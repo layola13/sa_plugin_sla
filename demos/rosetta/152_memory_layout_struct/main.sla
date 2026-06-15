@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 152 Memory Layout Struct.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_152_value() -> int {
+    let seed = 19;
+    let shifted = seed + 152;
+    let scaled = shifted * 10;
+    let result = scaled - 19;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_152_value();
+    return result;
+};
+
+@test "rosetta 152 152_memory_layout_struct"() {
+    let got = rosetta_152_value();
+    if got != 1691 {
+        panic(152);
+    }

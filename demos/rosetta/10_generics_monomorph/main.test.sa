@@ -1,0 +1,107 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@unwrap_or(opt: ptr, default: i64) -> i64:
+L_ENTRY:
+    tmp_0 = load opt+0 as u8
+    br tmp_0 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_0
+    tmp_1 = load opt+8 as i64
+    !default
+    !opt
+    return tmp_1
+
+L_ELSE_1:
+    !tmp_0
+    !opt
+    return default
+
+
+@rosetta_010_value() -> i64:
+L_ENTRY:
+    opt = alloc 16
+    tmp_3 = 1
+    store opt+0, tmp_3 as u8
+    tmp_4 = 42
+    store opt+8, tmp_4 as i64
+    tmp_5 = 0
+    tmp_6 = call @unwrap_or(opt, tmp_5)
+    !tmp_5
+    result = tmp_6
+    !opt
+    return result
+
+@main() -> i64:
+L_ENTRY:
+    tmp_7 = call @rosetta_010_value()
+    result = tmp_7
+    tmp_8 = 42
+    tmp_9 = eq result, tmp_8
+    br tmp_9 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_9
+    tmp_10 = call @sa_fmt_i64(result, 10)
+    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
+    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
+    tmp_13 = tmp_11
+    call @sa_print_bytes(&tmp_13, tmp_12)
+    call @sa_fmt_buffer_free(^tmp_10)
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    jmp L_MERGE_5
+
+L_ELSE_4:
+    !tmp_9
+    panic(10)
+
+L_MERGE_5:
+    tmp_16 = 0
+    !result
+    return tmp_16
+
+@test "rosetta 010 generics monomorph"():
+L_TEST_ENTRY_6:
+    tmp_17 = call @rosetta_010_value()
+    some = tmp_17
+    tmp_18 = 42
+    tmp_19 = ne some, tmp_18
+    br tmp_19 -> L_THEN_7, L_ELSE_8
+
+L_THEN_7:
+    !tmp_19
+    panic(10)
+
+L_ELSE_8:
+    !tmp_19
+    jmp L_MERGE_9
+
+L_MERGE_9:
+    none = alloc 16
+    tmp_22 = 0
+    store none+0, tmp_22 as u8
+    tmp_23 = 0
+    store none+8, tmp_23 as i64
+    tmp_24 = 7
+    tmp_25 = call @unwrap_or(none, tmp_24)
+    !tmp_24
+    fallback = tmp_25
+    tmp_26 = 7
+    tmp_27 = ne fallback, tmp_26
+    br tmp_27 -> L_THEN_10, L_ELSE_11
+
+L_THEN_10:
+    !tmp_27
+    panic(100)
+
+L_ELSE_11:
+    !tmp_27
+    jmp L_MERGE_12
+
+L_MERGE_12:
+    !some
+    !none
+    !fallback
+    return
+

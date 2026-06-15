@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 224 Mod Reexport Pub Use.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_224_value() -> int {
+    let seed = 6;
+    let shifted = seed + 224;
+    let scaled = shifted * 10;
+    let result = scaled - 22;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_224_value();
+    return result;
+};
+
+@test "rosetta 224 224_mod_reexport_pub_use"() {
+    let got = rosetta_224_value();
+    if got != 2278 {
+        panic(224);
+    }

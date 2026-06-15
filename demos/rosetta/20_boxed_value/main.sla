@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 020 Boxed Value.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_020_value() -> int {
+    let seed = 6;
+    let shifted = seed + 20;
+    let scaled = shifted * 4;
+    let result = scaled - 25;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_020_value();
+    return result;
+};
+
+@test "rosetta 020 20_boxed_value"() {
+    let got = rosetta_020_value();
+    if got != 79 {
+        panic(20);
+    }

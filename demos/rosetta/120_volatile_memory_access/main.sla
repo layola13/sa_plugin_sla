@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 120 Volatile Memory Access.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_120_value() -> int {
+    let seed = 4;
+    let shifted = seed + 120;
+    let scaled = shifted * 5;
+    let result = scaled - 10;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_120_value();
+    return result;
+};
+
+@test "rosetta 120 120_volatile_memory_access"() {
+    let got = rosetta_120_value();
+    if got != 610 {
+        panic(120);
+    }

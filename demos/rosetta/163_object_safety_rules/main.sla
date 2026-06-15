@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 163 Object Safety Rules.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_163_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_163_value() -> int {
+    let result = rosetta_163_mix(22, 10);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_163_value();
+    return result;
+};
+
+@test "rosetta 163 163_object_safety_rules"() {
+    let got = rosetta_163_value();
+    if got != 232 {
+        panic(163);
+    }

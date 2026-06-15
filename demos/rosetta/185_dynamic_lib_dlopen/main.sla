@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 185 Dynamic Lib Dlopen.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_185_value() -> int {
+    let base = (18 * 7) + 185;
+    let threshold = 191;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_185_value();
+    return result;
+};
+
+@test "rosetta 185 185_dynamic_lib_dlopen"() {
+    let got = rosetta_185_value();
+    if got != 120 {
+        panic(185);
+    }

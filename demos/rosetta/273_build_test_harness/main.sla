@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 273 Build Test Harness.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_273_value() -> int {
+    let base = (4 * 5) + 273;
+    let threshold = 298;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_273_value();
+    return result;
+};
+
+@test "rosetta 273 273_build_test_harness"() {
+    let got = rosetta_273_value();
+    if got != 5 {
+        panic(273);
+    }

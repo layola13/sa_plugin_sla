@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 277 Build Parallel Compilation.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_277_value() -> int {
+    let base = (8 * 9) + 277;
+    let threshold = 283;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_277_value();
+    return result;
+};
+
+@test "rosetta 277 277_build_parallel_compilation"() {
+    let got = rosetta_277_value();
+    if got != 66 {
+        panic(277);
+    }

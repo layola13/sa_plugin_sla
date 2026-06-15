@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 203 Pkg Dependencies Git.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_203_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_203_value() -> int {
+    let result = rosetta_203_mix(24, 31);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_203_value();
+    return result;
+};
+
+@test "rosetta 203 203_pkg_dependencies_git"() {
+    let got = rosetta_203_value();
+    if got != 737 {
+        panic(203);
+    }

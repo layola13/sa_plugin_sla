@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 063 Router Table.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_063_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_063_value() -> int {
+    let result = rosetta_063_mix(23, 24);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_063_value();
+    return result;
+};
+
+@test "rosetta 063 63_router_table"() {
+    let got = rosetta_063_value();
+    if got != 551 {
+        panic(63);
+    }

@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 029 Const Data.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_029_value() -> int {
+    let base = (15 * 4) + 29;
+    let threshold = 40;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_029_value();
+    return result;
+};
+
+@test "rosetta 029 29_const_data"() {
+    let got = rosetta_029_value();
+    if got != 49 {
+        panic(29);
+    }

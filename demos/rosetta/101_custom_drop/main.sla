@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 101 Custom Drop.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_101_value() -> int {
+    let base = (19 * 4) + 101;
+    let threshold = 115;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_101_value();
+    return result;
+};
+
+@test "rosetta 101 101_custom_drop"() {
+    let got = rosetta_101_value();
+    if got != 62 {
+        panic(101);
+    }

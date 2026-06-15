@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 092 Query Plan.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_092_value() -> int {
+    let seed = 10;
+    let shifted = seed + 92;
+    let scaled = shifted * 4;
+    let result = scaled - 5;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_092_value();
+    return result;
+};
+
+@test "rosetta 092 92_query_plan"() {
+    let got = rosetta_092_value();
+    if got != 403 {
+        panic(92);
+    }

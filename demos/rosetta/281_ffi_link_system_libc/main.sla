@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 281 Ffi Link System Libc.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_281_value() -> int {
+    let base = (12 * 4) + 281;
+    let threshold = 291;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_281_value();
+    return result;
+};
+
+@test "rosetta 281 281_ffi_link_system_libc"() {
+    let got = rosetta_281_value();
+    if got != 38 {
+        panic(281);
+    }

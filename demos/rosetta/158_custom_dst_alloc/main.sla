@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 158 Custom Dst Alloc.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_158_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 25;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_158_value();
+    return result;
+};
+
+@test "rosetta 158 158_custom_dst_alloc"() {
+    let got = rosetta_158_value();
+    if got != 61 {
+        panic(158);
+    }

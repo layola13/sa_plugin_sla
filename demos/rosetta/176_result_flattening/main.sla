@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 176 Result Flattening.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_176_value() -> int {
+    let seed = 9;
+    let shifted = seed + 176;
+    let scaled = shifted * 7;
+    let result = scaled - 20;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_176_value();
+    return result;
+};
+
+@test "rosetta 176 176_result_flattening"() {
+    let got = rosetta_176_value();
+    if got != 1275 {
+        panic(176);
+    }

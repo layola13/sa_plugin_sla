@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 127 Hazard Pointers.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_127_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_127_value() -> int {
+    let result = rosetta_127_mix(17, 20);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_127_value();
+    return result;
+};
+
+@test "rosetta 127 127_hazard_pointers"() {
+    let got = rosetta_127_value();
+    if got != 337 {
+        panic(127);
+    }

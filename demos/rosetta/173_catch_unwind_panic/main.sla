@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 173 Catch Unwind Panic.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_173_value() -> int {
+    let base = (6 * 4) + 173;
+    let threshold = 190;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_173_value();
+    return result;
+};
+
+@test "rosetta 173 173_catch_unwind_panic"() {
+    let got = rosetta_173_value();
+    if got != 7 {
+        panic(173);
+    };

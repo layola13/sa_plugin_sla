@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 280 Build Ci Cd Integration.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_280_value() -> int {
+    let seed = 11;
+    let shifted = seed + 280;
+    let scaled = shifted * 3;
+    let result = scaled - 9;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_280_value();
+    return result;
+};
+
+@test "rosetta 280 280_build_ci_cd_integration"() {
+    let got = rosetta_280_value();
+    if got != 864 {
+        panic(280);
+    };

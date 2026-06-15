@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 156 Slab Allocator Freelist.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_156_value() -> int {
+    let seed = 6;
+    let shifted = seed + 156;
+    let scaled = shifted * 5;
+    let result = scaled - 23;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_156_value();
+    return result;
+};
+
+@test "rosetta 156 156_slab_allocator_freelist"() {
+    let got = rosetta_156_value();
+    if got != 787 {
+        panic(156);
+    }

@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 175 Thiserror Macro Derive.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_175_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_175_value() -> int {
+    let result = rosetta_175_mix(18, 25);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_175_value();
+    return result;
+};
+
+@test "rosetta 175 175_thiserror_macro_derive"() {
+    let got = rosetta_175_value();
+    if got != 443 {
+        panic(175);
+    }

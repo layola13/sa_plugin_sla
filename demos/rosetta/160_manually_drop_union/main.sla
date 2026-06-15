@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 160 Manually Drop Union.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_160_value() -> int {
+    let seed = 10;
+    let shifted = seed + 160;
+    let scaled = shifted * 9;
+    let result = scaled - 27;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_160_value();
+    return result;
+};
+
+@test "rosetta 160 160_manually_drop_union"() {
+    let got = rosetta_160_value();
+    if got != 1503 {
+        panic(160);
+    }

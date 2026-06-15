@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 133 Select Macro Race.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_133_value() -> int {
+    let base = (17 * 9) + 133;
+    let threshold = 156;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_133_value();
+    return result;
+};
+
+@test "rosetta 133 133_select_macro_race"() {
+    let got = rosetta_133_value();
+    if got != 130 {
+        panic(133);
+    }

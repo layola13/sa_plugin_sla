@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 187 Opengl Context Swap.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_187_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_187_value() -> int {
+    let result = rosetta_187_mix(3, 17);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_187_value();
+    return result;
+};
+
+@test "rosetta 187 187_opengl_context_swap"() {
+    let got = rosetta_187_value();
+    if got != 37 {
+        panic(187);
+    }

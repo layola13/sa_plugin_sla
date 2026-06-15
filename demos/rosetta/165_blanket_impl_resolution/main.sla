@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 165 Blanket Impl Resolution.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_165_value() -> int {
+    let base = (15 * 5) + 165;
+    let threshold = 174;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_165_value();
+    return result;
+};
+
+@test "rosetta 165 165_blanket_impl_resolution"() {
+    let got = rosetta_165_value();
+    if got != 66 {
+        panic(165);
+    }

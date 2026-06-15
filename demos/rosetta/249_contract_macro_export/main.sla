@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 249 Contract Macro Export.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_249_value() -> int {
+    let base = (14 * 8) + 249;
+    let threshold = 273;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_249_value();
+    return result;
+};
+
+@test "rosetta 249 249_contract_macro_export"() {
+    let got = rosetta_249_value();
+    if got != 88 {
+        panic(249);
+    }

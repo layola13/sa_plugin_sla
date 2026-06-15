@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 245 Contract Generic Monomorph Share.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_245_value() -> int {
+    let base = (10 * 4) + 245;
+    let threshold = 265;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_245_value();
+    return result;
+};
+
+@test "rosetta 245 245_contract_generic_monomorph_share"() {
+    let got = rosetta_245_value();
+    if got != 20 {
+        panic(245);
+    };

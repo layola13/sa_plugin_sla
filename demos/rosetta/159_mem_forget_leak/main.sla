@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 159 Mem Forget Leak.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_159_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_159_value() -> int {
+    let result = rosetta_159_mix(14, 34);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_159_value();
+    return result;
+};
+
+@test "rosetta 159 159_mem_forget_leak"() {
+    let got = rosetta_159_value();
+    if got != 456 {
+        panic(159);
+    }

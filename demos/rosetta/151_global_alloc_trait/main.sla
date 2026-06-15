@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 151 Global Alloc Trait.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_151_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_151_value() -> int {
+    let result = rosetta_151_mix(26, 27);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_151_value();
+    return result;
+};
+
+@test "rosetta 151 151_global_alloc_trait"() {
+    let got = rosetta_151_value();
+    if got != 701 {
+        panic(151);
+    }

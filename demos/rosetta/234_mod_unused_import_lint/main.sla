@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 234 Mod Unused Import Lint.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_234_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 9;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_234_value();
+    return result;
+};
+
+@test "rosetta 234 234_mod_unused_import_lint"() {
+    let got = rosetta_234_value();
+    if got != 19 {
+        panic(234);
+    }

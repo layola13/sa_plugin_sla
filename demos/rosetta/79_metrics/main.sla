@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 079 Metrics.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_079_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_079_value() -> int {
+    let result = rosetta_079_mix(16, 24);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_079_value();
+    return result;
+};
+
+@test "rosetta 079 79_metrics"() {
+    let got = rosetta_079_value();
+    if got != 376 {
+        panic(79);
+    }

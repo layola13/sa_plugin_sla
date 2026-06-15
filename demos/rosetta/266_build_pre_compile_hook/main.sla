@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 266 Build Pre Compile Hook.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_266_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 18;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_266_value();
+    return result;
+};
+
+@test "rosetta 266 266_build_pre_compile_hook"() {
+    let got = rosetta_266_value();
+    if got != 28 {
+        panic(266);
+    }

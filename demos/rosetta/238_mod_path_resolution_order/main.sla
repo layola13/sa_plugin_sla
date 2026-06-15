@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 238 Mod Path Resolution Order.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_238_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 13;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_238_value();
+    return result;
+};
+
+@test "rosetta 238 238_mod_path_resolution_order"() {
+    let got = rosetta_238_value();
+    if got != 49 {
+        panic(238);
+    }

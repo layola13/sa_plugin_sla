@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 264 Build Env Var Injection.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_264_value() -> int {
+    let seed = 12;
+    let shifted = seed + 264;
+    let scaled = shifted * 5;
+    let result = scaled - 16;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_264_value();
+    return result;
+};
+
+@test "rosetta 264 264_build_env_var_injection"() {
+    let got = rosetta_264_value();
+    if got != 1364 {
+        panic(264);
+    }

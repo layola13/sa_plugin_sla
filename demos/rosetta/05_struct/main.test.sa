@@ -1,0 +1,71 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@create_point(x: i64, y: i64) -> ptr:
+L_ENTRY:
+    point = alloc 16
+    store point+0, x as i64
+    store point+8, y as i64
+    !x
+    !y
+    return point
+
+@rosetta_005_sum() -> i64:
+L_ENTRY:
+    tmp_0 = 10
+    tmp_1 = 20
+    tmp_2 = call @create_point(tmp_0, tmp_1)
+    !tmp_0
+    !tmp_1
+    point = tmp_2
+    tmp_3 = load point+0 as i64
+    tmp_4 = load point+8 as i64
+    tmp_5 = add tmp_3, tmp_4
+    total = tmp_5
+    !point
+    return total
+
+@main() -> i64:
+L_ENTRY:
+    tmp_6 = call @rosetta_005_sum()
+    total = tmp_6
+    tmp_7 = 30
+    tmp_8 = eq total, tmp_7
+    br tmp_8 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_8
+    @const SLA_STR_0 = utf8:"(10,20)"
+    call @sa_print_bytes(&SLA_STR_0, 7)
+    @const SLA_STR_1 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    jmp L_MERGE_2
+
+L_ELSE_1:
+    !tmp_8
+    panic(5)
+
+L_MERGE_2:
+    tmp_11 = 0
+    !total
+    return tmp_11
+
+@test "rosetta 005 struct"():
+L_TEST_ENTRY_3:
+    tmp_12 = call @rosetta_005_sum()
+    got = tmp_12
+    tmp_13 = 30
+    tmp_14 = ne got, tmp_13
+    br tmp_14 -> L_THEN_4, L_ELSE_5
+
+L_THEN_4:
+    !tmp_14
+    panic(5)
+
+L_ELSE_5:
+    !tmp_14
+    jmp L_MERGE_6
+
+L_MERGE_6:
+    !got
+    return
+

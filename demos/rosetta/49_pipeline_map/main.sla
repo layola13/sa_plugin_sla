@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 049 Pipeline Map.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_049_value() -> int {
+    let base = (18 * 6) + 49;
+    let threshold = 57;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_049_value();
+    return result;
+};
+
+@test "rosetta 049 49_pipeline_map"() {
+    let got = rosetta_049_value();
+    if got != 100 {
+        panic(49);
+    }

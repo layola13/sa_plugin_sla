@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 077 Http Route.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_077_value() -> int {
+    let base = (12 * 7) + 77;
+    let threshold = 90;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_077_value();
+    return result;
+};
+
+@test "rosetta 077 77_http_route"() {
+    let got = rosetta_077_value();
+    if got != 71 {
+        panic(77);
+    }

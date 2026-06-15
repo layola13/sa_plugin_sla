@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 268 Build Cross Compile Wasm.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_268_value() -> int {
+    let seed = 16;
+    let shifted = seed + 268;
+    let scaled = shifted * 9;
+    let result = scaled - 20;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_268_value();
+    return result;
+};
+
+@test "rosetta 268 268_build_cross_compile_wasm"() {
+    let got = rosetta_268_value();
+    if got != 2536 {
+        panic(268);
+    }

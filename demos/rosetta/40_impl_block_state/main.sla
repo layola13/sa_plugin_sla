@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 040 Impl Block State.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_040_value() -> int {
+    let seed = 9;
+    let shifted = seed + 40;
+    let scaled = shifted * 6;
+    let result = scaled - 22;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_040_value();
+    return result;
+};
+
+@test "rosetta 040 40_impl_block_state"() {
+    let got = rosetta_040_value();
+    if got != 272 {
+        panic(40);
+    }

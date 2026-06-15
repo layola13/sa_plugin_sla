@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 166 Specialization Fallback.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_166_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 10;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_166_value();
+    return result;
+};
+
+@test "rosetta 166 166_specialization_fallback"() {
+    let got = rosetta_166_value();
+    if got != 46 {
+        panic(166);
+    }

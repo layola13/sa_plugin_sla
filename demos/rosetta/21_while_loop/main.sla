@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 021 While Loop.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_021_value() -> int {
+    let base = (7 * 5) + 21;
+    let threshold = 47;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_021_value();
+    return result;
+};
+
+@test "rosetta 021 21_while_loop"() {
+    let got = rosetta_021_value();
+    if got != 9 {
+        panic(21);
+    }

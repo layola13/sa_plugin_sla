@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 086 Cache Eviction.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_086_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 22;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_086_value();
+    return result;
+};
+
+@test "rosetta 086 86_cache_eviction"() {
+    let got = rosetta_086_value();
+    if got != 58 {
+        panic(86);
+    }

@@ -1,0 +1,36 @@
+{
+  "schema": "sa.plugin/1",
+  "name": "sla",
+  "version": "0.1.0",
+  "source": {
+    "type": "local",
+    "path": "."
+  },
+  "abi": {
+    "plugin": 1,
+    "saasm": ">=0.4.0"
+  },
+  "artifacts": {
+    "linux-x86_64": {
+      "path": "zig-out/lib/libsla.so"
+    }
+  },
+  "interfaces": {},
+  "skills": ["sla"],
+  "permissions": {
+    "fs": [
+      { "op": "read", "path": "$PROJECT/**" },
+      { "op": "write", "path": "$PROJECT/**" },
+      { "op": "create", "path": "$PROJECT/**" }
+    ],
+    "net": [],
+    "env": ["HOME", "PATH", "SA_*"],
+    "process": {
+      "spawn": true,
+      "exec": [
+        { "path": "/opt/zig/zig", "args": ["*"] }
+      ]
+    }
+  },
+  "dependencies": {}
+}

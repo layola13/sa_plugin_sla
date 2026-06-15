@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 222 Mod Absolute Import.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_222_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 20;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_222_value();
+    return result;
+};
+
+@test "rosetta 222 222_mod_absolute_import"() {
+    let got = rosetta_222_value();
+    if got != 56 {
+        panic(222);
+    }

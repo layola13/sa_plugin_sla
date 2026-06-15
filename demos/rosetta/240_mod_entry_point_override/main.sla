@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 240 Mod Entry Point Override.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_240_value() -> int {
+    let seed = 5;
+    let shifted = seed + 240;
+    let scaled = shifted * 8;
+    let result = scaled - 15;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_240_value();
+    return result;
+};
+
+@test "rosetta 240 240_mod_entry_point_override"() {
+    let got = rosetta_240_value();
+    if got != 1945 {
+        panic(240);
+    }

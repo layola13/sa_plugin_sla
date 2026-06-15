@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 196 Lto Link Time Opt.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_196_value() -> int {
+    let seed = 12;
+    let shifted = seed + 196;
+    let scaled = shifted * 9;
+    let result = scaled - 17;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_196_value();
+    return result;
+};
+
+@test "rosetta 196 196_lto_link_time_opt"() {
+    let got = rosetta_196_value();
+    if got != 1855 {
+        panic(196);
+    }

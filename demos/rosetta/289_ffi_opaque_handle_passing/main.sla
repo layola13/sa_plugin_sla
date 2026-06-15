@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 289 Ffi Opaque Handle Passing.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_289_value() -> int {
+    let base = (3 * 3) + 289;
+    let threshold = 307;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_289_value();
+    return result;
+};
+
+@test "rosetta 289 289_ffi_opaque_handle_passing"() {
+    let got = rosetta_289_value();
+    if got != 9 {
+        panic(289);
+    }

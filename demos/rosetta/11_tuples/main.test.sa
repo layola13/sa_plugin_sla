@@ -1,0 +1,148 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@rosetta_011_first() -> i64:
+L_ENTRY:
+    pair = alloc 16
+    tmp_0 = 3
+    store pair+0, tmp_0 as i64
+    tmp_1 = 4
+    store pair+8, tmp_1 as i64
+    tmp_2 = load pair+0 as i64
+    !pair
+    return tmp_2
+
+@rosetta_011_second() -> i64:
+L_ENTRY:
+    pair = alloc 16
+    tmp_3 = 3
+    store pair+0, tmp_3 as i64
+    tmp_4 = 4
+    store pair+8, tmp_4 as i64
+    tmp_5 = load pair+8 as i64
+    !pair
+    return tmp_5
+
+@rosetta_011_value() -> i64:
+L_ENTRY:
+    pair = alloc 16
+    tmp_6 = 3
+    store pair+0, tmp_6 as i64
+    tmp_7 = 4
+    store pair+8, tmp_7 as i64
+    tmp_8 = load pair+0 as i64
+    tmp_9 = 10
+    tmp_10 = mul tmp_8, tmp_9
+    tmp_11 = load pair+8 as i64
+    tmp_12 = add tmp_10, tmp_11
+    !pair
+    return tmp_12
+
+@main() -> i64:
+L_ENTRY:
+    tmp_13 = call @rosetta_011_first()
+    first = tmp_13
+    tmp_14 = call @rosetta_011_second()
+    second = tmp_14
+    tmp_15 = 3
+    tmp_16 = ne first, tmp_15
+    br tmp_16 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_16
+    panic(11)
+
+L_ELSE_1:
+    !tmp_16
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_19 = 4
+    tmp_20 = ne second, tmp_19
+    br tmp_20 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_20
+    panic(11)
+
+L_ELSE_4:
+    !tmp_20
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    @const SLA_STR_0 = utf8:"("
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_23 = call @sa_fmt_i64(first, 10)
+    tmp_24 = call @sa_fmt_buffer_data(tmp_23)
+    tmp_25 = call @sa_fmt_buffer_len(tmp_23)
+    tmp_26 = tmp_24
+    call @sa_print_bytes(&tmp_26, tmp_25)
+    call @sa_fmt_buffer_free(^tmp_23)
+    @const SLA_STR_1 = utf8:", "
+    call @sa_print_bytes(&SLA_STR_1, 2)
+    tmp_27 = call @sa_fmt_i64(second, 10)
+    tmp_28 = call @sa_fmt_buffer_data(tmp_27)
+    tmp_29 = call @sa_fmt_buffer_len(tmp_27)
+    tmp_30 = tmp_28
+    call @sa_print_bytes(&tmp_30, tmp_29)
+    call @sa_fmt_buffer_free(^tmp_27)
+    @const SLA_STR_2 = utf8:")"
+    call @sa_print_bytes(&SLA_STR_2, 1)
+    @const SLA_STR_3 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_3, 1)
+    tmp_31 = 0
+    !first
+    !second
+    return tmp_31
+
+@test "rosetta 011 tuples"():
+L_TEST_ENTRY_6:
+    tmp_32 = call @rosetta_011_first()
+    first = tmp_32
+    tmp_33 = call @rosetta_011_second()
+    second = tmp_33
+    tmp_34 = call @rosetta_011_value()
+    encoded = tmp_34
+    tmp_35 = 3
+    tmp_36 = ne first, tmp_35
+    br tmp_36 -> L_THEN_7, L_ELSE_8
+
+L_THEN_7:
+    !tmp_36
+    panic(11)
+
+L_ELSE_8:
+    !tmp_36
+    jmp L_MERGE_9
+
+L_MERGE_9:
+    tmp_39 = 4
+    tmp_40 = ne second, tmp_39
+    br tmp_40 -> L_THEN_10, L_ELSE_11
+
+L_THEN_10:
+    !tmp_40
+    panic(12)
+
+L_ELSE_11:
+    !tmp_40
+    jmp L_MERGE_12
+
+L_MERGE_12:
+    tmp_43 = 34
+    tmp_44 = ne encoded, tmp_43
+    br tmp_44 -> L_THEN_13, L_ELSE_14
+
+L_THEN_13:
+    !tmp_44
+    panic(13)
+
+L_ELSE_14:
+    !tmp_44
+    jmp L_MERGE_15
+
+L_MERGE_15:
+    !first
+    !encoded
+    !second
+    return
+

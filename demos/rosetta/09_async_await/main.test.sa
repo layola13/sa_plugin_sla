@@ -1,0 +1,140 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/time.sai"
+@import "sa_std/future.sa"
+@delay_ms() -> i64:
+L_ENTRY:
+    tmp_0 = 5
+    return tmp_0
+
+@step_one_after_delay(delay: i64) -> ptr:
+L_ENTRY:
+    date = stack_alloc 32
+    tmp_1 = call @sa_time_utc_now(&date)
+    !tmp_1
+    tmp_2 = call @sa_time_unix_ms()
+    unix_before = tmp_2
+    tmp_3 = call @sa_time_sleep_ms(delay)
+    !tmp_3
+    tmp_4 = call @sa_time_unix_ms()
+    unix_after = tmp_4
+    tmp_5 = slt unix_after, unix_before
+    br tmp_5 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_5
+    panic(90)
+
+L_ELSE_1:
+    !tmp_5
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_8 = 1
+    EXPAND FUTURE_READY_STATE_NEW tmp_9, tmp_8
+    !unix_after
+    !unix_before
+    !delay
+    return tmp_9
+
+@run() -> ptr:
+L_ENTRY:
+    tmp_10 = call @sa_time_instant_ns()
+    started = tmp_10
+    tmp_11 = call @delay_ms()
+    tmp_12 = call @step_one_after_delay(tmp_11)
+    !tmp_11
+    EXPAND FUTURE_READY_STATE_INTO_INNER tmp_13, tmp_12
+    !tmp_12
+    value = tmp_13
+    tmp_14 = call @sa_time_instant_ns()
+    ended = tmp_14
+    tmp_15 = sub ended, started
+    elapsed = tmp_15
+    tmp_16 = 1000000
+    tmp_17 = slt elapsed, tmp_16
+    br tmp_17 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_17
+    panic(91)
+
+L_ELSE_4:
+    !tmp_17
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_20 = 1
+    tmp_21 = add value, tmp_20
+    EXPAND FUTURE_READY_STATE_NEW tmp_22, tmp_21
+    !value
+    !elapsed
+    !started
+    !ended
+    return tmp_22
+
+@block_on(future: ptr) -> i64:
+L_ENTRY:
+    EXPAND FUTURE_READY_STATE_INTO_INNER tmp_23, future
+    !future
+    value = tmp_23
+    return value
+
+@rosetta_009_value() -> i64:
+L_ENTRY:
+    tmp_24 = call @run()
+    future = tmp_24
+    tmp_25 = call @block_on(future)
+    result = tmp_25
+    !future
+    return result
+
+@main() -> i64:
+L_ENTRY:
+    tmp_26 = call @rosetta_009_value()
+    result = tmp_26
+    tmp_27 = 2
+    tmp_28 = eq result, tmp_27
+    br tmp_28 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_28
+    tmp_29 = call @sa_fmt_i64(result, 10)
+    tmp_30 = call @sa_fmt_buffer_data(tmp_29)
+    tmp_31 = call @sa_fmt_buffer_len(tmp_29)
+    tmp_32 = tmp_30
+    call @sa_print_bytes(&tmp_32, tmp_31)
+    call @sa_fmt_buffer_free(^tmp_29)
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    jmp L_MERGE_8
+
+L_ELSE_7:
+    !tmp_28
+    panic(9)
+
+L_MERGE_8:
+    tmp_35 = 0
+    !result
+    return tmp_35
+
+@test "rosetta 009 async await"():
+L_TEST_ENTRY_9:
+    tmp_36 = call @rosetta_009_value()
+    got = tmp_36
+    tmp_37 = 2
+    tmp_38 = ne got, tmp_37
+    br tmp_38 -> L_THEN_10, L_ELSE_11
+
+L_THEN_10:
+    !tmp_38
+    panic(9)
+
+L_ELSE_11:
+    !tmp_38
+    jmp L_MERGE_12
+
+L_MERGE_12:
+    !got
+    return
+

@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 261 Build Rs Codegen Saasm.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_261_value() -> int {
+    let base = (9 * 2) + 261;
+    let threshold = 274;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_261_value();
+    return result;
+};
+
+@test "rosetta 261 261_build_rs_codegen_saasm"() {
+    let got = rosetta_261_value();
+    if got != 5 {
+        panic(261);
+    }

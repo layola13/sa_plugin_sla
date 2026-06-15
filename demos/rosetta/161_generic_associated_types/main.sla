@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 161 Generic Associated Types.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_161_value() -> int {
+    let base = (11 * 10) + 161;
+    let threshold = 166;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_161_value();
+    return result;
+};
+
+@test "rosetta 161 161_generic_associated_types"() {
+    let got = rosetta_161_value();
+    if got != 105 {
+        panic(161);
+    }

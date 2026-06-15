@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 243 Contract Sig Mismatch Link.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_243_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_243_value() -> int {
+    let result = rosetta_243_mix(9, 20);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_243_value();
+    return result;
+};
+
+@test "rosetta 243 243_contract_sig_mismatch_link"() {
+    let got = rosetta_243_value();
+    if got != 169 {
+        panic(243);
+    }

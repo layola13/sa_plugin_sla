@@ -1,0 +1,33 @@
+// Sla enum and match smoke tests.
+
+enum Message {
+    Quit,
+    Move { x: int, y: int },
+}
+
+fn process_msg(^msg: Message) -> int {
+    match msg {
+        Message::Quit => {
+            return 0;
+        },
+        Message::Move { x, y } => {
+            return x + y;
+        },
+    };
+}
+
+@test "enum move match"() {
+    let msg = Message::Move { x: 10, y: 20 };
+    let result = process_msg(^msg);
+    if result != 30 {
+        panic(1);
+    };
+}
+
+@test "enum unit match"() {
+    let msg = Message::Quit;
+    let result = process_msg(^msg);
+    if result != 0 {
+        panic(2);
+    };
+}

@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 047 Tuple Swap.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_047_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_047_value() -> int {
+    let result = rosetta_047_mix(19, 10);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_047_value();
+    return result;
+};
+
+@test "rosetta 047 47_tuple_swap"() {
+    let got = rosetta_047_value();
+    if got != 199 {
+        panic(47);
+    }

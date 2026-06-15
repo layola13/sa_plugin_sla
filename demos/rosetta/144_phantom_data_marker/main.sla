@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 144 Phantom Data Marker.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_144_value() -> int {
+    let seed = 11;
+    let shifted = seed + 144;
+    let scaled = shifted * 2;
+    let result = scaled - 11;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_144_value();
+    return result;
+};
+
+@test "rosetta 144 144_phantom_data_marker"() {
+    let got = rosetta_144_value();
+    if got != 299 {
+        panic(144);
+    }

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 068 Parser Tokens.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_068_value() -> int {
+    let seed = 3;
+    let shifted = seed + 68;
+    let scaled = shifted * 7;
+    let result = scaled - 27;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_068_value();
+    return result;
+};
+
+@test "rosetta 068 68_parser_tokens"() {
+    let got = rosetta_068_value();
+    if got != 470 {
+        panic(68);
+    }

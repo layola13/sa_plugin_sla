@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 055 Builder Pattern.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_055_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_055_value() -> int {
+    let result = rosetta_055_mix(7, 17);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_055_value();
+    return result;
+};
+
+@test "rosetta 055 55_builder_pattern"() {
+    let got = rosetta_055_value();
+    if got != 109 {
+        panic(55);
+    }

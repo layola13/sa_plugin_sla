@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 209 Pkg Build Dependencies.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_209_value() -> int {
+    let base = (8 * 4) + 209;
+    let threshold = 216;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_209_value();
+    return result;
+};
+
+@test "rosetta 209 209_pkg_build_dependencies"() {
+    let got = rosetta_209_value();
+    if got != 25 {
+        panic(209);
+    }

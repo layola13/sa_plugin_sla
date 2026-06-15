@@ -1,0 +1,71 @@
+@tuple_value() -> i64:
+L_ENTRY:
+    pair = alloc 16
+    tmp_0 = 3
+    store pair+0, tmp_0 as i64
+    tmp_1 = 4
+    store pair+8, tmp_1 as i64
+    tmp_2 = load pair+0 as i64
+    tmp_3 = 10
+    tmp_4 = mul tmp_2, tmp_3
+    tmp_5 = load pair+8 as i64
+    tmp_6 = add tmp_4, tmp_5
+    !pair
+    return tmp_6
+
+@destructure_value() -> i64:
+L_ENTRY:
+    tmp_7 = alloc 16
+    tmp_8 = 2
+    store tmp_7+0, tmp_8 as i64
+    tmp_9 = 5
+    store tmp_7+8, tmp_9 as i64
+    x = load tmp_7+0 as i64
+    y = load tmp_7+8 as i64
+    !tmp_7
+    tmp_10 = add x, y
+    sum = tmp_10
+    !x
+    !y
+    return sum
+
+@test "tuple field access"():
+L_TEST_ENTRY_0:
+    tmp_11 = call @tuple_value()
+    got = tmp_11
+    tmp_12 = 34
+    tmp_13 = ne got, tmp_12
+    br tmp_13 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_13
+    panic(1)
+
+L_ELSE_2:
+    !tmp_13
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !got
+    return
+
+@test "tuple destructuring"():
+L_TEST_ENTRY_4:
+    tmp_16 = call @destructure_value()
+    got = tmp_16
+    tmp_17 = 7
+    tmp_18 = ne got, tmp_17
+    br tmp_18 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
+    !tmp_18
+    panic(2)
+
+L_ELSE_6:
+    !tmp_18
+    jmp L_MERGE_7
+
+L_MERGE_7:
+    !got
+    return
+

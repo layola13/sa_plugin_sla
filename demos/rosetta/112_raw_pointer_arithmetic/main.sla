@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 112 Raw Pointer Arithmetic.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_112_value() -> int {
+    let seed = 13;
+    let shifted = seed + 112;
+    let scaled = shifted * 6;
+    let result = scaled - 25;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_112_value();
+    return result;
+};
+
+@test "rosetta 112 112_raw_pointer_arithmetic"() {
+    let got = rosetta_112_value();
+    if got != 725 {
+        panic(112);
+    };

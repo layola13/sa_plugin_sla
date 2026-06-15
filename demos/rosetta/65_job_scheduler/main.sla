@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 065 Job Scheduler.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_065_value() -> int {
+    let base = (17 * 4) + 65;
+    let threshold = 89;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_065_value();
+    return result;
+};
+
+@test "rosetta 065 65_job_scheduler"() {
+    let got = rosetta_065_value();
+    if got != 44 {
+        panic(65);
+    }

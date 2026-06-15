@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 026 Reference Return.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_026_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 8;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_026_value();
+    return result;
+};
+
+@test "rosetta 026 26_reference_return"() {
+    let got = rosetta_026_value();
+    if got != 18 {
+        panic(26);
+    }

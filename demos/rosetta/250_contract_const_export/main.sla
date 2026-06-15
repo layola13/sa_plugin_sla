@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 250 Contract Const Export.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_250_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 25;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_250_value();
+    return result;
+};
+
+@test "rosetta 250 250_contract_const_export"() {
+    let got = rosetta_250_value();
+    if got != 35 {
+        panic(250);
+    }

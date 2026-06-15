@@ -1,0 +1,64 @@
+@closure_capture_value() -> i64:
+L_ENTRY:
+    tmp_0 = 5
+    offset = tmp_0
+    add_offset = 0
+    tmp_1 = 10
+    tmp_2 = add tmp_1, offset
+    !add_offset
+    !offset
+    return tmp_2
+
+@closure_two_args() -> i64:
+L_ENTRY:
+    tmp_3 = 2
+    scale = tmp_3
+    mix = 0
+    tmp_4 = 6
+    tmp_5 = 3
+    tmp_6 = mul tmp_4, scale
+    tmp_7 = add tmp_6, tmp_5
+    !mix
+    !scale
+    return tmp_7
+
+@test "closure captures outer value"():
+L_TEST_ENTRY_0:
+    tmp_8 = call @closure_capture_value()
+    result = tmp_8
+    tmp_9 = 15
+    tmp_10 = ne result, tmp_9
+    br tmp_10 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_10
+    panic(1)
+
+L_ELSE_2:
+    !tmp_10
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !result
+    return
+
+@test "closure supports multiple params"():
+L_TEST_ENTRY_4:
+    tmp_13 = call @closure_two_args()
+    result = tmp_13
+    tmp_14 = 15
+    tmp_15 = ne result, tmp_14
+    br tmp_15 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
+    !tmp_15
+    panic(2)
+
+L_ELSE_6:
+    !tmp_15
+    jmp L_MERGE_7
+
+L_MERGE_7:
+    !result
+    return
+

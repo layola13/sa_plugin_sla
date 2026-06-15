@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 184 Pthread Spawn Join.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_184_value() -> int {
+    let seed = 17;
+    let shifted = seed + 184;
+    let scaled = shifted * 6;
+    let result = scaled - 5;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_184_value();
+    return result;
+};
+
+@test "rosetta 184 184_pthread_spawn_join"() {
+    let got = rosetta_184_value();
+    if got != 1201 {
+        panic(184);
+    }

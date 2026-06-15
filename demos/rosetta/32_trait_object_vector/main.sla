@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 032 Trait Object Vector.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_032_value() -> int {
+    let seed = 18;
+    let shifted = seed + 32;
+    let scaled = shifted * 7;
+    let result = scaled - 14;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_032_value();
+    return result;
+};
+
+@test "rosetta 032 32_trait_object_vector"() {
+    let got = rosetta_032_value();
+    if got != 336 {
+        panic(32);
+    }

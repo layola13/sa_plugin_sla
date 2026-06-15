@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 075 Async Bridge.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_075_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_075_value() -> int {
+    let result = rosetta_075_mix(19, 16);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_075_value();
+    return result;
+};
+
+@test "rosetta 075 75_async_bridge"() {
+    let got = rosetta_075_value();
+    if got != 307 {
+        panic(75);
+    }

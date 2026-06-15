@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 286 Ffi Rust Staticlib Integration.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_286_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 15;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_286_value();
+    return result;
+};
+
+@test "rosetta 286 286_ffi_rust_staticlib_integration"() {
+    let got = rosetta_286_value();
+    if got != 51 {
+        panic(286);
+    }

@@ -1,0 +1,146 @@
+@import "sa_std/rc.sal"
+
+#struct Result_Layout {
+    is_err: u8 // offset +0
+    value: i64 // offset +8
+    error: i64 // offset +16
+}
+
+[MACRO] add_one_macro %var_ref
+    tmp_0 = 1
+    add_one_macro_temp_uniq_0 = ^tmp_0
+    tmp_1 = %var_ref
+    tmp_2 = %var_ref
+    tmp_3 = add tmp_2, add_one_macro_temp_uniq_0
+    tmp_1 = ^tmp_3
+    !add_one_macro_temp_uniq_0
+[END_MACRO]
+
+@nested_loops(outer_lim: i64, inner_lim: i64) -> i64:
+L_ENTRY:
+    temp = stack_alloc 16 // Hoisted loop stack allocation
+    tmp_4 = 0
+    sum = ^tmp_4
+    tmp_5 = 1
+    i_slot = stack_alloc 8
+    store i_slot+0, tmp_5 as i64
+    !tmp_5
+    jmp L_LOOP_HEAD_0
+
+L_LOOP_HEAD_0:
+    i = load i_slot+0 as i64
+    tmp_6 = slt i, outer_lim
+    br tmp_6 -> L_LOOP_BODY_1, L_LOOP_EXIT_2
+
+L_LOOP_BODY_1:
+    !tmp_6
+    // Hoisted stack slot temp initialized
+    tmp_7 = 1
+    j_slot = stack_alloc 8
+    store j_slot+0, tmp_7 as i64
+    !tmp_7
+    jmp L_LOOP_HEAD_3
+
+L_LOOP_HEAD_3:
+    j = load j_slot+0 as i64
+    tmp_8 = slt j, inner_lim
+    br tmp_8 -> L_LOOP_BODY_4, L_LOOP_EXIT_5
+
+L_LOOP_BODY_4:
+    !tmp_8
+    tmp_9 = add sum, i
+    tmp_10 = add tmp_9, j
+    sum = ^tmp_10
+    tmp_11 = add j, 1
+    store j_slot+0, tmp_11 as i64
+    !tmp_11
+    !j
+    jmp L_LOOP_HEAD_3
+
+L_LOOP_EXIT_5:
+    !tmp_8
+    !j
+    !j_slot
+    !inner_lim
+    !temp
+    tmp_12 = add i, 1
+    store i_slot+0, tmp_12 as i64
+    !tmp_12
+    !i
+    jmp L_LOOP_HEAD_0
+
+L_LOOP_EXIT_2:
+    !tmp_6
+    !i
+    !i_slot
+    !outer_lim
+    !return_ty_sentinel
+    !outer_lim
+    !inner_lim
+    return sum
+
+@nested_conditionals(a: i64, b: i64) -> i64:
+L_ENTRY:
+    tmp_13 = sgt a, b
+    br tmp_13 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_13
+    tmp_14 = 10
+    tmp_15 = sgt a, tmp_14
+    br tmp_15 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_15
+    !b
+    !return_ty_sentinel
+    return a
+    jmp L_MERGE_11
+
+L_ELSE_10:
+    !tmp_15
+    tmp_16 = 10
+    !b
+    !a
+    !return_ty_sentinel
+    return tmp_16
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    jmp L_MERGE_8
+
+L_ELSE_7:
+    !tmp_13
+    tmp_18 = 20
+    tmp_19 = sgt b, tmp_18
+    br tmp_19 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_19
+    !a
+    !return_ty_sentinel
+    return b
+    jmp L_MERGE_14
+
+L_ELSE_13:
+    !tmp_19
+    tmp_20 = 20
+    !b
+    !a
+    !return_ty_sentinel
+    return tmp_20
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    jmp L_MERGE_8
+
+L_MERGE_8:
+
+@test_macro_hygiene(val: i64) -> i64:
+L_ENTRY:
+    temp = ^val
+    EXPAND add_one_macro temp
+    !return_ty_sentinel
+    !val
+    return temp
+

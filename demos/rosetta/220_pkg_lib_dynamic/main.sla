@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 220 Pkg Lib Dynamic.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_220_value() -> int {
+    let seed = 19;
+    let shifted = seed + 220;
+    let scaled = shifted * 6;
+    let result = scaled - 18;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_220_value();
+    return result;
+};
+
+@test "rosetta 220 220_pkg_lib_dynamic"() {
+    let got = rosetta_220_value();
+    if got != 1416 {
+        panic(220);
+    }

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 100 Full App.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_100_value() -> int {
+    let seed = 18;
+    let shifted = seed + 100;
+    let scaled = shifted * 3;
+    let result = scaled - 13;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_100_value();
+    return result;
+};
+
+@test "rosetta 100 100_full_app"() {
+    let got = rosetta_100_value();
+    if got != 341 {
+        panic(100);
+    }

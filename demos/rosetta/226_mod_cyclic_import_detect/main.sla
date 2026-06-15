@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 226 Mod Cyclic Import Detect.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_226_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 24;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_226_value();
+    return result;
+};
+
+@test "rosetta 226 226_mod_cyclic_import_detect"() {
+    let got = rosetta_226_value();
+    if got != 34 {
+        panic(226);
+    };

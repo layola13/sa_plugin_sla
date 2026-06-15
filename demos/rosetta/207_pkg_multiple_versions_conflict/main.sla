@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 207 Pkg Multiple Versions Conflict.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_207_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_207_value() -> int {
+    let result = rosetta_207_mix(15, 7);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_207_value();
+    return result;
+};
+
+@test "rosetta 207 207_pkg_multiple_versions_conflict"() {
+    let got = rosetta_207_value();
+    if got != 113 {
+        panic(207);
+    }

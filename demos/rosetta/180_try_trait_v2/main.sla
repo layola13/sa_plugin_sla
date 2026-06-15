@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 180 Try Trait V2.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_180_value() -> int {
+    let seed = 13;
+    let shifted = seed + 180;
+    let scaled = shifted * 2;
+    let result = scaled - 24;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_180_value();
+    return result;
+};
+
+@test "rosetta 180 180_try_trait_v2"() {
+    let got = rosetta_180_value();
+    if got != 362 {
+        panic(180);
+    }

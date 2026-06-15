@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 291 Eco Wasm Host Imports.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_291_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_291_value() -> int {
+    let result = rosetta_291_mix(10, 25);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_291_value();
+    return result;
+};
+
+@test "rosetta 291 291_eco_wasm_host_imports"() {
+    let got = rosetta_291_value();
+    if got != 235 {
+        panic(291);
+    }

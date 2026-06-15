@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 285 Ffi Objective C Framework.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_285_value() -> int {
+    let base = (16 * 8) + 285;
+    let threshold = 299;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_285_value();
+    return result;
+};
+
+@test "rosetta 285 285_ffi_objective_c_framework"() {
+    let got = rosetta_285_value();
+    if got != 114 {
+        panic(285);
+    }

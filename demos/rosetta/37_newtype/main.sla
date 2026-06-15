@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 037 Newtype.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_037_value() -> int {
+    let base = (6 * 3) + 37;
+    let threshold = 56;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_037_value();
+    return result;
+};
+
+@test "rosetta 037 37_newtype"() {
+    let got = rosetta_037_value();
+    if got != 1 {
+        panic(37);
+    }

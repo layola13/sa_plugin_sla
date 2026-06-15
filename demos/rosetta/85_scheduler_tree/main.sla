@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 085 Scheduler Tree.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_085_value() -> int {
+    let base = (3 * 6) + 85;
+    let threshold = 106;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_085_value();
+    return result;
+};
+
+@test "rosetta 085 85_scheduler_tree"() {
+    let got = rosetta_085_value();
+    if got != 3 {
+        panic(85);
+    }

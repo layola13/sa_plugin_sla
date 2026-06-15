@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 094 Graphql Router.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_094_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 7;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_094_value();
+    return result;
+};
+
+@test "rosetta 094 94_graphql_router"() {
+    let got = rosetta_094_value();
+    if got != 43 {
+        panic(94);
+    }

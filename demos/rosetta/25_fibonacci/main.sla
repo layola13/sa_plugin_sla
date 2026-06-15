@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 025 Fibonacci.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_025_value() -> int {
+    let base = (11 * 9) + 25;
+    let threshold = 32;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_025_value();
+    return result;
+};
+
+@test "rosetta 025 25_fibonacci"() {
+    let got = rosetta_025_value();
+    if got != 92 {
+        panic(25);
+    }

@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 095 Repl Shell.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_095_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_095_value() -> int {
+    let result = rosetta_095_mix(20, 15);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_095_value();
+    return result;
+};
+
+@test "rosetta 095 95_repl_shell"() {
+    let got = rosetta_095_value();
+    if got != 305 {
+        panic(95);
+    }

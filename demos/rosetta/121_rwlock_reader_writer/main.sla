@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 121 Rwlock Reader Writer.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_121_value() -> int {
+    let base = (5 * 6) + 121;
+    let threshold = 132;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_121_value();
+    return result;
+};
+
+@test "rosetta 121 121_rwlock_reader_writer"() {
+    let got = rosetta_121_value();
+    if got != 19 {
+        panic(121);
+    }

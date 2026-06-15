@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 096 Task Orchestrator.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_096_value() -> int {
+    let seed = 14;
+    let shifted = seed + 96;
+    let scaled = shifted * 8;
+    let result = scaled - 9;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_096_value();
+    return result;
+};
+
+@test "rosetta 096 96_task_orchestrator"() {
+    let got = rosetta_096_value();
+    if got != 871 {
+        panic(96);
+    };

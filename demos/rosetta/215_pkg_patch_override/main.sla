@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 215 Pkg Patch Override.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_215_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_215_value() -> int {
+    let result = rosetta_215_mix(20, 23);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_215_value();
+    return result;
+};
+
+@test "rosetta 215 215_pkg_patch_override"() {
+    let got = rosetta_215_value();
+    if got != 457 {
+        panic(215);
+    };

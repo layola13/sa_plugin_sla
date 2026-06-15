@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 182 Mmap Memory Mapping.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_182_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 26;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_182_value();
+    return result;
+};
+
+@test "rosetta 182 182_mmap_memory_mapping"() {
+    let got = rosetta_182_value();
+    if got != 62 {
+        panic(182);
+    }

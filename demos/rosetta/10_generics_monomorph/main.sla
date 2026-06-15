@@ -1,0 +1,47 @@
+// Sla companion for Rust rosetta demo 010 Generics Monomorph.
+// Mirrors OptionValue<T> instantiated as OptionValue<int>.
+
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+struct OptionValue<T> {
+    is_some: bool,
+    value: T,
+}
+
+fn unwrap_or(opt: OptionValue<int>, default: int) -> int {
+    if opt.is_some {
+        return opt.value;
+    } else {
+        return default;
+    };
+}
+
+fn rosetta_010_value() -> int {
+    let opt = OptionValue<int> { is_some: true, value: 42 };
+    let result = unwrap_or(opt, 0);
+    return result;
+}
+
+fn main() -> int {
+    let result = rosetta_010_value();
+    if result == 42 {
+        println("{}", result);
+    } else {
+        panic(10);
+    };
+    return 0;
+}
+
+@test "rosetta 010 generics monomorph"() {
+    let some = rosetta_010_value();
+    if some != 42 {
+        panic(10);
+    };
+
+    let none = OptionValue<int> { is_some: false, value: 0 };
+    let fallback = unwrap_or(none, 7);
+    if fallback != 7 {
+        panic(100);
+    };
+}

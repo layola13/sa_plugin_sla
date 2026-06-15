@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 233 Mod Alias Import.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_233_value() -> int {
+    let base = (15 * 10) + 233;
+    let threshold = 241;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_233_value();
+    return result;
+};
+
+@test "rosetta 233 233_mod_alias_import"() {
+    let got = rosetta_233_value();
+    if got != 142 {
+        panic(233);
+    }

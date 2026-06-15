@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 167 Const Generics Expansion.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_167_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_167_value() -> int {
+    let result = rosetta_167_mix(19, 18);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_167_value();
+    return result;
+};
+
+@test "rosetta 167 167_const_generics_expansion"() {
+    let got = rosetta_167_value();
+    if got != 343 {
+        panic(167);
+    }

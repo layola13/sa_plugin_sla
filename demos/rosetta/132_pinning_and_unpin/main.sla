@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 132 Pinning And Unpin.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_132_value() -> int {
+    let seed = 16;
+    let shifted = seed + 132;
+    let scaled = shifted * 8;
+    let result = scaled - 22;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_132_value();
+    return result;
+};
+
+@test "rosetta 132 132_pinning_and_unpin"() {
+    let got = rosetta_132_value();
+    if got != 1162 {
+        panic(132);
+    }

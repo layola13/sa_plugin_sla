@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 228 Mod Iface Separation.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_228_value() -> int {
+    let seed = 10;
+    let shifted = seed + 228;
+    let scaled = shifted * 5;
+    let result = scaled - 26;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_228_value();
+    return result;
+};
+
+@test "rosetta 228 228_mod_iface_separation"() {
+    let got = rosetta_228_value();
+    if got != 1164 {
+        panic(228);
+    }

@@ -1,0 +1,26 @@
+// Sla tuple and destructuring smoke tests.
+
+fn tuple_value() -> int {
+    let pair = (3, 4);
+    return pair.0 * 10 + pair.1;
+}
+
+fn destructure_value() -> int {
+    let (x, y) = (2, 5);
+    let sum = x + y;
+    return sum;
+}
+
+@test "tuple field access"() {
+    let got = tuple_value();
+    if got != 34 {
+        panic(1);
+    };
+}
+
+@test "tuple destructuring"() {
+    let got = destructure_value();
+    if got != 7 {
+        panic(2);
+    };
+}

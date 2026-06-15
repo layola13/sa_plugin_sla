@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 097 Sync Service.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_097_value() -> int {
+    let base = (15 * 9) + 97;
+    let threshold = 107;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_097_value();
+    return result;
+};
+
+@test "rosetta 097 97_sync_service"() {
+    let got = rosetta_097_value();
+    if got != 125 {
+        panic(97);
+    }

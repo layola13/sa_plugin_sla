@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 193 Attribute Macro Rewrite.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_193_value() -> int {
+    let base = (9 * 6) + 193;
+    let threshold = 207;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_193_value();
+    return result;
+};
+
+@test "rosetta 193 193_attribute_macro_rewrite"() {
+    let got = rosetta_193_value();
+    if got != 40 {
+        panic(193);
+    }

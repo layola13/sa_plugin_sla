@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 210 Pkg Workspace Root.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_210_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 8;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_210_value();
+    return result;
+};
+
+@test "rosetta 210 210_pkg_workspace_root"() {
+    let got = rosetta_210_value();
+    if got != 18 {
+        panic(210);
+    };

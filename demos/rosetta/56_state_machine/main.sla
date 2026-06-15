@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 056 State Machine.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_056_value() -> int {
+    let seed = 8;
+    let shifted = seed + 56;
+    let scaled = shifted * 4;
+    let result = scaled - 15;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_056_value();
+    return result;
+};
+
+@test "rosetta 056 56_state_machine"() {
+    let got = rosetta_056_value();
+    if got != 241 {
+        panic(56);
+    }

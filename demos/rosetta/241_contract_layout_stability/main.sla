@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 241 Contract Layout Stability.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_241_value() -> int {
+    let base = (6 * 9) + 241;
+    let threshold = 257;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_241_value();
+    return result;
+};
+
+@test "rosetta 241 241_contract_layout_stability"() {
+    let got = rosetta_241_value();
+    if got != 38 {
+        panic(241);
+    };

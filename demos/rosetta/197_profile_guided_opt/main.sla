@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 197 Profile Guided Opt.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_197_value() -> int {
+    let base = (13 * 10) + 197;
+    let threshold = 215;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_197_value();
+    return result;
+};
+
+@test "rosetta 197 197_profile_guided_opt"() {
+    let got = rosetta_197_value();
+    if got != 112 {
+        panic(197);
+    }

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 260 Contract Deprecated Warning.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_260_value() -> int {
+    let seed = 8;
+    let shifted = seed + 260;
+    let scaled = shifted * 10;
+    let result = scaled - 12;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_260_value();
+    return result;
+};
+
+@test "rosetta 260 260_contract_deprecated_warning"() {
+    let got = rosetta_260_value();
+    if got != 2668 {
+        panic(260);
+    }

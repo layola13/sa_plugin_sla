@@ -1,0 +1,195 @@
+@sum4(values: ptr) -> i64:
+L_ENTRY:
+    tmp_0 = 0
+    tmp_1 = mul tmp_0, 8
+    tmp_2 = ptr_add values, tmp_1
+    tmp_3 = load tmp_2+0 as i64
+    tmp_4 = 1
+    tmp_5 = mul tmp_4, 8
+    tmp_6 = ptr_add values, tmp_5
+    tmp_7 = load tmp_6+0 as i64
+    tmp_8 = add tmp_3, tmp_7
+    tmp_9 = 2
+    tmp_10 = mul tmp_9, 8
+    tmp_11 = ptr_add values, tmp_10
+    tmp_12 = load tmp_11+0 as i64
+    tmp_13 = add tmp_8, tmp_12
+    tmp_14 = 3
+    tmp_15 = mul tmp_14, 8
+    tmp_16 = ptr_add values, tmp_15
+    tmp_17 = load tmp_16+0 as i64
+    tmp_18 = add tmp_13, tmp_17
+    total = tmp_18
+    !values
+    return total
+
+@fill_zero(^values: ptr) -> ptr:
+L_ENTRY:
+    i = 0
+    tmp_19 = mul i, 8
+    tmp_20 = ptr_add values, tmp_19
+    tmp_21 = 0
+    store tmp_20+0, tmp_21 as i64
+    !i
+    i = 1
+    tmp_22 = mul i, 8
+    tmp_23 = ptr_add values, tmp_22
+    tmp_24 = 0
+    store tmp_23+0, tmp_24 as i64
+    !i
+    i = 2
+    tmp_25 = mul i, 8
+    tmp_26 = ptr_add values, tmp_25
+    tmp_27 = 0
+    store tmp_26+0, tmp_27 as i64
+    !i
+    i = 3
+    tmp_28 = mul i, 8
+    tmp_29 = ptr_add values, tmp_28
+    tmp_30 = 0
+    store tmp_29+0, tmp_30 as i64
+    !i
+    return values
+
+@iter(values: ptr) -> ptr:
+L_ENTRY:
+    return values
+
+@sum(values: ptr) -> i64:
+L_ENTRY:
+    tmp_31 = 0
+    total = tmp_31
+    i = 0
+    tmp_32 = mul i, 8
+    tmp_33 = ptr_add values, tmp_32
+    tmp_34 = load tmp_33+0 as i64
+    tmp_35 = add total, tmp_34
+    !total
+    total = tmp_35
+    !i
+    i = 1
+    tmp_36 = mul i, 8
+    tmp_37 = ptr_add values, tmp_36
+    tmp_38 = load tmp_37+0 as i64
+    tmp_39 = add total, tmp_38
+    !total
+    total = tmp_39
+    !i
+    i = 2
+    tmp_40 = mul i, 8
+    tmp_41 = ptr_add values, tmp_40
+    tmp_42 = load tmp_41+0 as i64
+    tmp_43 = add total, tmp_42
+    !total
+    total = tmp_43
+    !i
+    i = 3
+    tmp_44 = mul i, 8
+    tmp_45 = ptr_add values, tmp_44
+    tmp_46 = load tmp_45+0 as i64
+    tmp_47 = add total, tmp_46
+    !total
+    total = tmp_47
+    !i
+    !values
+    return total
+
+@test "array literal index read write"():
+L_TEST_ENTRY_0:
+    values = alloc 32
+    tmp_48 = 1
+    store values+0, tmp_48 as i64
+    tmp_49 = 2
+    store values+8, tmp_49 as i64
+    tmp_50 = 3
+    store values+16, tmp_50 as i64
+    tmp_51 = 4
+    store values+24, tmp_51 as i64
+    tmp_52 = 2
+    tmp_53 = mul tmp_52, 8
+    tmp_54 = ptr_add values, tmp_53
+    tmp_55 = 9
+    store tmp_54+0, tmp_55 as i64
+    tmp_56 = call @sum4(values)
+    total = tmp_56
+    tmp_57 = 16
+    tmp_58 = ne total, tmp_57
+    br tmp_58 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_58
+    panic(1)
+
+L_ELSE_2:
+    !tmp_58
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !values
+    !total
+    return
+
+@test "array for loop index write"():
+L_TEST_ENTRY_4:
+    values = alloc 32
+    tmp_61 = 1
+    store values+0, tmp_61 as i64
+    tmp_62 = 2
+    store values+8, tmp_62 as i64
+    tmp_63 = 3
+    store values+16, tmp_63 as i64
+    tmp_64 = 4
+    store values+24, tmp_64 as i64
+    tmp_65 = call @fill_zero(^values)
+    zeroed = tmp_65
+    tmp_66 = call @sum4(zeroed)
+    total = tmp_66
+    tmp_67 = 0
+    tmp_68 = ne total, tmp_67
+    br tmp_68 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
+    !tmp_68
+    panic(2)
+
+L_ELSE_6:
+    !tmp_68
+    jmp L_MERGE_7
+
+L_MERGE_7:
+    !zeroed
+    !total
+    return
+
+@test "array method chain sum"():
+L_TEST_ENTRY_8:
+    values = alloc 32
+    tmp_71 = 1
+    store values+0, tmp_71 as i64
+    tmp_72 = 2
+    store values+8, tmp_72 as i64
+    tmp_73 = 3
+    store values+16, tmp_73 as i64
+    tmp_74 = 4
+    store values+24, tmp_74 as i64
+    tmp_75 = call @iter(values)
+    tmp_76 = call @sum(tmp_75)
+    !tmp_75
+    total = tmp_76
+    tmp_77 = 10
+    tmp_78 = ne total, tmp_77
+    br tmp_78 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_78
+    panic(3)
+
+L_ELSE_10:
+    !tmp_78
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    !values
+    !total
+    return
+

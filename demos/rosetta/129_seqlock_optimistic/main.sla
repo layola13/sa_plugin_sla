@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 129 Seqlock Optimistic.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_129_value() -> int {
+    let base = (13 * 5) + 129;
+    let threshold = 148;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_129_value();
+    return result;
+};
+
+@test "rosetta 129 129_seqlock_optimistic"() {
+    let got = rosetta_129_value();
+    if got != 46 {
+        panic(129);
+    };

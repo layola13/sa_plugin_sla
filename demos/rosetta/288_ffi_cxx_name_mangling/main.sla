@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 288 Ffi Cxx Name Mangling.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_288_value() -> int {
+    let seed = 19;
+    let shifted = seed + 288;
+    let scaled = shifted * 2;
+    let result = scaled - 17;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_288_value();
+    return result;
+};
+
+@test "rosetta 288 288_ffi_cxx_name_mangling"() {
+    let got = rosetta_288_value();
+    if got != 597 {
+        panic(288);
+    }

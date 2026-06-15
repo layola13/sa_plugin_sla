@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 115 Opaque Pointers.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_115_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_115_value() -> int {
+    let result = rosetta_115_mix(21, 14);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_115_value();
+    return result;
+};
+
+@test "rosetta 115 115_opaque_pointers"() {
+    let got = rosetta_115_value();
+    if got != 301 {
+        panic(115);
+    }

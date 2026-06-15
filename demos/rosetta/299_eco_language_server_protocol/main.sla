@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 299 Eco Language Server Protocol.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_299_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_299_value() -> int {
+    let result = rosetta_299_mix(15, 9);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_299_value();
+    return result;
+};
+
+@test "rosetta 299 299_eco_language_server_protocol"() {
+    let got = rosetta_299_value();
+    if got != 141 {
+        panic(299);
+    }

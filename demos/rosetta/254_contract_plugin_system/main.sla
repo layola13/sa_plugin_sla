@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 254 Contract Plugin System.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_254_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 6;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_254_value();
+    return result;
+};
+
+@test "rosetta 254 254_contract_plugin_system"() {
+    let got = rosetta_254_value();
+    if got != 42 {
+        panic(254);
+    }

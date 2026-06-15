@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 019 Result Question.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_019_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_019_value() -> int {
+    let result = rosetta_019_mix(13, 27);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_019_value();
+    return result;
+};
+
+@test "rosetta 019 19_result_question"() {
+    let got = rosetta_019_value();
+    if got != 337 {
+        panic(19);
+    }

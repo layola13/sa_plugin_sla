@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 030 Manual Guard Branch.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_030_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 12;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_030_value();
+    return result;
+};
+
+@test "rosetta 030 30_manual_guard_branch"() {
+    let got = rosetta_030_value();
+    if got != 48 {
+        panic(30);
+    }

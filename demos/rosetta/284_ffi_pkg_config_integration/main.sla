@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 284 Ffi Pkg Config Integration.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_284_value() -> int {
+    let seed = 15;
+    let shifted = seed + 284;
+    let scaled = shifted * 7;
+    let result = scaled - 13;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_284_value();
+    return result;
+};
+
+@test "rosetta 284 284_ffi_pkg_config_integration"() {
+    let got = rosetta_284_value();
+    if got != 2080 {
+        panic(284);
+    }

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 230 Mod Std Prelude.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_230_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 5;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_230_value();
+    return result;
+};
+
+@test "rosetta 230 230_mod_std_prelude"() {
+    let got = rosetta_230_value();
+    if got != 41 {
+        panic(230);
+    }

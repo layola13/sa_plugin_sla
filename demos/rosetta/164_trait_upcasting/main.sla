@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 164 Trait Upcasting.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_164_value() -> int {
+    let seed = 14;
+    let shifted = seed + 164;
+    let scaled = shifted * 4;
+    let result = scaled - 8;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_164_value();
+    return result;
+};
+
+@test "rosetta 164 164_trait_upcasting"() {
+    let got = rosetta_164_value();
+    if got != 704 {
+        panic(164);
+    }

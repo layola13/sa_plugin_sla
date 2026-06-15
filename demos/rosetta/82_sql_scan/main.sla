@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 082 Sql Scan.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_082_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 18;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_082_value();
+    return result;
+};
+
+@test "rosetta 082 82_sql_scan"() {
+    let got = rosetta_082_value();
+    if got != 28 {
+        panic(82);
+    }

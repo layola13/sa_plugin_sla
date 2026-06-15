@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 201 Pkg Manifest Basic.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_201_value() -> int {
+    let base = (17 * 5) + 201;
+    let threshold = 223;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_201_value();
+    return result;
+};
+
+@test "rosetta 201 201_pkg_manifest_basic"() {
+    let got = rosetta_201_value();
+    if got != 63 {
+        panic(201);
+    }

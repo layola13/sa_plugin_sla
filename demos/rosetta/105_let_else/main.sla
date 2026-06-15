@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 105 Let Else.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_105_value() -> int {
+    let base = (6 * 8) + 105;
+    let threshold = 123;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_105_value();
+    return result;
+};
+
+@test "rosetta 105 105_let_else"() {
+    let got = rosetta_105_value();
+    if got != 30 {
+        panic(105);
+    }

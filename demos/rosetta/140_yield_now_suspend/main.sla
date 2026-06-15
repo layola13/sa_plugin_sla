@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 140 Yield Now Suspend.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_140_value() -> int {
+    let seed = 7;
+    let shifted = seed + 140;
+    let scaled = shifted * 7;
+    let result = scaled - 7;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_140_value();
+    return result;
+};
+
+@test "rosetta 140 140_yield_now_suspend"() {
+    let got = rosetta_140_value();
+    if got != 1022 {
+        panic(140);
+    }

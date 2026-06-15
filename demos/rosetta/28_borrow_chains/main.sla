@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 028 Borrow Chains.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_028_value() -> int {
+    let seed = 14;
+    let shifted = seed + 28;
+    let scaled = shifted * 3;
+    let result = scaled - 10;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_028_value();
+    return result;
+};
+
+@test "rosetta 028 28_borrow_chains"() {
+    let got = rosetta_028_value();
+    if got != 116 {
+        panic(28);
+    }

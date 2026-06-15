@@ -1,0 +1,90 @@
+@process_msg(^msg: ptr) -> i64:
+L_ENTRY:
+    jmp L_MATCH_CHECK_0_2
+
+L_MATCH_CHECK_0_2:
+    tmp_0 = load msg+0 as i64
+    tmp_1 = 0
+    tmp_2 = eq tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    br tmp_2 -> L_MATCH_CASE_0_2, L_MATCH_CHECK_1_2
+
+L_MATCH_CASE_0_2:
+    !tmp_2
+    tmp_3 = 0
+    !msg
+    return tmp_3
+
+L_MATCH_CHECK_1_2:
+    !tmp_2
+    tmp_4 = load msg+0 as i64
+    tmp_5 = 1
+    tmp_6 = eq tmp_4, tmp_5
+    !tmp_4
+    !tmp_5
+    br tmp_6 -> L_MATCH_CASE_1_2, L_MATCH_NO_MATCH_1
+
+L_MATCH_CASE_1_2:
+    !tmp_6
+    x = load msg+8 as i64
+    y = load msg+16 as i64
+    tmp_7 = add x, y
+    !x
+    !y
+    !msg
+    return tmp_7
+
+L_MATCH_NO_MATCH_1:
+    !tmp_6
+    panic(1)
+
+
+@test "enum move match"():
+L_TEST_ENTRY_3:
+    msg = alloc 24
+    store msg+0, 1 as i64
+    tmp_9 = 10
+    store msg+8, tmp_9 as i64
+    tmp_10 = 20
+    store msg+16, tmp_10 as i64
+    tmp_11 = call @process_msg(^msg)
+    result = tmp_11
+    tmp_12 = 30
+    tmp_13 = ne result, tmp_12
+    br tmp_13 -> L_THEN_4, L_ELSE_5
+
+L_THEN_4:
+    !tmp_13
+    panic(1)
+
+L_ELSE_5:
+    !tmp_13
+    jmp L_MERGE_6
+
+L_MERGE_6:
+    !result
+    return
+
+@test "enum unit match"():
+L_TEST_ENTRY_7:
+    msg = alloc 24
+    store msg+0, 0 as i64
+    tmp_16 = call @process_msg(^msg)
+    result = tmp_16
+    tmp_17 = 0
+    tmp_18 = ne result, tmp_17
+    br tmp_18 -> L_THEN_8, L_ELSE_9
+
+L_THEN_8:
+    !tmp_18
+    panic(2)
+
+L_ELSE_9:
+    !tmp_18
+    jmp L_MERGE_10
+
+L_MERGE_10:
+    !result
+    return
+

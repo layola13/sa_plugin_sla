@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 038 Generic Struct I32.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_038_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 20;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_038_value();
+    return result;
+};
+
+@test "rosetta 038 38_generic_struct_i32"() {
+    let got = rosetta_038_value();
+    if got != 56 {
+        panic(38);
+    }

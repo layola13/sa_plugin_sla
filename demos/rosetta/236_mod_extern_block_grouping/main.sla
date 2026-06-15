@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 236 Mod Extern Block Grouping.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_236_value() -> int {
+    let seed = 18;
+    let shifted = seed + 236;
+    let scaled = shifted * 4;
+    let result = scaled - 11;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_236_value();
+    return result;
+};
+
+@test "rosetta 236 236_mod_extern_block_grouping"() {
+    let got = rosetta_236_value();
+    if got != 1005 {
+        panic(236);
+    }

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 274 Build Benchmark Runner.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_274_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 26;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_274_value();
+    return result;
+};
+
+@test "rosetta 274 274_build_benchmark_runner"() {
+    let got = rosetta_274_value();
+    if got != 36 {
+        panic(274);
+    }

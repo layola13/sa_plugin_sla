@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 057 Event Loop.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_057_value() -> int {
+    let base = (9 * 5) + 57;
+    let threshold = 73;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_057_value();
+    return result;
+};
+
+@test "rosetta 057 57_event_loop"() {
+    let got = rosetta_057_value();
+    if got != 29 {
+        panic(57);
+    };

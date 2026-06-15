@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 062 Channel Pingpong.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_062_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 21;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_062_value();
+    return result;
+};
+
+@test "rosetta 062 62_channel_pingpong"() {
+    let got = rosetta_062_value();
+    if got != 57 {
+        panic(62);
+    }

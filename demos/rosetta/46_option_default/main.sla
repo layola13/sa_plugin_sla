@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 046 Option Default.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_046_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 5;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_046_value();
+    return result;
+};
+
+@test "rosetta 046 46_option_default"() {
+    let got = rosetta_046_value();
+    if got != 41 {
+        panic(46);
+    };

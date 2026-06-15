@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 283 Ffi Link Dynamic C Lib.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_283_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_283_value() -> int {
+    let result = rosetta_283_mix(22, 18);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_283_value();
+    return result;
+};
+
+@test "rosetta 283 283_ffi_link_dynamic_c_lib"() {
+    let got = rosetta_283_value();
+    if got != 400 {
+        panic(283);
+    }

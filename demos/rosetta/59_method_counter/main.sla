@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 059 Method Counter.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_059_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_059_value() -> int {
+    let result = rosetta_059_mix(15, 25);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_059_value();
+    return result;
+};
+
+@test "rosetta 059 59_method_counter"() {
+    let got = rosetta_059_value();
+    if got != 365 {
+        panic(59);
+    }

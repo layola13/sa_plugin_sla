@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 246 Contract Semver Minor Update.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_246_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 21;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_246_value();
+    return result;
+};
+
+@test "rosetta 246 246_contract_semver_minor_update"() {
+    let got = rosetta_246_value();
+    if got != 57 {
+        panic(246);
+    }

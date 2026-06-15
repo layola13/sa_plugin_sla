@@ -1,0 +1,39 @@
+# code-index generated artifacts
+.code_index
+.claude/skills/code-index
+.codex/skills/code-index
+.opencode/skills/code-index
+# end code-index generated artifacts
+# Zig build cache and output
+.zig-cache/
+.sa_cache/
+zig-out/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# code-index generated artifacts
+.code_index
+.claude/skills/
+.codex/skills/
+.opencode/skills/
+# end code-index generated artifacts
+
+# benchmark generated artifacts
+benchmark_test/*.out
+benchmark_test/*.bc
+benchmark_test/*.dat
+benchmark_test/*.meta
+benchmark_test/*.write.lock
+benchmark_test/*.db
+benchmark_test/*.db-*
+benchmark_test/members*.sai
+benchmark_test/members*.sadb-schema
+benchmark_test/db_concurrent_bench
+

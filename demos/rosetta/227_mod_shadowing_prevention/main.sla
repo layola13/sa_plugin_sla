@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 227 Mod Shadowing Prevention.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_227_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_227_value() -> int {
+    let result = rosetta_227_mix(16, 29);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_227_value();
+    return result;
+};
+
+@test "rosetta 227 227_mod_shadowing_prevention"() {
+    let got = rosetta_227_value();
+    if got != 451 {
+        panic(227);
+    }

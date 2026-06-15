@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 138 Epoll Kqueue Event.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_138_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 5;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_138_value();
+    return result;
+};
+
+@test "rosetta 138 138_epoll_kqueue_event"() {
+    let got = rosetta_138_value();
+    if got != 15 {
+        panic(138);
+    };

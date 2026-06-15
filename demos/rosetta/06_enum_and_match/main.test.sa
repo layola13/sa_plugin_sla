@@ -1,0 +1,123 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@process_msg(^msg: ptr) -> i64:
+L_ENTRY:
+    jmp L_MATCH_CHECK_0_2
+
+L_MATCH_CHECK_0_2:
+    tmp_0 = load msg+0 as i64
+    tmp_1 = 0
+    tmp_2 = eq tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    br tmp_2 -> L_MATCH_CASE_0_2, L_MATCH_CHECK_1_2
+
+L_MATCH_CASE_0_2:
+    !tmp_2
+    tmp_3 = 0
+    !msg
+    return tmp_3
+
+L_MATCH_CHECK_1_2:
+    !tmp_2
+    tmp_4 = load msg+0 as i64
+    tmp_5 = 1
+    tmp_6 = eq tmp_4, tmp_5
+    !tmp_4
+    !tmp_5
+    br tmp_6 -> L_MATCH_CASE_1_2, L_MATCH_NO_MATCH_1
+
+L_MATCH_CASE_1_2:
+    !tmp_6
+    x = load msg+8 as i64
+    y = load msg+16 as i64
+    tmp_7 = add x, y
+    !x
+    !y
+    !msg
+    return tmp_7
+
+L_MATCH_NO_MATCH_1:
+    !tmp_6
+    panic(1)
+
+
+@rosetta_006_value() -> i64:
+L_ENTRY:
+    msg = alloc 24
+    store msg+0, 1 as i64
+    tmp_9 = 10
+    store msg+8, tmp_9 as i64
+    tmp_10 = 20
+    store msg+16, tmp_10 as i64
+    tmp_11 = call @process_msg(^msg)
+    result = tmp_11
+    return result
+
+@main() -> i64:
+L_ENTRY:
+    tmp_12 = call @rosetta_006_value()
+    result = tmp_12
+    tmp_13 = 30
+    tmp_14 = eq result, tmp_13
+    br tmp_14 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_14
+    tmp_15 = call @sa_fmt_i64(result, 10)
+    tmp_16 = call @sa_fmt_buffer_data(tmp_15)
+    tmp_17 = call @sa_fmt_buffer_len(tmp_15)
+    tmp_18 = tmp_16
+    call @sa_print_bytes(&tmp_18, tmp_17)
+    call @sa_fmt_buffer_free(^tmp_15)
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    jmp L_MERGE_5
+
+L_ELSE_4:
+    !tmp_14
+    panic(6)
+
+L_MERGE_5:
+    tmp_21 = 0
+    !result
+    return tmp_21
+
+@test "rosetta 006 enum and match"():
+L_TEST_ENTRY_6:
+    tmp_22 = call @rosetta_006_value()
+    moved = tmp_22
+    tmp_23 = 30
+    tmp_24 = ne moved, tmp_23
+    br tmp_24 -> L_THEN_7, L_ELSE_8
+
+L_THEN_7:
+    !tmp_24
+    panic(6)
+
+L_ELSE_8:
+    !tmp_24
+    jmp L_MERGE_9
+
+L_MERGE_9:
+    quit = alloc 24
+    store quit+0, 0 as i64
+    tmp_27 = call @process_msg(^quit)
+    stopped = tmp_27
+    tmp_28 = 0
+    tmp_29 = ne stopped, tmp_28
+    br tmp_29 -> L_THEN_10, L_ELSE_11
+
+L_THEN_10:
+    !tmp_29
+    panic(60)
+
+L_ELSE_11:
+    !tmp_29
+    jmp L_MERGE_12
+
+L_MERGE_12:
+    !stopped
+    !moved
+    return
+

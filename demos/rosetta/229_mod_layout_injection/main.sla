@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 229 Mod Layout Injection.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_229_value() -> int {
+    let base = (11 * 6) + 229;
+    let threshold = 256;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_229_value();
+    return result;
+};
+
+@test "rosetta 229 229_mod_layout_injection"() {
+    let got = rosetta_229_value();
+    if got != 39 {
+        panic(229);
+    }

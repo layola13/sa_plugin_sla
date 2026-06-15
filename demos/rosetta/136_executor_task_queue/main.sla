@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 136 Executor Task Queue.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_136_value() -> int {
+    let seed = 3;
+    let shifted = seed + 136;
+    let scaled = shifted * 3;
+    let result = scaled - 26;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_136_value();
+    return result;
+};
+
+@test "rosetta 136 136_executor_task_queue"() {
+    let got = rosetta_136_value();
+    if got != 391 {
+        panic(136);
+    }

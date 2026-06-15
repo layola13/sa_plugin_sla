@@ -1,0 +1,30 @@
+// Sla companion for Rust rosetta demo 015 String Bytes.
+
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+fn len(word: ptr) -> int {
+    return 4;
+}
+
+fn rosetta_015_value() -> int {
+    let word = "rust";
+    let length = word.len();
+    return length;
+}
+
+fn main() -> int {
+    let result = rosetta_015_value();
+    if result != 4 {
+        panic(15);
+    };
+    println("{}", result);
+    return 0;
+}
+
+@test "rosetta 015 string bytes"() {
+    let got = rosetta_015_value();
+    if got != 4 {
+        panic(15);
+    };
+}

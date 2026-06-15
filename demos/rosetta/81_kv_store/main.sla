@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 081 Kv Store.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_081_value() -> int {
+    let base = (16 * 2) + 81;
+    let threshold = 98;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_081_value();
+    return result;
+};
+
+@test "rosetta 081 81_kv_store"() {
+    let got = rosetta_081_value();
+    if got != 15 {
+        panic(81);
+    }

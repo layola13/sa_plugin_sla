@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 071 Pipeline Stage.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_071_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_071_value() -> int {
+    let result = rosetta_071_mix(11, 17);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_071_value();
+    return result;
+};
+
+@test "rosetta 071 71_pipeline_stage"() {
+    let got = rosetta_071_value();
+    if got != 181 {
+        panic(71);
+    }

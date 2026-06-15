@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 188 Websocket Frame Parse.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_188_value() -> int {
+    let seed = 4;
+    let shifted = seed + 188;
+    let scaled = shifted * 10;
+    let result = scaled - 9;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_188_value();
+    return result;
+};
+
+@test "rosetta 188 188_websocket_frame_parse"() {
+    let got = rosetta_188_value();
+    if got != 1911 {
+        panic(188);
+    }

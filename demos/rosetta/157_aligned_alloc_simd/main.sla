@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 157 Aligned Alloc Simd.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_157_value() -> int {
+    let base = (7 * 6) + 157;
+    let threshold = 181;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_157_value();
+    return result;
+};
+
+@test "rosetta 157 157_aligned_alloc_simd"() {
+    let got = rosetta_157_value();
+    if got != 18 {
+        panic(157);
+    }

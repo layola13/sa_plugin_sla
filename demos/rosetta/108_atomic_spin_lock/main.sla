@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 108 Atomic Spin Lock.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_108_value() -> int {
+    let seed = 9;
+    let shifted = seed + 108;
+    let scaled = shifted * 2;
+    let result = scaled - 21;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_108_value();
+    return result;
+};
+
+@test "rosetta 108 108_atomic_spin_lock"() {
+    let got = rosetta_108_value();
+    if got != 213 {
+        panic(108);
+    }

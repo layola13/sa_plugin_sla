@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 300 Eco Sa Lang Registry Publish.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_300_value() -> int {
+    let seed = 14;
+    let shifted = seed + 300;
+    let scaled = shifted * 5;
+    let result = scaled - 6;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_300_value();
+    return result;
+};
+
+@test "rosetta 300 300_eco_sa_lang_registry_publish"() {
+    let got = rosetta_300_value();
+    if got != 1564 {
+        panic(300);
+    };

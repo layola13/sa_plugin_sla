@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 048 Generic Pair.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_048_value() -> int {
+    let seed = 17;
+    let shifted = seed + 48;
+    let scaled = shifted * 5;
+    let result = scaled - 7;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_048_value();
+    return result;
+};
+
+@test "rosetta 048 48_generic_pair"() {
+    let got = rosetta_048_value();
+    if got != 318 {
+        panic(48);
+    }

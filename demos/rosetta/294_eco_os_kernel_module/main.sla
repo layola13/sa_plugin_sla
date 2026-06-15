@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 294 Eco Os Kernel Module.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_294_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 23;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_294_value();
+    return result;
+};
+
+@test "rosetta 294 294_eco_os_kernel_module"() {
+    let got = rosetta_294_value();
+    if got != 59 {
+        panic(294);
+    }

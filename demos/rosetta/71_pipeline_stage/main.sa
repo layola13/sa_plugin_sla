@@ -1,0 +1,46 @@
+@rosetta_071_mix(left: i64, right: i64) -> i64:
+L_ENTRY:
+    tmp_0 = mul left, right
+    product = tmp_0
+    tmp_1 = add product, left
+    tmp_2 = sub tmp_1, right
+    result = tmp_2
+    !product
+    !right
+    !left
+    return result
+
+@rosetta_071_value() -> i64:
+L_ENTRY:
+    tmp_3 = 11
+    tmp_4 = 17
+    tmp_5 = call @rosetta_071_mix(tmp_3, tmp_4)
+    result = tmp_5
+    return result
+
+@main() -> i64:
+L_ENTRY:
+    tmp_6 = call @rosetta_071_value()
+    result = tmp_6
+    return result
+
+@test "rosetta 071 71_pipeline_stage"():
+L_TEST_ENTRY_0:
+    tmp_7 = call @rosetta_071_value()
+    got = tmp_7
+    tmp_8 = 181
+    tmp_9 = ne got, tmp_8
+    br tmp_9 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_9
+    panic(71)
+
+L_ELSE_2:
+    !tmp_9
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !got
+    return
+

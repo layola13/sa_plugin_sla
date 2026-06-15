@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 178 Panic Hook Override.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_178_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 22;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_178_value();
+    return result;
+};
+
+@test "rosetta 178 178_panic_hook_override"() {
+    let got = rosetta_178_value();
+    if got != 32 {
+        panic(178);
+    }

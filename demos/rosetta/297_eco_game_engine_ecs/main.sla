@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 297 Eco Game Engine Ecs.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_297_value() -> int {
+    let base = (11 * 2) + 297;
+    let threshold = 323;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_297_value();
+    return result;
+};
+
+@test "rosetta 297 297_eco_game_engine_ecs"() {
+    let got = rosetta_297_value();
+    if got != 4 {
+        panic(297);
+    }

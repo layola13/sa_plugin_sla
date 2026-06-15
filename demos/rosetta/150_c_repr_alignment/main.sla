@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 150 C Repr Alignment.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_150_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 17;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_150_value();
+    return result;
+};
+
+@test "rosetta 150 150_c_repr_alignment"() {
+    let got = rosetta_150_value();
+    if got != 53 {
+        panic(150);
+    }

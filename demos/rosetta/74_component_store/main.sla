@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 074 Component Store.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_074_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 10;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_074_value();
+    return result;
+};
+
+@test "rosetta 074 74_component_store"() {
+    let got = rosetta_074_value();
+    if got != 20 {
+        panic(74);
+    }

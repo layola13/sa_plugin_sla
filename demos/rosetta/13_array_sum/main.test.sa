@@ -1,0 +1,74 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/array.sa"
+@import "sa_std/core/iter.sa"
+@rosetta_013_value() -> i64:
+L_ENTRY:
+    values = alloc 32
+    tmp_0 = 1
+    store values+0, tmp_0 as i64
+    tmp_1 = 2
+    store values+8, tmp_1 as i64
+    tmp_2 = 3
+    store values+16, tmp_2 as i64
+    tmp_3 = 4
+    store values+24, tmp_3 as i64
+    tmp_4 = alloc Slice_SIZE
+    EXPAND ARRAY_AS_SLICE_U64 tmp_4, values, 4
+    EXPAND ITER_FROM_SLICE tmp_5, tmp_4
+    EXPAND ITER_SUM_U64 tmp_6, tmp_5
+    !tmp_5
+    !tmp_4
+    sum = tmp_6
+    !values
+    return sum
+
+@main() -> i64:
+L_ENTRY:
+    tmp_7 = call @rosetta_013_value()
+    result = tmp_7
+    tmp_8 = 10
+    tmp_9 = ne result, tmp_8
+    br tmp_9 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_9
+    panic(13)
+
+L_ELSE_1:
+    !tmp_9
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_12 = call @sa_fmt_i64(result, 10)
+    tmp_13 = call @sa_fmt_buffer_data(tmp_12)
+    tmp_14 = call @sa_fmt_buffer_len(tmp_12)
+    tmp_15 = tmp_13
+    call @sa_print_bytes(&tmp_15, tmp_14)
+    call @sa_fmt_buffer_free(^tmp_12)
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_16 = 0
+    !result
+    return tmp_16
+
+@test "rosetta 013 array sum"():
+L_TEST_ENTRY_3:
+    tmp_17 = call @rosetta_013_value()
+    got = tmp_17
+    tmp_18 = 10
+    tmp_19 = ne got, tmp_18
+    br tmp_19 -> L_THEN_4, L_ELSE_5
+
+L_THEN_4:
+    !tmp_19
+    panic(13)
+
+L_ELSE_5:
+    !tmp_19
+    jmp L_MERGE_6
+
+L_MERGE_6:
+    !got
+    return
+

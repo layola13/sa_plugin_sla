@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 118 Global Mutable State.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_118_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 8;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_118_value();
+    return result;
+};
+
+@test "rosetta 118 118_global_mutable_state"() {
+    let got = rosetta_118_value();
+    if got != 44 {
+        panic(118);
+    }

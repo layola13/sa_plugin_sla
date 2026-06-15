@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 255 Contract Memory Allocator Swap.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_255_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_255_value() -> int {
+    let result = rosetta_255_mix(5, 12);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_255_value();
+    return result;
+};
+
+@test "rosetta 255 255_contract_memory_allocator_swap"() {
+    let got = rosetta_255_value();
+    if got != 53 {
+        panic(255);
+    }

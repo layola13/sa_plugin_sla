@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 036 Tuple Struct.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_036_value() -> int {
+    let seed = 5;
+    let shifted = seed + 36;
+    let scaled = shifted * 2;
+    let result = scaled - 18;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_036_value();
+    return result;
+};
+
+@test "rosetta 036 36_tuple_struct"() {
+    let got = rosetta_036_value();
+    if got != 64 {
+        panic(36);
+    }

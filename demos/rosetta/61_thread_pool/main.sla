@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 061 Thread Pool.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_061_value() -> int {
+    let base = (13 * 9) + 61;
+    let threshold = 81;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_061_value();
+    return result;
+};
+
+@test "rosetta 061 61_thread_pool"() {
+    let got = rosetta_061_value();
+    if got != 97 {
+        panic(61);
+    };

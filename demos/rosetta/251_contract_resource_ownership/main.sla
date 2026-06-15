@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 251 Contract Resource Ownership.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_251_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_251_value() -> int {
+    let result = rosetta_251_mix(25, 36);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_251_value();
+    return result;
+};
+
+@test "rosetta 251 251_contract_resource_ownership"() {
+    let got = rosetta_251_value();
+    if got != 889 {
+        panic(251);
+    }

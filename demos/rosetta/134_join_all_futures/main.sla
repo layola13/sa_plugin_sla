@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 134 Join All Futures.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_134_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 24;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_134_value();
+    return result;
+};
+
+@test "rosetta 134 134_join_all_futures"() {
+    let got = rosetta_134_value();
+    if got != 60 {
+        panic(134);
+    }

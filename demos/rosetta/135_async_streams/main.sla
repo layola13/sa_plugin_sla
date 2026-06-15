@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 135 Async Streams.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_135_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_135_value() -> int {
+    let result = rosetta_135_mix(22, 27);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_135_value();
+    return result;
+};
+
+@test "rosetta 135 135_async_streams"() {
+    let got = rosetta_135_value();
+    if got != 589 {
+        panic(135);
+    };

@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 213 Pkg Default Features.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_213_value() -> int {
+    let base = (12 * 8) + 213;
+    let threshold = 224;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_213_value();
+    return result;
+};
+
+@test "rosetta 213 213_pkg_default_features"() {
+    let got = rosetta_213_value();
+    if got != 85 {
+        panic(213);
+    }

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 198 Control Flow Guard Cfi.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_198_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 19;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_198_value();
+    return result;
+};
+
+@test "rosetta 198 198_control_flow_guard_cfi"() {
+    let got = rosetta_198_value();
+    if got != 55 {
+        panic(198);
+    }

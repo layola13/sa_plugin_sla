@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 148 Transparent Repr.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_148_value() -> int {
+    let seed = 15;
+    let shifted = seed + 148;
+    let scaled = shifted * 6;
+    let result = scaled - 15;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_148_value();
+    return result;
+};
+
+@test "rosetta 148 148_transparent_repr"() {
+    let got = rosetta_148_value();
+    if got != 963 {
+        panic(148);
+    }

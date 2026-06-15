@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 093 Log Aggregator.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_093_value() -> int {
+    let base = (11 * 5) + 93;
+    let threshold = 99;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_093_value();
+    return result;
+};
+
+@test "rosetta 093 93_log_aggregator"() {
+    let got = rosetta_093_value();
+    if got != 49 {
+        panic(93);
+    }

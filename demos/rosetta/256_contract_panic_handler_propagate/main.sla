@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 256 Contract Panic Handler Propagate.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_256_value() -> int {
+    let seed = 4;
+    let shifted = seed + 256;
+    let scaled = shifted * 6;
+    let result = scaled - 8;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_256_value();
+    return result;
+};
+
+@test "rosetta 256 256_contract_panic_handler_propagate"() {
+    let got = rosetta_256_value();
+    if got != 1552 {
+        panic(256);
+    }

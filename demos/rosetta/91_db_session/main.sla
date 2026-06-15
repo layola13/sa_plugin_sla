@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 091 Db Session.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_091_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_091_value() -> int {
+    let result = rosetta_091_mix(12, 30);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_091_value();
+    return result;
+};
+
+@test "rosetta 091 91_db_session"() {
+    let got = rosetta_091_value();
+    if got != 342 {
+        panic(91);
+    }

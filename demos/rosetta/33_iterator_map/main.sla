@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 033 Iterator Map.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_033_value() -> int {
+    let base = (19 * 8) + 33;
+    let threshold = 48;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_033_value();
+    return result;
+};
+
+@test "rosetta 033 33_iterator_map"() {
+    let got = rosetta_033_value();
+    if got != 137 {
+        panic(33);
+    }

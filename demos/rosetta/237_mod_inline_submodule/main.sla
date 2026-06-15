@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 237 Mod Inline Submodule.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_237_value() -> int {
+    let base = (19 * 5) + 237;
+    let threshold = 249;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_237_value();
+    return result;
+};
+
+@test "rosetta 237 237_mod_inline_submodule"() {
+    let got = rosetta_237_value();
+    if got != 83 {
+        panic(237);
+    }

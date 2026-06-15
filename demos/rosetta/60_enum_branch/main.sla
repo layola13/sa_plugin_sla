@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 060 Enum Branch.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_060_value() -> int {
+    let seed = 12;
+    let shifted = seed + 60;
+    let scaled = shifted * 8;
+    let result = scaled - 19;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_060_value();
+    return result;
+};
+
+@test "rosetta 060 60_enum_branch"() {
+    let got = rosetta_060_value();
+    if got != 557 {
+        panic(60);
+    }

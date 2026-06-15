@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 034 Iterator Filter.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_034_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 16;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_034_value();
+    return result;
+};
+
+@test "rosetta 034 34_iterator_filter"() {
+    let got = rosetta_034_value();
+    if got != 26 {
+        panic(34);
+    }

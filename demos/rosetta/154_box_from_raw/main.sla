@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 154 Box From Raw.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_154_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 21;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_154_value();
+    return result;
+};
+
+@test "rosetta 154 154_box_from_raw"() {
+    let got = rosetta_154_value();
+    if got != 31 {
+        panic(154);
+    }

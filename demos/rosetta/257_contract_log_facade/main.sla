@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 257 Contract Log Facade.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_257_value() -> int {
+    let base = (5 * 7) + 257;
+    let threshold = 266;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_257_value();
+    return result;
+};
+
+@test "rosetta 257 257_contract_log_facade"() {
+    let got = rosetta_257_value();
+    if got != 26 {
+        panic(257);
+    }

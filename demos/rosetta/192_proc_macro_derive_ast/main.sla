@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 192 Proc Macro Derive Ast.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_192_value() -> int {
+    let seed = 8;
+    let shifted = seed + 192;
+    let scaled = shifted * 5;
+    let result = scaled - 13;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_192_value();
+    return result;
+};
+
+@test "rosetta 192 192_proc_macro_derive_ast"() {
+    let got = rosetta_192_value();
+    if got != 987 {
+        panic(192);
+    }

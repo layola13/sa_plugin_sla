@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 128 Rcu Read Copy Update.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_128_value() -> int {
+    let seed = 12;
+    let shifted = seed + 128;
+    let scaled = shifted * 4;
+    let result = scaled - 18;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_128_value();
+    return result;
+};
+
+@test "rosetta 128 128_rcu_read_copy_update"() {
+    let got = rosetta_128_value();
+    if got != 542 {
+        panic(128);
+    }

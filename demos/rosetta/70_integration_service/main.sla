@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 070 Integration Service.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_070_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 6;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_070_value();
+    return result;
+};
+
+@test "rosetta 070 70_integration_service"() {
+    let got = rosetta_070_value();
+    if got != 42 {
+        panic(70);
+    }

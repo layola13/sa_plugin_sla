@@ -1,0 +1,24 @@
+// Sla companion for SA rosetta demo 111 Extern C Abi.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_111_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
+};
+
+fn rosetta_111_value() -> int {
+    let result = rosetta_111_mix(13, 29);
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_111_value();
+    return result;
+};
+
+@test "rosetta 111 111_extern_c_abi"() {
+    let got = rosetta_111_value();
+    if got != 361 {
+        panic(111);
+    };

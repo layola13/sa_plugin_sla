@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 052 Queue Rotate.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_052_value() -> int {
+    let seed = 4;
+    let shifted = seed + 52;
+    let scaled = shifted * 9;
+    let result = scaled - 11;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_052_value();
+    return result;
+};
+
+@test "rosetta 052 52_queue_rotate"() {
+    let got = rosetta_052_value();
+    if got != 493 {
+        panic(52);
+    }

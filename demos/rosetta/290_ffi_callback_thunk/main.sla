@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 290 Ffi Callback Thunk.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_290_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 19;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_290_value();
+    return result;
+};
+
+@test "rosetta 290 290_ffi_callback_thunk"() {
+    let got = rosetta_290_value();
+    if got != 29 {
+        panic(290);
+    }

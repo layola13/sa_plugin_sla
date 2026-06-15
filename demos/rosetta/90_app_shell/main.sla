@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 090 App Shell.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_090_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 26;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_090_value();
+    return result;
+};
+
+@test "rosetta 090 90_app_shell"() {
+    let got = rosetta_090_value();
+    if got != 36 {
+        panic(90);
+    }

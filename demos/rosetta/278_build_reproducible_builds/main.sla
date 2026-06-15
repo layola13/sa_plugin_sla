@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 278 Build Reproducible Builds.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_278_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 7;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_278_value();
+    return result;
+};
+
+@test "rosetta 278 278_build_reproducible_builds"() {
+    let got = rosetta_278_value();
+    if got != 43 {
+        panic(278);
+    }

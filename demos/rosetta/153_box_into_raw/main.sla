@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 153 Box Into Raw.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_153_value() -> int {
+    let base = (3 * 2) + 153;
+    let threshold = 173;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_153_value();
+    return result;
+};
+
+@test "rosetta 153 153_box_into_raw"() {
+    let got = rosetta_153_value();
+    if got != 14 {
+        panic(153);
+    };

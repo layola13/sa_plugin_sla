@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 232 Mod Conditional Import.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_232_value() -> int {
+    let seed = 14;
+    let shifted = seed + 232;
+    let scaled = shifted * 9;
+    let result = scaled - 7;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_232_value();
+    return result;
+};
+
+@test "rosetta 232 232_mod_conditional_import"() {
+    let got = rosetta_232_value();
+    if got != 2207 {
+        panic(232);
+    }

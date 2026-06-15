@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 200 Sa Asm Quine.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_200_value() -> int {
+    let seed = 16;
+    let shifted = seed + 200;
+    let scaled = shifted * 4;
+    let result = scaled - 21;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_200_value();
+    return result;
+};
+
+@test "rosetta 200 200_sa_asm_quine"() {
+    let got = rosetta_200_value();
+    if got != 843 {
+        panic(200);
+    }

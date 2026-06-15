@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 296 Eco Gpu Ptx Shader.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_296_value() -> int {
+    let seed = 10;
+    let shifted = seed + 296;
+    let scaled = shifted * 10;
+    let result = scaled - 25;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_296_value();
+    return result;
+};
+
+@test "rosetta 296 296_eco_gpu_ptx_shader"() {
+    let got = rosetta_296_value();
+    if got != 3035 {
+        panic(296);
+    }

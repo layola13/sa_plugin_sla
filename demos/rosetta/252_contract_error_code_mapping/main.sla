@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 252 Contract Error Code Mapping.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_252_value() -> int {
+    let seed = 17;
+    let shifted = seed + 252;
+    let scaled = shifted * 2;
+    let result = scaled - 27;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_252_value();
+    return result;
+};
+
+@test "rosetta 252 252_contract_error_code_mapping"() {
+    let got = rosetta_252_value();
+    if got != 511 {
+        panic(252);
+    };

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 116 Va List Variadic.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_116_value() -> int {
+    let seed = 17;
+    let shifted = seed + 116;
+    let scaled = shifted * 10;
+    let result = scaled - 6;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_116_value();
+    return result;
+};
+
+@test "rosetta 116 116_va_list_variadic"() {
+    let got = rosetta_116_value();
+    if got != 1324 {
+        panic(116);
+    }

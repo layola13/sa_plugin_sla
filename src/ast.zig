@@ -1,0 +1,323 @@
+const std = @import("std");
+
+pub const Node = union(enum) {
+    program: Program,
+
+    // Declarations
+    struct_decl: StructDecl,
+    enum_decl: EnumDecl,
+    impl_decl: ImplDecl,
+    func_decl: FuncDecl,
+    macro_decl: MacroDecl,
+    import_decl: ImportDecl,
+    test_decl: TestDecl,
+
+    // Statements
+    let_stmt: LetStmt,
+    let_destructure_stmt: LetDestructureStmt,
+    const_stmt: ConstStmt,
+    assign_stmt: AssignStmt,
+    expr_stmt: *Node,
+    return_stmt: ReturnStmt,
+    for_stmt: ForStmt,
+    release_stmt: ReleaseStmt,
+
+    // Expressions
+    literal: Literal,
+    identifier: []const u8,
+    if_expr: IfExpr,
+    switch_expr: SwitchExpr,
+    match_expr: MatchExpr,
+    await_expr: AwaitExpr,
+    binary_expr: BinaryExpr,
+    call_expr: CallExpr,
+    closure_literal: ClosureLiteral,
+    borrow_expr: BorrowExpr,
+    move_expr: MoveExpr,
+    deref_expr: DerefExpr,
+    field_expr: FieldExpr,
+    struct_literal: StructLiteral,
+    enum_literal: EnumLiteral,
+    tuple_literal: TupleLiteral,
+    array_literal: ArrayLiteral,
+    index_expr: IndexExpr,
+    slice_expr: SliceExpr,
+    try_expr: TryExpr,
+};
+
+pub const Program = struct {
+    decls: []const *Node,
+};
+
+pub const StructDecl = struct {
+    name: []const u8,
+    generics: []const []const u8,
+    fields: []const Field,
+};
+
+pub const EnumDecl = struct {
+    name: []const u8,
+    generics: []const []const u8,
+    variants: []const EnumVariant,
+};
+
+pub const EnumVariant = struct {
+    name: []const u8,
+    fields: []const Field,
+};
+
+pub const ImplDecl = struct {
+    target_ty: *Type,
+    methods: []const *Node,
+};
+
+pub const Field = struct {
+    name: []const u8,
+    ty: *Type,
+};
+
+pub const FuncDecl = struct {
+    name: []const u8,
+    generics: []const []const u8,
+    params: []const Param,
+    ret_ty: *Type,
+    body: []const *Node,
+    is_inline: bool,
+    is_async: bool = false,
+};
+
+pub const Param = struct {
+    name: []const u8,
+    ty: *Type,
+    is_borrow: bool = false,
+    is_move: bool = false,
+};
+
+pub const MacroDecl = struct {
+    name: []const u8,
+    params: []const []const u8,
+    body: []const *Node,
+};
+
+pub const ImportDecl = struct {
+    path: []const u8,
+};
+
+pub const TestDecl = struct {
+    name: []const u8,
+    is_ignored: bool,
+    should_panic: bool,
+    body: []const *Node,
+};
+
+pub const LetStmt = struct {
+    name: []const u8,
+    ty: ?*Type,
+    value: *Node,
+};
+
+pub const LetDestructureStmt = struct {
+    names: []const []const u8,
+    value: *Node,
+};
+
+pub const ConstStmt = struct {
+    name: []const u8,
+    ty: ?*Type,
+    value: *Node,
+};
+
+pub const AssignStmt = struct {
+    target: *Node,
+    value: *Node,
+};
+
+pub const ReturnStmt = struct {
+    value: ?*Node,
+};
+
+pub const ForStmt = struct {
+    var_name: []const u8,
+    start: *Node,
+    end: *Node,
+    body: []const *Node,
+};
+
+pub const ReleaseStmt = struct {
+    var_name: []const u8,
+};
+
+pub const Literal = union(enum) {
+    int_val: i64,
+    float_val: f64,
+    bool_val: bool,
+    string_val: []const u8,
+};
+
+pub const IfExpr = struct {
+    cond: *Node,
+    then_block: []const *Node,
+    else_block: ?[]const *Node,
+};
+
+pub const Case = struct {
+    pattern: *Node, // Literal or Identifier (for default pattern, e.g. "default")
+    body: []const *Node,
+};
+
+pub const SwitchExpr = struct {
+    val: *Node,
+    cases: []const Case,
+};
+
+pub const MatchExpr = struct {
+    val: *Node,
+    cases: []const MatchCase,
+};
+
+pub const MatchCase = struct {
+    pattern: EnumPattern,
+    body: []const *Node,
+};
+
+pub const AwaitExpr = struct {
+    expr: *Node,
+};
+
+pub const ClosureLiteral = struct {
+    params: []const Param,
+    body: *Node,
+};
+
+pub const EnumPattern = struct {
+    enum_name: []const u8,
+    variant_name: []const u8,
+    bindings: []const []const u8,
+};
+
+pub const BinaryOp = enum {
+    add,
+    sub,
+    mul,
+    div,
+    mod,
+    eq,
+    ne,
+    lt,
+    le,
+    gt,
+    ge,
+    logical_and,
+    logical_or,
+};
+
+pub const BinaryExpr = struct {
+    op: BinaryOp,
+    left: *Node,
+    right: *Node,
+};
+
+pub const CallExpr = struct {
+    func_name: []const u8,
+    generics: []const *Type,
+    args: []const *Node,
+};
+
+pub const BorrowExpr = struct {
+    expr: *Node,
+};
+
+pub const MoveExpr = struct {
+    expr: *Node,
+};
+
+pub const DerefExpr = struct {
+    expr: *Node,
+};
+
+pub const FieldExpr = struct {
+    expr: *Node,
+    field_name: []const u8,
+};
+
+pub const StructLiteralField = struct {
+    name: []const u8,
+    value: *Node,
+};
+
+pub const StructLiteral = struct {
+    ty: *Type,
+    fields: []const StructLiteralField,
+};
+
+pub const EnumLiteralField = struct {
+    name: []const u8,
+    value: *Node,
+};
+
+pub const EnumLiteral = struct {
+    enum_name: []const u8,
+    variant_name: []const u8,
+    fields: []const EnumLiteralField,
+};
+
+pub const TupleLiteral = struct {
+    elements: []const *Node,
+};
+
+pub const ArrayLiteral = struct {
+    elements: []const *Node,
+};
+
+pub const IndexExpr = struct {
+    target: *Node,
+    index: *Node,
+};
+
+pub const SliceExpr = struct {
+    target: *Node,
+    start: *Node,
+    end: *Node,
+};
+
+pub const TryExpr = struct {
+    expr: *Node,
+};
+
+// Type System representation
+pub const Type = union(enum) {
+    primitive: Primitive,
+    pointer: *Type,
+    borrow: *Type,
+    array: ArrayType,
+    tuple: TupleType,
+    future: *Type,
+    closure: ClosureType,
+    user_defined: UserDefined,
+};
+
+pub const Primitive = enum {
+    integer,
+    float,
+    boolean,
+    void_type,
+};
+
+pub const UserDefined = struct {
+    name: []const u8,
+    generics: []const *Type,
+};
+
+pub const ArrayType = struct {
+    elem: *Type,
+    len: usize,
+};
+
+pub const TupleType = struct {
+    elems: []const *Type,
+};
+
+pub const ClosureType = struct {
+    params: []const *Type,
+    ret: *Type,
+};

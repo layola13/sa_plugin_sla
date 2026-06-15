@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 244 Contract Vtable Export.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_244_value() -> int {
+    let seed = 9;
+    let shifted = seed + 244;
+    let scaled = shifted * 3;
+    let result = scaled - 19;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_244_value();
+    return result;
+};
+
+@test "rosetta 244 244_contract_vtable_export"() {
+    let got = rosetta_244_value();
+    if got != 740 {
+        panic(244);
+    }

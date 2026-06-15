@@ -1,0 +1,77 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@max(a: i64, b: i64) -> i64:
+L_ENTRY:
+    tmp_0 = sgt a, b
+    br tmp_0 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_0
+    !b
+    return a
+
+L_ELSE_1:
+    !tmp_0
+    !a
+    return b
+
+
+@rosetta_003_value() -> i64:
+L_ENTRY:
+    tmp_2 = 10
+    tmp_3 = 20
+    tmp_4 = call @max(tmp_2, tmp_3)
+    !tmp_2
+    !tmp_3
+    result = tmp_4
+    return result
+
+@main() -> i64:
+L_ENTRY:
+    tmp_5 = call @rosetta_003_value()
+    result = tmp_5
+    tmp_6 = 20
+    tmp_7 = eq result, tmp_6
+    br tmp_7 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_7
+    tmp_8 = call @sa_fmt_i64(result, 10)
+    tmp_9 = call @sa_fmt_buffer_data(tmp_8)
+    tmp_10 = call @sa_fmt_buffer_len(tmp_8)
+    tmp_11 = tmp_9
+    call @sa_print_bytes(&tmp_11, tmp_10)
+    call @sa_fmt_buffer_free(^tmp_8)
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    jmp L_MERGE_5
+
+L_ELSE_4:
+    !tmp_7
+    panic(3)
+
+L_MERGE_5:
+    tmp_14 = 0
+    !result
+    return tmp_14
+
+@test "rosetta 003 if else"():
+L_TEST_ENTRY_6:
+    tmp_15 = call @rosetta_003_value()
+    got = tmp_15
+    tmp_16 = 20
+    tmp_17 = ne got, tmp_16
+    br tmp_17 -> L_THEN_7, L_ELSE_8
+
+L_THEN_7:
+    !tmp_17
+    panic(3)
+
+L_ELSE_8:
+    !tmp_17
+    jmp L_MERGE_9
+
+L_MERGE_9:
+    !got
+    return
+

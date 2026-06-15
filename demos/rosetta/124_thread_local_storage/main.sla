@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 124 Thread Local Storage.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_124_value() -> int {
+    let seed = 8;
+    let shifted = seed + 124;
+    let scaled = shifted * 9;
+    let result = scaled - 14;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_124_value();
+    return result;
+};
+
+@test "rosetta 124 124_thread_local_storage"() {
+    let got = rosetta_124_value();
+    if got != 1174 {
+        panic(124);
+    }

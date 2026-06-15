@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 142 Zero Sized Types.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_142_value() -> int {
+    let total = 0;
+    for i in 1..9 {
+        total = total + i;
+    }    let result = total + 9;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_142_value();
+    return result;
+};
+
+@test "rosetta 142 142_zero_sized_types"() {
+    let got = rosetta_142_value();
+    if got != 45 {
+        panic(142);
+    }

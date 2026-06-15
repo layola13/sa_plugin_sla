@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 253 Contract Callback Registration.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_253_value() -> int {
+    let base = (18 * 3) + 253;
+    let threshold = 258;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_253_value();
+    return result;
+};
+
+@test "rosetta 253 253_contract_callback_registration"() {
+    let got = rosetta_253_value();
+    if got != 49 {
+        panic(253);
+    };

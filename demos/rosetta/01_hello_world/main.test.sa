@@ -1,0 +1,41 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@hello_message_len() -> i64:
+L_ENTRY:
+    tmp_0 = 13
+    return tmp_0
+
+@print_hello():
+L_ENTRY:
+    @const SLA_STR_0 = utf8:"hello, saasm"
+    call @sa_print_bytes(&SLA_STR_0, 12)
+    @const SLA_STR_1 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    return
+
+@main() -> i64:
+L_ENTRY:
+    call @print_hello()
+    tmp_1 = 0
+    return tmp_1
+
+@test "rosetta 001 hello world"():
+L_TEST_ENTRY_0:
+    tmp_2 = call @hello_message_len()
+    len = tmp_2
+    tmp_3 = 13
+    tmp_4 = ne len, tmp_3
+    br tmp_4 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_4
+    panic(1)
+
+L_ELSE_2:
+    !tmp_4
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !len
+    return
+

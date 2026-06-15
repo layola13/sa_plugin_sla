@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 276 Build Incremental Caching.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_276_value() -> int {
+    let seed = 7;
+    let shifted = seed + 276;
+    let scaled = shifted * 8;
+    let result = scaled - 5;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_276_value();
+    return result;
+};
+
+@test "rosetta 276 276_build_incremental_caching"() {
+    let got = rosetta_276_value();
+    if got != 2259 {
+        panic(276);
+    }

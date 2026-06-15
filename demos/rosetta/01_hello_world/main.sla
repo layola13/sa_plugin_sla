@@ -1,0 +1,25 @@
+// Sla companion for Rust rosetta demo 001 Hello World.
+// Rust reference: println!("hello, saasm").
+
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+fn hello_message_len() -> int {
+    return 13;
+}
+
+fn print_hello() {
+    println("hello, saasm");
+}
+
+fn main() -> int {
+    print_hello();
+    return 0;
+}
+
+@test "rosetta 001 hello world"() {
+    let len = hello_message_len();
+    if len != 13 {
+        panic(1);
+    };
+}

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 044 Slice Iteration.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_044_value() -> int {
+    let seed = 13;
+    let shifted = seed + 44;
+    let scaled = shifted * 10;
+    let result = scaled - 26;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_044_value();
+    return result;
+};
+
+@test "rosetta 044 44_slice_iteration"() {
+    let got = rosetta_044_value();
+    if got != 544 {
+        panic(44);
+    }

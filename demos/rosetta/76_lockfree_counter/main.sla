@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 076 Lockfree Counter.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_076_value() -> int {
+    let seed = 11;
+    let shifted = seed + 76;
+    let scaled = shifted * 6;
+    let result = scaled - 12;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_076_value();
+    return result;
+};
+
+@test "rosetta 076 76_lockfree_counter"() {
+    let got = rosetta_076_value();
+    if got != 510 {
+        panic(76);
+    }

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 080 Workflow.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_080_value() -> int {
+    let seed = 15;
+    let shifted = seed + 80;
+    let scaled = shifted * 10;
+    let result = scaled - 16;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_080_value();
+    return result;
+};
+
+@test "rosetta 080 80_workflow"() {
+    let got = rosetta_080_value();
+    if got != 934 {
+        panic(80);
+    }

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 208 Pkg Dev Dependencies.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_208_value() -> int {
+    let seed = 7;
+    let shifted = seed + 208;
+    let scaled = shifted * 3;
+    let result = scaled - 6;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_208_value();
+    return result;
+};
+
+@test "rosetta 208 208_pkg_dev_dependencies"() {
+    let got = rosetta_208_value();
+    if got != 639 {
+        panic(208);
+    }

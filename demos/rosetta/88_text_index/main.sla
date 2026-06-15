@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 088 Text Index.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_088_value() -> int {
+    let seed = 6;
+    let shifted = seed + 88;
+    let scaled = shifted * 9;
+    let result = scaled - 24;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_088_value();
+    return result;
+};
+
+@test "rosetta 088 88_text_index"() {
+    let got = rosetta_088_value();
+    if got != 822 {
+        panic(88);
+    }

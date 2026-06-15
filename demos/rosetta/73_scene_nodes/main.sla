@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 073 Scene Nodes.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_073_value() -> int {
+    let base = (8 * 3) + 73;
+    let threshold = 82;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_073_value();
+    return result;
+};
+
+@test "rosetta 073 73_scene_nodes"() {
+    let got = rosetta_073_value();
+    if got != 15 {
+        panic(73);
+    }

@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 162 Auto Traits Send Sync.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_162_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 6;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_162_value();
+    return result;
+};
+
+@test "rosetta 162 162_auto_traits_send_sync"() {
+    let got = rosetta_162_value();
+    if got != 16 {
+        panic(162);
+    }

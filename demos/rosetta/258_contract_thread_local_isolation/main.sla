@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 258 Contract Thread Local Isolation.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_258_value() -> int {
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }    let result = total + 10;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_258_value();
+    return result;
+};
+
+@test "rosetta 258 258_contract_thread_local_isolation"() {
+    let got = rosetta_258_value();
+    if got != 20 {
+        panic(258);
+    }

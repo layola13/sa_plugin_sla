@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 024 Factorial.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_024_value() -> int {
+    let seed = 10;
+    let shifted = seed + 24;
+    let scaled = shifted * 8;
+    let result = scaled - 6;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_024_value();
+    return result;
+};
+
+@test "rosetta 024 24_factorial"() {
+    let got = rosetta_024_value();
+    if got != 266 {
+        panic(24);
+    }

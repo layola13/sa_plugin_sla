@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 181 File Descriptor Raii.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_181_value() -> int {
+    let base = (14 * 3) + 181;
+    let threshold = 206;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_181_value();
+    return result;
+};
+
+@test "rosetta 181 181_file_descriptor_raii"() {
+    let got = rosetta_181_value();
+    if got != 17 {
+        panic(181);
+    }

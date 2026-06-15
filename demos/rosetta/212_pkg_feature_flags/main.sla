@@ -1,0 +1,21 @@
+// Sla companion for SA rosetta demo 212 Pkg Feature Flags.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_212_value() -> int {
+    let seed = 11;
+    let shifted = seed + 212;
+    let scaled = shifted * 7;
+    let result = scaled - 10;
+    return result;
+};
+
+fn main() -> int {
+    let result = rosetta_212_value();
+    return result;
+};
+
+@test "rosetta 212 212_pkg_feature_flags"() {
+    let got = rosetta_212_value();
+    if got != 1551 {
+        panic(212);
+    }

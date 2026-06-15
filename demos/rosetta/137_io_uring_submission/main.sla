@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 137 Io Uring Submission.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_137_value() -> int {
+    let base = (4 * 4) + 137;
+    let threshold = 164;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_137_value();
+    return result;
+};
+
+@test "rosetta 137 137_io_uring_submission"() {
+    let got = rosetta_137_value();
+    if got != 11 {
+        panic(137);
+    }

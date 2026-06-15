@@ -1,0 +1,22 @@
+// Sla companion for SA rosetta demo 053 Cache Hits.
+// Generated from the catalog name; Rust reference lives in main.rs.
+
+fn rosetta_053_value() -> int {
+    let base = (5 * 10) + 53;
+    let threshold = 65;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
+
+fn main() -> int {
+    let result = rosetta_053_value();
+    return result;
+};
+
+@test "rosetta 053 53_cache_hits"() {
+    let got = rosetta_053_value();
+    if got != 38 {
+        panic(53);
+    }

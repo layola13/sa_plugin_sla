@@ -5,12 +5,12 @@ fn rosetta_295_mix(left: int, right: int) -> int {
     let product = left * right;
     let result = product + left - right;
     return result;
-};
+}
 
 fn rosetta_295_value() -> int {
     let result = rosetta_295_mix(18, 33);
     return result;
-};
+}
 
 fn main() -> int {
     let result = rosetta_295_value();
@@ -21,4 +21,5 @@ fn main() -> int {
     let got = rosetta_295_value();
     if got != 579 {
         panic(295);
-    }
+    };
+};

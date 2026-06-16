@@ -78,6 +78,8 @@ pub const TypeChecker = struct {
     allocator: std.mem.Allocator,
     structs: std.StringHashMap(*ast.StructDecl),
     enums: std.StringHashMap(*ast.EnumDecl),
+    traits: std.StringHashMap(*ast.TraitDecl),
+    trait_impls: std.StringHashMap(void),
     extern_funcs: std.StringHashMap(contract_parser.ExternalFunction),
     layout_defines: std.StringHashMap(contract_parser.LayoutDefine),
     scope_pool: std.ArrayList(*Scope),
@@ -93,6 +95,13 @@ pub const TypeChecker = struct {
     macros: std.StringHashMap(*ast.MacroDecl),
     // Maps expressions to their validated types for use in Codegen layout offsets
     expr_types: std.AutoHashMap(*const ast.Node, *ast.Type),
+    dyn_call_traits: std.AutoHashMap(*const ast.Node, []const u8),
+    dyn_borrow_args: std.AutoHashMap(*const ast.Node, []const u8),
+    dyn_box_coercions: std.AutoHashMap(*const ast.Node, []const u8),
+    array_to_slice_borrow_args: std.AutoHashMap(*const ast.Node, void),
+    current_loop_scope: ?*Scope,
+    global_scope: ?*Scope,
+    unsafe_depth: usize,
 
     last_error: []const u8,
     last_error_buf: [1024]u8,
@@ -102,6 +111,8 @@ pub const TypeChecker = struct {
             .allocator = allocator,
             .structs = std.StringHashMap(*ast.StructDecl).init(allocator),
             .enums = std.StringHashMap(*ast.EnumDecl).init(allocator),
+            .traits = std.StringHashMap(*ast.TraitDecl).init(allocator),
+            .trait_impls = std.StringHashMap(void).init(allocator),
             .extern_funcs = std.StringHashMap(contract_parser.ExternalFunction).init(allocator),
             .layout_defines = std.StringHashMap(contract_parser.LayoutDefine).init(allocator),
             .scope_pool = std.ArrayList(*Scope).init(allocator),
@@ -110,6 +121,13 @@ pub const TypeChecker = struct {
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .macros = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .expr_types = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
+            .dyn_call_traits = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
+            .dyn_borrow_args = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
+            .dyn_box_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
+            .array_to_slice_borrow_args = std.AutoHashMap(*const ast.Node, void).init(allocator),
+            .current_loop_scope = null,
+            .global_scope = null,
+            .unsafe_depth = 0,
             .last_error = "",
             .last_error_buf = undefined,
         };
@@ -123,11 +141,17 @@ pub const TypeChecker = struct {
     pub fn deinit(self: *TypeChecker) void {
         self.structs.deinit();
         self.enums.deinit();
+        self.traits.deinit();
+        self.trait_impls.deinit();
         self.extern_funcs.deinit();
         self.layout_defines.deinit();
         self.funcs.deinit();
         self.macros.deinit();
         self.expr_types.deinit();
+        self.dyn_call_traits.deinit();
+        self.dyn_borrow_args.deinit();
+        self.dyn_box_coercions.deinit();
+        self.array_to_slice_borrow_args.deinit();
         for (self.scope_pool.items) |s| {
             s.deinit();
         }
@@ -157,11 +181,75 @@ pub const TypeChecker = struct {
         };
     }
 
-    fn isNumericType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| p == .integer or p == .float,
+    fn isIntegerPrimitive(primitive: ast.Primitive) bool {
+        return switch (primitive) {
+            .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize, .integer => true,
             else => false,
         };
+    }
+
+    fn isFloatPrimitive(primitive: ast.Primitive) bool {
+        return switch (primitive) {
+            .f32, .f64, .float => true,
+            else => false,
+        };
+    }
+
+    fn isAnyIntegerType(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| isIntegerPrimitive(p),
+            else => false,
+        };
+    }
+
+    fn isAnyFloatType(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| isFloatPrimitive(p),
+            else => false,
+        };
+    }
+
+    fn unwrapBorrowForCallArg(arg: *const ast.Node, arg_ty: *ast.Type) *ast.Type {
+        if (arg.* == .borrow_expr and arg_ty.* == .borrow) return arg_ty.borrow;
+        return arg_ty;
+    }
+
+    fn isNumericType(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| isIntegerPrimitive(p) or isFloatPrimitive(p),
+            else => false,
+        };
+    }
+
+    fn isStringLikeType(ty: *const ast.Type) bool {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .primitive => |p| return p == .void_type,
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .array => return true,
+                .user_defined => |ud| return std.mem.eql(u8, ud.name, "String"),
+                else => return false,
+            }
+        }
+    }
+
+    fn dynTraitName(ty: *ast.Type) ?[]const u8 {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .borrow => |b| curr = b,
+                .pointer => |p| curr = p,
+                .user_defined => |ud| {
+                    if (std.mem.startsWith(u8, ud.name, "__dyn_")) {
+                        return ud.name["__dyn_".len..];
+                    }
+                    return null;
+                },
+                else => return null,
+            }
+        }
     }
 
     fn arrayType(ty: *ast.Type) ?ast.ArrayType {
@@ -176,10 +264,442 @@ pub const TypeChecker = struct {
         }
     }
 
+    fn sliceElementType(ty: *ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Slice") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn canCoerceBorrowArrayToBorrowSlice(self: *TypeChecker, param_ty: *ast.Type, arg_ty: *ast.Type) bool {
+        if (param_ty.* != .borrow or arg_ty.* != .borrow) return false;
+        const slice_elem = sliceElementType(param_ty.borrow) orelse return false;
+        const arr = arrayType(arg_ty.borrow) orelse return false;
+        return self.typesEqual(slice_elem, arr.elem);
+    }
+
+    fn checkClosureLiteralWithContext(
+        self: *TypeChecker,
+        expr: *ast.Node,
+        scope: *Scope,
+        contextual_params: []const *ast.Type,
+    ) TypeError!*ast.Type {
+        if (expr.* != .closure_literal) return TypeError.TypeMismatch;
+        const lit = &expr.closure_literal;
+        if (lit.params.len != contextual_params.len) return TypeError.InvalidArgsCount;
+
+        var closure_scope = try Scope.init(self.allocator, scope);
+        try self.scope_pool.append(closure_scope);
+
+        var param_types = std.ArrayList(*ast.Type).init(self.allocator);
+        for (lit.params, contextual_params) |p, ctx_ty| {
+            if (p.ty.* != .infer and !self.typesEqual(p.ty, ctx_ty)) return TypeError.TypeMismatch;
+            try closure_scope.define(p.name, ctx_ty, true);
+            try param_types.append(ctx_ty);
+        }
+
+        const ret_ty = try self.checkExpr(lit.body, closure_scope);
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .closure = .{ .params = try param_types.toOwnedSlice(), .ret = ret_ty } };
+        self.expr_types.put(expr, ty) catch return TypeError.OutOfMemory;
+        return ty;
+    }
+
     fn makeFutureType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .future = inner };
         return ty;
+    }
+
+    fn makeBorrowType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .borrow = inner };
+        return ty;
+    }
+
+    fn makePointerType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .pointer = inner };
+        return ty;
+    }
+
+    fn makeInferType(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .infer;
+        return ty;
+    }
+
+    fn makeOptionType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Option", .generics = generics } };
+        return ty;
+    }
+
+    fn makeResultType(self: *TypeChecker, ok_ty: *ast.Type, err_ty: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 2);
+        generics[0] = ok_ty;
+        generics[1] = err_ty;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Result", .generics = generics } };
+        return ty;
+    }
+
+    fn makeJoinHandleType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "JoinHandle", .generics = generics } };
+        return ty;
+    }
+
+    fn makeSenderType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Sender", .generics = generics } };
+        return ty;
+    }
+
+    fn makeReceiverType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Receiver", .generics = generics } };
+        return ty;
+    }
+
+    fn makeTupleType(self: *TypeChecker, elems: []const *ast.Type) TypeError!*ast.Type {
+        const owned = try self.allocator.alloc(*ast.Type, elems.len);
+        for (elems, 0..) |elem, i| owned[i] = elem;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .tuple = .{ .elems = owned } };
+        return ty;
+    }
+
+    fn makeI32Type(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .primitive = .i32 };
+        return ty;
+    }
+
+    fn makeStringType(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "String", .generics = &.{} } };
+        return ty;
+    }
+
+    fn makeAtomicI32Type(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "AtomicI32", .generics = &.{} } };
+        return ty;
+    }
+
+    fn makeCellType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Cell", .generics = generics } };
+        return ty;
+    }
+
+    fn makeRefCellType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "RefCell", .generics = generics } };
+        return ty;
+    }
+
+    fn makeOrderingType(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Ordering", .generics = &.{} } };
+        return ty;
+    }
+
+    fn makeBoxType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Box", .generics = generics } };
+        return ty;
+    }
+
+    fn makeRcType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Rc", .generics = generics } };
+        return ty;
+    }
+
+    fn makeVecType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Vec", .generics = generics } };
+        return ty;
+    }
+
+    fn makeVecDequeType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "VecDeque", .generics = generics } };
+        return ty;
+    }
+
+    fn makeHashMapType(self: *TypeChecker, key_ty: *ast.Type, value_ty: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 2);
+        generics[0] = key_ty;
+        generics[1] = value_ty;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "HashMap", .generics = generics } };
+        return ty;
+    }
+
+    fn boxInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Box") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn rcInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Rc") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn vecElementType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Vec") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn vecDequeElementType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "VecDeque") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn isAtomicI32Type(ty: *const ast.Type) bool {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| return std.mem.eql(u8, ud.name, "AtomicI32") and ud.generics.len == 0,
+                else => return false,
+            }
+        }
+    }
+
+    fn cellInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Cell") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn refCellInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "RefCell") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn isOrderingType(ty: *const ast.Type) bool {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| return std.mem.eql(u8, ud.name, "Ordering") and ud.generics.len == 0,
+                else => return false,
+            }
+        }
+    }
+
+    fn isOrderingName(name: []const u8) bool {
+        return std.mem.eql(u8, name, "Ordering::SeqCst") or
+            std.mem.eql(u8, name, "Ordering::Acquire") or
+            std.mem.eql(u8, name, "Ordering::Release") or
+            std.mem.eql(u8, name, "Ordering::Relaxed") or
+            std.mem.eql(u8, name, "Ordering::AcqRel");
+    }
+
+    const HashMapTypes = struct {
+        key: *ast.Type,
+        value: *ast.Type,
+    };
+
+    fn hashMapTypes(ty: *const ast.Type) ?HashMapTypes {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "HashMap") and ud.generics.len == 2) {
+                        return .{ .key = ud.generics[0], .value = ud.generics[1] };
+                    }
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn optionInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Option") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn resultOkType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Result") and ud.generics.len == 2) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn joinHandleInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "JoinHandle") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn senderInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Sender") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn receiverInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Receiver") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn dynDispatchTraitName(ty: *const ast.Type) ?[]const u8 {
+        if (dynTraitName(@constCast(ty))) |name| return name;
+        if (boxInnerType(ty)) |inner| {
+            return dynTraitName(inner);
+        }
+        return null;
+    }
+
+    fn canCoerceToDynBox(self: *TypeChecker, declared_ty: *const ast.Type, val_ty: *const ast.Type) ?[]const u8 {
+        const declared_inner = boxInnerType(declared_ty) orelse return null;
+        const trait_name = dynTraitName(declared_inner) orelse return null;
+        const val_inner = boxInnerType(val_ty) orelse return null;
+        if (!self.typeImplementsTrait(val_inner, trait_name)) return null;
+        return trait_name;
     }
 
     fn rootIdentifier(expr: *const ast.Node) ?[]const u8 {
@@ -198,6 +718,32 @@ pub const TypeChecker = struct {
         return null;
     }
 
+    fn enumNameMatchesDecl(pattern_name: []const u8, decl_name: []const u8) bool {
+        if (std.mem.eql(u8, pattern_name, decl_name)) return true;
+        if (decl_name.len <= pattern_name.len) return false;
+        if (!std.mem.startsWith(u8, decl_name, pattern_name)) return false;
+        return decl_name[pattern_name.len] == '_';
+    }
+
+    fn concreteTypeName(ty: *const ast.Type) ?[]const u8 {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .borrow => |b| curr = b,
+                .pointer => |p| curr = p,
+                .user_defined => |ud| return ud.name,
+                else => return null,
+            }
+        }
+    }
+
+    fn typeImplementsTrait(self: *TypeChecker, ty: *const ast.Type, trait_name: []const u8) bool {
+        const type_name = concreteTypeName(ty) orelse return false;
+        var key_buf: [512]u8 = undefined;
+        const key = std.fmt.bufPrint(&key_buf, "{s}|{s}", .{ trait_name, type_name }) catch return false;
+        return self.trait_impls.contains(key);
+    }
+
     fn normalizeAbiTypeName(name: []const u8) []const u8 {
         var ty = std.mem.trim(u8, name, " \t\r");
         while (ty.len > 0 and (ty[0] == '^' or ty[0] == '&')) {
@@ -207,9 +753,7 @@ pub const TypeChecker = struct {
     }
 
     fn isIntegerAbiType(name: []const u8) bool {
-        return std.mem.eql(u8, name, "i1") or
-            std.mem.eql(u8, name, "u1") or
-            std.mem.eql(u8, name, "i8") or
+        return std.mem.eql(u8, name, "i8") or
             std.mem.eql(u8, name, "u8") or
             std.mem.eql(u8, name, "i16") or
             std.mem.eql(u8, name, "u16") or
@@ -230,9 +774,11 @@ pub const TypeChecker = struct {
 
         const name = normalizeAbiTypeName(abi_ret_ty);
         if (isIntegerAbiType(name)) {
-            ret.* = .{ .primitive = .integer };
-        } else if (std.mem.eql(u8, name, "f32") or std.mem.eql(u8, name, "f64")) {
-            ret.* = .{ .primitive = .float };
+            if (std.mem.eql(u8, name, "i8")) ret.* = .{ .primitive = .i8 } else if (std.mem.eql(u8, name, "i16")) ret.* = .{ .primitive = .i16 } else if (std.mem.eql(u8, name, "i32")) ret.* = .{ .primitive = .i32 } else if (std.mem.eql(u8, name, "i64")) ret.* = .{ .primitive = .i64 } else if (std.mem.eql(u8, name, "isize")) ret.* = .{ .primitive = .isize } else if (std.mem.eql(u8, name, "u8")) ret.* = .{ .primitive = .u8 } else if (std.mem.eql(u8, name, "u16")) ret.* = .{ .primitive = .u16 } else if (std.mem.eql(u8, name, "u32")) ret.* = .{ .primitive = .u32 } else if (std.mem.eql(u8, name, "u64")) ret.* = .{ .primitive = .u64 } else if (std.mem.eql(u8, name, "usize")) ret.* = .{ .primitive = .usize } else ret.* = .{ .primitive = .integer };
+        } else if (std.mem.eql(u8, name, "f32")) {
+            ret.* = .{ .primitive = .f32 };
+        } else if (std.mem.eql(u8, name, "f64")) {
+            ret.* = .{ .primitive = .f64 };
         } else if (std.mem.eql(u8, name, "bool")) {
             ret.* = .{ .primitive = .boolean };
         } else {
@@ -257,12 +803,26 @@ pub const TypeChecker = struct {
     pub fn checkProgram(self: *TypeChecker, program: *ast.Node) !void {
         if (program.* != .program) return TypeError.CompileError;
 
+        var global_scope = try Scope.init(self.allocator, null);
+        try self.scope_pool.append(global_scope);
+        self.global_scope = global_scope;
+
         // Register structs first
         for (program.program.decls) |decl| {
             if (decl.* == .struct_decl) {
                 try self.structs.put(decl.struct_decl.name, &decl.struct_decl);
             } else if (decl.* == .enum_decl) {
                 try self.enums.put(decl.enum_decl.name, &decl.enum_decl);
+            } else if (decl.* == .trait_decl) {
+                try self.traits.put(decl.trait_decl.name, &decl.trait_decl);
+            }
+        }
+
+        for (program.program.decls) |decl| {
+            if (decl.* == .trait_decl) {
+                for (decl.trait_decl.supertraits) |supertrait| {
+                    if (!self.traits.contains(supertrait)) return TypeError.UndefinedVariable;
+                }
             }
         }
 
@@ -276,9 +836,15 @@ pub const TypeChecker = struct {
         // Register impl methods
         for (program.program.decls) |decl| {
             if (decl.* == .impl_decl) {
+                const target_name = try self.typeName(decl.impl_decl.target_ty);
+                if (decl.impl_decl.trait_name) |trait_name| {
+                    const impl_key = try std.fmt.allocPrint(self.allocator, "{s}|{s}", .{ trait_name, target_name });
+                    try self.trait_impls.put(impl_key, {});
+                }
                 for (decl.impl_decl.methods) |method| {
                     if (method.* != .func_decl) return TypeError.CompileError;
-                    try self.funcs.put(method.func_decl.name, &method.func_decl);
+                    const method_key = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ target_name, method.func_decl.name });
+                    try self.funcs.put(method_key, &method.func_decl);
                 }
             }
         }
@@ -287,6 +853,20 @@ pub const TypeChecker = struct {
         for (program.program.decls) |decl| {
             if (decl.* == .macro_decl) {
                 try self.macros.put(decl.macro_decl.name, &decl.macro_decl);
+            }
+        }
+
+        // Register top-level consts into the global scope so functions/tests can use them.
+        for (program.program.decls) |decl| {
+            if (decl.* == .const_stmt) {
+                const c = &decl.const_stmt;
+                const val_ty = try self.checkExpr(c.value, global_scope);
+                const declared_ty = c.ty orelse val_ty;
+                if (!self.typesEqual(declared_ty, val_ty)) {
+                    self.setError("TypeMismatch in const {s}: declared tag={s}, val tag={s}", .{ c.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
+                    return TypeError.TypeMismatch;
+                }
+                try global_scope.define(c.name, declared_ty, true);
             }
         }
 
@@ -308,7 +888,7 @@ pub const TypeChecker = struct {
     }
 
     fn checkTest(self: *TypeChecker, test_decl: *ast.TestDecl) !void {
-        var scope = try Scope.init(self.allocator, null);
+        var scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
 
         const ret_ty = try self.allocator.create(ast.Type);
@@ -316,7 +896,7 @@ pub const TypeChecker = struct {
 
         try scope.define("return_ty_sentinel", ret_ty, true);
 
-        try self.checkBlock(test_decl.body, scope, ret_ty, null);
+        try self.checkBlock(test_decl.body, scope, ret_ty, null, null);
 
         var iter = scope.symbols.valueIterator();
         while (iter.next()) |sym| {
@@ -327,16 +907,28 @@ pub const TypeChecker = struct {
     }
 
     fn checkFunc(self: *TypeChecker, func: *ast.FuncDecl) !void {
-        var scope = try Scope.init(self.allocator, null);
+        var scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
 
         try scope.define("return_ty_sentinel", func.ret_ty, true);
 
         for (func.params) |p| {
-            try scope.define(p.name, p.ty, false);
+            const local_ty = if (p.is_borrow) try self.makeBorrowType(p.ty) else p.ty;
+            try scope.define(p.name, local_ty, false);
         }
 
-        try self.checkBlock(func.body, scope, func.ret_ty, null);
+        try self.checkBlock(func.body, scope, func.ret_ty, null, null);
+
+        if (!isPrimitiveType(func.ret_ty, .void_type) and func.body.len > 0) {
+            const last = func.body[func.body.len - 1];
+            if (last.* == .expr_stmt and !stmtTerminates(last)) {
+                const tail_ty = self.expr_types.get(last.expr_stmt) orelse return TypeError.CompileError;
+                if (!self.typesEqual(func.ret_ty, tail_ty)) {
+                    self.setError("TypeMismatch in function tail expression: expected tag={s}, actual tag={s}", .{ @tagName(func.ret_ty.*), @tagName(tail_ty.*) });
+                    return TypeError.TypeMismatch;
+                }
+            }
+        }
 
         // Verify that all parameters or locals in the function root scope are consumed (or we auto-release them)
         // For parameters/locals remaining active at function exit, compile-time checklist forces release.
@@ -355,12 +947,14 @@ pub const TypeChecker = struct {
         parent_scope: *Scope,
         ret_ty: *ast.Type,
         loop_node: ?*ast.Node,
+        current_loop_scope: ?*Scope,
     ) !void {
+        _ = loop_node;
         var scope = try Scope.init(self.allocator, parent_scope);
         try self.scope_pool.append(scope);
 
         for (body) |stmt| {
-            try self.checkStmt(stmt, scope, ret_ty, loop_node);
+            try self.checkStmt(stmt, scope, ret_ty, current_loop_scope);
         }
 
         // Auto-cleanup for variables local to this block that are still active
@@ -377,7 +971,7 @@ pub const TypeChecker = struct {
             // Associated cleanup list with the block's last statement, or block node itself
             if (body.len > 0) {
                 const last_stmt = body[body.len - 1];
-                if (last_stmt.* != .return_stmt) {
+                if (last_stmt.* != .return_stmt and last_stmt.* != .break_stmt and last_stmt.* != .continue_stmt) {
                     try self.cleanups.put(last_stmt, cleanup_list);
                 } else {
                     cleanup_list.deinit();
@@ -390,15 +984,42 @@ pub const TypeChecker = struct {
         }
     }
 
+    fn blockTerminates(body: []const *ast.Node) bool {
+        if (body.len == 0) return false;
+        return stmtTerminates(body[body.len - 1]);
+    }
+
+    fn stmtTerminates(stmt: *const ast.Node) bool {
+        return switch (stmt.*) {
+            .return_stmt, .break_stmt, .continue_stmt => true,
+            .expr_stmt => |expr| exprTerminates(expr),
+            else => false,
+        };
+    }
+
+    fn exprTerminates(expr: *const ast.Node) bool {
+        return switch (expr.*) {
+            .call_expr => |call| std.mem.eql(u8, call.func_name, "panic"),
+            .if_expr => |ife| blockTerminates(ife.then_block) and if (ife.else_block) |eb| blockTerminates(eb) else false,
+            .match_expr => |mat| blk: {
+                if (mat.cases.len == 0) break :blk false;
+                for (mat.cases) |case| {
+                    if (!blockTerminates(case.body)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
     fn checkStmt(
         self: *TypeChecker,
         stmt: *ast.Node,
         scope: *Scope,
         ret_ty: *ast.Type,
-        loop_node: ?*ast.Node,
+        current_loop_scope: ?*Scope,
     ) TypeError!void {
-        _ = loop_node;
-        self.checkStmtImpl(stmt, scope, ret_ty) catch |err| {
+        self.checkStmtImpl(stmt, scope, ret_ty, current_loop_scope) catch |err| {
             if (self.last_error.len == 0) {
                 self.setError("checkStmt failed at node tag {s}", .{@tagName(stmt.*)});
             }
@@ -411,16 +1032,53 @@ pub const TypeChecker = struct {
         stmt: *ast.Node,
         scope: *Scope,
         ret_ty: *ast.Type,
+        current_loop_scope: ?*Scope,
     ) TypeError!void {
         switch (stmt.*) {
             .let_stmt => |let| {
                 const val_ty = try self.checkExpr(let.value, scope);
                 const declared_ty = let.ty orelse val_ty;
                 if (!self.typesEqual(declared_ty, val_ty)) {
-                    self.setError("TypeMismatch in let {s}: declared tag={s}, val tag={s}", .{ let.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
-                    return TypeError.TypeMismatch;
+                    if (self.canCoerceToDynBox(declared_ty, val_ty)) |trait_name| {
+                        self.dyn_box_coercions.put(let.value, trait_name) catch return TypeError.OutOfMemory;
+                    } else {
+                        self.setError("TypeMismatch in let {s}: declared tag={s}, val tag={s}", .{ let.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
+                        return TypeError.TypeMismatch;
+                    }
                 }
                 try scope.define(let.name, declared_ty, false);
+            },
+            .let_else_stmt => |let| {
+                const value_ty = try self.checkExpr(let.value, scope);
+                const inner_ty = optionInnerType(value_ty) orelse {
+                    self.setError("let else value must be Option<T>", .{});
+                    return TypeError.TypeMismatch;
+                };
+                if (!std.mem.eql(u8, let.pattern.enum_name, "Option")) {
+                    self.setError("let else currently supports Option patterns, got {s}", .{let.pattern.enum_name});
+                    return TypeError.TypeMismatch;
+                }
+                try self.checkBlock(let.else_block, scope, ret_ty, null, current_loop_scope);
+                if (!blockTerminates(let.else_block)) {
+                    self.setError("let else block must diverge", .{});
+                    return TypeError.TypeMismatch;
+                }
+
+                if (std.mem.eql(u8, let.pattern.variant_name, "Some")) {
+                    if (let.pattern.bindings.len != 1) {
+                        self.setError("Some pattern requires one binding", .{});
+                        return TypeError.InvalidArgsCount;
+                    }
+                    try scope.define(let.pattern.bindings[0], inner_ty, false);
+                } else if (std.mem.eql(u8, let.pattern.variant_name, "None")) {
+                    if (let.pattern.bindings.len != 0) {
+                        self.setError("None pattern requires zero bindings", .{});
+                        return TypeError.InvalidArgsCount;
+                    }
+                } else {
+                    self.setError("unsupported let else Option variant {s}", .{let.pattern.variant_name});
+                    return TypeError.TypeMismatch;
+                }
             },
             .let_destructure_stmt => |let| {
                 const val_ty = try self.checkExpr(let.value, scope);
@@ -445,8 +1103,12 @@ pub const TypeChecker = struct {
                 const val_ty = try self.checkExpr(c.value, scope);
                 const declared_ty = c.ty orelse val_ty;
                 if (!self.typesEqual(declared_ty, val_ty)) {
-                    self.setError("TypeMismatch in const {s}: declared tag={s}, val tag={s}", .{ c.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
-                    return TypeError.TypeMismatch;
+                    if (self.canCoerceToDynBox(declared_ty, val_ty)) |trait_name| {
+                        self.dyn_box_coercions.put(c.value, trait_name) catch return TypeError.OutOfMemory;
+                    } else {
+                        self.setError("TypeMismatch in const {s}: declared tag={s}, val tag={s}", .{ c.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
+                        return TypeError.TypeMismatch;
+                    }
                 }
                 try scope.define(c.name, declared_ty, true);
             },
@@ -505,22 +1167,94 @@ pub const TypeChecker = struct {
                 }
             },
             .for_stmt => |*f| {
-                // Loop counter start and end must be integers
                 const start_ty = try self.checkExpr(f.start, scope);
-                const end_ty = try self.checkExpr(f.end, scope);
-                if (!isPrimitiveType(start_ty, .integer) or !isPrimitiveType(end_ty, .integer)) {
-                    return TypeError.TypeMismatch;
-                }
+                const iter_ty = if (f.end) |end_expr| blk: {
+                    const end_ty = try self.checkExpr(end_expr, scope);
+                    if (!isNumericType(start_ty) or !isNumericType(end_ty)) return TypeError.TypeMismatch;
+                    break :blk start_ty;
+                } else blk: {
+                    const arr = arrayType(start_ty) orelse return TypeError.TypeMismatch;
+                    break :blk arr.elem;
+                };
 
                 var loop_scope = try Scope.init(self.allocator, scope);
                 try self.scope_pool.append(loop_scope);
 
-                // Add loop variable
                 const i_ty = try self.allocator.create(ast.Type);
-                i_ty.* = .{ .primitive = .integer };
+                i_ty.* = iter_ty.*;
                 try loop_scope.define(f.var_name, i_ty, true);
 
-                try self.checkBlock(f.body, loop_scope, ret_ty, stmt);
+                const prev_loop_scope = self.current_loop_scope;
+                self.current_loop_scope = loop_scope;
+                defer self.current_loop_scope = prev_loop_scope;
+                try self.checkBlock(f.body, loop_scope, ret_ty, stmt, loop_scope);
+            },
+            .while_stmt => |*w| {
+                const cond_ty = try self.checkExpr(w.cond, scope);
+                const loop_scope = try Scope.init(self.allocator, scope);
+                try self.scope_pool.append(loop_scope);
+                if (w.let_pattern) |pattern| {
+                    const inner_ty = optionInnerType(cond_ty) orelse {
+                        self.setError("while let condition must be Option<T>", .{});
+                        return TypeError.TypeMismatch;
+                    };
+                    if (!std.mem.eql(u8, pattern.enum_name, "Option")) {
+                        self.setError("while let currently supports Option patterns, got {s}", .{pattern.enum_name});
+                        return TypeError.TypeMismatch;
+                    }
+                    if (std.mem.eql(u8, pattern.variant_name, "Some")) {
+                        if (pattern.bindings.len != 1) {
+                            self.setError("Some pattern requires one binding", .{});
+                            return TypeError.InvalidArgsCount;
+                        }
+                        try loop_scope.define(pattern.bindings[0], inner_ty, true);
+                    } else if (std.mem.eql(u8, pattern.variant_name, "None")) {
+                        if (pattern.bindings.len != 0) {
+                            self.setError("None pattern requires zero bindings", .{});
+                            return TypeError.InvalidArgsCount;
+                        }
+                    } else {
+                        self.setError("unsupported while let Option variant {s}", .{pattern.variant_name});
+                        return TypeError.TypeMismatch;
+                    }
+                } else {
+                    if (cond_ty.* != .primitive) {
+                        self.setError("while condition must be bool/int unless using while let", .{});
+                        return TypeError.TypeMismatch;
+                    }
+                    switch (cond_ty.primitive) {
+                        .boolean, .integer => {},
+                        else => return TypeError.TypeMismatch,
+                    }
+                }
+                const prev_loop_scope = self.current_loop_scope;
+                self.current_loop_scope = loop_scope;
+                defer self.current_loop_scope = prev_loop_scope;
+                try self.checkBlock(w.body, loop_scope, ret_ty, stmt, loop_scope);
+            },
+            .break_stmt, .continue_stmt => {
+                const loop_scope = current_loop_scope orelse {
+                    self.setError("break/continue used outside loop", .{});
+                    return TypeError.CompileError;
+                };
+
+                var cleanup_list = std.ArrayList([]const u8).init(self.allocator);
+                var curr: ?*Scope = scope;
+                while (curr) |s| {
+                    var iter = s.symbols.valueIterator();
+                    while (iter.next()) |sym| {
+                        if (sym.state == .active and !isInternalSymbol(sym.name)) {
+                            try cleanup_list.append(sym.name);
+                        }
+                    }
+                    if (s == loop_scope) break;
+                    curr = s.parent;
+                }
+                if (cleanup_list.items.len > 0) {
+                    try self.cleanups.put(stmt, cleanup_list);
+                } else {
+                    cleanup_list.deinit();
+                }
             },
             .release_stmt => |rel| {
                 const sym = scope.lookup(rel.var_name) orelse return TypeError.UndefinedVariable;
@@ -530,19 +1264,31 @@ pub const TypeChecker = struct {
             .expr_stmt => |expr| {
                 _ = try self.checkExpr(expr, scope);
             },
+            .block_stmt => |blk| {
+                const inner_scope = try Scope.init(self.allocator, scope);
+                try self.scope_pool.append(inner_scope);
+                try self.checkBlock(blk.body, inner_scope, ret_ty, stmt, current_loop_scope);
+            },
             else => return TypeError.CompileError,
         }
     }
 
     fn checkExpr(self: *TypeChecker, expr: *ast.Node, scope: *Scope) TypeError!*ast.Type {
         const ty = self.checkExprImpl(expr, scope) catch |err| {
-            if (self.last_error.len == 0) {
-                self.setError("checkExpr failed at node tag {s}", .{@tagName(expr.*)});
-            }
-            return err;
-        };
+                if (self.last_error.len == 0) {
+                    self.setError("checkExpr failed at node tag {s}", .{@tagName(expr.*)});
+                }
+                return err;
+            };
         self.expr_types.put(expr, ty) catch return TypeError.OutOfMemory;
         return ty;
+    }
+
+    fn blockTailExprType(self: *TypeChecker, block: []const *ast.Node) ?*ast.Type {
+        if (block.len == 0) return null;
+        const last = block[block.len - 1];
+        if (last.* != .expr_stmt) return null;
+        return self.expr_types.get(last.expr_stmt);
     }
 
     fn checkExprImpl(self: *TypeChecker, expr: *ast.Node, scope: *Scope) TypeError!*ast.Type {
@@ -550,8 +1296,8 @@ pub const TypeChecker = struct {
             .literal => |lit| {
                 const ty = try self.allocator.create(ast.Type);
                 switch (lit) {
-                    .int_val => ty.* = .{ .primitive = .integer },
-                    .float_val => ty.* = .{ .primitive = .float },
+                    .int_val => ty.* = .{ .primitive = .i32 },
+                    .float_val => ty.* = .{ .primitive = .f64 },
                     .bool_val => ty.* = .{ .primitive = .boolean },
                     .string_val => {
                         // In Sla, string literal evaluates to ptr (pointing to char array)
@@ -561,6 +1307,12 @@ pub const TypeChecker = struct {
                 return ty;
             },
             .identifier => |name| {
+                if (std.mem.eql(u8, name, "None")) {
+                    return try self.makeOptionType(try self.makeInferType());
+                }
+                if (isOrderingName(name)) {
+                    return try self.makeOrderingType();
+                }
                 const sym = scope.lookup(name) orelse return TypeError.UndefinedVariable;
                 if (sym.state == .consumed) return TypeError.UseAfterMove;
                 return sym.ty;
@@ -580,7 +1332,7 @@ pub const TypeChecker = struct {
                         ty.* = l_ty.*;
                     },
                     .eq, .ne, .lt, .le, .gt, .ge => {
-                        ty.* = .{ .primitive = .integer }; // comparisons produce 0/1 i64
+                        ty.* = .{ .primitive = .boolean };
                     },
                     .logical_and, .logical_or => {
                         if (!isPrimitiveType(l_ty, .boolean)) return TypeError.TypeMismatch;
@@ -611,17 +1363,51 @@ pub const TypeChecker = struct {
             },
             .deref_expr => |deref| {
                 const inner_ty = try self.checkExpr(deref.expr, scope);
+                if (rcInnerType(inner_ty)) |rc_inner| return rc_inner;
                 switch (inner_ty.*) {
                     .pointer => |p| return p,
                     .borrow => |b| return b,
                     else => return TypeError.DereferenceNonPointer,
                 }
             },
+            .cast_expr => |cast| {
+                const src_ty = try self.checkExpr(cast.expr, scope);
+                if (!isNumericType(src_ty) or !isNumericType(cast.ty)) {
+                    self.setError("unsupported cast: only numeric primitive casts are currently allowed", .{});
+                    return TypeError.TypeMismatch;
+                }
+                return cast.ty;
+            },
             .field_expr => |field| {
+                if (std.mem.eql(u8, field.field_name, "len")) {
+                    const recv_ty = try self.checkExpr(field.expr, scope);
+                    if (isStringLikeType(recv_ty)) {
+                        const ty = try self.allocator.create(ast.Type);
+                        ty.* = .{ .primitive = .u64 };
+                        return ty;
+                    }
+                }
+                if (field.expr.* == .literal and field.expr.literal == .string_val and std.mem.eql(u8, field.field_name, "len")) {
+                    const ty = try self.allocator.create(ast.Type);
+                    ty.* = .{ .primitive = .u64 };
+                    return ty;
+                }
                 const struct_ty = try self.checkExpr(field.expr, scope);
-                switch (struct_ty.*) {
+                var curr_ty = struct_ty;
+                while (true) {
+                    switch (curr_ty.*) {
+                        .borrow => |b| curr_ty = b,
+                        .pointer => |p| curr_ty = p,
+                        else => break,
+                    }
+                }
+                switch (curr_ty.*) {
                     .user_defined => |ud| {
                         const decl = self.structs.get(ud.name) orelse return TypeError.NotAStruct;
+                        if (decl.is_union and self.unsafe_depth == 0) {
+                            self.setError("union field access requires unsafe", .{});
+                            return TypeError.CompileError;
+                        }
                         for (decl.fields) |f| {
                             if (std.mem.eql(u8, f.name, field.field_name)) {
                                 return f.ty;
@@ -671,7 +1457,12 @@ pub const TypeChecker = struct {
                     }
                 }
 
-                if (seen.count() != decl.fields.len) {
+                if (decl.is_union) {
+                    if (seen.count() != 1) {
+                        self.setError("Union literal must initialize exactly one field: {s}", .{ud.name});
+                        return TypeError.CompileError;
+                    }
+                } else if (seen.count() != decl.fields.len) {
                     self.setError("Missing field in struct literal: {s}", .{ud.name});
                     return TypeError.FieldNotFound;
                 }
@@ -740,10 +1531,25 @@ pub const TypeChecker = struct {
                 ty.* = .{ .array = .{ .elem = elem_ty, .len = lit.elements.len } };
                 return ty;
             },
+            .repeat_array_literal => |lit| {
+                const elem_ty = try self.checkExpr(lit.value, scope);
+                const ty = try self.allocator.create(ast.Type);
+                ty.* = .{ .array = .{ .elem = elem_ty, .len = lit.len } };
+                return ty;
+            },
             .index_expr => |idx| {
                 const target_ty = try self.checkExpr(idx.target, scope);
                 const index_ty = try self.checkExpr(idx.index, scope);
-                if (!isPrimitiveType(index_ty, .integer)) return TypeError.TypeMismatch;
+
+                if (hashMapTypes(target_ty)) |hm| {
+                    if (!self.typesEqual(hm.key, index_ty)) return TypeError.TypeMismatch;
+                    return hm.value;
+                }
+
+                if (!isNumericType(index_ty)) return TypeError.TypeMismatch;
+
+                if (vecElementType(target_ty)) |elem_ty| return elem_ty;
+                if (vecDequeElementType(target_ty)) |elem_ty| return elem_ty;
 
                 const arr = arrayType(target_ty) orelse return TypeError.TypeMismatch;
                 return arr.elem;
@@ -752,7 +1558,7 @@ pub const TypeChecker = struct {
                 const target_ty = try self.checkExpr(slc.target, scope);
                 const start_ty = try self.checkExpr(slc.start, scope);
                 const end_ty = try self.checkExpr(slc.end, scope);
-                if (!isPrimitiveType(start_ty, .integer) or !isPrimitiveType(end_ty, .integer)) return TypeError.TypeMismatch;
+                if (!isNumericType(start_ty) or !isNumericType(end_ty)) return TypeError.TypeMismatch;
 
                 const arr = arrayType(target_ty) orelse return TypeError.TypeMismatch;
                 if (slc.start.* != .literal or slc.start.literal != .int_val or slc.end.* != .literal or slc.end.literal != .int_val) {
@@ -787,6 +1593,12 @@ pub const TypeChecker = struct {
                 return inner_ty;
             },
             .closure_literal => |lit| {
+                for (lit.params) |p| {
+                    if (p.ty.* == .infer) {
+                        self.setError("closure parameter types must be inferred from context; standalone inference is not available", .{});
+                        return TypeError.TypeMismatch;
+                    }
+                }
                 var closure_scope = try Scope.init(self.allocator, scope);
                 try self.scope_pool.append(closure_scope);
 
@@ -802,7 +1614,177 @@ pub const TypeChecker = struct {
                 return ty;
             },
             .call_expr => |call| {
+                if (std.mem.eql(u8, call.func_name, "Some")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const inner_ty = try self.checkExpr(call.args[0], scope);
+                    return try self.makeOptionType(inner_ty);
+                }
+
+                if (std.mem.eql(u8, call.func_name, "Ok")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const ok_ty = try self.checkExpr(call.args[0], scope);
+                    return try self.makeResultType(ok_ty, try self.makeInferType());
+                }
+
+                if (std.mem.eql(u8, call.func_name, "Err")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const err_ty = try self.checkExpr(call.args[0], scope);
+                    return try self.makeResultType(try self.makeInferType(), err_ty);
+                }
+
+                if (call.associated_target) |target_name| {
+                    if (std.mem.eql(u8, target_name, "mpsc") and std.mem.eql(u8, call.func_name, "channel")) {
+                        if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                        const elem_ty = try self.makeI32Type();
+                        const sender_ty = try self.makeSenderType(elem_ty);
+                        const receiver_ty = try self.makeReceiverType(elem_ty);
+                        return try self.makeTupleType(&.{ sender_ty, receiver_ty });
+                    }
+                    if (std.mem.eql(u8, target_name, "thread") and std.mem.eql(u8, call.func_name, "spawn")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const closure_ty = try self.checkExpr(call.args[0], scope);
+                        if (closure_ty.* != .closure or closure_ty.closure.params.len != 0) return TypeError.TypeMismatch;
+                        const ret_ty = if (closure_ty.closure.ret.* == .primitive and closure_ty.closure.ret.primitive == .integer)
+                            try self.makeI32Type()
+                        else
+                            closure_ty.closure.ret;
+                        return try self.makeJoinHandleType(ret_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "Box") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const inner_ty = try self.checkExpr(call.args[0], scope);
+                        return try self.makeBoxType(inner_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "Rc") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const inner_ty = try self.checkExpr(call.args[0], scope);
+                        return try self.makeRcType(inner_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "AtomicI32") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const value_ty = try self.checkExpr(call.args[0], scope);
+                        if (!isNumericType(value_ty)) return TypeError.TypeMismatch;
+                        return try self.makeAtomicI32Type();
+                    }
+                    if (std.mem.eql(u8, target_name, "Cell") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const value_ty = try self.checkExpr(call.args[0], scope);
+                        if (!isNumericType(value_ty)) return TypeError.TypeMismatch;
+                        return try self.makeCellType(value_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "RefCell") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const value_ty = try self.checkExpr(call.args[0], scope);
+                        if (!isNumericType(value_ty)) return TypeError.TypeMismatch;
+                        return try self.makeRefCellType(value_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "VecDeque") and std.mem.eql(u8, call.func_name, "from")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const array_ty = try self.checkExpr(call.args[0], scope);
+                        const arr = arrayType(array_ty) orelse return TypeError.TypeMismatch;
+                        return try self.makeVecDequeType(arr.elem);
+                    }
+                    if (std.mem.eql(u8, target_name, "VecDeque") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                        const elem_ty = if (call.generics.len == 1) call.generics[0] else try self.makeInferType();
+                        return try self.makeVecDequeType(elem_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "HashMap") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                        const key_ty = if (call.generics.len >= 1) call.generics[0] else try self.makeInferType();
+                        const value_ty = if (call.generics.len >= 2) call.generics[1] else try self.makeInferType();
+                        return try self.makeHashMapType(key_ty, value_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "Vec") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                        const elem_ty = if (call.generics.len == 1) call.generics[0] else try self.makeInferType();
+                        const generics = try self.allocator.alloc(*ast.Type, 1);
+                        generics[0] = elem_ty;
+                        const ty = try self.allocator.create(ast.Type);
+                        ty.* = .{ .user_defined = .{ .name = "Vec", .generics = generics } };
+                        return ty;
+                    }
+                    const method_key = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ target_name, call.func_name });
+                    if (self.funcs.get(method_key)) |func| {
+                        if (func.params.len != call.args.len) return TypeError.InvalidArgsCount;
+                        for (func.params, call.args) |param, arg| {
+                            if (param.is_move and arg.* != .move_expr) return TypeError.TypeMismatch;
+                            if (param.is_borrow and arg.* != .borrow_expr) {
+                                const arg_ty = try self.checkExpr(arg, scope);
+                                if (arg_ty.* != .borrow or !self.typesEqual(param.ty, arg_ty.borrow)) return TypeError.TypeMismatch;
+                                continue;
+                            }
+                            if (!param.is_move and !param.is_borrow and (arg.* == .move_expr or arg.* == .borrow_expr)) return TypeError.TypeMismatch;
+                            const arg_ty = try self.checkExpr(arg, scope);
+                            if (!self.typesEqual(param.ty, unwrapBorrowForCallArg(arg, arg_ty))) return TypeError.TypeMismatch;
+                        }
+                        if (func.is_async) return try self.makeFutureType(func.ret_ty);
+                        return func.ret_ty;
+                    }
+                }
+
+                if (std.mem.eql(u8, call.func_name, "vec")) {
+                    if (call.args.len == 0) {
+                        self.setError("vec requires at least one element", .{});
+                        return TypeError.InvalidArgsCount;
+                    }
+                    const elem_ty = try self.checkExpr(call.args[0], scope);
+                    for (call.args[1..]) |arg| {
+                        const arg_ty = try self.checkExpr(arg, scope);
+                        if (!self.typesEqual(elem_ty, arg_ty)) return TypeError.TypeMismatch;
+                    }
+                    const generics = try self.allocator.alloc(*ast.Type, 1);
+                    generics[0] = elem_ty;
+                    const ty = try self.allocator.create(ast.Type);
+                    ty.* = .{ .user_defined = .{ .name = "Vec", .generics = generics } };
+                    return ty;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "len") and call.args.len == 1) {
+                    _ = try self.checkExpr(call.args[0], scope);
+                    const ty = try self.allocator.create(ast.Type);
+                    ty.* = .{ .primitive = .usize };
+                    return ty;
+                }
+                if (std.mem.eql(u8, call.func_name, "len")) {
+                    self.setError("len call arity mismatch: {}", .{call.args.len});
+                    return TypeError.InvalidArgsCount;
+                }
+                if (std.mem.eql(u8, call.func_name, "str_eq")) {
+                    if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                    const left_ty = try self.checkExpr(call.args[0], scope);
+                    const right_ty = try self.checkExpr(call.args[1], scope);
+                    if (!isStringLikeType(left_ty) or !isStringLikeType(right_ty)) return TypeError.TypeMismatch;
+                    const ty = try self.allocator.create(ast.Type);
+                    ty.* = .{ .primitive = .boolean };
+                    return ty;
+                }
+                if (std.mem.eql(u8, call.func_name, "format")) {
+                    if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) return TypeError.InvalidArgsCount;
+                    for (call.args[1..]) |arg| {
+                        _ = try self.checkExpr(arg, scope);
+                    }
+                    return try self.makeStringType();
+                }
                 if (std.mem.eql(u8, call.func_name, "println")) {
+                    for (call.args) |arg| {
+                        _ = try self.checkExpr(arg, scope);
+                    }
+                    const ret = try self.allocator.create(ast.Type);
+                    ret.* = .{ .primitive = .void_type };
+                    return ret;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "panic") or std.mem.eql(u8, call.func_name, "panic_msg")) {
+                    for (call.args) |arg| {
+                        _ = try self.checkExpr(arg, scope);
+                    }
+                    const ret = try self.allocator.create(ast.Type);
+                    ret.* = .{ .primitive = .void_type };
+                    return ret;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "panic_msg")) {
                     for (call.args) |arg| {
                         _ = try self.checkExpr(arg, scope);
                     }
@@ -824,6 +1806,280 @@ pub const TypeChecker = struct {
                     }
                 }
 
+                if (call.args.len > 0) {
+                    const recv_ty = try self.checkExpr(call.args[0], scope);
+                    if (optionInnerType(recv_ty)) |inner_ty| {
+                        if (std.mem.eql(u8, call.func_name, "copied")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            if (inner_ty.* != .borrow) return TypeError.TypeMismatch;
+                            return try self.makeOptionType(inner_ty.borrow);
+                        }
+                        if (std.mem.eql(u8, call.func_name, "map")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const closure_ty = if (call.args[1].* == .closure_literal)
+                                try self.checkClosureLiteralWithContext(call.args[1], scope, &.{inner_ty})
+                            else
+                                try self.checkExpr(call.args[1], scope);
+                            if (closure_ty.* != .closure) return TypeError.TypeMismatch;
+                            if (closure_ty.closure.params.len != 1) return TypeError.InvalidArgsCount;
+                            if (!self.typesEqual(closure_ty.closure.params[0], inner_ty)) return TypeError.TypeMismatch;
+                            return try self.makeOptionType(closure_ty.closure.ret);
+                        }
+                        if (std.mem.eql(u8, call.func_name, "unwrap")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return inner_ty;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "unwrap_or")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const default_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(inner_ty, default_ty)) return TypeError.TypeMismatch;
+                            return inner_ty;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "unwrap_or_default")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return inner_ty;
+                        }
+                    }
+
+                    if (resultOkType(recv_ty)) |ok_ty| {
+                        if (std.mem.eql(u8, call.func_name, "is_ok") or std.mem.eql(u8, call.func_name, "is_err")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            const ty = try self.allocator.create(ast.Type);
+                            ty.* = .{ .primitive = .boolean };
+                            return ty;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "unwrap")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return ok_ty;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "unwrap_or")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const default_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(ok_ty, default_ty)) return TypeError.TypeMismatch;
+                            return ok_ty;
+                        }
+                    }
+
+                    if (isAtomicI32Type(recv_ty)) {
+                        if (std.mem.eql(u8, call.func_name, "load")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const ordering_ty = try self.checkExpr(call.args[1], scope);
+                            if (!isOrderingType(ordering_ty)) return TypeError.TypeMismatch;
+                            return try self.makeI32Type();
+                        }
+                        if (std.mem.eql(u8, call.func_name, "store")) {
+                            if (call.args.len != 3) return TypeError.InvalidArgsCount;
+                            const value_ty = try self.checkExpr(call.args[1], scope);
+                            const ordering_ty = try self.checkExpr(call.args[2], scope);
+                            if (!isNumericType(value_ty) or !isOrderingType(ordering_ty)) return TypeError.TypeMismatch;
+                            const ret = try self.allocator.create(ast.Type);
+                            ret.* = .{ .primitive = .void_type };
+                            return ret;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "fetch_add")) {
+                            if (call.args.len != 3) return TypeError.InvalidArgsCount;
+                            const value_ty = try self.checkExpr(call.args[1], scope);
+                            const ordering_ty = try self.checkExpr(call.args[2], scope);
+                            if (!isNumericType(value_ty) or !isOrderingType(ordering_ty)) return TypeError.TypeMismatch;
+                            return try self.makeI32Type();
+                        }
+                        if (std.mem.eql(u8, call.func_name, "compare_exchange")) {
+                            if (call.args.len != 5) return TypeError.InvalidArgsCount;
+                            const expected_ty = try self.checkExpr(call.args[1], scope);
+                            const new_ty = try self.checkExpr(call.args[2], scope);
+                            const success_ty = try self.checkExpr(call.args[3], scope);
+                            const failure_ty = try self.checkExpr(call.args[4], scope);
+                            if (!isNumericType(expected_ty) or !isNumericType(new_ty) or !isOrderingType(success_ty) or !isOrderingType(failure_ty)) return TypeError.TypeMismatch;
+                            const i32_ty = try self.makeI32Type();
+                            return try self.makeResultType(i32_ty, i32_ty);
+                        }
+                    }
+
+                    if (cellInnerType(recv_ty)) |inner_ty| {
+                        if (std.mem.eql(u8, call.func_name, "get")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return inner_ty;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "set")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const value_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(inner_ty, value_ty)) return TypeError.TypeMismatch;
+                            const ret = try self.allocator.create(ast.Type);
+                            ret.* = .{ .primitive = .void_type };
+                            return ret;
+                        }
+                    }
+
+                    if (refCellInnerType(recv_ty)) |inner_ty| {
+                        if (std.mem.eql(u8, call.func_name, "borrow") or std.mem.eql(u8, call.func_name, "borrow_mut")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return try self.makeBorrowType(inner_ty);
+                        }
+                    }
+
+                    if (joinHandleInnerType(recv_ty)) |inner_ty| {
+                        if (std.mem.eql(u8, call.func_name, "join")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return try self.makeResultType(inner_ty, try self.makeI32Type());
+                        }
+                    }
+
+                    if (senderInnerType(recv_ty)) |inner_ty| {
+                        if (std.mem.eql(u8, call.func_name, "send")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const value_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(inner_ty, value_ty)) return TypeError.TypeMismatch;
+                            const void_ty = try self.allocator.create(ast.Type);
+                            void_ty.* = .{ .primitive = .void_type };
+                            return try self.makeResultType(void_ty, try self.makeI32Type());
+                        }
+                    }
+
+                    if (receiverInnerType(recv_ty)) |inner_ty| {
+                        if (std.mem.eql(u8, call.func_name, "recv")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return try self.makeResultType(inner_ty, try self.makeI32Type());
+                        }
+                    }
+
+                    if (rcInnerType(recv_ty) != null and std.mem.eql(u8, call.func_name, "clone")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        return recv_ty;
+                    }
+
+                    if (vecDequeElementType(recv_ty)) |elem_ty| {
+                        if (std.mem.eql(u8, call.func_name, "rotate_left")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const count_ty = try self.checkExpr(call.args[1], scope);
+                            if (!isNumericType(count_ty)) return TypeError.TypeMismatch;
+                            const ret = try self.allocator.create(ast.Type);
+                            ret.* = .{ .primitive = .void_type };
+                            return ret;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "push_back")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const value_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(elem_ty, value_ty)) return TypeError.TypeMismatch;
+                            if (elem_ty.* == .infer) {
+                                if (rootIdentifier(call.args[0])) |recv_name| {
+                                    if (scope.lookup(recv_name)) |sym| {
+                                        const concrete_ty = try self.makeVecDequeType(value_ty);
+                                        sym.ty = concrete_ty;
+                                        self.expr_types.put(call.args[0], concrete_ty) catch return TypeError.OutOfMemory;
+                                    }
+                                }
+                            }
+                            const ret = try self.allocator.create(ast.Type);
+                            ret.* = .{ .primitive = .void_type };
+                            return ret;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "pop_front")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            if (elem_ty.* == .infer) return TypeError.TypeMismatch;
+                            return try self.makeOptionType(elem_ty);
+                        }
+                    }
+
+                    if (arrayType(recv_ty)) |arr| {
+                        if (std.mem.eql(u8, call.func_name, "as_ptr")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            return try self.makePointerType(arr.elem);
+                        }
+                        if (std.mem.eql(u8, call.func_name, "fill")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const value_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(arr.elem, value_ty)) return TypeError.TypeMismatch;
+                            const ret = try self.allocator.create(ast.Type);
+                            ret.* = .{ .primitive = .void_type };
+                            return ret;
+                        }
+                    }
+
+                    if (recv_ty.* == .pointer and std.mem.eql(u8, call.func_name, "add")) {
+                        if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                        const index_ty = try self.checkExpr(call.args[1], scope);
+                        if (!isAnyIntegerType(index_ty)) return TypeError.TypeMismatch;
+                        return recv_ty;
+                    }
+
+                    if (hashMapTypes(recv_ty)) |hm| {
+                        if (std.mem.eql(u8, call.func_name, "insert")) {
+                            if (call.args.len != 3) return TypeError.InvalidArgsCount;
+                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            const value_ty = try self.checkExpr(call.args[2], scope);
+                            if (!self.typesEqual(hm.key, key_ty) or !self.typesEqual(hm.value, value_ty)) return TypeError.TypeMismatch;
+                            if (rootIdentifier(call.args[0])) |recv_name| {
+                                if (scope.lookup(recv_name)) |sym| {
+                                    if (hm.key.* == .infer or hm.value.* == .infer) {
+                                        const concrete_ty = try self.makeHashMapType(key_ty, value_ty);
+                                        sym.ty = concrete_ty;
+                                        self.expr_types.put(call.args[0], concrete_ty) catch return TypeError.OutOfMemory;
+                                    }
+                                }
+                            }
+                            return try self.makeOptionType(value_ty);
+                        }
+                        if (std.mem.eql(u8, call.func_name, "get")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const key_ty = try self.checkExpr(call.args[1], scope);
+                            if (!self.typesEqual(hm.key, key_ty)) return TypeError.TypeMismatch;
+                            return try self.makeOptionType(try self.makeBorrowType(hm.value));
+                        }
+                    }
+
+                    if (dynDispatchTraitName(recv_ty)) |trait_name| {
+                        const trait_decl = self.traits.get(trait_name) orelse return TypeError.UndefinedVariable;
+                        for (trait_decl.methods) |method| {
+                            if (!std.mem.eql(u8, method.name, call.func_name)) continue;
+                            if (method.params.len != call.args.len) return TypeError.InvalidArgsCount;
+                            for (method.params[1..], call.args[1..]) |param, arg| {
+                                const arg_ty = try self.checkExpr(arg, scope);
+                                if (!self.typesEqual(param.ty, unwrapBorrowForCallArg(arg, arg_ty))) return TypeError.TypeMismatch;
+                            }
+                            self.dyn_call_traits.put(expr, trait_name) catch return TypeError.OutOfMemory;
+                            return method.ret_ty;
+                        }
+                    }
+                }
+
+                if (std.mem.eql(u8, call.func_name, "push")) {
+                    if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                    const recv_ty = try self.checkExpr(call.args[0], scope);
+                    const elem_ty = vecElementType(recv_ty) orelse return TypeError.TypeMismatch;
+                    const arg_ty = try self.checkExpr(call.args[1], scope);
+                    if (!self.typesEqual(elem_ty, arg_ty)) return TypeError.TypeMismatch;
+                    if (elem_ty.* == .infer) {
+                        if (rootIdentifier(call.args[0])) |recv_name| {
+                            if (scope.lookup(recv_name)) |sym| {
+                                const concrete_ty = try self.makeVecType(arg_ty);
+                                sym.ty = concrete_ty;
+                                self.expr_types.put(call.args[0], concrete_ty) catch return TypeError.OutOfMemory;
+                            }
+                        }
+                    }
+                    const ret = try self.allocator.create(ast.Type);
+                    ret.* = .{ .primitive = .void_type };
+                    return ret;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "pop")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const recv_ty = try self.checkExpr(call.args[0], scope);
+                    const elem_ty = vecElementType(recv_ty) orelse return TypeError.TypeMismatch;
+                    if (elem_ty.* == .infer) return TypeError.TypeMismatch;
+                    return try self.makeOptionType(elem_ty);
+                }
+
+                if (std.mem.eql(u8, call.func_name, "remove")) {
+                    if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                    const recv_ty = try self.checkExpr(call.args[0], scope);
+                    const elem_ty = vecElementType(recv_ty) orelse return TypeError.TypeMismatch;
+                    const index_ty = try self.checkExpr(call.args[1], scope);
+                    if (!isNumericType(index_ty)) return TypeError.TypeMismatch;
+                    if (elem_ty.* == .infer) return TypeError.TypeMismatch;
+                    return elem_ty;
+                }
+
                 // 1. Check Sla internal function calls
                 const method_match = blk: {
                     if (call.args.len == 0) break :blk null;
@@ -835,8 +2091,7 @@ pub const TypeChecker = struct {
                             .pointer => |p| curr = p,
                             .user_defined => |ud| {
                                 var method_buf: [256]u8 = undefined;
-                                _ = ud;
-                                break :blk std.fmt.bufPrint(&method_buf, "{s}", .{call.func_name}) catch null;
+                                break :blk std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ ud.name, call.func_name }) catch null;
                             },
                             else => break :blk null,
                         }
@@ -848,15 +2103,35 @@ pub const TypeChecker = struct {
                         if (func.params.len != call.args.len) return TypeError.InvalidArgsCount;
                         for (func.params, call.args) |param, arg| {
                             if (param.is_move and arg.* != .move_expr) return TypeError.TypeMismatch;
+                            if (param.is_borrow) {
+                                if (dynTraitName(param.ty)) |trait_name| {
+                                    const arg_ty = try self.checkExpr(arg, scope);
+                                    const concrete_ty = switch (arg_ty.*) {
+                                        .borrow => |inner| inner,
+                                        else => null,
+                                    } orelse return TypeError.TypeMismatch;
+                                    if (!self.typeImplementsTrait(concrete_ty, trait_name)) return TypeError.TypeMismatch;
+                                    self.dyn_borrow_args.put(arg, trait_name) catch return TypeError.OutOfMemory;
+                                    continue;
+                                }
+                            }
                             if (param.is_borrow and call.args[0] == arg and arg.* != .borrow_expr) {
                                 const arg_ty = try self.checkExpr(arg, scope);
-                                if (!self.typesEqual(param.ty, arg_ty)) return TypeError.TypeMismatch;
+                                const effective_ty = switch (arg_ty.*) {
+                                    .borrow => |inner| inner,
+                                    else => unwrapBorrowForCallArg(arg, arg_ty),
+                                };
+                                if (!self.typesEqual(param.ty, effective_ty)) return TypeError.TypeMismatch;
                                 continue;
                             }
-                            if (param.is_borrow and arg.* != .borrow_expr) return TypeError.TypeMismatch;
+                            if (param.is_borrow and arg.* != .borrow_expr) {
+                                const arg_ty = try self.checkExpr(arg, scope);
+                                if (arg_ty.* != .borrow or !self.typesEqual(param.ty, arg_ty.borrow)) return TypeError.TypeMismatch;
+                                continue;
+                            }
                             if (!param.is_move and !param.is_borrow and (arg.* == .move_expr or arg.* == .borrow_expr)) return TypeError.TypeMismatch;
                             const arg_ty = try self.checkExpr(arg, scope);
-                            if (!self.typesEqual(param.ty, arg_ty)) return TypeError.TypeMismatch;
+                            if (!self.typesEqual(param.ty, unwrapBorrowForCallArg(arg, arg_ty))) return TypeError.TypeMismatch;
                         }
                         if (func.is_async) {
                             return try self.makeFutureType(func.ret_ty);
@@ -872,16 +2147,50 @@ pub const TypeChecker = struct {
                             self.setError("Call to {s} requires move argument for parameter {s}", .{ call.func_name, param.name });
                             return TypeError.TypeMismatch;
                         }
+                        if (param.ty.* == .borrow) {
+                            const arg_ty = try self.checkExpr(arg, scope);
+                            if (canCoerceBorrowArrayToBorrowSlice(self, param.ty, arg_ty)) {
+                                self.array_to_slice_borrow_args.put(arg, {}) catch return TypeError.OutOfMemory;
+                                continue;
+                            }
+                            if (arg_ty.* != .borrow or !self.typesEqual(param.ty.borrow, arg_ty.borrow)) {
+                                self.setError("Call to {s} requires borrow-typed argument for parameter {s}", .{ call.func_name, param.name });
+                                return TypeError.TypeMismatch;
+                            }
+                            continue;
+                        }
+                        if (param.is_borrow) {
+                            if (dynTraitName(param.ty)) |trait_name| {
+                                const arg_ty = try self.checkExpr(arg, scope);
+                                const concrete_ty = switch (arg_ty.*) {
+                                    .borrow => |inner| inner,
+                                    else => null,
+                                } orelse {
+                                    self.setError("Call to {s} requires dyn borrow for parameter {s}", .{ call.func_name, param.name });
+                                    return TypeError.TypeMismatch;
+                                };
+                                if (!self.typeImplementsTrait(concrete_ty, trait_name)) {
+                                    self.setError("Type does not implement trait {s} for parameter {s}", .{ trait_name, param.name });
+                                    return TypeError.TypeMismatch;
+                                }
+                                self.dyn_borrow_args.put(arg, trait_name) catch return TypeError.OutOfMemory;
+                                continue;
+                            }
+                        }
                         if (param.is_borrow and arg.* != .borrow_expr) {
-                            self.setError("Call to {s} requires borrow argument for parameter {s}", .{ call.func_name, param.name });
-                            return TypeError.TypeMismatch;
+                            const arg_ty = try self.checkExpr(arg, scope);
+                            if (arg_ty.* != .borrow or !self.typesEqual(param.ty, arg_ty.borrow)) {
+                                self.setError("Call to {s} requires borrow argument for parameter {s}", .{ call.func_name, param.name });
+                                return TypeError.TypeMismatch;
+                            }
+                            continue;
                         }
                         if (!param.is_move and !param.is_borrow and (arg.* == .move_expr or arg.* == .borrow_expr)) {
                             self.setError("Call to {s} passes capability argument to plain parameter {s}", .{ call.func_name, param.name });
                             return TypeError.TypeMismatch;
                         }
                         const arg_ty = try self.checkExpr(arg, scope);
-                        if (!self.typesEqual(param.ty, arg_ty)) return TypeError.TypeMismatch;
+                        if (!self.typesEqual(param.ty, unwrapBorrowForCallArg(arg, arg_ty))) return TypeError.TypeMismatch;
                     }
                     if (func.is_async) {
                         return try self.makeFutureType(func.ret_ty);
@@ -889,20 +2198,102 @@ pub const TypeChecker = struct {
                     return func.ret_ty;
                 }
 
-                if (std.mem.eql(u8, call.func_name, "iter")) {
+                if (self.structs.get(call.func_name)) |decl| {
+                    if (decl.fields.len != call.args.len) return TypeError.InvalidArgsCount;
+                    for (decl.fields, call.args) |field, arg| {
+                        const arg_ty = try self.checkExpr(arg, scope);
+                        if (!self.typesEqual(field.ty, unwrapBorrowForCallArg(arg, arg_ty))) return TypeError.TypeMismatch;
+                    }
+                    const ret = try self.allocator.create(ast.Type);
+                    ret.* = .{ .user_defined = .{ .name = decl.name, .generics = &.{} } };
+                    return ret;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "iter") or std.mem.eql(u8, call.func_name, "into_iter")) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const target_ty = try self.checkExpr(call.args[0], scope);
-                    _ = arrayType(target_ty) orelse return TypeError.TypeMismatch;
+                    if (arrayType(target_ty) == null and vecElementType(target_ty) == null and sliceElementType(target_ty) == null) return TypeError.TypeMismatch;
                     return target_ty;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "copied")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const target_ty = try self.checkExpr(call.args[0], scope);
+                    if (arrayType(target_ty) == null and vecElementType(target_ty) == null and sliceElementType(target_ty) == null) return TypeError.TypeMismatch;
+                    return target_ty;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "map")) {
+                    if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                    const source_ty = try self.checkExpr(call.args[0], scope);
+                    const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else vecElementType(source_ty) orelse return TypeError.TypeMismatch;
+                    const closure_ty = if (call.args[1].* == .closure_literal)
+                        try self.checkClosureLiteralWithContext(call.args[1], scope, &.{elem_ty})
+                    else
+                        try self.checkExpr(call.args[1], scope);
+                    if (closure_ty.* != .closure) return TypeError.TypeMismatch;
+                    if (closure_ty.closure.params.len != 1) return TypeError.InvalidArgsCount;
+                    if (!self.typesEqual(closure_ty.closure.params[0], elem_ty)) return TypeError.TypeMismatch;
+                    if (arrayType(source_ty)) |arr| {
+                        const ty = try self.allocator.create(ast.Type);
+                        ty.* = .{ .array = .{ .elem = closure_ty.closure.ret, .len = arr.len } };
+                        return ty;
+                    }
+                    const generics = try self.allocator.alloc(*ast.Type, 1);
+                    generics[0] = closure_ty.closure.ret;
+                    const ty = try self.allocator.create(ast.Type);
+                    ty.* = .{ .user_defined = .{ .name = "Vec", .generics = generics } };
+                    return ty;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "filter")) {
+                    if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                    const source_ty = try self.checkExpr(call.args[0], scope);
+                    const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else vecElementType(source_ty) orelse return TypeError.TypeMismatch;
+                    const closure_ty = if (call.args[1].* == .closure_literal)
+                        try self.checkClosureLiteralWithContext(call.args[1], scope, &.{elem_ty})
+                    else
+                        try self.checkExpr(call.args[1], scope);
+                    if (closure_ty.* != .closure) return TypeError.TypeMismatch;
+                    if (closure_ty.closure.params.len != 1) return TypeError.InvalidArgsCount;
+                    if (!self.typesEqual(closure_ty.closure.params[0], elem_ty)) return TypeError.TypeMismatch;
+                    if (closure_ty.closure.ret.* != .primitive or closure_ty.closure.ret.primitive != .boolean) return TypeError.TypeMismatch;
+                    return source_ty;
+                }
+
+                if (std.mem.eql(u8, call.func_name, "fold")) {
+                    if (call.args.len != 3) return TypeError.InvalidArgsCount;
+                    const source_ty = try self.checkExpr(call.args[0], scope);
+                    const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else vecElementType(source_ty) orelse return TypeError.TypeMismatch;
+                    const init_ty = try self.checkExpr(call.args[1], scope);
+                    const closure_ty = if (call.args[2].* == .closure_literal)
+                        try self.checkClosureLiteralWithContext(call.args[2], scope, &.{ init_ty, elem_ty })
+                    else
+                        try self.checkExpr(call.args[2], scope);
+                    if (closure_ty.* != .closure) return TypeError.TypeMismatch;
+                    if (closure_ty.closure.params.len != 2) return TypeError.InvalidArgsCount;
+                    const acc_ty = closure_ty.closure.params[0];
+                    if (!self.typesEqual(acc_ty, init_ty)) return TypeError.TypeMismatch;
+                    if (!self.typesEqual(closure_ty.closure.params[1], elem_ty)) return TypeError.TypeMismatch;
+                    if (!self.typesEqual(closure_ty.closure.ret, acc_ty)) return TypeError.TypeMismatch;
+                    return acc_ty;
                 }
 
                 if (std.mem.eql(u8, call.func_name, "sum")) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const target_ty = try self.checkExpr(call.args[0], scope);
-                    _ = arrayType(target_ty) orelse return TypeError.TypeMismatch;
-                    const ret = try self.allocator.create(ast.Type);
-                    ret.* = .{ .primitive = .integer };
-                    return ret;
+                    if (arrayType(target_ty)) |arr| {
+                        const ret = try self.allocator.create(ast.Type);
+                        ret.* = arr.elem.*;
+                        return ret;
+                    }
+                    if (sliceElementType(target_ty)) |elem_ty| {
+                        return elem_ty;
+                    }
+                    if (vecElementType(target_ty)) |elem_ty| {
+                        return elem_ty;
+                    }
+                    return TypeError.TypeMismatch;
                 }
 
                 // 2. Check FFI functions
@@ -941,6 +2332,7 @@ pub const TypeChecker = struct {
                     return ret;
                 }
 
+                self.setError("Undefined call: {s}", .{call.func_name});
                 if (call.args.len > 0) {
                     const recv_ty = try self.checkExpr(call.args[0], scope);
                     var curr = recv_ty;
@@ -958,9 +2350,31 @@ pub const TypeChecker = struct {
                                             self.setError("Call to {s} requires move argument for parameter {s}", .{ call.func_name, param.name });
                                             return TypeError.TypeMismatch;
                                         }
+                                        if (param.is_borrow) {
+                                            if (dynTraitName(param.ty)) |trait_name| {
+                                                const arg_ty = try self.checkExpr(arg, scope);
+                                                const concrete_ty = switch (arg_ty.*) {
+                                                    .borrow => |inner| inner,
+                                                    else => null,
+                                                } orelse {
+                                                    self.setError("Call to {s} requires dyn borrow for parameter {s}", .{ call.func_name, param.name });
+                                                    return TypeError.TypeMismatch;
+                                                };
+                                                if (!self.typeImplementsTrait(concrete_ty, trait_name)) {
+                                                    self.setError("Type does not implement trait {s} for parameter {s}", .{ trait_name, param.name });
+                                                    return TypeError.TypeMismatch;
+                                                }
+                                                self.dyn_borrow_args.put(arg, trait_name) catch return TypeError.OutOfMemory;
+                                                continue;
+                                            }
+                                        }
                                         if (param.is_borrow and arg.* != .borrow_expr) {
-                                            self.setError("Call to {s} requires borrow argument for parameter {s}", .{ call.func_name, param.name });
-                                            return TypeError.TypeMismatch;
+                                            const arg_ty = try self.checkExpr(arg, scope);
+                                            if (arg_ty.* != .borrow or !self.typesEqual(param.ty, arg_ty.borrow)) {
+                                                self.setError("Call to {s} requires borrow argument for parameter {s}", .{ call.func_name, param.name });
+                                                return TypeError.TypeMismatch;
+                                            }
+                                            continue;
                                         }
                                         if (!param.is_move and !param.is_borrow and (arg.* == .move_expr or arg.* == .borrow_expr)) {
                                             self.setError("Call to {s} passes capability argument to plain parameter {s}", .{ call.func_name, param.name });
@@ -983,6 +2397,130 @@ pub const TypeChecker = struct {
                 return TypeError.UndefinedVariable;
             },
             .if_expr => |*ife| {
+                if (ife.let_chain) |chain| {
+                    var saved_states = std.StringHashMap(ValueState).init(self.allocator);
+                    defer saved_states.deinit();
+
+                    var curr: ?*Scope = scope;
+                    while (curr) |s| {
+                        var iter = s.symbols.iterator();
+                        while (iter.next()) |entry| {
+                            try saved_states.put(entry.key_ptr.*, entry.value_ptr.state);
+                        }
+                        curr = s.parent;
+                    }
+
+                    var chain_scope = try Scope.init(self.allocator, scope);
+                    try self.scope_pool.append(chain_scope);
+
+                    for (chain) |cond| {
+                        const value_ty = try self.checkExpr(cond.value, chain_scope);
+                        const inner_ty = optionInnerType(value_ty) orelse {
+                            self.setError("if let condition must be Option<T>", .{});
+                            return TypeError.TypeMismatch;
+                        };
+                        if (!std.mem.eql(u8, cond.pattern.enum_name, "Option")) {
+                            self.setError("if let currently supports Option patterns, got {s}", .{cond.pattern.enum_name});
+                            return TypeError.TypeMismatch;
+                        }
+                        if (std.mem.eql(u8, cond.pattern.variant_name, "Some")) {
+                            if (cond.pattern.bindings.len != 1) {
+                                self.setError("Some pattern requires one binding", .{});
+                                return TypeError.InvalidArgsCount;
+                            }
+                            try chain_scope.define(cond.pattern.bindings[0], inner_ty, true);
+                        } else if (std.mem.eql(u8, cond.pattern.variant_name, "None")) {
+                            if (cond.pattern.bindings.len != 0) {
+                                self.setError("None pattern requires zero bindings", .{});
+                                return TypeError.InvalidArgsCount;
+                            }
+                        } else {
+                            self.setError("unsupported if let Option variant {s}", .{cond.pattern.variant_name});
+                            return TypeError.TypeMismatch;
+                        }
+                    }
+
+                    try self.checkBlock(ife.then_block, chain_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+
+                    var then_states = std.StringHashMap(ValueState).init(self.allocator);
+                    defer then_states.deinit();
+                    curr = scope;
+                    while (curr) |s| {
+                        var iter = s.symbols.iterator();
+                        while (iter.next()) |entry| {
+                            try then_states.put(entry.key_ptr.*, entry.value_ptr.state);
+                        }
+                        curr = s.parent;
+                    }
+
+                    curr = scope;
+                    while (curr) |s| {
+                        var iter = s.symbols.iterator();
+                        while (iter.next()) |entry| {
+                            if (saved_states.get(entry.key_ptr.*)) |st| {
+                                entry.value_ptr.state = st;
+                            }
+                        }
+                        curr = s.parent;
+                    }
+
+                    if (ife.else_block) |eb| {
+                        try self.checkBlock(eb, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                    }
+
+                    curr = scope;
+                    while (curr) |s| {
+                        var iter = s.symbols.iterator();
+                        while (iter.next()) |entry| {
+                            const name = entry.key_ptr.*;
+                            if (isInternalSymbol(name)) continue;
+                            const else_state = entry.value_ptr.state;
+                            const then_state = then_states.get(name) orelse .active;
+
+                            if (then_state != else_state) {
+                                entry.value_ptr.state = .consumed;
+                                if (then_state == .active) {
+                                    if (ife.then_block.len > 0) {
+                                        const last = ife.then_block[ife.then_block.len - 1];
+                                        var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                        try list.append(name);
+                                        try self.phi_cleanups.put(last, list);
+                                    }
+                                } else {
+                                    if (ife.else_block) |eb| {
+                                        if (eb.len > 0) {
+                                            const last = eb[eb.len - 1];
+                                            var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                            try list.append(name);
+                                            try self.phi_cleanups.put(last, list);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        curr = s.parent;
+                    }
+
+                    const then_ty = self.blockTailExprType(ife.then_block);
+                    if (ife.else_block) |eb| {
+                        const else_ty = self.blockTailExprType(eb);
+                        if (then_ty == null or else_ty == null) {
+                            const ty = try self.allocator.create(ast.Type);
+                            ty.* = .{ .primitive = .void_type };
+                            return ty;
+                        }
+                        if (!self.typesEqual(then_ty.?, else_ty.?)) {
+                            self.setError("if expression branch type mismatch", .{});
+                            return TypeError.TypeMismatch;
+                        }
+                        return then_ty.?;
+                    }
+
+                    const ty = try self.allocator.create(ast.Type);
+                    ty.* = .{ .primitive = .void_type };
+                    return ty;
+                }
+
                 const cond_ty = try self.checkExpr(ife.cond, scope);
                 // Comparisons produce integers (0/1) in SA; booleans are also fine.
                 if (cond_ty.* != .primitive) return TypeError.TypeMismatch;
@@ -1011,7 +2549,7 @@ pub const TypeChecker = struct {
                 }
 
                 // Check then_block
-                try self.checkBlock(ife.then_block, scope, scope.lookup("return_ty_sentinel").?.ty, null);
+                try self.checkBlock(ife.then_block, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
 
                 // Collect states after then_block
                 var then_states = std.StringHashMap(ValueState).init(self.allocator);
@@ -1039,7 +2577,7 @@ pub const TypeChecker = struct {
 
                 // Check else_block
                 if (ife.else_block) |eb| {
-                    try self.checkBlock(eb, scope, scope.lookup("return_ty_sentinel").?.ty, null);
+                    try self.checkBlock(eb, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                 }
 
                 // Re-align states at merge point (Phi Resolution)
@@ -1081,6 +2619,21 @@ pub const TypeChecker = struct {
                     curr = s.parent;
                 }
 
+                const then_ty = self.blockTailExprType(ife.then_block);
+                if (ife.else_block) |eb| {
+                    const else_ty = self.blockTailExprType(eb);
+                    if (then_ty == null or else_ty == null) {
+                        const ty = try self.allocator.create(ast.Type);
+                        ty.* = .{ .primitive = .void_type };
+                        return ty;
+                    }
+                    if (!self.typesEqual(then_ty.?, else_ty.?)) {
+                        self.setError("if expression branch type mismatch", .{});
+                        return TypeError.TypeMismatch;
+                    }
+                    return then_ty.?;
+                }
+
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .primitive = .void_type };
                 return ty;
@@ -1098,7 +2651,7 @@ pub const TypeChecker = struct {
                 // For simplicity, switch patterns are literal/identifiers.
                 // We return void or default case type.
                 for (swe.cases) |case| {
-                    try self.checkBlock(case.body, scope, scope.lookup("return_ty_sentinel").?.ty, null);
+                    try self.checkBlock(case.body, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                 }
 
                 const ty = try self.allocator.create(ast.Type);
@@ -1107,11 +2660,93 @@ pub const TypeChecker = struct {
             },
             .match_expr => |*mat| {
                 const val_ty = try self.checkExpr(mat.val, scope);
+                if (optionInnerType(val_ty)) |inner_ty| {
+                    var saved_states = std.StringHashMap(ValueState).init(self.allocator);
+                    defer saved_states.deinit();
+                    var curr: ?*Scope = scope;
+                    while (curr) |s| {
+                        var iter = s.symbols.iterator();
+                        while (iter.next()) |entry| {
+                            try saved_states.put(entry.key_ptr.*, entry.value_ptr.state);
+                        }
+                        curr = s.parent;
+                    }
+
+                    var result_ty: ?*ast.Type = null;
+                    for (mat.cases) |case| {
+                        curr = scope;
+                        while (curr) |s| {
+                            var iter = s.symbols.iterator();
+                            while (iter.next()) |entry| {
+                                if (saved_states.get(entry.key_ptr.*)) |st| {
+                                    entry.value_ptr.state = st;
+                                }
+                            }
+                            curr = s.parent;
+                        }
+
+                        if (!std.mem.eql(u8, case.pattern.enum_name, "Option")) return TypeError.TypeMismatch;
+                        var pattern_scope = try Scope.init(self.allocator, scope);
+                        try self.scope_pool.append(pattern_scope);
+                        if (std.mem.eql(u8, case.pattern.variant_name, "Some")) {
+                            if (case.pattern.bindings.len != 1) return TypeError.InvalidArgsCount;
+                            try pattern_scope.define(case.pattern.bindings[0], inner_ty, true);
+                        } else if (std.mem.eql(u8, case.pattern.variant_name, "None")) {
+                            if (case.pattern.bindings.len != 0) return TypeError.InvalidArgsCount;
+                        } else {
+                            return TypeError.TypeMismatch;
+                        }
+
+                        try self.checkBlock(case.body, pattern_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                        if (self.blockTailExprType(case.body)) |case_ty| {
+                            if (blockTerminates(case.body)) continue;
+                            if (result_ty) |existing| {
+                                if (!self.typesEqual(existing, case_ty)) return TypeError.TypeMismatch;
+                            } else {
+                                result_ty = case_ty;
+                            }
+                        } else if (!blockTerminates(case.body)) {
+                            const ty = try self.allocator.create(ast.Type);
+                            ty.* = .{ .primitive = .void_type };
+                            return ty;
+                        }
+                    }
+
+                    if (result_ty) |ty| return ty;
+                    const ty = try self.allocator.create(ast.Type);
+                    ty.* = .{ .primitive = .void_type };
+                    return ty;
+                }
+
                 if (val_ty.* != .user_defined) return TypeError.TypeMismatch;
                 const decl = self.enums.get(val_ty.user_defined.name) orelse return TypeError.NotAStruct;
 
+                var saved_states = std.StringHashMap(ValueState).init(self.allocator);
+                defer saved_states.deinit();
+                var curr: ?*Scope = scope;
+                while (curr) |s| {
+                    var iter = s.symbols.iterator();
+                    while (iter.next()) |entry| {
+                        try saved_states.put(entry.key_ptr.*, entry.value_ptr.state);
+                    }
+                    curr = s.parent;
+                }
+
+                var result_ty: ?*ast.Type = null;
+                var has_value_cases = true;
                 for (mat.cases) |case| {
-                    if (!std.mem.eql(u8, case.pattern.enum_name, decl.name)) return TypeError.TypeMismatch;
+                    curr = scope;
+                    while (curr) |s| {
+                        var iter = s.symbols.iterator();
+                        while (iter.next()) |entry| {
+                            if (saved_states.get(entry.key_ptr.*)) |st| {
+                                entry.value_ptr.state = st;
+                            }
+                        }
+                        curr = s.parent;
+                    }
+
+                    if (!enumNameMatchesDecl(case.pattern.enum_name, decl.name)) return TypeError.TypeMismatch;
                     const variant = findEnumVariant(decl, case.pattern.variant_name) orelse return TypeError.FieldNotFound;
                     if (case.pattern.bindings.len != variant.fields.len) return TypeError.InvalidArgsCount;
 
@@ -1120,15 +2755,80 @@ pub const TypeChecker = struct {
                     for (case.pattern.bindings, variant.fields) |binding, field| {
                         try pattern_scope.define(binding, field.ty, true);
                     }
-                    try self.checkBlock(case.body, pattern_scope, scope.lookup("return_ty_sentinel").?.ty, null);
+                    try self.checkBlock(case.body, pattern_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+
+                    const case_ty = self.blockTailExprType(case.body);
+                    if (case_ty) |ty| {
+                        if (blockTerminates(case.body)) continue;
+                        if (result_ty) |existing| {
+                            if (!self.typesEqual(existing, ty)) return TypeError.TypeMismatch;
+                        } else {
+                            result_ty = ty;
+                        }
+                    } else {
+                        if (!blockTerminates(case.body)) has_value_cases = false;
+                    }
+                }
+
+                if (has_value_cases and result_ty != null) {
+                    return result_ty.?;
                 }
 
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .primitive = .void_type };
                 return ty;
             },
+            .unsafe_expr => |ue| {
+                self.unsafe_depth += 1;
+                defer self.unsafe_depth -= 1;
+                try self.checkBlock(ue.body, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                if (self.blockTailExprType(ue.body)) |tail_ty| return tail_ty;
+                const ty = try self.allocator.create(ast.Type);
+                ty.* = .{ .primitive = .void_type };
+                return ty;
+            },
             .try_expr => |trye| {
                 const inner_ty = try self.checkExpr(trye.expr, scope);
+
+                if (optionInnerType(inner_ty)) |unwrapped_ty| {
+                    var try_cleanup = std.ArrayList([]const u8).init(self.allocator);
+                    var curr: ?*Scope = scope;
+                    while (curr) |s| {
+                        var iter = s.symbols.valueIterator();
+                        while (iter.next()) |sym| {
+                            if (sym.state == .active and !isInternalSymbol(sym.name)) {
+                                try try_cleanup.append(sym.name);
+                            }
+                        }
+                        curr = s.parent;
+                    }
+                    if (try_cleanup.items.len > 0) {
+                        try self.cleanups.put(expr, try_cleanup);
+                    } else {
+                        try_cleanup.deinit();
+                    }
+                    return unwrapped_ty;
+                }
+
+                if (resultOkType(inner_ty)) |unwrapped_ty| {
+                    var try_cleanup = std.ArrayList([]const u8).init(self.allocator);
+                    var curr: ?*Scope = scope;
+                    while (curr) |s| {
+                        var iter = s.symbols.valueIterator();
+                        while (iter.next()) |sym| {
+                            if (sym.state == .active and !isInternalSymbol(sym.name)) {
+                                try try_cleanup.append(sym.name);
+                            }
+                        }
+                        curr = s.parent;
+                    }
+                    if (try_cleanup.items.len > 0) {
+                        try self.cleanups.put(expr, try_cleanup);
+                    } else {
+                        try_cleanup.deinit();
+                    }
+                    return unwrapped_ty;
+                }
 
                 // Unwrapped type is the type of the "value" field of the Result struct
                 var struct_ty = inner_ty;
@@ -1176,9 +2876,20 @@ pub const TypeChecker = struct {
     }
 
     fn typesEqual(self: *TypeChecker, a: *ast.Type, b: *ast.Type) bool {
+        if (a.* == .infer or b.* == .infer) return true;
         if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
         switch (a.*) {
-            .primitive => |pa| return pa == b.primitive,
+            .infer => return true,
+            .primitive => |pa| {
+                if (pa == b.primitive) return true;
+                return switch (pa) {
+                    .integer => isAnyIntegerType(b),
+                    .float => isAnyFloatType(b),
+                    .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize => isAnyIntegerType(b),
+                    .f32, .f64 => isAnyFloatType(b),
+                    else => false,
+                };
+            },
             .pointer => |pa| return self.typesEqual(pa, b.pointer),
             .borrow => |ba| return self.typesEqual(ba, b.borrow),
             .array => |aa| {

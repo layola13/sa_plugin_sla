@@ -1,21 +1,19 @@
-// Sla companion for SA rosetta demo 072 Graph Walk.
-// Generated from the catalog name; Rust reference lives in main.rs.
+fn graph_walk_sum() -> i32 {
+    let graph = [(0, 1), (1, 2)];
+    let sum = graph[0].0 + graph[0].1 + graph[1].1;
+    return sum;
+}
 
-fn rosetta_072_value() -> int {
-    let seed = 7;
-    let shifted = seed + 72;
-    let scaled = shifted * 2;
-    let result = scaled - 8;
-    return result;
-};
-
-fn main() -> int {
-    let result = rosetta_072_value();
-    return result;
-};
+fn main() -> i32 {
+    let graph = [(0, 1), (1, 2)];
+    let sum = graph[0].0 + graph[0].1 + graph[1].1;
+    println("{}", sum);
+    return 0;
+}
 
 @test "rosetta 072 72_graph_walk"() {
-    let got = rosetta_072_value();
-    if got != 150 {
+    let got = graph_walk_sum();
+    if got != 3 {
         panic(72);
     };
+}

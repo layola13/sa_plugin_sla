@@ -1,21 +1,19 @@
-// Sla companion for SA rosetta demo 050 Error Chain.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_050_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }    let result = total + 9;
-    return result;
-};
+fn parse_ok() -> Result<i32, i32> {
+    Ok(7)
+}
 
-fn main() -> int {
-    let result = rosetta_050_value();
-    return result;
-};
+fn main() -> i32 {
+    let value = parse_ok().unwrap();
+    println("{}", value + 5);
+    return 0;
+}
 
-@test "rosetta 050 50_error_chain"() {
-    let got = rosetta_050_value();
-    if got != 19 {
+@test "rosetta 050 error chain"() {
+    let value = parse_ok().unwrap();
+    if value + 5 != 12 {
         panic(50);
-    }
+    };
+}

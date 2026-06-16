@@ -1,41 +1,55 @@
-@import "sa_std/io/print.sai"
-@import "sa_std/fmt.sai"
-@hello_message_len() -> i64:
+@import "sa_std/string.sa"
+@rosetta_001_value() -> i64:
 L_ENTRY:
-    tmp_0 = 13
-    return tmp_0
+    tmp_0 = 4
+    tmp_1 = 3
+    tmp_2 = mul tmp_0, tmp_1
+    tmp_3 = 1
+    tmp_4 = add tmp_2, tmp_3
+    base = tmp_4
+    tmp_5 = 7
+    threshold = tmp_5
+    tmp_6 = sgt base, threshold
+    br tmp_6 -> L_THEN_0, L_ELSE_1
 
-@print_hello():
-L_ENTRY:
-    @const SLA_STR_0 = utf8:"hello, saasm"
-    call @sa_print_bytes(&SLA_STR_0, 12)
-    @const SLA_STR_1 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_1, 1)
-    return
+L_THEN_0:
+    !tmp_6
+    tmp_7 = sub base, threshold
+    !threshold
+    !base
+    return tmp_7
+
+L_ELSE_1:
+    !tmp_6
+    tmp_8 = sub threshold, base
+    !threshold
+    !base
+    return tmp_8
+
 
 @main() -> i64:
 L_ENTRY:
-    call @print_hello()
-    tmp_1 = 0
-    return tmp_1
+    tmp_10 = call @rosetta_001_value()
+    result = tmp_10
+    return result
 
-@test "rosetta 001 hello world"():
-L_TEST_ENTRY_0:
-    tmp_2 = call @hello_message_len()
-    len = tmp_2
-    tmp_3 = 13
-    tmp_4 = ne len, tmp_3
-    br tmp_4 -> L_THEN_1, L_ELSE_2
+@test "rosetta 001 01_hello_world"():
+L_TEST_ENTRY_3:
+    tmp_11 = call @rosetta_001_value()
+    got = tmp_11
+    tmp_12 = 6
+    tmp_13 = ne got, tmp_12
+    br tmp_13 -> L_THEN_4, L_ELSE_5
 
-L_THEN_1:
-    !tmp_4
+L_THEN_4:
+    !tmp_13
     panic(1)
 
-L_ELSE_2:
-    !tmp_4
-    jmp L_MERGE_3
+L_ELSE_5:
+    !tmp_13
+    jmp L_MERGE_6
 
-L_MERGE_3:
-    !len
+L_MERGE_6:
+    !got
     return
 

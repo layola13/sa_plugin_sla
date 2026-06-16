@@ -1,0 +1,35 @@
+fn all_some() -> i32 {
+    let left = Some(2);
+    let middle = Some(3);
+    let right = Some(4);
+    let result = if let Some(x) = left && let Some(y) = middle && let Some(z) = right {
+        x + y + z
+    } else {
+        0
+    };
+    return result;
+}
+
+fn middle_none() -> i32 {
+    let left = Some(2);
+    let middle = None;
+    let right = Some(4);
+    let result = if let Some(x) = left && let Some(y) = middle && let Some(z) = right {
+        x + y + z
+    } else {
+        7
+    };
+    return result;
+}
+
+@test "if let chain all some"() {
+    if all_some() != 9 {
+        panic(1);
+    };
+}
+
+@test "if let chain middle none"() {
+    if middle_none() != 7 {
+        panic(2);
+    };
+}

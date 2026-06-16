@@ -1,21 +1,20 @@
-// Sla companion for SA rosetta demo 028 Borrow Chains.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_028_value() -> int {
-    let seed = 14;
-    let shifted = seed + 28;
-    let scaled = shifted * 3;
-    let result = scaled - 10;
-    return result;
+fn read_twice(&value: i32) -> i32 {
+    *value + *value
+}
+
+fn main() -> i32 {
+    let value: i32 = 6;
+    println("{}", read_twice(&value));
+    return 0;
 };
 
-fn main() -> int {
-    let result = rosetta_028_value();
-    return result;
-};
-
-@test "rosetta 028 28_borrow_chains"() {
-    let got = rosetta_028_value();
-    if got != 116 {
+@test "rosetta 028 borrow chains"() {
+    let value: i32 = 6;
+    let result: i32 = read_twice(&value);
+    if result != 12 {
         panic(28);
-    }
+    };
+};

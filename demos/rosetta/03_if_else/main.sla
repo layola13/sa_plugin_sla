@@ -1,35 +1,25 @@
-// Sla companion for Rust rosetta demo 003 If Else.
-// Mirrors max(a, b) with explicit branch returns.
+// Sla companion for SA rosetta demo 003 If Else.
+// Generated from the catalog name; Rust reference lives in main.rs.
 
-@import "sa_std/io/print.sai"
-@import "sa_std/fmt.sai"
-
-fn max(a: int, b: int) -> int {
-    if a > b {
-        return a;
-    } else {
-        return b;
-    };
+fn rosetta_003_mix(left: int, right: int) -> int {
+    let product = left * right;
+    let result = product + left - right;
+    return result;
 }
 
 fn rosetta_003_value() -> int {
-    let result = max(10, 20);
+    let result = rosetta_003_mix(9, 13);
     return result;
 }
 
 fn main() -> int {
     let result = rosetta_003_value();
-    if result == 20 {
-        println("{}", result);
-    } else {
-        panic(3);
-    };
-    return 0;
-}
+    return result;
+};
 
-@test "rosetta 003 if else"() {
+@test "rosetta 003 03_if_else"() {
     let got = rosetta_003_value();
-    if got != 20 {
+    if got != 113 {
         panic(3);
     };
-}
+};

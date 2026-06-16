@@ -1,21 +1,28 @@
-// Sla companion for SA rosetta demo 060 Enum Branch.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_060_value() -> int {
-    let seed = 12;
-    let shifted = seed + 60;
-    let scaled = shifted * 8;
-    let result = scaled - 19;
-    return result;
-};
+enum Flag {
+    A,
+    B,
+}
 
-fn main() -> int {
-    let result = rosetta_060_value();
-    return result;
-};
+fn main() -> i32 {
+    let flag = Flag::B;
+    let value = match flag {
+        Flag::A => { 1 },
+        Flag::B => { 2 },
+    };
+    println("{}", value);
+    return 0;
+}
 
-@test "rosetta 060 60_enum_branch"() {
-    let got = rosetta_060_value();
-    if got != 557 {
+@test "rosetta 060 enum branch"() {
+    let flag = Flag::B;
+    let value = match flag {
+        Flag::A => { 1 },
+        Flag::B => { 2 },
+    };
+    if value != 2 {
         panic(60);
-    }
+    };
+}

@@ -1,21 +1,36 @@
-// Sla companion for SA rosetta demo 056 State Machine.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_056_value() -> int {
-    let seed = 8;
-    let shifted = seed + 56;
-    let scaled = shifted * 4;
-    let result = scaled - 15;
-    return result;
-};
+enum State {
+    Idle,
+    Running,
+    Done,
+}
 
-fn main() -> int {
-    let result = rosetta_056_value();
-    return result;
-};
+fn main() -> i32 {
+    let state = State::Done;
+    match state {
+        State::Idle => {
+            println("0");
+        },
+        State::Running => {
+            println("1");
+        },
+        State::Done => {
+            println("2");
+        },
+    };
+    return 0;
+}
 
-@test "rosetta 056 56_state_machine"() {
-    let got = rosetta_056_value();
-    if got != 241 {
+@test "rosetta 056 state machine"() {
+    let state = State::Done;
+    let code = match state {
+        State::Idle => { 0 },
+        State::Running => { 1 },
+        State::Done => { 2 },
+    };
+    if code != 2 {
         panic(56);
-    }
+    };
+}

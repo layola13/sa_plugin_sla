@@ -1,75 +1,70 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@square_len(&self: ptr) -> i64:
+@import "sa_std/string.sa"
+@Vec2_square_len(&self: ptr) -> i32:
 L_ENTRY:
-    tmp_0 = load self+0 as i64
-    tmp_1 = load self+0 as i64
+    tmp_0 = load self+0 as i32
+    tmp_1 = load self+0 as i32
     tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = load self+8 as i64
-    tmp_4 = load self+8 as i64
+    !tmp_0
+    !tmp_1
+    tmp_3 = load self+4 as i32
+    tmp_4 = load self+4 as i32
     tmp_5 = mul tmp_3, tmp_4
+    !tmp_3
+    !tmp_4
     tmp_6 = add tmp_2, tmp_5
+    !tmp_2
+    !tmp_5
     !self
     return tmp_6
 
-@rosetta_016_value() -> i64:
+@main() -> i32:
 L_ENTRY:
-    v = alloc 16
+    v = alloc 8
     tmp_7 = 3
-    store v+0, tmp_7 as i64
+    store v+0, tmp_7 as i32
     tmp_8 = 4
-    store v+8, tmp_8 as i64
-    tmp_9 = call @square_len(&v)
-    result = tmp_9
-    !v
-    return result
-
-@main() -> i64:
-L_ENTRY:
-    tmp_10 = call @rosetta_016_value()
-    result = tmp_10
-    tmp_11 = 25
-    tmp_12 = ne result, tmp_11
-    br tmp_12 -> L_THEN_0, L_ELSE_1
-
-L_THEN_0:
+    store v+4, tmp_8 as i32
+    tmp_9 = call @Vec2_square_len(&v)
+    tmp_10 = call @sa_fmt_u64(tmp_9, 10)
+    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
+    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
+    tmp_13 = tmp_11
+    call @sa_print_bytes(&tmp_13, tmp_12)
+    call @sa_fmt_buffer_free(^tmp_10)
+    !tmp_13
     !tmp_12
-    panic(16)
-
-L_ELSE_1:
-    !tmp_12
-    jmp L_MERGE_2
-
-L_MERGE_2:
-    tmp_15 = call @sa_fmt_i64(result, 10)
-    tmp_16 = call @sa_fmt_buffer_data(tmp_15)
-    tmp_17 = call @sa_fmt_buffer_len(tmp_15)
-    tmp_18 = tmp_16
-    call @sa_print_bytes(&tmp_18, tmp_17)
-    call @sa_fmt_buffer_free(^tmp_15)
+    !tmp_9
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_19 = 0
-    !result
-    return tmp_19
+    tmp_14 = 0
+    !v
+    return tmp_14
 
 @test "rosetta 016 methods"():
-L_TEST_ENTRY_3:
-    tmp_20 = call @rosetta_016_value()
-    got = tmp_20
-    tmp_21 = 25
-    tmp_22 = ne got, tmp_21
-    br tmp_22 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_0:
+    v = alloc 8
+    tmp_15 = 3
+    store v+0, tmp_15 as i32
+    tmp_16 = 4
+    store v+4, tmp_16 as i32
+    tmp_17 = call @Vec2_square_len(&v)
+    tmp_18 = 25
+    tmp_19 = ne tmp_17, tmp_18
+    !tmp_17
+    !tmp_18
+    br tmp_19 -> L_THEN_1, L_ELSE_2
 
-L_THEN_4:
-    !tmp_22
+L_THEN_1:
+    !tmp_19
     panic(16)
 
-L_ELSE_5:
-    !tmp_22
-    jmp L_MERGE_6
+L_ELSE_2:
+    !tmp_19
+    jmp L_MERGE_3
 
-L_MERGE_6:
-    !got
+L_MERGE_3:
+    !v
     return
 

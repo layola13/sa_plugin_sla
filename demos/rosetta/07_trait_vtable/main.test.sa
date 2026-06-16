@@ -1,107 +1,61 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@button_new(id: i64) -> ptr:
+@import "sa_std/string.sa"
+@import "sa_std/core/trait_object.sa"
+@const VT_Button_Draw = vtable { draw = @Button_draw }
+@Button_draw(&self: ptr) -> i32:
 L_ENTRY:
-    button = alloc 8
-    store button+0, id as i64
-    !id
-    return button
+    tmp_0 = load self+0 as i32
+    return tmp_0
 
-@button_as_draw(button: ptr) -> ptr:
+@render(&item: ptr) -> i32:
 L_ENTRY:
-    object = alloc 16
-    tmp_0 = 1
-    store object+0, tmp_0 as i64
-    tmp_1 = load button+0 as i64
-    store object+8, tmp_1 as i64
-    !button
-    return object
+    EXPAND DYN_CALL tmp_1, item, 0
+    return tmp_1
 
-@draw_dispatch(item: ptr) -> i64:
+@main() -> i32:
 L_ENTRY:
-    tmp_2 = load item+0 as i64
-    tmp_3 = 1
-    tmp_4 = eq tmp_2, tmp_3
-    br tmp_4 -> L_THEN_0, L_ELSE_1
-
-L_THEN_0:
-    !tmp_4
-    tmp_5 = load item+8 as i64
-    !item
-    return tmp_5
-
-L_ELSE_1:
-    !tmp_4
-    panic(70)
-
-
-@render(item: ptr) -> i64:
-L_ENTRY:
-    tmp_8 = call @draw_dispatch(item)
-    value = tmp_8
-    !item
-    return value
-
-@rosetta_007_value() -> i64:
-L_ENTRY:
-    tmp_9 = 77
-    tmp_10 = call @button_new(tmp_9)
-    !tmp_9
-    button = tmp_10
-    tmp_11 = call @button_as_draw(button)
-    object = tmp_11
-    tmp_12 = call @render(object)
-    result = tmp_12
-    !object
-    !button
-    return result
-
-@main() -> i64:
-L_ENTRY:
-    tmp_13 = call @rosetta_007_value()
-    result = tmp_13
-    tmp_14 = 77
-    tmp_15 = eq result, tmp_14
-    br tmp_15 -> L_THEN_3, L_ELSE_4
-
-L_THEN_3:
-    !tmp_15
-    tmp_16 = call @sa_fmt_i64(result, 10)
-    tmp_17 = call @sa_fmt_buffer_data(tmp_16)
-    tmp_18 = call @sa_fmt_buffer_len(tmp_16)
-    tmp_19 = tmp_17
-    call @sa_print_bytes(&tmp_19, tmp_18)
-    call @sa_fmt_buffer_free(^tmp_16)
+    button = alloc 4
+    tmp_2 = 77
+    store button+0, tmp_2 as i32
+    tmp_3 = alloc Dyn_SIZE
+    store tmp_3+Dyn_data, button as ptr
+    store tmp_3+Dyn_vtable, &VT_Button_Draw as ptr
+    tmp_4 = call @render(&tmp_3)
+    !tmp_3
+    result = tmp_4
+    tmp_5 = call @sa_fmt_u64(result, 10)
+    tmp_6 = call @sa_fmt_buffer_data(tmp_5)
+    tmp_7 = call @sa_fmt_buffer_len(tmp_5)
+    tmp_8 = tmp_6
+    call @sa_print_bytes(&tmp_8, tmp_7)
+    call @sa_fmt_buffer_free(^tmp_5)
+    !tmp_8
+    !tmp_7
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    jmp L_MERGE_5
-
-L_ELSE_4:
-    !tmp_15
-    panic(7)
-
-L_MERGE_5:
-    tmp_22 = 0
+    tmp_9 = 0
+    !button
     !result
-    return tmp_22
+    return tmp_9
 
 @test "rosetta 007 trait vtable"():
-L_TEST_ENTRY_6:
-    tmp_23 = call @rosetta_007_value()
-    got = tmp_23
-    tmp_24 = 77
-    tmp_25 = ne got, tmp_24
-    br tmp_25 -> L_THEN_7, L_ELSE_8
+L_TEST_ENTRY_0:
+    tmp_10 = call @main()
+    tmp_11 = 0
+    tmp_12 = ne tmp_10, tmp_11
+    !tmp_10
+    !tmp_11
+    br tmp_12 -> L_THEN_1, L_ELSE_2
 
-L_THEN_7:
-    !tmp_25
+L_THEN_1:
+    !tmp_12
     panic(7)
 
-L_ELSE_8:
-    !tmp_25
-    jmp L_MERGE_9
+L_ELSE_2:
+    !tmp_12
+    jmp L_MERGE_3
 
-L_MERGE_9:
-    !got
+L_MERGE_3:
     return
 

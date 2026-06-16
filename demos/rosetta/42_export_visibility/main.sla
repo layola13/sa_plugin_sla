@@ -1,21 +1,23 @@
-// Sla companion for SA rosetta demo 042 Export Visibility.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_042_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }    let result = total + 24;
-    return result;
-};
+pub fn exported_value() -> i32 {
+    7
+}
 
-fn main() -> int {
-    let result = rosetta_042_value();
-    return result;
-};
+fn internal_value() -> i32 {
+    5
+}
 
-@test "rosetta 042 42_export_visibility"() {
-    let got = rosetta_042_value();
-    if got != 34 {
+fn main() -> i32 {
+    let total = exported_value() + internal_value();
+    println("{}", total);
+    return 0;
+}
+
+@test "rosetta 042 export visibility"() {
+    let total = exported_value() + internal_value();
+    if total != 12 {
         panic(42);
-    }
+    };
+}

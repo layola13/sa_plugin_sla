@@ -1,21 +1,26 @@
-// Sla companion for SA rosetta demo 104 If Let Chains.
-// Generated from the catalog name; Rust reference lives in main.rs.
+fn rosetta_104_value() -> i32 {
+    let left = Some(2);
+    let middle = Some(3);
+    let right = Some(4);
 
-fn rosetta_104_value() -> int {
-    let seed = 5;
-    let shifted = seed + 104;
-    let scaled = shifted * 7;
-    let result = scaled - 17;
-    return result;
-};
+    let result = if let Some(x) = left && let Some(y) = middle && let Some(z) = right {
+        x + y + z
+    } else {
+        0
+    };
 
-fn main() -> int {
-    let result = rosetta_104_value();
     return result;
-};
+}
+
+fn main() -> i32 {
+    let value = rosetta_104_value();
+    println("{}", value);
+    return value;
+}
 
 @test "rosetta 104 104_if_let_chains"() {
     let got = rosetta_104_value();
-    if got != 746 {
+    if got != 9 {
         panic(104);
-    }
+    };
+}

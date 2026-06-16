@@ -1,24 +1,15 @@
-// Sla companion for SA rosetta demo 035 Iterator Fold.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_035_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-};
+fn main() -> i32 {
+    let total: usize = ["sa", "asm", "!!"].into_iter().fold(0, |acc: usize, item: ptr| acc + item.len());
+    println("{}", total);
+    return 0;
+}
 
-fn rosetta_035_value() -> int {
-    let result = rosetta_035_mix(6, 27);
-    return result;
-};
-
-fn main() -> int {
-    let result = rosetta_035_value();
-    return result;
-};
-
-@test "rosetta 035 35_iterator_fold"() {
-    let got = rosetta_035_value();
-    if got != 141 {
+@test "rosetta 035 iterator fold"() {
+    let total: usize = ["sa", "asm", "!!"].into_iter().fold(0, |acc: usize, item: ptr| acc + item.len());
+    if total != 7 {
         panic(35);
-    }
+    };
+}

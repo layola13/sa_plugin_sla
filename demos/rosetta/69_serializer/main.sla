@@ -1,22 +1,17 @@
-// Sla companion for SA rosetta demo 069 Serializer.
-// Generated from the catalog name; Rust reference lives in main.rs.
+fn serializer_json() -> String {
+    let json = format("{{\"id\":{}}}", 7);
+    return json;
+}
 
-fn rosetta_069_value() -> int {
-    let base = (4 * 8) + 69;
-    let threshold = 74;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-
-fn main() -> int {
-    let result = rosetta_069_value();
-    return result;
-};
+fn main() -> i32 {
+    let json = serializer_json();
+    println("{}", json);
+    return 0;
+}
 
 @test "rosetta 069 69_serializer"() {
-    let got = rosetta_069_value();
-    if got != 27 {
+    let json = serializer_json();
+    if str_eq(json, "{\"id\":7}") != true {
         panic(69);
-    }
+    };
+}

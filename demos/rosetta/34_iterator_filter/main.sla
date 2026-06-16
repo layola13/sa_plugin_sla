@@ -1,21 +1,15 @@
-// Sla companion for SA rosetta demo 034 Iterator Filter.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_034_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }    let result = total + 16;
-    return result;
-};
+fn main() -> i32 {
+    let total: i32 = [1, 2, 3, 4, 5].into_iter().filter(|x: i32| x % 2 == 0).sum();
+    println("{}", total);
+    return 0;
+}
 
-fn main() -> int {
-    let result = rosetta_034_value();
-    return result;
-};
-
-@test "rosetta 034 34_iterator_filter"() {
-    let got = rosetta_034_value();
-    if got != 26 {
+@test "rosetta 034 iterator filter"() {
+    let total: i32 = [1, 2, 3, 4, 5].into_iter().filter(|x: i32| x % 2 == 0).sum();
+    if total != 6 {
         panic(34);
-    }
+    };
+}

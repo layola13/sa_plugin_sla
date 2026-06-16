@@ -1,22 +1,17 @@
-// Sla companion for SA rosetta demo 037 Newtype.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_037_value() -> int {
-    let base = (6 * 3) + 37;
-    let threshold = 56;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+struct UserId(u32);
 
-fn main() -> int {
-    let result = rosetta_037_value();
-    return result;
-};
+fn main() -> i32 {
+    let user = UserId(42);
+    println("{}", user.0);
+    return 0;
+}
 
-@test "rosetta 037 37_newtype"() {
-    let got = rosetta_037_value();
-    if got != 1 {
+@test "rosetta 037 newtype"() {
+    let user = UserId(42);
+    if user.0 != 42 {
         panic(37);
-    }
+    };
+}

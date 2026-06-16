@@ -1,24 +1,24 @@
-// Sla companion for SA rosetta demo 027 Move Semantics.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_027_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+struct Data {
+    value: i32,
+}
+
+fn consume(data: Data) -> i32 {
+    data.value
+}
+
+fn main() -> i32 {
+    let data = Data { value: 11 };
+    println("{}", consume(data));
+    return 0;
 };
 
-fn rosetta_027_value() -> int {
-    let result = rosetta_027_mix(18, 11);
-    return result;
-};
-
-fn main() -> int {
-    let result = rosetta_027_value();
-    return result;
-};
-
-@test "rosetta 027 27_move_semantics"() {
-    let got = rosetta_027_value();
-    if got != 205 {
+@test "rosetta 027 move semantics"() {
+    let data = Data { value: 11 };
+    let result: i32 = consume(data);
+    if result != 11 {
         panic(27);
-    }
+    };
+};

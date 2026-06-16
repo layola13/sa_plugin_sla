@@ -15,10 +15,12 @@ pub const Substitution = struct {
 pub const Monomorphizer = struct {
     allocator: std.mem.Allocator,
     struct_templates: std.StringHashMap(*ast.StructDecl),
+    enum_templates: std.StringHashMap(*ast.EnumDecl),
     func_templates: std.StringHashMap(*ast.FuncDecl),
 
-    // Tracks already specialized structs and functions to avoid duplicate generation
+    // Tracks already specialized structs, enums, and functions to avoid duplicate generation
     specialized_structs: std.StringHashMap([]const u8),
+    specialized_enums: std.StringHashMap([]const u8),
     specialized_funcs: std.StringHashMap([]const u8),
 
     // Accumulators for the generated concrete declarations
@@ -28,8 +30,10 @@ pub const Monomorphizer = struct {
         return .{
             .allocator = allocator,
             .struct_templates = std.StringHashMap(*ast.StructDecl).init(allocator),
+            .enum_templates = std.StringHashMap(*ast.EnumDecl).init(allocator),
             .func_templates = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .specialized_structs = std.StringHashMap([]const u8).init(allocator),
+            .specialized_enums = std.StringHashMap([]const u8).init(allocator),
             .specialized_funcs = std.StringHashMap([]const u8).init(allocator),
             .new_decls = std.ArrayList(*ast.Node).init(allocator),
         };
@@ -37,6 +41,7 @@ pub const Monomorphizer = struct {
 
     pub fn deinit(self: *Monomorphizer) void {
         self.struct_templates.deinit();
+        self.enum_templates.deinit();
         self.func_templates.deinit();
 
         var struct_val_iter = self.specialized_structs.valueIterator();
@@ -44,6 +49,12 @@ pub const Monomorphizer = struct {
             self.allocator.free(v.*);
         }
         self.specialized_structs.deinit();
+
+        var enum_val_iter = self.specialized_enums.valueIterator();
+        while (enum_val_iter.next()) |v| {
+            self.allocator.free(v.*);
+        }
+        self.specialized_enums.deinit();
 
         var func_val_iter = self.specialized_funcs.valueIterator();
         while (func_val_iter.next()) |v| {
@@ -69,6 +80,16 @@ pub const Monomorphizer = struct {
                     } else {
                         try regular_decls.append(decl);
                     }
+                },
+                .enum_decl => |*e| {
+                    if (e.generics.len > 0) {
+                        try self.enum_templates.put(e.name, e);
+                    } else {
+                        try regular_decls.append(decl);
+                    }
+                },
+                .trait_decl => {
+                    try regular_decls.append(decl);
                 },
                 .func_decl => |*f| {
                     if (f.generics.len > 0) {
@@ -114,6 +135,7 @@ pub const Monomorphizer = struct {
                         .name = s.name,
                         .generics = &.{},
                         .fields = try new_fields.toOwnedSlice(),
+                        .is_union = s.is_union,
                     },
                 };
                 return res;
@@ -132,11 +154,26 @@ pub const Monomorphizer = struct {
                 res.* = .{ .enum_decl = .{ .name = e.name, .generics = &.{}, .variants = try new_variants.toOwnedSlice() } };
                 return res;
             },
+            .trait_decl => |t| {
+                var new_methods = std.ArrayList(ast.TraitMethod).init(self.allocator);
+                for (t.methods) |method| {
+                    var new_params = std.ArrayList(ast.Param).init(self.allocator);
+                    for (method.params) |p| {
+                        const new_ty = try self.specializeType(p.ty);
+                        try new_params.append(.{ .name = p.name, .ty = new_ty, .is_borrow = p.is_borrow, .is_move = p.is_move });
+                    }
+                    const new_ret = try self.specializeType(method.ret_ty);
+                    try new_methods.append(.{ .name = method.name, .params = try new_params.toOwnedSlice(), .ret_ty = new_ret });
+                }
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .trait_decl = .{ .name = t.name, .supertraits = t.supertraits, .methods = try new_methods.toOwnedSlice() } };
+                return res;
+            },
             .impl_decl => |i| {
                 const new_target = try self.specializeType(i.target_ty);
                 const new_methods = try self.specializeBlock(i.methods);
                 const res = try self.allocator.create(ast.Node);
-                res.* = .{ .impl_decl = .{ .target_ty = new_target, .methods = new_methods } };
+                res.* = .{ .impl_decl = .{ .trait_name = i.trait_name, .target_ty = new_target, .methods = new_methods } };
                 return res;
             },
             .func_decl => |f| {
@@ -152,6 +189,10 @@ pub const Monomorphizer = struct {
                 res.* = .{
                     .func_decl = .{
                         .name = f.name,
+                        .is_pub = f.is_pub,
+                        .is_extern = f.is_extern,
+                        .abi = f.abi,
+                        .no_mangle = f.no_mangle,
                         .generics = &.{},
                         .params = try new_params.toOwnedSlice(),
                         .ret_ty = new_ret,
@@ -194,7 +235,10 @@ pub const Monomorphizer = struct {
             },
             .let_stmt => |let| {
                 const new_ty = if (let.ty) |ty| try self.specializeType(ty) else null;
-                const new_val = try self.specializeNode(let.value);
+                const new_val = if (let.ty) |declared_ty|
+                    try self.specializeEnumLiteralForType(let.value, declared_ty, new_ty.?)
+                else
+                    try self.specializeNode(let.value);
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
                     .let_stmt = .{
@@ -205,6 +249,13 @@ pub const Monomorphizer = struct {
                 };
                 return res;
             },
+            .let_else_stmt => |let| {
+                const new_val = try self.specializeNode(let.value);
+                const new_else = try self.specializeBlock(let.else_block);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .let_else_stmt = .{ .pattern = let.pattern, .value = new_val, .else_block = new_else } };
+                return res;
+            },
             .let_destructure_stmt => |let| {
                 const new_val = try self.specializeNode(let.value);
                 const res = try self.allocator.create(ast.Node);
@@ -213,7 +264,10 @@ pub const Monomorphizer = struct {
             },
             .const_stmt => |c| {
                 const new_ty = if (c.ty) |ty| try self.specializeType(ty) else null;
-                const new_val = try self.specializeNode(c.value);
+                const new_val = if (c.ty) |declared_ty|
+                    try self.specializeEnumLiteralForType(c.value, declared_ty, new_ty.?)
+                else
+                    try self.specializeNode(c.value);
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
                     .const_stmt = .{
@@ -236,6 +290,12 @@ pub const Monomorphizer = struct {
                 };
                 return res;
             },
+            .block_stmt => |blk| {
+                const new_body = try self.specializeBlock(blk.body);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .block_stmt = .{ .body = new_body } };
+                return res;
+            },
             .expr_stmt => |expr| {
                 const new_expr = try self.specializeNode(expr);
                 const res = try self.allocator.create(ast.Node);
@@ -250,7 +310,7 @@ pub const Monomorphizer = struct {
             },
             .for_stmt => |f| {
                 const new_start = try self.specializeNode(f.start);
-                const new_end = try self.specializeNode(f.end);
+                const new_end = if (f.end) |end_expr| try self.specializeNode(end_expr) else null;
                 const new_body = try self.specializeBlock(f.body);
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
@@ -261,6 +321,29 @@ pub const Monomorphizer = struct {
                         .body = new_body,
                     },
                 };
+                return res;
+            },
+            .while_stmt => |w| {
+                const new_cond = try self.specializeNode(w.cond);
+                const new_body = try self.specializeBlock(w.body);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{
+                    .while_stmt = .{
+                        .cond = new_cond,
+                        .let_pattern = w.let_pattern,
+                        .body = new_body,
+                    },
+                };
+                return res;
+            },
+            .break_stmt => {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .break_stmt = .{} };
+                return res;
+            },
+            .continue_stmt => {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .continue_stmt = .{} };
                 return res;
             },
             .release_stmt => |rel| {
@@ -280,12 +363,21 @@ pub const Monomorphizer = struct {
             },
             .if_expr => |ife| {
                 const new_cond = try self.specializeNode(ife.cond);
+                var new_chain: ?[]const ast.IfLetCond = null;
+                if (ife.let_chain) |chain| {
+                    var items = std.ArrayList(ast.IfLetCond).init(self.allocator);
+                    for (chain) |cond| {
+                        try items.append(.{ .pattern = cond.pattern, .value = try self.specializeNode(cond.value) });
+                    }
+                    new_chain = try items.toOwnedSlice();
+                }
                 const new_then = try self.specializeBlock(ife.then_block);
                 const new_else = if (ife.else_block) |eb| try self.specializeBlock(eb) else null;
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
                     .if_expr = .{
                         .cond = new_cond,
+                        .let_chain = new_chain,
                         .then_block = new_then,
                         .else_block = new_else,
                     },
@@ -318,6 +410,12 @@ pub const Monomorphizer = struct {
                 }
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .match_expr = .{ .val = new_val, .cases = try new_cases.toOwnedSlice() } };
+                return res;
+            },
+            .unsafe_expr => |ue| {
+                const new_body = try self.specializeBlock(ue.body);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .unsafe_expr = .{ .body = new_body } };
                 return res;
             },
             .await_expr => |aw| {
@@ -355,6 +453,13 @@ pub const Monomorphizer = struct {
                 const new_expr = try self.specializeNode(deref.expr);
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .deref_expr = .{ .expr = new_expr } };
+                return res;
+            },
+            .cast_expr => |cast| {
+                const new_expr = try self.specializeNode(cast.expr);
+                const new_ty = try self.specializeType(cast.ty);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .cast_expr = .{ .expr = new_expr, .ty = new_ty } };
                 return res;
             },
             .field_expr => |field| {
@@ -414,6 +519,11 @@ pub const Monomorphizer = struct {
                 res.* = .{ .array_literal = .{ .elements = try new_elements.toOwnedSlice() } };
                 return res;
             },
+            .repeat_array_literal => |lit| {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .repeat_array_literal = .{ .value = try self.specializeNode(lit.value), .len = lit.len } };
+                return res;
+            },
             .tuple_literal => |lit| {
                 var new_elements = std.ArrayList(*ast.Node).init(self.allocator);
                 for (lit.elements) |elem| {
@@ -464,11 +574,37 @@ pub const Monomorphizer = struct {
                     res.* = .{
                         .call_expr = .{
                             .func_name = mangled_name,
+                            .associated_target = call.associated_target,
                             .generics = &.{},
                             .args = try new_args.toOwnedSlice(),
                         },
                     };
                     return res;
+                }
+
+                if (self.func_templates.get(call.func_name)) |template| {
+                    if (try self.inferGenericArgsForCall(template, call.args)) |inferred_args| {
+                        const mangled_name = try self.getMangledFuncName(call.func_name, inferred_args);
+                        if (!self.specialized_funcs.contains(mangled_name)) {
+                            try self.instantiateFunction(mangled_name, template, inferred_args);
+                        }
+
+                        var new_args = std.ArrayList(*ast.Node).init(self.allocator);
+                        for (call.args) |arg| {
+                            try new_args.append(try self.specializeNode(arg));
+                        }
+
+                        const res = try self.allocator.create(ast.Node);
+                        res.* = .{
+                            .call_expr = .{
+                                .func_name = mangled_name,
+                                .associated_target = call.associated_target,
+                                .generics = &.{},
+                                .args = try new_args.toOwnedSlice(),
+                            },
+                        };
+                        return res;
+                    }
                 }
 
                 // Ordinary function call
@@ -480,11 +616,185 @@ pub const Monomorphizer = struct {
                 res.* = .{
                     .call_expr = .{
                         .func_name = call.func_name,
+                        .associated_target = call.associated_target,
                         .generics = &.{},
                         .args = try new_args.toOwnedSlice(),
                     },
                 };
                 return res;
+            },
+        }
+    }
+
+    fn inferGenericArgsForCall(self: *Monomorphizer, template: *const ast.FuncDecl, args: []const *ast.Node) MonomorphizeError!?[]const *ast.Type {
+        if (template.generics.len == 0) return null;
+        if (template.params.len != args.len) return null;
+
+        const inferred = try self.allocator.alloc(?*ast.Type, template.generics.len);
+        @memset(inferred, null);
+
+        for (template.params, args) |param, arg| {
+            const actual_ty = try self.inferNodeTypeShallow(arg) orelse return null;
+            if (!try self.collectGenericBindings(template.generics, param.ty, actual_ty, inferred)) {
+                return null;
+            }
+        }
+
+        const final = try self.allocator.alloc(*ast.Type, template.generics.len);
+        for (inferred, 0..) |maybe_ty, i| {
+            final[i] = maybe_ty orelse return null;
+        }
+        return final;
+    }
+
+    fn inferNodeTypeShallow(self: *Monomorphizer, node: *const ast.Node) MonomorphizeError!?*ast.Type {
+        switch (node.*) {
+            .literal => |lit| {
+                const ty = try self.allocator.create(ast.Type);
+                ty.* = switch (lit) {
+                    .int_val => .{ .primitive = .i32 },
+                    .float_val => .{ .primitive = .f64 },
+                    .bool_val => .{ .primitive = .boolean },
+                    .string_val => .{ .user_defined = .{ .name = "Slice", .generics = blk: {
+                        const generics = try self.allocator.alloc(*ast.Type, 1);
+                        const elem = try self.allocator.create(ast.Type);
+                        elem.* = .{ .primitive = .u8 };
+                        generics[0] = elem;
+                        break :blk generics;
+                    } } },
+                };
+                return ty;
+            },
+            .tuple_literal => |tuple| {
+                var elems = std.ArrayList(*ast.Type).init(self.allocator);
+                for (tuple.elements) |elem| {
+                    try elems.append((try self.inferNodeTypeShallow(elem)) orelse return null);
+                }
+                const ty = try self.allocator.create(ast.Type);
+                ty.* = .{ .tuple = .{ .elems = try elems.toOwnedSlice() } };
+                return ty;
+            },
+            .array_literal => |array| {
+                if (array.elements.len == 0) return null;
+                const elem_ty = (try self.inferNodeTypeShallow(array.elements[0])) orelse return null;
+                for (array.elements[1..]) |elem| {
+                    const next_ty = (try self.inferNodeTypeShallow(elem)) orelse return null;
+                    if (!self.typesStructurallyEqual(elem_ty, next_ty)) return null;
+                }
+                const ty = try self.allocator.create(ast.Type);
+                ty.* = .{ .array = .{ .elem = elem_ty, .len = array.elements.len } };
+                return ty;
+            },
+            .repeat_array_literal => |array| {
+                const elem_ty = (try self.inferNodeTypeShallow(array.value)) orelse return null;
+                const ty = try self.allocator.create(ast.Type);
+                ty.* = .{ .array = .{ .elem = elem_ty, .len = array.len } };
+                return ty;
+            },
+            .struct_literal => |lit| return lit.ty,
+            .borrow_expr => |borrow| {
+                const inner_ty = (try self.inferNodeTypeShallow(borrow.expr)) orelse return null;
+                const ty = try self.allocator.create(ast.Type);
+                ty.* = .{ .borrow = inner_ty };
+                return ty;
+            },
+            .move_expr => |move| return try self.inferNodeTypeShallow(move.expr),
+            .cast_expr => |cast| return cast.ty,
+            else => return null,
+        }
+    }
+
+    fn collectGenericBindings(
+        self: *Monomorphizer,
+        generic_names: []const []const u8,
+        template_ty: *ast.Type,
+        actual_ty: *ast.Type,
+        inferred: []?*ast.Type,
+    ) MonomorphizeError!bool {
+        switch (template_ty.*) {
+            .user_defined => |ud| {
+                for (generic_names, 0..) |name, idx| {
+                    if (std.mem.eql(u8, ud.name, name) and ud.generics.len == 0) {
+                        if (inferred[idx]) |existing| {
+                            return self.typesStructurallyEqual(existing, actual_ty);
+                        }
+                        inferred[idx] = actual_ty;
+                        return true;
+                    }
+                }
+                if (actual_ty.* != .user_defined) return false;
+                if (!std.mem.eql(u8, ud.name, actual_ty.user_defined.name)) return false;
+                if (ud.generics.len != actual_ty.user_defined.generics.len) return false;
+                for (ud.generics, actual_ty.user_defined.generics) |tg, ag| {
+                    if (!try self.collectGenericBindings(generic_names, tg, ag, inferred)) return false;
+                }
+                return true;
+            },
+            .pointer => |inner| {
+                if (actual_ty.* != .pointer) return false;
+                return try self.collectGenericBindings(generic_names, inner, actual_ty.pointer, inferred);
+            },
+            .borrow => |inner| {
+                if (actual_ty.* != .borrow) return false;
+                return try self.collectGenericBindings(generic_names, inner, actual_ty.borrow, inferred);
+            },
+            .array => |arr| {
+                if (actual_ty.* != .array or arr.len != actual_ty.array.len) return false;
+                return try self.collectGenericBindings(generic_names, arr.elem, actual_ty.array.elem, inferred);
+            },
+            .tuple => |tuple| {
+                if (actual_ty.* != .tuple or tuple.elems.len != actual_ty.tuple.elems.len) return false;
+                for (tuple.elems, actual_ty.tuple.elems) |te, ae| {
+                    if (!try self.collectGenericBindings(generic_names, te, ae, inferred)) return false;
+                }
+                return true;
+            },
+            .primitive => return self.typesStructurallyEqual(template_ty, actual_ty),
+            .future => |inner| {
+                if (actual_ty.* != .future) return false;
+                return try self.collectGenericBindings(generic_names, inner, actual_ty.future, inferred);
+            },
+            .closure => |closure| {
+                if (actual_ty.* != .closure or closure.params.len != actual_ty.closure.params.len) return false;
+                for (closure.params, actual_ty.closure.params) |tp, ap| {
+                    if (!try self.collectGenericBindings(generic_names, tp, ap, inferred)) return false;
+                }
+                return try self.collectGenericBindings(generic_names, closure.ret, actual_ty.closure.ret, inferred);
+            },
+            .infer => return true,
+        }
+    }
+
+    fn typesStructurallyEqual(self: *Monomorphizer, a: *ast.Type, b: *ast.Type) bool {
+        if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
+        switch (a.*) {
+            .infer => return true,
+            .primitive => return a.primitive == b.primitive,
+            .pointer => return self.typesStructurallyEqual(a.pointer, b.pointer),
+            .borrow => return self.typesStructurallyEqual(a.borrow, b.borrow),
+            .array => return a.array.len == b.array.len and self.typesStructurallyEqual(a.array.elem, b.array.elem),
+            .tuple => {
+                if (a.tuple.elems.len != b.tuple.elems.len) return false;
+                for (a.tuple.elems, b.tuple.elems) |ta, tb| {
+                    if (!self.typesStructurallyEqual(ta, tb)) return false;
+                }
+                return true;
+            },
+            .future => return self.typesStructurallyEqual(a.future, b.future),
+            .closure => {
+                if (a.closure.params.len != b.closure.params.len) return false;
+                for (a.closure.params, b.closure.params) |pa, pb| {
+                    if (!self.typesStructurallyEqual(pa, pb)) return false;
+                }
+                return self.typesStructurallyEqual(a.closure.ret, b.closure.ret);
+            },
+            .user_defined => {
+                if (!std.mem.eql(u8, a.user_defined.name, b.user_defined.name)) return false;
+                if (a.user_defined.generics.len != b.user_defined.generics.len) return false;
+                for (a.user_defined.generics, b.user_defined.generics) |ga, gb| {
+                    if (!self.typesStructurallyEqual(ga, gb)) return false;
+                }
+                return true;
             },
         }
     }
@@ -499,6 +809,7 @@ pub const Monomorphizer = struct {
 
     fn specializeType(self: *Monomorphizer, ty: *ast.Type) MonomorphizeError!*ast.Type {
         switch (ty.*) {
+            .infer => return ty,
             .primitive => return ty,
             .pointer => |inner| {
                 const new_inner = try self.specializeType(inner);
@@ -545,12 +856,36 @@ pub const Monomorphizer = struct {
             },
             .user_defined => |ud| {
                 if (ud.generics.len > 0) {
+                    var spec_args = std.ArrayList(*ast.Type).init(self.allocator);
+                    for (ud.generics) |g| {
+                        try spec_args.append(try self.specializeType(g));
+                    }
+                    if (std.mem.eql(u8, ud.name, "Box") or
+                        std.mem.eql(u8, ud.name, "Vec") or
+                        std.mem.startsWith(u8, ud.name, "__dyn_") or
+                        (!self.struct_templates.contains(ud.name) and !self.enum_templates.contains(ud.name)))
+                    {
+                        const res = try self.allocator.create(ast.Type);
+                        res.* = .{
+                            .user_defined = .{
+                                .name = ud.name,
+                                .generics = try spec_args.toOwnedSlice(),
+                            },
+                        };
+                        return res;
+                    }
                     const mangled_name = try self.getMangledStructName(ud.name, ud.generics);
 
-                    // Instantiate if not already done
-                    if (!self.specialized_structs.contains(mangled_name)) {
-                        const template = self.struct_templates.get(ud.name) orelse return MonomorphizeError.TemplateNotFound;
-                        try self.instantiateStruct(mangled_name, template, ud.generics);
+                    if (self.struct_templates.get(ud.name)) |template| {
+                        if (!self.specialized_structs.contains(mangled_name)) {
+                            try self.instantiateStruct(mangled_name, template, ud.generics);
+                        }
+                    } else if (self.enum_templates.get(ud.name)) |template| {
+                        if (!self.specialized_enums.contains(mangled_name)) {
+                            try self.instantiateEnum(mangled_name, template, ud.generics);
+                        }
+                    } else {
+                        return MonomorphizeError.TemplateNotFound;
                     }
 
                     const res = try self.allocator.create(ast.Type);
@@ -565,6 +900,44 @@ pub const Monomorphizer = struct {
                 return ty;
             },
         }
+    }
+
+    fn specializeEnumLiteralForType(
+        self: *Monomorphizer,
+        value: *ast.Node,
+        declared_ty: *ast.Type,
+        specialized_ty: *ast.Type,
+    ) MonomorphizeError!*ast.Node {
+        if (value.* != .enum_literal) {
+            return try self.specializeNode(value);
+        }
+        if (declared_ty.* != .user_defined or specialized_ty.* != .user_defined) {
+            return try self.specializeNode(value);
+        }
+        const declared_ud = declared_ty.user_defined;
+        const specialized_ud = specialized_ty.user_defined;
+        const lit = value.enum_literal;
+        if (!std.mem.eql(u8, lit.enum_name, declared_ud.name)) {
+            return try self.specializeNode(value);
+        }
+
+        var spec_fields = std.ArrayList(ast.EnumLiteralField).init(self.allocator);
+        for (lit.fields) |field| {
+            try spec_fields.append(.{
+                .name = field.name,
+                .value = try self.specializeNode(field.value),
+            });
+        }
+
+        const res = try self.allocator.create(ast.Node);
+        res.* = .{
+            .enum_literal = .{
+                .enum_name = specialized_ud.name,
+                .variant_name = lit.variant_name,
+                .fields = try spec_fields.toOwnedSlice(),
+            },
+        };
+        return res;
     }
 
     fn getMangledStructName(self: *Monomorphizer, base: []const u8, generics: []const *ast.Type) MonomorphizeError![]const u8 {
@@ -589,8 +962,21 @@ pub const Monomorphizer = struct {
 
     fn appendTypeName(self: *Monomorphizer, buf: *std.ArrayList(u8), ty: *ast.Type) MonomorphizeError!void {
         switch (ty.*) {
+            .infer => try buf.appendSlice("infer"),
             .primitive => |p| {
                 switch (p) {
+                    .i8 => try buf.appendSlice("i8"),
+                    .i16 => try buf.appendSlice("i16"),
+                    .i32 => try buf.appendSlice("i32"),
+                    .i64 => try buf.appendSlice("i64"),
+                    .isize => try buf.appendSlice("isize"),
+                    .u8 => try buf.appendSlice("u8"),
+                    .u16 => try buf.appendSlice("u16"),
+                    .u32 => try buf.appendSlice("u32"),
+                    .u64 => try buf.appendSlice("u64"),
+                    .usize => try buf.appendSlice("usize"),
+                    .f32 => try buf.appendSlice("f32"),
+                    .f64 => try buf.appendSlice("f64"),
                     .integer => try buf.appendSlice("int"),
                     .float => try buf.appendSlice("float"),
                     .boolean => try buf.appendSlice("bool"),
@@ -661,6 +1047,38 @@ pub const Monomorphizer = struct {
                 .name = mangled_name,
                 .generics = &.{},
                 .fields = try spec_fields.toOwnedSlice(),
+                .is_union = template.is_union,
+            },
+        };
+        try self.new_decls.append(node);
+    }
+
+    fn instantiateEnum(self: *Monomorphizer, mangled_name: []const u8, template: *ast.EnumDecl, args: []const *ast.Type) MonomorphizeError!void {
+        try self.specialized_enums.put(mangled_name, try self.allocator.dupe(u8, mangled_name));
+
+        var spec_variants = std.ArrayList(ast.EnumVariant).init(self.allocator);
+        for (template.variants) |variant| {
+            var spec_fields = std.ArrayList(ast.Field).init(self.allocator);
+            for (variant.fields) |field| {
+                const spec_ty = try self.substituteType(field.ty, template.generics, args);
+                const fully_spec_ty = try self.specializeType(spec_ty);
+                try spec_fields.append(.{
+                    .name = field.name,
+                    .ty = fully_spec_ty,
+                });
+            }
+            try spec_variants.append(.{
+                .name = variant.name,
+                .fields = try spec_fields.toOwnedSlice(),
+            });
+        }
+
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{
+            .enum_decl = .{
+                .name = mangled_name,
+                .generics = &.{},
+                .variants = try spec_variants.toOwnedSlice(),
             },
         };
         try self.new_decls.append(node);
@@ -694,6 +1112,10 @@ pub const Monomorphizer = struct {
         node.* = .{
             .func_decl = .{
                 .name = mangled_name,
+                .is_pub = template.is_pub,
+                .is_extern = template.is_extern,
+                .abi = template.abi,
+                .no_mangle = template.no_mangle,
                 .generics = &.{},
                 .params = try spec_params.toOwnedSlice(),
                 .ret_ty = fully_spec_ret_ty,
@@ -707,6 +1129,7 @@ pub const Monomorphizer = struct {
 
     fn substituteType(self: *Monomorphizer, ty: *ast.Type, params: []const []const u8, args: []const *ast.Type) MonomorphizeError!*ast.Type {
         switch (ty.*) {
+            .infer => return ty,
             .primitive => return ty,
             .pointer => |inner| {
                 const spec_inner = try self.substituteType(inner, params, args);
@@ -789,6 +1212,7 @@ pub const Monomorphizer = struct {
             .program => unreachable,
             .struct_decl => unreachable,
             .enum_decl => unreachable,
+            .trait_decl => unreachable,
             .impl_decl => unreachable,
             .func_decl => unreachable,
             .macro_decl => unreachable,
@@ -805,6 +1229,13 @@ pub const Monomorphizer = struct {
                         .value = spec_val,
                     },
                 };
+                return res;
+            },
+            .let_else_stmt => |let| {
+                const spec_val = try self.substituteNode(let.value, params, args);
+                const spec_else = try self.substituteBlock(let.else_block, params, args);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .let_else_stmt = .{ .pattern = let.pattern, .value = spec_val, .else_block = spec_else } };
                 return res;
             },
             .let_destructure_stmt => |let| {
@@ -838,6 +1269,12 @@ pub const Monomorphizer = struct {
                 };
                 return res;
             },
+            .block_stmt => |blk| {
+                const spec_body = try self.substituteBlock(blk.body, params, args);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .block_stmt = .{ .body = spec_body } };
+                return res;
+            },
             .expr_stmt => |expr| {
                 const spec_expr = try self.substituteNode(expr, params, args);
                 const res = try self.allocator.create(ast.Node);
@@ -852,7 +1289,7 @@ pub const Monomorphizer = struct {
             },
             .for_stmt => |f| {
                 const spec_start = try self.substituteNode(f.start, params, args);
-                const spec_end = try self.substituteNode(f.end, params, args);
+                const spec_end = if (f.end) |end_expr| try self.substituteNode(end_expr, params, args) else null;
                 const spec_body = try self.substituteBlock(f.body, params, args);
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
@@ -863,6 +1300,29 @@ pub const Monomorphizer = struct {
                         .body = spec_body,
                     },
                 };
+                return res;
+            },
+            .while_stmt => |w| {
+                const spec_cond = try self.substituteNode(w.cond, params, args);
+                const spec_body = try self.substituteBlock(w.body, params, args);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{
+                    .while_stmt = .{
+                        .cond = spec_cond,
+                        .let_pattern = w.let_pattern,
+                        .body = spec_body,
+                    },
+                };
+                return res;
+            },
+            .break_stmt => {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .break_stmt = .{} };
+                return res;
+            },
+            .continue_stmt => {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .continue_stmt = .{} };
                 return res;
             },
             .release_stmt => |rel| {
@@ -882,12 +1342,21 @@ pub const Monomorphizer = struct {
             },
             .if_expr => |ife| {
                 const spec_cond = try self.substituteNode(ife.cond, params, args);
+                var spec_chain: ?[]const ast.IfLetCond = null;
+                if (ife.let_chain) |chain| {
+                    var items = std.ArrayList(ast.IfLetCond).init(self.allocator);
+                    for (chain) |cond| {
+                        try items.append(.{ .pattern = cond.pattern, .value = try self.substituteNode(cond.value, params, args) });
+                    }
+                    spec_chain = try items.toOwnedSlice();
+                }
                 const spec_then = try self.substituteBlock(ife.then_block, params, args);
                 const spec_else = if (ife.else_block) |eb| try self.substituteBlock(eb, params, args) else null;
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
                     .if_expr = .{
                         .cond = spec_cond,
+                        .let_chain = spec_chain,
                         .then_block = spec_then,
                         .else_block = spec_else,
                     },
@@ -920,6 +1389,12 @@ pub const Monomorphizer = struct {
                 }
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .match_expr = .{ .val = spec_val, .cases = try spec_cases.toOwnedSlice() } };
+                return res;
+            },
+            .unsafe_expr => |ue| {
+                const spec_body = try self.substituteBlock(ue.body, params, args);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .unsafe_expr = .{ .body = spec_body } };
                 return res;
             },
             .await_expr => |aw| {
@@ -957,6 +1432,13 @@ pub const Monomorphizer = struct {
                 const spec_expr = try self.substituteNode(deref.expr, params, args);
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .deref_expr = .{ .expr = spec_expr } };
+                return res;
+            },
+            .cast_expr => |cast| {
+                const spec_expr = try self.substituteNode(cast.expr, params, args);
+                const spec_ty = try self.substituteType(cast.ty, params, args);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .cast_expr = .{ .expr = spec_expr, .ty = spec_ty } };
                 return res;
             },
             .field_expr => |field| {
@@ -1016,6 +1498,11 @@ pub const Monomorphizer = struct {
                 res.* = .{ .array_literal = .{ .elements = try spec_elements.toOwnedSlice() } };
                 return res;
             },
+            .repeat_array_literal => |lit| {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .repeat_array_literal = .{ .value = try self.substituteNode(lit.value, params, args), .len = lit.len } };
+                return res;
+            },
             .tuple_literal => |lit| {
                 var spec_elements = std.ArrayList(*ast.Node).init(self.allocator);
                 for (lit.elements) |elem| {
@@ -1059,6 +1546,7 @@ pub const Monomorphizer = struct {
                 res.* = .{
                     .call_expr = .{
                         .func_name = call.func_name,
+                        .associated_target = call.associated_target,
                         .generics = try spec_generics.toOwnedSlice(),
                         .args = try spec_args.toOwnedSlice(),
                     },
@@ -1075,9 +1563,9 @@ test "monomorphize generic struct" {
         \\    has_value: bool,
         \\    value: T
         \\}
-        \\fn process(opt: Option<int>) -> int {
-        \\    return opt.value;
-        \\}
+        \\fn process(opt: Option<i32>) -> i32 {
+            \\    return opt.value;
+            \\}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1091,12 +1579,12 @@ test "monomorphize generic struct" {
 
     const specialized_prog = try mono.monomorphize(prog);
 
-    // Verify that Option_int struct decl was generated
+    // Verify that Option_i32 struct decl was generated
     try std.testing.expect(specialized_prog.* == .program);
     var found_option_int = false;
     for (specialized_prog.program.decls) |decl| {
         if (decl.* == .struct_decl) {
-            if (std.mem.eql(u8, decl.struct_decl.name, "Option_int")) {
+            if (std.mem.eql(u8, decl.struct_decl.name, "Option_i32")) {
                 found_option_int = true;
                 try std.testing.expectEqual(@as(usize, 2), decl.struct_decl.fields.len);
             }

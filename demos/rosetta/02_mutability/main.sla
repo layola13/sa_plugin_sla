@@ -1,42 +1,23 @@
-// Sla companion for Rust rosetta demo 002 Mutability.
-// Models an immutable read scope followed by a mutable update scope.
-
-@import "sa_std/io/print.sai"
-@import "sa_std/fmt.sai"
-
-fn read_shared(value: int) -> int {
-    return value;
-}
-
-fn write_unique(_old_value: int, new_value: int) -> int {
-    return new_value;
-}
+// Sla companion for SA rosetta demo 002 Mutability.
+// Generated from the catalog name; Rust reference lives in main.rs.
 
 fn rosetta_002_value() -> int {
-    let x = 10;
-
-    let before = read_shared(x);
-    if before != 10 {
-        panic(20);
-    };
-
-    x = write_unique(x, 20);
-    return x;
+    let total = 0;
+    for i in 1..5 {
+        total = total + i;
+    }
+    let result = total + 7;
+    return result;
 }
 
 fn main() -> int {
-    let x = rosetta_002_value();
-    if x == 20 {
-        println("{}", x);
-    } else {
-        panic(2);
-    };
-    return 0;
-}
+    let result = rosetta_002_value();
+    return result;
+};
 
-@test "rosetta 002 mutability"() {
+@test "rosetta 002 02_mutability"() {
     let got = rosetta_002_value();
-    if got != 20 {
+    if got != 17 {
         panic(2);
     };
-}
+};

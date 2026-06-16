@@ -1,26 +1,17 @@
-// Sla companion for Rust rosetta demo 014 Slice Window.
-
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-fn rosetta_014_value() -> int {
-    let values = [1, 2, 3, 4];
-    let window_sum: int = values[1..3].iter().sum();
-    return window_sum;
-}
-
-fn main() -> int {
-    let result = rosetta_014_value();
-    if result != 5 {
-        panic(14);
-    };
-    println("{}", result);
+fn main() -> i32 {
+    let values: [i32; 4] = [1, 2, 3, 4];
+    let window_sum: i32 = values[1..3].iter().sum();
+    println("{}", window_sum);
     return 0;
-}
+};
 
 @test "rosetta 014 slice window"() {
-    let got = rosetta_014_value();
-    if got != 5 {
+    let values: [i32; 4] = [1, 2, 3, 4];
+    let window_sum: i32 = values[1..3].iter().sum();
+    if window_sum != 5 {
         panic(14);
     };
-}
+};

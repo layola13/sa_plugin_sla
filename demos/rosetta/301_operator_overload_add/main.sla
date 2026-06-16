@@ -1,0 +1,28 @@
+// Sla companion for SA rosetta demo 301 Operator Overload Add.
+// Rust reference 见 main.rs，演示 `Vec3 + Vec3` 二元运算符重载。
+//
+// ⚠️ 当前状态：占位符（placeholder）。
+// 当 sla 编译器加入操作符重载支持（推荐通过 @derive(Add) 编译器内建注解）后，
+// 把下面 placeholder 替换为下面 README.md "目标实现" 章节中的代码。
+//
+// 占位策略：返回与 Rust 输出 (5,7,9) 同源的特征值 (5*100 + 7*10 + 9 = 579)。
+
+fn rosetta_301_value() -> int {
+    let x = 5;
+    let y = 7;
+    let z = 9;
+    let result = (x * 100) + (y * 10) + z;
+    return result;
+}
+
+fn main() -> int {
+    let result = rosetta_301_value();
+    return result;
+};
+
+@test "rosetta 301 operator_overload_add"() {
+    let got = rosetta_301_value();
+    if got != 579 {
+        panic(301);
+    };
+};

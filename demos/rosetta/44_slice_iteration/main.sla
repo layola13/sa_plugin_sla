@@ -1,21 +1,20 @@
-// Sla companion for SA rosetta demo 044 Slice Iteration.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_044_value() -> int {
-    let seed = 13;
-    let shifted = seed + 44;
-    let scaled = shifted * 10;
-    let result = scaled - 26;
-    return result;
-};
+fn sum(values: &[i32]) -> i32 {
+    values.iter().copied().sum()
+}
 
-fn main() -> int {
-    let result = rosetta_044_value();
-    return result;
-};
+fn main() -> i32 {
+    let values = [1, 2, 3, 4];
+    println("{}", sum(&values));
+    return 0;
+}
 
-@test "rosetta 044 44_slice_iteration"() {
-    let got = rosetta_044_value();
-    if got != 544 {
+@test "rosetta 044 slice iteration"() {
+    let values = [1, 2, 3, 4];
+    let total = sum(&values);
+    if total != 10 {
         panic(44);
-    }
+    };
+}

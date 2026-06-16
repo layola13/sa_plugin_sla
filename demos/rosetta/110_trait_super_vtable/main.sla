@@ -1,21 +1,41 @@
-// Sla companion for SA rosetta demo 110 Trait Super Vtable.
-// Generated from the catalog name; Rust reference lives in main.rs.
+trait A {
+    fn a(&self) -> i32;
+}
 
-fn rosetta_110_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }    let result = total + 23;
-    return result;
-};
+trait B: A {
+    fn b(&self) -> i32;
+}
 
-fn main() -> int {
+struct Item {
+    value: i32,
+}
+
+impl A for Item {
+    fn a(&self) -> i32 {
+        self.value
+    }
+}
+
+impl B for Item {
+    fn b(&self) -> i32 {
+        self.value + 1
+    }
+}
+
+fn rosetta_110_value() -> i32 {
+    let item = Item { value: 7 };
+    return item.a() + item.b();
+}
+
+fn main() -> i32 {
     let result = rosetta_110_value();
+    println("{}", result);
     return result;
-};
+}
 
 @test "rosetta 110 110_trait_super_vtable"() {
     let got = rosetta_110_value();
-    if got != 59 {
+    if got != 15 {
         panic(110);
-    }
+    };
+};

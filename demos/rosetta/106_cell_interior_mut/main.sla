@@ -1,21 +1,20 @@
-// Sla companion for SA rosetta demo 106 Cell Interior Mut.
-// Generated from the catalog name; Rust reference lives in main.rs.
+fn rosetta_106_value() -> i32 {
+    let value = Cell::new(10);
+    let first = value.get();
+    value.set(20);
+    let second = value.get();
+    return first + second;
+}
 
-fn rosetta_106_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }    let result = total + 19;
-    return result;
-};
-
-fn main() -> int {
+fn main() -> i32 {
     let result = rosetta_106_value();
+    println("{}", result);
     return result;
-};
+}
 
 @test "rosetta 106 106_cell_interior_mut"() {
     let got = rosetta_106_value();
-    if got != 29 {
+    if got != 30 {
         panic(106);
-    }
+    };
+};

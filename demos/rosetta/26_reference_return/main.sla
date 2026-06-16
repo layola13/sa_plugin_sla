@@ -1,21 +1,24 @@
-// Sla companion for SA rosetta demo 026 Reference Return.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_026_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }    let result = total + 8;
-    return result;
+fn choose_left(&left: i32, &_right: i32) -> &i32 {
+    left
+}
+
+fn main() -> i32 {
+    let left: i32 = 9;
+    let right: i32 = 4;
+    let chosen = choose_left(&left, &right);
+    println("{}", chosen);
+    return 0;
 };
 
-fn main() -> int {
-    let result = rosetta_026_value();
-    return result;
-};
-
-@test "rosetta 026 26_reference_return"() {
-    let got = rosetta_026_value();
-    if got != 18 {
+@test "rosetta 026 reference return"() {
+    let left: i32 = 9;
+    let right: i32 = 4;
+    let chosen = choose_left(&left, &right);
+    let value = *chosen;
+    if value != 9 {
         panic(26);
-    }
+    };
+};

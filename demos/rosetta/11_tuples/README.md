@@ -3,16 +3,7 @@
 This directory pairs the original Rust rosetta reference with a Sla companion.
 
 - `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/11_tuples/main.rs`.
-- `main.sla`: uses native Sla tuple literals and numeric tuple fields.
-
-Rust/Sla comparison:
-
-- Rust: `let pair = (3, 4);` creates a tuple value.
-- Sla: `let pair = (3, 4);` creates the same two-field tuple value.
-- Rust: `pair.0` and `pair.1` read tuple fields.
-- Sla: `pair.0` and `pair.1` lower to field loads at tuple offsets.
-- Rust output: `println!("({}, {})", pair.0, pair.1);`.
-- Sla output: validates both fields and prints `(3, 4)` through `sa_std/io/print.sai`.
+- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
 
 Commands:
 

@@ -1,0 +1,26 @@
+// Sla companion for SA rosetta demo 302 Operator Overload Neg.
+// Rust reference 见 main.rs，演示 `-vec` 一元运算符重载。
+//
+// ⚠️ 当前状态：占位符。等待 sla 编译器加入 @derive(Neg) 或 trait Neg 支持后替换。
+//
+// 占位策略：返回 1+2+3=6 表示 |(-1,2,-3)| 的绝对值之和。
+
+fn rosetta_302_value() -> int {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let result = a + b + c;
+    return result;
+}
+
+fn main() -> int {
+    let result = rosetta_302_value();
+    return result;
+};
+
+@test "rosetta 302 operator_overload_neg"() {
+    let got = rosetta_302_value();
+    if got != 6 {
+        panic(302);
+    };
+};

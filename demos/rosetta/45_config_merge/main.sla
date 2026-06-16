@@ -1,22 +1,44 @@
-// Sla companion for SA rosetta demo 045 Config Merge.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_045_value() -> int {
-    let base = (14 * 2) + 45;
-    let threshold = 72;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+struct Config {
+    threads: u32,
+    level: u32,
+}
 
-fn main() -> int {
-    let result = rosetta_045_value();
-    return result;
-};
-
-@test "rosetta 045 45_config_merge"() {
-    let got = rosetta_045_value();
-    if got != 1 {
-        panic(45);
+fn merge(base: Config, override_cfg: Config) -> Config {
+    Config {
+        threads: if override_cfg.threads == 0 {
+            base.threads
+        } else {
+            override_cfg.threads
+        },
+        level: if override_cfg.level == 0 {
+            base.level
+        } else {
+            override_cfg.level
+        },
     }
+}
+
+fn main() -> i32 {
+    let merged = merge(
+        Config { threads: 4, level: 1 },
+        Config { threads: 0, level: 3 },
+    );
+    println("{} {}", merged.threads, merged.level);
+    return 0;
+}
+
+@test "rosetta 045 config merge"() {
+    let merged = merge(
+        Config { threads: 4, level: 1 },
+        Config { threads: 0, level: 3 },
+    );
+    if merged.threads != 4 {
+        panic(45);
+    };
+    if merged.level != 3 {
+        panic(145);
+    };
+}

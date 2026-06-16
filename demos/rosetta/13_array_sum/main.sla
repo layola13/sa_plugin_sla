@@ -1,26 +1,17 @@
-// Sla companion for Rust rosetta demo 013 Array Sum.
-
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-fn rosetta_013_value() -> int {
-    let values = [1, 2, 3, 4];
-    let sum: int = values.iter().sum();
-    return sum;
-}
-
-fn main() -> int {
-    let result = rosetta_013_value();
-    if result != 10 {
-        panic(13);
-    };
-    println("{}", result);
+fn main() -> i32 {
+    let values: [i32; 4] = [1, 2, 3, 4];
+    let sum: i32 = values.iter().sum();
+    println("{}", sum);
     return 0;
-}
+};
 
 @test "rosetta 013 array sum"() {
-    let got = rosetta_013_value();
-    if got != 10 {
+    let values: [i32; 4] = [1, 2, 3, 4];
+    let sum: i32 = values.iter().sum();
+    if sum != 10 {
         panic(13);
     };
-}
+};

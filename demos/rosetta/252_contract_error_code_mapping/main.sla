@@ -7,7 +7,7 @@ fn rosetta_252_value() -> int {
     let scaled = shifted * 2;
     let result = scaled - 27;
     return result;
-};
+}
 
 fn main() -> int {
     let result = rosetta_252_value();
@@ -19,3 +19,4 @@ fn main() -> int {
     if got != 511 {
         panic(252);
     };
+};

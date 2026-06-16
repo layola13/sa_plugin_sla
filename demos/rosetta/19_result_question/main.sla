@@ -1,24 +1,24 @@
-// Sla companion for SA rosetta demo 019 Result Question.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_019_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-};
+fn triple_ok(x: i32) -> Result<i32, i32> {
+    Ok(x * 3)
+}
 
-fn rosetta_019_value() -> int {
-    let result = rosetta_019_mix(13, 27);
-    return result;
-};
+fn compute() -> Result<i32, i32> {
+    let value = triple_ok(7)?;
+    Ok(value)
+}
 
-fn main() -> int {
-    let result = rosetta_019_value();
-    return result;
-};
+fn main() -> i32 {
+    let result = compute().unwrap_or(-1);
+    println("{}", result);
+    return 0;
+}
 
-@test "rosetta 019 19_result_question"() {
-    let got = rosetta_019_value();
-    if got != 337 {
+@test "rosetta 019 result question"() {
+    let result = compute().unwrap_or(-1);
+    if result != 21 {
         panic(19);
-    }
+    };
+}

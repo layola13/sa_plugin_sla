@@ -158,7 +158,7 @@ fn loadImportedContracts(
     }
 }
 
-fn runSlaCommandImpl(
+pub fn runSlaCommandImpl(
     ctx: *const plugin_api.Context,
     args: []const []const u8,
     stdout: std.io.AnyWriter,

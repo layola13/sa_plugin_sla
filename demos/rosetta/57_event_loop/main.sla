@@ -1,22 +1,23 @@
-// Sla companion for SA rosetta demo 057 Event Loop.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_057_value() -> int {
-    let base = (9 * 5) + 57;
-    let threshold = 73;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn main() -> i32 {
+    let events = [1, 2, 3];
+    let acc = 0;
+    for event in events {
+        acc += event;
+    }
+    println("{}", acc);
+    return 0;
+}
 
-fn main() -> int {
-    let result = rosetta_057_value();
-    return result;
-};
-
-@test "rosetta 057 57_event_loop"() {
-    let got = rosetta_057_value();
-    if got != 29 {
+@test "rosetta 057 event loop"() {
+    let events = [1, 2, 3];
+    let acc = 0;
+    for event in events {
+        acc += event;
+    }
+    if acc != 6 {
         panic(57);
     };
+}

@@ -1,9 +1,9 @@
 # 009 Async Await
 
-This directory pairs a Rust async/await reference with a Sla companion.
+This directory pairs the original Rust rosetta reference with a Sla companion.
 
-- `main.rs`: Rust async/await with `SystemTime`, `Instant`, and a real `thread::sleep` delay.
-- `main.sla`: Sla native async/await using `sa_std/time.sai` for unix time, monotonic time, and real sleep.
+- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/09_async_await/main.rs`.
+- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
 
 Commands:
 

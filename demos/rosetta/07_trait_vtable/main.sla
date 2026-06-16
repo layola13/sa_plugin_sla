@@ -1,61 +1,33 @@
-// Sla companion for Rust rosetta demo 007 Trait Vtable.
-// Models Button implementing Draw and a Draw trait object dispatch path.
-
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-struct Button<T> {
-    id: T,
+trait Draw {
+    fn draw(&self) -> i32;
 }
 
-struct DrawObject<T> {
-    kind: int,
-    id: T,
+struct Button {
+    id: i32,
 }
 
-fn button_new(id: int) -> Button<int> {
-    let button = Button<int> { id: id };
-    return button;
+impl Draw for Button {
+    fn draw(&self) -> i32 {
+        self.id
+    }
 }
 
-fn button_as_draw(button: Button<int>) -> DrawObject<int> {
-    let object = DrawObject<int> { kind: 1, id: button.id };
-    return object;
+fn render(&item: dyn Draw) -> i32 {
+    item.draw()
 }
 
-fn draw_dispatch(item: DrawObject<int>) -> int {
-    if item.kind == 1 {
-        return item.id;
-    } else {
-        panic(70);
-    };
-}
-
-fn render(item: DrawObject<int>) -> int {
-    let value = draw_dispatch(item);
-    return value;
-}
-
-fn rosetta_007_value() -> int {
-    let button = button_new(77);
-    let object = button_as_draw(button);
-    let result = render(object);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_007_value();
-    if result == 77 {
-        println("{}", result);
-    } else {
-        panic(7);
-    };
+fn main() -> i32 {
+    let button = Button { id: 77 };
+    let result = render(&button);
+    println("{}", result);
     return 0;
 }
 
 @test "rosetta 007 trait vtable"() {
-    let got = rosetta_007_value();
-    if got != 77 {
+    if main() != 0 {
         panic(7);
     };
 }

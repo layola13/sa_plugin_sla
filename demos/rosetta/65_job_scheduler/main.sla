@@ -1,22 +1,21 @@
-// Sla companion for SA rosetta demo 065 Job Scheduler.
-// Generated from the catalog name; Rust reference lives in main.rs.
+fn job_scheduler_done() -> i32 {
+    let jobs = [1, 2, 3, 4];
+    let done = 0;
+    for job in jobs {
+        done += job;
+    }
+    return done;
+}
 
-fn rosetta_065_value() -> int {
-    let base = (17 * 4) + 65;
-    let threshold = 89;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-
-fn main() -> int {
-    let result = rosetta_065_value();
-    return result;
-};
+fn main() -> i32 {
+    let done = job_scheduler_done();
+    println("{}", done);
+    return 0;
+}
 
 @test "rosetta 065 65_job_scheduler"() {
-    let got = rosetta_065_value();
-    if got != 44 {
+    let got = job_scheduler_done();
+    if got != 10 {
         panic(65);
-    }
+    };
+}

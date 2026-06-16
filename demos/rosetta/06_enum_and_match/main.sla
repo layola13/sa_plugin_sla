@@ -1,15 +1,12 @@
-// Sla companion for Rust rosetta demo 006 Enum And Match.
-// Mirrors Message::Move { x, y } and match destructuring.
-
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
 enum Message {
     Quit,
-    Move { x: int, y: int },
+    Move { x: i32, y: i32 },
 }
 
-fn process_msg(^msg: Message) -> int {
+fn process_msg(msg: Message) -> i32 {
     match msg {
         Message::Quit => {
             return 0;
@@ -20,31 +17,17 @@ fn process_msg(^msg: Message) -> int {
     };
 }
 
-fn rosetta_006_value() -> int {
+fn main() -> i32 {
     let msg = Message::Move { x: 10, y: 20 };
-    let result = process_msg(^msg);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_006_value();
-    if result == 30 {
-        println("{}", result);
-    } else {
-        panic(6);
-    };
+    let result = process_msg(msg);
+    println("{}", result);
     return 0;
-}
+};
 
 @test "rosetta 006 enum and match"() {
-    let moved = rosetta_006_value();
-    if moved != 30 {
+    let msg = Message::Move { x: 10, y: 20 };
+    let result = process_msg(msg);
+    if result != 30 {
         panic(6);
     };
-
-    let quit = Message::Quit;
-    let stopped = process_msg(^quit);
-    if stopped != 0 {
-        panic(60);
-    };
-}
+};

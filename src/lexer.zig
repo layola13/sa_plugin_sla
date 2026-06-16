@@ -21,10 +21,18 @@ pub const Token = struct {
 
         // Keywords
         keyword_struct,
+        keyword_union,
         keyword_enum,
+        keyword_trait,
+        keyword_dyn,
         keyword_impl,
+        keyword_mod,
+        keyword_pub,
+        keyword_extern,
         keyword_async,
         keyword_await,
+        keyword_unsafe,
+        keyword_as,
         keyword_fn,
         keyword_if,
         keyword_else,
@@ -32,6 +40,9 @@ pub const Token = struct {
         keyword_switch,
         keyword_return,
         keyword_for,
+        keyword_while,
+        keyword_break,
+        keyword_continue,
         keyword_in,
         keyword_let,
         keyword_const,
@@ -40,6 +51,7 @@ pub const Token = struct {
 
         // Symbols
         plus,           // +
+        plus_equal,     // +=
         minus,          // -
         asterisk,       // *
         slash,          // /
@@ -50,6 +62,7 @@ pub const Token = struct {
         less_equal,     // <=
         greater_equal,  // >=
         ampersand,      // &
+        amp_amp,        // &&
         caret,          // ^
         bang,           // !
         pipe,           // |
@@ -102,7 +115,13 @@ pub const Lexer = struct {
         switch (c) {
             '@' => return Token{ .tag = .at, .loc = .{ .start = start, .end = self.index } },
             '?' => return Token{ .tag = .question_mark, .loc = .{ .start = start, .end = self.index } },
-            '+' => return Token{ .tag = .plus, .loc = .{ .start = start, .end = self.index } },
+            '+' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
+                    self.index += 1;
+                    return Token{ .tag = .plus_equal, .loc = .{ .start = start, .end = self.index } };
+                }
+                return Token{ .tag = .plus, .loc = .{ .start = start, .end = self.index } };
+            },
             '-' => {
                 if (self.index < self.buffer.len and self.buffer[self.index] == '>') {
                     self.index += 1;
@@ -132,7 +151,13 @@ pub const Lexer = struct {
                 }
                 return Token{ .tag = .equal, .loc = .{ .start = start, .end = self.index } };
             },
-            '&' => return Token{ .tag = .ampersand, .loc = .{ .start = start, .end = self.index } },
+            '&' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '&') {
+                    self.index += 1;
+                    return Token{ .tag = .amp_amp, .loc = .{ .start = start, .end = self.index } };
+                }
+                return Token{ .tag = .ampersand, .loc = .{ .start = start, .end = self.index } };
+            },
             '^' => return Token{ .tag = .caret, .loc = .{ .start = start, .end = self.index } },
             '|' => return Token{ .tag = .pipe, .loc = .{ .start = start, .end = self.index } },
             '!' => {
@@ -213,6 +238,9 @@ pub const Lexer = struct {
                         break;
                     }
                 }
+                if (!is_float) {
+                    while (self.index < self.buffer.len and std.ascii.isAlphanumeric(self.buffer[self.index])) : (self.index += 1) {}
+                }
                 const tag: Token.Tag = if (is_float) .float_literal else .int_literal;
                 return Token{ .tag = tag, .loc = .{ .start = start, .end = self.index } };
             },
@@ -229,10 +257,18 @@ pub const Lexer = struct {
 
     fn checkKeyword(str: []const u8) Token.Tag {
         if (std.mem.eql(u8, str, "struct")) return .keyword_struct;
+        if (std.mem.eql(u8, str, "union")) return .keyword_union;
         if (std.mem.eql(u8, str, "enum")) return .keyword_enum;
+        if (std.mem.eql(u8, str, "trait")) return .keyword_trait;
+        if (std.mem.eql(u8, str, "dyn")) return .keyword_dyn;
         if (std.mem.eql(u8, str, "impl")) return .keyword_impl;
+        if (std.mem.eql(u8, str, "mod")) return .keyword_mod;
+        if (std.mem.eql(u8, str, "pub")) return .keyword_pub;
+        if (std.mem.eql(u8, str, "extern")) return .keyword_extern;
         if (std.mem.eql(u8, str, "async")) return .keyword_async;
         if (std.mem.eql(u8, str, "await")) return .keyword_await;
+        if (std.mem.eql(u8, str, "unsafe")) return .keyword_unsafe;
+        if (std.mem.eql(u8, str, "as")) return .keyword_as;
         if (std.mem.eql(u8, str, "fn")) return .keyword_fn;
         if (std.mem.eql(u8, str, "if")) return .keyword_if;
         if (std.mem.eql(u8, str, "else")) return .keyword_else;
@@ -240,6 +276,9 @@ pub const Lexer = struct {
         if (std.mem.eql(u8, str, "switch")) return .keyword_switch;
         if (std.mem.eql(u8, str, "return")) return .keyword_return;
         if (std.mem.eql(u8, str, "for")) return .keyword_for;
+        if (std.mem.eql(u8, str, "while")) return .keyword_while;
+        if (std.mem.eql(u8, str, "break")) return .keyword_break;
+        if (std.mem.eql(u8, str, "continue")) return .keyword_continue;
         if (std.mem.eql(u8, str, "in")) return .keyword_in;
         if (std.mem.eql(u8, str, "let")) return .keyword_let;
         if (std.mem.eql(u8, str, "const")) return .keyword_const;

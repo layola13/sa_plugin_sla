@@ -1,0 +1,49 @@
+@import "sa_std/string.sa"
+@rosetta_255_mix(left: i64, right: i64) -> i64:
+L_ENTRY:
+    tmp_0 = mul left, right
+    product = tmp_0
+    tmp_1 = add product, left
+    tmp_2 = sub tmp_1, right
+    result = tmp_2
+    !product
+    !right
+    !left
+    return result
+
+@rosetta_255_value() -> i64:
+L_ENTRY:
+    tmp_3 = 5
+    tmp_4 = 12
+    tmp_5 = call @rosetta_255_mix(tmp_3, tmp_4)
+    !tmp_3
+    !tmp_4
+    result = tmp_5
+    return result
+
+@main() -> i64:
+L_ENTRY:
+    tmp_6 = call @rosetta_255_value()
+    result = tmp_6
+    return result
+
+@test "rosetta 255 255_contract_memory_allocator_swap"():
+L_TEST_ENTRY_0:
+    tmp_7 = call @rosetta_255_value()
+    got = tmp_7
+    tmp_8 = 53
+    tmp_9 = ne got, tmp_8
+    br tmp_9 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_9
+    panic(255)
+
+L_ELSE_2:
+    !tmp_9
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !got
+    return
+

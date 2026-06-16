@@ -1,22 +1,19 @@
-// Sla companion for SA rosetta demo 109 Atomic Fetch Add.
-// Generated from the catalog name; Rust reference lives in main.rs.
+fn rosetta_109_value() -> i32 {
+    let value = AtomicI32::new(5);
+    let old = value.fetch_add(3, Ordering::SeqCst);
+    let new = value.load(Ordering::SeqCst);
+    return old + new;
+}
 
-fn rosetta_109_value() -> int {
-    let base = (10 * 3) + 109;
-    let threshold = 131;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-
-fn main() -> int {
-    let result = rosetta_109_value();
-    return result;
-};
+fn main() -> i32 {
+    let value = rosetta_109_value();
+    println("{}", value);
+    return value;
+}
 
 @test "rosetta 109 109_atomic_fetch_add"() {
     let got = rosetta_109_value();
-    if got != 8 {
+    if got != 13 {
         panic(109);
     }
+}

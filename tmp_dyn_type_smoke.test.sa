@@ -1,0 +1,32 @@
+@import "sa_std/string.sa"
+@noop(&value: ptr) -> i32:
+L_ENTRY:
+    tmp_0 = 0
+    !value
+    return tmp_0
+
+@main() -> i32:
+L_ENTRY:
+    tmp_1 = 0
+    return tmp_1
+
+@test "dyn type smoke"():
+L_TEST_ENTRY_0:
+    tmp_2 = call @main()
+    tmp_3 = 0
+    tmp_4 = ne tmp_2, tmp_3
+    !tmp_2
+    !tmp_3
+    br tmp_4 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_4
+    panic(902)
+
+L_ELSE_2:
+    !tmp_4
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    return
+

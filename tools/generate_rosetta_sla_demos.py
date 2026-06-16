@@ -76,7 +76,7 @@ def sla_source(name: str) -> str:
     let total = 0;
     for i in 1..{limit} {{
         total = total + i;
-    }};
+    }}
     let result = total + {offset};
     return result;
 }}
@@ -105,14 +105,14 @@ fn rosetta_{suffix}_value() -> int {{
 fn main() -> int {{
     let result = rosetta_{suffix}_value();
     return result;
-}}
+}};
 
 @test "rosetta {suffix} {name}"() {{
     let got = rosetta_{suffix}_value();
     if got != {expected} {{
         panic({number});
     }};
-}}
+}};
 """
 
 

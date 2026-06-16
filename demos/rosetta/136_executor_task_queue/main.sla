@@ -1,21 +1,35 @@
-// Sla companion for SA rosetta demo 136 Executor Task Queue.
-// Generated from the catalog name; Rust reference lives in main.rs.
+async fn task_one() -> i32 {
+    1
+}
 
-fn rosetta_136_value() -> int {
-    let seed = 3;
-    let shifted = seed + 136;
-    let scaled = shifted * 3;
-    let result = scaled - 26;
-    return result;
-};
+async fn task_two() -> i32 {
+    2
+}
 
-fn main() -> int {
-    let result = rosetta_136_value();
-    return result;
-};
+async fn task_three() -> i32 {
+    3
+}
+
+fn rosetta_136_value() -> i32 {
+    let queue = vec(task_one(), task_two(), task_three());
+    let total = 0;
+
+    while let Some(task) = queue.pop() {
+        total = total + task.await;
+    }
+
+    return total;
+}
+
+fn main() -> i32 {
+    let value = rosetta_136_value();
+    println("{}", value);
+    return value;
+}
 
 @test "rosetta 136 136_executor_task_queue"() {
     let got = rosetta_136_value();
-    if got != 391 {
+    if got != 6 {
         panic(136);
-    }
+    };
+}

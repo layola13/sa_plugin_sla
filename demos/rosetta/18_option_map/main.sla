@@ -1,21 +1,15 @@
-// Sla companion for SA rosetta demo 018 Option Map.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_018_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }    let result = total + 23;
-    return result;
-};
+fn main() -> i32 {
+    let value = Some(3).map(|x| x + 5).unwrap_or(0);
+    println("{}", value);
+    return 0;
+}
 
-fn main() -> int {
-    let result = rosetta_018_value();
-    return result;
-};
-
-@test "rosetta 018 18_option_map"() {
-    let got = rosetta_018_value();
-    if got != 33 {
+@test "rosetta 018 option map"() {
+    let value = Some(3).map(|x| x + 5).unwrap_or(0);
+    if value != 8 {
         panic(18);
-    }
+    };
+}

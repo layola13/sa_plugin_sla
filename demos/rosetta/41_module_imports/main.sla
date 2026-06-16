@@ -1,22 +1,21 @@
-// Sla companion for SA rosetta demo 041 Module Imports.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_041_value() -> int {
-    let base = (10 * 7) + 41;
-    let threshold = 64;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-
-fn main() -> int {
-    let result = rosetta_041_value();
-    return result;
-};
-
-@test "rosetta 041 41_module_imports"() {
-    let got = rosetta_041_value();
-    if got != 47 {
-        panic(41);
+mod math {
+    pub fn double(x: i32) -> i32 {
+        x * 2
     }
+}
+
+fn main() -> i32 {
+    let value = math::double(21);
+    println("{}", value);
+    return 0;
+}
+
+@test "rosetta 041 module imports"() {
+    let value = math::double(21);
+    if value != 42 {
+        panic(41);
+    };
+}

@@ -1,21 +1,21 @@
-// Sla companion for SA rosetta demo 058 Borrow Update.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_058_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }    let result = total + 17;
-    return result;
-};
+fn bump(&value: i32) {
+    *value += 1;
+}
 
-fn main() -> int {
-    let result = rosetta_058_value();
-    return result;
-};
+fn main() -> i32 {
+    let value = 9;
+    bump(&value);
+    println("{}", value);
+    return 0;
+}
 
-@test "rosetta 058 58_borrow_update"() {
-    let got = rosetta_058_value();
-    if got != 27 {
+@test "rosetta 058 borrow update"() {
+    let value = 9;
+    bump(&value);
+    if value != 10 {
         panic(58);
-    }
+    };
+}

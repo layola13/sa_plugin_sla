@@ -1,76 +1,100 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
 @import "sa_std/array.sa"
 @import "sa_std/core/iter.sa"
-@rosetta_014_value() -> i64:
+@main() -> i32:
 L_ENTRY:
-    values = alloc 32
+    values = alloc 16
     tmp_0 = 1
-    store values+0, tmp_0 as i64
+    store values+0, tmp_0 as i32
     tmp_1 = 2
-    store values+8, tmp_1 as i64
+    store values+4, tmp_1 as i32
     tmp_2 = 3
-    store values+16, tmp_2 as i64
+    store values+8, tmp_2 as i32
     tmp_3 = 4
-    store values+24, tmp_3 as i64
-    tmp_4 = 8
+    store values+12, tmp_3 as i32
+    tmp_4 = 4
     tmp_5 = ptr_add values, tmp_4
-    tmp_6 = alloc Slice_SIZE
-    EXPAND ARRAY_AS_SLICE_U64 tmp_6, tmp_5, 2
-    EXPAND ITER_FROM_SLICE tmp_7, tmp_6
-    EXPAND ITER_SUM_U64 tmp_8, tmp_7
+    tmp_6 = 0
+    tmp_7 = 0
+    tmp_8 = ptr_add tmp_5, tmp_7
+    tmp_9 = load tmp_8+0 as i32
+    tmp_10 = add tmp_6, tmp_9
     !tmp_7
+    !tmp_8
+    !tmp_9
     !tmp_6
-    window_sum = tmp_8
-    !values
-    return window_sum
-
-@main() -> i64:
-L_ENTRY:
-    tmp_9 = call @rosetta_014_value()
-    result = tmp_9
-    tmp_10 = 5
-    tmp_11 = ne result, tmp_10
-    br tmp_11 -> L_THEN_0, L_ELSE_1
-
-L_THEN_0:
+    tmp_11 = 4
+    tmp_12 = ptr_add tmp_5, tmp_11
+    tmp_13 = load tmp_12+0 as i32
+    tmp_14 = add tmp_10, tmp_13
     !tmp_11
-    panic(14)
-
-L_ELSE_1:
-    !tmp_11
-    jmp L_MERGE_2
-
-L_MERGE_2:
-    tmp_14 = call @sa_fmt_i64(result, 10)
-    tmp_15 = call @sa_fmt_buffer_data(tmp_14)
-    tmp_16 = call @sa_fmt_buffer_len(tmp_14)
-    tmp_17 = tmp_15
-    call @sa_print_bytes(&tmp_17, tmp_16)
-    call @sa_fmt_buffer_free(^tmp_14)
+    !tmp_12
+    !tmp_13
+    !tmp_10
+    !tmp_5
+    window_sum = tmp_14
+    tmp_15 = call @sa_fmt_u64(window_sum, 10)
+    tmp_16 = call @sa_fmt_buffer_data(tmp_15)
+    tmp_17 = call @sa_fmt_buffer_len(tmp_15)
+    tmp_18 = tmp_16
+    call @sa_print_bytes(&tmp_18, tmp_17)
+    call @sa_fmt_buffer_free(^tmp_15)
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_18 = 0
-    !result
-    return tmp_18
+    tmp_19 = 0
+    !values
+    !window_sum
+    return tmp_19
 
 @test "rosetta 014 slice window"():
-L_TEST_ENTRY_3:
-    tmp_19 = call @rosetta_014_value()
-    got = tmp_19
-    tmp_20 = 5
-    tmp_21 = ne got, tmp_20
-    br tmp_21 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_0:
+    values = alloc 16
+    tmp_20 = 1
+    store values+0, tmp_20 as i32
+    tmp_21 = 2
+    store values+4, tmp_21 as i32
+    tmp_22 = 3
+    store values+8, tmp_22 as i32
+    tmp_23 = 4
+    store values+12, tmp_23 as i32
+    tmp_24 = 4
+    tmp_25 = ptr_add values, tmp_24
+    tmp_26 = 0
+    tmp_27 = 0
+    tmp_28 = ptr_add tmp_25, tmp_27
+    tmp_29 = load tmp_28+0 as i32
+    tmp_30 = add tmp_26, tmp_29
+    !tmp_27
+    !tmp_28
+    !tmp_29
+    !tmp_26
+    tmp_31 = 4
+    tmp_32 = ptr_add tmp_25, tmp_31
+    tmp_33 = load tmp_32+0 as i32
+    tmp_34 = add tmp_30, tmp_33
+    !tmp_31
+    !tmp_32
+    !tmp_33
+    !tmp_30
+    !tmp_25
+    window_sum = tmp_34
+    tmp_35 = 5
+    tmp_36 = ne window_sum, tmp_35
+    !tmp_35
+    br tmp_36 -> L_THEN_1, L_ELSE_2
 
-L_THEN_4:
-    !tmp_21
+L_THEN_1:
+    !tmp_36
     panic(14)
 
-L_ELSE_5:
-    !tmp_21
-    jmp L_MERGE_6
+L_ELSE_2:
+    !tmp_36
+    jmp L_MERGE_3
 
-L_MERGE_6:
-    !got
+L_MERGE_3:
+    !values
+    !window_sum
     return
 

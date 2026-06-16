@@ -1,21 +1,17 @@
-// Sla companion for SA rosetta demo 064 File Manifest.
-// Generated from the catalog name; Rust reference lives in main.rs.
+fn file_manifest_count() -> usize {
+    let files = ["main.rs", "main.sa", "README.md"];
+    return files.len();
+}
 
-fn rosetta_064_value() -> int {
-    let seed = 16;
-    let shifted = seed + 64;
-    let scaled = shifted * 3;
-    let result = scaled - 23;
-    return result;
-};
-
-fn main() -> int {
-    let result = rosetta_064_value();
-    return result;
-};
+fn main() -> i32 {
+    let count = file_manifest_count();
+    println("{}", count);
+    return 0;
+}
 
 @test "rosetta 064 64_file_manifest"() {
-    let got = rosetta_064_value();
-    if got != 217 {
+    let got = file_manifest_count();
+    if got != 3 {
         panic(64);
-    }
+    };
+}

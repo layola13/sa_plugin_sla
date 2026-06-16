@@ -1,21 +1,24 @@
-// Sla companion for SA rosetta demo 146 Never Type Fallback.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_146_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }    let result = total + 13;
+fn rosetta_146_value() -> i32 {
+    let result: i32 = match Some(1) {
+        Some(v) => {
+            v
+        },
+        None => {
+            panic("unreachable")
+        },
+    };
     return result;
-};
+}
 
-fn main() -> int {
-    let result = rosetta_146_value();
-    return result;
-};
+fn main() -> i32 {
+    let value = rosetta_146_value();
+    println("{}", value);
+    return value;
+}
 
 @test "rosetta 146 146_never_type_fallback"() {
     let got = rosetta_146_value();
-    if got != 23 {
+    if got != 1 {
         panic(146);
-    }
+    };
+}

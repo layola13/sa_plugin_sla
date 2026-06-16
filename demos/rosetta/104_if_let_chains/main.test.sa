@@ -1,0 +1,121 @@
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+@import "sa_std/core/mem.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@import "sa_std/core/option.sa"
+@sla__rosetta_104_value() -> i32:
+L_ENTRY:
+    tmp_0 = 2
+    EXPAND OPTION_NEW_SOME tmp_1, tmp_0
+    !tmp_0
+    left = tmp_1
+    tmp_2 = 3
+    EXPAND OPTION_NEW_SOME tmp_3, tmp_2
+    !tmp_2
+    middle = tmp_3
+    tmp_4 = 4
+    EXPAND OPTION_NEW_SOME tmp_5, tmp_4
+    !tmp_4
+    right = tmp_5
+    tmp_6 = alloc 4
+    EXPAND OPTION_IS_SOME tmp_7, left
+    br tmp_7 -> L_IF_LET_NEXT_3, L_IF_LET_FAIL_4
+
+L_IF_LET_FAIL_4:
+    !tmp_7
+    jmp L_IF_LET_ELSE_1
+
+L_IF_LET_NEXT_3:
+    !tmp_7
+    EXPAND OPTION_GET x, left
+    EXPAND OPTION_IS_SOME tmp_8, middle
+    br tmp_8 -> L_IF_LET_NEXT_5, L_IF_LET_FAIL_6
+
+L_IF_LET_FAIL_6:
+    !tmp_8
+    !x
+    jmp L_IF_LET_ELSE_1
+
+L_IF_LET_NEXT_5:
+    !tmp_8
+    EXPAND OPTION_GET y, middle
+    EXPAND OPTION_IS_SOME tmp_9, right
+    br tmp_9 -> L_IF_LET_THEN_0, L_IF_LET_FAIL_7
+
+L_IF_LET_FAIL_7:
+    !tmp_9
+    !x
+    !y
+    jmp L_IF_LET_ELSE_1
+
+L_IF_LET_THEN_0:
+    !tmp_9
+    EXPAND OPTION_GET z, right
+    tmp_10 = add x, y
+    tmp_11 = add tmp_10, z
+    !tmp_10
+    store tmp_6+0, tmp_11 as i32
+    !tmp_11
+    !x
+    !y
+    !z
+    jmp L_IF_LET_MERGE_2
+
+L_IF_LET_ELSE_1:
+    tmp_12 = 0
+    store tmp_6+0, tmp_12 as i32
+    !tmp_12
+    jmp L_IF_LET_MERGE_2
+
+L_IF_LET_MERGE_2:
+    tmp_13 = load tmp_6+0 as i32
+    !tmp_6
+    result = tmp_13
+    !middle
+    !right
+    !left
+    return result
+
+@main() -> i32:
+L_ENTRY:
+    tmp_14 = call @sla__rosetta_104_value()
+    value = tmp_14
+    tmp_15 = call @sa_fmt_u64(value, 10)
+    tmp_16 = call @sa_fmt_buffer_data(tmp_15)
+    tmp_17 = call @sa_fmt_buffer_len(tmp_15)
+    tmp_18 = tmp_16
+    call @sa_print_bytes(&tmp_18, tmp_17)
+    call @sa_fmt_buffer_free(^tmp_15)
+    !tmp_18
+    !tmp_17
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    return value
+
+@test "rosetta 104 104_if_let_chains"():
+L_TEST_ENTRY_8:
+    tmp_19 = call @sla__rosetta_104_value()
+    got = tmp_19
+    tmp_20 = 9
+    tmp_21 = ne got, tmp_20
+    !tmp_20
+    br tmp_21 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_21
+    panic(104)
+
+L_ELSE_10:
+    !tmp_21
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    !got
+    return
+

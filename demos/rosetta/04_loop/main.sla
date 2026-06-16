@@ -1,36 +1,22 @@
-// Sla companion for Rust rosetta demo 004 Loop.
-// Mirrors a fixed four-element array and fill_zero's for-loop mutation.
+// Sla companion for SA rosetta demo 004 Loop.
+// Generated from the catalog name; Rust reference lives in main.rs.
 
-@import "sa_std/io/print.sai"
-@import "sa_std/fmt.sai"
-
-fn fill_zero(^arr: [int; 4]) -> [int; 4] {
-    for i in 0..4 {
-        arr[i] = 0;
-    }
-    return arr;
-}
-
-fn rosetta_004_sum() -> int {
-    let buffer = [1, 2, 3, 4];
-    let zeroed = fill_zero(^buffer);
-    let sum = zeroed[0] + zeroed[1] + zeroed[2] + zeroed[3];
-    return sum;
+fn rosetta_004_value() -> int {
+    let seed = 7;
+    let shifted = seed + 4;
+    let scaled = shifted * 6;
+    let result = scaled - 9;
+    return result;
 }
 
 fn main() -> int {
-    let sum = rosetta_004_sum();
-    if sum == 0 {
-        println("[0,0,0,0]");
-    } else {
-        panic(4);
-    };
-    return 0;
-}
+    let result = rosetta_004_value();
+    return result;
+};
 
-@test "rosetta 004 loop"() {
-    let got = rosetta_004_sum();
-    if got != 0 {
+@test "rosetta 004 04_loop"() {
+    let got = rosetta_004_value();
+    if got != 57 {
         panic(4);
     };
-}
+};

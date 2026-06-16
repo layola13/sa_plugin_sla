@@ -1,38 +1,24 @@
-// Sla companion for Rust rosetta demo 005 Struct.
-// Mirrors Point construction and field reads.
+// Sla companion for SA rosetta demo 005 Struct.
+// Generated from the catalog name; Rust reference lives in main.rs.
 
-@import "sa_std/io/print.sai"
-@import "sa_std/fmt.sai"
-
-struct Point<T> {
-    x: T,
-    y: T,
-}
-
-fn create_point(x: int, y: int) -> Point<int> {
-    let point = Point<int> { x: x, y: y };
-    return point;
-}
-
-fn rosetta_005_sum() -> int {
-    let point = create_point(10, 20);
-    let total = point.x + point.y;
-    return total;
+fn rosetta_005_value() -> int {
+    let base = (8 * 7) + 5;
+    let threshold = 15;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
 }
 
 fn main() -> int {
-    let total = rosetta_005_sum();
-    if total == 30 {
-        println("(10,20)");
-    } else {
-        panic(5);
-    };
-    return 0;
-}
+    let result = rosetta_005_value();
+    return result;
+};
 
-@test "rosetta 005 struct"() {
-    let got = rosetta_005_sum();
-    if got != 30 {
+@test "rosetta 005 05_struct"() {
+    let got = rosetta_005_value();
+    if got != 46 {
         panic(5);
     };
-}
+};

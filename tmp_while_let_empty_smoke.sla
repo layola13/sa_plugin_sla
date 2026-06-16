@@ -1,0 +1,13 @@
+fn while_let_empty() -> i32 {
+    let values = vec(1, 2, 3);
+    while let Some(value) = values.pop() {
+    }
+    return 0;
+}
+
+@test "while let empty smoke"() {
+    let got = while_let_empty();
+    if got != 0 {
+        panic(7009);
+    };
+}

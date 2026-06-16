@@ -1,0 +1,17 @@
+trait Score {
+    fn score(&self) -> i32;
+}
+
+fn score_value(&value: dyn Score) -> i32 {
+    value.score()
+}
+
+fn main() -> i32 {
+    return 0;
+};
+
+@test "dyn method call smoke"() {
+    if main() != 0 {
+        panic(903);
+    };
+};

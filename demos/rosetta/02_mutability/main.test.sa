@@ -1,87 +1,57 @@
-@import "sa_std/io/print.sai"
-@import "sa_std/fmt.sai"
-@read_shared(value: i64) -> i64:
-L_ENTRY:
-    return value
-
-@write_unique(_old_value: i64, new_value: i64) -> i64:
-L_ENTRY:
-    !_old_value
-    return new_value
-
+@import "sa_std/string.sa"
 @rosetta_002_value() -> i64:
 L_ENTRY:
-    tmp_0 = 10
-    x = tmp_0
-    tmp_1 = call @read_shared(x)
-    before = tmp_1
-    tmp_2 = 10
-    tmp_3 = ne before, tmp_2
-    br tmp_3 -> L_THEN_0, L_ELSE_1
-
-L_THEN_0:
-    !tmp_3
-    panic(20)
-
-L_ELSE_1:
-    !tmp_3
-    jmp L_MERGE_2
-
-L_MERGE_2:
-    tmp_6 = 20
-    tmp_7 = call @write_unique(x, tmp_6)
-    !tmp_6
-    !x
-    x = tmp_7
-    !before
-    return x
+    tmp_0 = 0
+    total = tmp_0
+    i = 1
+    tmp_1 = add total, i
+    !total
+    total = tmp_1
+    !i
+    i = 2
+    tmp_2 = add total, i
+    !total
+    total = tmp_2
+    !i
+    i = 3
+    tmp_3 = add total, i
+    !total
+    total = tmp_3
+    !i
+    i = 4
+    tmp_4 = add total, i
+    !total
+    total = tmp_4
+    !i
+    tmp_5 = 7
+    tmp_6 = add total, tmp_5
+    result = tmp_6
+    !total
+    return result
 
 @main() -> i64:
 L_ENTRY:
+    tmp_7 = call @rosetta_002_value()
+    result = tmp_7
+    return result
+
+@test "rosetta 002 02_mutability"():
+L_TEST_ENTRY_0:
     tmp_8 = call @rosetta_002_value()
-    x = tmp_8
-    tmp_9 = 20
-    tmp_10 = eq x, tmp_9
-    br tmp_10 -> L_THEN_3, L_ELSE_4
+    got = tmp_8
+    tmp_9 = 17
+    tmp_10 = ne got, tmp_9
+    br tmp_10 -> L_THEN_1, L_ELSE_2
 
-L_THEN_3:
-    !tmp_10
-    tmp_11 = call @sa_fmt_i64(x, 10)
-    tmp_12 = call @sa_fmt_buffer_data(tmp_11)
-    tmp_13 = call @sa_fmt_buffer_len(tmp_11)
-    tmp_14 = tmp_12
-    call @sa_print_bytes(&tmp_14, tmp_13)
-    call @sa_fmt_buffer_free(^tmp_11)
-    @const SLA_STR_0 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_0, 1)
-    jmp L_MERGE_5
-
-L_ELSE_4:
+L_THEN_1:
     !tmp_10
     panic(2)
 
-L_MERGE_5:
-    tmp_17 = 0
-    !x
-    return tmp_17
+L_ELSE_2:
+    !tmp_10
+    jmp L_MERGE_3
 
-@test "rosetta 002 mutability"():
-L_TEST_ENTRY_6:
-    tmp_18 = call @rosetta_002_value()
-    got = tmp_18
-    tmp_19 = 20
-    tmp_20 = ne got, tmp_19
-    br tmp_20 -> L_THEN_7, L_ELSE_8
-
-L_THEN_7:
-    !tmp_20
-    panic(2)
-
-L_ELSE_8:
-    !tmp_20
-    jmp L_MERGE_9
-
-L_MERGE_9:
+L_MERGE_3:
     !got
     return
 

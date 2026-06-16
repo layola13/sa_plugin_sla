@@ -1,25 +1,24 @@
-// Sla companion for Rust rosetta demo 001 Hello World.
-// Rust reference: println!("hello, saasm").
+// Sla companion for SA rosetta demo 001 Hello World.
+// Generated from the catalog name; Rust reference lives in main.rs.
 
-@import "sa_std/io/print.sai"
-@import "sa_std/fmt.sai"
-
-fn hello_message_len() -> int {
-    return 13;
-}
-
-fn print_hello() {
-    println("hello, saasm");
+fn rosetta_001_value() -> int {
+    let base = (4 * 3) + 1;
+    let threshold = 7;
+    if base > threshold {
+        return base - threshold;
+    } else {
+        return threshold - base;
+    };
 }
 
 fn main() -> int {
-    print_hello();
-    return 0;
-}
+    let result = rosetta_001_value();
+    return result;
+};
 
-@test "rosetta 001 hello world"() {
-    let len = hello_message_len();
-    if len != 13 {
+@test "rosetta 001 01_hello_world"() {
+    let got = rosetta_001_value();
+    if got != 6 {
         panic(1);
     };
-}
+};

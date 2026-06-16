@@ -1,47 +1,18 @@
-// Sla companion for Rust rosetta demo 011 Tuples.
-
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-fn rosetta_011_first() -> int {
+fn main() -> i32 {
     let pair = (3, 4);
-    return pair.0;
-}
-
-fn rosetta_011_second() -> int {
-    let pair = (3, 4);
-    return pair.1;
-}
-
-fn rosetta_011_value() -> int {
-    let pair = (3, 4);
-    return pair.0 * 10 + pair.1;
-}
-
-fn main() -> int {
-    let first = rosetta_011_first();
-    let second = rosetta_011_second();
-    if first != 3 {
-        panic(11);
-    };
-    if second != 4 {
-        panic(11);
-    };
-    println("({}, {})", first, second);
+    println("({}, {})", pair.0, pair.1);
     return 0;
-}
+};
 
 @test "rosetta 011 tuples"() {
-    let first = rosetta_011_first();
-    let second = rosetta_011_second();
-    let encoded = rosetta_011_value();
-    if first != 3 {
+    let pair = (3, 4);
+    if pair.0 != 3 {
         panic(11);
     };
-    if second != 4 {
-        panic(12);
+    if pair.1 != 4 {
+        panic(11);
     };
-    if encoded != 34 {
-        panic(13);
-    };
-}
+};

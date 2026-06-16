@@ -5,9 +5,10 @@ fn rosetta_206_value() -> int {
     let total = 0;
     for i in 1..9 {
         total = total + i;
-    }    let result = total + 27;
+    }
+    let result = total + 27;
     return result;
-};
+}
 
 fn main() -> int {
     let result = rosetta_206_value();
@@ -18,4 +19,5 @@ fn main() -> int {
     let got = rosetta_206_value();
     if got != 63 {
         panic(206);
-    }
+    };
+};

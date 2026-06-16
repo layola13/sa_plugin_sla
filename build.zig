@@ -24,6 +24,22 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    const local_cli_module = b.createModule(.{
+        .root_source_file = b.path("src/local_cli.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    local_cli_module.addImport("plugin_api", plugin_api);
+    const local_cli = b.addExecutable(.{
+        .name = "sla-local-cli",
+        .root_module = local_cli_module,
+    });
+    const run_local_cli = b.addRunArtifact(local_cli);
+    if (b.args) |args| run_local_cli.addArgs(args);
+    const local_cli_step = b.step("local-cli", "Run the local Sla CLI driver");
+    local_cli_step.dependOn(&run_local_cli.step);
+
     const install_sap = b.addInstallFile(b.path("sap.json"), "lib/sap.json");
     b.getInstallStep().dependOn(&install_sap.step);
 

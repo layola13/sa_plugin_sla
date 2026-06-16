@@ -1,0 +1,18 @@
+fn refcell_smoke() -> i32 {
+    let value = RefCell::new(7);
+    let first = 0;
+    {
+        let borrowed = value.borrow();
+        first = *borrowed;
+    }
+    *value.borrow_mut() = 9;
+    let second_ref = value.borrow();
+    let second = *second_ref;
+    return first + second;
+}
+
+@test "refcell borrow set"() {
+    if refcell_smoke() != 16 {
+        panic(1);
+    };
+}

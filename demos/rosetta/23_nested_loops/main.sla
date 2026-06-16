@@ -1,24 +1,33 @@
-// Sla companion for SA rosetta demo 023 Nested Loops.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_023_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-};
-
-fn rosetta_023_value() -> int {
-    let result = rosetta_023_mix(10, 12);
-    return result;
-};
-
-fn main() -> int {
-    let result = rosetta_023_value();
-    return result;
-};
-
-@test "rosetta 023 23_nested_loops"() {
-    let got = rosetta_023_value();
-    if got != 118 {
-        panic(23);
+fn main() -> i32 {
+    let sum: i32 = 0;
+    let y: i32 = 1;
+    while y <= 2 {
+        let x: i32 = 1;
+        while x <= 3 {
+            sum = sum + (x * y);
+            x = x + 1;
+        }
+        y = y + 1;
     }
+    println("{}", sum);
+    return 0;
+};
+
+@test "rosetta 023 nested loops"() {
+    let sum: i32 = 0;
+    let y: i32 = 1;
+    while y <= 2 {
+        let x: i32 = 1;
+        while x <= 3 {
+            sum = sum + (x * y);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    if sum != 18 {
+        panic(23);
+    };
+};

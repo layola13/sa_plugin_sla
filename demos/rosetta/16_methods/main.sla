@@ -1,38 +1,26 @@
-// Sla companion for Rust rosetta demo 016 Methods.
-// Mirrors a simple impl block with a receiver method.
-
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
 struct Vec2 {
-    x: int,
-    y: int,
+    x: i32,
+    y: i32,
 }
 
 impl Vec2 {
-    fn square_len(&self) -> int {
+    fn square_len(&self) -> i32 {
         return self.x * self.x + self.y * self.y;
     }
 }
 
-fn rosetta_016_value() -> int {
+fn main() -> i32 {
     let v = Vec2 { x: 3, y: 4 };
-    let result = v.square_len();
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_016_value();
-    if result != 25 {
-        panic(16);
-    };
-    println("{}", result);
+    println("{}", v.square_len());
     return 0;
-}
+};
 
 @test "rosetta 016 methods"() {
-    let got = rosetta_016_value();
-    if got != 25 {
+    let v = Vec2 { x: 3, y: 4 };
+    if v.square_len() != 25 {
         panic(16);
     };
-}
+};

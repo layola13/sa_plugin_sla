@@ -1,0 +1,172 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@map_add_five(opt: ptr) -> ptr:
+L_ENTRY:
+    jmp L_MATCH_CHECK_0_2
+
+L_MATCH_CHECK_0_2:
+    tmp_0 = load opt+0 as i64
+    tmp_1 = 0
+    tmp_2 = eq tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    br tmp_2 -> L_MATCH_CASE_0_2, L_MATCH_CHECK_1_2
+
+L_MATCH_CASE_0_2:
+    !tmp_2
+    tmp_3 = alloc 12
+    store tmp_3+0, 0 as i64
+    !opt
+    return tmp_3
+
+L_MATCH_CHECK_1_2:
+    !tmp_2
+    tmp_4 = load opt+0 as i64
+    tmp_5 = 1
+    tmp_6 = eq tmp_4, tmp_5
+    !tmp_4
+    !tmp_5
+    br tmp_6 -> L_MATCH_CASE_1_2, L_MATCH_NO_MATCH_1
+
+L_MATCH_CASE_1_2:
+    !tmp_6
+    value = load opt+8 as i32
+    tmp_7 = alloc 12
+    store tmp_7+0, 1 as i64
+    tmp_8 = 5
+    tmp_9 = add value, tmp_8
+    !tmp_8
+    store tmp_7+8, tmp_9 as i32
+    !value
+    !opt
+    return tmp_7
+
+L_MATCH_NO_MATCH_1:
+    !tmp_6
+    panic(1)
+
+
+@main() -> i32:
+L_ENTRY:
+    tmp_11 = alloc 12
+    store tmp_11+0, 1 as i64
+    tmp_12 = 3
+    store tmp_11+8, tmp_12 as i32
+    tmp_13 = call @map_add_five(tmp_11)
+    !tmp_11
+    mapped = tmp_13
+    jmp L_MATCH_CHECK_0_5
+
+L_MATCH_CHECK_0_5:
+    tmp_14 = load mapped+0 as i64
+    tmp_15 = 0
+    tmp_16 = eq tmp_14, tmp_15
+    !tmp_14
+    !tmp_15
+    br tmp_16 -> L_MATCH_CASE_0_5, L_MATCH_CHECK_1_5
+
+L_MATCH_CASE_0_5:
+    !tmp_16
+    tmp_17 = 0
+    tmp_18 = call @sa_fmt_u64(tmp_17, 10)
+    tmp_19 = call @sa_fmt_buffer_data(tmp_18)
+    tmp_20 = call @sa_fmt_buffer_len(tmp_18)
+    tmp_21 = tmp_19
+    call @sa_print_bytes(&tmp_21, tmp_20)
+    call @sa_fmt_buffer_free(^tmp_18)
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_22 = 0
+    !mapped
+    return tmp_22
+
+L_MATCH_CHECK_1_5:
+    !tmp_16
+    tmp_23 = load mapped+0 as i64
+    tmp_24 = 1
+    tmp_25 = eq tmp_23, tmp_24
+    !tmp_23
+    !tmp_24
+    br tmp_25 -> L_MATCH_CASE_1_5, L_MATCH_NO_MATCH_4
+
+L_MATCH_CASE_1_5:
+    !tmp_25
+    value = load mapped+8 as i32
+    tmp_26 = call @sa_fmt_u64(value, 10)
+    tmp_27 = call @sa_fmt_buffer_data(tmp_26)
+    tmp_28 = call @sa_fmt_buffer_len(tmp_26)
+    tmp_29 = tmp_27
+    call @sa_print_bytes(&tmp_29, tmp_28)
+    call @sa_fmt_buffer_free(^tmp_26)
+    @const SLA_STR_1 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    tmp_30 = 0
+    !value
+    !mapped
+    return tmp_30
+
+L_MATCH_NO_MATCH_4:
+    !tmp_25
+    panic(1)
+
+
+@test "rosetta 018 option map"():
+L_TEST_ENTRY_6:
+    tmp_32 = alloc 12
+    store tmp_32+0, 1 as i64
+    tmp_33 = 3
+    store tmp_32+8, tmp_33 as i32
+    tmp_34 = call @map_add_five(tmp_32)
+    !tmp_32
+    mapped = tmp_34
+    jmp L_MATCH_CHECK_0_9
+
+L_MATCH_CHECK_0_9:
+    tmp_35 = load mapped+0 as i64
+    tmp_36 = 0
+    tmp_37 = eq tmp_35, tmp_36
+    !tmp_35
+    !tmp_36
+    br tmp_37 -> L_MATCH_CASE_0_9, L_MATCH_CHECK_1_9
+
+L_MATCH_CASE_0_9:
+    !tmp_37
+    panic(18)
+
+L_MATCH_CHECK_1_9:
+    !tmp_37
+    tmp_39 = load mapped+0 as i64
+    tmp_40 = 1
+    tmp_41 = eq tmp_39, tmp_40
+    !tmp_39
+    !tmp_40
+    br tmp_41 -> L_MATCH_CASE_1_9, L_MATCH_NO_MATCH_8
+
+L_MATCH_CASE_1_9:
+    !tmp_41
+    value = load mapped+8 as i32
+    tmp_42 = 8
+    tmp_43 = ne value, tmp_42
+    !tmp_42
+    br tmp_43 -> L_THEN_10, L_ELSE_11
+
+L_THEN_10:
+    !tmp_43
+    panic(18)
+
+L_ELSE_11:
+    !tmp_43
+    jmp L_MERGE_12
+
+L_MERGE_12:
+    !value
+    !mapped
+    return
+
+L_MATCH_NO_MATCH_8:
+    !tmp_41
+    panic(1)
+
+    return
+

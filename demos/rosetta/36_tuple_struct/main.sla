@@ -1,21 +1,19 @@
-// Sla companion for SA rosetta demo 036 Tuple Struct.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_036_value() -> int {
-    let seed = 5;
-    let shifted = seed + 36;
-    let scaled = shifted * 2;
-    let result = scaled - 18;
-    return result;
-};
+struct Color(u8, u8, u8);
 
-fn main() -> int {
-    let result = rosetta_036_value();
-    return result;
-};
+fn main() -> i32 {
+    let color = Color(2, 4, 8);
+    let total = color.0 as i32 + color.1 as i32 + color.2 as i32;
+    println("{}", total);
+    return 0;
+}
 
-@test "rosetta 036 36_tuple_struct"() {
-    let got = rosetta_036_value();
-    if got != 64 {
+@test "rosetta 036 tuple struct"() {
+    let color = Color(2, 4, 8);
+    let total = color.0 as i32 + color.1 as i32 + color.2 as i32;
+    if total != 14 {
         panic(36);
-    }
+    };
+}

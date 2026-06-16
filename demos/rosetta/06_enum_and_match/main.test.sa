@@ -1,6 +1,16 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@process_msg(^msg: ptr) -> i64:
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+@import "sa_std/core/mem.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@sla__process_msg(msg: ptr) -> i32:
 L_ENTRY:
     jmp L_MATCH_CHECK_0_2
 
@@ -29,8 +39,8 @@ L_MATCH_CHECK_1_2:
 
 L_MATCH_CASE_1_2:
     !tmp_6
-    x = load msg+8 as i64
-    y = load msg+16 as i64
+    x = load msg+8 as i32
+    y = load msg+12 as i32
     tmp_7 = add x, y
     !x
     !y
@@ -42,82 +52,56 @@ L_MATCH_NO_MATCH_1:
     panic(1)
 
 
-@rosetta_006_value() -> i64:
+@main() -> i32:
 L_ENTRY:
-    msg = alloc 24
+    msg = alloc 16
     store msg+0, 1 as i64
     tmp_9 = 10
-    store msg+8, tmp_9 as i64
+    store msg+8, tmp_9 as i32
     tmp_10 = 20
-    store msg+16, tmp_10 as i64
-    tmp_11 = call @process_msg(^msg)
+    store msg+12, tmp_10 as i32
+    tmp_11 = call @sla__process_msg(msg)
     result = tmp_11
-    return result
-
-@main() -> i64:
-L_ENTRY:
-    tmp_12 = call @rosetta_006_value()
-    result = tmp_12
-    tmp_13 = 30
-    tmp_14 = eq result, tmp_13
-    br tmp_14 -> L_THEN_3, L_ELSE_4
-
-L_THEN_3:
+    tmp_12 = call @sa_fmt_u64(result, 10)
+    tmp_13 = call @sa_fmt_buffer_data(tmp_12)
+    tmp_14 = call @sa_fmt_buffer_len(tmp_12)
+    tmp_15 = tmp_13
+    call @sa_print_bytes(&tmp_15, tmp_14)
+    call @sa_fmt_buffer_free(^tmp_12)
+    !tmp_15
     !tmp_14
-    tmp_15 = call @sa_fmt_i64(result, 10)
-    tmp_16 = call @sa_fmt_buffer_data(tmp_15)
-    tmp_17 = call @sa_fmt_buffer_len(tmp_15)
-    tmp_18 = tmp_16
-    call @sa_print_bytes(&tmp_18, tmp_17)
-    call @sa_fmt_buffer_free(^tmp_15)
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    jmp L_MERGE_5
-
-L_ELSE_4:
-    !tmp_14
-    panic(6)
-
-L_MERGE_5:
-    tmp_21 = 0
+    tmp_16 = 0
+    !msg
     !result
-    return tmp_21
+    return tmp_16
 
 @test "rosetta 006 enum and match"():
-L_TEST_ENTRY_6:
-    tmp_22 = call @rosetta_006_value()
-    moved = tmp_22
-    tmp_23 = 30
-    tmp_24 = ne moved, tmp_23
-    br tmp_24 -> L_THEN_7, L_ELSE_8
+L_TEST_ENTRY_3:
+    msg = alloc 16
+    store msg+0, 1 as i64
+    tmp_17 = 10
+    store msg+8, tmp_17 as i32
+    tmp_18 = 20
+    store msg+12, tmp_18 as i32
+    tmp_19 = call @sla__process_msg(msg)
+    result = tmp_19
+    tmp_20 = 30
+    tmp_21 = ne result, tmp_20
+    !tmp_20
+    br tmp_21 -> L_THEN_4, L_ELSE_5
 
-L_THEN_7:
-    !tmp_24
+L_THEN_4:
+    !tmp_21
     panic(6)
 
-L_ELSE_8:
-    !tmp_24
-    jmp L_MERGE_9
+L_ELSE_5:
+    !tmp_21
+    jmp L_MERGE_6
 
-L_MERGE_9:
-    quit = alloc 24
-    store quit+0, 0 as i64
-    tmp_27 = call @process_msg(^quit)
-    stopped = tmp_27
-    tmp_28 = 0
-    tmp_29 = ne stopped, tmp_28
-    br tmp_29 -> L_THEN_10, L_ELSE_11
-
-L_THEN_10:
-    !tmp_29
-    panic(60)
-
-L_ELSE_11:
-    !tmp_29
-    jmp L_MERGE_12
-
-L_MERGE_12:
-    !stopped
-    !moved
+L_MERGE_6:
+    !msg
+    !result
     return
 

@@ -1,24 +1,48 @@
-// Sla companion for SA rosetta demo 055 Builder Pattern.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_055_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-};
+struct Request {
+    method: ptr,
+    path: ptr,
+}
 
-fn rosetta_055_value() -> int {
-    let result = rosetta_055_mix(7, 17);
-    return result;
-};
+struct Builder {
+    method: ptr,
+    path: ptr,
+}
 
-fn main() -> int {
-    let result = rosetta_055_value();
-    return result;
-};
-
-@test "rosetta 055 55_builder_pattern"() {
-    let got = rosetta_055_value();
-    if got != 109 {
-        panic(55);
+impl Builder {
+    fn new() -> Self {
+        return Self { method: "GET", path: "/" };
     }
+
+    fn method(self, method: ptr) -> Self {
+        self.method = method;
+        return self;
+    }
+
+    fn path(self, path: ptr) -> Self {
+        self.path = path;
+        return self;
+    }
+
+    fn build(self) -> Request {
+        return Request { method: self.method, path: self.path };
+    }
+}
+
+fn main() -> i32 {
+    let req = Builder::new().method("POST").path("/api").build();
+    println("{} {}", req.method, req.path);
+    return 0;
+}
+
+@test "rosetta 055 builder pattern"() {
+    let req = Builder::new().method("POST").path("/api").build();
+    if str_eq(req.method, "POST") == false {
+        panic(55);
+    };
+    if str_eq(req.path, "/api") == false {
+        panic(155);
+    };
+}

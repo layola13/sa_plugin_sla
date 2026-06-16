@@ -1,21 +1,40 @@
-// Sla companion for SA rosetta demo 030 Manual Guard Branch.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_030_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }    let result = total + 12;
+enum OptionI32 {
+    None,
+    Some { value: i32 },
+}
+
+fn eval_guard(opt: OptionI32) -> i32 {
+    let miss_value: i32 = 0;
+    let none_value: i32 = -1;
+    let result: i32 = match opt {
+        OptionI32::Some { value } => {
+            if value > 3 {
+                value
+            } else {
+                miss_value
+            };
+        },
+        OptionI32::None => {
+            none_value
+        },
+    };
     return result;
+}
+
+fn main() -> i32 {
+    let value = OptionI32::Some { value: 5 };
+    let result: i32 = eval_guard(value);
+    println("{}", result);
+    return 0;
 };
 
-fn main() -> int {
-    let result = rosetta_030_value();
-    return result;
-};
-
-@test "rosetta 030 30_manual_guard_branch"() {
-    let got = rosetta_030_value();
-    if got != 48 {
+@test "rosetta 030 manual guard branch"() {
+    let value = OptionI32::Some { value: 5 };
+    let result: i32 = eval_guard(value);
+    if result != 5 {
         panic(30);
-    }
+    };
+};

@@ -1,0 +1,77 @@
+@import "sa_std/string.sa"
+@rosetta_134_value() -> i64:
+L_ENTRY:
+    tmp_0 = 0
+    total = tmp_0
+    i = 1
+    tmp_1 = add total, i
+    !total
+    total = tmp_1
+    !i
+    i = 2
+    tmp_2 = add total, i
+    !total
+    total = tmp_2
+    !i
+    i = 3
+    tmp_3 = add total, i
+    !total
+    total = tmp_3
+    !i
+    i = 4
+    tmp_4 = add total, i
+    !total
+    total = tmp_4
+    !i
+    i = 5
+    tmp_5 = add total, i
+    !total
+    total = tmp_5
+    !i
+    i = 6
+    tmp_6 = add total, i
+    !total
+    total = tmp_6
+    !i
+    i = 7
+    tmp_7 = add total, i
+    !total
+    total = tmp_7
+    !i
+    i = 8
+    tmp_8 = add total, i
+    !total
+    total = tmp_8
+    !i
+    tmp_9 = 24
+    tmp_10 = add total, tmp_9
+    result = tmp_10
+    !total
+    return result
+
+@main() -> i64:
+L_ENTRY:
+    tmp_11 = call @rosetta_134_value()
+    result = tmp_11
+    return result
+
+@test "rosetta 134 134_join_all_futures"():
+L_TEST_ENTRY_0:
+    tmp_12 = call @rosetta_134_value()
+    got = tmp_12
+    tmp_13 = 60
+    tmp_14 = ne got, tmp_13
+    br tmp_14 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_14
+    panic(134)
+
+L_ELSE_2:
+    !tmp_14
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !got
+    return
+

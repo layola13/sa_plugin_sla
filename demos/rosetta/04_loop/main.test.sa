@@ -1,111 +1,45 @@
-@import "sa_std/io/print.sai"
-@import "sa_std/fmt.sai"
-@fill_zero(^arr: ptr) -> ptr:
+@import "sa_std/string.sa"
+@rosetta_004_value() -> i64:
 L_ENTRY:
-    i = 0
-    tmp_0 = mul i, 8
-    tmp_1 = ptr_add arr, tmp_0
-    tmp_2 = 0
-    store tmp_1+0, tmp_2 as i64
-    !i
-    i = 1
-    tmp_3 = mul i, 8
-    tmp_4 = ptr_add arr, tmp_3
-    tmp_5 = 0
-    store tmp_4+0, tmp_5 as i64
-    !i
-    i = 2
-    tmp_6 = mul i, 8
-    tmp_7 = ptr_add arr, tmp_6
-    tmp_8 = 0
-    store tmp_7+0, tmp_8 as i64
-    !i
-    i = 3
-    tmp_9 = mul i, 8
-    tmp_10 = ptr_add arr, tmp_9
-    tmp_11 = 0
-    store tmp_10+0, tmp_11 as i64
-    !i
-    return arr
-
-@rosetta_004_sum() -> i64:
-L_ENTRY:
-    buffer = alloc 32
-    tmp_12 = 1
-    store buffer+0, tmp_12 as i64
-    tmp_13 = 2
-    store buffer+8, tmp_13 as i64
-    tmp_14 = 3
-    store buffer+16, tmp_14 as i64
-    tmp_15 = 4
-    store buffer+24, tmp_15 as i64
-    tmp_16 = call @fill_zero(^buffer)
-    zeroed = tmp_16
-    tmp_17 = 0
-    tmp_18 = mul tmp_17, 8
-    tmp_19 = ptr_add zeroed, tmp_18
-    tmp_20 = load tmp_19+0 as i64
-    tmp_21 = 1
-    tmp_22 = mul tmp_21, 8
-    tmp_23 = ptr_add zeroed, tmp_22
-    tmp_24 = load tmp_23+0 as i64
-    tmp_25 = add tmp_20, tmp_24
-    tmp_26 = 2
-    tmp_27 = mul tmp_26, 8
-    tmp_28 = ptr_add zeroed, tmp_27
-    tmp_29 = load tmp_28+0 as i64
-    tmp_30 = add tmp_25, tmp_29
-    tmp_31 = 3
-    tmp_32 = mul tmp_31, 8
-    tmp_33 = ptr_add zeroed, tmp_32
-    tmp_34 = load tmp_33+0 as i64
-    tmp_35 = add tmp_30, tmp_34
-    sum = tmp_35
-    !zeroed
-    return sum
+    tmp_0 = 7
+    seed = tmp_0
+    tmp_1 = 4
+    tmp_2 = add seed, tmp_1
+    shifted = tmp_2
+    tmp_3 = 6
+    tmp_4 = mul shifted, tmp_3
+    scaled = tmp_4
+    tmp_5 = 9
+    tmp_6 = sub scaled, tmp_5
+    result = tmp_6
+    !scaled
+    !seed
+    !shifted
+    return result
 
 @main() -> i64:
 L_ENTRY:
-    tmp_36 = call @rosetta_004_sum()
-    sum = tmp_36
-    tmp_37 = 0
-    tmp_38 = eq sum, tmp_37
-    br tmp_38 -> L_THEN_0, L_ELSE_1
+    tmp_7 = call @rosetta_004_value()
+    result = tmp_7
+    return result
 
-L_THEN_0:
-    !tmp_38
-    @const SLA_STR_0 = utf8:"[0,0,0,0]"
-    call @sa_print_bytes(&SLA_STR_0, 9)
-    @const SLA_STR_1 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_1, 1)
-    jmp L_MERGE_2
+@test "rosetta 004 04_loop"():
+L_TEST_ENTRY_0:
+    tmp_8 = call @rosetta_004_value()
+    got = tmp_8
+    tmp_9 = 57
+    tmp_10 = ne got, tmp_9
+    br tmp_10 -> L_THEN_1, L_ELSE_2
 
-L_ELSE_1:
-    !tmp_38
+L_THEN_1:
+    !tmp_10
     panic(4)
 
-L_MERGE_2:
-    tmp_41 = 0
-    !sum
-    return tmp_41
+L_ELSE_2:
+    !tmp_10
+    jmp L_MERGE_3
 
-@test "rosetta 004 loop"():
-L_TEST_ENTRY_3:
-    tmp_42 = call @rosetta_004_sum()
-    got = tmp_42
-    tmp_43 = 0
-    tmp_44 = ne got, tmp_43
-    br tmp_44 -> L_THEN_4, L_ELSE_5
-
-L_THEN_4:
-    !tmp_44
-    panic(4)
-
-L_ELSE_5:
-    !tmp_44
-    jmp L_MERGE_6
-
-L_MERGE_6:
+L_MERGE_3:
     !got
     return
 

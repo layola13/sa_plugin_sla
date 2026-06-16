@@ -6,6 +6,7 @@ pub const Node = union(enum) {
     // Declarations
     struct_decl: StructDecl,
     enum_decl: EnumDecl,
+    trait_decl: TraitDecl,
     impl_decl: ImplDecl,
     func_decl: FuncDecl,
     macro_decl: MacroDecl,
@@ -14,12 +15,17 @@ pub const Node = union(enum) {
 
     // Statements
     let_stmt: LetStmt,
+    let_else_stmt: LetElseStmt,
     let_destructure_stmt: LetDestructureStmt,
     const_stmt: ConstStmt,
     assign_stmt: AssignStmt,
+    block_stmt: BlockStmt,
     expr_stmt: *Node,
     return_stmt: ReturnStmt,
     for_stmt: ForStmt,
+    while_stmt: WhileStmt,
+    break_stmt: BreakStmt,
+    continue_stmt: ContinueStmt,
     release_stmt: ReleaseStmt,
 
     // Expressions
@@ -28,6 +34,7 @@ pub const Node = union(enum) {
     if_expr: IfExpr,
     switch_expr: SwitchExpr,
     match_expr: MatchExpr,
+    unsafe_expr: UnsafeExpr,
     await_expr: AwaitExpr,
     binary_expr: BinaryExpr,
     call_expr: CallExpr,
@@ -35,11 +42,13 @@ pub const Node = union(enum) {
     borrow_expr: BorrowExpr,
     move_expr: MoveExpr,
     deref_expr: DerefExpr,
+    cast_expr: CastExpr,
     field_expr: FieldExpr,
     struct_literal: StructLiteral,
     enum_literal: EnumLiteral,
     tuple_literal: TupleLiteral,
     array_literal: ArrayLiteral,
+    repeat_array_literal: RepeatArrayLiteral,
     index_expr: IndexExpr,
     slice_expr: SliceExpr,
     try_expr: TryExpr,
@@ -53,6 +62,7 @@ pub const StructDecl = struct {
     name: []const u8,
     generics: []const []const u8,
     fields: []const Field,
+    is_union: bool = false,
 };
 
 pub const EnumDecl = struct {
@@ -67,8 +77,21 @@ pub const EnumVariant = struct {
 };
 
 pub const ImplDecl = struct {
+    trait_name: ?[]const u8 = null,
     target_ty: *Type,
     methods: []const *Node,
+};
+
+pub const TraitMethod = struct {
+    name: []const u8,
+    params: []const Param,
+    ret_ty: *Type,
+};
+
+pub const TraitDecl = struct {
+    name: []const u8,
+    supertraits: []const []const u8 = &.{},
+    methods: []const TraitMethod,
 };
 
 pub const Field = struct {
@@ -78,6 +101,10 @@ pub const Field = struct {
 
 pub const FuncDecl = struct {
     name: []const u8,
+    is_pub: bool = false,
+    is_extern: bool = false,
+    abi: ?[]const u8 = null,
+    no_mangle: bool = false,
     generics: []const []const u8,
     params: []const Param,
     ret_ty: *Type,
@@ -116,6 +143,12 @@ pub const LetStmt = struct {
     value: *Node,
 };
 
+pub const LetElseStmt = struct {
+    pattern: EnumPattern,
+    value: *Node,
+    else_block: []const *Node,
+};
+
 pub const LetDestructureStmt = struct {
     names: []const []const u8,
     value: *Node,
@@ -132,6 +165,10 @@ pub const AssignStmt = struct {
     value: *Node,
 };
 
+pub const BlockStmt = struct {
+    body: []const *Node,
+};
+
 pub const ReturnStmt = struct {
     value: ?*Node,
 };
@@ -139,9 +176,19 @@ pub const ReturnStmt = struct {
 pub const ForStmt = struct {
     var_name: []const u8,
     start: *Node,
-    end: *Node,
+    end: ?*Node,
     body: []const *Node,
 };
+
+pub const WhileStmt = struct {
+    cond: *Node,
+    let_pattern: ?EnumPattern = null,
+    body: []const *Node,
+};
+
+pub const BreakStmt = struct {};
+
+pub const ContinueStmt = struct {};
 
 pub const ReleaseStmt = struct {
     var_name: []const u8,
@@ -156,8 +203,14 @@ pub const Literal = union(enum) {
 
 pub const IfExpr = struct {
     cond: *Node,
+    let_chain: ?[]const IfLetCond = null,
     then_block: []const *Node,
     else_block: ?[]const *Node,
+};
+
+pub const IfLetCond = struct {
+    pattern: EnumPattern,
+    value: *Node,
 };
 
 pub const Case = struct {
@@ -173,6 +226,10 @@ pub const SwitchExpr = struct {
 pub const MatchExpr = struct {
     val: *Node,
     cases: []const MatchCase,
+};
+
+pub const UnsafeExpr = struct {
+    body: []const *Node,
 };
 
 pub const MatchCase = struct {
@@ -219,6 +276,7 @@ pub const BinaryExpr = struct {
 
 pub const CallExpr = struct {
     func_name: []const u8,
+    associated_target: ?[]const u8 = null,
     generics: []const *Type,
     args: []const *Node,
 };
@@ -233,6 +291,11 @@ pub const MoveExpr = struct {
 
 pub const DerefExpr = struct {
     expr: *Node,
+};
+
+pub const CastExpr = struct {
+    expr: *Node,
+    ty: *Type,
 };
 
 pub const FieldExpr = struct {
@@ -269,6 +332,11 @@ pub const ArrayLiteral = struct {
     elements: []const *Node,
 };
 
+pub const RepeatArrayLiteral = struct {
+    value: *Node,
+    len: usize,
+};
+
 pub const IndexExpr = struct {
     target: *Node,
     index: *Node,
@@ -286,6 +354,7 @@ pub const TryExpr = struct {
 
 // Type System representation
 pub const Type = union(enum) {
+    infer,
     primitive: Primitive,
     pointer: *Type,
     borrow: *Type,
@@ -297,6 +366,21 @@ pub const Type = union(enum) {
 };
 
 pub const Primitive = enum {
+    // Integer primitives
+    i8,
+    i16,
+    i32,
+    i64,
+    isize,
+    u8,
+    u16,
+    u32,
+    u64,
+    usize,
+    // Floating-point primitives
+    f32,
+    f64,
+    // Legacy aliases kept during migration.
     integer,
     float,
     boolean,

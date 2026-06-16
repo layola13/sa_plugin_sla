@@ -1,21 +1,33 @@
-// Sla companion for SA rosetta demo 022 Break Continue.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_022_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }    let result = total + 27;
-    return result;
+fn compute_sum() -> i32 {
+    let i: i32 = 0;
+    let sum: i32 = 0;
+
+    while 1 == 1 {
+        i = i + 1;
+        if i % 2 == 0 {
+            continue;
+        };
+        if i > 5 {
+            break;
+        };
+        sum = sum + i;
+    }
+
+    return sum;
+}
+
+fn main() -> i32 {
+    let sum = compute_sum();
+    println("{}", sum);
+    return 0;
 };
 
-fn main() -> int {
-    let result = rosetta_022_value();
-    return result;
-};
-
-@test "rosetta 022 22_break_continue"() {
-    let got = rosetta_022_value();
-    if got != 63 {
+@test "rosetta 022 break continue"() {
+    let sum = compute_sum();
+    if sum != 9 {
         panic(22);
     };
+};

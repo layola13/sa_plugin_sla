@@ -1,24 +1,17 @@
-// Sla companion for SA rosetta demo 051 Refcount.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_051_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-};
+fn main() -> i32 {
+    let value = Rc::new(5);
+    let clone = value.clone();
+    println("{}", *value + *clone);
+    return 0;
+}
 
-fn rosetta_051_value() -> int {
-    let result = rosetta_051_mix(10, 18);
-    return result;
-};
-
-fn main() -> int {
-    let result = rosetta_051_value();
-    return result;
-};
-
-@test "rosetta 051 51_refcount"() {
-    let got = rosetta_051_value();
-    if got != 172 {
+@test "rosetta 051 refcount"() {
+    let value = Rc::new(5);
+    let clone = value.clone();
+    if *value + *clone != 10 {
         panic(51);
-    }
+    };
+}

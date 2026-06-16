@@ -9,6 +9,7 @@ fn rosetta_169_value() -> int {
     } else {
         return threshold - base;
     };
+}
 
 fn main() -> int {
     let result = rosetta_169_value();
@@ -19,4 +20,5 @@ fn main() -> int {
     let got = rosetta_169_value();
     if got != 158 {
         panic(169);
-    }
+    };
+};

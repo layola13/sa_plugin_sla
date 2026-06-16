@@ -1,24 +1,31 @@
-// Sla companion for SA rosetta demo 043 Tagged Union.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_043_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-};
+enum Shape {
+    Circle(i32),
+    Square(i32),
+}
 
-fn rosetta_043_value() -> int {
-    let result = rosetta_043_mix(22, 34);
-    return result;
-};
-
-fn main() -> int {
-    let result = rosetta_043_value();
-    return result;
-};
-
-@test "rosetta 043 43_tagged_union"() {
-    let got = rosetta_043_value();
-    if got != 736 {
-        panic(43);
+fn area(shape: Shape) -> i32 {
+    match shape {
+        Shape::Circle(r) => {
+            r * r * 3
+        },
+        Shape::Square(s) => {
+            s * s
+        },
     }
+}
+
+fn main() -> i32 {
+    let value = area(Shape::Square(6));
+    println("{}", value);
+    return 0;
+}
+
+@test "rosetta 043 tagged union"() {
+    let value = area(Shape::Square(6));
+    if value != 36 {
+        panic(43);
+    };
+}

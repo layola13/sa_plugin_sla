@@ -1,21 +1,23 @@
-// Sla companion for SA rosetta demo 024 Factorial.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_024_value() -> int {
-    let seed = 10;
-    let shifted = seed + 24;
-    let scaled = shifted * 8;
-    let result = scaled - 6;
-    return result;
-};
-
-fn main() -> int {
-    let result = rosetta_024_value();
-    return result;
-};
-
-@test "rosetta 024 24_factorial"() {
-    let got = rosetta_024_value();
-    if got != 266 {
-        panic(24);
+fn factorial(n: i32) -> i32 {
+    if n <= 1 {
+        1
+    } else {
+        n * factorial(n - 1)
     }
+}
+
+fn main() -> i32 {
+    let value = factorial(5);
+    println("{}", value);
+    return 0;
+};
+
+@test "rosetta 024 factorial"() {
+    let value = factorial(5);
+    if value != 120 {
+        panic(24);
+    };
+};

@@ -1,21 +1,18 @@
-// Sla companion for SA rosetta demo 066 Actor Mailbox.
-// Generated from the catalog name; Rust reference lives in main.rs.
+fn actor_mailbox_sum() -> i32 {
+    let inbox = vec(1, 2, 3);
+    let sum: i32 = inbox.into_iter().sum();
+    return sum;
+}
 
-fn rosetta_066_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }    let result = total + 25;
-    return result;
-};
-
-fn main() -> int {
-    let result = rosetta_066_value();
-    return result;
-};
+fn main() -> i32 {
+    let sum = actor_mailbox_sum();
+    println("{}", sum);
+    return 0;
+}
 
 @test "rosetta 066 66_actor_mailbox"() {
-    let got = rosetta_066_value();
-    if got != 35 {
+    let got = actor_mailbox_sum();
+    if got != 6 {
         panic(66);
-    }
+    };
+}

@@ -1,5 +1,10 @@
-// 259 - Contract Static Init Order
+fn init_order_stages() -> i32 {
+    let config_loaded = 1;
+    let service_started = 1;
+    config_loaded + service_started
+}
+
 fn main() {
-    let value = 259;
-    println!("{}", value);
+    let result = init_order_stages();
+    println!("{}", result);
 }

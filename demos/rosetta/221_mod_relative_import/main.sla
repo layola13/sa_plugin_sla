@@ -1,24 +1,6 @@
-// Sla companion for SA rosetta demo 221 Mod Relative Import.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_221_value() -> int {
-    let base = (3 * 7) + 221;
-    let threshold = 240;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_221_value();
-    return result;
-};
-
-@test "rosetta 221 221_mod_relative_import"() {
-    let got = rosetta_221_value();
-    if got != 2 {
-        panic(221);
-    };
-};
+fn mod_relative_import_depth() -> i32 { let sibling_module = 1; return sibling_module; }
+fn main() -> i32 { let result = mod_relative_import_depth(); println("{}", result); return result; }
+@test "rosetta 221 mod relative import"() { let got = mod_relative_import_depth(); if got != 1 { panic(221); }; }

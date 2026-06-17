@@ -1,22 +1,22 @@
-// Sla companion for SA rosetta demo 124 Thread Local Storage.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/cell.sa"
 
-fn rosetta_124_value() -> int {
-    let seed = 8;
-    let shifted = seed + 124;
-    let scaled = shifted * 9;
-    let result = scaled - 14;
-    return result;
+fn thread_local_cell_value() -> i32 {
+    let value = Cell::new(6);
+    value.set(value.get() + 2);
+    return value.get();
 }
 
-fn main() -> int {
-    let result = rosetta_124_value();
+fn main() -> i32 {
+    let result = thread_local_cell_value();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 124 124_thread_local_storage"() {
-    let got = rosetta_124_value();
-    if got != 1174 {
+    let got = thread_local_cell_value();
+    if got != 8 {
         panic(124);
     };
 };

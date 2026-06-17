@@ -1,22 +1,25 @@
-// Sla companion for SA rosetta demo 116 Va List Variadic.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/slice.sa"
 
-fn rosetta_116_value() -> int {
-    let seed = 17;
-    let shifted = seed + 116;
-    let scaled = shifted * 10;
-    let result = scaled - 6;
+fn sum(nums: &[i32]) -> i32 {
+    nums.iter().copied().sum()
+}
+
+fn variadic_slice_sum() -> i32 {
+    let values = [1, 2, 3];
+    return sum(&values);
+}
+
+fn main() -> i32 {
+    let result = variadic_slice_sum();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_116_value();
-    return result;
-};
-
 @test "rosetta 116 116_va_list_variadic"() {
-    let got = rosetta_116_value();
-    if got != 1324 {
+    let got = variadic_slice_sum();
+    if got != 6 {
         panic(116);
     };
-};
+}

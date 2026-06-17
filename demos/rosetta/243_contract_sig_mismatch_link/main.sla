@@ -1,25 +1,19 @@
-// Sla companion for SA rosetta demo 243 Contract Sig Mismatch Link.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_243_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
+fn contract_signature_mismatch_count() -> i32 {
+    let expected_args = 2;
+    let provided_args = 1;
+    return expected_args - provided_args;
+}
+
+fn main() -> i32 {
+    let result = contract_signature_mismatch_count();
+    println("{}", result);
     return result;
 }
 
-fn rosetta_243_value() -> int {
-    let result = rosetta_243_mix(9, 20);
-    return result;
+@test "rosetta 243 contract sig mismatch link"() {
+    let got = contract_signature_mismatch_count();
+    if got != 1 { panic(243); };
 }
-
-fn main() -> int {
-    let result = rosetta_243_value();
-    return result;
-};
-
-@test "rosetta 243 243_contract_sig_mismatch_link"() {
-    let got = rosetta_243_value();
-    if got != 169 {
-        panic(243);
-    };
-};

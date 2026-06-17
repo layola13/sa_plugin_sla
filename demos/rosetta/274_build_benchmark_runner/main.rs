@@ -1,5 +1,9 @@
-// 274 - Build Benchmark Runner
+fn benchmark_groups() -> i32 {
+    let throughput_group = 1;
+    throughput_group
+}
+
 fn main() {
-    let value = 274;
-    println!("{}", value);
+    let result = benchmark_groups();
+    println!("{}", result);
 }

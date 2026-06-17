@@ -1,5 +1,6 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/core/box.sa"
 
 fn main() -> i32 {
     let value = Box::new(9);
@@ -9,5 +10,7 @@ fn main() -> i32 {
 
 @test "rosetta 020 boxed value"() {
     let value = Box::new(9);
-    println("{}", value);
+    if *value != 9 {
+        panic(20);
+    };
 };

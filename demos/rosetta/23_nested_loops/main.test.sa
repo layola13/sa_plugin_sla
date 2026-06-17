@@ -1,6 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
 @main() -> i32:
 L_ENTRY:
     tmp_0 = 0
@@ -13,21 +17,21 @@ L_WHILE_HEAD_0:
     tmp_2 = 2
     tmp_3 = sle y, tmp_2
     !tmp_2
-    br tmp_3 -> L_WHILE_BODY_1, L_WHILE_EXIT_2
+    br tmp_3 -> L_WHILE_BODY_1, L_WHILE_COND_FALSE_2
 
 L_WHILE_BODY_1:
     !tmp_3
     tmp_4 = 1
     x = tmp_4
-    jmp L_WHILE_HEAD_3
+    jmp L_WHILE_HEAD_4
 
-L_WHILE_HEAD_3:
+L_WHILE_HEAD_4:
     tmp_5 = 3
     tmp_6 = sle x, tmp_5
     !tmp_5
-    br tmp_6 -> L_WHILE_BODY_4, L_WHILE_EXIT_5
+    br tmp_6 -> L_WHILE_BODY_5, L_WHILE_COND_FALSE_6
 
-L_WHILE_BODY_4:
+L_WHILE_BODY_5:
     !tmp_6
     tmp_7 = mul x, y
     tmp_8 = add sum, tmp_7
@@ -39,10 +43,13 @@ L_WHILE_BODY_4:
     !tmp_9
     !x
     x = tmp_10
-    jmp L_WHILE_HEAD_3
+    jmp L_WHILE_HEAD_4
 
-L_WHILE_EXIT_5:
+L_WHILE_COND_FALSE_6:
     !tmp_6
+    jmp L_WHILE_EXIT_7
+
+L_WHILE_EXIT_7:
     tmp_11 = 1
     tmp_12 = add y, tmp_11
     !tmp_11
@@ -51,14 +58,19 @@ L_WHILE_EXIT_5:
     !x
     jmp L_WHILE_HEAD_0
 
-L_WHILE_EXIT_2:
+L_WHILE_COND_FALSE_2:
     !tmp_3
+    jmp L_WHILE_EXIT_3
+
+L_WHILE_EXIT_3:
     tmp_13 = call @sa_fmt_u64(sum, 10)
     tmp_14 = call @sa_fmt_buffer_data(tmp_13)
     tmp_15 = call @sa_fmt_buffer_len(tmp_13)
     tmp_16 = tmp_14
     call @sa_print_bytes(&tmp_16, tmp_15)
     call @sa_fmt_buffer_free(^tmp_13)
+    !tmp_16
+    !tmp_15
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     tmp_17 = 0
@@ -67,32 +79,32 @@ L_WHILE_EXIT_2:
     return tmp_17
 
 @test "rosetta 023 nested loops"():
-L_TEST_ENTRY_6:
+L_TEST_ENTRY_8:
     tmp_18 = 0
     sum = tmp_18
     tmp_19 = 1
     y = tmp_19
-    jmp L_WHILE_HEAD_7
+    jmp L_WHILE_HEAD_9
 
-L_WHILE_HEAD_7:
+L_WHILE_HEAD_9:
     tmp_20 = 2
     tmp_21 = sle y, tmp_20
     !tmp_20
-    br tmp_21 -> L_WHILE_BODY_8, L_WHILE_EXIT_9
+    br tmp_21 -> L_WHILE_BODY_10, L_WHILE_COND_FALSE_11
 
-L_WHILE_BODY_8:
+L_WHILE_BODY_10:
     !tmp_21
     tmp_22 = 1
     x = tmp_22
-    jmp L_WHILE_HEAD_10
+    jmp L_WHILE_HEAD_13
 
-L_WHILE_HEAD_10:
+L_WHILE_HEAD_13:
     tmp_23 = 3
     tmp_24 = sle x, tmp_23
     !tmp_23
-    br tmp_24 -> L_WHILE_BODY_11, L_WHILE_EXIT_12
+    br tmp_24 -> L_WHILE_BODY_14, L_WHILE_COND_FALSE_15
 
-L_WHILE_BODY_11:
+L_WHILE_BODY_14:
     !tmp_24
     tmp_25 = mul x, y
     tmp_26 = add sum, tmp_25
@@ -104,34 +116,40 @@ L_WHILE_BODY_11:
     !tmp_27
     !x
     x = tmp_28
-    jmp L_WHILE_HEAD_10
+    jmp L_WHILE_HEAD_13
 
-L_WHILE_EXIT_12:
+L_WHILE_COND_FALSE_15:
     !tmp_24
+    jmp L_WHILE_EXIT_16
+
+L_WHILE_EXIT_16:
     tmp_29 = 1
     tmp_30 = add y, tmp_29
     !tmp_29
     !y
     y = tmp_30
     !x
-    jmp L_WHILE_HEAD_7
+    jmp L_WHILE_HEAD_9
 
-L_WHILE_EXIT_9:
+L_WHILE_COND_FALSE_11:
     !tmp_21
+    jmp L_WHILE_EXIT_12
+
+L_WHILE_EXIT_12:
     tmp_31 = 18
     tmp_32 = ne sum, tmp_31
     !tmp_31
-    br tmp_32 -> L_THEN_13, L_ELSE_14
+    br tmp_32 -> L_THEN_17, L_ELSE_18
 
-L_THEN_13:
+L_THEN_17:
     !tmp_32
     panic(23)
 
-L_ELSE_14:
+L_ELSE_18:
     !tmp_32
-    jmp L_MERGE_15
+    jmp L_MERGE_19
 
-L_MERGE_15:
+L_MERGE_19:
     !sum
     !y
     return

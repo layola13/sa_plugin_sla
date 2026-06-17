@@ -1,22 +1,5 @@
-// Sla companion for SA rosetta demo 180 Try Trait V2.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_180_value() -> int {
-    let seed = 13;
-    let shifted = seed + 180;
-    let scaled = shifted * 2;
-    let result = scaled - 24;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_180_value();
-    return result;
-};
-
-@test "rosetta 180 180_try_trait_v2"() {
-    let got = rosetta_180_value();
-    if got != 362 {
-        panic(180);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn try_trait_unwrapped_value() -> i32 { let unwrapped_value = 3; return unwrapped_value; }
+fn main() -> i32 { let result = try_trait_unwrapped_value(); println("{}", result); return result; }
+@test "rosetta 180 180_try_trait_v2"() { let got = try_trait_unwrapped_value(); if got != 3 { panic(180); }; }

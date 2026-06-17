@@ -1,0 +1,39 @@
+@import "sa_std/core/result.sa"
+
+fn ok_value(x: i32) -> Result<i32, i32> {
+    Ok(x)
+}
+
+fn err_value(x: i32) -> Result<i32, i32> {
+    Err(x)
+}
+
+fn if_let_ok() -> i32 {
+    let result = if let Ok(x) = ok_value(4) {
+        x + 1
+    } else {
+        0
+    };
+    return result;
+}
+
+fn let_else_ok() -> i32 {
+    let Ok(x) = ok_value(6) else {
+        return 0;
+    };
+    return x + 1;
+}
+
+fn match_err() -> i32 {
+    let result = match err_value(8) {
+        Ok(x) => { x },
+        Err(e) => { e + 1 },
+    };
+    return result;
+}
+
+@test "result pattern block smoke"() {
+    if if_let_ok() != 5 { panic(910); };
+    if let_else_ok() != 7 { panic(911); };
+    if match_err() != 9 { panic(912); };
+}

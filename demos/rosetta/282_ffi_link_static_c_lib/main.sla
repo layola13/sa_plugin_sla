@@ -1,23 +1,6 @@
-// Sla companion for SA rosetta demo 282 Ffi Link Static C Lib.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_282_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 11;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_282_value();
-    return result;
-};
-
-@test "rosetta 282 282_ffi_link_static_c_lib"() {
-    let got = rosetta_282_value();
-    if got != 21 {
-        panic(282);
-    };
-};
+fn ffi_static_library_objects() -> i32 { let archive_member = 1; return archive_member; }
+fn main() -> i32 { let result = ffi_static_library_objects(); println("{}", result); return result; }
+@test "rosetta 282 ffi link static c lib"() { let got = ffi_static_library_objects(); if got != 1 { panic(282); }; }

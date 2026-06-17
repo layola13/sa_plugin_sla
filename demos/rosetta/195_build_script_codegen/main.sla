@@ -1,25 +1,5 @@
-// Sla companion for SA rosetta demo 195 Build Script Codegen.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_195_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_195_value() -> int {
-    let result = rosetta_195_mix(19, 24);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_195_value();
-    return result;
-};
-
-@test "rosetta 195 195_build_script_codegen"() {
-    let got = rosetta_195_value();
-    if got != 451 {
-        panic(195);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn build_script_generated_value() -> i32 { let generated_constant = 1; return generated_constant; }
+fn main() -> i32 { let result = build_script_generated_value(); println("{}", result); return result; }
+@test "rosetta 195 195_build_script_codegen"() { let got = build_script_generated_value(); if got != 1 { panic(195); }; }

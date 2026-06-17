@@ -1,0 +1,42 @@
+enum Token {
+    Num(i32),
+    End,
+}
+
+fn number() -> Token {
+    Token::Num(4)
+}
+
+fn done() -> Token {
+    Token::End
+}
+
+fn if_let_custom() -> i32 {
+    let result = if let Token::Num(x) = number() {
+        x + 1
+    } else {
+        0
+    };
+    return result;
+}
+
+fn let_else_custom() -> i32 {
+    let Token::Num(x) = number() else {
+        return 0;
+    };
+    return x + 2;
+}
+
+fn match_custom() -> i32 {
+    let result = match done() {
+        Token::Num(x) => { x },
+        Token::End => { 7 },
+    };
+    return result;
+}
+
+@test "custom enum pattern block smoke"() {
+    if if_let_custom() != 5 { panic(920); };
+    if let_else_custom() != 6 { panic(921); };
+    if match_custom() != 7 { panic(922); };
+}

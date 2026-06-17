@@ -1,25 +1,20 @@
-// Sla companion for SA rosetta demo 235 Mod Transitive Dependency.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_235_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
+fn transitive_dependency_reachable_items() -> i32 {
+    let leaf_export = 1;
+    return leaf_export;
+}
+
+fn main() -> i32 {
+    let result = transitive_dependency_reachable_items();
+    println("{}", result);
     return result;
 }
 
-fn rosetta_235_value() -> int {
-    let result = rosetta_235_mix(21, 13);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_235_value();
-    return result;
-};
-
-@test "rosetta 235 235_mod_transitive_dependency"() {
-    let got = rosetta_235_value();
-    if got != 281 {
+@test "rosetta 235 mod transitive dependency"() {
+    let got = transitive_dependency_reachable_items();
+    if got != 1 {
         panic(235);
     };
-};
+}

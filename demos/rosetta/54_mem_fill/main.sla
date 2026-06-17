@@ -1,5 +1,6 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/core/mem.sa"
 
 fn main() -> i32 {
     let data = [0u8; 4];

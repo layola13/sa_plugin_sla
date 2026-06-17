@@ -1,24 +1,6 @@
-// Sla companion for SA rosetta demo 265 Build Custom Linker Script.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_265_value() -> int {
-    let base = (13 * 6) + 265;
-    let threshold = 282;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_265_value();
-    return result;
-};
-
-@test "rosetta 265 265_build_custom_linker_script"() {
-    let got = rosetta_265_value();
-    if got != 61 {
-        panic(265);
-    };
-};
+fn build_linker_script_sections() -> i32 { let text_section = 1; let data_section = 1; return text_section + data_section; }
+fn main() -> i32 { let result = build_linker_script_sections(); println("{}", result); return result; }
+@test "rosetta 265 build custom linker script"() { let got = build_linker_script_sections(); if got != 2 { panic(265); }; }

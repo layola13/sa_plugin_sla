@@ -1,23 +1,6 @@
-// Sla companion for SA rosetta demo 274 Build Benchmark Runner.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_274_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 26;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_274_value();
-    return result;
-};
-
-@test "rosetta 274 274_build_benchmark_runner"() {
-    let got = rosetta_274_value();
-    if got != 36 {
-        panic(274);
-    };
-};
+fn build_benchmark_group_count() -> i32 { let throughput_group = 1; return throughput_group; }
+fn main() -> i32 { let result = build_benchmark_group_count(); println("{}", result); return result; }
+@test "rosetta 274 build benchmark runner"() { let got = build_benchmark_group_count(); if got != 1 { panic(274); }; }

@@ -1,24 +1,23 @@
-// Sla companion for SA rosetta demo 117 Inline Assembly.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_117_value() -> int {
-    let base = (18 * 2) + 117;
-    let threshold = 124;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
+fn inline_assembly_value() -> i32 {
+    let value: i32 = 7;
+    unsafe {
+        asm!("/* native escape */", inout("eax") value);
     };
+    return value;
 }
 
-fn main() -> int {
-    let result = rosetta_117_value();
+fn main() -> i32 {
+    let result = inline_assembly_value();
+    println("{}", result);
     return result;
-};
+}
 
 @test "rosetta 117 117_inline_assembly"() {
-    let got = rosetta_117_value();
-    if got != 29 {
+    let got = inline_assembly_value();
+    if got != 7 {
         panic(117);
     };
-};
+}

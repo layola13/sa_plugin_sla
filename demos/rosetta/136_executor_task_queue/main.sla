@@ -1,3 +1,9 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/future.sa"
+@import "sa_std/core/option.sa"
+@import "sa_std/vec.sa"
+
 async fn task_one() -> i32 {
     1
 }
@@ -10,7 +16,7 @@ async fn task_three() -> i32 {
     3
 }
 
-fn rosetta_136_value() -> i32 {
+fn executor_task_queue_sum() -> i32 {
     let queue = vec(task_one(), task_two(), task_three());
     let total = 0;
 
@@ -22,13 +28,13 @@ fn rosetta_136_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let value = rosetta_136_value();
+    let value = executor_task_queue_sum();
     println("{}", value);
     return value;
 }
 
 @test "rosetta 136 136_executor_task_queue"() {
-    let got = rosetta_136_value();
+    let got = executor_task_queue_sum();
     if got != 6 {
         panic(136);
     };

@@ -1,15 +1,13 @@
-@import "sa_std/string.sa"
-@import "sa_std/string_format.sa"
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/core/panic.sa"
-@import "sa_std/core/mem.sa"
+@import "sa_std/core/option.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@import "sa_std/core/option.sa"
-@sla__rosetta_104_value() -> i32:
+@const SLA_FNPTR_VT_if_let_chain_sum = vtable { call = @sla__if_let_chain_sum }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__if_let_chain_sum() -> i32:
 L_ENTRY:
     tmp_0 = 2
     EXPAND OPTION_NEW_SOME tmp_1, tmp_0
@@ -84,7 +82,7 @@ L_IF_LET_MERGE_2:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_14 = call @sla__rosetta_104_value()
+    tmp_14 = call @sla__if_let_chain_sum()
     value = tmp_14
     tmp_15 = call @sa_fmt_u64(value, 10)
     tmp_16 = call @sa_fmt_buffer_data(tmp_15)
@@ -100,7 +98,7 @@ L_ENTRY:
 
 @test "rosetta 104 104_if_let_chains"():
 L_TEST_ENTRY_8:
-    tmp_19 = call @sla__rosetta_104_value()
+    tmp_19 = call @sla__if_let_chain_sum()
     got = tmp_19
     tmp_20 = 9
     tmp_21 = ne got, tmp_20

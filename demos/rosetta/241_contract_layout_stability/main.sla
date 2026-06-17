@@ -1,24 +1,19 @@
-// Sla companion for SA rosetta demo 241 Contract Layout Stability.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_241_value() -> int {
-    let base = (6 * 9) + 241;
-    let threshold = 257;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn contract_layout_stable_field_count() -> i32 {
+    let tag_field = 1;
+    let len_field = 1;
+    return tag_field + len_field;
 }
 
-fn main() -> int {
-    let result = rosetta_241_value();
+fn main() -> i32 {
+    let result = contract_layout_stable_field_count();
+    println("{}", result);
     return result;
-};
+}
 
-@test "rosetta 241 241_contract_layout_stability"() {
-    let got = rosetta_241_value();
-    if got != 38 {
-        panic(241);
-    };
-};
+@test "rosetta 241 contract layout stability"() {
+    let got = contract_layout_stable_field_count();
+    if got != 2 { panic(241); };
+}

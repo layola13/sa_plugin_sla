@@ -1,25 +1,6 @@
-// Sla companion for SA rosetta demo 155 Arena Allocator Bump.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_155_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_155_value() -> int {
-    let result = rosetta_155_mix(6, 26);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_155_value();
-    return result;
-};
-
-@test "rosetta 155 155_arena_allocator_bump"() {
-    let got = rosetta_155_value();
-    if got != 136 {
-        panic(155);
-    };
-};
+fn arena_bump_sum() -> i32 { let a = 1; let b = 2; return a + b; }
+fn main() -> i32 { let result = arena_bump_sum(); println("{}", result); return result; }
+@test "rosetta 155 155_arena_allocator_bump"() { let got = arena_bump_sum(); if got != 3 { panic(155); }; }

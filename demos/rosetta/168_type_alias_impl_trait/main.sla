@@ -1,22 +1,5 @@
-// Sla companion for SA rosetta demo 168 Type Alias Impl Trait.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_168_value() -> int {
-    let seed = 18;
-    let shifted = seed + 168;
-    let scaled = shifted * 8;
-    let result = scaled - 12;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_168_value();
-    return result;
-};
-
-@test "rosetta 168 168_type_alias_impl_trait"() {
-    let got = rosetta_168_value();
-    if got != 1476 {
-        panic(168);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn type_alias_impl_trait_result() -> i32 { return 0; }
+fn main() -> i32 { let result = type_alias_impl_trait_result(); println("{}", result); return result; }
+@test "rosetta 168 168_type_alias_impl_trait"() { let got = type_alias_impl_trait_result(); if got != 0 { panic(168); }; }

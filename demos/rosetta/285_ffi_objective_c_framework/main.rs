@@ -1,5 +1,9 @@
-// 285 - Ffi Objective C Framework
+fn objective_c_frameworks() -> i32 {
+    let foundation = 1;
+    foundation
+}
+
 fn main() {
-    let value = 285;
-    println!("{}", value);
+    let result = objective_c_frameworks();
+    println!("{}", result);
 }

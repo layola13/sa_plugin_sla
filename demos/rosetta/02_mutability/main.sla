@@ -1,23 +1,21 @@
-// Sla companion for SA rosetta demo 002 Mutability.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_002_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 7;
-    return result;
+fn immutable_update_value() -> i32 {
+    let before = 10;
+    let after = before + 10;
+    return after;
 }
 
-fn main() -> int {
-    let result = rosetta_002_value();
+fn main() -> i32 {
+    let result = immutable_update_value();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 002 02_mutability"() {
-    let got = rosetta_002_value();
-    if got != 17 {
+    let got = immutable_update_value();
+    if got != 20 {
         panic(2);
     };
 };

@@ -1,24 +1,5 @@
-// Sla companion for SA rosetta demo 169 Negative Impls.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_169_value() -> int {
-    let base = (19 * 9) + 169;
-    let threshold = 182;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_169_value();
-    return result;
-};
-
-@test "rosetta 169 169_negative_impls"() {
-    let got = rosetta_169_value();
-    if got != 158 {
-        panic(169);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn negative_impl_marker_result() -> i32 { return 0; }
+fn main() -> i32 { let result = negative_impl_marker_result(); println("{}", result); return result; }
+@test "rosetta 169 169_negative_impls"() { let got = negative_impl_marker_result(); if got != 0 { panic(169); }; }

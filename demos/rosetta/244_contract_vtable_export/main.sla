@@ -1,22 +1,19 @@
-// Sla companion for SA rosetta demo 244 Contract Vtable Export.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_244_value() -> int {
-    let seed = 9;
-    let shifted = seed + 244;
-    let scaled = shifted * 3;
-    let result = scaled - 19;
+fn contract_vtable_exported_slots() -> i32 {
+    let init_slot = 1;
+    let run_slot = 1;
+    return init_slot + run_slot;
+}
+
+fn main() -> i32 {
+    let result = contract_vtable_exported_slots();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_244_value();
-    return result;
-};
-
-@test "rosetta 244 244_contract_vtable_export"() {
-    let got = rosetta_244_value();
-    if got != 740 {
-        panic(244);
-    };
-};
+@test "rosetta 244 contract vtable export"() {
+    let got = contract_vtable_exported_slots();
+    if got != 2 { panic(244); };
+}

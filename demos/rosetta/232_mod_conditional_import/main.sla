@@ -1,22 +1,20 @@
-// Sla companion for SA rosetta demo 232 Mod Conditional Import.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_232_value() -> int {
-    let seed = 14;
-    let shifted = seed + 232;
-    let scaled = shifted * 9;
-    let result = scaled - 7;
+fn conditional_import_selected_branch() -> i32 {
+    let active_platform_branch = 1;
+    return active_platform_branch;
+}
+
+fn main() -> i32 {
+    let result = conditional_import_selected_branch();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_232_value();
-    return result;
-};
-
-@test "rosetta 232 232_mod_conditional_import"() {
-    let got = rosetta_232_value();
-    if got != 2207 {
+@test "rosetta 232 mod conditional import"() {
+    let got = conditional_import_selected_branch();
+    if got != 1 {
         panic(232);
     };
-};
+}

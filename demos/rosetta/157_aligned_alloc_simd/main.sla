@@ -1,24 +1,6 @@
-// Sla companion for SA rosetta demo 157 Aligned Alloc Simd.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_157_value() -> int {
-    let base = (7 * 6) + 157;
-    let threshold = 181;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_157_value();
-    return result;
-};
-
-@test "rosetta 157 157_aligned_alloc_simd"() {
-    let got = rosetta_157_value();
-    if got != 18 {
-        panic(157);
-    };
-};
+fn aligned_simd_lane_count() -> i32 { let lanes = 4; return lanes; }
+fn main() -> i32 { let result = aligned_simd_lane_count(); println("{}", result); return result; }
+@test "rosetta 157 157_aligned_alloc_simd"() { let got = aligned_simd_lane_count(); if got != 4 { panic(157); }; }

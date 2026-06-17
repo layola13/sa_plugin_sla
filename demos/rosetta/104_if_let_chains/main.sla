@@ -1,4 +1,8 @@
-fn rosetta_104_value() -> i32 {
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/option.sa"
+
+fn if_let_chain_sum() -> i32 {
     let left = Some(2);
     let middle = Some(3);
     let right = Some(4);
@@ -13,13 +17,13 @@ fn rosetta_104_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let value = rosetta_104_value();
+    let value = if_let_chain_sum();
     println("{}", value);
     return value;
 }
 
 @test "rosetta 104 104_if_let_chains"() {
-    let got = rosetta_104_value();
+    let got = if_let_chain_sum();
     if got != 9 {
         panic(104);
     };

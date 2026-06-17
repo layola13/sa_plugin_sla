@@ -1,6 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
 @main() -> i32:
 L_ENTRY:
     pair = alloc 8
@@ -17,6 +21,9 @@ L_ENTRY:
     tmp_6 = tmp_4
     call @sa_print_bytes(&tmp_6, tmp_5)
     call @sa_fmt_buffer_free(^tmp_3)
+    !tmp_6
+    !tmp_5
+    !tmp_2
     @const SLA_STR_1 = utf8:", "
     call @sa_print_bytes(&SLA_STR_1, 2)
     tmp_7 = load pair+4 as i32
@@ -26,6 +33,9 @@ L_ENTRY:
     tmp_11 = tmp_9
     call @sa_print_bytes(&tmp_11, tmp_10)
     call @sa_fmt_buffer_free(^tmp_8)
+    !tmp_11
+    !tmp_10
+    !tmp_7
     @const SLA_STR_2 = utf8:")"
     call @sa_print_bytes(&SLA_STR_2, 1)
     @const SLA_STR_3 = utf8:"\n"

@@ -1,22 +1,8 @@
-// Sla companion for SA rosetta demo 196 Lto Link Time Opt.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_196_value() -> int {
-    let seed = 12;
-    let shifted = seed + 196;
-    let scaled = shifted * 9;
-    let result = scaled - 17;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_196_value();
-    return result;
-};
-
-@test "rosetta 196 196_lto_link_time_opt"() {
-    let got = rosetta_196_value();
-    if got != 1855 {
-        panic(196);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn leaf(a: i32, b: i32) -> i32 { return a + b; }
+fn inner(x: i32) -> i32 { return leaf(x, 1) + leaf(x, 2); }
+fn cold_path(x: i32) -> i32 { return inner(x) + leaf(3, 4); }
+fn lto_hot_cold_sum() -> i32 { let hot_path = inner(1); let cold_path_result = cold_path(2); return hot_path + cold_path_result; }
+fn main() -> i32 { let result = lto_hot_cold_sum(); println("{}", result); return result; }
+@test "rosetta 196 196_lto_link_time_opt"() { let got = lto_hot_cold_sum(); if got != 19 { panic(196); }; }

@@ -1,4 +1,15 @@
+#[derive(Copy, Clone)]
+struct Row {
+    active: bool,
+    age: i32,
+}
+
+fn qualifies(row: Row) -> bool {
+    row.active && row.age >= 18
+}
+
 fn main() {
-    let rows = 2;
-    println!("{rows}");
+    let rows = [Row { active: true, age: 21 }, Row { active: false, age: 40 }, Row { active: true, age: 17 }];
+    let count = rows.into_iter().filter(|row| qualifies(*row)).count();
+    println!("{count}");
 }

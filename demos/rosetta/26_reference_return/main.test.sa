@@ -1,7 +1,12 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
-@choose_left(&left: ptr, &_right: ptr) -> &ptr:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_choose_left = vtable { call = @sla__choose_left }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__choose_left(&left: ptr, &_right: ptr) -> &ptr:
 L_ENTRY:
     return left
 
@@ -13,7 +18,7 @@ L_ENTRY:
     tmp_1 = 4
     right = stack_alloc 4
     store right+0, tmp_1 as i32
-    tmp_2 = call @choose_left(&left, &right)
+    tmp_2 = call @sla__choose_left(&left, &right)
     chosen = tmp_2
     tmp_3 = load chosen+0 as i32
     tmp_4 = call @sa_fmt_u64(tmp_3, 10)
@@ -39,7 +44,7 @@ L_TEST_ENTRY_0:
     tmp_10 = 4
     right = stack_alloc 4
     store right+0, tmp_10 as i32
-    tmp_11 = call @choose_left(&left, &right)
+    tmp_11 = call @sla__choose_left(&left, &right)
     chosen = tmp_11
     tmp_12 = load chosen+0 as i32
     value = tmp_12

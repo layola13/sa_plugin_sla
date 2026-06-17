@@ -1,3 +1,8 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/result.sa"
+@import "sa_std/sync/mpsc.sa"
+
 fn channel_pingpong_value() -> i32 {
     let (tx, rx) = mpsc::channel();
     tx.send(8).unwrap();

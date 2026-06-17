@@ -1,24 +1,11 @@
-// Sla companion for SA rosetta demo 141 Dynamically Sized Types.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_141_value() -> int {
-    let base = (8 * 8) + 141;
-    let threshold = 149;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn dynamically_sized_bytes_len() -> usize {
+    let bytes_len: usize = 2;
+    return bytes_len;
 }
 
-fn main() -> int {
-    let result = rosetta_141_value();
-    return result;
-};
+fn main() -> i32 { let result = dynamically_sized_bytes_len(); println("{}", result); return 0; }
 
-@test "rosetta 141 141_dynamically_sized_types"() {
-    let got = rosetta_141_value();
-    if got != 56 {
-        panic(141);
-    };
-};
+@test "rosetta 141 141_dynamically_sized_types"() { let got = dynamically_sized_bytes_len(); if got != 2 { panic(141); }; }

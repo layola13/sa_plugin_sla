@@ -1,46 +1,70 @@
-@rosetta_179_mix(left: i64, right: i64) -> i64:
-L_ENTRY:
-    tmp_0 = mul left, right
-    product = tmp_0
-    tmp_1 = add product, left
-    tmp_2 = sub tmp_1, right
-    result = tmp_2
-    !product
-    !right
-    !left
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@rosetta_179_value() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_assert_macro_result = vtable { call = @sla__assert_macro_result }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__assert_macro_result() -> i32:
 L_ENTRY:
-    tmp_3 = 15
-    tmp_4 = 33
-    tmp_5 = call @rosetta_179_mix(tmp_3, tmp_4)
-    result = tmp_5
-    return result
+    tmp_0 = 1
+    tmp_1 = 1
+    tmp_2 = add tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    tmp_3 = 2
+    tmp_4 = ne tmp_2, tmp_3
+    !tmp_2
+    !tmp_3
+    br tmp_4 -> L_THEN_0, L_ELSE_1
 
-@main() -> i64:
+L_THEN_0:
+    !tmp_4
+    panic(179)
+
+L_ELSE_1:
+    !tmp_4
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_7 = 2
+    return tmp_7
+
+@main() -> i32:
 L_ENTRY:
-    tmp_6 = call @rosetta_179_value()
-    result = tmp_6
+    tmp_8 = call @sla__assert_macro_result()
+    result = tmp_8
+    tmp_9 = call @sa_fmt_u64(result, 10)
+    tmp_10 = call @sa_fmt_buffer_data(tmp_9)
+    tmp_11 = call @sa_fmt_buffer_len(tmp_9)
+    tmp_12 = tmp_10
+    call @sa_print_bytes(&tmp_12, tmp_11)
+    call @sa_fmt_buffer_free(^tmp_9)
+    !tmp_12
+    !tmp_11
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 179 179_assert_macro_expansion"():
-L_TEST_ENTRY_0:
-    tmp_7 = call @rosetta_179_value()
-    got = tmp_7
-    tmp_8 = 477
-    tmp_9 = ne got, tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_3:
+    tmp_13 = call @sla__assert_macro_result()
+    got = tmp_13
+    tmp_14 = 2
+    tmp_15 = ne got, tmp_14
+    !tmp_14
+    br tmp_15 -> L_THEN_4, L_ELSE_5
 
-L_THEN_1:
-    !tmp_9
+L_THEN_4:
+    !tmp_15
     panic(179)
 
-L_ELSE_2:
-    !tmp_9
-    jmp L_MERGE_3
+L_ELSE_5:
+    !tmp_15
+    jmp L_MERGE_6
 
-L_MERGE_3:
+L_MERGE_6:
     !got
     return
 

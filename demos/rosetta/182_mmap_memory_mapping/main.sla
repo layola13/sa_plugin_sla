@@ -1,23 +1,5 @@
-// Sla companion for SA rosetta demo 182 Mmap Memory Mapping.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_182_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 26;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_182_value();
-    return result;
-};
-
-@test "rosetta 182 182_mmap_memory_mapping"() {
-    let got = rosetta_182_value();
-    if got != 62 {
-        panic(182);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn mmap_mapped_fd() -> i32 { let raw_fd = 3; let mapped_fd = raw_fd + 1; return mapped_fd; }
+fn main() -> i32 { let result = mmap_mapped_fd(); println("{}", result); return result; }
+@test "rosetta 182 182_mmap_memory_mapping"() { let got = mmap_mapped_fd(); if got != 4 { panic(182); }; }

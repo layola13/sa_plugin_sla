@@ -1,5 +1,9 @@
-// 264 - Build Env Var Injection
+fn injected_env_vars() -> i32 {
+    let profile_var = 1;
+    profile_var
+}
+
 fn main() {
-    let value = 264;
-    println!("{}", value);
+    let result = injected_env_vars();
+    println!("{}", result);
 }

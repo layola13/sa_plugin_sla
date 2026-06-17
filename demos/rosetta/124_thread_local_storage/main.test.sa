@@ -1,42 +1,59 @@
-@import "sa_std/string.sa"
-@rosetta_124_value() -> i64:
-L_ENTRY:
-    tmp_0 = 8
-    seed = tmp_0
-    tmp_1 = 124
-    tmp_2 = add seed, tmp_1
-    shifted = tmp_2
-    tmp_3 = 9
-    tmp_4 = mul shifted, tmp_3
-    scaled = tmp_4
-    tmp_5 = 14
-    tmp_6 = sub scaled, tmp_5
-    result = tmp_6
-    !scaled
-    !seed
-    !shifted
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/cell.sa"
 
-@main() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_thread_local_cell_value = vtable { call = @sla__thread_local_cell_value }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__thread_local_cell_value() -> i32:
 L_ENTRY:
-    tmp_7 = call @rosetta_124_value()
-    result = tmp_7
+    tmp_0 = 6
+    value = stack_alloc Cell_SIZE
+    EXPAND CELL_SET value, tmp_0
+    !tmp_0
+    EXPAND CELL_GET tmp_1, value
+    tmp_2 = 2
+    tmp_3 = add tmp_1, tmp_2
+    !tmp_1
+    !tmp_2
+    EXPAND CELL_SET value, tmp_3
+    !tmp_3
+    EXPAND CELL_GET tmp_4, value
+    return tmp_4
+
+@main() -> i32:
+L_ENTRY:
+    tmp_5 = call @sla__thread_local_cell_value()
+    result = tmp_5
+    tmp_6 = call @sa_fmt_u64(result, 10)
+    tmp_7 = call @sa_fmt_buffer_data(tmp_6)
+    tmp_8 = call @sa_fmt_buffer_len(tmp_6)
+    tmp_9 = tmp_7
+    call @sa_print_bytes(&tmp_9, tmp_8)
+    call @sa_fmt_buffer_free(^tmp_6)
+    !tmp_9
+    !tmp_8
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 124 124_thread_local_storage"():
 L_TEST_ENTRY_0:
-    tmp_8 = call @rosetta_124_value()
-    got = tmp_8
-    tmp_9 = 1174
-    tmp_10 = ne got, tmp_9
-    br tmp_10 -> L_THEN_1, L_ELSE_2
+    tmp_10 = call @sla__thread_local_cell_value()
+    got = tmp_10
+    tmp_11 = 8
+    tmp_12 = ne got, tmp_11
+    !tmp_11
+    br tmp_12 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_10
+    !tmp_12
     panic(124)
 
 L_ELSE_2:
-    !tmp_10
+    !tmp_12
     jmp L_MERGE_3
 
 L_MERGE_3:

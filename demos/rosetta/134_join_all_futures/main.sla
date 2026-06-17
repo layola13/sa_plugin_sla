@@ -1,23 +1,35 @@
-// Sla companion for SA rosetta demo 134 Join All Futures.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/future.sa"
 
-fn rosetta_134_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 24;
-    return result;
+async fn job_a() -> i32 {
+    1
 }
 
-fn main() -> int {
-    let result = rosetta_134_value();
+async fn job_b() -> i32 {
+    2
+}
+
+async fn job_c() -> i32 {
+    3
+}
+
+fn join_all_futures_sum() -> i32 {
+    let a = job_a().await;
+    let b = job_b().await;
+    let c = job_c().await;
+    return a + b + c;
+}
+
+fn main() -> i32 {
+    let result = join_all_futures_sum();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 134 134_join_all_futures"() {
-    let got = rosetta_134_value();
-    if got != 60 {
+    let got = join_all_futures_sum();
+    if got != 6 {
         panic(134);
     };
 };

@@ -1,55 +1,180 @@
-@import "sa_std/string.sa"
-@rosetta_009_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/future.sa"
+@import "sa_std/core/waker.sa"
+@import "sa_std/pin.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/core/box.sa"
+@import "sa_std/time.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_step_one_after_delay = vtable { call = @sla__step_one_after_delay }
+@const SLA_FNPTR_VT_run = vtable { call = @sla__run }
+@const SLA_FNPTR_VT_block_on = vtable { call = @sla__block_on }
+@const SLA_FNPTR_VT_async_run_value = vtable { call = @sla__async_run_value }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__step_one_after_delay(delay_ms: u64) -> ptr:
 L_ENTRY:
-    tmp_0 = 12
-    tmp_1 = 2
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 9
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 23
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+    EXPAND TIME_NOW_UNIX_MS tmp_0
+    unix_before = tmp_0
+    EXPAND TIME_SLEEP_MS delay_ms
+    EXPAND TIME_NOW_UNIX_MS tmp_1
+    unix_after = tmp_1
+    tmp_2 = slt unix_after, unix_before
+    br tmp_2 -> L_THEN_0, L_ELSE_1
 
 L_THEN_0:
-    !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
+    !tmp_2
+    panic(91)
 
 L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
+    !tmp_2
+    jmp L_MERGE_2
 
+L_MERGE_2:
+    tmp_5 = 1
+    EXPAND FUTURE_READY_STATE_NEW tmp_6, tmp_5
+    !unix_after
+    !unix_before
+    !delay_ms
+    return tmp_6
 
-@main() -> i64:
+@sla__run() -> ptr:
 L_ENTRY:
-    tmp_10 = call @rosetta_009_value()
-    result = tmp_10
+    EXPAND TIME_NOW_NS tmp_7
+    started_ns = tmp_7
+    tmp_8 = 5
+    delay_ms = tmp_8
+    tmp_9 = call @sla__step_one_after_delay(delay_ms)
+    EXPAND FUTURE_READY_STATE_INTO_INNER tmp_10, tmp_9
+    !tmp_9
+    value = tmp_10
+    EXPAND TIME_NOW_NS tmp_11
+    ended_ns = tmp_11
+    tmp_12 = sub ended_ns, started_ns
+    elapsed_ns = tmp_12
+    tmp_14 = 1
+    EXPAND TIME_DURATION_FROM_MILLIS tmp_13, tmp_14
+    !tmp_14
+    min_elapsed_ns = tmp_13
+    tmp_15 = slt elapsed_ns, min_elapsed_ns
+    br tmp_15 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_15
+    panic(92)
+
+L_ELSE_4:
+    !tmp_15
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_18 = 1
+    tmp_19 = add value, tmp_18
+    !tmp_18
+    EXPAND FUTURE_READY_STATE_NEW tmp_20, tmp_19
+    !value
+    !elapsed_ns
+    !min_elapsed_ns
+    !ended_ns
+    !delay_ms
+    !started_ns
+    return tmp_20
+
+@sla__block_on(future: ptr) -> i32:
+L_ENTRY:
+    EXPAND PTR_NULL tmp_21
+    data = tmp_21
+    EXPAND RAW_WAKER_NEW tmp_22, data, data
+    raw = tmp_22
+    EXPAND WAKER_FROM_RAW tmp_23, raw
+    waker = tmp_23
+    EXPAND CONTEXT_FROM_WAKER tmp_24, waker
+    context = tmp_24
+    EXPAND BOX_NEW tmp_25, future
+    boxed = tmp_25
+    tmp_26 = load boxed+0 as ptr
+    future_ref = tmp_26
+    pinned = stack_alloc 16
+    EXPAND PIN_MUT_NEW pinned, future_ref
+    EXPAND PIN_MUT_GET_MUT tmp_28, pinned
+    EXPAND FUTURE_READY_POLL_STATE tmp_27, tmp_28
+    !tmp_28
+    poll = tmp_27
+    EXPAND POLL_IS_READY tmp_29, poll
+    ready = tmp_29
+    tmp_30 = 1
+    tmp_31 = ne ready, tmp_30
+    !tmp_30
+    br tmp_31 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_31
+    EXPAND CONTEXT_WAKER tmp_32, context
+    _cx_waker = tmp_32
+    panic(93)
+
+L_ELSE_7:
+    !tmp_31
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    EXPAND POLL_VALUE tmp_35, poll
+    value = tmp_35
+    !poll
+    !context
+    !waker
+    !data
+    !raw
+    !ready
+    !boxed
+    !future_ref
+    !future
+    return value
+
+@sla__async_run_value() -> i32:
+L_ENTRY:
+    tmp_36 = call @sla__run()
+    tmp_37 = call @sla__block_on(tmp_36)
+    !tmp_36
+    return tmp_37
+
+@main() -> i32:
+L_ENTRY:
+    tmp_38 = call @sla__async_run_value()
+    result = tmp_38
+    tmp_39 = call @sa_fmt_u64(result, 10)
+    tmp_40 = call @sa_fmt_buffer_data(tmp_39)
+    tmp_41 = call @sa_fmt_buffer_len(tmp_39)
+    tmp_42 = tmp_40
+    call @sa_print_bytes(&tmp_42, tmp_41)
+    call @sa_fmt_buffer_free(^tmp_39)
+    !tmp_42
+    !tmp_41
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 009 09_async_await"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_009_value()
-    got = tmp_11
-    tmp_12 = 10
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_9:
+    tmp_43 = call @sla__async_run_value()
+    got = tmp_43
+    tmp_44 = 2
+    tmp_45 = ne got, tmp_44
+    !tmp_44
+    br tmp_45 -> L_THEN_10, L_ELSE_11
 
-L_THEN_4:
-    !tmp_13
+L_THEN_10:
+    !tmp_45
     panic(9)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_11:
+    !tmp_45
+    jmp L_MERGE_12
 
-L_MERGE_6:
+L_MERGE_12:
     !got
     return
 

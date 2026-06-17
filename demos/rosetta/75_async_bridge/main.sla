@@ -1,25 +1,24 @@
-// Sla companion for SA rosetta demo 075 Async Bridge.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/future.sa"
 
-fn rosetta_075_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+async fn compute() -> i32 {
+    5
 }
 
-fn rosetta_075_value() -> int {
-    let result = rosetta_075_mix(19, 16);
-    return result;
+fn async_bridge_value() -> i32 {
+    return compute().await;
 }
 
-fn main() -> int {
-    let result = rosetta_075_value();
+fn main() -> i32 {
+    let result = async_bridge_value();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 075 75_async_bridge"() {
-    let got = rosetta_075_value();
-    if got != 307 {
+    let got = async_bridge_value();
+    if got != 5 {
         panic(75);
     };
 };

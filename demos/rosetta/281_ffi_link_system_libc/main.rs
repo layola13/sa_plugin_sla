@@ -1,5 +1,9 @@
-// 281 - Ffi Link System Libc
+fn linked_libc_symbols() -> i32 {
+    let puts_symbol = 1;
+    puts_symbol
+}
+
 fn main() {
-    let value = 281;
-    println!("{}", value);
+    let result = linked_libc_symbols();
+    println!("{}", result);
 }

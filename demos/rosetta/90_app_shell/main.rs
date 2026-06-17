@@ -1,4 +1,11 @@
+fn dispatch(command: &str, config_loaded: bool) -> i32 {
+    match (command, config_loaded) {
+        ("sync", true) => 0,
+        ("status", true) => 1,
+        _ => 64,
+    }
+}
+
 fn main() {
-    let args = ["app", "--mode", "demo"];
-    println!("{}", args.join(" "));
+    println!("{}", dispatch("sync", true));
 }

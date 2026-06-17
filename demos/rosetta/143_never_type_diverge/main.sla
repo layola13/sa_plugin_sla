@@ -1,25 +1,11 @@
-// Sla companion for SA rosetta demo 143 Never Type Diverge.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_143_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn never_type_safe_path() -> i32 {
+    let safe = true;
+    if safe == false { panic(143); };
+    return 0;
 }
 
-fn rosetta_143_value() -> int {
-    let result = rosetta_143_mix(10, 20);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_143_value();
-    return result;
-};
-
-@test "rosetta 143 143_never_type_diverge"() {
-    let got = rosetta_143_value();
-    if got != 190 {
-        panic(143);
-    };
-};
+fn main() -> i32 { let result = never_type_safe_path(); println("{}", result); return result; }
+@test "rosetta 143 143_never_type_diverge"() { let got = never_type_safe_path(); if got != 0 { panic(143); }; }

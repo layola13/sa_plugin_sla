@@ -1,14 +1,19 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
 @import "sa_std/core/trait_object.sa"
-@const VT_Button_Draw = vtable { draw = @Button_draw }
-@Button_draw(&self: ptr) -> i32:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const VT_Button_Draw = vtable { draw = @sla__Button_draw }
+@const SLA_FNPTR_VT_render = vtable { call = @sla__render }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__Button_draw(&self: ptr) -> i32:
 L_ENTRY:
     tmp_0 = load self+0 as i32
     return tmp_0
 
-@render(&item: ptr) -> i32:
+@sla__render(&item: ptr) -> i32:
 L_ENTRY:
     EXPAND DYN_CALL tmp_1, item, 0
     return tmp_1
@@ -21,7 +26,7 @@ L_ENTRY:
     tmp_3 = alloc Dyn_SIZE
     store tmp_3+Dyn_data, button as ptr
     store tmp_3+Dyn_vtable, &VT_Button_Draw as ptr
-    tmp_4 = call @render(&tmp_3)
+    tmp_4 = call @sla__render(&tmp_3)
     !tmp_3
     result = tmp_4
     tmp_5 = call @sa_fmt_u64(result, 10)
@@ -41,21 +46,30 @@ L_ENTRY:
 
 @test "rosetta 007 trait vtable"():
 L_TEST_ENTRY_0:
-    tmp_10 = call @main()
-    tmp_11 = 0
-    tmp_12 = ne tmp_10, tmp_11
-    !tmp_10
+    button = alloc 4
+    tmp_10 = 77
+    store button+0, tmp_10 as i32
+    tmp_11 = alloc Dyn_SIZE
+    store tmp_11+Dyn_data, button as ptr
+    store tmp_11+Dyn_vtable, &VT_Button_Draw as ptr
+    tmp_12 = call @sla__render(&tmp_11)
     !tmp_11
-    br tmp_12 -> L_THEN_1, L_ELSE_2
+    result = tmp_12
+    tmp_13 = 77
+    tmp_14 = ne result, tmp_13
+    !tmp_13
+    br tmp_14 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_12
+    !tmp_14
     panic(7)
 
 L_ELSE_2:
-    !tmp_12
+    !tmp_14
     jmp L_MERGE_3
 
 L_MERGE_3:
+    !button
+    !result
     return
 

@@ -1,24 +1,26 @@
-// Sla companion for SA rosetta demo 101 Custom Drop.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_101_value() -> int {
-    let base = (19 * 4) + 101;
-    let threshold = 115;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn custom_drop_tally() -> i32 {
+    let tally = 0;
+    let outer_value = 1;
+    let inner_value = 10;
+    let result = 2 + 3;
+
+    tally = tally + inner_value;
+    tally = tally + outer_value;
+    return tally + result;
 }
 
-fn main() -> int {
-    let result = rosetta_101_value();
+fn main() -> i32 {
+    let result = custom_drop_tally();
+    println("{}", result);
     return result;
-};
+}
 
 @test "rosetta 101 101_custom_drop"() {
-    let got = rosetta_101_value();
-    if got != 62 {
+    let got = custom_drop_tally();
+    if got != 16 {
         panic(101);
     };
-};
+}

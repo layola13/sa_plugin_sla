@@ -1,22 +1,10 @@
-// Sla companion for SA rosetta demo 204 Pkg Dependencies Registry.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_204_value() -> int {
-    let seed = 3;
-    let shifted = seed + 204;
-    let scaled = shifted * 8;
-    let result = scaled - 25;
-    return result;
+fn pkg_registry_dependency_count() -> i32 {
+    let registry_dependency = 1;
+    return registry_dependency;
 }
 
-fn main() -> int {
-    let result = rosetta_204_value();
-    return result;
-};
-
-@test "rosetta 204 204_pkg_dependencies_registry"() {
-    let got = rosetta_204_value();
-    if got != 1631 {
-        panic(204);
-    };
-};
+fn main() -> i32 { let result = pkg_registry_dependency_count(); println("{}", result); return result; }
+@test "rosetta 204 pkg dependencies registry"() { let got = pkg_registry_dependency_count(); if got != 1 { panic(204); }; }

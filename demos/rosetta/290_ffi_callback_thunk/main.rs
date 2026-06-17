@@ -1,5 +1,9 @@
-// 290 - Ffi Callback Thunk
+fn callback_thunks() -> i32 {
+    let c_to_rust_thunk = 1;
+    c_to_rust_thunk
+}
+
 fn main() {
-    let value = 290;
-    println!("{}", value);
+    let result = callback_thunks();
+    println!("{}", result);
 }

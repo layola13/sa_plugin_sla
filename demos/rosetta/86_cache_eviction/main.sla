@@ -1,18 +1,30 @@
-fn rosetta_086_value() -> i32 {
-    let cache = vec(10, 20, 30);
-    cache.remove(0);
-    return cache[0];
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+struct CacheEntry {
+    key: i32,
+    last_used: i32,
+}
+
+fn evict_key(a: CacheEntry, b: CacheEntry) -> i32 {
+    let a_last = a.last_used;
+    let b_last = b.last_used;
+    if a_last < b_last {
+        return a.key;
+    } else {
+        return b.key;
+    };
 }
 
 fn main() -> i32 {
-    let value = rosetta_086_value();
+    let value = evict_key(CacheEntry { key: 10, last_used: 4 }, CacheEntry { key: 20, last_used: 9 });
     println("{}", value);
     return value;
 }
 
 @test "rosetta 086 86_cache_eviction"() {
-    let got = rosetta_086_value();
-    if got != 20 {
+    let got = evict_key(CacheEntry { key: 10, last_used: 4 }, CacheEntry { key: 20, last_used: 9 });
+    if got != 10 {
         panic(86);
     };
 }

@@ -1,24 +1,31 @@
-// Sla companion for SA rosetta demo 129 Seqlock Optimistic.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_129_value() -> int {
-    let base = (13 * 5) + 129;
-    let threshold = 148;
-    if base > threshold {
-        return base - threshold;
+fn seqlock_optimistic_value() -> i32 {
+    return seqlock_read(2, 10, 2);
+}
+
+fn seqlock_read(begin_version: i32, value: i32, end_version: i32) -> i32 {
+    if begin_version == end_version {
+        if begin_version % 2 == 0 {
+            return value + end_version;
+        } else {
+            return 0;
+        };
     } else {
-        return threshold - base;
+        return 0;
     };
 }
 
-fn main() -> int {
-    let result = rosetta_129_value();
+fn main() -> i32 {
+    let result = seqlock_optimistic_value();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 129 129_seqlock_optimistic"() {
-    let got = rosetta_129_value();
-    if got != 46 {
+    let got = seqlock_optimistic_value();
+    if got != 12 {
         panic(129);
     };
 };

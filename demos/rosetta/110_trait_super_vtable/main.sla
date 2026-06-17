@@ -1,3 +1,6 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
 trait A {
     fn a(&self) -> i32;
 }
@@ -22,19 +25,19 @@ impl B for Item {
     }
 }
 
-fn rosetta_110_value() -> i32 {
+fn super_trait_total() -> i32 {
     let item = Item { value: 7 };
     return item.a() + item.b();
 }
 
 fn main() -> i32 {
-    let result = rosetta_110_value();
+    let result = super_trait_total();
     println("{}", result);
     return result;
 }
 
 @test "rosetta 110 110_trait_super_vtable"() {
-    let got = rosetta_110_value();
+    let got = super_trait_total();
     if got != 15 {
         panic(110);
     };

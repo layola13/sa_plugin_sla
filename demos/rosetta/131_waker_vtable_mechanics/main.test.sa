@@ -1,46 +1,85 @@
-@import "sa_std/string.sa"
-@rosetta_131_mix(left: i64, right: i64) -> i64:
-L_ENTRY:
-    tmp_0 = mul left, right
-    product = tmp_0
-    tmp_1 = add product, left
-    tmp_2 = sub tmp_1, right
-    result = tmp_2
-    !product
-    !right
-    !left
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/waker.sa"
 
-@rosetta_131_value() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_waker_vtable_wake_count = vtable { call = @sla__waker_vtable_wake_count }
+@const SLA_FNPTR_VT_raw_waker_clone = vtable { call = @sla__raw_waker_clone }
+@const SLA_FNPTR_VT_raw_waker_wake_by_ref = vtable { call = @sla__raw_waker_wake_by_ref }
+@const SLA_FNPTR_VT_raw_waker_wake = vtable { call = @sla__raw_waker_wake }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__waker_vtable_wake_count() -> i32:
 L_ENTRY:
-    tmp_3 = 25
-    tmp_4 = 28
-    tmp_5 = call @rosetta_131_mix(tmp_3, tmp_4)
-    !tmp_3
+    tmp_0 = 0
+    wakes = tmp_0
+    tmp_1 = call @sla__raw_waker_clone(wakes)
+    !wakes
+    wakes = tmp_1
+    tmp_2 = call @sla__raw_waker_wake_by_ref(wakes)
+    !wakes
+    wakes = tmp_2
+    tmp_3 = call @sla__raw_waker_wake(wakes)
+    !wakes
+    wakes = tmp_3
+    return wakes
+
+@sla__raw_waker_clone(wakes: i32) -> i32:
+L_ENTRY:
+    tmp_4 = 1
+    tmp_5 = add wakes, tmp_4
     !tmp_4
-    result = tmp_5
-    return result
+    !wakes
+    return tmp_5
 
-@main() -> i64:
+@sla__raw_waker_wake_by_ref(wakes: i32) -> i32:
 L_ENTRY:
-    tmp_6 = call @rosetta_131_value()
-    result = tmp_6
+    tmp_6 = 1
+    tmp_7 = add wakes, tmp_6
+    !tmp_6
+    !wakes
+    return tmp_7
+
+@sla__raw_waker_wake(wakes: i32) -> i32:
+L_ENTRY:
+    tmp_8 = 1
+    tmp_9 = add wakes, tmp_8
+    !tmp_8
+    !wakes
+    return tmp_9
+
+@main() -> i32:
+L_ENTRY:
+    tmp_10 = call @sla__waker_vtable_wake_count()
+    result = tmp_10
+    tmp_11 = call @sa_fmt_u64(result, 10)
+    tmp_12 = call @sa_fmt_buffer_data(tmp_11)
+    tmp_13 = call @sa_fmt_buffer_len(tmp_11)
+    tmp_14 = tmp_12
+    call @sa_print_bytes(&tmp_14, tmp_13)
+    call @sa_fmt_buffer_free(^tmp_11)
+    !tmp_14
+    !tmp_13
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 131 131_waker_vtable_mechanics"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @rosetta_131_value()
-    got = tmp_7
-    tmp_8 = 697
-    tmp_9 = ne got, tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+    tmp_15 = call @sla__waker_vtable_wake_count()
+    got = tmp_15
+    tmp_16 = 3
+    tmp_17 = ne got, tmp_16
+    !tmp_16
+    br tmp_17 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_9
+    !tmp_17
     panic(131)
 
 L_ELSE_2:
-    !tmp_9
+    !tmp_17
     jmp L_MERGE_3
 
 L_MERGE_3:

@@ -1,24 +1,23 @@
-// Sla companion for SA rosetta demo 097 Sync Service.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_097_value() -> int {
-    let base = (15 * 9) + 97;
-    let threshold = 107;
-    if base > threshold {
-        return base - threshold;
+fn sync_needed(local_version: i32, remote_version: i32, dirty: bool) -> bool {
+    if dirty == true {
+        return true;
     } else {
-        return threshold - base;
+        return local_version < remote_version;
     };
 }
 
-fn main() -> int {
-    let result = rosetta_097_value();
-    return result;
+fn main() -> i32 {
+    let sync = sync_needed(7, 9, false);
+    println("{}", sync);
+    return 0;
 };
 
 @test "rosetta 097 97_sync_service"() {
-    let got = rosetta_097_value();
-    if got != 125 {
+    let got = sync_needed(7, 9, false);
+    if got != true {
         panic(97);
     };
 };

@@ -1,24 +1,6 @@
-// Sla companion for SA rosetta demo 229 Mod Layout Injection.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_229_value() -> int {
-    let base = (11 * 6) + 229;
-    let threshold = 256;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_229_value();
-    return result;
-};
-
-@test "rosetta 229 229_mod_layout_injection"() {
-    let got = rosetta_229_value();
-    if got != 39 {
-        panic(229);
-    };
-};
+fn mod_layout_injected_field_count() -> i32 { let injected_layout_field = 1; return injected_layout_field; }
+fn main() -> i32 { let result = mod_layout_injected_field_count(); println("{}", result); return result; }
+@test "rosetta 229 mod layout injection"() { let got = mod_layout_injected_field_count(); if got != 1 { panic(229); }; }

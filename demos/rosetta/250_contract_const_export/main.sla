@@ -1,23 +1,18 @@
-// Sla companion for SA rosetta demo 250 Contract Const Export.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_250_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 25;
+fn contract_exported_const_count() -> i32 {
+    let abi_version_const = 1;
+    return abi_version_const;
+}
+
+fn main() -> i32 {
+    let result = contract_exported_const_count();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_250_value();
-    return result;
-};
-
-@test "rosetta 250 250_contract_const_export"() {
-    let got = rosetta_250_value();
-    if got != 35 {
-        panic(250);
-    };
-};
+@test "rosetta 250 contract const export"() {
+    let got = contract_exported_const_count();
+    if got != 1 { panic(250); };
+}

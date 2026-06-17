@@ -1,5 +1,6 @@
-// 250 - Contract Const Export
+pub const ABI_VERSION: i32 = 1;
+
 fn main() {
-    let value = 250;
-    println!("{}", value);
+    let result = ABI_VERSION;
+    println!("{}", result);
 }

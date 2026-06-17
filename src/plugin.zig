@@ -113,6 +113,51 @@ fn importPathFromLine(raw_line: []const u8) ?[]const u8 {
     return null;
 }
 
+fn macroParamName(raw: []const u8) []const u8 {
+    var param = std.mem.trim(u8, raw, " \t\r,");
+    if (param.len > 0 and param[0] == '%') param = param[1..];
+    return param;
+}
+
+fn isLeadingOutputMacroParam(raw: []const u8) bool {
+    const param = macroParamName(raw);
+    return std.mem.startsWith(u8, param, "out") or
+        std.mem.eql(u8, param, "nonnull_ptr") or
+        std.mem.eql(u8, param, "type_id") or
+        std.mem.eql(u8, param, "any_ref") or
+        std.mem.eql(u8, param, "cursor") or
+        std.mem.eql(u8, param, "take") or
+        std.mem.eql(u8, param, "repeat");
+}
+
+fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, source: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (!std.mem.startsWith(u8, line, "[MACRO]")) continue;
+
+        var parts = std.mem.tokenizeAny(u8, line["[MACRO]".len..], " \t");
+        const raw_name = parts.next() orelse continue;
+        const name = try allocator.dupe(u8, std.mem.trim(u8, raw_name, " \t\r,"));
+
+        var arity: usize = 0;
+        var leading_outputs: usize = 0;
+        var still_leading = true;
+        while (parts.next()) |raw_param| {
+            const param = macroParamName(raw_param);
+            if (param.len == 0) continue;
+            if (still_leading and isLeadingOutputMacroParam(raw_param)) {
+                leading_outputs += 1;
+            } else {
+                still_leading = false;
+            }
+            arity += 1;
+        }
+
+        try tc.registerImportedMacro(name, arity, leading_outputs);
+    }
+}
+
 fn loadImportContractsRecursive(
     tc: *type_checker_mod.TypeChecker,
     allocator: std.mem.Allocator,
@@ -137,6 +182,7 @@ fn loadImportContractsRecursive(
     } else if (std.mem.endsWith(u8, resolved.path, ".sal")) {
         try tc.loadContracts("", resolved.source);
     }
+    try loadImportedMacros(tc, allocator, resolved.source);
 }
 
 fn loadImportedContracts(

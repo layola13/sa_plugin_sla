@@ -1,23 +1,10 @@
-// Sla companion for SA rosetta demo 206 Pkg Version Resolution.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_206_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 27;
-    return result;
+fn pkg_resolved_patch_version() -> i32 {
+    let selected_patch = 3;
+    return selected_patch;
 }
 
-fn main() -> int {
-    let result = rosetta_206_value();
-    return result;
-};
-
-@test "rosetta 206 206_pkg_version_resolution"() {
-    let got = rosetta_206_value();
-    if got != 63 {
-        panic(206);
-    };
-};
+fn main() -> i32 { let result = pkg_resolved_patch_version(); println("{}", result); return result; }
+@test "rosetta 206 pkg version resolution"() { let got = pkg_resolved_patch_version(); if got != 3 { panic(206); }; }

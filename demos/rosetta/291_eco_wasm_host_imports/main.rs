@@ -1,5 +1,10 @@
-// 291 - Eco Wasm Host Imports
+fn wasm_host_imports() -> i32 {
+    let log_import = 1;
+    let clock_import = 1;
+    log_import + clock_import
+}
+
 fn main() {
-    let value = 291;
-    println!("{}", value);
+    let result = wasm_host_imports();
+    println!("{}", result);
 }

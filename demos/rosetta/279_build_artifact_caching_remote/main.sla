@@ -1,25 +1,6 @@
-// Sla companion for SA rosetta demo 279 Build Artifact Caching Remote.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_279_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_279_value() -> int {
-    let result = rosetta_279_mix(14, 10);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_279_value();
-    return result;
-};
-
-@test "rosetta 279 279_build_artifact_caching_remote"() {
-    let got = rosetta_279_value();
-    if got != 144 {
-        panic(279);
-    };
-};
+fn build_remote_cache_hits() -> i32 { let downloaded_artifact = 1; return downloaded_artifact; }
+fn main() -> i32 { let result = build_remote_cache_hits(); println("{}", result); return result; }
+@test "rosetta 279 build artifact caching remote"() { let got = build_remote_cache_hits(); if got != 1 { panic(279); }; }

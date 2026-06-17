@@ -1,3 +1,6 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
 fn integration_service_total() -> i32 {
     let users = 2;
     let orders = 4;

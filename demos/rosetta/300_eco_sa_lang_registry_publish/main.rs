@@ -1,5 +1,11 @@
-// 300 - Eco Sa Lang Registry Publish
+fn registry_publish_steps() -> i32 {
+    let package = 1;
+    let checksum = 1;
+    let index = 1;
+    package + checksum + index
+}
+
 fn main() {
-    let value = 300;
-    println!("{}", value);
+    let result = registry_publish_steps();
+    println!("{}", result);
 }

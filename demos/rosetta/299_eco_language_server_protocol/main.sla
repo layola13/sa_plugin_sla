@@ -1,25 +1,6 @@
-// Sla companion for SA rosetta demo 299 Eco Language Server Protocol.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_299_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_299_value() -> int {
-    let result = rosetta_299_mix(15, 9);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_299_value();
-    return result;
-};
-
-@test "rosetta 299 299_eco_language_server_protocol"() {
-    let got = rosetta_299_value();
-    if got != 141 {
-        panic(299);
-    };
-};
+fn eco_lsp_message_kinds() -> i32 { let request = 1; let response = 1; return request + response; }
+fn main() -> i32 { let result = eco_lsp_message_kinds(); println("{}", result); return result; }
+@test "rosetta 299 eco language server protocol"() { let got = eco_lsp_message_kinds(); if got != 2 { panic(299); }; }

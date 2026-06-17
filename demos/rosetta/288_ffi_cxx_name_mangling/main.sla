@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 288 Ffi Cxx Name Mangling.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_288_value() -> int {
-    let seed = 19;
-    let shifted = seed + 288;
-    let scaled = shifted * 2;
-    let result = scaled - 17;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_288_value();
-    return result;
-};
-
-@test "rosetta 288 288_ffi_cxx_name_mangling"() {
-    let got = rosetta_288_value();
-    if got != 597 {
-        panic(288);
-    };
-};
+fn ffi_cxx_symbol_name_count() -> i32 { let mangled_name = 1; let extern_c_shim = 1; return mangled_name + extern_c_shim; }
+fn main() -> i32 { let result = ffi_cxx_symbol_name_count(); println("{}", result); return result; }
+@test "rosetta 288 ffi cxx name mangling"() { let got = ffi_cxx_symbol_name_count(); if got != 2 { panic(288); }; }

@@ -1,3 +1,6 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
 fn scene_nodes_sum() -> i32 {
     let nodes = [4, 5, 6];
     return nodes.iter().sum();

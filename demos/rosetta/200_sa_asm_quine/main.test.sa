@@ -1,42 +1,50 @@
-@import "sa_std/string.sa"
-@rosetta_200_value() -> i64:
-L_ENTRY:
-    tmp_0 = 16
-    seed = tmp_0
-    tmp_1 = 200
-    tmp_2 = add seed, tmp_1
-    shifted = tmp_2
-    tmp_3 = 4
-    tmp_4 = mul shifted, tmp_3
-    scaled = tmp_4
-    tmp_5 = 21
-    tmp_6 = sub scaled, tmp_5
-    result = tmp_6
-    !scaled
-    !seed
-    !shifted
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@main() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_sa_asm_quine_source_len = vtable { call = @sa_asm_quine_source_len }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sa_asm_quine_source_len() -> u64:
 L_ENTRY:
-    tmp_7 = call @rosetta_200_value()
-    result = tmp_7
-    return result
+    tmp_0 = 67
+    source_len = tmp_0
+    return source_len
+
+@main() -> i32:
+L_ENTRY:
+    tmp_1 = call @sa_asm_quine_source_len()
+    result = tmp_1
+    tmp_2 = call @sa_fmt_u64(result, 10)
+    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
+    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
+    tmp_5 = tmp_3
+    call @sa_print_bytes(&tmp_5, tmp_4)
+    call @sa_fmt_buffer_free(^tmp_2)
+    !tmp_5
+    !tmp_4
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_6 = 0
+    !result
+    return tmp_6
 
 @test "rosetta 200 200_sa_asm_quine"():
 L_TEST_ENTRY_0:
-    tmp_8 = call @rosetta_200_value()
-    got = tmp_8
-    tmp_9 = 843
-    tmp_10 = ne got, tmp_9
-    br tmp_10 -> L_THEN_1, L_ELSE_2
+    tmp_7 = call @sa_asm_quine_source_len()
+    got = tmp_7
+    tmp_8 = 67
+    tmp_9 = ne got, tmp_8
+    !tmp_8
+    br tmp_9 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_10
+    !tmp_9
     panic(200)
 
 L_ELSE_2:
-    !tmp_10
+    !tmp_9
     jmp L_MERGE_3
 
 L_MERGE_3:

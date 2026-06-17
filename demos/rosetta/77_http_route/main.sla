@@ -1,24 +1,43 @@
-// Sla companion for SA rosetta demo 077 Http Route.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
 
-fn rosetta_077_value() -> int {
-    let base = (12 * 7) + 77;
-    let threshold = 90;
-    if base > threshold {
-        return base - threshold;
+struct Request {
+    method: ptr,
+    path: ptr,
+}
+
+fn route_status(req: Request) -> i32 {
+    if str_eq(req.method, "GET") == true {
+        if str_eq(req.path, "/health") == true {
+            return 200;
+        } else {
+            return 404;
+        };
     } else {
-        return threshold - base;
+        if str_eq(req.method, "POST") == true {
+            if str_eq(req.path, "/jobs") == true {
+                return 202;
+            } else {
+                return 404;
+            };
+        } else {
+            return 404;
+        };
     };
 }
 
-fn main() -> int {
-    let result = rosetta_077_value();
-    return result;
+fn main() -> i32 {
+    let request = Request { method: "POST", path: "/jobs" };
+    let status = route_status(request);
+    println("{}", status);
+    return status;
 };
 
 @test "rosetta 077 77_http_route"() {
-    let got = rosetta_077_value();
-    if got != 71 {
+    let request = Request { method: "POST", path: "/jobs" };
+    let got = route_status(request);
+    if got != 202 {
         panic(77);
     };
 };

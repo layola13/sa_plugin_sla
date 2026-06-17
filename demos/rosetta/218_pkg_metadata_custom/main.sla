@@ -1,23 +1,11 @@
-// Sla companion for SA rosetta demo 218 Pkg Metadata Custom.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_218_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 16;
-    return result;
+fn pkg_custom_metadata_fields() -> i32 {
+    let owner_field = 1;
+    let category_field = 1;
+    return owner_field + category_field;
 }
 
-fn main() -> int {
-    let result = rosetta_218_value();
-    return result;
-};
-
-@test "rosetta 218 218_pkg_metadata_custom"() {
-    let got = rosetta_218_value();
-    if got != 26 {
-        panic(218);
-    };
-};
+fn main() -> i32 { let result = pkg_custom_metadata_fields(); println("{}", result); return result; }
+@test "rosetta 218 pkg metadata custom"() { let got = pkg_custom_metadata_fields(); if got != 2 { panic(218); }; }

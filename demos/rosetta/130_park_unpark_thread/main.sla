@@ -1,23 +1,32 @@
-// Sla companion for SA rosetta demo 130 Park Unpark Thread.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_130_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 20;
-    return result;
+fn park_unpark_result() -> i32 {
+    let parked = park_thread();
+    return unpark_thread(parked);
 }
 
-fn main() -> int {
-    let result = rosetta_130_value();
+fn park_thread() -> i32 {
+    return 0;
+}
+
+fn unpark_thread(park_token: i32) -> i32 {
+    if park_token == 0 {
+        return 1;
+    } else {
+        return 0;
+    };
+}
+
+fn main() -> i32 {
+    let result = park_unpark_result();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 130 130_park_unpark_thread"() {
-    let got = rosetta_130_value();
-    if got != 30 {
+    let got = park_unpark_result();
+    if got != 1 {
         panic(130);
     };
 };

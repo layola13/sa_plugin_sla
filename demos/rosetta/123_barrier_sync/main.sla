@@ -1,25 +1,29 @@
-// Sla companion for SA rosetta demo 123 Barrier Sync.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_123_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn barrier_release_count() -> i32 {
+    let parties = 3;
+    let arrived = 3;
+    return barrier_release(parties, arrived);
 }
 
-fn rosetta_123_value() -> int {
-    let result = rosetta_123_mix(9, 21);
-    return result;
+fn barrier_release(parties: i32, arrived: i32) -> i32 {
+    if arrived == parties {
+        return arrived;
+    } else {
+        return 0;
+    };
 }
 
-fn main() -> int {
-    let result = rosetta_123_value();
+fn main() -> i32 {
+    let result = barrier_release_count();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 123 123_barrier_sync"() {
-    let got = rosetta_123_value();
-    if got != 177 {
+    let got = barrier_release_count();
+    if got != 3 {
         panic(123);
     };
 };

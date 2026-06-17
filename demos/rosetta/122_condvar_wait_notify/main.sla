@@ -1,23 +1,27 @@
-// Sla companion for SA rosetta demo 122 Condvar Wait Notify.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_122_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 12;
-    return result;
+fn condvar_wait_result() -> i32 {
+    return condvar_wait(true, 4);
 }
 
-fn main() -> int {
-    let result = rosetta_122_value();
+fn condvar_wait(ready: bool, value: i32) -> i32 {
+    if ready {
+        return value;
+    } else {
+        return 0;
+    };
+}
+
+fn main() -> i32 {
+    let result = condvar_wait_result();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 122 122_condvar_wait_notify"() {
-    let got = rosetta_122_value();
-    if got != 22 {
+    let got = condvar_wait_result();
+    if got != 4 {
         panic(122);
     };
 };

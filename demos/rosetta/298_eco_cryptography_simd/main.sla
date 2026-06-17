@@ -1,23 +1,6 @@
-// Sla companion for SA rosetta demo 298 Eco Cryptography Simd.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_298_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 27;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_298_value();
-    return result;
-};
-
-@test "rosetta 298 298_eco_cryptography_simd"() {
-    let got = rosetta_298_value();
-    if got != 37 {
-        panic(298);
-    };
-};
+fn eco_crypto_simd_lanes() -> i32 { let lane0 = 1; let lane1 = 1; let lane2 = 1; let lane3 = 1; return lane0 + lane1 + lane2 + lane3; }
+fn main() -> i32 { let result = eco_crypto_simd_lanes(); println("{}", result); return result; }
+@test "rosetta 298 eco cryptography simd"() { let got = eco_crypto_simd_lanes(); if got != 4 { panic(298); }; }

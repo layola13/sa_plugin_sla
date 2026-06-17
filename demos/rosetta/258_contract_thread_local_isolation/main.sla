@@ -1,23 +1,19 @@
-// Sla companion for SA rosetta demo 258 Contract Thread Local Isolation.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_258_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 10;
+fn contract_thread_local_slots() -> i32 {
+    let main_thread_slot = 1;
+    let worker_thread_slot = 1;
+    return main_thread_slot + worker_thread_slot;
+}
+
+fn main() -> i32 {
+    let result = contract_thread_local_slots();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_258_value();
-    return result;
-};
-
-@test "rosetta 258 258_contract_thread_local_isolation"() {
-    let got = rosetta_258_value();
-    if got != 20 {
-        panic(258);
-    };
-};
+@test "rosetta 258 contract thread local isolation"() {
+    let got = contract_thread_local_slots();
+    if got != 2 { panic(258); };
+}

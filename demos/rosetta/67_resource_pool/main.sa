@@ -1,43 +1,63 @@
-@rosetta_067_mix(left: i64, right: i64) -> i64:
-L_ENTRY:
-    tmp_0 = mul left, right
-    product = tmp_0
-    tmp_1 = add product, left
-    tmp_2 = sub tmp_1, right
-    result = tmp_2
-    !product
-    !right
-    !left
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@rosetta_067_value() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_resource_pool_value = vtable { call = @sla__resource_pool_value }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__resource_pool_value() -> i32:
 L_ENTRY:
-    tmp_3 = 20
-    tmp_4 = 32
-    tmp_5 = call @rosetta_067_mix(tmp_3, tmp_4)
-    result = tmp_5
-    return result
+    pool = alloc 12
+    tmp_0 = 10
+    store pool+0, tmp_0 as i32
+    tmp_1 = 20
+    store pool+4, tmp_1 as i32
+    tmp_2 = 30
+    store pool+8, tmp_2 as i32
+    tmp_3 = 1
+    tmp_4 = mul tmp_3, 4
+    tmp_5 = ptr_add pool, tmp_4
+    !tmp_4
+    !tmp_3
+    tmp_6 = load tmp_5+0 as i32
+    !tmp_5
+    !pool
+    return tmp_6
 
-@main() -> i64:
+@main() -> i32:
 L_ENTRY:
-    tmp_6 = call @rosetta_067_value()
-    result = tmp_6
-    return result
+    tmp_7 = call @sla__resource_pool_value()
+    value = tmp_7
+    tmp_8 = call @sa_fmt_u64(value, 10)
+    tmp_9 = call @sa_fmt_buffer_data(tmp_8)
+    tmp_10 = call @sa_fmt_buffer_len(tmp_8)
+    tmp_11 = tmp_9
+    call @sa_print_bytes(&tmp_11, tmp_10)
+    call @sa_fmt_buffer_free(^tmp_8)
+    !tmp_11
+    !tmp_10
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_12 = 0
+    !value
+    return tmp_12
 
 @test "rosetta 067 67_resource_pool"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @rosetta_067_value()
-    got = tmp_7
-    tmp_8 = 628
-    tmp_9 = ne got, tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+    tmp_13 = call @sla__resource_pool_value()
+    got = tmp_13
+    tmp_14 = 20
+    tmp_15 = ne got, tmp_14
+    !tmp_14
+    br tmp_15 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_9
+    !tmp_15
     panic(67)
 
 L_ELSE_2:
-    !tmp_9
+    !tmp_15
     jmp L_MERGE_3
 
 L_MERGE_3:

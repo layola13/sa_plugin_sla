@@ -1,15 +1,13 @@
-@import "sa_std/string.sa"
-@import "sa_std/string_format.sa"
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/core/panic.sa"
-@import "sa_std/core/mem.sa"
+@import "sa_std/core/refcell.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@import "sa_std/core/refcell.sa"
-@sla__rosetta_107_value() -> i32:
+@const SLA_FNPTR_VT_refcell_borrow_sum = vtable { call = @sla__refcell_borrow_sum }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__refcell_borrow_sum() -> i32:
 L_ENTRY:
     tmp_0 = 7
     EXPAND REFCELL_U64_NEW tmp_1, tmp_0
@@ -133,7 +131,7 @@ L_REFCELL_BORROW_END_11:
 
 @test "rosetta 107 107_refcell_dynamic_borrow"():
 L_TEST_ENTRY_12:
-    tmp_33 = call @sla__rosetta_107_value()
+    tmp_33 = call @sla__refcell_borrow_sum()
     got = tmp_33
     tmp_34 = 16
     tmp_35 = ne got, tmp_34

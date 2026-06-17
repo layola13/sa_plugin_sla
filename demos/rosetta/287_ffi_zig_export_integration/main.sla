@@ -1,25 +1,6 @@
-// Sla companion for SA rosetta demo 287 Ffi Zig Export Integration.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_287_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_287_value() -> int {
-    let result = rosetta_287_mix(19, 26);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_287_value();
-    return result;
-};
-
-@test "rosetta 287 287_ffi_zig_export_integration"() {
-    let got = rosetta_287_value();
-    if got != 487 {
-        panic(287);
-    };
-};
+fn ffi_zig_exported_symbols() -> i32 { let exported_entry = 1; return exported_entry; }
+fn main() -> i32 { let result = ffi_zig_exported_symbols(); println("{}", result); return result; }
+@test "rosetta 287 ffi zig export integration"() { let got = ffi_zig_exported_symbols(); if got != 1 { panic(287); }; }

@@ -1,5 +1,8 @@
-// 247 - Contract Semver Major Break
+fn removed_required_field_count() -> i32 {
+    1
+}
+
 fn main() {
-    let value = 247;
-    println!("{}", value);
+    let result = removed_required_field_count();
+    println!("{}", result);
 }

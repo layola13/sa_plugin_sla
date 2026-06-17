@@ -1,24 +1,5 @@
-// Sla companion for SA rosetta demo 177 Unwrap Unwrap Err.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_177_value() -> int {
-    let base = (10 * 8) + 177;
-    let threshold = 198;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_177_value();
-    return result;
-};
-
-@test "rosetta 177 177_unwrap_unwrap_err"() {
-    let got = rosetta_177_value();
-    if got != 59 {
-        panic(177);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn unwrap_value() -> i32 { let unwrapped_value = 5; return unwrapped_value; }
+fn main() -> i32 { let result = unwrap_value(); println("{}", result); return result; }
+@test "rosetta 177 177_unwrap_unwrap_err"() { let got = unwrap_value(); if got != 5 { panic(177); }; }

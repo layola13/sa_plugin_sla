@@ -1,51 +1,79 @@
-@rosetta_105_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/option.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_let_else_unwrapped_value = vtable { call = @sla__let_else_unwrapped_value }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__let_else_unwrapped_value() -> i32:
 L_ENTRY:
-    tmp_0 = 6
-    tmp_1 = 8
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 105
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 123
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+    tmp_0 = 5
+    EXPAND OPTION_NEW_SOME tmp_1, tmp_0
+    !tmp_0
+    value = tmp_1
+    EXPAND OPTION_IS_SOME tmp_2, value
+    br tmp_2 -> L_LET_ELSE_OK_0, L_LET_ELSE_ELSE_1
 
-L_THEN_0:
+L_LET_ELSE_ELSE_1:
+    !tmp_2
+    tmp_3 = 0
+    tmp_4 = call @sa_fmt_u64(tmp_3, 10)
+    tmp_5 = call @sa_fmt_buffer_data(tmp_4)
+    tmp_6 = call @sa_fmt_buffer_len(tmp_4)
+    tmp_7 = tmp_5
+    call @sa_print_bytes(&tmp_7, tmp_6)
+    call @sa_fmt_buffer_free(^tmp_4)
+    !tmp_7
     !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
-
-L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
+    !tmp_3
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_8 = 0
+    !value
     return tmp_8
 
+L_LET_ELSE_OK_0:
+    !tmp_2
+    EXPAND OPTION_GET x, value
+    jmp L_LET_ELSE_CONT_2
 
-@main() -> i64:
+L_LET_ELSE_CONT_2:
+    !value
+    return x
+
+@main() -> i32:
 L_ENTRY:
-    tmp_10 = call @rosetta_105_value()
-    result = tmp_10
-    return result
+    tmp_9 = call @sla__let_else_unwrapped_value()
+    value = tmp_9
+    tmp_10 = call @sa_fmt_u64(value, 10)
+    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
+    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
+    tmp_13 = tmp_11
+    call @sa_print_bytes(&tmp_13, tmp_12)
+    call @sa_fmt_buffer_free(^tmp_10)
+    !tmp_13
+    !tmp_12
+    @const SLA_STR_1 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    return value
 
 @test "rosetta 105 105_let_else"():
 L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_105_value()
-    got = tmp_11
-    tmp_12 = 30
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
+    tmp_14 = call @sla__let_else_unwrapped_value()
+    got = tmp_14
+    tmp_15 = 5
+    tmp_16 = ne got, tmp_15
+    !tmp_15
+    br tmp_16 -> L_THEN_4, L_ELSE_5
 
 L_THEN_4:
-    !tmp_13
+    !tmp_16
     panic(105)
 
 L_ELSE_5:
-    !tmp_13
+    !tmp_16
     jmp L_MERGE_6
 
 L_MERGE_6:

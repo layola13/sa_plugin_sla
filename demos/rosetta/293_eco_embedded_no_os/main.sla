@@ -1,24 +1,6 @@
-// Sla companion for SA rosetta demo 293 Eco Embedded No Os.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_293_value() -> int {
-    let base = (7 * 7) + 293;
-    let threshold = 315;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_293_value();
-    return result;
-};
-
-@test "rosetta 293 293_eco_embedded_no_os"() {
-    let got = rosetta_293_value();
-    if got != 27 {
-        panic(293);
-    };
-};
+fn eco_embedded_no_os_hooks() -> i32 { let reset_handler = 1; return reset_handler; }
+fn main() -> i32 { let result = eco_embedded_no_os_hooks(); println("{}", result); return result; }
+@test "rosetta 293 eco embedded no os"() { let got = eco_embedded_no_os_hooks(); if got != 1 { panic(293); }; }

@@ -1,23 +1,7 @@
-// Sla companion for SA rosetta demo 142 Zero Sized Types.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_142_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 9;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_142_value();
-    return result;
-};
-
-@test "rosetta 142 142_zero_sized_types"() {
-    let got = rosetta_142_value();
-    if got != 45 {
-        panic(142);
-    };
-};
+fn process_unit() -> i32 { return 42; }
+fn zero_sized_process_result() -> i32 { return process_unit(); }
+fn main() -> i32 { let result = zero_sized_process_result(); println("{}", result); return result; }
+@test "rosetta 142 142_zero_sized_types"() { let got = zero_sized_process_result(); if got != 42 { panic(142); }; }

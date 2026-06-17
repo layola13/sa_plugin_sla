@@ -1,77 +1,52 @@
-@import "sa_std/string.sa"
-@rosetta_038_value() -> i64:
-L_ENTRY:
-    tmp_0 = 0
-    total = tmp_0
-    i = 1
-    tmp_1 = add total, i
-    !total
-    total = tmp_1
-    !i
-    i = 2
-    tmp_2 = add total, i
-    !total
-    total = tmp_2
-    !i
-    i = 3
-    tmp_3 = add total, i
-    !total
-    total = tmp_3
-    !i
-    i = 4
-    tmp_4 = add total, i
-    !total
-    total = tmp_4
-    !i
-    i = 5
-    tmp_5 = add total, i
-    !total
-    total = tmp_5
-    !i
-    i = 6
-    tmp_6 = add total, i
-    !total
-    total = tmp_6
-    !i
-    i = 7
-    tmp_7 = add total, i
-    !total
-    total = tmp_7
-    !i
-    i = 8
-    tmp_8 = add total, i
-    !total
-    total = tmp_8
-    !i
-    tmp_9 = 20
-    tmp_10 = add total, tmp_9
-    result = tmp_10
-    !total
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@main() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@main() -> i32:
 L_ENTRY:
-    tmp_11 = call @rosetta_038_value()
-    result = tmp_11
-    return result
+    wrapped = alloc 4
+    tmp_0 = 31
+    store wrapped+0, tmp_0 as i32
+    tmp_1 = load wrapped+0 as i32
+    tmp_2 = call @sa_fmt_u64(tmp_1, 10)
+    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
+    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
+    tmp_5 = tmp_3
+    call @sa_print_bytes(&tmp_5, tmp_4)
+    call @sa_fmt_buffer_free(^tmp_2)
+    !tmp_5
+    !tmp_4
+    !tmp_1
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_6 = 0
+    !wrapped
+    return tmp_6
 
-@test "rosetta 038 38_generic_struct_i32"():
+@test "rosetta 038 generic struct i32"():
 L_TEST_ENTRY_0:
-    tmp_12 = call @rosetta_038_value()
-    got = tmp_12
-    tmp_13 = 56
-    tmp_14 = ne got, tmp_13
-    br tmp_14 -> L_THEN_1, L_ELSE_2
+    wrapped = alloc 4
+    tmp_7 = 31
+    store wrapped+0, tmp_7 as i32
+    tmp_8 = load wrapped+0 as i32
+    tmp_9 = 31
+    tmp_10 = ne tmp_8, tmp_9
+    !tmp_8
+    !tmp_9
+    br tmp_10 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_14
+    !tmp_10
     panic(38)
 
 L_ELSE_2:
-    !tmp_14
+    !tmp_10
     jmp L_MERGE_3
 
 L_MERGE_3:
-    !got
+    !wrapped
     return
 

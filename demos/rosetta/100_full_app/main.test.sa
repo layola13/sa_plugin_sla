@@ -1,45 +1,115 @@
-@import "sa_std/string.sa"
-@rosetta_100_value() -> i64:
-L_ENTRY:
-    tmp_0 = 18
-    seed = tmp_0
-    tmp_1 = 100
-    tmp_2 = add seed, tmp_1
-    shifted = tmp_2
-    tmp_3 = 3
-    tmp_4 = mul shifted, tmp_3
-    scaled = tmp_4
-    tmp_5 = 13
-    tmp_6 = sub scaled, tmp_5
-    result = tmp_6
-    !scaled
-    !seed
-    !shifted
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@main() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_handle_request = vtable { call = @sla__handle_request }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__handle_request(req: ptr) -> i32:
 L_ENTRY:
-    tmp_7 = call @rosetta_100_value()
-    result = tmp_7
+    tmp_0 = load req+0 as u8
+    tmp_1 = 1
+    tmp_2 = ne tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    br tmp_2 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_2
+    tmp_3 = 401
+    !req
+    return tmp_3
+
+L_ELSE_1:
+    !tmp_2
+    tmp_4 = load req+1 as u8
+    tmp_5 = 1
+    tmp_6 = ne tmp_4, tmp_5
+    !tmp_4
+    !tmp_5
+    br tmp_6 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_6
+    tmp_7 = 404
+    !req
+    return tmp_7
+
+L_ELSE_4:
+    !tmp_6
+    tmp_8 = load req+2 as u8
+    tmp_9 = 1
+    tmp_10 = ne tmp_8, tmp_9
+    !tmp_8
+    !tmp_9
+    br tmp_10 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_10
+    tmp_11 = 503
+    !req
+    return tmp_11
+
+L_ELSE_7:
+    !tmp_10
+    tmp_12 = 200
+    !req
+    return tmp_12
+
+
+
+
+@main() -> i32:
+L_ENTRY:
+    req = alloc 3
+    tmp_16 = 1
+    store req+0, tmp_16 as u8
+    tmp_17 = 1
+    store req+1, tmp_17 as u8
+    tmp_18 = 1
+    store req+2, tmp_18 as u8
+    tmp_19 = call @sla__handle_request(req)
+    result = tmp_19
+    tmp_20 = call @sa_fmt_u64(result, 10)
+    tmp_21 = call @sa_fmt_buffer_data(tmp_20)
+    tmp_22 = call @sa_fmt_buffer_len(tmp_20)
+    tmp_23 = tmp_21
+    call @sa_print_bytes(&tmp_23, tmp_22)
+    call @sa_fmt_buffer_free(^tmp_20)
+    !tmp_23
+    !tmp_22
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    !req
     return result
 
 @test "rosetta 100 100_full_app"():
-L_TEST_ENTRY_0:
-    tmp_8 = call @rosetta_100_value()
-    got = tmp_8
-    tmp_9 = 341
-    tmp_10 = ne got, tmp_9
-    br tmp_10 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_9:
+    req = alloc 3
+    tmp_24 = 1
+    store req+0, tmp_24 as u8
+    tmp_25 = 1
+    store req+1, tmp_25 as u8
+    tmp_26 = 1
+    store req+2, tmp_26 as u8
+    tmp_27 = call @sla__handle_request(req)
+    got = tmp_27
+    tmp_28 = 200
+    tmp_29 = ne got, tmp_28
+    !tmp_28
+    br tmp_29 -> L_THEN_10, L_ELSE_11
 
-L_THEN_1:
-    !tmp_10
+L_THEN_10:
+    !tmp_29
     panic(100)
 
-L_ELSE_2:
-    !tmp_10
-    jmp L_MERGE_3
+L_ELSE_11:
+    !tmp_29
+    jmp L_MERGE_12
 
-L_MERGE_3:
+L_MERGE_12:
+    !req
     !got
     return
 

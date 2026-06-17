@@ -1,4 +1,8 @@
-fn rosetta_107_value() -> i32 {
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/refcell.sa"
+
+fn refcell_borrow_sum() -> i32 {
     let value = RefCell::new(7);
     let first = 0;
     {
@@ -23,7 +27,7 @@ fn main() -> i32 {
 }
 
 @test "rosetta 107 107_refcell_dynamic_borrow"() {
-    let got = rosetta_107_value();
+    let got = refcell_borrow_sum();
     if got != 16 {
         panic(107);
     };

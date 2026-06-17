@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 192 Proc Macro Derive Ast.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_192_value() -> int {
-    let seed = 8;
-    let shifted = seed + 192;
-    let scaled = shifted * 5;
-    let result = scaled - 13;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_192_value();
-    return result;
-};
-
-@test "rosetta 192 192_proc_macro_derive_ast"() {
-    let got = rosetta_192_value();
-    if got != 987 {
-        panic(192);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+struct Pair { left: i32, right: i32 }
+fn proc_macro_derive_pair_sum() -> i32 { let pair = Pair { left: 1, right: 2 }; return pair.left + pair.right; }
+fn main() -> i32 { let result = proc_macro_derive_pair_sum(); println("{}", result); return result; }
+@test "rosetta 192 192_proc_macro_derive_ast"() { let got = proc_macro_derive_pair_sum(); if got != 3 { panic(192); }; }

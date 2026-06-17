@@ -1,5 +1,9 @@
-// 282 - Ffi Link Static C Lib
+fn static_library_objects() -> i32 {
+    let archive_member = 1;
+    archive_member
+}
+
 fn main() {
-    let value = 282;
-    println!("{}", value);
+    let result = static_library_objects();
+    println!("{}", result);
 }

@@ -1,49 +1,103 @@
-@import "sa_std/string.sa"
-@rosetta_099_mix(left: i64, right: i64) -> i64:
-L_ENTRY:
-    tmp_0 = mul left, right
-    product = tmp_0
-    tmp_1 = add product, left
-    tmp_2 = sub tmp_1, right
-    result = tmp_2
-    !product
-    !right
-    !left
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@rosetta_099_value() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_release_ready = vtable { call = @sla__release_ready }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__release_ready(manifest: ptr) -> u8:
 L_ENTRY:
-    tmp_3 = 17
-    tmp_4 = 14
-    tmp_5 = call @rosetta_099_mix(tmp_3, tmp_4)
+    tmp_0 = load manifest+0 as u8
+    tmp_1 = 1
+    tmp_2 = eq tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    br tmp_2 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_2
+    tmp_3 = load manifest+1 as u8
+    tmp_4 = 1
+    tmp_5 = eq tmp_3, tmp_4
     !tmp_3
     !tmp_4
-    result = tmp_5
-    return result
+    br tmp_5 -> L_THEN_3, L_ELSE_4
 
-@main() -> i64:
+L_THEN_3:
+    !tmp_5
+    tmp_6 = load manifest+2 as u8
+    !manifest
+    return tmp_6
+
+L_ELSE_4:
+    !tmp_5
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    jmp L_MERGE_2
+
+L_ELSE_1:
+    !tmp_2
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_9 = 0
+    !manifest
+    return tmp_9
+
+@main() -> i32:
 L_ENTRY:
-    tmp_6 = call @rosetta_099_value()
-    result = tmp_6
-    return result
+    manifest = alloc 3
+    tmp_10 = 1
+    store manifest+0, tmp_10 as u8
+    tmp_11 = 1
+    store manifest+1, tmp_11 as u8
+    tmp_12 = 1
+    store manifest+2, tmp_12 as u8
+    tmp_13 = call @sla__release_ready(manifest)
+    result = tmp_13
+    tmp_14 = call @sa_fmt_bool(result)
+    tmp_15 = call @sa_fmt_buffer_data(tmp_14)
+    tmp_16 = call @sa_fmt_buffer_len(tmp_14)
+    tmp_17 = tmp_15
+    call @sa_print_bytes(&tmp_17, tmp_16)
+    call @sa_fmt_buffer_free(^tmp_14)
+    !tmp_17
+    !tmp_16
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_18 = 0
+    !result
+    !manifest
+    return tmp_18
 
 @test "rosetta 099 99_release_bundle"():
-L_TEST_ENTRY_0:
-    tmp_7 = call @rosetta_099_value()
-    got = tmp_7
-    tmp_8 = 241
-    tmp_9 = ne got, tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_6:
+    manifest = alloc 3
+    tmp_19 = 1
+    store manifest+0, tmp_19 as u8
+    tmp_20 = 1
+    store manifest+1, tmp_20 as u8
+    tmp_21 = 1
+    store manifest+2, tmp_21 as u8
+    tmp_22 = call @sla__release_ready(manifest)
+    got = tmp_22
+    tmp_23 = 1
+    tmp_24 = ne got, tmp_23
+    !tmp_23
+    br tmp_24 -> L_THEN_7, L_ELSE_8
 
-L_THEN_1:
-    !tmp_9
+L_THEN_7:
+    !tmp_24
     panic(99)
 
-L_ELSE_2:
-    !tmp_9
-    jmp L_MERGE_3
+L_ELSE_8:
+    !tmp_24
+    jmp L_MERGE_9
 
-L_MERGE_3:
+L_MERGE_9:
     !got
+    !manifest
     return
 

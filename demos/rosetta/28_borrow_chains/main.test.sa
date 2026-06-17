@@ -1,7 +1,12 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
-@read_twice(&value: ptr) -> i32:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_read_twice = vtable { call = @sla__read_twice }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__read_twice(&value: ptr) -> i32:
 L_ENTRY:
     tmp_0 = load value+0 as i32
     tmp_1 = load value+0 as i32
@@ -15,7 +20,7 @@ L_ENTRY:
     tmp_3 = 6
     value = stack_alloc 4
     store value+0, tmp_3 as i32
-    tmp_4 = call @read_twice(&value)
+    tmp_4 = call @sla__read_twice(&value)
     tmp_5 = call @sa_fmt_u64(tmp_4, 10)
     tmp_6 = call @sa_fmt_buffer_data(tmp_5)
     tmp_7 = call @sa_fmt_buffer_len(tmp_5)
@@ -35,7 +40,7 @@ L_TEST_ENTRY_0:
     tmp_10 = 6
     value = stack_alloc 4
     store value+0, tmp_10 as i32
-    tmp_11 = call @read_twice(&value)
+    tmp_11 = call @sla__read_twice(&value)
     result = tmp_11
     tmp_12 = 12
     tmp_13 = ne result, tmp_12

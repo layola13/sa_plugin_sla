@@ -1,5 +1,6 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/core/result.sa"
 
 fn parse_ok() -> Result<i32, i32> {
     Ok(7)

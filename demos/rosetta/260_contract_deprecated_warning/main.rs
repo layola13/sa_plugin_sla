@@ -1,5 +1,10 @@
-// 260 - Contract Deprecated Warning
+#[deprecated]
+fn old_entry() -> i32 {
+    1
+}
+
 fn main() {
-    let value = 260;
-    println!("{}", value);
+    #[allow(deprecated)]
+    let result = old_entry();
+    println!("{}", result);
 }

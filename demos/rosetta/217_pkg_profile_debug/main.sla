@@ -1,24 +1,11 @@
-// Sla companion for SA rosetta demo 217 Pkg Profile Debug.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_217_value() -> int {
-    let base = (16 * 3) + 217;
-    let threshold = 232;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn pkg_debug_profile_level() -> i32 {
+    let debug_info = 1;
+    let optimization_level = 0;
+    return debug_info + optimization_level;
 }
 
-fn main() -> int {
-    let result = rosetta_217_value();
-    return result;
-};
-
-@test "rosetta 217 217_pkg_profile_debug"() {
-    let got = rosetta_217_value();
-    if got != 33 {
-        panic(217);
-    };
-};
+fn main() -> i32 { let result = pkg_debug_profile_level(); println("{}", result); return result; }
+@test "rosetta 217 pkg profile debug"() { let got = pkg_debug_profile_level(); if got != 1 { panic(217); }; }

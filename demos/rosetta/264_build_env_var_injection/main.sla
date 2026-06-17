@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 264 Build Env Var Injection.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_264_value() -> int {
-    let seed = 12;
-    let shifted = seed + 264;
-    let scaled = shifted * 5;
-    let result = scaled - 16;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_264_value();
-    return result;
-};
-
-@test "rosetta 264 264_build_env_var_injection"() {
-    let got = rosetta_264_value();
-    if got != 1364 {
-        panic(264);
-    };
-};
+fn build_injected_env_var_count() -> i32 { let profile_var = 1; return profile_var; }
+fn main() -> i32 { let result = build_injected_env_var_count(); println("{}", result); return result; }
+@test "rosetta 264 build env var injection"() { let got = build_injected_env_var_count(); if got != 1 { panic(264); }; }

@@ -1,4 +1,7 @@
+fn frame_valid(kind: u8, len: u8, checksum: u8) -> bool {
+    kind == 1 && checksum == kind + len
+}
+
 fn main() {
-    let frame = [0x01u8, 0x02, 0x03];
-    println!("{}", frame.len());
+    println!("{}", frame_valid(1, 4, 5));
 }

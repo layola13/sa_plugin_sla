@@ -1,23 +1,10 @@
-// Sla companion for SA rosetta demo 202 Pkg Dependencies Local.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_202_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 23;
-    return result;
+fn pkg_local_dependency_count() -> i32 {
+    let path_dependency = 1;
+    return path_dependency;
 }
 
-fn main() -> int {
-    let result = rosetta_202_value();
-    return result;
-};
-
-@test "rosetta 202 202_pkg_dependencies_local"() {
-    let got = rosetta_202_value();
-    if got != 33 {
-        panic(202);
-    };
-};
+fn main() -> i32 { let result = pkg_local_dependency_count(); println("{}", result); return result; }
+@test "rosetta 202 pkg dependencies local"() { let got = pkg_local_dependency_count(); if got != 1 { panic(202); }; }

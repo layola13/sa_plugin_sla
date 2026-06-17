@@ -1,24 +1,67 @@
-// Sla companion for SA rosetta demo 009 Async Await.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/future.sa"
+@import "sa_std/core/waker.sa"
+@import "sa_std/pin.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/core/box.sa"
+@import "sa_std/time.sa"
 
-fn rosetta_009_value() -> int {
-    let base = (12 * 2) + 9;
-    let threshold = 23;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
+async fn step_one_after_delay(delay_ms: u64) -> i32 {
+    let unix_before: i64 = TIME_NOW_UNIX_MS();
+    TIME_SLEEP_MS(delay_ms);
+    let unix_after: i64 = TIME_NOW_UNIX_MS();
+    if unix_after < unix_before {
+        panic(91);
     };
+    return 1;
 }
 
-fn main() -> int {
-    let result = rosetta_009_value();
+async fn run() -> i32 {
+    let started_ns: u64 = TIME_NOW_NS();
+    let delay_ms: u64 = 5;
+    let value = step_one_after_delay(delay_ms).await;
+    let ended_ns: u64 = TIME_NOW_NS();
+    let elapsed_ns: u64 = ended_ns - started_ns;
+    let min_elapsed_ns: u64 = TIME_DURATION_FROM_MILLIS(1);
+    if elapsed_ns < min_elapsed_ns {
+        panic(92);
+    };
+    return value + 1;
+}
+
+fn block_on(future: future<i32>) -> i32 {
+    let data: ptr = PTR_NULL();
+    let raw = RAW_WAKER_NEW(data, data);
+    let waker = WAKER_FROM_RAW(raw);
+    let context = CONTEXT_FROM_WAKER(waker);
+    let boxed = Box::new(future);
+    let future_ref = *boxed;
+    let pinned = stack_alloc();
+    PIN_MUT_NEW(pinned, future_ref);
+    let poll = FUTURE_READY_POLL_STATE(PIN_MUT_GET_MUT(pinned));
+    let ready = POLL_IS_READY(poll);
+    if ready != true {
+        let _cx_waker = CONTEXT_WAKER(context);
+        panic(93);
+    };
+    let value: i32 = POLL_VALUE(poll);
+    return value;
+}
+
+fn async_run_value() -> i32 {
+    return block_on(run());
+}
+
+fn main() -> i32 {
+    let result = async_run_value();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 009 09_async_await"() {
-    let got = rosetta_009_value();
-    if got != 10 {
+    let got = async_run_value();
+    if got != 2 {
         panic(9);
     };
 };

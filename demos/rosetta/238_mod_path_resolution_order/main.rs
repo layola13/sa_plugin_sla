@@ -1,5 +1,16 @@
-// 238 - Mod Path Resolution Order
+mod local {
+    pub fn priority() -> i32 {
+        1
+    }
+}
+
+fn priority() -> i32 {
+    2
+}
+
 fn main() {
-    let value = 238;
-    println!("{}", value);
+    let local_module_wins = local::priority();
+    let root_item = priority();
+    let result = root_item - local_module_wins;
+    println!("{}", result);
 }

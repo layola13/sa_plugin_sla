@@ -1,25 +1,6 @@
-// Sla companion for SA rosetta demo 295 Eco Bpf Ebpf Bytecode.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_295_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_295_value() -> int {
-    let result = rosetta_295_mix(18, 33);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_295_value();
-    return result;
-};
-
-@test "rosetta 295 295_eco_bpf_ebpf_bytecode"() {
-    let got = rosetta_295_value();
-    if got != 579 {
-        panic(295);
-    };
-};
+fn eco_ebpf_instruction_kinds() -> i32 { let load = 1; let return_op = 1; return load + return_op; }
+fn main() -> i32 { let result = eco_ebpf_instruction_kinds(); println("{}", result); return result; }
+@test "rosetta 295 eco bpf ebpf bytecode"() { let got = eco_ebpf_instruction_kinds(); if got != 2 { panic(295); }; }

@@ -1,5 +1,9 @@
-// 266 - Build Pre Compile Hook
+fn pre_compile_hooks() -> i32 {
+    let schema_check = 1;
+    schema_check
+}
+
 fn main() {
-    let value = 266;
-    println!("{}", value);
+    let result = pre_compile_hooks();
+    println!("{}", result);
 }

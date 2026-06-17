@@ -1,22 +1,21 @@
-// Sla companion for SA rosetta demo 012 Destructuring.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_012_value() -> int {
-    let seed = 15;
-    let shifted = seed + 12;
-    let scaled = shifted * 5;
-    let result = scaled - 17;
-    return result;
+fn destructured_sum() -> i32 {
+    let (x, y) = (2, 5);
+    let sum = x + y;
+    return sum;
 }
 
-fn main() -> int {
-    let result = rosetta_012_value();
+fn main() -> i32 {
+    let result = destructured_sum();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 012 12_destructuring"() {
-    let got = rosetta_012_value();
-    if got != 118 {
+    let got = destructured_sum();
+    if got != 7 {
         panic(12);
     };
 };

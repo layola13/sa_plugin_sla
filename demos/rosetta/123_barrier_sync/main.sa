@@ -1,46 +1,75 @@
-@rosetta_123_mix(left: i64, right: i64) -> i64:
-L_ENTRY:
-    tmp_0 = mul left, right
-    product = tmp_0
-    tmp_1 = add product, left
-    tmp_2 = sub tmp_1, right
-    result = tmp_2
-    !product
-    !right
-    !left
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@rosetta_123_value() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_barrier_release_count = vtable { call = @sla__barrier_release_count }
+@const SLA_FNPTR_VT_barrier_release = vtable { call = @sla__barrier_release }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__barrier_release_count() -> i32:
 L_ENTRY:
-    tmp_3 = 9
-    tmp_4 = 21
-    tmp_5 = call @rosetta_123_mix(tmp_3, tmp_4)
-    result = tmp_5
-    return result
+    tmp_0 = 3
+    parties = tmp_0
+    tmp_1 = 3
+    arrived = tmp_1
+    tmp_2 = call @sla__barrier_release(parties, arrived)
+    !parties
+    !arrived
+    return tmp_2
 
-@main() -> i64:
+@sla__barrier_release(parties: i32, arrived: i32) -> i32:
 L_ENTRY:
-    tmp_6 = call @rosetta_123_value()
+    tmp_3 = eq arrived, parties
+    br tmp_3 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_3
+    !parties
+    return arrived
+
+L_ELSE_1:
+    !tmp_3
+    tmp_4 = 0
+    !parties
+    !arrived
+    return tmp_4
+
+
+@main() -> i32:
+L_ENTRY:
+    tmp_6 = call @sla__barrier_release_count()
     result = tmp_6
+    tmp_7 = call @sa_fmt_u64(result, 10)
+    tmp_8 = call @sa_fmt_buffer_data(tmp_7)
+    tmp_9 = call @sa_fmt_buffer_len(tmp_7)
+    tmp_10 = tmp_8
+    call @sa_print_bytes(&tmp_10, tmp_9)
+    call @sa_fmt_buffer_free(^tmp_7)
+    !tmp_10
+    !tmp_9
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 123 123_barrier_sync"():
-L_TEST_ENTRY_0:
-    tmp_7 = call @rosetta_123_value()
-    got = tmp_7
-    tmp_8 = 177
-    tmp_9 = ne got, tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_3:
+    tmp_11 = call @sla__barrier_release_count()
+    got = tmp_11
+    tmp_12 = 3
+    tmp_13 = ne got, tmp_12
+    !tmp_12
+    br tmp_13 -> L_THEN_4, L_ELSE_5
 
-L_THEN_1:
-    !tmp_9
+L_THEN_4:
+    !tmp_13
     panic(123)
 
-L_ELSE_2:
-    !tmp_9
-    jmp L_MERGE_3
+L_ELSE_5:
+    !tmp_13
+    jmp L_MERGE_6
 
-L_MERGE_3:
+L_MERGE_6:
     !got
     return
 

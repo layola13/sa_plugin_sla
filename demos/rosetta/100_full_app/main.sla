@@ -1,22 +1,39 @@
-// Sla companion for SA rosetta demo 100 Full App.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_100_value() -> int {
-    let seed = 18;
-    let shifted = seed + 100;
-    let scaled = shifted * 3;
-    let result = scaled - 13;
-    return result;
+struct AppRequest {
+    authenticated: bool,
+    route_ok: bool,
+    db_ready: bool,
 }
 
-fn main() -> int {
-    let result = rosetta_100_value();
+fn handle_request(req: AppRequest) -> i32 {
+    if req.authenticated != true {
+        return 401;
+    } else {
+        if req.route_ok != true {
+            return 404;
+        } else {
+            if req.db_ready != true {
+                return 503;
+            } else {
+                return 200;
+            };
+        };
+    };
+}
+
+fn main() -> i32 {
+    let req = AppRequest { authenticated: true, route_ok: true, db_ready: true };
+    let result = handle_request(req);
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 100 100_full_app"() {
-    let got = rosetta_100_value();
-    if got != 341 {
+    let req = AppRequest { authenticated: true, route_ok: true, db_ready: true };
+    let got = handle_request(req);
+    if got != 200 {
         panic(100);
     };
 };

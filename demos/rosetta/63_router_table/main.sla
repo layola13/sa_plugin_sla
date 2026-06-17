@@ -1,3 +1,8 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/option.sa"
+@import "sa_std/hashmap.sa"
+
 fn router_table_value() -> i32 {
     let router = HashMap::new();
     router.insert("/home", 1);
@@ -8,7 +13,7 @@ fn router_table_value() -> i32 {
 fn main() -> i32 {
     let value = router_table_value();
     println("{}", value);
-    return 0;
+    return value;
 }
 
 @test "rosetta 063 63_router_table"() {

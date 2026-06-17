@@ -1,23 +1,5 @@
-// Sla companion for SA rosetta demo 170 Marker Traits.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_170_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 14;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_170_value();
-    return result;
-};
-
-@test "rosetta 170 170_marker_traits"() {
-    let got = rosetta_170_value();
-    if got != 24 {
-        panic(170);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn marker_trait_process_result() -> i32 { return 42; }
+fn main() -> i32 { let result = marker_trait_process_result(); println("{}", result); return result; }
+@test "rosetta 170 170_marker_traits"() { let got = marker_trait_process_result(); if got != 42 { panic(170); }; }

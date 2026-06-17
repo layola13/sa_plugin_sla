@@ -1,25 +1,21 @@
-// Sla companion for SA rosetta demo 239 Mod Version Suffix Isolation.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_239_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
+fn version_suffix_isolated_versions() -> i32 {
+    let codec_v1 = 1;
+    let codec_v2 = 1;
+    return codec_v1 + codec_v2;
+}
+
+fn main() -> i32 {
+    let result = version_suffix_isolated_versions();
+    println("{}", result);
     return result;
 }
 
-fn rosetta_239_value() -> int {
-    let result = rosetta_239_mix(12, 21);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_239_value();
-    return result;
-};
-
-@test "rosetta 239 239_mod_version_suffix_isolation"() {
-    let got = rosetta_239_value();
-    if got != 243 {
+@test "rosetta 239 mod version suffix isolation"() {
+    let got = version_suffix_isolated_versions();
+    if got != 2 {
         panic(239);
     };
-};
+}

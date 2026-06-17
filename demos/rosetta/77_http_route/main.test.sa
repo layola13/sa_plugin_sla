@@ -1,55 +1,172 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 @import "sa_std/string.sa"
-@rosetta_077_value() -> i64:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_route_status = vtable { call = @sla__route_status }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__route_status(req: ptr) -> i32:
 L_ENTRY:
-    tmp_0 = 12
-    tmp_1 = 7
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 77
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 90
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+    tmp_0 = load req+0 as ptr
+    @const SLA_STR_0 = utf8:"GET"
+    tmp_2 = 3
+    tmp_1 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_1, &SLA_STR_0, tmp_2
+    !tmp_2
+    EXPAND STR_EQ tmp_3, tmp_0, tmp_1
+    !tmp_0
+    tmp_4 = 1
+    tmp_5 = eq tmp_3, tmp_4
+    !tmp_3
+    !tmp_4
+    br tmp_5 -> L_THEN_0, L_ELSE_1
 
 L_THEN_0:
+    !tmp_5
+    tmp_6 = load req+8 as ptr
+    @const SLA_STR_1 = utf8:"/health"
+    tmp_8 = 7
+    tmp_7 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_7, &SLA_STR_1, tmp_8
+    !tmp_8
+    EXPAND STR_EQ tmp_9, tmp_6, tmp_7
     !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
+    tmp_10 = 1
+    tmp_11 = eq tmp_9, tmp_10
+    !tmp_9
+    !tmp_10
+    br tmp_11 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_11
+    tmp_12 = 200
+    !req
+    return tmp_12
+
+L_ELSE_4:
+    !tmp_11
+    tmp_13 = 404
+    !req
+    return tmp_13
+
 
 L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
+    !tmp_5
+    tmp_15 = load req+0 as ptr
+    @const SLA_STR_2 = utf8:"POST"
+    tmp_17 = 4
+    tmp_16 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_16, &SLA_STR_2, tmp_17
+    !tmp_17
+    EXPAND STR_EQ tmp_18, tmp_15, tmp_16
+    !tmp_15
+    tmp_19 = 1
+    tmp_20 = eq tmp_18, tmp_19
+    !tmp_18
+    !tmp_19
+    br tmp_20 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_20
+    tmp_21 = load req+8 as ptr
+    @const SLA_STR_3 = utf8:"/jobs"
+    tmp_23 = 5
+    tmp_22 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_22, &SLA_STR_3, tmp_23
+    !tmp_23
+    EXPAND STR_EQ tmp_24, tmp_21, tmp_22
+    !tmp_21
+    tmp_25 = 1
+    tmp_26 = eq tmp_24, tmp_25
+    !tmp_24
+    !tmp_25
+    br tmp_26 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_26
+    tmp_27 = 202
+    !req
+    return tmp_27
+
+L_ELSE_10:
+    !tmp_26
+    tmp_28 = 404
+    !req
+    return tmp_28
 
 
-@main() -> i64:
+L_ELSE_7:
+    !tmp_20
+    tmp_30 = 404
+    !req
+    return tmp_30
+
+
+
+@main() -> i32:
 L_ENTRY:
-    tmp_10 = call @rosetta_077_value()
-    result = tmp_10
-    return result
+    request = alloc 16
+    @const SLA_STR_4 = utf8:"POST"
+    tmp_34 = 4
+    tmp_33 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_33, &SLA_STR_4, tmp_34
+    !tmp_34
+    store request+0, tmp_33 as ptr
+    @const SLA_STR_5 = utf8:"/jobs"
+    tmp_36 = 5
+    tmp_35 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_35, &SLA_STR_5, tmp_36
+    !tmp_36
+    store request+8, tmp_35 as ptr
+    tmp_37 = call @sla__route_status(request)
+    status = tmp_37
+    tmp_38 = call @sa_fmt_u64(status, 10)
+    tmp_39 = call @sa_fmt_buffer_data(tmp_38)
+    tmp_40 = call @sa_fmt_buffer_len(tmp_38)
+    tmp_41 = tmp_39
+    call @sa_print_bytes(&tmp_41, tmp_40)
+    call @sa_fmt_buffer_free(^tmp_38)
+    !tmp_41
+    !tmp_40
+    @const SLA_STR_6 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_6, 1)
+    !request
+    return status
 
 @test "rosetta 077 77_http_route"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_077_value()
-    got = tmp_11
-    tmp_12 = 71
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_12:
+    request = alloc 16
+    @const SLA_STR_7 = utf8:"POST"
+    tmp_43 = 4
+    tmp_42 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_42, &SLA_STR_7, tmp_43
+    !tmp_43
+    store request+0, tmp_42 as ptr
+    @const SLA_STR_8 = utf8:"/jobs"
+    tmp_45 = 5
+    tmp_44 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_44, &SLA_STR_8, tmp_45
+    !tmp_45
+    store request+8, tmp_44 as ptr
+    tmp_46 = call @sla__route_status(request)
+    got = tmp_46
+    tmp_47 = 202
+    tmp_48 = ne got, tmp_47
+    !tmp_47
+    br tmp_48 -> L_THEN_13, L_ELSE_14
 
-L_THEN_4:
-    !tmp_13
+L_THEN_13:
+    !tmp_48
     panic(77)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_14:
+    !tmp_48
+    jmp L_MERGE_15
 
-L_MERGE_6:
+L_MERGE_15:
+    !request
     !got
     return
 

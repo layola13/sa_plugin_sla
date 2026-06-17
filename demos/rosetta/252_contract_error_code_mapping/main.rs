@@ -1,5 +1,16 @@
-// 252 - Contract Error Code Mapping
+enum ContractError {
+    NotFound,
+    Denied,
+}
+
+fn code(error: ContractError) -> i32 {
+    match error {
+        ContractError::NotFound => 1,
+        ContractError::Denied => 1,
+    }
+}
+
 fn main() {
-    let value = 252;
-    println!("{}", value);
+    let result = code(ContractError::NotFound) + code(ContractError::Denied);
+    println!("{}", result);
 }

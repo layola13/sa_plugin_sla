@@ -1,3 +1,6 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
 fn resource_pool_value() -> i32 {
     let pool = [10, 20, 30];
     return pool[1];

@@ -1,5 +1,9 @@
-// 287 - Ffi Zig Export Integration
+fn zig_exported_symbols() -> i32 {
+    let exported_entry = 1;
+    exported_entry
+}
+
 fn main() {
-    let value = 287;
-    println!("{}", value);
+    let result = zig_exported_symbols();
+    println!("{}", result);
 }

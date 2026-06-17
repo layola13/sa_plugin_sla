@@ -1,22 +1,7 @@
-// Sla companion for SA rosetta demo 160 Manually Drop Union.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_160_value() -> int {
-    let seed = 10;
-    let shifted = seed + 160;
-    let scaled = shifted * 9;
-    let result = scaled - 27;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_160_value();
-    return result;
-};
-
-@test "rosetta 160 160_manually_drop_union"() {
-    let got = rosetta_160_value();
-    if got != 1503 {
-        panic(160);
-    };
-};
+union Slot { a: i32, b: i32 }
+fn manually_drop_union_value() -> i32 { let slot = Slot { a: 11 }; let value = unsafe { slot.a }; return value; }
+fn main() -> i32 { let result = manually_drop_union_value(); println("{}", result); return result; }
+@test "rosetta 160 160_manually_drop_union"() { let got = manually_drop_union_value(); if got != 11 { panic(160); }; }

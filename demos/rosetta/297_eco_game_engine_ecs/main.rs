@@ -1,5 +1,11 @@
-// 297 - Eco Game Engine Ecs
+fn ecs_component_types() -> i32 {
+    let transform = 1;
+    let velocity = 1;
+    let sprite = 1;
+    transform + velocity + sprite
+}
+
 fn main() {
-    let value = 297;
-    println!("{}", value);
+    let result = ecs_component_types();
+    println!("{}", result);
 }

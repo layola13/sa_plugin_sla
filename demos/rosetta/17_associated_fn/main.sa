@@ -1,54 +1,64 @@
-@rosetta_017_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__Counter_new(seed: i32) -> ptr:
 L_ENTRY:
-    tmp_0 = 3
-    tmp_1 = 10
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 17
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 39
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+    tmp_0 = alloc 4
+    tmp_1 = 2
+    tmp_2 = add seed, tmp_1
+    !tmp_1
+    store tmp_0+0, tmp_2 as i32
+    !seed
+    return tmp_0
 
-L_THEN_0:
-    !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
-
-L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
-
-
-@main() -> i64:
+@main() -> i32:
 L_ENTRY:
-    tmp_10 = call @rosetta_017_value()
-    result = tmp_10
-    return result
+    tmp_3 = 40
+    tmp_4 = call @sla__Counter_new(tmp_3)
+    !tmp_3
+    counter = tmp_4
+    tmp_5 = load counter+0 as i32
+    tmp_6 = call @sa_fmt_u64(tmp_5, 10)
+    tmp_7 = call @sa_fmt_buffer_data(tmp_6)
+    tmp_8 = call @sa_fmt_buffer_len(tmp_6)
+    tmp_9 = tmp_7
+    call @sa_print_bytes(&tmp_9, tmp_8)
+    call @sa_fmt_buffer_free(^tmp_6)
+    !tmp_9
+    !tmp_8
+    !tmp_5
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_10 = 0
+    !counter
+    return tmp_10
 
-@test "rosetta 017 17_associated_fn"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_017_value()
-    got = tmp_11
-    tmp_12 = 8
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
-
-L_THEN_4:
+@test "rosetta 017 associated fn"():
+L_TEST_ENTRY_0:
+    tmp_11 = 40
+    tmp_12 = call @sla__Counter_new(tmp_11)
+    !tmp_11
+    counter = tmp_12
+    tmp_13 = load counter+0 as i32
+    tmp_14 = 42
+    tmp_15 = ne tmp_13, tmp_14
     !tmp_13
+    !tmp_14
+    br tmp_15 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_15
     panic(17)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_2:
+    !tmp_15
+    jmp L_MERGE_3
 
-L_MERGE_6:
-    !got
+L_MERGE_3:
+    !counter
     return
 

@@ -1,25 +1,32 @@
-// Sla companion for SA rosetta demo 135 Async Streams.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/future.sa"
 
-fn rosetta_135_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn async_stream_sum() -> i32 {
+    let total = 0;
+    total = stream_accumulate(total, stream_next(0));
+    total = stream_accumulate(total, stream_next(1));
+    total = stream_accumulate(total, stream_next(2));
+    return total;
 }
 
-fn rosetta_135_value() -> int {
-    let result = rosetta_135_mix(22, 27);
-    return result;
+fn stream_next(index: i32) -> i32 {
+    return index + 1;
 }
 
-fn main() -> int {
-    let result = rosetta_135_value();
+fn stream_accumulate(total: i32, item: i32) -> i32 {
+    return total + item;
+}
+
+fn main() -> i32 {
+    let result = async_stream_sum();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 135 135_async_streams"() {
-    let got = rosetta_135_value();
-    if got != 589 {
+    let got = async_stream_sum();
+    if got != 6 {
         panic(135);
     };
 };

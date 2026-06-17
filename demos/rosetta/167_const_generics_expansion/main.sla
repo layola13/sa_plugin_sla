@@ -1,25 +1,5 @@
-// Sla companion for SA rosetta demo 167 Const Generics Expansion.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_167_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_167_value() -> int {
-    let result = rosetta_167_mix(19, 18);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_167_value();
-    return result;
-};
-
-@test "rosetta 167 167_const_generics_expansion"() {
-    let got = rosetta_167_value();
-    if got != 343 {
-        panic(167);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn const_generic_array_len() -> usize { let fixed_array = [1, 2, 3, 4]; return fixed_array.len(); }
+fn main() -> i32 { let result = const_generic_array_len(); println("{}", result); return 0; }
+@test "rosetta 167 167_const_generics_expansion"() { let got = const_generic_array_len(); if got != 4 { panic(167); }; }

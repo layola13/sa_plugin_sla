@@ -1,24 +1,19 @@
-// Sla companion for SA rosetta demo 245 Contract Generic Monomorph Share.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_245_value() -> int {
-    let base = (10 * 4) + 245;
-    let threshold = 265;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn contract_shared_monomorph_paths() -> i32 {
+    let int_path = 1;
+    let bool_path = 1;
+    return int_path + bool_path;
 }
 
-fn main() -> int {
-    let result = rosetta_245_value();
+fn main() -> i32 {
+    let result = contract_shared_monomorph_paths();
+    println("{}", result);
     return result;
-};
+}
 
-@test "rosetta 245 245_contract_generic_monomorph_share"() {
-    let got = rosetta_245_value();
-    if got != 20 {
-        panic(245);
-    };
-};
+@test "rosetta 245 contract generic monomorph share"() {
+    let got = contract_shared_monomorph_paths();
+    if got != 2 { panic(245); };
+}

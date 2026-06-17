@@ -1,3 +1,6 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
 fn component_store_len() -> usize {
     let positions = [(1, 2), (3, 4)];
     return positions.len();

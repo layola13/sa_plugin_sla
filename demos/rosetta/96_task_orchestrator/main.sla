@@ -1,22 +1,30 @@
-// Sla companion for SA rosetta demo 096 Task Orchestrator.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_096_value() -> int {
-    let seed = 14;
-    let shifted = seed + 96;
-    let scaled = shifted * 8;
-    let result = scaled - 9;
-    return result;
+struct Task {
+    deps_done: bool,
+    priority: i32,
 }
 
-fn main() -> int {
-    let result = rosetta_096_value();
+fn ready_score(task: Task) -> i32 {
+    if task.deps_done == true {
+        return task.priority;
+    } else {
+        return 0;
+    };
+}
+
+fn main() -> i32 {
+    let task = Task { deps_done: true, priority: 7 };
+    let result = ready_score(task);
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 096 96_task_orchestrator"() {
-    let got = rosetta_096_value();
-    if got != 871 {
+    let task = Task { deps_done: true, priority: 7 };
+    let got = ready_score(task);
+    if got != 7 {
         panic(96);
     };
 };

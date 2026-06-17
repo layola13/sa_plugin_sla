@@ -20,6 +20,10 @@ const RefCellBorrowHandle = struct {
     is_mut: bool,
 };
 
+const MutexGuardHandle = struct {
+    mutex_reg: []const u8,
+};
+
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
@@ -41,7 +45,12 @@ pub const Codegen = struct {
     mpsc_sender_channels: std.StringHashMap([]const u8),
     mpsc_receiver_bindings: std.StringHashMap(void),
     string_buf_bindings: std.StringHashMap(void),
+    hashmap_bindings: std.StringHashMap(void),
+    btree_map_bindings: std.StringHashMap(void),
     refcell_borrow_handles: std.StringHashMap(RefCellBorrowHandle),
+    mutex_guard_handles: std.StringHashMap(MutexGuardHandle),
+    mutex_lock_results: std.StringHashMap(MutexGuardHandle),
+    binding_aliases: std.StringHashMap(std.ArrayList([]const u8)),
     loop_continue_labels: std.ArrayList([]const u8),
     loop_break_labels: std.ArrayList([]const u8),
     current_async: bool,
@@ -69,7 +78,12 @@ pub const Codegen = struct {
             .mpsc_sender_channels = std.StringHashMap([]const u8).init(allocator),
             .mpsc_receiver_bindings = std.StringHashMap(void).init(allocator),
             .string_buf_bindings = std.StringHashMap(void).init(allocator),
+            .hashmap_bindings = std.StringHashMap(void).init(allocator),
+            .btree_map_bindings = std.StringHashMap(void).init(allocator),
             .refcell_borrow_handles = std.StringHashMap(RefCellBorrowHandle).init(allocator),
+            .mutex_guard_handles = std.StringHashMap(MutexGuardHandle).init(allocator),
+            .mutex_lock_results = std.StringHashMap(MutexGuardHandle).init(allocator),
+            .binding_aliases = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
             .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
             .loop_break_labels = std.ArrayList([]const u8).init(allocator),
             .current_async = false,
@@ -106,9 +120,46 @@ pub const Codegen = struct {
         self.mpsc_sender_channels.deinit();
         self.mpsc_receiver_bindings.deinit();
         self.string_buf_bindings.deinit();
+        self.hashmap_bindings.deinit();
+        self.btree_map_bindings.deinit();
         self.refcell_borrow_handles.deinit();
+        self.mutex_guard_handles.deinit();
+        self.mutex_lock_results.deinit();
+        self.clearBindingAliases();
+        self.binding_aliases.deinit();
         self.loop_continue_labels.deinit();
         self.loop_break_labels.deinit();
+    }
+
+    fn clearBindingAliases(self: *Codegen) void {
+        var iter = self.binding_aliases.valueIterator();
+        while (iter.next()) |aliases| {
+            aliases.deinit();
+        }
+        self.binding_aliases.clearRetainingCapacity();
+    }
+
+    fn resolveBindingName(self: *Codegen, name: []const u8) []const u8 {
+        if (self.binding_aliases.getPtr(name)) |aliases| {
+            if (aliases.items.len > 0) return aliases.items[aliases.items.len - 1];
+        }
+        return name;
+    }
+
+    fn pushBindingAlias(self: *Codegen, name: []const u8) CodegenError![]const u8 {
+        const alias = try self.newTmp();
+        var entry = self.binding_aliases.getOrPut(name) catch return CodegenError.OutOfMemory;
+        if (!entry.found_existing) {
+            entry.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+        }
+        entry.value_ptr.append(alias) catch return CodegenError.OutOfMemory;
+        return alias;
+    }
+
+    fn popBindingAlias(self: *Codegen, name: []const u8) void {
+        if (self.binding_aliases.getPtr(name)) |aliases| {
+            if (aliases.items.len > 0) _ = aliases.pop();
+        }
     }
 
     fn newTmp(self: *Codegen) CodegenError![]const u8 {
@@ -179,6 +230,18 @@ pub const Codegen = struct {
 
     fn vtableName(self: *Codegen, trait_name: []const u8, type_name: []const u8) CodegenError![]const u8 {
         return std.fmt.allocPrint(self.allocator, "VT_{s}_{s}", .{ type_name, trait_name }) catch return CodegenError.OutOfMemory;
+    }
+
+    fn fnPtrVTableName(self: *Codegen, func_name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "SLA_FNPTR_VT_{s}", .{func_name}) catch return CodegenError.OutOfMemory;
+    }
+
+    fn emitFunctionPointerVTableDecl(self: *Codegen, func_name: []const u8) CodegenError!void {
+        const vt_name = try self.fnPtrVTableName(func_name);
+        defer self.allocator.free(vt_name);
+        const lowered = try self.loweredFuncSymbol(func_name);
+        defer self.allocator.free(lowered);
+        self.out.writer().print("@const {s} = vtable {{ call = @{s} }}\n", .{ vt_name, lowered }) catch return CodegenError.CodegenError;
     }
 
     fn emitTraitVTableDecl(self: *Codegen, decl: *const ast.ImplDecl) CodegenError!void {
@@ -270,21 +333,32 @@ pub const Codegen = struct {
     }
 
     fn emitRelease(self: *Codegen, name: []const u8) CodegenError!void {
-        if (std.mem.eql(u8, name, "return_ty_sentinel")) return;
-        if (self.refcell_borrow_handles.get(name)) |handle| {
+        const resolved_name = self.resolveBindingName(name);
+        if (std.mem.eql(u8, resolved_name, "return_ty_sentinel")) return;
+        if (self.refcell_borrow_handles.get(resolved_name)) |handle| {
             if (handle.is_mut) {
                 self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_MUT {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
             } else {
                 self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_SHARED {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
             }
-            _ = self.refcell_borrow_handles.remove(name);
+            _ = self.refcell_borrow_handles.remove(resolved_name);
+            return;
+        }
+        if (self.mutex_guard_handles.get(resolved_name)) |handle| {
+            self.out.writer().print("    EXPAND MUTEX_UNLOCK {s}\n", .{handle.mutex_reg}) catch return CodegenError.CodegenError;
+            _ = self.mutex_guard_handles.remove(resolved_name);
+            return;
+        }
+        if (self.mutex_lock_results.get(resolved_name)) |handle| {
+            self.out.writer().print("    EXPAND MUTEX_UNLOCK {s}\n", .{handle.mutex_reg}) catch return CodegenError.CodegenError;
+            _ = self.mutex_lock_results.remove(resolved_name);
             return;
         }
         var handles_to_release = std.ArrayList([]const u8).init(self.allocator);
         defer handles_to_release.deinit();
         var handle_iter = self.refcell_borrow_handles.iterator();
         while (handle_iter.next()) |entry| {
-            if (std.mem.eql(u8, entry.value_ptr.cell_reg, name)) {
+            if (std.mem.eql(u8, entry.value_ptr.cell_reg, resolved_name)) {
                 handles_to_release.append(entry.key_ptr.*) catch return CodegenError.OutOfMemory;
             }
         }
@@ -299,21 +373,86 @@ pub const Codegen = struct {
                 self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
             }
         }
-        if (std.mem.startsWith(u8, name, "&")) return;
-        if (std.mem.startsWith(u8, name, "^")) return;
-        if (self.stack_alloc_bindings.contains(name)) return;
-        if (self.global_const_bindings.contains(name)) return;
-        if (self.consumed_bindings.contains(name)) return;
-        if (self.mpsc_sender_bindings.contains(name)) return;
-        if (self.mpsc_receiver_bindings.contains(name)) {
-            self.out.writer().print("    EXPAND MPSC_FREE {s}\n", .{name}) catch return CodegenError.CodegenError;
+        if (std.mem.startsWith(u8, resolved_name, "&")) return;
+        if (std.mem.startsWith(u8, resolved_name, "^")) return;
+        if (self.stack_alloc_bindings.contains(resolved_name)) return;
+        if (self.global_const_bindings.contains(resolved_name)) return;
+        if (self.consumed_bindings.contains(resolved_name)) return;
+        if (self.mpsc_sender_bindings.contains(resolved_name)) return;
+        if (self.mpsc_receiver_bindings.contains(resolved_name)) {
+            self.out.writer().print("    EXPAND MPSC_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             return;
         }
-        if (self.string_buf_bindings.contains(name)) {
-            self.out.writer().print("    EXPAND FORMAT_FREE {s}\n", .{name}) catch return CodegenError.CodegenError;
+        if (self.string_buf_bindings.contains(resolved_name)) {
+            self.out.writer().print("    EXPAND FORMAT_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             return;
         }
-        self.out.writer().print("    !{s}\n", .{name}) catch return CodegenError.CodegenError;
+        if (self.hashmap_bindings.contains(resolved_name)) {
+            self.out.writer().print("    EXPAND MAP_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            return;
+        }
+        if (self.btree_map_bindings.contains(resolved_name)) {
+            self.out.writer().print("    EXPAND BTREE_MAP_FREE {s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            return;
+        }
+        self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+    }
+
+    fn restoreMutexState(
+        self: *Codegen,
+        guards: *const std.StringHashMap(MutexGuardHandle),
+        results: *const std.StringHashMap(MutexGuardHandle),
+    ) CodegenError!void {
+        self.mutex_guard_handles.clearRetainingCapacity();
+        var guard_iter = guards.iterator();
+        while (guard_iter.next()) |entry| {
+            self.mutex_guard_handles.put(entry.key_ptr.*, entry.value_ptr.*) catch return CodegenError.OutOfMemory;
+        }
+
+        self.mutex_lock_results.clearRetainingCapacity();
+        var result_iter = results.iterator();
+        while (result_iter.next()) |entry| {
+            self.mutex_lock_results.put(entry.key_ptr.*, entry.value_ptr.*) catch return CodegenError.OutOfMemory;
+        }
+    }
+
+    fn markOwnedCollectionBinding(self: *Codegen, name: []const u8, ty: *const ast.Type) CodegenError!void {
+        if (hashMapTypes(ty) != null) {
+            self.hashmap_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+        }
+        if (btreeMapTypes(ty) != null) {
+            self.btree_map_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+        }
+    }
+
+    fn emitExternDecl(self: *Codegen, f: *const ast.FuncDecl) CodegenError!void {
+        const lowered_name = try self.loweredFuncSymbol(f.name);
+        defer self.allocator.free(lowered_name);
+        self.out.writer().print("@extern {s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        for (f.params, 0..) |p, i| {
+            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            const prefix: []const u8 = if (p.is_move) "^" else if (p.is_borrow) "&" else "";
+            self.out.writer().print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+        }
+        if (isVoidType(f.ret_ty)) {
+            self.out.writer().print(") -> void\n", .{}) catch return CodegenError.CodegenError;
+        } else {
+            self.out.writer().print(") -> {s}\n", .{abiReturnTypeString(f.ret_ty)}) catch return CodegenError.CodegenError;
+        }
+    }
+
+    fn hasConcreteFunctionSymbol(self: *Codegen, decls: []const *ast.Node, decl_only: *const ast.FuncDecl) CodegenError!bool {
+        const decl_symbol = try self.loweredFuncSymbol(decl_only.name);
+        defer self.allocator.free(decl_symbol);
+        for (decls) |candidate| {
+            if (candidate.* != .func_decl) continue;
+            const f = &candidate.func_decl;
+            if (f.is_decl_only) continue;
+            const candidate_symbol = try self.loweredFuncSymbol(f.name);
+            defer self.allocator.free(candidate_symbol);
+            if (std.mem.eql(u8, decl_symbol, candidate_symbol)) return true;
+        }
+        return false;
     }
 
     fn clearHashMapKeySlots(self: *Codegen) void {
@@ -754,6 +893,14 @@ pub const Codegen = struct {
         };
     }
 
+    fn ptrReadVolatileMacroName(ty: *const ast.Type) ?[]const u8 {
+        const ty_str = typeString(ty);
+        if (std.mem.eql(u8, ty_str, "i32")) return "PTR_READ_VOLATILE_I32";
+        if (std.mem.eql(u8, ty_str, "u64")) return "PTR_READ_VOLATILE_U64";
+        if (std.mem.eql(u8, ty_str, "u8")) return "PTR_READ_VOLATILE_U8";
+        return null;
+    }
+
     fn abiParamTypeString(p: ast.Param) []const u8 {
         if (p.is_borrow or p.is_move) return "ptr";
         return typeString(p.ty);
@@ -843,9 +990,11 @@ pub const Codegen = struct {
             .match_expr => |mat| {
                 try self.collectAddressableBindingsInExpr(mat.val);
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| try self.collectAddressableBindingsInExpr(guard);
                     try self.collectAddressableBindings(case.body);
                 }
             },
+            .unsafe_expr => |unsafe_expr| try self.collectAddressableBindings(unsafe_expr.body),
             .await_expr => |await_expr| try self.collectAddressableBindingsInExpr(await_expr.expr),
             .cast_expr => |cast| try self.collectAddressableBindingsInExpr(cast.expr),
             .field_expr => |field| try self.collectAddressableBindingsInExpr(field.expr),
@@ -1105,6 +1254,7 @@ pub const Codegen = struct {
     }
 
     fn structSize(s: *const ast.StructDecl) usize {
+        if (s.is_opaque) return 1;
         if (s.is_union) {
             var max_size: usize = 0;
             for (s.fields) |f| {
@@ -1168,6 +1318,203 @@ pub const Codegen = struct {
         return null;
     }
 
+    fn unwrapPointerLikeType(ty: *const ast.Type) *const ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                else => return curr,
+            }
+        }
+    }
+
+    fn structDeclForType(self: *Codegen, ty: *const ast.Type) ?*ast.StructDecl {
+        const curr = unwrapPointerLikeType(ty);
+        if (curr.* != .user_defined) return null;
+        return self.tc.structs.get(curr.user_defined.name);
+    }
+
+    fn isNumericType(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| switch (p) {
+                .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize, .integer, .f32, .f64, .float => true,
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    fn zeroLiteralForType(ty: *const ast.Type) []const u8 {
+        return switch (ty.*) {
+            .primitive => |p| switch (p) {
+                .f32, .f64, .float => "0.0",
+                else => "0",
+            },
+            else => "0",
+        };
+    }
+
+    fn literalZero(expr: *const ast.Node) bool {
+        return expr.* == .literal and switch (expr.literal) {
+            .int_val => |v| v == 0,
+            .float_val => |v| v == 0.0,
+            else => false,
+        };
+    }
+
+    fn arithmeticOpName(op: ast.BinaryOp) ?[]const u8 {
+        return switch (op) {
+            .add => "add",
+            .sub => "sub",
+            .mul => "mul",
+            .div => "div",
+            .mod => "rem",
+            else => null,
+        };
+    }
+
+    fn genStructArithmeticExpr(
+        self: *Codegen,
+        bin: *const ast.BinaryExpr,
+        left_ty: *const ast.Type,
+        right_ty: *const ast.Type,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!?[]const u8 {
+        const left_struct = self.structDeclForType(left_ty);
+        const right_struct = self.structDeclForType(right_ty);
+
+        if (left_struct == null and right_struct == null) return null;
+        const op = arithmeticOpName(bin.op) orelse return null;
+
+        const struct_decl = left_struct orelse right_struct.?;
+        if (struct_decl.is_opaque or struct_decl.is_union) return null;
+
+        const result = try self.newTmp();
+        self.out.writer().print("    {s} = alloc {}\n", .{ result, structSize(struct_decl) }) catch return CodegenError.CodegenError;
+
+        if (left_struct != null and right_struct != null) {
+            if (left_struct.? != right_struct.? or !(bin.op == .add or bin.op == .sub)) return null;
+            const left_reg = try self.genExpr(bin.left, hoisted_allocs);
+            const right_reg = try self.genExpr(bin.right, hoisted_allocs);
+            for (struct_decl.fields) |field| {
+                if (!isNumericType(field.ty)) return CodegenError.CodegenError;
+                const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
+                const lhs = try self.newTmp();
+                const rhs = try self.newTmp();
+                const value = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ value, op, lhs, rhs }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
+            }
+            if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
+            if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
+            return result;
+        }
+
+        if (right_struct != null and bin.op == .sub and literalZero(bin.left)) {
+            const zero_reg = try self.genExpr(bin.left, hoisted_allocs);
+            try self.emitRelease(zero_reg);
+            const right_reg = try self.genExpr(bin.right, hoisted_allocs);
+            for (struct_decl.fields) |field| {
+                if (!isNumericType(field.ty)) return CodegenError.CodegenError;
+                const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
+                const rhs = try self.newTmp();
+                const value = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = sub {s}, {s}\n", .{ value, zeroLiteralForType(field.ty), rhs }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
+            }
+            if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
+            return result;
+        }
+
+        if (bin.op == .mul and left_struct != null and isNumericType(right_ty)) {
+            const left_reg = try self.genExpr(bin.left, hoisted_allocs);
+            const scalar = try self.genExpr(bin.right, hoisted_allocs);
+            for (struct_decl.fields) |field| {
+                if (!isNumericType(field.ty)) return CodegenError.CodegenError;
+                const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
+                const lhs = try self.newTmp();
+                const value = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = mul {s}, {s}\n", .{ value, lhs, scalar }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
+            }
+            if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
+            if (callArgNeedsRelease(bin.right)) try self.emitRelease(scalar);
+            return result;
+        }
+
+        if (bin.op == .mul and right_struct != null and isNumericType(left_ty)) {
+            const scalar = try self.genExpr(bin.left, hoisted_allocs);
+            const right_reg = try self.genExpr(bin.right, hoisted_allocs);
+            for (struct_decl.fields) |field| {
+                if (!isNumericType(field.ty)) return CodegenError.CodegenError;
+                const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
+                const rhs = try self.newTmp();
+                const value = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = mul {s}, {s}\n", .{ value, scalar, rhs }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ result, layout.offset, value, layout.ty_str }) catch return CodegenError.CodegenError;
+            }
+            if (callArgNeedsRelease(bin.left)) try self.emitRelease(scalar);
+            if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
+            return result;
+        }
+
+        return null;
+    }
+
+    fn genStructEqualityExpr(
+        self: *Codegen,
+        bin: *const ast.BinaryExpr,
+        left_ty: *const ast.Type,
+        right_ty: *const ast.Type,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!?[]const u8 {
+        if (!(bin.op == .eq or bin.op == .ne)) return null;
+        const left_struct = self.structDeclForType(left_ty) orelse return null;
+        const right_struct = self.structDeclForType(right_ty) orelse return null;
+        if (left_struct != right_struct or left_struct.is_opaque or left_struct.is_union) return null;
+
+        const left_reg = try self.genExpr(bin.left, hoisted_allocs);
+        const right_reg = try self.genExpr(bin.right, hoisted_allocs);
+        var acc: ?[]const u8 = null;
+        for (left_struct.fields) |field| {
+            const layout = fieldLayout(left_struct, field.name) orelse return CodegenError.CodegenError;
+            const lhs = try self.newTmp();
+            const rhs = try self.newTmp();
+            const eq_reg = try self.newTmp();
+            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = eq {s}, {s}\n", .{ eq_reg, lhs, rhs }) catch return CodegenError.CodegenError;
+            if (acc) |prev| {
+                const next = try self.newTmp();
+                self.out.writer().print("    {s} = and {s}, {s}\n", .{ next, prev, eq_reg }) catch return CodegenError.CodegenError;
+                acc = next;
+            } else {
+                acc = eq_reg;
+            }
+        }
+
+        const result = try self.newTmp();
+        if (acc) |eq_all| {
+            if (bin.op == .eq) {
+                self.out.writer().print("    {s} = or {s}, 0\n", .{ result, eq_all }) catch return CodegenError.CodegenError;
+            } else {
+                self.out.writer().print("    {s} = ne {s}, 1\n", .{ result, eq_all }) catch return CodegenError.CodegenError;
+            }
+        } else {
+            const empty_value: i32 = if (bin.op == .eq) 1 else 0;
+            self.out.writer().print("    {s} = {}\n", .{ result, empty_value }) catch return CodegenError.CodegenError;
+        }
+        if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
+        if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
+        return result;
+    }
+
     fn enumVariantIndex(e: *const ast.EnumDecl, name: []const u8) ?usize {
         for (e.variants, 0..) |variant, i| {
             if (std.mem.eql(u8, variant.name, name)) return i;
@@ -1195,6 +1542,27 @@ pub const Codegen = struct {
         return null;
     }
 
+    fn genEnumPatternCheck(self: *Codegen, decl: *const ast.EnumDecl, pattern: ast.EnumPattern, value_reg: []const u8, branch_flag: []const u8) CodegenError!void {
+        const tag_reg = try self.newTmp();
+        self.out.writer().print("    {s} = load {s}+0 as i64\n", .{ tag_reg, value_reg }) catch return CodegenError.CodegenError;
+        const tag = enumVariantIndex(decl, pattern.variant_name) orelse return CodegenError.CodegenError;
+        const tag_const = try self.newTmp();
+        try self.emitIntConst(tag_const, @as(i64, @intCast(tag)));
+        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ branch_flag, tag_reg, tag_const }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;
+    }
+
+    fn genEnumPatternBindings(self: *Codegen, decl: *const ast.EnumDecl, pattern: ast.EnumPattern, value_reg: []const u8) CodegenError!void {
+        const variant = enumVariant(decl, pattern.variant_name) orelse return CodegenError.CodegenError;
+        if (pattern.bindings.len != variant.fields.len) return CodegenError.CodegenError;
+        for (pattern.bindings, variant.fields) |binding, field| {
+            const target = try self.pushBindingAlias(binding);
+            const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ target, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+        }
+    }
+
     fn enumSize(e: *const ast.EnumDecl) usize {
         var max_payload: usize = 0;
         for (e.variants) |variant| {
@@ -1216,59 +1584,7 @@ pub const Codegen = struct {
         };
     }
 
-    fn emitAsyncMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/future.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitStringMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/string.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitIterMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/array.sa\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/core/iter.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitBoxMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/core/box.sal\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/core/mem.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitVecMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/vec.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitOptionMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/core/option.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitResultMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/core/result.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitRcMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/core/rc.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitVecDequeMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/vec_deque.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitAtomicMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/sync/atomic.sal\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/sync/atomic.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitCellMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/core/cell.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
-    fn emitRefCellMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/core/refcell.sa\"\n", .{}) catch return CodegenError.CodegenError;
-    }
-
     fn emitArrayFillMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/core/mem.sa\"\n", .{}) catch return CodegenError.CodegenError;
         self.out.writer().print(
             \\
             \\[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
@@ -1279,8 +1595,6 @@ pub const Codegen = struct {
     }
 
     fn emitHashMapMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/core/option.sa\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/hashmap.sa\"\n", .{}) catch return CodegenError.CodegenError;
         self.out.writer().print(
             \\
             \\[MACRO] SLA_MAP_TRY_GET_OPTION %out_opt, %map_reg, %key_reg
@@ -1318,8 +1632,42 @@ pub const Codegen = struct {
         , .{}) catch return CodegenError.CodegenError;
     }
 
-    fn emitTraitObjectMacros(self: *Codegen) CodegenError!void {
-        self.out.writer().print("@import \"sa_std/core/trait_object.sa\"\n", .{}) catch return CodegenError.CodegenError;
+    fn emitBTreeMapMacros(self: *Codegen) CodegenError!void {
+        self.out.writer().print(
+            \\
+            \\[MACRO] SLA_BTREE_MAP_INSERT_OPTION_U64 %out_opt, %map_reg, %key_reg, %value_reg
+            \\    EXPAND BTREE_MAP_INSERT_OLD __sla_btree_insert_replaced_%out_opt, __sla_btree_insert_old_%out_opt, %map_reg, %key_reg, %value_reg
+            \\    br __sla_btree_insert_replaced_%out_opt -> L_SLA_BTREE_INSERT_SOME_%out_opt, L_SLA_BTREE_INSERT_NONE_%out_opt
+            \\L_SLA_BTREE_INSERT_SOME_%out_opt:
+            \\    EXPAND OPTION_NEW_SOME %out_opt, __sla_btree_insert_old_%out_opt
+            \\    !__sla_btree_insert_old_%out_opt
+            \\    !__sla_btree_insert_replaced_%out_opt
+            \\    jmp L_SLA_BTREE_INSERT_END_%out_opt
+            \\L_SLA_BTREE_INSERT_NONE_%out_opt:
+            \\    EXPAND OPTION_NEW_NONE %out_opt
+            \\    !__sla_btree_insert_old_%out_opt
+            \\    !__sla_btree_insert_replaced_%out_opt
+            \\L_SLA_BTREE_INSERT_END_%out_opt:
+            \\[END_MACRO]
+            \\
+            \\[MACRO] SLA_BTREE_MAP_TRY_GET_OPTION %out_opt, %map_reg, %key_reg
+            \\    EXPAND BTREE_MAP_TRY_GET __sla_btree_get_ok_%out_opt, __sla_btree_get_value_%out_opt, %map_reg, %key_reg
+            \\    br __sla_btree_get_ok_%out_opt -> L_SLA_BTREE_GET_SOME_%out_opt, L_SLA_BTREE_GET_NONE_%out_opt
+            \\L_SLA_BTREE_GET_SOME_%out_opt:
+            \\    __sla_btree_get_slot_%out_opt = stack_alloc 8
+            \\    store __sla_btree_get_slot_%out_opt+0, __sla_btree_get_value_%out_opt as u64
+            \\    EXPAND OPTION_NEW_SOME %out_opt, __sla_btree_get_slot_%out_opt
+            \\    !__sla_btree_get_value_%out_opt
+            \\    !__sla_btree_get_ok_%out_opt
+            \\    jmp L_SLA_BTREE_GET_END_%out_opt
+            \\L_SLA_BTREE_GET_NONE_%out_opt:
+            \\    EXPAND OPTION_NEW_NONE %out_opt
+            \\    !__sla_btree_get_value_%out_opt
+            \\    !__sla_btree_get_ok_%out_opt
+            \\L_SLA_BTREE_GET_END_%out_opt:
+            \\[END_MACRO]
+            \\
+        , .{}) catch return CodegenError.CodegenError;
     }
 
     fn arrayIterSumSource(call: *const ast.CallExpr) ?*ast.Node {
@@ -1401,6 +1749,43 @@ pub const Codegen = struct {
                 else => return null,
             }
         }
+    }
+
+    fn mutexInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Mutex") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn mutexGuardInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "MutexGuard") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn isI32LikeType(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| p == .i32 or p == .integer,
+            else => false,
+        };
     }
 
     fn atomicOrderingToken(expr: *const ast.Node) CodegenError![]const u8 {
@@ -1501,6 +1886,58 @@ pub const Codegen = struct {
                 else => return null,
             }
         }
+    }
+
+    fn resultErrType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Result") and ud.generics.len == 2) return ud.generics[1];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn patternUsesResultMacros(pattern: ast.EnumPattern) bool {
+        return std.mem.eql(u8, pattern.enum_name, "Result") or std.mem.eql(u8, pattern.variant_name, "Ok") or std.mem.eql(u8, pattern.variant_name, "Err");
+    }
+
+    fn patternUsesOptionMacros(pattern: ast.EnumPattern) bool {
+        return std.mem.eql(u8, pattern.enum_name, "Option") or std.mem.eql(u8, pattern.variant_name, "Some") or std.mem.eql(u8, pattern.variant_name, "None");
+    }
+
+    fn enumNameMatchesDecl(pattern_name: []const u8, decl_name: []const u8) bool {
+        if (std.mem.eql(u8, pattern_name, decl_name)) return true;
+        if (decl_name.len <= pattern_name.len) return false;
+        if (!std.mem.startsWith(u8, decl_name, pattern_name)) return false;
+        return decl_name[pattern_name.len] == '_';
+    }
+
+    fn enumDeclForValueType(self: *Codegen, value_ty: *const ast.Type) ?*ast.EnumDecl {
+        var curr = value_ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Option") or std.mem.eql(u8, ud.name, "Result")) return null;
+                    return self.tc.enums.get(ud.name);
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn enumDeclForPatternValue(self: *Codegen, value: *const ast.Node, pattern: ast.EnumPattern) CodegenError!?*ast.EnumDecl {
+        const value_ty = self.tc.expr_types.get(value) orelse return CodegenError.CodegenError;
+        const decl = self.enumDeclForValueType(value_ty) orelse return null;
+        if (!enumNameMatchesDecl(pattern.enum_name, decl.name)) return CodegenError.CodegenError;
+        return decl;
     }
 
     fn joinHandleInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -1617,6 +2054,7 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (exprNeedsIterMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| if (exprNeedsIterMacros(guard)) break :blk true;
                     if (blockNeedsIterMacros(case.body)) break :blk true;
                 }
                 break :blk false;
@@ -1711,6 +2149,7 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (exprNeedsBoxMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| if (exprNeedsBoxMacros(guard)) break :blk true;
                     if (blockNeedsBoxMacros(case.body)) break :blk true;
                 }
                 break :blk false;
@@ -1794,6 +2233,7 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (self.exprNeedsVecMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsVecMacros(guard)) break :blk true;
                     if (self.blockNeedsVecMacros(case.body)) break :blk true;
                 }
                 break :blk false;
@@ -1915,6 +2355,7 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (self.exprNeedsOptionMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsOptionMacros(guard)) break :blk true;
                     if (self.blockNeedsOptionMacros(case.body)) break :blk true;
                 }
                 break :blk false;
@@ -1956,6 +2397,9 @@ pub const Codegen = struct {
     }
 
     fn exprNeedsResultMacros(self: *Codegen, expr: *const ast.Node) bool {
+        if (self.tc.expr_types.get(expr)) |ty| {
+            if (resultOkType(ty) != null) return true;
+        }
         return switch (expr.*) {
             .call_expr => |call| blk: {
                 if (std.mem.eql(u8, call.func_name, "Ok") or std.mem.eql(u8, call.func_name, "Err")) break :blk true;
@@ -2023,7 +2467,8 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (self.exprNeedsResultMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
-                    if (self.blockNeedsResultMacros(case.body)) break :blk true;
+                    if (case.guard) |guard| if (self.exprNeedsResultMacros(guard)) break :blk true;
+                    if (patternUsesResultMacros(case.pattern) or self.blockNeedsResultMacros(case.body)) break :blk true;
                 }
                 break :blk false;
             },
@@ -2035,6 +2480,7 @@ pub const Codegen = struct {
         for (block) |stmt| {
             switch (stmt.*) {
                 .let_stmt => |let| if (self.exprNeedsResultMacros(let.value)) return true,
+                .let_else_stmt => |let| if (patternUsesResultMacros(let.pattern) or self.exprNeedsResultMacros(let.value) or self.blockNeedsResultMacros(let.else_block)) return true,
                 .let_destructure_stmt => |let| if (self.exprNeedsResultMacros(let.value)) return true,
                 .const_stmt => |c| if (self.exprNeedsResultMacros(c.value)) return true,
                 .assign_stmt => |assign| if (self.exprNeedsResultMacros(assign.target) or self.exprNeedsResultMacros(assign.value)) return true,
@@ -2115,7 +2561,10 @@ pub const Codegen = struct {
             },
             .match_expr => |mat| blk: {
                 if (self.exprNeedsMpscMacros(mat.val)) break :blk true;
-                for (mat.cases) |case| if (self.blockNeedsMpscMacros(case.body)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsMpscMacros(guard)) break :blk true;
+                    if (self.blockNeedsMpscMacros(case.body)) break :blk true;
+                }
                 break :blk false;
             },
             else => false,
@@ -2217,6 +2666,7 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (self.exprNeedsRcMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsRcMacros(guard)) break :blk true;
                     if (self.blockNeedsRcMacros(case.body)) break :blk true;
                 }
                 break :blk false;
@@ -2323,6 +2773,7 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (self.exprNeedsVecDequeMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsVecDequeMacros(guard)) break :blk true;
                     if (self.blockNeedsVecDequeMacros(case.body)) break :blk true;
                 }
                 break :blk false;
@@ -2425,6 +2876,7 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (self.exprNeedsHashMapMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsHashMapMacros(guard)) break :blk true;
                     if (self.blockNeedsHashMapMacros(case.body)) break :blk true;
                 }
                 break :blk false;
@@ -2512,7 +2964,10 @@ pub const Codegen = struct {
             },
             .match_expr => |mat| blk: {
                 if (self.exprNeedsBTreeMapMacros(mat.val)) break :blk true;
-                for (mat.cases) |case| if (self.blockNeedsBTreeMapMacros(case.body)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsBTreeMapMacros(guard)) break :blk true;
+                    if (self.blockNeedsBTreeMapMacros(case.body)) break :blk true;
+                }
                 break :blk false;
             },
             else => false,
@@ -2597,7 +3052,10 @@ pub const Codegen = struct {
             },
             .match_expr => |mat| blk: {
                 if (self.exprNeedsAtomicMacros(mat.val)) break :blk true;
-                for (mat.cases) |case| if (self.blockNeedsAtomicMacros(case.body)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsAtomicMacros(guard)) break :blk true;
+                    if (self.blockNeedsAtomicMacros(case.body)) break :blk true;
+                }
                 break :blk false;
             },
             else => false,
@@ -2629,6 +3087,95 @@ pub const Codegen = struct {
                     if (method.* == .func_decl and self.blockNeedsAtomicMacros(method.func_decl.body)) return true;
                 },
                 .test_decl => |t| if (self.blockNeedsAtomicMacros(t.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn exprNeedsPtrMacros(self: *Codegen, expr: *const ast.Node) bool {
+        return switch (expr.*) {
+            .call_expr => |call| blk: {
+                if (std.mem.eql(u8, call.func_name, "std__ptr__null") or std.mem.eql(u8, call.func_name, "std__ptr__read_volatile") or std.mem.eql(u8, call.func_name, "ptr__null") or std.mem.eql(u8, call.func_name, "ptr__read_volatile")) break :blk true;
+                if (call.associated_target) |target| {
+                    const is_ptr_target = std.mem.eql(u8, target, "std__ptr") or std.mem.eql(u8, target, "ptr");
+                    if (is_ptr_target and (std.mem.eql(u8, call.func_name, "null") or std.mem.eql(u8, call.func_name, "read_volatile"))) break :blk true;
+                }
+                for (call.args) |arg| if (self.exprNeedsPtrMacros(arg)) break :blk true;
+                break :blk false;
+            },
+            .binary_expr => |bin| self.exprNeedsPtrMacros(bin.left) or self.exprNeedsPtrMacros(bin.right),
+            .borrow_expr => |borrow| self.exprNeedsPtrMacros(borrow.expr),
+            .move_expr => |move| self.exprNeedsPtrMacros(move.expr),
+            .deref_expr => |deref| self.exprNeedsPtrMacros(deref.expr),
+            .field_expr => |field| self.exprNeedsPtrMacros(field.expr),
+            .index_expr => |idx| self.exprNeedsPtrMacros(idx.target) or self.exprNeedsPtrMacros(idx.index),
+            .slice_expr => |slc| self.exprNeedsPtrMacros(slc.target) or self.exprNeedsPtrMacros(slc.start) or self.exprNeedsPtrMacros(slc.end),
+            .closure_literal => |lit| self.exprNeedsPtrMacros(lit.body),
+            .await_expr => |aw| self.exprNeedsPtrMacros(aw.expr),
+            .try_expr => |trye| self.exprNeedsPtrMacros(trye.expr),
+            .unsafe_expr => |unsafe_expr| self.blockNeedsPtrMacros(unsafe_expr.body),
+            .struct_literal => |lit| blk: {
+                for (lit.fields) |field| if (self.exprNeedsPtrMacros(field.value)) break :blk true;
+                break :blk false;
+            },
+            .enum_literal => |lit| blk: {
+                for (lit.fields) |field| if (self.exprNeedsPtrMacros(field.value)) break :blk true;
+                break :blk false;
+            },
+            .tuple_literal => |lit| blk: {
+                for (lit.elements) |elem| if (self.exprNeedsPtrMacros(elem)) break :blk true;
+                break :blk false;
+            },
+            .array_literal => |lit| blk: {
+                for (lit.elements) |elem| if (self.exprNeedsPtrMacros(elem)) break :blk true;
+                break :blk false;
+            },
+            .if_expr => |ife| self.exprNeedsPtrMacros(ife.cond) or self.blockNeedsPtrMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsPtrMacros(eb) else false,
+            .switch_expr => |swe| blk: {
+                if (self.exprNeedsPtrMacros(swe.val)) break :blk true;
+                for (swe.cases) |case| if (self.exprNeedsPtrMacros(case.pattern) or self.blockNeedsPtrMacros(case.body)) break :blk true;
+                break :blk false;
+            },
+            .match_expr => |mat| blk: {
+                if (self.exprNeedsPtrMacros(mat.val)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsPtrMacros(guard)) break :blk true;
+                    if (self.blockNeedsPtrMacros(case.body)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn blockNeedsPtrMacros(self: *Codegen, block: []const *ast.Node) bool {
+        for (block) |stmt| {
+            switch (stmt.*) {
+                .let_stmt => |let| if (self.exprNeedsPtrMacros(let.value)) return true,
+                .let_else_stmt => |let| if (self.exprNeedsPtrMacros(let.value) or self.blockNeedsPtrMacros(let.else_block)) return true,
+                .let_destructure_stmt => |let| if (self.exprNeedsPtrMacros(let.value)) return true,
+                .const_stmt => |c| if (self.exprNeedsPtrMacros(c.value)) return true,
+                .assign_stmt => |assign| if (self.exprNeedsPtrMacros(assign.target) or self.exprNeedsPtrMacros(assign.value)) return true,
+                .expr_stmt => |expr| if (self.exprNeedsPtrMacros(expr)) return true,
+                .return_stmt => |ret| if (ret.value) |v| if (self.exprNeedsPtrMacros(v)) return true,
+                .for_stmt => |f| if (self.exprNeedsPtrMacros(f.start) or (if (f.end) |end_expr| self.exprNeedsPtrMacros(end_expr) else false) or self.blockNeedsPtrMacros(f.body)) return true,
+                .while_stmt => |w| if (self.exprNeedsPtrMacros(w.cond) or self.blockNeedsPtrMacros(w.body)) return true,
+                .block_stmt => |blk| if (self.blockNeedsPtrMacros(blk.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn programNeedsPtrMacros(self: *Codegen, program: *const ast.Node) bool {
+        for (program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => |f| if (self.blockNeedsPtrMacros(f.body)) return true,
+                .impl_decl => |i| for (i.methods) |method| {
+                    if (method.* == .func_decl and self.blockNeedsPtrMacros(method.func_decl.body)) return true;
+                },
+                .test_decl => |t| if (self.blockNeedsPtrMacros(t.body)) return true,
                 else => {},
             }
         }
@@ -2685,7 +3232,10 @@ pub const Codegen = struct {
             },
             .match_expr => |mat| blk: {
                 if (self.exprNeedsCellMacros(mat.val)) break :blk true;
-                for (mat.cases) |case| if (self.blockNeedsCellMacros(case.body)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsCellMacros(guard)) break :blk true;
+                    if (self.blockNeedsCellMacros(case.body)) break :blk true;
+                }
                 break :blk false;
             },
             else => false,
@@ -2775,7 +3325,10 @@ pub const Codegen = struct {
             },
             .match_expr => |mat| blk: {
                 if (self.exprNeedsRefCellMacros(mat.val)) break :blk true;
-                for (mat.cases) |case| if (self.blockNeedsRefCellMacros(case.body)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsRefCellMacros(guard)) break :blk true;
+                    if (self.blockNeedsRefCellMacros(case.body)) break :blk true;
+                }
                 break :blk false;
             },
             else => false,
@@ -2867,6 +3420,7 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (exprNeedsAsyncMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| if (exprNeedsAsyncMacros(guard)) break :blk true;
                     if (blockNeedsAsyncMacros(case.body)) break :blk true;
                 }
                 break :blk false;
@@ -2952,6 +3506,7 @@ pub const Codegen = struct {
             .match_expr => |mat| blk: {
                 if (self.exprNeedsTraitObjectMacros(mat.val)) break :blk true;
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsTraitObjectMacros(guard)) break :blk true;
                     if (self.blockNeedsTraitObjectMacros(case.body)) break :blk true;
                 }
                 break :blk false;
@@ -3105,7 +3660,10 @@ pub const Codegen = struct {
             },
             .match_expr => |mat| {
                 try self.collectThreadSpawnInExpr(mat.val);
-                for (mat.cases) |case| try self.collectThreadSpawnInBlock(case.body);
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| try self.collectThreadSpawnInExpr(guard);
+                    try self.collectThreadSpawnInBlock(case.body);
+                }
             },
             else => {},
         }
@@ -3113,10 +3671,6 @@ pub const Codegen = struct {
 
     fn emitThreadSpawnHelpers(self: *Codegen) CodegenError!void {
         if (self.thread_spawn_helpers.count() == 0) return;
-        self.out.writer().print("@extern pthread_spawn(*entry: ptr, *arg: ptr) -> i32\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@extern pthread_join(handle: i32, *out: ptr) -> i32\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@extern pthread_drop(handle: i32) -> void\n\n", .{}) catch return CodegenError.CodegenError;
-
         var iter = self.thread_spawn_helpers.valueIterator();
         while (iter.next()) |helper| {
             self.out.writer().print("@const {s} = vtable {{ call = @{s} }}\n", .{ helper.vtable_name, helper.worker_name }) catch return CodegenError.CodegenError;
@@ -3130,7 +3684,7 @@ pub const Codegen = struct {
             self.out.writer().print("    worker_fn = load worker_vt+0 as ptr\n", .{}) catch return CodegenError.CodegenError;
             self.out.writer().print("    worker_raw = *worker_fn\n", .{}) catch return CodegenError.CodegenError;
             self.out.writer().print("    worker_safe = assume_safe worker_raw\n", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    handle = call @pthread_spawn(*worker_safe, *slot)\n", .{}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    EXPAND THREAD_SPAWN handle, *worker_safe, *slot\n", .{}) catch return CodegenError.CodegenError;
             self.out.writer().print("    !slot\n    return handle\n\n", .{}) catch return CodegenError.CodegenError;
 
             self.out.writer().print("@{s}(&slot: ptr) -> i32:\nL_ENTRY:\n", .{helper.worker_name}) catch return CodegenError.CodegenError;
@@ -3161,72 +3715,12 @@ pub const Codegen = struct {
             }
         }
 
-        if (programNeedsAsyncMacros(program)) {
-            try self.emitAsyncMacros();
-        }
-
-        self.out.writer().print("@import \"sa_std/string.sa\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/string_format.sa\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/io/print.sai\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/fmt.sai\"\n", .{}) catch return CodegenError.CodegenError;
-        self.out.writer().print("@import \"sa_std/core/panic.sa\"\n", .{}) catch return CodegenError.CodegenError;
-
         try self.emitArrayFillMacros();
-
-        if (self.programNeedsOptionMacros(program)) {
-            try self.emitOptionMacros();
-        }
-
-        if (self.programNeedsResultMacros(program)) {
-            try self.emitResultMacros();
-        }
-
-        if (self.programNeedsMpscMacros(program)) {
-            self.out.writer().print("@import \"sa_std/sync/mpsc.sa\"\n", .{}) catch return CodegenError.CodegenError;
-        }
-
-        if (self.programNeedsRcMacros(program)) {
-            try self.emitRcMacros();
-        }
-
-        if (self.programNeedsVecDequeMacros(program)) {
-            try self.emitVecDequeMacros();
-        }
-
         if (self.programNeedsHashMapMacros(program)) {
             try self.emitHashMapMacros();
         }
-
         if (self.programNeedsBTreeMapMacros(program)) {
-            self.out.writer().print("@import \"sa_std/btree_map.sa\"\n", .{}) catch return CodegenError.CodegenError;
-        }
-
-        if (self.programNeedsAtomicMacros(program)) {
-            try self.emitAtomicMacros();
-        }
-
-        if (self.programNeedsCellMacros(program)) {
-            try self.emitCellMacros();
-        }
-
-        if (self.programNeedsRefCellMacros(program)) {
-            try self.emitRefCellMacros();
-        }
-
-        if (programNeedsBoxMacros(program)) {
-            try self.emitBoxMacros();
-        }
-
-        if (self.programNeedsVecMacros(program)) {
-            try self.emitVecMacros();
-        }
-
-        if (programNeedsIterMacros(program)) {
-            try self.emitIterMacros();
-        }
-
-        if (self.programNeedsTraitObjectMacros(program)) {
-            try self.emitTraitObjectMacros();
+            try self.emitBTreeMapMacros();
         }
 
         try self.emitThreadSpawnHelpers();
@@ -3252,10 +3746,24 @@ pub const Codegen = struct {
             }
         }
 
+        for (program.program.decls) |decl| {
+            if (decl.* == .func_decl) {
+                if (decl.func_decl.is_decl_only) {
+                    if (!try self.hasConcreteFunctionSymbol(program.program.decls, &decl.func_decl)) {
+                        try self.emitExternDecl(&decl.func_decl);
+                    }
+                } else {
+                    try self.emitFunctionPointerVTableDecl(decl.func_decl.name);
+                }
+            }
+        }
+
         // 4. Emit functions
         for (program.program.decls) |decl| {
             if (decl.* == .func_decl) {
-                try self.genFuncDecl(&decl.func_decl);
+                if (!decl.func_decl.is_decl_only) {
+                    try self.genFuncDecl(&decl.func_decl);
+                }
             } else if (decl.* == .impl_decl) {
                 const impl_name = switch (decl.impl_decl.target_ty.*) {
                     .user_defined => |ud| ud.name,
@@ -3419,7 +3927,12 @@ pub const Codegen = struct {
         self.mpsc_sender_bindings.clearRetainingCapacity();
         self.mpsc_sender_channels.clearRetainingCapacity();
         self.mpsc_receiver_bindings.clearRetainingCapacity();
+        self.hashmap_bindings.clearRetainingCapacity();
+        self.btree_map_bindings.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
+        self.mutex_guard_handles.clearRetainingCapacity();
+        self.mutex_lock_results.clearRetainingCapacity();
+        self.clearBindingAliases();
         self.clearHashMapKeySlots();
         try self.collectAddressableBindings(f.body);
 
@@ -3487,6 +4000,11 @@ pub const Codegen = struct {
         self.mpsc_sender_bindings.clearRetainingCapacity();
         self.mpsc_sender_channels.clearRetainingCapacity();
         self.mpsc_receiver_bindings.clearRetainingCapacity();
+        self.hashmap_bindings.clearRetainingCapacity();
+        self.btree_map_bindings.clearRetainingCapacity();
+        self.mutex_guard_handles.clearRetainingCapacity();
+        self.mutex_lock_results.clearRetainingCapacity();
+        self.clearBindingAliases();
         self.clearHashMapKeySlots();
         try self.collectAddressableBindings(t.body);
 
@@ -3619,6 +4137,7 @@ pub const Codegen = struct {
             .match_expr => |mat| {
                 try self.collectHoistedAllocsInExpr(mat.val, list, in_loop);
                 for (mat.cases) |case| {
+                    if (case.guard) |guard| try self.collectHoistedAllocsInExpr(guard, list, in_loop);
                     try self.collectHoistedAllocsInternal(case.body, list, in_loop);
                 }
             },
@@ -3802,6 +4321,38 @@ pub const Codegen = struct {
         return try self.genExpr(arg, hoisted_allocs);
     }
 
+    fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, macro: type_checker.ImportedMacro, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+        const expression_output = macro.leading_outputs == 1 and call.args.len + 1 == macro.arity;
+        if (call.args.len != macro.arity and !expression_output) return CodegenError.CodegenError;
+
+        const reg = if (expression_output) try self.newTmp() else "return_ty_sentinel";
+        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        defer arg_regs.deinit();
+        for (call.args) |arg| {
+            const arg_reg = try self.genCallArg(arg, hoisted_allocs);
+            try arg_regs.append(arg_reg);
+        }
+
+        self.out.writer().print("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
+        if (expression_output) {
+            self.out.writer().print(" {s}", .{reg}) catch return CodegenError.CodegenError;
+        }
+        for (arg_regs.items, 0..) |arg_reg, i| {
+            if (expression_output or i > 0) {
+                self.out.writer().print(", {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+            } else {
+                self.out.writer().print(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+            }
+        }
+        self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+
+        for (call.args, arg_regs.items) |arg, arg_reg| {
+            if (callArgNeedsRelease(arg)) try self.emitRelease(arg_reg);
+        }
+
+        return reg;
+    }
+
     fn genArrayBorrowToSliceArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
         if (arg.* != .borrow_expr) return CodegenError.CodegenError;
         const inner = arg.borrow_expr.expr;
@@ -3861,7 +4412,10 @@ pub const Codegen = struct {
             },
             .match_expr => |mat| blk: {
                 if (exprConsumesIdentifier(mat.val, name)) break :blk true;
-                for (mat.cases) |case| if (blockConsumesIdentifier(case.body, name)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (exprConsumesIdentifier(guard, name)) break :blk true;
+                    if (blockConsumesIdentifier(case.body, name)) break :blk true;
+                }
                 break :blk false;
             },
             .struct_literal => |lit| blk: {
@@ -3965,6 +4519,7 @@ pub const Codegen = struct {
                 if (isFormatStringType(let_ty)) {
                     self.string_buf_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                 }
+                try self.markOwnedCollectionBinding(let.name, let_ty);
                 if (is_hoisted) {
                     self.out.writer().print("    // Hoisted stack slot {s} initialized\n", .{let.name}) catch return CodegenError.CodegenError;
                 } else if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "AtomicI32") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
@@ -4027,25 +4582,43 @@ pub const Codegen = struct {
                         _ = self.refcell_borrow_handles.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
+                    if (self.mutex_guard_handles.get(val_reg)) |handle| {
+                        self.mutex_guard_handles.put(let.name, handle) catch return CodegenError.OutOfMemory;
+                        _ = self.mutex_guard_handles.remove(val_reg);
+                        self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
+                    }
+                    if (self.mutex_lock_results.get(val_reg)) |handle| {
+                        self.mutex_lock_results.put(let.name, handle) catch return CodegenError.OutOfMemory;
+                        _ = self.mutex_lock_results.remove(val_reg);
+                        self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
+                    }
                     self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 }
             },
             .let_else_stmt => |let| {
                 const value_reg = try self.genExpr(let.value, hoisted_allocs);
-                const is_some = try self.newTmp();
+                const branch_flag = try self.newTmp();
                 const success_label = try self.newLabel("L_LET_ELSE_OK");
                 const else_label = try self.newLabel("L_LET_ELSE_ELSE");
                 const cont_label = try self.newLabel("L_LET_ELSE_CONT");
+                const enum_decl = try self.enumDeclForPatternValue(let.value, let.pattern);
 
-                self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, value_reg }) catch return CodegenError.CodegenError;
-                if (std.mem.eql(u8, let.pattern.variant_name, "Some")) {
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, success_label, else_label }) catch return CodegenError.CodegenError;
+                const success_on_true = enum_decl != null or std.mem.eql(u8, let.pattern.variant_name, "Some") or std.mem.eql(u8, let.pattern.variant_name, "Ok");
+                if (enum_decl) |decl| {
+                    try self.genEnumPatternCheck(decl, let.pattern, value_reg, branch_flag);
+                } else if (patternUsesResultMacros(let.pattern)) {
+                    self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
                 } else {
-                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, else_label, success_label }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
+                }
+                if (success_on_true) {
+                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, success_label, else_label }) catch return CodegenError.CodegenError;
+                } else {
+                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, else_label, success_label }) catch return CodegenError.CodegenError;
                 }
 
                 self.out.writer().print("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(let.value)) try self.emitRelease(value_reg);
                 try self.genBlock(let.else_block, hoisted_allocs);
                 if (!blockTerminates(let.else_block)) {
@@ -4054,9 +4627,21 @@ pub const Codegen = struct {
                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
 
                 self.out.writer().print("{s}:\n", .{success_label}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
-                if (std.mem.eql(u8, let.pattern.variant_name, "Some") and let.pattern.bindings.len == 1) {
-                    self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ let.pattern.bindings[0], value_reg }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                if (enum_decl) |decl| {
+                    try self.genEnumPatternBindings(decl, let.pattern, value_reg);
+                } else if (std.mem.eql(u8, let.pattern.variant_name, "Some") and let.pattern.bindings.len == 1) {
+                    const binding = let.pattern.bindings[0];
+                    const target = try self.pushBindingAlias(binding);
+                    self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                } else if (std.mem.eql(u8, let.pattern.variant_name, "Ok") and let.pattern.bindings.len == 1) {
+                    const binding = let.pattern.bindings[0];
+                    const target = try self.pushBindingAlias(binding);
+                    self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                } else if (std.mem.eql(u8, let.pattern.variant_name, "Err") and let.pattern.bindings.len == 1) {
+                    const binding = let.pattern.bindings[0];
+                    const target = try self.pushBindingAlias(binding);
+                    self.out.writer().print("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
                 }
                 if (callArgNeedsRelease(let.value)) try self.emitRelease(value_reg);
                 self.out.writer().print("    jmp {s}\n\n", .{cont_label}) catch return CodegenError.CodegenError;
@@ -4089,6 +4674,7 @@ pub const Codegen = struct {
             },
             .const_stmt => |c| {
                 const const_ty = if (c.ty) |explicit| explicit else self.tc.expr_types.get(c.value) orelse return CodegenError.CodegenError;
+                try self.markOwnedCollectionBinding(c.name, const_ty);
                 if (self.bindingNeedsAddressableStorage(c.name, const_ty)) {
                     const val_reg = try self.genExpr(c.value, hoisted_allocs);
                     self.stack_alloc_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
@@ -4126,7 +4712,7 @@ pub const Codegen = struct {
                     try self.genIndexAssign(&assign.target.index_expr, assign.value, hoisted_allocs);
                 } else if (assign.target.* == .deref_expr) {
                     const target_ty = self.tc.expr_types.get(assign.target.deref_expr.expr) orelse return CodegenError.CodegenError;
-                    const inner_ty = switch (target_ty.*) {
+                    const inner_ty = mutexGuardInnerType(target_ty) orelse switch (target_ty.*) {
                         .borrow => |b| b,
                         .pointer => |p| p,
                         else => return CodegenError.CodegenError,
@@ -4135,6 +4721,7 @@ pub const Codegen = struct {
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
                     self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_reg, val_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
                     if (self.refcell_borrow_handles.contains(target_reg)) try self.emitRelease(target_reg);
+                    if (assign.target.deref_expr.expr.* != .identifier and self.mutex_guard_handles.contains(target_reg)) try self.emitRelease(target_reg);
                     if (callArgNeedsRelease(assign.value)) try self.emitRelease(val_reg);
                 } else if (assign.target.* == .field_expr) {
                     const field = assign.target.field_expr;
@@ -4164,12 +4751,13 @@ pub const Codegen = struct {
                     }
                 } else if (assign.target.* == .identifier) {
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
-                    if (self.addressable_bindings.contains(assign.target.identifier)) {
+                    const target_name = self.resolveBindingName(assign.target.identifier);
+                    if (self.addressable_bindings.contains(target_name)) {
                         const target_ty = self.tc.expr_types.get(assign.target) orelse return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ assign.target.identifier, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     } else {
                         try self.emitRelease(assign.target.identifier);
-                        self.out.writer().print("    {s} = {s}\n", .{ assign.target.identifier, val_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = {s}\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError;
                     }
                 } else {
                     const target_reg = try self.genExpr(assign.target, hoisted_allocs);
@@ -4294,18 +4882,46 @@ pub const Codegen = struct {
                 self.out.writer().print("{s}:\n", .{loop_head}) catch return CodegenError.CodegenError;
                 const cond_reg = try self.genExpr(w.cond, hoisted_allocs);
                 if (w.let_pattern) |pattern| {
-                    const is_some = try self.newTmp();
-                    self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, cond_reg }) catch return CodegenError.CodegenError;
-                    if (std.mem.eql(u8, pattern.variant_name, "Some")) {
-                        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, loop_body, loop_cond_false }) catch return CodegenError.CodegenError;
+                    const branch_flag = try self.newTmp();
+                    const enum_decl = try self.enumDeclForPatternValue(w.cond, pattern);
+                    var scoped_bindings = std.ArrayList([]const u8).init(self.allocator);
+                    defer scoped_bindings.deinit();
+                    const success_on_true = enum_decl != null or std.mem.eql(u8, pattern.variant_name, "Some") or std.mem.eql(u8, pattern.variant_name, "Ok");
+                    if (enum_decl) |decl| {
+                        try self.genEnumPatternCheck(decl, pattern, cond_reg, branch_flag);
+                    } else if (patternUsesResultMacros(pattern)) {
+                        self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, cond_reg }) catch return CodegenError.CodegenError;
                     } else {
-                        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, loop_cond_false, loop_body }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, cond_reg }) catch return CodegenError.CodegenError;
+                    }
+                    if (success_on_true) {
+                        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, loop_body, loop_cond_false }) catch return CodegenError.CodegenError;
+                    } else {
+                        self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, loop_cond_false, loop_body }) catch return CodegenError.CodegenError;
                     }
 
                     self.out.writer().print("{s}:\n", .{loop_body}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
-                    if (std.mem.eql(u8, pattern.variant_name, "Some") and pattern.bindings.len == 1) {
-                        self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ pattern.bindings[0], cond_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                    if (enum_decl) |decl| {
+                        try self.genEnumPatternBindings(decl, pattern, cond_reg);
+                        for (pattern.bindings) |binding| {
+                            scoped_bindings.append(binding) catch return CodegenError.OutOfMemory;
+                        }
+                    } else if (std.mem.eql(u8, pattern.variant_name, "Some") and pattern.bindings.len == 1) {
+                        const binding = pattern.bindings[0];
+                        const target = try self.pushBindingAlias(binding);
+                        scoped_bindings.append(binding) catch return CodegenError.OutOfMemory;
+                        self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ target, cond_reg }) catch return CodegenError.CodegenError;
+                    } else if (std.mem.eql(u8, pattern.variant_name, "Ok") and pattern.bindings.len == 1) {
+                        const binding = pattern.bindings[0];
+                        const target = try self.pushBindingAlias(binding);
+                        scoped_bindings.append(binding) catch return CodegenError.OutOfMemory;
+                        self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, cond_reg }) catch return CodegenError.CodegenError;
+                    } else if (std.mem.eql(u8, pattern.variant_name, "Err") and pattern.bindings.len == 1) {
+                        const binding = pattern.bindings[0];
+                        const target = try self.pushBindingAlias(binding);
+                        scoped_bindings.append(binding) catch return CodegenError.OutOfMemory;
+                        self.out.writer().print("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, cond_reg }) catch return CodegenError.CodegenError;
                     }
                     try self.emitRelease(cond_reg);
                     self.loop_continue_labels.append(loop_head) catch return CodegenError.OutOfMemory;
@@ -4313,13 +4929,20 @@ pub const Codegen = struct {
                     try self.genBlock(w.body, hoisted_allocs);
                     _ = self.loop_continue_labels.pop();
                     _ = self.loop_break_labels.pop();
-                    if (std.mem.eql(u8, pattern.variant_name, "Some") and pattern.bindings.len == 1 and !blockConsumesIdentifier(w.body, pattern.bindings[0])) {
-                        try self.emitRelease(pattern.bindings[0]);
+                    if (!blockTerminates(w.body)) {
+                        for (pattern.bindings) |binding| {
+                            if (!blockConsumesIdentifier(w.body, binding)) {
+                                try self.emitRelease(binding);
+                            }
+                        }
+                        self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
                     }
-                    self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                    for (scoped_bindings.items) |binding| {
+                        self.popBindingAlias(binding);
+                    }
 
                     self.out.writer().print("{s}:\n", .{loop_cond_false}) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                     try self.emitRelease(cond_reg);
                     self.out.writer().print("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;
 
@@ -4404,6 +5027,15 @@ pub const Codegen = struct {
         const struct_decl = self.tc.structs.get(lit.ty.user_defined.name) orelse return CodegenError.CodegenError;
 
         self.out.writer().print("    {s} = alloc {}\n", .{ target, structSize(struct_decl) }) catch return CodegenError.CodegenError;
+
+        if (struct_decl.is_union) {
+            for (lit.fields) |literal_field| {
+                const layout = fieldLayout(struct_decl, literal_field.name) orelse return CodegenError.CodegenError;
+                const val_reg = try self.genExpr(literal_field.value, hoisted_allocs);
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+            }
+            return;
+        }
 
         for (struct_decl.fields) |decl_field| {
             var literal_value: ?*ast.Node = null;
@@ -4516,7 +5148,7 @@ pub const Codegen = struct {
         if (mat.cases.len == 0) return CodegenError.CodegenError;
         const val_reg = try self.genExpr(mat.val, hoisted_allocs);
         const val_ty = self.tc.expr_types.get(mat.val) orelse return CodegenError.CodegenError;
-        if (optionInnerType(val_ty) != null) {
+        if (optionInnerType(val_ty) != null or resultOkType(val_ty) != null) {
             return try self.genOptionMatchExpr(expr, mat, val_reg, hoisted_allocs);
         }
         if (val_ty.* != .user_defined) return CodegenError.CodegenError;
@@ -4569,12 +5201,28 @@ pub const Codegen = struct {
             self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ cond, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
 
             self.out.writer().print("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{cond}) catch return CodegenError.CodegenError;
             const variant = enumVariant(decl, case.pattern.variant_name) orelse return CodegenError.CodegenError;
             for (case.pattern.bindings, variant.fields) |binding, field| {
                 const layout = enumFieldLayout(variant, field.name) orelse return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ binding, val_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
             }
+            if (case.guard) |guard| {
+                const body_label = try self.newLabel("L_MATCH_GUARD_BODY");
+                const fail_label = try self.newLabel("L_MATCH_GUARD_FAIL");
+                const guard_reg = try self.genExpr(guard, hoisted_allocs);
+                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ guard_reg, body_label, fail_label }) catch return CodegenError.CodegenError;
+
+                self.out.writer().print("{s}:\n", .{fail_label}) catch return CodegenError.CodegenError;
+                try self.emitRelease(guard_reg);
+                for (case.pattern.bindings) |binding| {
+                    try self.emitRelease(binding);
+                }
+                self.out.writer().print("    jmp {s}\n\n", .{next_label}) catch return CodegenError.CodegenError;
+
+                self.out.writer().print("{s}:\n", .{body_label}) catch return CodegenError.CodegenError;
+                try self.emitRelease(guard_reg);
+            }
+            self.out.writer().print("    !{s}\n", .{cond}) catch return CodegenError.CodegenError;
             if (value_match and !blockTerminates(case.body)) {
                 try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty, hoisted_allocs);
             } else {
@@ -4582,7 +5230,9 @@ pub const Codegen = struct {
             }
             if (!blockTerminates(case.body)) {
                 for (case.pattern.bindings) |binding| {
-                    try self.emitRelease(binding);
+                    if (!blockConsumesIdentifier(case.body, binding)) {
+                        try self.emitRelease(binding);
+                    }
                 }
                 self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
             }
@@ -4642,22 +5292,34 @@ pub const Codegen = struct {
             if (i > 0) {
                 self.out.writer().print("    !{s}\n", .{cond_regs.items[i - 1]}) catch return CodegenError.CodegenError;
             }
-            const is_some = try self.newTmp();
-            cond_regs.append(is_some) catch return CodegenError.OutOfMemory;
-            self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, val_reg }) catch return CodegenError.CodegenError;
+            const branch_flag = try self.newTmp();
+            cond_regs.append(branch_flag) catch return CodegenError.OutOfMemory;
+            if (patternUsesResultMacros(case.pattern)) {
+                self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, val_reg }) catch return CodegenError.CodegenError;
+            } else {
+                self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, val_reg }) catch return CodegenError.CodegenError;
+            }
             const next_label = if (i + 1 < mat.cases.len) check_labels.items[i + 1] else no_match_label;
             if (std.mem.eql(u8, case.pattern.variant_name, "Some")) {
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
             } else if (std.mem.eql(u8, case.pattern.variant_name, "None")) {
-                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, next_label, case_labels.items[i] }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, next_label, case_labels.items[i] }) catch return CodegenError.CodegenError;
+            } else if (std.mem.eql(u8, case.pattern.variant_name, "Ok")) {
+                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, case_labels.items[i], next_label }) catch return CodegenError.CodegenError;
+            } else if (std.mem.eql(u8, case.pattern.variant_name, "Err")) {
+                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, next_label, case_labels.items[i] }) catch return CodegenError.CodegenError;
             } else {
                 return CodegenError.CodegenError;
             }
 
             self.out.writer().print("{s}:\n", .{case_labels.items[i]}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
             if (std.mem.eql(u8, case.pattern.variant_name, "Some") and case.pattern.bindings.len == 1) {
                 self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
+            } else if (std.mem.eql(u8, case.pattern.variant_name, "Ok") and case.pattern.bindings.len == 1) {
+                self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
+            } else if (std.mem.eql(u8, case.pattern.variant_name, "Err") and case.pattern.bindings.len == 1) {
+                self.out.writer().print("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ case.pattern.bindings[0], val_reg }) catch return CodegenError.CodegenError;
             }
             if (value_match and !blockTerminates(case.body)) {
                 try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty, hoisted_allocs);
@@ -5277,8 +5939,23 @@ pub const Codegen = struct {
                     self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     return reg;
                 }
+                const resolved_name = self.resolveBindingName(name);
+                if (!std.mem.eql(u8, resolved_name, name)) return resolved_name;
                 if (self.closure_param_regs.get(name)) |mapped| return mapped;
                 if (self.global_const_bindings.contains(name)) return name;
+                if (self.tc.funcs.contains(name)) {
+                    const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                    if (expr_ty.* == .fn_ptr) {
+                        const reg = try self.newTmp();
+                        const vt_name = try self.fnPtrVTableName(name);
+                        defer self.allocator.free(vt_name);
+                        self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
+                        self.out.writer().print("    {s} = stack_alloc 16\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    store {s}+0, 0 as ptr\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    store {s}+8, &{s} as ptr\n", .{ reg, vt_name }) catch return CodegenError.CodegenError;
+                        return reg;
+                    }
+                }
                 if (self.addressable_bindings.contains(name)) {
                     const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                     if (expr_ty.* == .primitive) {
@@ -5290,6 +5967,10 @@ pub const Codegen = struct {
                 return name;
             },
             .binary_expr => |bin| {
+                const left_ty = self.tc.expr_types.get(bin.left) orelse return CodegenError.CodegenError;
+                const right_ty = self.tc.expr_types.get(bin.right) orelse return CodegenError.CodegenError;
+                if (try self.genStructEqualityExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
+                if (try self.genStructArithmeticExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 const l = try self.genExpr(bin.left, hoisted_allocs);
                 const r = try self.genExpr(bin.right, hoisted_allocs);
                 const reg = try self.newTmp();
@@ -5374,6 +6055,46 @@ pub const Codegen = struct {
 
                 if (curr_ty.* != .user_defined) return CodegenError.CodegenError;
                 const struct_decl = self.tc.structs.get(curr_ty.user_defined.name) orelse return CodegenError.CodegenError;
+                // Old inline layout logic is intentionally kept here as comment per user preference.
+                // It has been centralized into `fieldLayout(...)` so struct and union field access
+                // share one layout rule instead of drifting apart in multiple call sites.
+                //
+                // var offset: usize = 0;
+                // var found = false;
+                // var field_ty_str: []const u8 = "i64";
+                // for (struct_decl.fields) |f| {
+                //     const size: usize = switch (f.ty.*) {
+                //         .primitive => |p| switch (p) {
+                //             .boolean => 1,
+                //             .i8 => 1,
+                //             .i16 => 2,
+                //             .i32 => 4,
+                //             .i64 => 8,
+                //             .isize => 8,
+                //             .u8 => 1,
+                //             .u16 => 2,
+                //             .u32 => 4,
+                //             .u64 => 8,
+                //             .usize => 8,
+                //             .f32 => 4,
+                //             .f64 => 8,
+                //             .integer => 8,
+                //             .float => 8,
+                //             .void_type => 8,
+                //         },
+                //         else => 8, // pointer or borrow
+                //     };
+                //     if (size == 8) {
+                //         offset = (offset + 7) & ~@as(usize, 7);
+                //     }
+                //     if (std.mem.eql(u8, f.name, field.field_name)) {
+                //         found = true;
+                //         field_ty_str = typeString(f.ty);
+                //         break;
+                //     }
+                //     offset += size;
+                // }
+                // if (!found) return CodegenError.CodegenError;
                 const layout = fieldLayout(struct_decl, field.field_name) orelse return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
                 return reg;
@@ -5416,6 +6137,9 @@ pub const Codegen = struct {
                 try self.genBlockTailValueInto(ue.body, reg, hoisted_allocs);
                 return reg;
             },
+            .inline_asm_expr => {
+                return "return_ty_sentinel";
+            },
             .await_expr => |aw| {
                 const future_reg = try self.genExpr(aw.expr, hoisted_allocs);
                 const out_reg = try self.newTmp();
@@ -5448,6 +6172,25 @@ pub const Codegen = struct {
                     const reg = try self.newTmp();
                     self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, value_ptr, typeString(hm.value) }) catch return CodegenError.CodegenError;
                     try self.emitRelease(value_ptr);
+                    if (callArgNeedsRelease(idx.index)) try self.emitRelease(key_reg);
+                    return reg;
+                }
+                if (btreeMapTypes(target_ty)) |bm| {
+                    const map_reg = try self.genExpr(idx.target, hoisted_allocs);
+                    const key_reg = try self.genHashMapKeyReg(idx.index, hoisted_allocs);
+                    const raw_value = try self.newTmp();
+                    const found = try self.newTmp();
+                    const hit_label = try self.newLabel("L_BTREE_MAP_INDEX_HIT");
+                    const miss_label = try self.newLabel("L_BTREE_MAP_INDEX_MISS");
+                    self.out.writer().print("    EXPAND BTREE_MAP_TRY_GET {s}, {s}, {s}, {s}\n", .{ found, raw_value, map_reg, key_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ found, hit_label, miss_label }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    panic(404)\n\n", .{}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
+                    const reg = try self.newTmp();
+                    self.out.writer().print("    {s} = {s} as {s}\n", .{ reg, raw_value, typeString(bm.value) }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(key_reg);
                     return reg;
                 }
@@ -5507,7 +6250,48 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
                 }
+                if (std.mem.eql(u8, call.func_name, "std__ptr__null") or std.mem.eql(u8, call.func_name, "ptr__null")) {
+                    if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
+                    const reg = try self.newTmp();
+                    self.out.writer().print("    EXPAND PTR_NULL {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                    return reg;
+                }
+                if (std.mem.eql(u8, call.func_name, "std__ptr__read_volatile") or std.mem.eql(u8, call.func_name, "ptr__read_volatile")) {
+                    if (call.args.len != 1) return CodegenError.CodegenError;
+                    const ptr_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                    const read_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                    const reg = try self.newTmp();
+                    const macro_name = ptrReadVolatileMacroName(read_ty) orelse return CodegenError.CodegenError;
+                    self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, reg, ptr_reg }) catch return CodegenError.CodegenError;
+                    if (call.args[0].* == .borrow_expr) {
+                        const borrowed = call.args[0].borrow_expr.expr;
+                        const is_direct_slot = borrowed.* == .identifier and std.mem.eql(u8, ptr_reg, borrowed.identifier);
+                        if (!is_direct_slot) try self.emitRelease(ptr_reg);
+                    } else if (callArgNeedsRelease(call.args[0])) try self.emitRelease(ptr_reg);
+                    return reg;
+                }
                 if (call.associated_target) |target| {
+                    const is_ptr_target = std.mem.eql(u8, target, "std__ptr") or std.mem.eql(u8, target, "ptr");
+                    if (is_ptr_target and std.mem.eql(u8, call.func_name, "null")) {
+                        if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
+                        const reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND PTR_NULL {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        return reg;
+                    }
+                    if (is_ptr_target and std.mem.eql(u8, call.func_name, "read_volatile")) {
+                        if (call.args.len != 1) return CodegenError.CodegenError;
+                        const ptr_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                        const read_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                        const reg = try self.newTmp();
+                        const macro_name = ptrReadVolatileMacroName(read_ty) orelse return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, reg, ptr_reg }) catch return CodegenError.CodegenError;
+                        if (call.args[0].* == .borrow_expr) {
+                            const borrowed = call.args[0].borrow_expr.expr;
+                            const is_direct_slot = borrowed.* == .identifier and std.mem.eql(u8, ptr_reg, borrowed.identifier);
+                            if (!is_direct_slot) try self.emitRelease(ptr_reg);
+                        } else if (callArgNeedsRelease(call.args[0])) try self.emitRelease(ptr_reg);
+                        return reg;
+                    }
                     if (std.mem.eql(u8, target, "mpsc") and std.mem.eql(u8, call.func_name, "channel")) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const chan = try self.newTmp();
@@ -5574,6 +6358,16 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
+                    if (std.mem.eql(u8, target, "Mutex") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 1) return CodegenError.CodegenError;
+                        const value_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
+                        if (!isI32LikeType(value_ty)) return CodegenError.CodegenError;
+                        const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                        const reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND MUTEX_NEW_I32 {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                        return reg;
+                    }
                     if (std.mem.eql(u8, target, "VecDeque") and std.mem.eql(u8, call.func_name, "from")) {
                         if (call.args.len != 1 or call.args[0].* != .array_literal) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
@@ -5595,6 +6389,12 @@ pub const Codegen = struct {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const reg = try self.newTmp();
                         self.out.writer().print("    EXPAND MAP_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        return reg;
+                    }
+                    if (std.mem.eql(u8, target, "BTreeMap") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 0) return CodegenError.CodegenError;
+                        const reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND BTREE_MAP_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "Vec") and std.mem.eql(u8, call.func_name, "new")) {
@@ -5854,6 +6654,34 @@ pub const Codegen = struct {
                     return try self.genClosureCall(closure, &call, hoisted_allocs);
                 }
 
+                if (self.tc.fn_ptr_calls.contains(expr)) {
+                    const fn_reg = call.func_name;
+                    const vt_reg = try self.newTmp();
+                    const call_reg = try self.newTmp();
+                    self.out.writer().print("    {s} = load {s}+8 as ptr\n", .{ vt_reg, fn_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ call_reg, vt_reg }) catch return CodegenError.CodegenError;
+
+                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                    defer arg_regs.deinit();
+                    for (call.args) |arg| {
+                        arg_regs.append(try self.genCallArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+                    }
+
+                    const ret_reg = try self.newTmp();
+                    self.out.writer().print("    {s} = call_indirect {s}(", .{ ret_reg, call_reg }) catch return CodegenError.CodegenError;
+                    for (arg_regs.items, 0..) |arg_reg, i| {
+                        if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                    }
+                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                    try self.emitRelease(call_reg);
+                    try self.emitRelease(vt_reg);
+                    for (call.args, arg_regs.items) |arg, arg_reg| {
+                        if (callArgNeedsRelease(arg)) try self.emitRelease(arg_reg);
+                    }
+                    return ret_reg;
+                }
+
                 if (call.args.len > 0) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty) |ty| {
@@ -5898,8 +6726,8 @@ pub const Codegen = struct {
                                 const err_label = try self.newLabel("L_THREAD_JOIN_ERR");
                                 const end_label = try self.newLabel("L_THREAD_JOIN_END");
                                 self.out.writer().print("    {s} = load {s}+0 as i32\n", .{ handle, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    {s} = call @pthread_join({s}, *{s})\n", .{ status, handle, recv_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @pthread_drop({s})\n", .{handle}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    EXPAND THREAD_JOIN_STATUS {s}, {s}, *{s}\n", .{ status, handle, recv_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    EXPAND THREAD_DROP {s}\n", .{handle}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = eq {s}, 0\n", .{ is_ok, status }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
@@ -6001,6 +6829,10 @@ pub const Codegen = struct {
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
                                 self.out.writer().print("    EXPAND RESULT_UNWRAP {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                if (self.mutex_lock_results.get(recv_reg)) |handle| {
+                                    self.mutex_guard_handles.put(reg, handle) catch return CodegenError.OutOfMemory;
+                                    _ = self.mutex_lock_results.remove(recv_reg);
+                                }
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -6121,6 +6953,20 @@ pub const Codegen = struct {
                                 return borrow_reg;
                             }
                         }
+                        if (mutexInnerType(ty) != null) {
+                            if (std.mem.eql(u8, call.func_name, "lock")) {
+                                if (call.args.len != 1) return CodegenError.CodegenError;
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const guard_reg = try self.newTmp();
+                                const result_reg = try self.newTmp();
+                                self.out.writer().print("    EXPAND MUTEX_LOCK {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = ptr_add {s}, Mutex_data\n", .{ guard_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, guard_reg }) catch return CodegenError.CodegenError;
+                                self.mutex_lock_results.put(result_reg, .{ .mutex_reg = recv_reg }) catch return CodegenError.OutOfMemory;
+                                try self.emitRelease(guard_reg);
+                                return result_reg;
+                            }
+                        }
                         if (rcInnerType(ty) != null and std.mem.eql(u8, call.func_name, "clone")) {
                             if (call.args.len != 1) return CodegenError.CodegenError;
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -6233,6 +7079,30 @@ pub const Codegen = struct {
                                 return reg;
                             }
                         }
+                        if (btreeMapTypes(ty) != null) {
+                            if (std.mem.eql(u8, call.func_name, "insert")) {
+                                if (call.args.len != 3) return CodegenError.CodegenError;
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const value_reg = try self.genExpr(call.args[2], hoisted_allocs);
+                                const reg = try self.newTmp();
+                                self.out.writer().print("    EXPAND SLA_BTREE_MAP_INSERT_OPTION_U64 {s}, {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg, value_reg }) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+                                if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                if (callArgNeedsRelease(call.args[2])) try self.emitRelease(value_reg);
+                                return reg;
+                            }
+                            if (std.mem.eql(u8, call.func_name, "get")) {
+                                if (call.args.len != 2) return CodegenError.CodegenError;
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
+                                const reg = try self.newTmp();
+                                self.out.writer().print("    EXPAND SLA_BTREE_MAP_TRY_GET_OPTION {s}, {s}, {s}\n", .{ reg, recv_reg, key_reg }) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+                                if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
+                                return reg;
+                            }
+                        }
                     }
                 }
 
@@ -6247,6 +7117,7 @@ pub const Codegen = struct {
                 }
 
                 if (self.tc.structs.get(call.func_name)) |decl| {
+                    if (decl.is_opaque) return CodegenError.CodegenError;
                     if (decl.fields.len != call.args.len) return CodegenError.CodegenError;
                     const reg = try self.newTmp();
                     self.out.writer().print("    {s} = alloc {}\n", .{ reg, structSize(decl) }) catch return CodegenError.CodegenError;
@@ -6413,6 +7284,10 @@ pub const Codegen = struct {
                     return reg;
                 }
 
+                if (self.tc.imported_macros.get(call.func_name)) |macro| {
+                    return try self.genImportedMacroCall(&call, macro, hoisted_allocs);
+                }
+
                 // Assume macro expansion call in Sla
                 const reg = try self.newTmp();
                 self.out.writer().print("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
@@ -6446,16 +7321,24 @@ pub const Codegen = struct {
                         const success_label = if (i + 1 == chain.len) then_label else try self.newLabel("L_IF_LET_NEXT");
                         const fail_label = try self.newLabel("L_IF_LET_FAIL");
                         const value_reg = try self.genExpr(cond.value, hoisted_allocs);
-                        const is_some = try self.newTmp();
-                        self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, value_reg }) catch return CodegenError.CodegenError;
-                        if (std.mem.eql(u8, cond.pattern.variant_name, "Some")) {
-                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, success_label, fail_label }) catch return CodegenError.CodegenError;
+                        const branch_flag = try self.newTmp();
+                        const enum_decl = try self.enumDeclForPatternValue(cond.value, cond.pattern);
+                        const success_on_true = enum_decl != null or std.mem.eql(u8, cond.pattern.variant_name, "Some") or std.mem.eql(u8, cond.pattern.variant_name, "Ok");
+                        if (enum_decl) |decl| {
+                            try self.genEnumPatternCheck(decl, cond.pattern, value_reg, branch_flag);
+                        } else if (patternUsesResultMacros(cond.pattern)) {
+                            self.out.writer().print("    EXPAND RESULT_IS_OK {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
                         } else {
-                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, fail_label, success_label }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ branch_flag, value_reg }) catch return CodegenError.CodegenError;
+                        }
+                        if (success_on_true) {
+                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, success_label, fail_label }) catch return CodegenError.CodegenError;
+                        } else {
+                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, fail_label, success_label }) catch return CodegenError.CodegenError;
                         }
 
                         self.out.writer().print("{s}:\n", .{fail_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(cond.value)) try self.emitRelease(value_reg);
                         for (acquired.items) |binding| {
                             try self.emitRelease(binding);
@@ -6463,10 +7346,26 @@ pub const Codegen = struct {
                         self.out.writer().print("    jmp {s}\n\n", .{else_label}) catch return CodegenError.CodegenError;
 
                         self.out.writer().print("{s}:\n", .{success_label}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
-                        if (std.mem.eql(u8, cond.pattern.variant_name, "Some") and cond.pattern.bindings.len == 1) {
+                        self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
+                        if (enum_decl) |decl| {
+                            try self.genEnumPatternBindings(decl, cond.pattern, value_reg);
+                            for (cond.pattern.bindings) |binding| {
+                                try acquired.append(binding);
+                            }
+                        } else if (std.mem.eql(u8, cond.pattern.variant_name, "Some") and cond.pattern.bindings.len == 1) {
                             const binding = cond.pattern.bindings[0];
-                            self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ binding, value_reg }) catch return CodegenError.CodegenError;
+                            const target = try self.pushBindingAlias(binding);
+                            self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                            try acquired.append(binding);
+                        } else if (std.mem.eql(u8, cond.pattern.variant_name, "Ok") and cond.pattern.bindings.len == 1) {
+                            const binding = cond.pattern.bindings[0];
+                            const target = try self.pushBindingAlias(binding);
+                            self.out.writer().print("    EXPAND RESULT_GET_OK {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+                            try acquired.append(binding);
+                        } else if (std.mem.eql(u8, cond.pattern.variant_name, "Err") and cond.pattern.bindings.len == 1) {
+                            const binding = cond.pattern.bindings[0];
+                            const target = try self.pushBindingAlias(binding);
+                            self.out.writer().print("    EXPAND RESULT_GET_ERR {s}, {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
                             try acquired.append(binding);
                         }
                         if (callArgNeedsRelease(cond.value)) try self.emitRelease(value_reg);
@@ -6482,6 +7381,9 @@ pub const Codegen = struct {
                         if (!blockConsumesIdentifier(ife.then_block, binding)) {
                             try self.emitRelease(binding);
                         }
+                    }
+                    for (acquired.items) |binding| {
+                        self.popBindingAlias(binding);
                     }
                     if (ife.then_block.len > 0) {
                         if (self.tc.phi_cleanups.get(ife.then_block[ife.then_block.len - 1])) |list| {
@@ -6543,6 +7445,11 @@ pub const Codegen = struct {
 
                 self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ cond_reg, then_label, else_label }) catch return CodegenError.CodegenError;
 
+                var pre_then_mutex_guards = self.mutex_guard_handles.clone() catch return CodegenError.OutOfMemory;
+                defer pre_then_mutex_guards.deinit();
+                var pre_then_mutex_results = self.mutex_lock_results.clone() catch return CodegenError.OutOfMemory;
+                defer pre_then_mutex_results.deinit();
+
                 self.out.writer().print("{s}:\n", .{then_label}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
                 if (value_if and !then_terminates) {
@@ -6562,6 +7469,15 @@ pub const Codegen = struct {
                     self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                 }
                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+
+                if (then_terminates) {
+                    try self.restoreMutexState(&pre_then_mutex_guards, &pre_then_mutex_results);
+                }
+
+                var pre_else_mutex_guards = self.mutex_guard_handles.clone() catch return CodegenError.OutOfMemory;
+                defer pre_else_mutex_guards.deinit();
+                var pre_else_mutex_results = self.mutex_lock_results.clone() catch return CodegenError.OutOfMemory;
+                defer pre_else_mutex_results.deinit();
 
                 self.out.writer().print("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
@@ -6584,6 +7500,10 @@ pub const Codegen = struct {
                     self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
                 }
                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+
+                if (else_terminates) {
+                    try self.restoreMutexState(&pre_else_mutex_guards, &pre_else_mutex_results);
+                }
 
                 if (needs_merge) {
                     self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;

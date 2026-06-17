@@ -1,24 +1,38 @@
-// Sla companion for SA rosetta demo 133 Select Macro Race.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/future.sa"
 
-fn rosetta_133_value() -> int {
-    let base = (17 * 9) + 133;
-    let threshold = 156;
-    if base > threshold {
-        return base - threshold;
+fn select_first_ready_value() -> i32 {
+    let left = branch_a().await;
+    let right = branch_b().await;
+    return select_first_ready(left, right);
+}
+
+async fn branch_a() -> i32 {
+    11
+}
+
+async fn branch_b() -> i32 {
+    22
+}
+
+fn select_first_ready(left: i32, right: i32) -> i32 {
+    if left != 0 {
+        return left;
     } else {
-        return threshold - base;
+        return right;
     };
 }
 
-fn main() -> int {
-    let result = rosetta_133_value();
+fn main() -> i32 {
+    let result = select_first_ready_value();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 133 133_select_macro_race"() {
-    let got = rosetta_133_value();
-    if got != 130 {
+    let got = select_first_ready_value();
+    if got != 11 {
         panic(133);
     };
 };

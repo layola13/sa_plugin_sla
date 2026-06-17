@@ -1,25 +1,7 @@
-// Sla companion for SA rosetta demo 159 Mem Forget Leak.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/box.sa"
 
-fn rosetta_159_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_159_value() -> int {
-    let result = rosetta_159_mix(14, 34);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_159_value();
-    return result;
-};
-
-@test "rosetta 159 159_mem_forget_leak"() {
-    let got = rosetta_159_value();
-    if got != 456 {
-        panic(159);
-    };
-};
+fn mem_forget_observable_value() -> i32 { let value = Box::new(9); return *value; }
+fn main() -> i32 { let result = mem_forget_observable_value(); println("{}", result); return result; }
+@test "rosetta 159 159_mem_forget_leak"() { let got = mem_forget_observable_value(); if got != 9 { panic(159); }; }

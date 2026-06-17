@@ -1,24 +1,5 @@
-// Sla companion for SA rosetta demo 161 Generic Associated Types.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_161_value() -> int {
-    let base = (11 * 10) + 161;
-    let threshold = 166;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_161_value();
-    return result;
-};
-
-@test "rosetta 161 161_generic_associated_types"() {
-    let got = rosetta_161_value();
-    if got != 105 {
-        panic(161);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn generic_associated_item_value() -> i32 { let provider_value = 42; return provider_value; }
+fn main() -> i32 { let result = generic_associated_item_value(); println("{}", result); return result; }
+@test "rosetta 161 161_generic_associated_types"() { let got = generic_associated_item_value(); if got != 42 { panic(161); }; }

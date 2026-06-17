@@ -1,5 +1,10 @@
-// 262 - Build Bindgen C Header
+fn generated_bindings() -> i32 {
+    let type_decl = 1;
+    let function_decl = 1;
+    type_decl + function_decl
+}
+
 fn main() {
-    let value = 262;
-    println!("{}", value);
+    let result = generated_bindings();
+    println!("{}", result);
 }

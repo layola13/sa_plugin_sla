@@ -1,25 +1,18 @@
-// Sla companion for SA rosetta demo 255 Contract Memory Allocator Swap.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_255_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
+fn contract_selected_allocator_count() -> i32 {
+    let bump_allocator_selected = 1;
+    return bump_allocator_selected;
+}
+
+fn main() -> i32 {
+    let result = contract_selected_allocator_count();
+    println("{}", result);
     return result;
 }
 
-fn rosetta_255_value() -> int {
-    let result = rosetta_255_mix(5, 12);
-    return result;
+@test "rosetta 255 contract memory allocator swap"() {
+    let got = contract_selected_allocator_count();
+    if got != 1 { panic(255); };
 }
-
-fn main() -> int {
-    let result = rosetta_255_value();
-    return result;
-};
-
-@test "rosetta 255 255_contract_memory_allocator_swap"() {
-    let got = rosetta_255_value();
-    if got != 53 {
-        panic(255);
-    };
-};

@@ -1,25 +1,10 @@
-// Sla companion for SA rosetta demo 207 Pkg Multiple Versions Conflict.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_207_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn pkg_multiple_versions_conflict() -> i32 {
+    let conflict_reported = 1;
+    return conflict_reported;
 }
 
-fn rosetta_207_value() -> int {
-    let result = rosetta_207_mix(15, 7);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_207_value();
-    return result;
-};
-
-@test "rosetta 207 207_pkg_multiple_versions_conflict"() {
-    let got = rosetta_207_value();
-    if got != 113 {
-        panic(207);
-    };
-};
+fn main() -> i32 { let result = pkg_multiple_versions_conflict(); println("{}", result); return result; }
+@test "rosetta 207 pkg multiple versions conflict"() { let got = pkg_multiple_versions_conflict(); if got != 1 { panic(207); }; }

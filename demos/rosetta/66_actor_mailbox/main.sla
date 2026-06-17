@@ -1,3 +1,7 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/vec.sa"
+
 fn actor_mailbox_sum() -> i32 {
     let inbox = vec(1, 2, 3);
     let sum: i32 = inbox.into_iter().sum();

@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 276 Build Incremental Caching.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_276_value() -> int {
-    let seed = 7;
-    let shifted = seed + 276;
-    let scaled = shifted * 8;
-    let result = scaled - 5;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_276_value();
-    return result;
-};
-
-@test "rosetta 276 276_build_incremental_caching"() {
-    let got = rosetta_276_value();
-    if got != 2259 {
-        panic(276);
-    };
-};
+fn build_incremental_cache_hits() -> i32 { let unchanged_module = 1; return unchanged_module; }
+fn main() -> i32 { let result = build_incremental_cache_hits(); println("{}", result); return result; }
+@test "rosetta 276 build incremental caching"() { let got = build_incremental_cache_hits(); if got != 1 { panic(276); }; }

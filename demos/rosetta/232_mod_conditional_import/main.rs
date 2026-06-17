@@ -1,5 +1,14 @@
-// 232 - Mod Conditional Import
+#[cfg(unix)]
+fn selected_platform_module() -> i32 {
+    1
+}
+
+#[cfg(not(unix))]
+fn selected_platform_module() -> i32 {
+    0
+}
+
 fn main() {
-    let value = 232;
-    println!("{}", value);
+    let result = selected_platform_module();
+    println!("{}", result);
 }

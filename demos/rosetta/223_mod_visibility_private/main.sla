@@ -1,25 +1,6 @@
-// Sla companion for SA rosetta demo 223 Mod Visibility Private.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_223_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_223_value() -> int {
-    let result = rosetta_223_mix(8, 30);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_223_value();
-    return result;
-};
-
-@test "rosetta 223 223_mod_visibility_private"() {
-    let got = rosetta_223_value();
-    if got != 218 {
-        panic(223);
-    };
-};
+fn mod_private_helper_count() -> i32 { let private_helper = 1; return private_helper; }
+fn main() -> i32 { let result = mod_private_helper_count(); println("{}", result); return result; }
+@test "rosetta 223 mod visibility private"() { let got = mod_private_helper_count(); if got != 1 { panic(223); }; }

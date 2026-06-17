@@ -1,57 +1,62 @@
-@import "sa_std/string.sa"
-@rosetta_058_value() -> i64:
-L_ENTRY:
-    tmp_0 = 0
-    total = tmp_0
-    i = 1
-    tmp_1 = add total, i
-    !total
-    total = tmp_1
-    !i
-    i = 2
-    tmp_2 = add total, i
-    !total
-    total = tmp_2
-    !i
-    i = 3
-    tmp_3 = add total, i
-    !total
-    total = tmp_3
-    !i
-    i = 4
-    tmp_4 = add total, i
-    !total
-    total = tmp_4
-    !i
-    tmp_5 = 17
-    tmp_6 = add total, tmp_5
-    result = tmp_6
-    !total
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@main() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_bump = vtable { call = @sla__bump }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__bump(&value: ptr):
 L_ENTRY:
-    tmp_7 = call @rosetta_058_value()
-    result = tmp_7
-    return result
+    tmp_0 = load value+0 as i32
+    tmp_1 = 1
+    tmp_2 = add tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    store value+0, tmp_2 as i32
+    !tmp_2
+    return
 
-@test "rosetta 058 58_borrow_update"():
+@main() -> i32:
+L_ENTRY:
+    tmp_3 = 9
+    value = stack_alloc 4
+    store value+0, tmp_3 as i32
+    call @sla__bump(&value)
+    tmp_4 = load value+0 as i32
+    tmp_5 = call @sa_fmt_u64(tmp_4, 10)
+    tmp_6 = call @sa_fmt_buffer_data(tmp_5)
+    tmp_7 = call @sa_fmt_buffer_len(tmp_5)
+    tmp_8 = tmp_6
+    call @sa_print_bytes(&tmp_8, tmp_7)
+    call @sa_fmt_buffer_free(^tmp_5)
+    !tmp_8
+    !tmp_7
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_9 = 0
+    return tmp_9
+
+@test "rosetta 058 borrow update"():
 L_TEST_ENTRY_0:
-    tmp_8 = call @rosetta_058_value()
-    got = tmp_8
-    tmp_9 = 27
-    tmp_10 = ne got, tmp_9
-    br tmp_10 -> L_THEN_1, L_ELSE_2
+    tmp_10 = 9
+    value = stack_alloc 4
+    store value+0, tmp_10 as i32
+    call @sla__bump(&value)
+    tmp_11 = load value+0 as i32
+    tmp_12 = 10
+    tmp_13 = ne tmp_11, tmp_12
+    !tmp_12
+    br tmp_13 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_10
+    !tmp_13
     panic(58)
 
 L_ELSE_2:
-    !tmp_10
+    !tmp_13
     jmp L_MERGE_3
 
 L_MERGE_3:
-    !got
     return
 

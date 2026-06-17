@@ -1,24 +1,10 @@
-// Sla companion for SA rosetta demo 205 Pkg Cyclic Dependency Reject.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_205_value() -> int {
-    let base = (4 * 9) + 205;
-    let threshold = 231;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn pkg_cyclic_dependency_rejected() -> i32 {
+    let cycle_detected = 1;
+    return cycle_detected;
 }
 
-fn main() -> int {
-    let result = rosetta_205_value();
-    return result;
-};
-
-@test "rosetta 205 205_pkg_cyclic_dependency_reject"() {
-    let got = rosetta_205_value();
-    if got != 10 {
-        panic(205);
-    };
-};
+fn main() -> i32 { let result = pkg_cyclic_dependency_rejected(); println("{}", result); return result; }
+@test "rosetta 205 pkg cyclic dependency reject"() { let got = pkg_cyclic_dependency_rejected(); if got != 1 { panic(205); }; }

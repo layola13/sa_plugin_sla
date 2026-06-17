@@ -1,55 +1,128 @@
-@import "sa_std/string.sa"
-@rosetta_057_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@main() -> i32:
 L_ENTRY:
-    tmp_0 = 9
-    tmp_1 = 5
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 57
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 73
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+    events = alloc 12
+    tmp_0 = 1
+    store events+0, tmp_0 as i32
+    tmp_1 = 2
+    store events+4, tmp_1 as i32
+    tmp_2 = 3
+    store events+8, tmp_2 as i32
+    tmp_3 = 0
+    acc = tmp_3
+    event_slot = stack_alloc 8
+    store event_slot+0, 0 as i64
+    jmp L_LOOP_HEAD_0
 
-L_THEN_0:
+L_LOOP_HEAD_0:
+    tmp_4 = load event_slot+0 as i64
+    tmp_5 = slt tmp_4, 3
+    br tmp_5 -> L_LOOP_BODY_1, L_LOOP_COND_FALSE_3
+
+L_LOOP_BODY_1:
+    !tmp_5
+    tmp_6 = mul tmp_4, 4
+    tmp_7 = ptr_add events, tmp_6
+    event = load tmp_7+0 as i32
     !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
+    !tmp_7
+    tmp_8 = add acc, event
+    !acc
+    acc = tmp_8
+L_LOOP_CONTINUE_2:
+    tmp_9 = add tmp_4, 1
+    store event_slot+0, tmp_9 as i64
+    !tmp_9
+    !tmp_4
+    !event
+    jmp L_LOOP_HEAD_0
 
-L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
+L_LOOP_COND_FALSE_3:
+    !tmp_5
+    !tmp_4
+    jmp L_LOOP_EXIT_4
 
-
-@main() -> i64:
-L_ENTRY:
-    tmp_10 = call @rosetta_057_value()
-    result = tmp_10
-    return result
-
-@test "rosetta 057 57_event_loop"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_057_value()
-    got = tmp_11
-    tmp_12 = 29
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
-
-L_THEN_4:
+L_LOOP_EXIT_4:
+    tmp_10 = call @sa_fmt_u64(acc, 10)
+    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
+    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
+    tmp_13 = tmp_11
+    call @sa_print_bytes(&tmp_13, tmp_12)
+    call @sa_fmt_buffer_free(^tmp_10)
     !tmp_13
+    !tmp_12
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_14 = 0
+    !events
+    !acc
+    return tmp_14
+
+@test "rosetta 057 event loop"():
+L_TEST_ENTRY_5:
+    events = alloc 12
+    tmp_15 = 1
+    store events+0, tmp_15 as i32
+    tmp_16 = 2
+    store events+4, tmp_16 as i32
+    tmp_17 = 3
+    store events+8, tmp_17 as i32
+    tmp_18 = 0
+    acc = tmp_18
+    event_slot = stack_alloc 8
+    store event_slot+0, 0 as i64
+    jmp L_LOOP_HEAD_6
+
+L_LOOP_HEAD_6:
+    tmp_19 = load event_slot+0 as i64
+    tmp_20 = slt tmp_19, 3
+    br tmp_20 -> L_LOOP_BODY_7, L_LOOP_COND_FALSE_9
+
+L_LOOP_BODY_7:
+    !tmp_20
+    tmp_21 = mul tmp_19, 4
+    tmp_22 = ptr_add events, tmp_21
+    event = load tmp_22+0 as i32
+    !tmp_21
+    !tmp_22
+    tmp_23 = add acc, event
+    !acc
+    acc = tmp_23
+L_LOOP_CONTINUE_8:
+    tmp_24 = add tmp_19, 1
+    store event_slot+0, tmp_24 as i64
+    !tmp_24
+    !tmp_19
+    !event
+    jmp L_LOOP_HEAD_6
+
+L_LOOP_COND_FALSE_9:
+    !tmp_20
+    !tmp_19
+    jmp L_LOOP_EXIT_10
+
+L_LOOP_EXIT_10:
+    tmp_25 = 6
+    tmp_26 = ne acc, tmp_25
+    !tmp_25
+    br tmp_26 -> L_THEN_11, L_ELSE_12
+
+L_THEN_11:
+    !tmp_26
     panic(57)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_12:
+    !tmp_26
+    jmp L_MERGE_13
 
-L_MERGE_6:
-    !got
+L_MERGE_13:
+    !events
+    !acc
     return
 

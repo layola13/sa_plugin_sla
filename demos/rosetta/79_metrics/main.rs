@@ -1,5 +1,7 @@
+fn success_per_thousand(ok: i32, failed: i32) -> i32 {
+    ok * 1000 / (ok + failed)
+}
+
 fn main() {
-    let hits = 3;
-    let misses = 1;
-    println!("{}", hits + misses);
+    println!("{}", success_per_thousand(95, 5));
 }

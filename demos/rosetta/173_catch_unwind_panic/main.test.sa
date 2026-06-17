@@ -1,55 +1,38 @@
-@import "sa_std/string.sa"
-@rosetta_173_value() -> i64:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_catch_unwind_observable = vtable { call = @sla__catch_unwind_observable }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__catch_unwind_observable() -> i32:
 L_ENTRY:
-    tmp_0 = 6
-    tmp_1 = 4
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 173
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 190
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+    tmp_0 = 0
+    caught_status = tmp_0
+    return caught_status
 
-L_THEN_0:
-    !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
-
-L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
-
-
-@main() -> i64:
+@main() -> i32:
 L_ENTRY:
-    tmp_10 = call @rosetta_173_value()
-    result = tmp_10
-    return result
+    tmp_1 = call @sla__catch_unwind_observable()
+    return tmp_1
 
 @test "rosetta 173 173_catch_unwind_panic"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_173_value()
-    got = tmp_11
-    tmp_12 = 7
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_0:
+    tmp_2 = call @sla__catch_unwind_observable()
+    got = tmp_2
+    tmp_3 = 0
+    tmp_4 = ne got, tmp_3
+    !tmp_3
+    br tmp_4 -> L_THEN_1, L_ELSE_2
 
-L_THEN_4:
-    !tmp_13
+L_THEN_1:
+    !tmp_4
     panic(173)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_2:
+    !tmp_4
+    jmp L_MERGE_3
 
-L_MERGE_6:
+L_MERGE_3:
     !got
     return
 

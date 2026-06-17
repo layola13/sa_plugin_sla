@@ -1,8 +1,13 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
-@const VT_Square_Area = vtable { area = @Square_area }
-@Square_area(&self: ptr) -> i32:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const VT_Square_Area = vtable { area = @sla__Square_area }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@const SLA_FNPTR_VT_area_of_Square = vtable { call = @sla__area_of_Square }
+@sla__Square_area(&self: ptr) -> i32:
 L_ENTRY:
     tmp_0 = load self+0 as i32
     tmp_1 = load self+0 as i32
@@ -16,7 +21,7 @@ L_ENTRY:
     square = alloc 4
     tmp_3 = 4
     store square+0, tmp_3 as i32
-    tmp_4 = call @area_of_Square(&square)
+    tmp_4 = call @sla__area_of_Square(&square)
     tmp_5 = call @sa_fmt_u64(tmp_4, 10)
     tmp_6 = call @sa_fmt_buffer_data(tmp_5)
     tmp_7 = call @sa_fmt_buffer_len(tmp_5)
@@ -32,9 +37,9 @@ L_ENTRY:
     !square
     return tmp_9
 
-@area_of_Square(&value: ptr) -> i32:
+@sla__area_of_Square(&value: ptr) -> i32:
 L_ENTRY:
-    tmp_10 = call @Square_area(&value)
+    tmp_10 = call @sla__Square_area(&value)
     return tmp_10
 
 @test "rosetta 031 trait static dispatch"():
@@ -42,7 +47,7 @@ L_TEST_ENTRY_0:
     square = alloc 4
     tmp_11 = 4
     store square+0, tmp_11 as i32
-    tmp_12 = call @area_of_Square(&square)
+    tmp_12 = call @sla__area_of_Square(&square)
     result = tmp_12
     tmp_13 = 16
     tmp_14 = ne result, tmp_13

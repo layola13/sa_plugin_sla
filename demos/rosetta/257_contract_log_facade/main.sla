@@ -1,24 +1,20 @@
-// Sla companion for SA rosetta demo 257 Contract Log Facade.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_257_value() -> int {
-    let base = (5 * 7) + 257;
-    let threshold = 266;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn contract_log_facade_levels() -> i32 {
+    let info = 1;
+    let warn = 1;
+    let error = 1;
+    return info + warn + error;
 }
 
-fn main() -> int {
-    let result = rosetta_257_value();
+fn main() -> i32 {
+    let result = contract_log_facade_levels();
+    println("{}", result);
     return result;
-};
+}
 
-@test "rosetta 257 257_contract_log_facade"() {
-    let got = rosetta_257_value();
-    if got != 26 {
-        panic(257);
-    };
-};
+@test "rosetta 257 contract log facade"() {
+    let got = contract_log_facade_levels();
+    if got != 3 { panic(257); };
+}

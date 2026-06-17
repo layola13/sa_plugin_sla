@@ -1,43 +1,63 @@
-@rosetta_079_mix(left: i64, right: i64) -> i64:
-L_ENTRY:
-    tmp_0 = mul left, right
-    product = tmp_0
-    tmp_1 = add product, left
-    tmp_2 = sub tmp_1, right
-    result = tmp_2
-    !product
-    !right
-    !left
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@rosetta_079_value() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_success_per_thousand = vtable { call = @sla__success_per_thousand }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__success_per_thousand(ok: i32, failed: i32) -> i32:
 L_ENTRY:
-    tmp_3 = 16
-    tmp_4 = 24
-    tmp_5 = call @rosetta_079_mix(tmp_3, tmp_4)
-    result = tmp_5
-    return result
+    tmp_0 = 1000
+    tmp_1 = mul ok, tmp_0
+    !tmp_0
+    tmp_2 = add ok, failed
+    tmp_3 = div tmp_1, tmp_2
+    !tmp_1
+    !tmp_2
+    !ok
+    !failed
+    return tmp_3
 
-@main() -> i64:
+@main() -> i32:
 L_ENTRY:
-    tmp_6 = call @rosetta_079_value()
+    tmp_4 = 95
+    tmp_5 = 5
+    tmp_6 = call @sla__success_per_thousand(tmp_4, tmp_5)
+    !tmp_4
+    !tmp_5
     result = tmp_6
+    tmp_7 = call @sa_fmt_u64(result, 10)
+    tmp_8 = call @sa_fmt_buffer_data(tmp_7)
+    tmp_9 = call @sa_fmt_buffer_len(tmp_7)
+    tmp_10 = tmp_8
+    call @sa_print_bytes(&tmp_10, tmp_9)
+    call @sa_fmt_buffer_free(^tmp_7)
+    !tmp_10
+    !tmp_9
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 079 79_metrics"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @rosetta_079_value()
-    got = tmp_7
-    tmp_8 = 376
-    tmp_9 = ne got, tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+    tmp_11 = 95
+    tmp_12 = 5
+    tmp_13 = call @sla__success_per_thousand(tmp_11, tmp_12)
+    !tmp_11
+    !tmp_12
+    got = tmp_13
+    tmp_14 = 950
+    tmp_15 = ne got, tmp_14
+    !tmp_14
+    br tmp_15 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_9
+    !tmp_15
     panic(79)
 
 L_ELSE_2:
-    !tmp_9
+    !tmp_15
     jmp L_MERGE_3
 
 L_MERGE_3:

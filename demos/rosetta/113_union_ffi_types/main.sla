@@ -1,24 +1,26 @@
-// Sla companion for SA rosetta demo 113 Union Ffi Types.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_113_value() -> int {
-    let base = (14 * 7) + 113;
-    let threshold = 139;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+union Payload {
+    i: i32,
+    b: u8,
 }
 
-fn main() -> int {
-    let result = rosetta_113_value();
+fn union_payload_i32() -> i32 {
+    let payload = Payload { i: 36 };
+    let value = unsafe { payload.i };
+    return value;
+}
+
+fn main() -> i32 {
+    let result = union_payload_i32();
+    println("{}", result);
     return result;
-};
+}
 
 @test "rosetta 113 113_union_ffi_types"() {
-    let got = rosetta_113_value();
-    if got != 72 {
+    let got = union_payload_i32();
+    if got != 36 {
         panic(113);
     };
 };

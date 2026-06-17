@@ -1,3 +1,7 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/slice.sa"
+
 fn file_manifest_count() -> usize {
     let files = ["main.rs", "main.sa", "README.md"];
     return files.len();

@@ -1,24 +1,30 @@
-// Sla companion for SA rosetta demo 121 Rwlock Reader Writer.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_121_value() -> int {
-    let base = (5 * 6) + 121;
-    let threshold = 132;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn rwlock_reader_writer_total() -> i32 {
+    let first_read = rwlock_read(1);
+    let written = rwlock_write(first_read, 2);
+    let second_read = rwlock_read(written);
+    return first_read + second_read;
 }
 
-fn main() -> int {
-    let result = rosetta_121_value();
+fn rwlock_read(value: i32) -> i32 {
+    return value;
+}
+
+fn rwlock_write(value: i32, delta: i32) -> i32 {
+    return value + delta;
+}
+
+fn main() -> i32 {
+    let result = rwlock_reader_writer_total();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 121 121_rwlock_reader_writer"() {
-    let got = rosetta_121_value();
-    if got != 19 {
+    let got = rwlock_reader_writer_total();
+    if got != 4 {
         panic(121);
     };
 };

@@ -1,7 +1,12 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
-@eval_guard(opt: ptr) -> i32:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_eval_guard = vtable { call = @sla__eval_guard }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__eval_guard(opt: ptr) -> i32:
 L_ENTRY:
     tmp_0 = 0
     miss_value = tmp_0
@@ -88,7 +93,7 @@ L_ENTRY:
     store value+0, 1 as i64
     tmp_19 = 5
     store value+8, tmp_19 as i32
-    tmp_20 = call @eval_guard(value)
+    tmp_20 = call @sla__eval_guard(value)
     result = tmp_20
     tmp_21 = call @sa_fmt_u64(result, 10)
     tmp_22 = call @sa_fmt_buffer_data(tmp_21)
@@ -111,7 +116,7 @@ L_TEST_ENTRY_6:
     store value+0, 1 as i64
     tmp_26 = 5
     store value+8, tmp_26 as i32
-    tmp_27 = call @eval_guard(value)
+    tmp_27 = call @sla__eval_guard(value)
     result = tmp_27
     tmp_28 = 5
     tmp_29 = ne result, tmp_28

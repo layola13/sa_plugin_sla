@@ -1,5 +1,9 @@
-// 267 - Build Post Compile Hook
+fn post_compile_artifacts() -> i32 {
+    let stripped_binary = 1;
+    stripped_binary
+}
+
 fn main() {
-    let value = 267;
-    println!("{}", value);
+    let result = post_compile_artifacts();
+    println!("{}", result);
 }

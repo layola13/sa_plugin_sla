@@ -1,22 +1,25 @@
-// Sla companion for SA rosetta demo 140 Yield Now Suspend.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/future.sa"
 
-fn rosetta_140_value() -> int {
-    let seed = 7;
-    let shifted = seed + 140;
-    let scaled = shifted * 7;
-    let result = scaled - 7;
-    return result;
+async fn yield_once() -> i32 {
+    2
 }
 
-fn main() -> int {
-    let result = rosetta_140_value();
+fn yield_now_value() -> i32 {
+    let yielded = yield_once().await;
+    return yielded;
+}
+
+fn main() -> i32 {
+    let result = yield_now_value();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 140 140_yield_now_suspend"() {
-    let got = rosetta_140_value();
-    if got != 1022 {
+    let got = yield_now_value();
+    if got != 2 {
         panic(140);
     };
 };

@@ -1,25 +1,6 @@
-// Sla companion for SA rosetta demo 275 Build Doc Generator.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_275_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_275_value() -> int {
-    let result = rosetta_275_mix(6, 34);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_275_value();
-    return result;
-};
-
-@test "rosetta 275 275_build_doc_generator"() {
-    let got = rosetta_275_value();
-    if got != 176 {
-        panic(275);
-    };
-};
+fn build_generated_doc_pages() -> i32 { let api_page = 1; let guide_page = 1; return api_page + guide_page; }
+fn main() -> i32 { let result = build_generated_doc_pages(); println("{}", result); return result; }
+@test "rosetta 275 build doc generator"() { let got = build_generated_doc_pages(); if got != 2 { panic(275); }; }

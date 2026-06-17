@@ -1,22 +1,5 @@
-// Sla companion for SA rosetta demo 164 Trait Upcasting.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_164_value() -> int {
-    let seed = 14;
-    let shifted = seed + 164;
-    let scaled = shifted * 4;
-    let result = scaled - 8;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_164_value();
-    return result;
-};
-
-@test "rosetta 164 164_trait_upcasting"() {
-    let got = rosetta_164_value();
-    if got != 704 {
-        panic(164);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn trait_upcast_method_sum() -> i32 { let base_method = 2; let derived_method = 3; return base_method + derived_method; }
+fn main() -> i32 { let result = trait_upcast_method_sum(); println("{}", result); return result; }
+@test "rosetta 164 164_trait_upcasting"() { let got = trait_upcast_method_sum(); if got != 5 { panic(164); }; }

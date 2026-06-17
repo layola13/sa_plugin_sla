@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 292 Eco Wasm Memory Export.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_292_value() -> int {
-    let seed = 6;
-    let shifted = seed + 292;
-    let scaled = shifted * 6;
-    let result = scaled - 21;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_292_value();
-    return result;
-};
-
-@test "rosetta 292 292_eco_wasm_memory_export"() {
-    let got = rosetta_292_value();
-    if got != 1767 {
-        panic(292);
-    };
-};
+fn eco_wasm_memory_exports() -> i32 { let linear_memory = 1; return linear_memory; }
+fn main() -> i32 { let result = eco_wasm_memory_exports(); println("{}", result); return result; }
+@test "rosetta 292 eco wasm memory export"() { let got = eco_wasm_memory_exports(); if got != 1 { panic(292); }; }

@@ -1,5 +1,10 @@
-// 237 - Mod Inline Submodule
+mod inline_child {
+    pub fn layer_count() -> i32 {
+        1
+    }
+}
+
 fn main() {
-    let value = 237;
-    println!("{}", value);
+    let result = inline_child::layer_count();
+    println!("{}", result);
 }

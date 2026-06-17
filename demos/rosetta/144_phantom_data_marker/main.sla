@@ -1,22 +1,7 @@
-// Sla companion for SA rosetta demo 144 Phantom Data Marker.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_144_value() -> int {
-    let seed = 11;
-    let shifted = seed + 144;
-    let scaled = shifted * 2;
-    let result = scaled - 11;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_144_value();
-    return result;
-};
-
-@test "rosetta 144 144_phantom_data_marker"() {
-    let got = rosetta_144_value();
-    if got != 299 {
-        panic(144);
-    };
-};
+struct Wrapper { id: i32 }
+fn phantom_marker_id() -> i32 { let w = Wrapper { id: 7 }; return w.id; }
+fn main() -> i32 { let result = phantom_marker_id(); println("{}", result); return result; }
+@test "rosetta 144 144_phantom_data_marker"() { let got = phantom_marker_id(); if got != 7 { panic(144); }; }

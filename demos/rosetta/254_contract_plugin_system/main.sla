@@ -1,23 +1,19 @@
-// Sla companion for SA rosetta demo 254 Contract Plugin System.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_254_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 6;
+fn contract_enabled_plugin_count() -> i32 {
+    let formatter_plugin = 1;
+    let analyzer_plugin = 1;
+    return formatter_plugin + analyzer_plugin;
+}
+
+fn main() -> i32 {
+    let result = contract_enabled_plugin_count();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_254_value();
-    return result;
-};
-
-@test "rosetta 254 254_contract_plugin_system"() {
-    let got = rosetta_254_value();
-    if got != 42 {
-        panic(254);
-    };
-};
+@test "rosetta 254 contract plugin system"() {
+    let got = contract_enabled_plugin_count();
+    if got != 2 { panic(254); };
+}

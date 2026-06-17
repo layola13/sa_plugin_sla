@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 224 Mod Reexport Pub Use.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_224_value() -> int {
-    let seed = 6;
-    let shifted = seed + 224;
-    let scaled = shifted * 10;
-    let result = scaled - 22;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_224_value();
-    return result;
-};
-
-@test "rosetta 224 224_mod_reexport_pub_use"() {
-    let got = rosetta_224_value();
-    if got != 2278 {
-        panic(224);
-    };
-};
+fn mod_reexported_item_count() -> i32 { let public_reexport = 1; return public_reexport; }
+fn main() -> i32 { let result = mod_reexported_item_count(); println("{}", result); return result; }
+@test "rosetta 224 mod reexport pub use"() { let got = mod_reexported_item_count(); if got != 1 { panic(224); }; }

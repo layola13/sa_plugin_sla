@@ -1,23 +1,6 @@
-// Sla companion for SA rosetta demo 270 Build Sysroot Custom.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_270_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 22;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_270_value();
-    return result;
-};
-
-@test "rosetta 270 270_build_sysroot_custom"() {
-    let got = rosetta_270_value();
-    if got != 58 {
-        panic(270);
-    };
-};
+fn build_sysroot_layer_count() -> i32 { let core_layer = 1; let std_layer = 1; return core_layer + std_layer; }
+fn main() -> i32 { let result = build_sysroot_layer_count(); println("{}", result); return result; }
+@test "rosetta 270 build sysroot custom"() { let got = build_sysroot_layer_count(); if got != 2 { panic(270); }; }

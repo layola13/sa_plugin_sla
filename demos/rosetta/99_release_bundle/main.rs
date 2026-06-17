@@ -1,4 +1,14 @@
+struct BundleManifest {
+    binary: bool,
+    config: bool,
+    checksums: bool,
+}
+
+fn release_ready(manifest: BundleManifest) -> bool {
+    manifest.binary && manifest.config && manifest.checksums
+}
+
 fn main() {
-    let bundle = ["bin", "cfg", "docs"];
-    println!("{}", bundle.len());
+    let manifest = BundleManifest { binary: true, config: true, checksums: true };
+    println!("{}", release_ready(manifest));
 }

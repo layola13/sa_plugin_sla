@@ -1,26 +1,32 @@
-// Sla companion for SA rosetta demo 302 Operator Overload Neg.
-// Rust reference 见 main.rs，演示 `-vec` 一元运算符重载。
-//
-// ⚠️ 当前状态：占位符。等待 sla 编译器加入 @derive(Neg) 或 trait Neg 支持后替换。
-//
-// 占位策略：返回 1+2+3=6 表示 |(-1,2,-3)| 的绝对值之和。
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/ops.sa"
 
-fn rosetta_302_value() -> int {
-    let a = 1;
-    let b = 2;
-    let c = 3;
-    let result = a + b + c;
+struct Vec3 {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+fn negated_vec3_score() -> i32 {
+    let a = Vec3 { x: 1.0, y: -2.0, z: 3.0 };
+    let b = -a;
+    if b.x != -1.0 { return 0; };
+    if b.y != 2.0 { return 0; };
+    if b.z != -3.0 { return 0; };
+    return 123;
+}
+
+fn main() -> i32 {
+    let result = negated_vec3_score();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_302_value();
-    return result;
-};
-
 @test "rosetta 302 operator_overload_neg"() {
-    let got = rosetta_302_value();
-    if got != 6 {
-        panic(302);
-    };
-};
+    let a = Vec3 { x: 1.0, y: -2.0, z: 3.0 };
+    let b = -a;
+    if b.x != -1.0 { panic(302); };
+    if b.y != 2.0 { panic(303); };
+    if b.z != -3.0 { panic(304); };
+}

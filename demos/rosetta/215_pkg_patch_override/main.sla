@@ -1,25 +1,10 @@
-// Sla companion for SA rosetta demo 215 Pkg Patch Override.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_215_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn pkg_patch_override_applied() -> i32 {
+    let patched_source = 1;
+    return patched_source;
 }
 
-fn rosetta_215_value() -> int {
-    let result = rosetta_215_mix(20, 23);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_215_value();
-    return result;
-};
-
-@test "rosetta 215 215_pkg_patch_override"() {
-    let got = rosetta_215_value();
-    if got != 457 {
-        panic(215);
-    };
-};
+fn main() -> i32 { let result = pkg_patch_override_applied(); println("{}", result); return result; }
+@test "rosetta 215 pkg patch override"() { let got = pkg_patch_override_applied(); if got != 1 { panic(215); }; }

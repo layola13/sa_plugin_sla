@@ -1,4 +1,8 @@
-fn rosetta_105_value() -> i32 {
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/option.sa"
+
+fn let_else_unwrapped_value() -> i32 {
     let value = Some(5);
     let Some(x) = value else {
         println("{}", 0);
@@ -9,13 +13,13 @@ fn rosetta_105_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let value = rosetta_105_value();
+    let value = let_else_unwrapped_value();
     println("{}", value);
     return value;
 }
 
 @test "rosetta 105 105_let_else"() {
-    let got = rosetta_105_value();
+    let got = let_else_unwrapped_value();
     if got != 5 {
         panic(105);
     };

@@ -1,25 +1,36 @@
-// Sla companion for SA rosetta demo 131 Waker Vtable Mechanics.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/waker.sa"
 
-fn rosetta_131_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn waker_vtable_wake_count() -> i32 {
+    let wakes = 0;
+    wakes = raw_waker_clone(wakes);
+    wakes = raw_waker_wake_by_ref(wakes);
+    wakes = raw_waker_wake(wakes);
+    return wakes;
 }
 
-fn rosetta_131_value() -> int {
-    let result = rosetta_131_mix(25, 28);
-    return result;
+fn raw_waker_clone(wakes: i32) -> i32 {
+    return wakes + 1;
 }
 
-fn main() -> int {
-    let result = rosetta_131_value();
+fn raw_waker_wake_by_ref(wakes: i32) -> i32 {
+    return wakes + 1;
+}
+
+fn raw_waker_wake(wakes: i32) -> i32 {
+    return wakes + 1;
+}
+
+fn main() -> i32 {
+    let result = waker_vtable_wake_count();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 131 131_waker_vtable_mechanics"() {
-    let got = rosetta_131_value();
-    if got != 697 {
+    let got = waker_vtable_wake_count();
+    if got != 3 {
         panic(131);
     };
 };

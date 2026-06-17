@@ -1,22 +1,5 @@
-// Sla companion for SA rosetta demo 188 Websocket Frame Parse.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_188_value() -> int {
-    let seed = 4;
-    let shifted = seed + 188;
-    let scaled = shifted * 10;
-    let result = scaled - 9;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_188_value();
-    return result;
-};
-
-@test "rosetta 188 188_websocket_frame_parse"() {
-    let got = rosetta_188_value();
-    if got != 1911 {
-        panic(188);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn websocket_text_frame_flag() -> i32 { let fin = true; let opcode = 1; let masked = false; let payload_len = 3; if fin == true { if opcode == 1 { if masked == false { if payload_len == 3 { return 1; }; }; }; }; return 0; }
+fn main() -> i32 { let result = websocket_text_frame_flag(); println("{}", result); return result; }
+@test "rosetta 188 188_websocket_frame_parse"() { let got = websocket_text_frame_flag(); if got != 1 { panic(188); }; }

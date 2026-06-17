@@ -1,4 +1,11 @@
+fn postings_for(term: &str) -> i32 {
+    match term {
+        "rust" => 2,
+        "sla" => 3,
+        _ => 0,
+    }
+}
+
 fn main() {
-    let words = ["sa", "rust", "demo"];
-    println!("{}", words.len());
+    println!("{}", postings_for("sla"));
 }

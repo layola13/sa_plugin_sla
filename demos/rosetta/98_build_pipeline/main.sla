@@ -1,23 +1,31 @@
-// Sla companion for SA rosetta demo 098 Build Pipeline.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_098_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 11;
-    return result;
+fn artifact_count(compiled: bool, tests_passed: bool, docs_built: bool) -> i32 {
+    if compiled == true {
+        if tests_passed == true {
+            if docs_built == true {
+                return 2;
+            } else {
+                return 1;
+            };
+        } else {
+            return 0;
+        };
+    } else {
+        return 0;
+    };
 }
 
-fn main() -> int {
-    let result = rosetta_098_value();
+fn main() -> i32 {
+    let result = artifact_count(true, true, true);
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 098 98_build_pipeline"() {
-    let got = rosetta_098_value();
-    if got != 21 {
+    let got = artifact_count(true, true, true);
+    if got != 2 {
         panic(98);
     };
 };

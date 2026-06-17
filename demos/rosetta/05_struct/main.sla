@@ -1,24 +1,29 @@
-// Sla companion for SA rosetta demo 005 Struct.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_005_value() -> int {
-    let base = (8 * 7) + 5;
-    let threshold = 15;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+struct Point {
+    x: i32,
+    y: i32,
 }
 
-fn main() -> int {
-    let result = rosetta_005_value();
-    return result;
+fn create_point(x: i32, y: i32) -> Point {
+    Point { x: x, y: y }
+}
+
+fn point_coordinate_sum() -> i32 {
+    let point = create_point(10, 20);
+    return point.x + point.y;
+}
+
+fn main() -> i32 {
+    let point = create_point(10, 20);
+    println("({},{})", point.x, point.y);
+    return 0;
 };
 
 @test "rosetta 005 05_struct"() {
-    let got = rosetta_005_value();
-    if got != 46 {
+    let got = point_coordinate_sum();
+    if got != 30 {
         panic(5);
     };
 };

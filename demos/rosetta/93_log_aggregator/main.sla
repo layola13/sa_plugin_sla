@@ -1,24 +1,19 @@
-// Sla companion for SA rosetta demo 093 Log Aggregator.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_093_value() -> int {
-    let base = (11 * 5) + 93;
-    let threshold = 99;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn severity_score(info: i32, warn: i32, error: i32) -> i32 {
+    return info + warn * 10 + error * 100;
 }
 
-fn main() -> int {
-    let result = rosetta_093_value();
+fn main() -> i32 {
+    let result = severity_score(4, 2, 1);
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 093 93_log_aggregator"() {
-    let got = rosetta_093_value();
-    if got != 49 {
+    let got = severity_score(4, 2, 1);
+    if got != 124 {
         panic(93);
     };
 };

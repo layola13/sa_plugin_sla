@@ -1,0 +1,24 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/option.sa"
+@import "sa_std/btree_map.sa"
+
+fn btree_map_smoke() -> i32 {
+    let kv = BTreeMap::new();
+    kv.insert("alpha", 5);
+    kv.insert("beta", 8);
+    let hit = kv.get("beta").copied().unwrap_or_default();
+    let len = kv.len();
+    return hit + len;
+}
+
+fn main() -> i32 {
+    let result = btree_map_smoke();
+    println("{}", result);
+    return result;
+}
+
+@test "btree map smoke"() {
+    let got = btree_map_smoke();
+    if got != 10 { panic(810); };
+}

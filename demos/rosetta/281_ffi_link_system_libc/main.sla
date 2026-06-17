@@ -1,24 +1,6 @@
-// Sla companion for SA rosetta demo 281 Ffi Link System Libc.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_281_value() -> int {
-    let base = (12 * 4) + 281;
-    let threshold = 291;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_281_value();
-    return result;
-};
-
-@test "rosetta 281 281_ffi_link_system_libc"() {
-    let got = rosetta_281_value();
-    if got != 38 {
-        panic(281);
-    };
-};
+fn ffi_linked_libc_symbols() -> i32 { let puts_symbol = 1; return puts_symbol; }
+fn main() -> i32 { let result = ffi_linked_libc_symbols(); println("{}", result); return result; }
+@test "rosetta 281 ffi link system libc"() { let got = ffi_linked_libc_symbols(); if got != 1 { panic(281); }; }

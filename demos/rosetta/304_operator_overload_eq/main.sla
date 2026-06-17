@@ -1,36 +1,32 @@
-// Sla companion for SA rosetta demo 304 Operator Overload Eq.
-// Rust reference 见 main.rs，演示自定义 `==` / `!=` 重载（PartialEq）。
-//
-// ⚠️ 当前状态：占位符。等待 sla 编译器加入 @derive(PartialEq) 支持。
-//
-// 占位策略：用 int 模拟两组比较结果。
-//   a==b 真 (=1)，a!=c 真 (=1)，结果 = 11（两位）。
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn point_eq(ax: int, ay: int, bx: int, by: int) -> int {
-    let xeq = ax == bx;
-    let yeq = ay == by;
-    if xeq {
-        if yeq { return 1; } else { return 0; };
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn struct_equality_score() -> i32 {
+    let a = Point { x: 10, y: 20 };
+    let b = Point { x: 10, y: 20 };
+    let c = Point { x: 99, y: 0 };
+    if a == b {
+        if a != c { return 11; } else { return 0; };
     } else {
         return 0;
     };
 }
 
-fn rosetta_304_value() -> int {
-    let ab = point_eq(10, 20, 10, 20);   // 1
-    let ac_eq = point_eq(10, 20, 99, 0); // 0
-    let ac_neq = 1 - ac_eq;              // 1
-    return ab * 10 + ac_neq;             // 11
+fn main() -> i32 {
+    let result = struct_equality_score();
+    println("{}", result);
+    return result;
 }
 
-fn main() -> int {
-    let result = rosetta_304_value();
-    return result;
-};
-
 @test "rosetta 304 operator_overload_eq"() {
-    let got = rosetta_304_value();
-    if got != 11 {
-        panic(304);
-    };
-};
+    let a = Point { x: 10, y: 20 };
+    let b = Point { x: 10, y: 20 };
+    let c = Point { x: 99, y: 0 };
+    if a != b { panic(304); };
+    if a == c { panic(305); };
+}

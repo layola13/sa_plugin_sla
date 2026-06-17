@@ -1,24 +1,27 @@
-// Sla companion for SA rosetta demo 085 Scheduler Tree.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_085_value() -> int {
-    let base = (3 * 6) + 85;
-    let threshold = 106;
-    if base > threshold {
-        return base - threshold;
+fn max_i32(left: i32, right: i32) -> i32 {
+    if left > right {
+        return left;
     } else {
-        return threshold - base;
+        return right;
     };
 }
 
-fn main() -> int {
-    let result = rosetta_085_value();
+fn critical_path(root: i32, left: i32, right: i32) -> i32 {
+    return root + max_i32(left, right);
+}
+
+fn main() -> i32 {
+    let result = critical_path(4, 7, 3);
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 085 85_scheduler_tree"() {
-    let got = rosetta_085_value();
-    if got != 3 {
+    let got = critical_path(4, 7, 3);
+    if got != 11 {
         panic(85);
     };
 };

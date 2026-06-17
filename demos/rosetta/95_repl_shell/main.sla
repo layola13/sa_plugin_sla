@@ -1,25 +1,28 @@
-// Sla companion for SA rosetta demo 095 Repl Shell.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
 
-fn rosetta_095_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn eval_line(line: ptr) -> i32 {
+    if str_eq(line, ":quit") == true {
+        return 0;
+    } else {
+        if str_eq(line, "help") == true {
+            return 1;
+        } else {
+            return 2;
+        };
+    };
 }
 
-fn rosetta_095_value() -> int {
-    let result = rosetta_095_mix(20, 15);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_095_value();
+fn main() -> i32 {
+    let result = eval_line("help");
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 095 95_repl_shell"() {
-    let got = rosetta_095_value();
-    if got != 305 {
+    let got = eval_line("help");
+    if got != 1 {
         panic(95);
     };
 };

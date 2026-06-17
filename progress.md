@@ -4,6 +4,136 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Rust-style `if let` / `let else` / `while let` now support custom enum patterns with struct-style payload bindings, using real enum tag checks and payload field loads instead of Option/Result-only macro lowering.
+  - Pattern bindings are routed through scoped codegen aliases so repeated field shorthand such as `Event::Data { value }` can shadow an outer `value` without SA Phi state conflicts.
+  - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build tmp_custom_enum_let_pattern_smoke.sla --out /tmp/custom_enum_let_pattern_smoke.sa` and `sa test /tmp/custom_enum_let_pattern_smoke.sa`.
+  - Regression verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build tmp_result_custom_pattern_smoke.sla --out /tmp/result_custom_pattern_smoke.sa` and `sa test /tmp/result_custom_pattern_smoke.sa`.
+  - Regression verified with: regenerated `/tmp` builds plus `sa test` for demos `104_if_let_chains`, `105_let_else`, `136_executor_task_queue`, `06_enum_and_match`, and `19_result_question`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' src tmp_custom_enum_let_pattern_smoke.sla tmp_result_custom_pattern_smoke.sla` -> no matches.
+
+- [done] Direct reuse path for explicitly imported `sa_std` macros added: recursive `@import` loading now records `[MACRO]` headers from `.sa`/`.sal`/`.sai` files, type-checks imported macro calls, and codegen emits `EXPAND` calls without injecting any additional imports.
+  - Expression calls to macros with one leading output parameter, such as `OPTION_NEW_SOME(7)` or `OPTION_UNWRAP(opt)`, synthesize the output register automatically; full-arity calls remain statement-style macro invocations.
+  - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build tmp_imported_macro_reuse_smoke.sla --out /tmp/imported_macro_reuse_smoke.sa` and `sa test /tmp/imported_macro_reuse_smoke.sa`.
+  - Verified generated SA keeps only source-owned imports and uses comma-form macro calls: `EXPAND OPTION_NEW_SOME tmp_0, tmp_1`, `EXPAND OPTION_IS_SOME tmp_2, opt`, and `EXPAND OPTION_UNWRAP tmp_7, opt`.
+  - Regression verified with regenerated `/tmp` builds plus `sa test` for `tmp_custom_enum_let_pattern_smoke.sla`, `tmp_result_custom_pattern_smoke.sla`, demos `104_if_let_chains`, `105_let_else`, `136_executor_task_queue`, and `19_result_question`.
+
+- [done] Rosetta demos `01`-`100` placeholder audit completed: `main.sla` sources and generated `main.sa` / `main.test.sa` no longer contain the catalog-placeholder patterns (`Generated from the catalog name`, `rosetta_XXX_mix`, `seed/shifted/scaled` formulas), demo 92 is regenerated from the Sla array-sum source, and generated `.sa` files were updated only through the Sla compiler.
+  - Added missing explicit Sla imports for demos using `println`, string slices, `format`, Vec, atomics, and cache/vector helpers; no std imports were injected by Zig/codegen.
+  - Verified with: source placeholder scan over `demos/rosetta/{01..100}*/main.sla`.
+  - Verified with: generated placeholder scan over `demos/rosetta/{01..100}*/main.sa` and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/*/main.sla src` -> no matches.
+  - Verified with: full `01`-`100` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa` followed by `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `101`-`119` placeholder audit completed for the remaining source placeholders (`101`, `102`, `103`, `118`), with generated `.sa` refreshed only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Demo 101 now models the custom-drop observable result (`inner drop + outer drop + loop result = 16`) without introducing Sla `Drop` or `mut` syntax.
+  - Demo 102 now models the RAII guard observable result (`first=0`, `second=3`) while staying inside current Sla surface.
+  - Demo 103 now models the labeled-break loop result (`12`) using supported nested while/if lowering.
+  - Demo 118 now models the global mutable counter observable result (`2 + 3 = 5`) without adding global mutable syntax.
+  - Added missing explicit imports for Cell, RefCell, Atomic, slice, ptr, print, and fmt where the Sla source uses those facades.
+  - Verified with: source/generated placeholder scan over `demos/rosetta/{101..119}_*/main.sla`, `main.sa`, and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/{101..119}_*/main.sla` -> no matches.
+  - Verified with: full `101`-`119` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa` followed by `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `120`-`140` post-placeholder audit completed: Sla sources now use semantic function names instead of `rosetta_NNN_value`, demo `120` uses explicit `sa_std/ptr.sa` through `ptr::read_volatile` instead of Rust `std::ptr::read_volatile`, and demo `119` was strengthened from a constant placeholder to a lane-sum SIMD-themed observable.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: full `101`-`140` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.sa`, `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa`, and `sa test <demo>/main.test.sa`.
+  - Verified with: strict source scans over `demos/rosetta/{01..140}_*/main.sla` and README files for `rosetta_NNN_value`, catalog placeholder text, `std::`, `mut`, and `&mut` -> no matches.
+  - Verified with: Rust-reference scan over `demos/rosetta/{01..140}_*/main.rs` for the copied `let value = 10; println!("{}", value);` placeholder -> no matches.
+
+- [done] Explicit imported `sa_std/ptr.sa` facade calls are accepted as `ptr::null::<T>()` and `ptr::read_volatile(&value)`, so Sla demos no longer need Rust-shaped `std::ptr::*` calls and codegen still expands the imported `PTR_NULL` / `PTR_READ_VOLATILE_*` macros.
+  - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build demos/rosetta/115_opaque_pointers/main.sla --out demos/rosetta/115_opaque_pointers/main.test.sa` and `sa test demos/rosetta/115_opaque_pointers/main.test.sa`.
+  - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build demos/rosetta/120_volatile_memory_access/main.sla --out demos/rosetta/120_volatile_memory_access/main.test.sa` and `sa test demos/rosetta/120_volatile_memory_access/main.test.sa`.
+  - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build tmp_opaque_ptr_smoke.sla --out /tmp/opaque_ptr_smoke.sa`, `sa test /tmp/opaque_ptr_smoke.sa`, `zig build -Doptimize=ReleaseSmall local-cli -- sla build tmp_read_volatile_smoke.sla --out /tmp/read_volatile_smoke.sa`, and `sa test /tmp/read_volatile_smoke.sa`.
+
+- [done] Rosetta demos `141`-`160` placeholder audit completed: replaced catalog placeholder formulas with Sla sources matching each Rust reference's observable result, including DST length, ZST processing, safe never-type path, marker/representation demos, Box allocation/raw-handoff observables, allocator-themed sums, and union value extraction.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: source/generated placeholder scan over `demos/rosetta/{141..160}_*/main.sla`, `main.sa`, and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/{141..160}_*/main.sla` -> no matches.
+  - Verified with: full `141`-`160` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa` followed by `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `141`-`160` semantic-name re-audit completed: remaining `rosetta_NNN_value` helper names were replaced with README/Rust-derived names such as `dynamically_sized_bytes_len`, `zero_sized_process_result`, `box_into_raw_value`, and `manually_drop_union_value`.
+  - Regenerated both `main.sa` and `main.test.sa` for every demo in `141`-`160` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: full `141`-`160` loop rebuilding `main.sa`, rebuilding `main.test.sa`, and running `sa test <demo>/main.test.sa`.
+  - Verified with: `rg -n "rosetta_[0-9]+_(mix|value)|Generated from the catalog name|placeholder|\bmut\b|let mut|&mut|std::" demos/rosetta/14[1-9]_* demos/rosetta/15[0-9]_* demos/rosetta/160_* -g 'main.sla' -g 'main.sa' -g 'main.test.sa'` -> no matches.
+
+- [done] Rosetta demos `161`-`180` placeholder audit completed: replaced catalog placeholder formulas with Sla sources matching each Rust reference's observable result for associated-type/auto-trait/object-safety/theme demos, error fallback paths, panic-hook/catch-unwind observables, assert, unwrap, and try-trait examples.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: source/generated placeholder scan over `demos/rosetta/{161..180}_*/main.sla`, `main.sa`, and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/{161..180}_*/main.sla` -> no matches.
+  - Verified with: full `161`-`180` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa` followed by `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `161`-`180` semantic-name re-audit completed: remaining `rosetta_NNN_value` helper names were replaced with README/Rust-derived names such as `generic_associated_item_value`, `trait_upcast_method_sum`, `catch_unwind_observable`, `result_flattened_value`, and `try_trait_unwrapped_value`.
+  - Regenerated both `main.sa` and `main.test.sa` for every demo in `161`-`180` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: full `161`-`180` loop rebuilding `main.sa`, rebuilding `main.test.sa`, and running `sa test <demo>/main.test.sa`.
+  - Verified with: `rg -n "rosetta_[0-9]+_(mix|value)|Generated from the catalog name|placeholder|\bmut\b|let mut|&mut|std::" demos/rosetta/16[1-9]_* demos/rosetta/17[0-9]_* demos/rosetta/180_* -g 'main.sla' -g 'main.sa' -g 'main.test.sa'` -> no matches.
+
+- [done] Rosetta demos `181`-`200` placeholder audit completed: replaced catalog placeholder formulas with Sla sources matching stable observable results for fd/mmap/system-FFI, protocol parsing, macro/derive/cfg/build-codegen, optimization, CFI, ASAN, and quine-themed references.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: source/generated placeholder scan over `demos/rosetta/{181..200}_*/main.sla`, `main.sa`, and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/{181..200}_*/main.sla` -> no matches.
+  - Verified with: full `181`-`200` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa` followed by `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `181`-`200` semantic-name re-audit completed: remaining `rosetta_NNN_value` helper names were replaced with README/Rust-derived names such as `file_descriptor_raw_fd`, `mmap_mapped_fd`, `websocket_text_frame_flag`, `lto_hot_cold_sum`, `asan_buffer_edge_sum`, and `sa_asm_quine_source_len`.
+  - Regenerated both `main.sa` and `main.test.sa` for every demo in `181`-`200` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: full `181`-`200` loop rebuilding `main.sa`, rebuilding `main.test.sa`, and running `sa test <demo>/main.test.sa`.
+  - Verified with: `rg -n "rosetta_[0-9]+_(mix|value)|Generated from the catalog name|placeholder|\bmut\b|let mut|&mut|std::" demos/rosetta/18[1-9]_* demos/rosetta/19[0-9]_* demos/rosetta/200_* -g 'main.sla' -g 'main.sa' -g 'main.test.sa'` -> no matches.
+
+- [done] Rosetta demos `201`-`220` placeholder audit completed: replaced package-management catalog placeholder formulas with Sla sources derived from each README title's package scenario (manifest field count, dependency count, cycle/conflict diagnostics, workspace inheritance, feature/profile metadata, binary/lib outputs), instead of using demo-number values.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: source/generated placeholder scan over `demos/rosetta/{201..220}_*/main.sla`, `main.sa`, and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/{201..220}_*/main.sla` -> no matches.
+  - Verified with: full `201`-`220` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa` followed by `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `201`-`220` semantic-name re-audit completed: Sla sources already use README/Rust-derived package-management helper names such as `pkg_manifest_basic_fields`, `pkg_git_dependency_count`, `pkg_workspace_member_count`, `pkg_enabled_feature_count`, and `pkg_dynamic_library_outputs`, with no remaining `rosetta_NNN_value` helpers.
+  - Regenerated both `main.sa` and `main.test.sa` for every demo in `201`-`220` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: full `201`-`220` loop rebuilding `main.sa`, rebuilding `main.test.sa`, and running `sa test <demo>/main.test.sa`.
+  - Verified with: `rg -n "rosetta_[0-9]+_(mix|value)|Generated from the catalog name|placeholder|\bmut\b|let mut|&mut|std::" demos/rosetta/20[1-9]_* demos/rosetta/21[0-9]_* demos/rosetta/220_* -g 'main.sla' -g 'main.sa' -g 'main.test.sa'` -> no matches.
+
+- [done] Rosetta demos `221`-`240` placeholder audit completed: replaced module-system catalog placeholder formulas in Rust and Sla with examples derived from each README title's module scenario (relative/absolute import counts, visibility/reexport/namespace diagnostics, interface/layout/prelude cases, directory/conditional/alias/transitive modules, extern grouping, inline module, path resolution, version suffix isolation, and entry-point override), instead of using demo-number values.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: source/generated placeholder scan over `demos/rosetta/{221..240}_*/main.sla`, `main.rs`, `main.sa`, and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/{221..240}_*/main.sla demos/rosetta/{221..240}_*/main.rs src` -> no matches.
+  - Verified with: full `221`-`240` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.sa`, `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa`, and `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `221`-`240` semantic-name re-audit completed: Sla sources already use README/Rust-derived module-system helper names such as `mod_relative_import_depth`, `mod_namespace_prefix_segments`, `conditional_import_selected_branch`, `path_resolution_selected_scope`, and `entry_point_override_selected`, with no remaining `rosetta_NNN_value` helpers.
+  - Regenerated both `main.sa` and `main.test.sa` for every demo in `221`-`240` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: full `221`-`240` loop rebuilding `main.sa`, rebuilding `main.test.sa`, and running `sa test <demo>/main.test.sa`.
+  - Verified with: `rg -n "rosetta_[0-9]+_(mix|value)|Generated from the catalog name|placeholder|\bmut\b|let mut|&mut|std::" demos/rosetta/22[1-9]_* demos/rosetta/23[0-9]_* demos/rosetta/240_* -g 'main.sla' -g 'main.sa' -g 'main.test.sa'` -> no matches.
+
+- [done] Rosetta demos `241`-`260` placeholder audit completed: replaced contract-system catalog placeholder formulas in Rust and Sla with examples derived from each README title's contract scenario (layout stability, opaque handles, signature mismatch, vtable/macro/const exports, semver compatibility and breaks, FFI boundary checks, ownership transfer, error-code mapping, callback registration, plugin loading, allocator selection, panic propagation, log facade levels, thread-local isolation, static init order, and deprecated warning), instead of using demo-number values.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: source/generated placeholder scan over `demos/rosetta/{241..260}_*/main.sla`, `main.rs`, `main.sa`, and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/{241..260}_*/main.sla demos/rosetta/{241..260}_*/main.rs src` -> no matches.
+  - Verified with: full `241`-`260` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.sa`, `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa`, and `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `241`-`260` semantic-name re-audit completed: Sla sources already use README/Rust-derived contract-system helper names such as `contract_layout_stable_field_count`, `contract_ffi_boundary_checks`, `contract_enabled_plugin_count`, `contract_thread_local_slots`, and `contract_deprecated_warning_count`, with no remaining `rosetta_NNN_value` helpers.
+  - Regenerated both `main.sa` and `main.test.sa` for every demo in `241`-`260` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: full `241`-`260` loop rebuilding `main.sa`, rebuilding `main.test.sa`, and running `sa test <demo>/main.test.sa`.
+  - Verified with: `rg -n "rosetta_[0-9]+_(mix|value)|Generated from the catalog name|placeholder|\bmut\b|let mut|&mut|std::" demos/rosetta/24[1-9]_* demos/rosetta/25[0-9]_* demos/rosetta/260_* -g 'main.sla' -g 'main.sa' -g 'main.test.sa'` -> no matches.
+
+- [done] Rosetta demos `261`-`280` placeholder audit completed: replaced build-system catalog placeholder formulas in Rust and Sla with examples derived from each README title's build scenario (SA-ASM codegen, C header bindgen, asset bundling, env injection, linker sections, pre/post hooks, cross targets, custom sysroot, optimization passes, sanitizer flags, test/benchmark/doc generation, incremental and remote caching, parallel compilation, reproducible builds, and CI/CD stages), instead of using demo-number values.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: source/generated placeholder scan over `demos/rosetta/{261..280}_*/main.sla`, `main.rs`, `main.sa`, and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/{261..280}_*/main.sla demos/rosetta/{261..280}_*/main.rs src` -> no matches.
+  - Verified with: full `261`-`280` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.sa`, `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa`, and `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `261`-`280` semantic-name re-audit completed: Sla sources already use README/Rust-derived build-system helper names such as `build_codegen_saasm_units`, `build_linker_script_sections`, `build_optimization_pass_count`, `build_parallel_codegen_units`, and `build_ci_cd_stage_count`, with no remaining `rosetta_NNN_value` helpers.
+  - Regenerated both `main.sa` and `main.test.sa` for every demo in `261`-`280` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: full `261`-`280` loop rebuilding `main.sa`, rebuilding `main.test.sa`, and running `sa test <demo>/main.test.sa`.
+  - Verified with: `rg -n "rosetta_[0-9]+_(mix|value)|Generated from the catalog name|placeholder|\bmut\b|let mut|&mut|std::" demos/rosetta/26[1-9]_* demos/rosetta/27[0-9]_* demos/rosetta/280_* -g 'main.sla' -g 'main.sa' -g 'main.test.sa'` -> no matches.
+
+- [done] Rosetta demos `281`-`300` placeholder audit completed: replaced FFI/ecosystem catalog placeholder formulas in Rust and Sla with examples derived from each README title's scenario (system/static/dynamic C links, pkg-config, Objective-C framework, Rust/Zig exports, C++ symbol names, opaque handles, callback thunk, wasm host imports and memory export, embedded/kernel/eBPF/GPU targets, ECS, crypto SIMD lanes, LSP messages, and SA registry publish steps), instead of using demo-number values.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: source/generated placeholder scan over `demos/rosetta/{281..300}_*/main.sla`, `main.rs`, `main.sa`, and `main.test.sa`.
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/{281..300}_*/main.sla demos/rosetta/{281..300}_*/main.rs src` -> no matches.
+  - Verified with: full `281`-`300` loop using `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.sa`, `zig build -Doptimize=ReleaseSmall local-cli -- sla build <demo>/main.sla --out <demo>/main.test.sa`, and `sa test <demo>/main.test.sa`.
+
+- [done] Rosetta demos `301`-`304` now use real struct operators instead of named helper simulations: `Vec3 + Vec3`, unary `-Vec3`, `Vec3 * f32`, and `Point == Point` / `Point != Point` are accepted by the Sla type checker and lowered by codegen to field-level SA ops.
+  - Added compiler support for numeric-field struct `+`/`-`, zero-literal unary negation, struct/scalar `*`, and comparable-field struct `==`/`!=`.
+  - Updated README files to describe the current real-operator implementation instead of a future `@derive`/named-helper target.
+  - Generated `main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: full `301`-`304` loop rebuilding `main.sa`, rebuilding `main.test.sa`, and running `sa test <demo>/main.test.sa`.
+
 - [done] Unified rosetta API-to-`sa_std` macro map added for `Vec`, `VecDeque`, `String`/`&str`, `Option`, `Result`, maps, interior mutability, guards, time, and async so shared gaps are handled by capability block instead of one demo at a time.
   - Verified with: `rg -n "VecDeque|Vec::|vec!|vec\(|String|&str|\.len\(|\.bytes\(|\.as_bytes\(|\.as_ptr\(|\.push\(|\.pop\(|\.remove\(|\.join\(|unwrap_or|unwrap_or_default|is_ok\(|is_err\(|HashMap|BTreeMap|Cell|RefCell|Mutex|RwLock|Duration|Instant|SystemTime|sleep|async|await" demos/rosetta -g 'main.rs'`
   - Recorded in: `docs/sa_std_macro_gap_audit.md`
@@ -15,6 +145,22 @@ Update this file every time a compiler feature or demo milestone is completed an
   - Verified with: `sa test /tmp/89_job_queue.sa`
   - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build demos/rosetta/89_job_queue/main.sla --out demos/rosetta/89_job_queue/main.test.sa`
   - Verified with: `sa test demos/rosetta/89_job_queue/main.test.sa`
+
+- [done] Collection block B completed for Rust-style `BTreeMap` on the current string-key/i32-value rosetta path: `BTreeMap::new`, `.insert`, `.get(...).copied().unwrap_or_default()`, indexing, receiver-typed `.len()`, and lexical `BTREE_MAP_FREE` cleanup now lower through explicit `sa_std/btree_map.sa` imports.
+  - Added codegen-owned collection binding cleanup for `HashMap` and `BTreeMap`, emitting `MAP_FREE` / `BTREE_MAP_FREE` instead of only raw register release.
+  - Fixed `SLA_BTREE_MAP_TRY_GET_OPTION` so its internal stack slot is not explicitly released, satisfying the SA verifier.
+  - Verified with: `zig build -Doptimize=Debug`.
+  - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build tmp_btree_map_smoke.sla --out /tmp/btree_map_smoke.sa`, `rg -n "BTREE_MAP_(NEW|INSERT|TRY_GET|LEN|FREE)|SLA_BTREE" /tmp/btree_map_smoke.sa`, and `sa test /tmp/btree_map_smoke.sa`.
+  - Regression verified with: rebuilding `main.sa` and `main.test.sa` only through the Sla compiler plus `sa test` for demos `53_cache_hits`, `63_router_table`, and `81_kv_store`.
+  - Verified generated cleanup with: `rg -n "MAP_FREE|BTREE_MAP_FREE" demos/rosetta/53_cache_hits/main.test.sa demos/rosetta/63_router_table/main.test.sa demos/rosetta/81_kv_store/main.test.sa`.
+
+- [done] Mutex guard block completed for demo `102_raii_guard`: Sla now imports `sa_std/core/result.sa` and `sa_std/sync/mutex.sa`, uses `Mutex::new(0)`, `counter.lock().unwrap()`, guard deref read/update, and compiler-owned lexical `MUTEX_UNLOCK` on both early-return and normal-return paths.
+  - Added thin `MUTEX_NEW_I32` facade to `sci/sa_std/sync/mutex.sa` and the active `/home/vscode/.sa/std/sync/mutex.sa` surface.
+  - Added Sla type/codegen support for `Mutex<i32>`, `MutexGuard<i32>`, `Result<MutexGuard<i32>, i32>` unwrap ownership transfer, and branch-safe guard cleanup state for terminating `if` branches.
+  - Regenerated `demos/rosetta/102_raii_guard/main.sa` and `main.test.sa` only through `zig build -Doptimize=ReleaseSmall local-cli -- sla build`.
+  - Verified with: `zig build -Doptimize=Debug`.
+  - Verified with: `sa test demos/rosetta/102_raii_guard/main.test.sa --trace-panic`.
+  - Verified generated mutex lowering with: `rg -n "MUTEX_(NEW_I32|LOCK|UNLOCK)|RESULT_UNWRAP" demos/rosetta/102_raii_guard/main.sa demos/rosetta/102_raii_guard/main.test.sa`.
 
 - [done] Demo `89_job_queue` manually rewritten from generated placeholder to Rust-equivalent queue semantics: create an empty `VecDeque`, push `5` and `7`, pop both front values through `Option.unwrap()`, print/assert `12`.
   - Verified with: `sa test demos/rosetta/89_job_queue/main.test.sa`
@@ -145,6 +291,34 @@ Update this file every time a compiler feature or demo milestone is completed an
   - Verified with: `SA_PLUGIN_DEV=1 sa sla build demos/rosetta/112_raw_pointer_arithmetic/main.sla --out demos/rosetta/112_raw_pointer_arithmetic/main.test.sa`
   - Verified with: `rg -n "ptr_add|mul .* 4|load .* as i32|panic\(112\)" demos/rosetta/112_raw_pointer_arithmetic/main.test.sa`
   - Verified with: `sa test demos/rosetta/112_raw_pointer_arithmetic/main.test.sa`
+
+- [done] Rust-style `union` baseline added for FFI-style overlay storage: `union Name { ... }` declarations, single-field union literals, `unsafe { value.field }` union field reads, and shared struct/union field layout routing through one codegen entry so unions use offset `0` overlay semantics.
+  - Verified with: `zig build`
+  - Verified with: `SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla`
+  - Verified with: `SA_PLUGIN_DEV=1 sa sla build tmp_union_smoke.sla --out /tmp/union_smoke.sa`
+  - Verified with: `rg -n "alloc 4|store .* as i32|load .* as i32" /tmp/union_smoke.sa`
+  - Verified with: `sa test /tmp/union_smoke.sa`
+  - Regression verified with: `sa test demos/rosetta/111_extern_c_abi/main.test.sa`
+  - Regression verified with: `sa test demos/rosetta/43_tagged_union/main.test.sa`
+
+- [done] Demo `113_union_ffi_types` manually rewritten from generated placeholder to Rust-equivalent union semantics: define `union Payload { i: i32, b: u8 }`, initialize `Payload { i: 36 }`, read `unsafe { payload.i }`, then print/assert `36`.
+  - Verified with: `SA_PLUGIN_DEV=1 sa sla build demos/rosetta/113_union_ffi_types/main.sla --out demos/rosetta/113_union_ffi_types/main.test.sa`
+  - Verified with: `rg -n "alloc 4|store .* as i32|load .* as i32|panic\(113\)" demos/rosetta/113_union_ffi_types/main.test.sa`
+  - Verified with: `sa test demos/rosetta/113_union_ffi_types/main.test.sa`
+
+- [done] Rust-style function pointer baseline added for callback demos: parse `fn(...) -> T` and `extern "C" fn(...) -> T` types, treat named functions as first-class values, pass them through pointer-typed params, and lower variable-call sites to `call_indirect` via a generated one-slot callback vtable aligned with the current SA surface in `~/projects/sci`.
+  - Verified with: `zig build`
+  - Verified with: `SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla`
+  - Verified with: `SA_PLUGIN_DEV=1 sa sla build tmp_fn_ptr_smoke.sla --out /tmp/fn_ptr_smoke.sa`
+  - Verified with: `rg -n "SLA_FNPTR_VT_add_one|call_indirect|stack_alloc 16|store .*\+8, &SLA_FNPTR_VT_add_one" /tmp/fn_ptr_smoke.sa`
+  - Verified with: `sa test /tmp/fn_ptr_smoke.sa`
+  - Regression verified with: `sa test demos/rosetta/111_extern_c_abi/main.test.sa`
+  - Regression verified with: `sa test demos/rosetta/08_closures/main.test.sa`
+
+- [done] Demo `114_callback_from_c` manually rewritten from generated placeholder to Rust-equivalent callback semantics: define `extern "C" fn add_one(i32) -> i32`, pass it to `apply(cb, 41)`, invoke the callback indirectly, then print/assert `42`.
+  - Verified with: `SA_PLUGIN_DEV=1 sa sla build demos/rosetta/114_callback_from_c/main.sla --out demos/rosetta/114_callback_from_c/main.test.sa`
+  - Verified with: `rg -n "SLA_FNPTR_VT_add_one|call_indirect|stack_alloc 16|panic\(114\)" demos/rosetta/114_callback_from_c/main.test.sa`
+  - Verified with: `sa test demos/rosetta/114_callback_from_c/main.test.sa`
 
 - [done] Async function tail expressions now lower to ready futures containing the tail value, so `async fn task_one() -> i32 { 1 }` returns `Future<Output = 1>` instead of defaulting to `0`.
   - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build demos/rosetta/136_executor_task_queue/main.sla --out /tmp/136_executor_task_queue.sa`
@@ -447,6 +621,53 @@ Update this file every time a compiler feature or demo milestone is completed an
   - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build demos/rosetta/63_router_table/main.sla --out /tmp/63_router_table.sa`
   - Verified with: `sa test /tmp/63_router_table.sa`
 
+- [done] `extern "C"` opaque pointer demo now self-tests with a local `@no_mangle pub extern "C" fn opaque_value(ptr: *Opaque) -> i32` stub plus `std::ptr::null::<Opaque>()` call path, covering decl-only extern parsing and opaque aggregate handling.
+  - Verified with: `zig build && SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla`
+  - Verified with: `SA_PLUGIN_DEV=1 sa sla build demos/rosetta/115_opaque_pointers/main.sla --out demos/rosetta/115_opaque_pointers/main.test.sa`
+  - Verified with: `rg -n "@extern opaque_value|@opaque_value|0 as ptr|call @opaque_value|panic\(115\)" demos/rosetta/115_opaque_pointers/main.test.sa`
+  - Verified with: `sa test demos/rosetta/115_opaque_pointers/main.test.sa`
+  - Regression verified with: `sa test demos/rosetta/111_extern_c_abi/main.test.sa`
+  - Regression verified with: `sa test demos/rosetta/114_callback_from_c/main.test.sa`
+
+- [done] Demo `116_va_list_variadic` rewritten from placeholder arithmetic to a real slice sum demo: `fn sum(nums: &[i32]) -> i32 { nums.iter().copied().sum() }`, then print/assert `6`.
+  - Verified with: `SA_PLUGIN_DEV=1 sa sla build demos/rosetta/116_va_list_variadic/main.sla --out demos/rosetta/116_va_list_variadic/main.test.sa`
+  - Verified with: `rg -n "SLA_FNPTR_VT_sum|@sla__sum|sa_print|panic\(116\)" demos/rosetta/116_va_list_variadic/main.test.sa`
+  - Verified with: `sa test demos/rosetta/116_va_list_variadic/main.test.sa`
+
+- [done] Rust-style restricted inline assembly syntax added for the current demo shape: `unsafe { asm!("...", inout("eax") value); }` parses as a void native escape, requires `unsafe`, validates numeric `inout` bindings, and lowers as a no-op so the original value is preserved. This intentionally does not introduce `let mut` support.
+  - Verified with: `zig build`
+  - Verified with: `SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla`
+  - Verified with: `SA_PLUGIN_DEV=1 sa sla build tmp_inline_asm_smoke.sla --out /tmp/inline_asm_smoke.sa`
+  - Verified with: `sa test /tmp/inline_asm_smoke.sa`
+
+- [done] Demo `117_inline_assembly` rewritten from placeholder arithmetic to Rust-equivalent native-escape semantics without `let mut`: initialize `value = 7`, run restricted `asm!(..., inout("eax") value)` as a no-op, then print/assert `7`.
+  - Verified with: `SA_PLUGIN_DEV=1 sa sla build demos/rosetta/117_inline_assembly/main.sla --out demos/rosetta/117_inline_assembly/main.test.sa`
+  - Verified with: `rg -n "asm!|panic\(117\)|sa_print|sla__rosetta_117_value" demos/rosetta/117_inline_assembly/main.sla demos/rosetta/117_inline_assembly/main.test.sa`
+  - Verified with: `sa test demos/rosetta/117_inline_assembly/main.test.sa`
+
+- [done] Demo `119_simd_intrinsics` rewritten as the current portable scalar baseline for the SIMD intrinsic reference, returning/printing/asserting lane count `4` while keeping Sla source free of `mut` syntax.
+  - Verified with: `SA_PLUGIN_DEV=1 sa sla build demos/rosetta/119_simd_intrinsics/main.sla --out demos/rosetta/119_simd_intrinsics/main.test.sa`
+  - Verified with: `sa test demos/rosetta/119_simd_intrinsics/main.test.sa`
+
+- [done] Rust-style `std::ptr::read_volatile` baseline added for unsafe pointer reads: `std::ptr::read_volatile(&value)` type-checks under `unsafe`, imports `sa_std/ptr.sa`, lowers through `PTR_READ_VOLATILE_I32`, and `unsafe { ... }` bodies now participate in addressable-binding collection so borrowed primitive locals use stack slots instead of leaving SA borrow state locked.
+  - Verified with: `zig build`
+  - Verified with: `SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla`
+  - Verified with: `zig build -Doptimize=ReleaseSmall local-cli -- sla build tmp_read_volatile_smoke.sla --out /tmp/read_volatile_smoke_local.sa`
+  - Verified with: `sa test /tmp/read_volatile_smoke_local.sa`
+
+- [done] Rosetta demos `120`-`140` repaired after placeholder audit: weak Rust references in both `sa_plugin_sla` and `/home/vscode/projects/sci` were replaced with topic-specific examples, and Sla companions were rewritten as meaningful current-surface equivalents with explicit `sa_std` imports and no `mut` syntax.
+  - `120_volatile_memory_access`: Rust keeps real `std::ptr::read_volatile`; Sla imports `sa_std/ptr.sa` and lowers through `PTR_READ_VOLATILE_I32`.
+  - `121`-`123`: Rust now exercises `RwLock`, `Condvar`, and `Barrier`; Sla models the reader/writer, notify, and barrier-release state transitions deterministically.
+  - `124`-`128`: Rust now uses thread-local `Cell`, `OnceLock`, channels, hazard-pointer-style atomic pointer protection, and RCU snapshot/update; Sla uses explicit facade-compatible models and `Cell` where supported.
+  - `129`-`132`: Rust now covers seqlock optimistic reads, `park`/`unpark`, `RawWakerVTable`, and `Pin`; Sla covers the same observable state transitions with explicit imports for pointer/waker/pin surfaces where relevant.
+  - `133`-`140`: async demos now have non-placeholder Sla companions for biased select, future joins, stream accumulation, executor queue, io_uring-style submission depth, epoll/kqueue readiness, cancellation safety, and yield/resume.
+  - Verified with: `zig build`
+  - Verified with: `for d in demos/rosetta/12[0-9]_* demos/rosetta/13[0-9]_* demos/rosetta/140_*; do zig build -Doptimize=ReleaseSmall local-cli -- sla build "$d/main.sla" --out "$d/main.test.sa" && sa test "$d/main.test.sa"; done`
+  - Verified with: `rg -n '\bmut\b|let mut|&mut' demos/rosetta/12[0-9]_*/main.sla demos/rosetta/13[0-9]_*/main.sla demos/rosetta/140_*/main.sla` returning no matches.
+  - Verified with: `rg -n '@import "sa_std|sa_std/.*"' src/codegen.zig src/type_checker.zig src/parser.zig` returning no matches, so `sa_std` imports remain source-owned.
+  - Verified with: `cmp` across plugin and `/home/vscode/projects/sci` Rust references for `120`-`140`.
+  - Rust execution not verified locally because `rustc` is not installed in this environment.
+
 ## Manually Rewritten Demos
 
 - [done] `06_enum_and_match`
@@ -514,11 +735,32 @@ Update this file every time a compiler feature or demo milestone is completed an
 - [done] `72_graph_walk`
 - [done] `73_scene_nodes`
 - [done] `74_component_store`
+- [done] `119_simd_intrinsics`
+- [done] `120_volatile_memory_access`
+- [done] `121_rwlock_reader_writer`
+- [done] `122_condvar_wait_notify`
+- [done] `123_barrier_sync`
+- [done] `124_thread_local_storage`
+- [done] `125_once_cell_lazy`
+- [done] `126_mpmc_channel`
+- [done] `127_hazard_pointers`
+- [done] `128_rcu_read_copy_update`
+- [done] `129_seqlock_optimistic`
+- [done] `130_park_unpark_thread`
+- [done] `131_waker_vtable_mechanics`
+- [done] `132_pinning_and_unpin`
+- [done] `133_select_macro_race`
+- [done] `134_join_all_futures`
+- [done] `135_async_streams`
+- [done] `136_executor_task_queue`
+- [done] `137_io_uring_submission`
+- [done] `138_epoll_kqueue_event`
+- [done] `139_cancellation_safety`
+- [done] `140_yield_now_suspend`
 - [done] `104_if_let_chains`
 - [done] `105_let_else`
 - [done] `146_never_type_fallback`
 
 ## Pending Next
 
-- [pending] `while let` / `if let` / `let else` for Result/custom enum patterns; `while let Some(...)`, chained `if let Some(...)`, `let Some(...) else`, and `match Option<T>` for Option are done.
-- [pending] direct reuse path for imported `sa_std` macros where Sla demos need them
+- [pending] continue from `docs/sa_std_macro_gap_audit.md` P0/P1 shared gaps now that rosetta currently ends at `304`: prioritize remaining Result/custom enum pattern paths, RwLock/broader guard cleanup, file/raw ownership facades, and string/byte collection APIs; keep Sla imports explicit and regenerate `.sa` only through the Sla compiler.

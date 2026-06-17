@@ -1,22 +1,21 @@
-// Sla companion for SA rosetta demo 236 Mod Extern Block Grouping.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_236_value() -> int {
-    let seed = 18;
-    let shifted = seed + 236;
-    let scaled = shifted * 4;
-    let result = scaled - 11;
+fn extern_block_grouped_symbol_count() -> i32 {
+    let open_symbol = 1;
+    let close_symbol = 1;
+    return open_symbol + close_symbol;
+}
+
+fn main() -> i32 {
+    let result = extern_block_grouped_symbol_count();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_236_value();
-    return result;
-};
-
-@test "rosetta 236 236_mod_extern_block_grouping"() {
-    let got = rosetta_236_value();
-    if got != 1005 {
+@test "rosetta 236 mod extern block grouping"() {
+    let got = extern_block_grouped_symbol_count();
+    if got != 2 {
         panic(236);
     };
-};
+}

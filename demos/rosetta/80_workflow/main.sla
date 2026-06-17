@@ -1,22 +1,35 @@
-// Sla companion for SA rosetta demo 080 Workflow.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_080_value() -> int {
-    let seed = 15;
-    let shifted = seed + 80;
-    let scaled = shifted * 10;
-    let result = scaled - 16;
-    return result;
+struct WorkflowState {
+    lint_ok: bool,
+    tests_ok: bool,
+    package_ok: bool,
 }
 
-fn main() -> int {
-    let result = rosetta_080_value();
+fn bool_score(value: bool) -> i32 {
+    if value == true {
+        return 1;
+    } else {
+        return 0;
+    };
+}
+
+fn completed_steps(state: WorkflowState) -> i32 {
+    return bool_score(state.lint_ok) + bool_score(state.tests_ok) + bool_score(state.package_ok);
+}
+
+fn main() -> i32 {
+    let state = WorkflowState { lint_ok: true, tests_ok: true, package_ok: false };
+    let result = completed_steps(state);
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 080 80_workflow"() {
-    let got = rosetta_080_value();
-    if got != 934 {
+    let state = WorkflowState { lint_ok: true, tests_ok: true, package_ok: false };
+    let got = completed_steps(state);
+    if got != 2 {
         panic(80);
     };
 };

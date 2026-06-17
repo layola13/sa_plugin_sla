@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 272 Build Sanitizer Flags.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_272_value() -> int {
-    let seed = 3;
-    let shifted = seed + 272;
-    let scaled = shifted * 4;
-    let result = scaled - 24;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_272_value();
-    return result;
-};
-
-@test "rosetta 272 272_build_sanitizer_flags"() {
-    let got = rosetta_272_value();
-    if got != 1076 {
-        panic(272);
-    };
-};
+fn build_sanitizer_flag_count() -> i32 { let address = 1; let undefined = 1; return address + undefined; }
+fn main() -> i32 { let result = build_sanitizer_flag_count(); println("{}", result); return result; }
+@test "rosetta 272 build sanitizer flags"() { let got = build_sanitizer_flag_count(); if got != 2 { panic(272); }; }

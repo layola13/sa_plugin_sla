@@ -1,24 +1,7 @@
-// Sla companion for SA rosetta demo 149 Packed Repr.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_149_value() -> int {
-    let base = (16 * 7) + 149;
-    let threshold = 165;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_149_value();
-    return result;
-};
-
-@test "rosetta 149 149_packed_repr"() {
-    let got = rosetta_149_value();
-    if got != 96 {
-        panic(149);
-    };
-};
+struct Pair { a: i32, b: i32 }
+fn packed_pair_sum() -> i32 { let pair = Pair { a: 1, b: 2 }; return pair.a + pair.b; }
+fn main() -> i32 { let result = packed_pair_sum(); println("{}", result); return result; }
+@test "rosetta 149 149_packed_repr"() { let got = packed_pair_sum(); if got != 3 { panic(149); }; }

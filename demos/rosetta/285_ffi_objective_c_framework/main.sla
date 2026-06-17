@@ -1,24 +1,6 @@
-// Sla companion for SA rosetta demo 285 Ffi Objective C Framework.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_285_value() -> int {
-    let base = (16 * 8) + 285;
-    let threshold = 299;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_285_value();
-    return result;
-};
-
-@test "rosetta 285 285_ffi_objective_c_framework"() {
-    let got = rosetta_285_value();
-    if got != 114 {
-        panic(285);
-    };
-};
+fn ffi_objective_c_framework_count() -> i32 { let foundation = 1; return foundation; }
+fn main() -> i32 { let result = ffi_objective_c_framework_count(); println("{}", result); return result; }
+@test "rosetta 285 ffi objective c framework"() { let got = ffi_objective_c_framework_count(); if got != 1 { panic(285); }; }

@@ -1,5 +1,6 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/core/trait_object.sa"
 
 trait Draw {
     fn draw(&self) -> i32;
@@ -27,7 +28,9 @@ fn main() -> i32 {
 }
 
 @test "rosetta 007 trait vtable"() {
-    if main() != 0 {
+    let button = Button { id: 77 };
+    let result = render(&button);
+    if result != 77 {
         panic(7);
     };
 }

@@ -1,5 +1,10 @@
-// 275 - Build Doc Generator
+fn generated_doc_pages() -> i32 {
+    let api_page = 1;
+    let guide_page = 1;
+    api_page + guide_page
+}
+
 fn main() {
-    let value = 275;
-    println!("{}", value);
+    let result = generated_doc_pages();
+    println!("{}", result);
 }

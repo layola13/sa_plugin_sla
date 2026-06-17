@@ -1,46 +1,104 @@
-@rosetta_095_mix(left: i64, right: i64) -> i64:
-L_ENTRY:
-    tmp_0 = mul left, right
-    product = tmp_0
-    tmp_1 = add product, left
-    tmp_2 = sub tmp_1, right
-    result = tmp_2
-    !product
-    !right
-    !left
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
 
-@rosetta_095_value() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_eval_line = vtable { call = @sla__eval_line }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__eval_line(line: ptr) -> i32:
 L_ENTRY:
-    tmp_3 = 20
-    tmp_4 = 15
-    tmp_5 = call @rosetta_095_mix(tmp_3, tmp_4)
-    result = tmp_5
-    return result
+    @const SLA_STR_0 = utf8:":quit"
+    tmp_1 = 5
+    tmp_0 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_0, &SLA_STR_0, tmp_1
+    !tmp_1
+    EXPAND STR_EQ tmp_2, line, tmp_0
+    tmp_3 = 1
+    tmp_4 = eq tmp_2, tmp_3
+    !tmp_2
+    !tmp_3
+    br tmp_4 -> L_THEN_0, L_ELSE_1
 
-@main() -> i64:
+L_THEN_0:
+    !tmp_4
+    tmp_5 = 0
+    !line
+    return tmp_5
+
+L_ELSE_1:
+    !tmp_4
+    @const SLA_STR_1 = utf8:"help"
+    tmp_7 = 4
+    tmp_6 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_6, &SLA_STR_1, tmp_7
+    !tmp_7
+    EXPAND STR_EQ tmp_8, line, tmp_6
+    tmp_9 = 1
+    tmp_10 = eq tmp_8, tmp_9
+    !tmp_8
+    !tmp_9
+    br tmp_10 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_10
+    tmp_11 = 1
+    !line
+    return tmp_11
+
+L_ELSE_4:
+    !tmp_10
+    tmp_12 = 2
+    !line
+    return tmp_12
+
+
+
+@main() -> i32:
 L_ENTRY:
-    tmp_6 = call @rosetta_095_value()
-    result = tmp_6
+    @const SLA_STR_2 = utf8:"help"
+    tmp_16 = 4
+    tmp_15 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_15, &SLA_STR_2, tmp_16
+    !tmp_16
+    tmp_17 = call @sla__eval_line(tmp_15)
+    result = tmp_17
+    tmp_18 = call @sa_fmt_u64(result, 10)
+    tmp_19 = call @sa_fmt_buffer_data(tmp_18)
+    tmp_20 = call @sa_fmt_buffer_len(tmp_18)
+    tmp_21 = tmp_19
+    call @sa_print_bytes(&tmp_21, tmp_20)
+    call @sa_fmt_buffer_free(^tmp_18)
+    !tmp_21
+    !tmp_20
+    @const SLA_STR_3 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_3, 1)
     return result
 
 @test "rosetta 095 95_repl_shell"():
-L_TEST_ENTRY_0:
-    tmp_7 = call @rosetta_095_value()
-    got = tmp_7
-    tmp_8 = 305
-    tmp_9 = ne got, tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_6:
+    @const SLA_STR_4 = utf8:"help"
+    tmp_23 = 4
+    tmp_22 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_22, &SLA_STR_4, tmp_23
+    !tmp_23
+    tmp_24 = call @sla__eval_line(tmp_22)
+    got = tmp_24
+    tmp_25 = 1
+    tmp_26 = ne got, tmp_25
+    !tmp_25
+    br tmp_26 -> L_THEN_7, L_ELSE_8
 
-L_THEN_1:
-    !tmp_9
+L_THEN_7:
+    !tmp_26
     panic(95)
 
-L_ELSE_2:
-    !tmp_9
-    jmp L_MERGE_3
+L_ELSE_8:
+    !tmp_26
+    jmp L_MERGE_9
 
-L_MERGE_3:
+L_MERGE_9:
     !got
     return
 

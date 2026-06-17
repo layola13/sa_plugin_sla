@@ -1,22 +1,11 @@
-// Sla companion for SA rosetta demo 212 Pkg Feature Flags.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_212_value() -> int {
-    let seed = 11;
-    let shifted = seed + 212;
-    let scaled = shifted * 7;
-    let result = scaled - 10;
-    return result;
+fn pkg_enabled_feature_count() -> i32 {
+    let default_feature = 1;
+    let explicit_feature = 1;
+    return default_feature + explicit_feature;
 }
 
-fn main() -> int {
-    let result = rosetta_212_value();
-    return result;
-};
-
-@test "rosetta 212 212_pkg_feature_flags"() {
-    let got = rosetta_212_value();
-    if got != 1551 {
-        panic(212);
-    };
-};
+fn main() -> i32 { let result = pkg_enabled_feature_count(); println("{}", result); return result; }
+@test "rosetta 212 pkg feature flags"() { let got = pkg_enabled_feature_count(); if got != 2 { panic(212); }; }

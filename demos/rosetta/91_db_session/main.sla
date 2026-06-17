@@ -1,25 +1,30 @@
-// Sla companion for SA rosetta demo 091 Db Session.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_091_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+struct Session {
+    connected: bool,
+    transaction_open: bool,
 }
 
-fn rosetta_091_value() -> int {
-    let result = rosetta_091_mix(12, 30);
-    return result;
+fn can_commit(session: Session) -> bool {
+    if session.connected == true {
+        return session.transaction_open;
+    } else {
+        return false;
+    };
 }
 
-fn main() -> int {
-    let result = rosetta_091_value();
-    return result;
+fn main() -> i32 {
+    let session = Session { connected: true, transaction_open: true };
+    let result = can_commit(session);
+    println("{}", result);
+    return 0;
 };
 
 @test "rosetta 091 91_db_session"() {
-    let got = rosetta_091_value();
-    if got != 342 {
+    let session = Session { connected: true, transaction_open: true };
+    let got = can_commit(session);
+    if got != true {
         panic(91);
     };
 };

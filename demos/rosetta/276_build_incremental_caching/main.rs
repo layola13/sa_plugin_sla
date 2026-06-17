@@ -1,5 +1,9 @@
-// 276 - Build Incremental Caching
+fn incremental_cache_hits() -> i32 {
+    let unchanged_module = 1;
+    unchanged_module
+}
+
 fn main() {
-    let value = 276;
-    println!("{}", value);
+    let result = incremental_cache_hits();
+    println!("{}", result);
 }

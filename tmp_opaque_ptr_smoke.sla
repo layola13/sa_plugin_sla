@@ -1,0 +1,24 @@
+@import "sa_std/ptr.sa"
+
+struct Opaque;
+
+extern "C" {
+    fn opaque_value(ptr: *Opaque) -> i32;
+}
+
+@no_mangle pub extern "C" fn opaque_value(ptr: *Opaque) -> i32 {
+    return 0;
+}
+
+fn use_null() -> i32 {
+    let ptr = ptr::null::<Opaque>();
+    let _ignored = unsafe { opaque_value(ptr) };
+    return 0;
+}
+
+@test "opaque ptr smoke"() {
+    let got = use_null();
+    if got != 0 {
+        panic(1);
+    };
+}

@@ -1,35 +1,42 @@
-@rosetta_175_mix(left: i64, right: i64) -> i64:
-L_ENTRY:
-    tmp_0 = mul left, right
-    product = tmp_0
-    tmp_1 = add product, left
-    tmp_2 = sub tmp_1, right
-    result = tmp_2
-    !product
-    !right
-    !left
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@rosetta_175_value() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_thiserror_message_len = vtable { call = @sla__thiserror_message_len }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__thiserror_message_len() -> u64:
 L_ENTRY:
-    tmp_3 = 18
-    tmp_4 = 25
-    tmp_5 = call @rosetta_175_mix(tmp_3, tmp_4)
-    result = tmp_5
-    return result
+    tmp_0 = 4
+    error_message_len = tmp_0
+    return error_message_len
 
-@main() -> i64:
+@main() -> i32:
 L_ENTRY:
-    tmp_6 = call @rosetta_175_value()
-    result = tmp_6
-    return result
+    tmp_1 = call @sla__thiserror_message_len()
+    result = tmp_1
+    tmp_2 = call @sa_fmt_u64(result, 10)
+    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
+    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
+    tmp_5 = tmp_3
+    call @sa_print_bytes(&tmp_5, tmp_4)
+    call @sa_fmt_buffer_free(^tmp_2)
+    !tmp_5
+    !tmp_4
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_6 = 0
+    !result
+    return tmp_6
 
 @test "rosetta 175 175_thiserror_macro_derive"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @rosetta_175_value()
+    tmp_7 = call @sla__thiserror_message_len()
     got = tmp_7
-    tmp_8 = 443
+    tmp_8 = 4
     tmp_9 = ne got, tmp_8
+    !tmp_8
     br tmp_9 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:

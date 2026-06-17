@@ -1,5 +1,6 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/core/option.sa"
 
 fn main() -> i32 {
     let value = Some(3).map(|x| x + 5).unwrap_or(0);

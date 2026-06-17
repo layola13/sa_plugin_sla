@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 228 Mod Iface Separation.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_228_value() -> int {
-    let seed = 10;
-    let shifted = seed + 228;
-    let scaled = shifted * 5;
-    let result = scaled - 26;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_228_value();
-    return result;
-};
-
-@test "rosetta 228 228_mod_iface_separation"() {
-    let got = rosetta_228_value();
-    if got != 1164 {
-        panic(228);
-    };
-};
+fn mod_iface_layers() -> i32 { let interface_layer = 1; let implementation_layer = 1; return interface_layer + implementation_layer; }
+fn main() -> i32 { let result = mod_iface_layers(); println("{}", result); return result; }
+@test "rosetta 228 mod iface separation"() { let got = mod_iface_layers(); if got != 2 { panic(228); }; }

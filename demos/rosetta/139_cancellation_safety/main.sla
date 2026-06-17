@@ -1,25 +1,41 @@
-// Sla companion for SA rosetta demo 139 Cancellation Safety.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_139_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn cancellation_safe_value() -> i32 {
+    let reserved = reserve_slot(4);
+    let committed = commit_slot(reserved, true);
+    return cancel_cleanup(committed, false);
 }
 
-fn rosetta_139_value() -> int {
-    let result = rosetta_139_mix(13, 12);
-    return result;
+fn reserve_slot(value: i32) -> i32 {
+    return value;
 }
 
-fn main() -> int {
-    let result = rosetta_139_value();
+fn commit_slot(value: i32, commit: bool) -> i32 {
+    if commit {
+        return value;
+    } else {
+        return 0;
+    };
+}
+
+fn cancel_cleanup(value: i32, cancelled: bool) -> i32 {
+    if cancelled {
+        return 0;
+    } else {
+        return value;
+    };
+}
+
+fn main() -> i32 {
+    let result = cancellation_safe_value();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 139 139_cancellation_safety"() {
-    let got = rosetta_139_value();
-    if got != 157 {
+    let got = cancellation_safe_value();
+    if got != 4 {
         panic(139);
     };
 };

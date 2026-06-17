@@ -1,54 +1,114 @@
-@rosetta_081_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/option.sa"
+@import "sa_std/btree_map.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+
+[MACRO] SLA_BTREE_MAP_INSERT_OPTION_U64 %out_opt, %map_reg, %key_reg, %value_reg
+    EXPAND BTREE_MAP_INSERT_OLD __sla_btree_insert_replaced_%out_opt, __sla_btree_insert_old_%out_opt, %map_reg, %key_reg, %value_reg
+    br __sla_btree_insert_replaced_%out_opt -> L_SLA_BTREE_INSERT_SOME_%out_opt, L_SLA_BTREE_INSERT_NONE_%out_opt
+L_SLA_BTREE_INSERT_SOME_%out_opt:
+    EXPAND OPTION_NEW_SOME %out_opt, __sla_btree_insert_old_%out_opt
+    !__sla_btree_insert_old_%out_opt
+    !__sla_btree_insert_replaced_%out_opt
+    jmp L_SLA_BTREE_INSERT_END_%out_opt
+L_SLA_BTREE_INSERT_NONE_%out_opt:
+    EXPAND OPTION_NEW_NONE %out_opt
+    !__sla_btree_insert_old_%out_opt
+    !__sla_btree_insert_replaced_%out_opt
+L_SLA_BTREE_INSERT_END_%out_opt:
+[END_MACRO]
+
+[MACRO] SLA_BTREE_MAP_TRY_GET_OPTION %out_opt, %map_reg, %key_reg
+    EXPAND BTREE_MAP_TRY_GET __sla_btree_get_ok_%out_opt, __sla_btree_get_value_%out_opt, %map_reg, %key_reg
+    br __sla_btree_get_ok_%out_opt -> L_SLA_BTREE_GET_SOME_%out_opt, L_SLA_BTREE_GET_NONE_%out_opt
+L_SLA_BTREE_GET_SOME_%out_opt:
+    __sla_btree_get_slot_%out_opt = stack_alloc 8
+    store __sla_btree_get_slot_%out_opt+0, __sla_btree_get_value_%out_opt as u64
+    EXPAND OPTION_NEW_SOME %out_opt, __sla_btree_get_slot_%out_opt
+    !__sla_btree_get_value_%out_opt
+    !__sla_btree_get_ok_%out_opt
+    jmp L_SLA_BTREE_GET_END_%out_opt
+L_SLA_BTREE_GET_NONE_%out_opt:
+    EXPAND OPTION_NEW_NONE %out_opt
+    !__sla_btree_get_value_%out_opt
+    !__sla_btree_get_ok_%out_opt
+L_SLA_BTREE_GET_END_%out_opt:
+[END_MACRO]
+@const SLA_FNPTR_VT_kv_lookup_beta = vtable { call = @sla__kv_lookup_beta }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__kv_lookup_beta() -> i32:
 L_ENTRY:
-    tmp_0 = 16
-    tmp_1 = 2
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 81
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 98
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
-
-L_THEN_0:
+    EXPAND BTREE_MAP_NEW tmp_0
+    kv = tmp_0
+    @const SLA_STR_0 = utf8:"alpha"
+    tmp_2 = 5
+    tmp_1 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_1, &SLA_STR_0, tmp_2
+    !tmp_2
+    tmp_3 = 5
+    EXPAND SLA_BTREE_MAP_INSERT_OPTION_U64 tmp_4, kv, tmp_1, tmp_3
+    !tmp_3
+    !tmp_4
+    @const SLA_STR_1 = utf8:"beta"
+    tmp_6 = 4
+    tmp_5 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_5, &SLA_STR_1, tmp_6
     !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
+    tmp_7 = 8
+    EXPAND SLA_BTREE_MAP_INSERT_OPTION_U64 tmp_8, kv, tmp_5, tmp_7
+    !tmp_7
+    !tmp_8
+    EXPAND BTREE_MAP_TRY_GET tmp_10, tmp_9, kv, tmp_5
+    br tmp_10 -> L_BTREE_MAP_INDEX_HIT_0, L_BTREE_MAP_INDEX_MISS_1
 
-L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
+L_BTREE_MAP_INDEX_MISS_1:
+    !tmp_10
+    panic(404)
 
+L_BTREE_MAP_INDEX_HIT_0:
+    !tmp_10
+    tmp_11 = tmp_9 as i32
+    EXPAND BTREE_MAP_FREE kv
+    return tmp_11
 
-@main() -> i64:
+@main() -> i32:
 L_ENTRY:
-    tmp_10 = call @rosetta_081_value()
-    result = tmp_10
+    tmp_12 = call @sla__kv_lookup_beta()
+    result = tmp_12
+    tmp_13 = call @sa_fmt_u64(result, 10)
+    tmp_14 = call @sa_fmt_buffer_data(tmp_13)
+    tmp_15 = call @sa_fmt_buffer_len(tmp_13)
+    tmp_16 = tmp_14
+    call @sa_print_bytes(&tmp_16, tmp_15)
+    call @sa_fmt_buffer_free(^tmp_13)
+    !tmp_16
+    !tmp_15
+    @const SLA_STR_2 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_2, 1)
     return result
 
 @test "rosetta 081 81_kv_store"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_081_value()
-    got = tmp_11
-    tmp_12 = 15
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_2:
+    tmp_17 = call @sla__kv_lookup_beta()
+    got = tmp_17
+    tmp_18 = 8
+    tmp_19 = ne got, tmp_18
+    !tmp_18
+    br tmp_19 -> L_THEN_3, L_ELSE_4
 
-L_THEN_4:
-    !tmp_13
+L_THEN_3:
+    !tmp_19
     panic(81)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_4:
+    !tmp_19
+    jmp L_MERGE_5
 
-L_MERGE_6:
+L_MERGE_5:
     !got
     return
 

@@ -1,44 +1,74 @@
-@rosetta_016_value() -> i64:
-L_ENTRY:
-    tmp_0 = 19
-    seed = tmp_0
-    tmp_1 = 16
-    tmp_2 = add seed, tmp_1
-    shifted = tmp_2
-    tmp_3 = 9
-    tmp_4 = mul shifted, tmp_3
-    scaled = tmp_4
-    tmp_5 = 21
-    tmp_6 = sub scaled, tmp_5
-    result = tmp_6
-    !scaled
-    !seed
-    !shifted
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-@main() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__Vec2_square_len(&self: ptr) -> i32:
 L_ENTRY:
-    tmp_7 = call @rosetta_016_value()
-    result = tmp_7
-    return result
+    tmp_0 = load self+0 as i32
+    tmp_1 = load self+0 as i32
+    tmp_2 = mul tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    tmp_3 = load self+4 as i32
+    tmp_4 = load self+4 as i32
+    tmp_5 = mul tmp_3, tmp_4
+    !tmp_3
+    !tmp_4
+    tmp_6 = add tmp_2, tmp_5
+    !tmp_2
+    !tmp_5
+    !self
+    return tmp_6
 
-@test "rosetta 016 16_methods"():
+@main() -> i32:
+L_ENTRY:
+    v = alloc 8
+    tmp_7 = 3
+    store v+0, tmp_7 as i32
+    tmp_8 = 4
+    store v+4, tmp_8 as i32
+    tmp_9 = call @sla__Vec2_square_len(&v)
+    tmp_10 = call @sa_fmt_u64(tmp_9, 10)
+    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
+    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
+    tmp_13 = tmp_11
+    call @sa_print_bytes(&tmp_13, tmp_12)
+    call @sa_fmt_buffer_free(^tmp_10)
+    !tmp_13
+    !tmp_12
+    !tmp_9
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_14 = 0
+    !v
+    return tmp_14
+
+@test "rosetta 016 methods"():
 L_TEST_ENTRY_0:
-    tmp_8 = call @rosetta_016_value()
-    got = tmp_8
-    tmp_9 = 294
-    tmp_10 = ne got, tmp_9
-    br tmp_10 -> L_THEN_1, L_ELSE_2
+    v = alloc 8
+    tmp_15 = 3
+    store v+0, tmp_15 as i32
+    tmp_16 = 4
+    store v+4, tmp_16 as i32
+    tmp_17 = call @sla__Vec2_square_len(&v)
+    tmp_18 = 25
+    tmp_19 = ne tmp_17, tmp_18
+    !tmp_17
+    !tmp_18
+    br tmp_19 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_10
+    !tmp_19
     panic(16)
 
 L_ELSE_2:
-    !tmp_10
+    !tmp_19
     jmp L_MERGE_3
 
 L_MERGE_3:
-    !got
+    !v
     return
 

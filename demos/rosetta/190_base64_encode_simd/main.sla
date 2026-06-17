@@ -1,23 +1,5 @@
-// Sla companion for SA rosetta demo 190 Base64 Encode Simd.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_190_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 11;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_190_value();
-    return result;
-};
-
-@test "rosetta 190 190_base64_encode_simd"() {
-    let got = rosetta_190_value();
-    if got != 47 {
-        panic(190);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn base64_encoded_len() -> usize { let encoded_len: usize = 4; return encoded_len; }
+fn main() -> i32 { let result = base64_encoded_len(); println("{}", result); return 0; }
+@test "rosetta 190 190_base64_encode_simd"() { let got = base64_encoded_len(); if got != 4 { panic(190); }; }

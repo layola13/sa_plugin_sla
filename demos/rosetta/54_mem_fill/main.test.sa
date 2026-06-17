@@ -1,77 +1,195 @@
-@import "sa_std/string.sa"
-@rosetta_054_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/mem.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@main() -> i32:
 L_ENTRY:
+    data = alloc 4
     tmp_0 = 0
-    total = tmp_0
-    i = 1
-    tmp_1 = add total, i
-    !total
-    total = tmp_1
-    !i
-    i = 2
-    tmp_2 = add total, i
-    !total
-    total = tmp_2
-    !i
-    i = 3
-    tmp_3 = add total, i
-    !total
-    total = tmp_3
-    !i
-    i = 4
-    tmp_4 = add total, i
-    !total
-    total = tmp_4
-    !i
-    i = 5
-    tmp_5 = add total, i
-    !total
-    total = tmp_5
-    !i
-    i = 6
-    tmp_6 = add total, i
-    !total
-    total = tmp_6
-    !i
-    i = 7
-    tmp_7 = add total, i
-    !total
-    total = tmp_7
-    !i
-    i = 8
-    tmp_8 = add total, i
-    !total
-    total = tmp_8
-    !i
-    tmp_9 = 13
-    tmp_10 = add total, tmp_9
-    result = tmp_10
-    !total
-    return result
+    tmp_1 = tmp_0 as u8
+    EXPAND SLA_ARRAY_FILL_U8 data, tmp_1, 4
+    !tmp_1
+    tmp_2 = 7
+    EXPAND SLA_ARRAY_FILL_U8 data, tmp_2, 4
+    !tmp_2
+    tmp_3 = 0
+    tmp_4 = mul tmp_3, 1
+    tmp_5 = ptr_add data, tmp_4
+    !tmp_4
+    !tmp_3
+    tmp_6 = load tmp_5+0 as u8
+    !tmp_5
+    tmp_7 = call @sa_fmt_u64(tmp_6, 10)
+    tmp_8 = call @sa_fmt_buffer_data(tmp_7)
+    tmp_9 = call @sa_fmt_buffer_len(tmp_7)
+    tmp_10 = tmp_8
+    call @sa_print_bytes(&tmp_10, tmp_9)
+    call @sa_fmt_buffer_free(^tmp_7)
+    !tmp_10
+    !tmp_9
+    !tmp_6
+    @const SLA_STR_0 = utf8:","
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_11 = 1
+    tmp_12 = mul tmp_11, 1
+    tmp_13 = ptr_add data, tmp_12
+    !tmp_12
+    !tmp_11
+    tmp_14 = load tmp_13+0 as u8
+    !tmp_13
+    tmp_15 = call @sa_fmt_u64(tmp_14, 10)
+    tmp_16 = call @sa_fmt_buffer_data(tmp_15)
+    tmp_17 = call @sa_fmt_buffer_len(tmp_15)
+    tmp_18 = tmp_16
+    call @sa_print_bytes(&tmp_18, tmp_17)
+    call @sa_fmt_buffer_free(^tmp_15)
+    !tmp_18
+    !tmp_17
+    !tmp_14
+    @const SLA_STR_1 = utf8:","
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    tmp_19 = 2
+    tmp_20 = mul tmp_19, 1
+    tmp_21 = ptr_add data, tmp_20
+    !tmp_20
+    !tmp_19
+    tmp_22 = load tmp_21+0 as u8
+    !tmp_21
+    tmp_23 = call @sa_fmt_u64(tmp_22, 10)
+    tmp_24 = call @sa_fmt_buffer_data(tmp_23)
+    tmp_25 = call @sa_fmt_buffer_len(tmp_23)
+    tmp_26 = tmp_24
+    call @sa_print_bytes(&tmp_26, tmp_25)
+    call @sa_fmt_buffer_free(^tmp_23)
+    !tmp_26
+    !tmp_25
+    !tmp_22
+    @const SLA_STR_2 = utf8:","
+    call @sa_print_bytes(&SLA_STR_2, 1)
+    tmp_27 = 3
+    tmp_28 = mul tmp_27, 1
+    tmp_29 = ptr_add data, tmp_28
+    !tmp_28
+    !tmp_27
+    tmp_30 = load tmp_29+0 as u8
+    !tmp_29
+    tmp_31 = call @sa_fmt_u64(tmp_30, 10)
+    tmp_32 = call @sa_fmt_buffer_data(tmp_31)
+    tmp_33 = call @sa_fmt_buffer_len(tmp_31)
+    tmp_34 = tmp_32
+    call @sa_print_bytes(&tmp_34, tmp_33)
+    call @sa_fmt_buffer_free(^tmp_31)
+    !tmp_34
+    !tmp_33
+    !tmp_30
+    @const SLA_STR_3 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_3, 1)
+    tmp_35 = 0
+    !data
+    return tmp_35
 
-@main() -> i64:
-L_ENTRY:
-    tmp_11 = call @rosetta_054_value()
-    result = tmp_11
-    return result
-
-@test "rosetta 054 54_mem_fill"():
+@test "rosetta 054 mem fill"():
 L_TEST_ENTRY_0:
-    tmp_12 = call @rosetta_054_value()
-    got = tmp_12
-    tmp_13 = 49
-    tmp_14 = ne got, tmp_13
-    br tmp_14 -> L_THEN_1, L_ELSE_2
+    data = alloc 4
+    tmp_36 = 0
+    tmp_37 = tmp_36 as u8
+    EXPAND SLA_ARRAY_FILL_U8 data, tmp_37, 4
+    !tmp_37
+    tmp_38 = 7
+    EXPAND SLA_ARRAY_FILL_U8 data, tmp_38, 4
+    !tmp_38
+    tmp_39 = 0
+    tmp_40 = mul tmp_39, 1
+    tmp_41 = ptr_add data, tmp_40
+    !tmp_40
+    !tmp_39
+    tmp_42 = load tmp_41+0 as u8
+    !tmp_41
+    tmp_43 = 7
+    tmp_44 = ne tmp_42, tmp_43
+    !tmp_42
+    !tmp_43
+    br tmp_44 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_14
+    !tmp_44
     panic(54)
 
 L_ELSE_2:
-    !tmp_14
+    !tmp_44
     jmp L_MERGE_3
 
 L_MERGE_3:
-    !got
+    tmp_47 = 1
+    tmp_48 = mul tmp_47, 1
+    tmp_49 = ptr_add data, tmp_48
+    !tmp_48
+    !tmp_47
+    tmp_50 = load tmp_49+0 as u8
+    !tmp_49
+    tmp_51 = 7
+    tmp_52 = ne tmp_50, tmp_51
+    !tmp_50
+    !tmp_51
+    br tmp_52 -> L_THEN_4, L_ELSE_5
+
+L_THEN_4:
+    !tmp_52
+    panic(154)
+
+L_ELSE_5:
+    !tmp_52
+    jmp L_MERGE_6
+
+L_MERGE_6:
+    tmp_55 = 2
+    tmp_56 = mul tmp_55, 1
+    tmp_57 = ptr_add data, tmp_56
+    !tmp_56
+    !tmp_55
+    tmp_58 = load tmp_57+0 as u8
+    !tmp_57
+    tmp_59 = 7
+    tmp_60 = ne tmp_58, tmp_59
+    !tmp_58
+    !tmp_59
+    br tmp_60 -> L_THEN_7, L_ELSE_8
+
+L_THEN_7:
+    !tmp_60
+    panic(254)
+
+L_ELSE_8:
+    !tmp_60
+    jmp L_MERGE_9
+
+L_MERGE_9:
+    tmp_63 = 3
+    tmp_64 = mul tmp_63, 1
+    tmp_65 = ptr_add data, tmp_64
+    !tmp_64
+    !tmp_63
+    tmp_66 = load tmp_65+0 as u8
+    !tmp_65
+    tmp_67 = 7
+    tmp_68 = ne tmp_66, tmp_67
+    !tmp_66
+    !tmp_67
+    br tmp_68 -> L_THEN_10, L_ELSE_11
+
+L_THEN_10:
+    !tmp_68
+    panic(354)
+
+L_ELSE_11:
+    !tmp_68
+    jmp L_MERGE_12
+
+L_MERGE_12:
+    !data
     return
 

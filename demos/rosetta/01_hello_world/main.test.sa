@@ -1,55 +1,47 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 @import "sa_std/string.sa"
-@rosetta_001_value() -> i64:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@main() -> i32:
 L_ENTRY:
-    tmp_0 = 4
-    tmp_1 = 3
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 1
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 7
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
-
-L_THEN_0:
-    !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
-
-L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
-
-
-@main() -> i64:
-L_ENTRY:
-    tmp_10 = call @rosetta_001_value()
-    result = tmp_10
-    return result
+    @const SLA_STR_0 = utf8:"hello, saasm"
+    call @sa_print_bytes(&SLA_STR_0, 12)
+    @const SLA_STR_1 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    tmp_0 = 0
+    return tmp_0
 
 @test "rosetta 001 01_hello_world"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_001_value()
-    got = tmp_11
-    tmp_12 = 6
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_0:
+    @const SLA_STR_2 = utf8:"hello, saasm"
+    tmp_2 = 12
+    tmp_1 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_1, &SLA_STR_2, tmp_2
+    !tmp_2
+    @const SLA_STR_3 = utf8:"hello, saasm"
+    tmp_4 = 12
+    tmp_3 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_3, &SLA_STR_3, tmp_4
+    !tmp_4
+    EXPAND STR_EQ tmp_5, tmp_1, tmp_3
+    tmp_6 = 1
+    tmp_7 = ne tmp_5, tmp_6
+    !tmp_5
+    !tmp_6
+    br tmp_7 -> L_THEN_1, L_ELSE_2
 
-L_THEN_4:
-    !tmp_13
+L_THEN_1:
+    !tmp_7
     panic(1)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_2:
+    !tmp_7
+    jmp L_MERGE_3
 
-L_MERGE_6:
-    !got
+L_MERGE_3:
     return
 

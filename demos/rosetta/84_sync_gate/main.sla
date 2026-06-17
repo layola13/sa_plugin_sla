@@ -1,22 +1,19 @@
-// Sla companion for SA rosetta demo 084 Sync Gate.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_084_value() -> int {
-    let seed = 19;
-    let shifted = seed + 84;
-    let scaled = shifted * 5;
-    let result = scaled - 20;
-    return result;
+fn gate_open(arrived: i32, required: i32) -> bool {
+    return arrived >= required;
 }
 
-fn main() -> int {
-    let result = rosetta_084_value();
-    return result;
+fn main() -> i32 {
+    let ready = gate_open(3, 3);
+    println("{}", ready);
+    return 0;
 };
 
 @test "rosetta 084 84_sync_gate"() {
-    let got = rosetta_084_value();
-    if got != 495 {
+    let got = gate_open(3, 3);
+    if got != true {
         panic(84);
     };
 };

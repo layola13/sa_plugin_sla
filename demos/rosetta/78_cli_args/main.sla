@@ -1,23 +1,35 @@
-// Sla companion for SA rosetta demo 078 Cli Args.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
 
-fn rosetta_078_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 14;
-    return result;
+struct CliCommand {
+    command: ptr,
+    release: bool,
 }
 
-fn main() -> int {
-    let result = rosetta_078_value();
+fn exit_code(cmd: CliCommand) -> i32 {
+    if str_eq(cmd.command, "build") == true {
+        if cmd.release == true {
+            return 0;
+        } else {
+            return 2;
+        };
+    } else {
+        return 2;
+    };
+}
+
+fn main() -> i32 {
+    let cmd = CliCommand { command: "build", release: true };
+    let result = exit_code(cmd);
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 078 78_cli_args"() {
-    let got = rosetta_078_value();
-    if got != 50 {
+    let cmd = CliCommand { command: "build", release: true };
+    let got = exit_code(cmd);
+    if got != 0 {
         panic(78);
     };
 };

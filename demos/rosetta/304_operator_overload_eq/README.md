@@ -1,6 +1,11 @@
-# 304 Operator Overload — Custom Eq (`a == b` on struct)
+# 304 Operator Overload - Custom Eq (`a == b` on struct)
 
-> **状态**：占位符。等待 sla 编译器加入 `@derive(PartialEq)` 支持。
+> **状态**：当前 Sla companion 已使用真实 `a == b` / `a != c` 操作符。编译器在类型检查阶段允许可比较字段 struct 的同类型 `==`/`!=`，在 codegen 阶段生成逐字段 `eq` 与 `and`。
+
+This directory pairs the Rust rosetta reference with a Sla companion.
+
+- `main.rs`：Rust 原版，演示 `impl PartialEq for Point` 实现 `a == b` 和 `a != c`。
+- `main.sla`：Sla 等价实现，使用 `let` 绑定的 `Point` 直接比较，验证 `a == b` 且 `a != c`。
 
 ## 命令
 
@@ -10,60 +15,29 @@ SA_PLUGIN_DEV=1 sa sla build demos/rosetta/304_operator_overload_eq/main.sla --o
 SA_PLUGIN_DEV=1 sa sla test  demos/rosetta/304_operator_overload_eq/main.sla
 ```
 
-## 目标实现（等 sla 支持后替换占位）
+## 当前 Sla 示例
 
 ```sla
-@derive(PartialEq)
 struct Point {
-    x: int,
-    y: int
+    x: i32,
+    y: i32,
 }
 
-fn main() -> int {
+fn main() -> i32 {
     let a = Point { x: 10, y: 20 };
     let b = Point { x: 10, y: 20 };
     let c = Point { x: 99, y: 0 };
 
     if a == b {
-        // 期望进入
+        if a != c { return 11; } else { return 0; };
+    } else {
+        return 0;
     };
-    if a != c {
-        // 期望进入
-    };
-    return 0;
 }
-
-@test "rosetta 304 operator_overload_eq"() {
-    let a = Point { x: 10, y: 20 };
-    let b = Point { x: 10, y: 20 };
-    let c = Point { x: 99, y: 0 };
-    if a != b { panic(1); };
-    if a == c { panic(2); };
-};
 ```
 
 ## 编译器实现要点
 
-1. **`@derive(PartialEq)`** → 生成 `impl PartialEq for T { fn eq(&self, other: &Self) -> bool }`
-2. **Type checker**：`binary_expr` 中 `==` / `!=` 检测到 struct/enum 时回退查 `PartialEq` 实现（当前 `src/type_checker.zig:1129` 直接返回 boolean 但仅对原生数值）
-3. **Codegen**：`a == b` 改写为 `<TypeOf(a)>_eq(&a, &b)` 调用
-4. **生成 SA**：逐字段 eq + 短路 and
-
-## 关联 derive 建议
-
-`@derive(PartialEq)` 通常与下列 derive 同时使用，建议一起规划：
-- `@derive(Eq)`：标记类型可作 HashMap key（等价于 PartialEq + 自反性）
-- `@derive(Hash)`：生成 hash 函数（同字段哈希组合）
-- `@derive(PartialOrd)` / `@derive(Ord)`：比较 `<` / `<=` / `>` / `>=`
-
-**实施顺序建议**：先 `PartialEq` + `Eq` + `Hash`（HashMap 必需），再 `PartialOrd` + `Ord`（排序）。
-
-## 与 ECS / 通用业务的关系
-
-`@derive(PartialEq)` 是**通用业务高频需求**：
-- 测试断言：`assert_eq!(actual, expected)`
-- 集合查找：`vec.iter().position(|x| x == &target)`
-- ECS Entity 比较：判断两个 entity handle 是否同一实体
-- 缓存键比较
-
-**没有 `==` 重载，每处都要手写 `point_eq(a.x, a.y, b.x, b.y)`**，可读性灾难。
+1. **Type checker**：`==` / `!=` 要求左右是同一 struct，且字段都是可比较 primitive。
+2. **Codegen**：逐字段 `load`、`eq`，再用 `and` 合并；`!=` 由合并结果反转得到。
+3. **生成 SA**：不调用命名模拟 helper，直接生成字段级 `eq` / `and`。

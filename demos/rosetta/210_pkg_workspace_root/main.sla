@@ -1,23 +1,11 @@
-// Sla companion for SA rosetta demo 210 Pkg Workspace Root.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_210_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 8;
-    return result;
+fn pkg_workspace_member_count() -> i32 {
+    let app_member = 1;
+    let lib_member = 1;
+    return app_member + lib_member;
 }
 
-fn main() -> int {
-    let result = rosetta_210_value();
-    return result;
-};
-
-@test "rosetta 210 210_pkg_workspace_root"() {
-    let got = rosetta_210_value();
-    if got != 18 {
-        panic(210);
-    };
-};
+fn main() -> i32 { let result = pkg_workspace_member_count(); println("{}", result); return result; }
+@test "rosetta 210 pkg workspace root"() { let got = pkg_workspace_member_count(); if got != 2 { panic(210); }; }

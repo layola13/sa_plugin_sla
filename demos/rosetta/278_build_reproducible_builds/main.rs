@@ -1,5 +1,9 @@
-// 278 - Build Reproducible Builds
+fn reproducible_hash_matches() -> i32 {
+    let deterministic_output = 1;
+    deterministic_output
+}
+
 fn main() {
-    let value = 278;
-    println!("{}", value);
+    let result = reproducible_hash_matches();
+    println!("{}", result);
 }

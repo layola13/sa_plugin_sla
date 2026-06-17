@@ -1,7 +1,12 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
-@compute_sum() -> i32:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_compute_sum = vtable { call = @sla__compute_sum }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__compute_sum() -> i32:
 L_ENTRY:
     tmp_0 = 0
     i = tmp_0
@@ -71,29 +76,37 @@ L_WHILE_EXIT_3:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_16 = call @compute_sum()
+    tmp_16 = call @sla__compute_sum()
     sum = tmp_16
+    tmp_17 = call @sa_fmt_u64(sum, 10)
+    tmp_18 = call @sa_fmt_buffer_data(tmp_17)
+    tmp_19 = call @sa_fmt_buffer_len(tmp_17)
+    tmp_20 = tmp_18
+    call @sa_print_bytes(&tmp_20, tmp_19)
+    call @sa_fmt_buffer_free(^tmp_17)
+    !tmp_20
+    !tmp_19
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_17 = 0
+    tmp_21 = 0
     !sum
-    return tmp_17
+    return tmp_21
 
 @test "rosetta 022 break continue"():
 L_TEST_ENTRY_10:
-    tmp_18 = call @compute_sum()
-    sum = tmp_18
-    tmp_19 = 9
-    tmp_20 = ne sum, tmp_19
-    !tmp_19
-    br tmp_20 -> L_THEN_11, L_ELSE_12
+    tmp_22 = call @sla__compute_sum()
+    sum = tmp_22
+    tmp_23 = 9
+    tmp_24 = ne sum, tmp_23
+    !tmp_23
+    br tmp_24 -> L_THEN_11, L_ELSE_12
 
 L_THEN_11:
-    !tmp_20
+    !tmp_24
     panic(22)
 
 L_ELSE_12:
-    !tmp_20
+    !tmp_24
     jmp L_MERGE_13
 
 L_MERGE_13:

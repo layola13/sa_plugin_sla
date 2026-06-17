@@ -1,5 +1,6 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
 
 fn main() -> i32 {
     let word = "rust";

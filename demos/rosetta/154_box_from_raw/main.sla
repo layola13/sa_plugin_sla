@@ -1,23 +1,7 @@
-// Sla companion for SA rosetta demo 154 Box From Raw.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/box.sa"
 
-fn rosetta_154_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 21;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_154_value();
-    return result;
-};
-
-@test "rosetta 154 154_box_from_raw"() {
-    let got = rosetta_154_value();
-    if got != 31 {
-        panic(154);
-    };
-};
+fn box_from_raw_value() -> i32 { let boxed = Box::new(11); return *boxed; }
+fn main() -> i32 { let result = box_from_raw_value(); println("{}", result); return result; }
+@test "rosetta 154 154_box_from_raw"() { let got = box_from_raw_value(); if got != 11 { panic(154); }; }

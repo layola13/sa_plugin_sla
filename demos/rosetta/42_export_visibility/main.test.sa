@@ -1,57 +1,66 @@
-@import "sa_std/string.sa"
-@rosetta_042_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_exported_value = vtable { call = @sla__exported_value }
+@const SLA_FNPTR_VT_internal_value = vtable { call = @sla__internal_value }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__exported_value() -> i32:
 L_ENTRY:
-    tmp_0 = 0
-    total = tmp_0
-    i = 1
-    tmp_1 = add total, i
-    !total
-    total = tmp_1
-    !i
-    i = 2
-    tmp_2 = add total, i
-    !total
-    total = tmp_2
-    !i
-    i = 3
-    tmp_3 = add total, i
-    !total
-    total = tmp_3
-    !i
-    i = 4
-    tmp_4 = add total, i
-    !total
+    tmp_0 = 7
+    return tmp_0
+
+@sla__internal_value() -> i32:
+L_ENTRY:
+    tmp_1 = 5
+    return tmp_1
+
+@main() -> i32:
+L_ENTRY:
+    tmp_2 = call @sla__exported_value()
+    tmp_3 = call @sla__internal_value()
+    tmp_4 = add tmp_2, tmp_3
+    !tmp_2
+    !tmp_3
     total = tmp_4
-    !i
-    tmp_5 = 24
-    tmp_6 = add total, tmp_5
-    result = tmp_6
+    tmp_5 = call @sa_fmt_u64(total, 10)
+    tmp_6 = call @sa_fmt_buffer_data(tmp_5)
+    tmp_7 = call @sa_fmt_buffer_len(tmp_5)
+    tmp_8 = tmp_6
+    call @sa_print_bytes(&tmp_8, tmp_7)
+    call @sa_fmt_buffer_free(^tmp_5)
+    !tmp_8
+    !tmp_7
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_9 = 0
     !total
-    return result
+    return tmp_9
 
-@main() -> i64:
-L_ENTRY:
-    tmp_7 = call @rosetta_042_value()
-    result = tmp_7
-    return result
-
-@test "rosetta 042 42_export_visibility"():
+@test "rosetta 042 export visibility"():
 L_TEST_ENTRY_0:
-    tmp_8 = call @rosetta_042_value()
-    got = tmp_8
-    tmp_9 = 34
-    tmp_10 = ne got, tmp_9
-    br tmp_10 -> L_THEN_1, L_ELSE_2
+    tmp_10 = call @sla__exported_value()
+    tmp_11 = call @sla__internal_value()
+    tmp_12 = add tmp_10, tmp_11
+    !tmp_10
+    !tmp_11
+    total = tmp_12
+    tmp_13 = 12
+    tmp_14 = ne total, tmp_13
+    !tmp_13
+    br tmp_14 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_10
+    !tmp_14
     panic(42)
 
 L_ELSE_2:
-    !tmp_10
+    !tmp_14
     jmp L_MERGE_3
 
 L_MERGE_3:
-    !got
+    !total
     return
 

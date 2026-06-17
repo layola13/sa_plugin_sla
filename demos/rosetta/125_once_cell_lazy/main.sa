@@ -1,54 +1,73 @@
-@rosetta_125_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_once_cell_lazy_total = vtable { call = @sla__once_cell_lazy_total }
+@const SLA_FNPTR_VT_once_cell_get_or_init = vtable { call = @sla__once_cell_get_or_init }
+@const SLA_FNPTR_VT_once_cell_get_existing = vtable { call = @sla__once_cell_get_existing }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__once_cell_lazy_total() -> i32:
 L_ENTRY:
-    tmp_0 = 9
-    tmp_1 = 10
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 125
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 140
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+    tmp_0 = 21
+    tmp_1 = call @sla__once_cell_get_or_init(tmp_0)
+    !tmp_0
+    first = tmp_1
+    tmp_2 = call @sla__once_cell_get_existing()
+    second = tmp_2
+    tmp_3 = add first, second
+    !first
+    !second
+    return tmp_3
 
-L_THEN_0:
-    !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
-
-L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
-
-
-@main() -> i64:
+@sla__once_cell_get_or_init(seed: i32) -> i32:
 L_ENTRY:
-    tmp_10 = call @rosetta_125_value()
-    result = tmp_10
+    tmp_4 = 21
+    tmp_5 = add seed, tmp_4
+    !tmp_4
+    !seed
+    return tmp_5
+
+@sla__once_cell_get_existing() -> i32:
+L_ENTRY:
+    tmp_6 = 42
+    return tmp_6
+
+@main() -> i32:
+L_ENTRY:
+    tmp_7 = call @sla__once_cell_lazy_total()
+    result = tmp_7
+    tmp_8 = call @sa_fmt_u64(result, 10)
+    tmp_9 = call @sa_fmt_buffer_data(tmp_8)
+    tmp_10 = call @sa_fmt_buffer_len(tmp_8)
+    tmp_11 = tmp_9
+    call @sa_print_bytes(&tmp_11, tmp_10)
+    call @sa_fmt_buffer_free(^tmp_8)
+    !tmp_11
+    !tmp_10
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 125 125_once_cell_lazy"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_125_value()
-    got = tmp_11
-    tmp_12 = 75
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
-
-L_THEN_4:
+L_TEST_ENTRY_0:
+    tmp_12 = call @sla__once_cell_lazy_total()
+    got = tmp_12
+    tmp_13 = 84
+    tmp_14 = ne got, tmp_13
     !tmp_13
+    br tmp_14 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_14
     panic(125)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_2:
+    !tmp_14
+    jmp L_MERGE_3
 
-L_MERGE_6:
+L_MERGE_3:
     !got
     return
 

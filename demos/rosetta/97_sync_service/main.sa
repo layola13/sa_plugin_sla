@@ -1,51 +1,80 @@
-@rosetta_097_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_sync_needed = vtable { call = @sla__sync_needed }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__sync_needed(local_version: i32, remote_version: i32, dirty: u8) -> u8:
 L_ENTRY:
-    tmp_0 = 15
-    tmp_1 = 9
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 97
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 107
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+    tmp_0 = 1
+    tmp_1 = eq dirty, tmp_0
+    !tmp_0
+    br tmp_1 -> L_THEN_0, L_ELSE_1
 
 L_THEN_0:
-    !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
+    !tmp_1
+    tmp_2 = 1
+    !dirty
+    !local_version
+    !remote_version
+    return tmp_2
 
 L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
+    !tmp_1
+    tmp_3 = slt local_version, remote_version
+    !dirty
+    !local_version
+    !remote_version
+    return tmp_3
 
 
-@main() -> i64:
+@main() -> i32:
 L_ENTRY:
-    tmp_10 = call @rosetta_097_value()
-    result = tmp_10
-    return result
+    tmp_5 = 7
+    tmp_6 = 9
+    tmp_7 = 0
+    tmp_8 = call @sla__sync_needed(tmp_5, tmp_6, tmp_7)
+    !tmp_5
+    !tmp_6
+    !tmp_7
+    sync = tmp_8
+    tmp_9 = call @sa_fmt_bool(sync)
+    tmp_10 = call @sa_fmt_buffer_data(tmp_9)
+    tmp_11 = call @sa_fmt_buffer_len(tmp_9)
+    tmp_12 = tmp_10
+    call @sa_print_bytes(&tmp_12, tmp_11)
+    call @sa_fmt_buffer_free(^tmp_9)
+    !tmp_12
+    !tmp_11
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_13 = 0
+    !sync
+    return tmp_13
 
 @test "rosetta 097 97_sync_service"():
 L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_097_value()
-    got = tmp_11
-    tmp_12 = 125
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
+    tmp_14 = 7
+    tmp_15 = 9
+    tmp_16 = 0
+    tmp_17 = call @sla__sync_needed(tmp_14, tmp_15, tmp_16)
+    !tmp_14
+    !tmp_15
+    !tmp_16
+    got = tmp_17
+    tmp_18 = 1
+    tmp_19 = ne got, tmp_18
+    !tmp_18
+    br tmp_19 -> L_THEN_4, L_ELSE_5
 
 L_THEN_4:
-    !tmp_13
+    !tmp_19
     panic(97)
 
 L_ELSE_5:
-    !tmp_13
+    !tmp_19
     jmp L_MERGE_6
 
 L_MERGE_6:

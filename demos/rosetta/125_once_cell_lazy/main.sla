@@ -1,24 +1,29 @@
-// Sla companion for SA rosetta demo 125 Once Cell Lazy.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_125_value() -> int {
-    let base = (9 * 10) + 125;
-    let threshold = 140;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn once_cell_lazy_total() -> i32 {
+    let first = once_cell_get_or_init(21);
+    let second = once_cell_get_existing();
+    return first + second;
 }
 
-fn main() -> int {
-    let result = rosetta_125_value();
+fn once_cell_get_or_init(seed: i32) -> i32 {
+    return seed + 21;
+}
+
+fn once_cell_get_existing() -> i32 {
+    return 42;
+}
+
+fn main() -> i32 {
+    let result = once_cell_lazy_total();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 125 125_once_cell_lazy"() {
-    let got = rosetta_125_value();
-    if got != 75 {
+    let got = once_cell_lazy_total();
+    if got != 84 {
         panic(125);
     };
 };

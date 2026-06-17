@@ -1,23 +1,30 @@
-// Sla companion for SA rosetta demo 138 Epoll Kqueue Event.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_138_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 5;
-    return result;
+fn event_loop_ready_mask() -> i32 {
+    let ready_read = event_ready(1, true);
+    let ready_write = event_ready(2, true);
+    let blocked = event_ready(4, false);
+    return ready_read + ready_write + blocked;
 }
 
-fn main() -> int {
-    let result = rosetta_138_value();
+fn event_ready(token: i32, ready: bool) -> i32 {
+    if ready {
+        return token;
+    } else {
+        return 0;
+    };
+}
+
+fn main() -> i32 {
+    let result = event_loop_ready_mask();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 138 138_epoll_kqueue_event"() {
-    let got = rosetta_138_value();
-    if got != 15 {
+    let got = event_loop_ready_mask();
+    if got != 3 {
         panic(138);
     };
 };

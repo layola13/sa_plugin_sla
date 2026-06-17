@@ -1,25 +1,11 @@
-// Sla companion for SA rosetta demo 219 Pkg Bin Multiple.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_219_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn pkg_binary_target_count() -> i32 {
+    let cli_bin = 1;
+    let worker_bin = 1;
+    return cli_bin + worker_bin;
 }
 
-fn rosetta_219_value() -> int {
-    let result = rosetta_219_mix(28, 22);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_219_value();
-    return result;
-};
-
-@test "rosetta 219 219_pkg_bin_multiple"() {
-    let got = rosetta_219_value();
-    if got != 622 {
-        panic(219);
-    };
-};
+fn main() -> i32 { let result = pkg_binary_target_count(); println("{}", result); return result; }
+@test "rosetta 219 pkg bin multiple"() { let got = pkg_binary_target_count(); if got != 2 { panic(219); }; }

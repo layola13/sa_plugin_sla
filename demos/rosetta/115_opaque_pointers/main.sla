@@ -1,25 +1,32 @@
-// Sla companion for SA rosetta demo 115 Opaque Pointers.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/ptr.sa"
 
-fn rosetta_115_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+struct Opaque;
+
+extern "C" {
+    fn opaque_value(ptr: *Opaque) -> i32;
 }
 
-fn rosetta_115_value() -> int {
-    let result = rosetta_115_mix(21, 14);
-    return result;
+@no_mangle pub extern "C" fn opaque_value(ptr: *Opaque) -> i32 {
+    return 0;
 }
 
-fn main() -> int {
-    let result = rosetta_115_value();
+fn opaque_pointer_result() -> i32 {
+    let ptr = ptr::null::<Opaque>();
+    let _ignored = unsafe { opaque_value(ptr) };
+    return 0;
+}
+
+fn main() -> i32 {
+    let result = opaque_pointer_result();
+    println("{}", result);
     return result;
-};
+}
 
 @test "rosetta 115 115_opaque_pointers"() {
-    let got = rosetta_115_value();
-    if got != 301 {
+    let got = opaque_pointer_result();
+    if got != 0 {
         panic(115);
     };
-};
+}

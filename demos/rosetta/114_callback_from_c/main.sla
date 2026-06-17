@@ -1,23 +1,28 @@
-// Sla companion for SA rosetta demo 114 Callback From C.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_114_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 27;
+extern "C" fn add_one(x: i32) -> i32 {
+    x + 1
+}
+
+fn apply(cb: extern "C" fn(i32) -> i32, value: i32) -> i32 {
+    cb(value)
+}
+
+fn c_callback_result() -> i32 {
+    let result = apply(add_one, 41);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_114_value();
+fn main() -> i32 {
+    let result = c_callback_result();
+    println("{}", result);
     return result;
-};
+}
 
 @test "rosetta 114 114_callback_from_c"() {
-    let got = rosetta_114_value();
-    if got != 37 {
+    let got = c_callback_result();
+    if got != 42 {
         panic(114);
     };
 };

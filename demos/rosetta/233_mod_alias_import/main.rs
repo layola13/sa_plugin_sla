@@ -1,5 +1,12 @@
-// 233 - Mod Alias Import
+mod registry {
+    pub fn service_count() -> i32 {
+        1
+    }
+}
+
+use registry as services;
+
 fn main() {
-    let value = 233;
-    println!("{}", value);
+    let result = services::service_count();
+    println!("{}", result);
 }

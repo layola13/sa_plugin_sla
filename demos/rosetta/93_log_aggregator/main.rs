@@ -1,4 +1,7 @@
+fn severity_score(info: i32, warn: i32, error: i32) -> i32 {
+    info + warn * 10 + error * 100
+}
+
 fn main() {
-    let logs = [2, 3, 5];
-    println!("{}", logs.iter().sum::<i32>());
+    println!("{}", severity_score(4, 2, 1));
 }

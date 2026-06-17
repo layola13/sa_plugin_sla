@@ -1,4 +1,8 @@
-fn rosetta_106_value() -> i32 {
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/cell.sa"
+
+fn cell_update_sum() -> i32 {
     let value = Cell::new(10);
     let first = value.get();
     value.set(20);
@@ -7,13 +11,13 @@ fn rosetta_106_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = rosetta_106_value();
+    let result = cell_update_sum();
     println("{}", result);
     return result;
 }
 
 @test "rosetta 106 106_cell_interior_mut"() {
-    let got = rosetta_106_value();
+    let got = cell_update_sum();
     if got != 30 {
         panic(106);
     };

@@ -1,25 +1,5 @@
-// Sla companion for SA rosetta demo 199 Address Sanitizer Asan.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_199_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_199_value() -> int {
-    let result = rosetta_199_mix(16, 23);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_199_value();
-    return result;
-};
-
-@test "rosetta 199 199_address_sanitizer_asan"() {
-    let got = rosetta_199_value();
-    if got != 361 {
-        panic(199);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn asan_buffer_edge_sum() -> u8 { let first_byte: u8 = 1; let last_byte: u8 = 4; return first_byte + last_byte; }
+fn main() -> i32 { let result = asan_buffer_edge_sum(); println("{}", result); return 0; }
+@test "rosetta 199 199_address_sanitizer_asan"() { let got = asan_buffer_edge_sum(); if got != 5 { panic(199); }; }

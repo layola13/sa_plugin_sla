@@ -1,3 +1,6 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
 fn pipeline_stage_value() -> i32 {
     let stage1 = 2;
     let stage2 = stage1 * 3;

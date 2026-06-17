@@ -1,29 +1,32 @@
-// Sla companion for SA rosetta demo 303 Operator Overload Scalar Mul.
-// Rust reference 见 main.rs，演示 `vec * scalar` 异构类型运算符重载。
-//
-// ⚠️ 当前状态：占位符。等待 sla 编译器加入异构类型操作符重载支持。
-// 此 demo 揭示一个关键设计点：
-//   `impl Mul<f32> for Vec3` 与 `impl Mul<Vec3> for f32` 是不同 impl，
-//   sla 的 @derive(Mul) 必须支持参数类型多态（与 derive(Add) 同构类型不同）。
-//
-// 占位策略：返回 4+8+12=24 表示输出 (4,8,12) 的分量之和。
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/ops.sa"
 
-fn rosetta_303_value() -> int {
-    let s = 4;
-    let x = 1 * s;
-    let y = 2 * s;
-    let z = 3 * s;
-    return x + y + z;
+struct Vec3 {
+    x: f32,
+    y: f32,
+    z: f32,
 }
 
-fn main() -> int {
-    let result = rosetta_303_value();
+fn vec3_scalar_product_score() -> i32 {
+    let a = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+    let b = a * 4.0;
+    if b.x != 4.0 { return 0; };
+    if b.y != 8.0 { return 0; };
+    if b.z != 12.0 { return 0; };
+    return 4812;
+}
+
+fn main() -> i32 {
+    let result = vec3_scalar_product_score();
+    println("{}", result);
     return result;
-};
+}
 
 @test "rosetta 303 operator_overload_scalar_mul"() {
-    let got = rosetta_303_value();
-    if got != 24 {
-        panic(303);
-    };
-};
+    let a = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+    let b = a * 4.0;
+    if b.x != 4.0 { panic(303); };
+    if b.y != 8.0 { panic(304); };
+    if b.z != 12.0 { panic(305); };
+}

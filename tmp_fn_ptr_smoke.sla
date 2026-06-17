@@ -1,0 +1,14 @@
+extern "C" fn add_one(x: i32) -> i32 {
+    x + 1
+}
+
+fn apply(cb: extern "C" fn(i32) -> i32, value: i32) -> i32 {
+    cb(value)
+}
+
+@test "fn ptr extern callback"() {
+    let got = apply(add_one, 41);
+    if got != 42 {
+        panic(1);
+    };
+};

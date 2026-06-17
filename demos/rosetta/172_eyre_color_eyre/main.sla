@@ -1,22 +1,5 @@
-// Sla companion for SA rosetta demo 172 Eyre Color Eyre.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_172_value() -> int {
-    let seed = 5;
-    let shifted = seed + 172;
-    let scaled = shifted * 3;
-    let result = scaled - 16;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_172_value();
-    return result;
-};
-
-@test "rosetta 172 172_eyre_color_eyre"() {
-    let got = rosetta_172_value();
-    if got != 515 {
-        panic(172);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn eyre_context_len() -> usize { let context_len: usize = 7; return context_len; }
+fn main() -> i32 { let result = eyre_context_len(); println("{}", result); return 0; }
+@test "rosetta 172 172_eyre_color_eyre"() { let got = eyre_context_len(); if got != 7 { panic(172); }; }

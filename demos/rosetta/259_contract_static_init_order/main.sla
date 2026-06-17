@@ -1,25 +1,19 @@
-// Sla companion for SA rosetta demo 259 Contract Static Init Order.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_259_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
+fn contract_static_init_stages() -> i32 {
+    let config_loaded = 1;
+    let service_started = 1;
+    return config_loaded + service_started;
+}
+
+fn main() -> i32 {
+    let result = contract_static_init_stages();
+    println("{}", result);
     return result;
 }
 
-fn rosetta_259_value() -> int {
-    let result = rosetta_259_mix(13, 20);
-    return result;
+@test "rosetta 259 contract static init order"() {
+    let got = contract_static_init_stages();
+    if got != 2 { panic(259); };
 }
-
-fn main() -> int {
-    let result = rosetta_259_value();
-    return result;
-};
-
-@test "rosetta 259 259_contract_static_init_order"() {
-    let got = rosetta_259_value();
-    if got != 253 {
-        panic(259);
-    };
-};

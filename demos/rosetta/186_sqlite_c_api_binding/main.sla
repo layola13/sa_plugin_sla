@@ -1,23 +1,6 @@
-// Sla companion for SA rosetta demo 186 Sqlite C Api Binding.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_186_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 7;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_186_value();
-    return result;
-};
-
-@test "rosetta 186 186_sqlite_c_api_binding"() {
-    let got = rosetta_186_value();
-    if got != 17 {
-        panic(186);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+struct Row { id: i32, count: i32, pad: i32 }
+fn sqlite_insert_result_code() -> i32 { let row = Row { id: 7, count: 1, pad: 0 }; return row.count; }
+fn main() -> i32 { let result = sqlite_insert_result_code(); println("{}", result); return result; }
+@test "rosetta 186 186_sqlite_c_api_binding"() { let got = sqlite_insert_result_code(); if got != 1 { panic(186); }; }

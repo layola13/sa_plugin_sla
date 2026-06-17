@@ -1,25 +1,6 @@
-// Sla companion for SA rosetta demo 271 Build Optimization Passes.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_271_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_271_value() -> int {
-    let result = rosetta_271_mix(26, 26);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_271_value();
-    return result;
-};
-
-@test "rosetta 271 271_build_optimization_passes"() {
-    let got = rosetta_271_value();
-    if got != 676 {
-        panic(271);
-    };
-};
+fn build_optimization_pass_count() -> i32 { let inline_pass = 1; let dce_pass = 1; let const_fold_pass = 1; return inline_pass + dce_pass + const_fold_pass; }
+fn main() -> i32 { let result = build_optimization_pass_count(); println("{}", result); return result; }
+@test "rosetta 271 build optimization passes"() { let got = build_optimization_pass_count(); if got != 3 { panic(271); }; }

@@ -1,5 +1,8 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/vec.sa"
+@import "sa_std/core/box.sa"
+@import "sa_std/core/trait_object.sa"
 
 trait Score {
     fn score(&self) -> i32;

@@ -1,5 +1,8 @@
-// 249 - Contract Macro Export
+macro_rules! exported_answer {
+    () => { 1 };
+}
+
 fn main() {
-    let value = 249;
-    println!("{}", value);
+    let result = exported_answer!();
+    println!("{}", result);
 }

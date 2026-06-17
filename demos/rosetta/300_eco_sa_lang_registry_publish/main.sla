@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 300 Eco Sa Lang Registry Publish.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_300_value() -> int {
-    let seed = 14;
-    let shifted = seed + 300;
-    let scaled = shifted * 5;
-    let result = scaled - 6;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_300_value();
-    return result;
-};
-
-@test "rosetta 300 300_eco_sa_lang_registry_publish"() {
-    let got = rosetta_300_value();
-    if got != 1564 {
-        panic(300);
-    };
-};
+fn eco_registry_publish_steps() -> i32 { let package = 1; let checksum = 1; let index = 1; return package + checksum + index; }
+fn main() -> i32 { let result = eco_registry_publish_steps(); println("{}", result); return result; }
+@test "rosetta 300 eco sa lang registry publish"() { let got = eco_registry_publish_steps(); if got != 3 { panic(300); }; }

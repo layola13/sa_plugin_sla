@@ -1,22 +1,29 @@
-// Sla companion for SA rosetta demo 128 Rcu Read Copy Update.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_128_value() -> int {
-    let seed = 12;
-    let shifted = seed + 128;
-    let scaled = shifted * 4;
-    let result = scaled - 18;
-    return result;
+fn rcu_snapshot_total() -> i32 {
+    let old_snapshot = rcu_read(1);
+    let new_snapshot = rcu_update(old_snapshot, 1);
+    return old_snapshot + rcu_read(new_snapshot);
 }
 
-fn main() -> int {
-    let result = rosetta_128_value();
+fn rcu_read(snapshot: i32) -> i32 {
+    return snapshot;
+}
+
+fn rcu_update(snapshot: i32, delta: i32) -> i32 {
+    return snapshot + delta;
+}
+
+fn main() -> i32 {
+    let result = rcu_snapshot_total();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 128 128_rcu_read_copy_update"() {
-    let got = rosetta_128_value();
-    if got != 542 {
+    let got = rcu_snapshot_total();
+    if got != 3 {
         panic(128);
     };
 };

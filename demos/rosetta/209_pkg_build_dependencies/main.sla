@@ -1,24 +1,10 @@
-// Sla companion for SA rosetta demo 209 Pkg Build Dependencies.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_209_value() -> int {
-    let base = (8 * 4) + 209;
-    let threshold = 216;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn pkg_build_dependency_count() -> i32 {
+    let build_script_dependency = 1;
+    return build_script_dependency;
 }
 
-fn main() -> int {
-    let result = rosetta_209_value();
-    return result;
-};
-
-@test "rosetta 209 209_pkg_build_dependencies"() {
-    let got = rosetta_209_value();
-    if got != 25 {
-        panic(209);
-    };
-};
+fn main() -> i32 { let result = pkg_build_dependency_count(); println("{}", result); return result; }
+@test "rosetta 209 pkg build dependencies"() { let got = pkg_build_dependency_count(); if got != 1 { panic(209); }; }

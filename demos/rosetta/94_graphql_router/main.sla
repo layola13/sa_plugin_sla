@@ -1,23 +1,36 @@
-// Sla companion for SA rosetta demo 094 Graphql Router.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
 
-fn rosetta_094_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 7;
-    return result;
+fn resolver_id(operation: ptr, field: ptr) -> i32 {
+    if str_eq(operation, "query") == true {
+        if str_eq(field, "user") == true {
+            return 11;
+        } else {
+            return 0;
+        };
+    } else {
+        if str_eq(operation, "mutation") == true {
+            if str_eq(field, "createUser") == true {
+                return 21;
+            } else {
+                return 0;
+            };
+        } else {
+            return 0;
+        };
+    };
 }
 
-fn main() -> int {
-    let result = rosetta_094_value();
+fn main() -> i32 {
+    let result = resolver_id("query", "user");
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 094 94_graphql_router"() {
-    let got = rosetta_094_value();
-    if got != 43 {
+    let got = resolver_id("query", "user");
+    if got != 11 {
         panic(94);
     };
 };

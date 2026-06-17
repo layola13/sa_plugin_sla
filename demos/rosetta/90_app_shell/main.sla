@@ -1,23 +1,32 @@
-// Sla companion for SA rosetta demo 090 App Shell.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
 
-fn rosetta_090_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 26;
-    return result;
+fn dispatch(command: ptr, config_loaded: bool) -> i32 {
+    if config_loaded == true {
+        if str_eq(command, "sync") == true {
+            return 0;
+        } else {
+            if str_eq(command, "status") == true {
+                return 1;
+            } else {
+                return 64;
+            };
+        };
+    } else {
+        return 64;
+    };
 }
 
-fn main() -> int {
-    let result = rosetta_090_value();
-    return result;
+fn main() -> i32 {
+    let code = dispatch("sync", true);
+    println("{}", code);
+    return code;
 };
 
 @test "rosetta 090 90_app_shell"() {
-    let got = rosetta_090_value();
-    if got != 36 {
+    let got = dispatch("sync", true);
+    if got != 0 {
         panic(90);
     };
 };

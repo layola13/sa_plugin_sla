@@ -1,23 +1,21 @@
-// Sla companion for SA rosetta demo 234 Mod Unused Import Lint.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_234_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 9;
+fn unused_import_lint_count() -> i32 {
+    let imported_symbols = 2;
+    let referenced_symbols = 1;
+    return imported_symbols - referenced_symbols;
+}
+
+fn main() -> i32 {
+    let result = unused_import_lint_count();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_234_value();
-    return result;
-};
-
-@test "rosetta 234 234_mod_unused_import_lint"() {
-    let got = rosetta_234_value();
-    if got != 19 {
+@test "rosetta 234 mod unused import lint"() {
+    let got = unused_import_lint_count();
+    if got != 1 {
         panic(234);
     };
-};
+}

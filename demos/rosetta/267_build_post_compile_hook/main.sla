@@ -1,25 +1,6 @@
-// Sla companion for SA rosetta demo 267 Build Post Compile Hook.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_267_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_267_value() -> int {
-    let result = rosetta_267_mix(18, 27);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_267_value();
-    return result;
-};
-
-@test "rosetta 267 267_build_post_compile_hook"() {
-    let got = rosetta_267_value();
-    if got != 477 {
-        panic(267);
-    };
-};
+fn build_post_compile_artifact_count() -> i32 { let stripped_binary = 1; return stripped_binary; }
+fn main() -> i32 { let result = build_post_compile_artifact_count(); println("{}", result); return result; }
+@test "rosetta 267 build post compile hook"() { let got = build_post_compile_artifact_count(); if got != 1 { panic(267); }; }

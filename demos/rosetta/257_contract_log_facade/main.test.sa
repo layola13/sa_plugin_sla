@@ -1,55 +1,61 @@
-@import "sa_std/string.sa"
-@rosetta_257_value() -> i64:
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_contract_log_facade_levels = vtable { call = @sla__contract_log_facade_levels }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__contract_log_facade_levels() -> i32:
 L_ENTRY:
-    tmp_0 = 5
-    tmp_1 = 7
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 257
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 266
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+    tmp_0 = 1
+    info = tmp_0
+    tmp_1 = 1
+    warn = tmp_1
+    tmp_2 = 1
+    error = tmp_2
+    tmp_3 = add info, warn
+    tmp_4 = add tmp_3, error
+    !tmp_3
+    !info
+    !warn
+    !error
+    return tmp_4
 
-L_THEN_0:
-    !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
-    return tmp_7
-
-L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
-
-
-@main() -> i64:
+@main() -> i32:
 L_ENTRY:
-    tmp_10 = call @rosetta_257_value()
-    result = tmp_10
+    tmp_5 = call @sla__contract_log_facade_levels()
+    result = tmp_5
+    tmp_6 = call @sa_fmt_u64(result, 10)
+    tmp_7 = call @sa_fmt_buffer_data(tmp_6)
+    tmp_8 = call @sa_fmt_buffer_len(tmp_6)
+    tmp_9 = tmp_7
+    call @sa_print_bytes(&tmp_9, tmp_8)
+    call @sa_fmt_buffer_free(^tmp_6)
+    !tmp_9
+    !tmp_8
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
-@test "rosetta 257 257_contract_log_facade"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_257_value()
-    got = tmp_11
-    tmp_12 = 26
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
+@test "rosetta 257 contract log facade"():
+L_TEST_ENTRY_0:
+    tmp_10 = call @sla__contract_log_facade_levels()
+    got = tmp_10
+    tmp_11 = 3
+    tmp_12 = ne got, tmp_11
+    !tmp_11
+    br tmp_12 -> L_THEN_1, L_ELSE_2
 
-L_THEN_4:
-    !tmp_13
+L_THEN_1:
+    !tmp_12
     panic(257)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_2:
+    !tmp_12
+    jmp L_MERGE_3
 
-L_MERGE_6:
+L_MERGE_3:
     !got
     return
 

@@ -136,6 +136,7 @@ pub const Monomorphizer = struct {
                         .generics = &.{},
                         .fields = try new_fields.toOwnedSlice(),
                         .is_union = s.is_union,
+                        .is_opaque = s.is_opaque,
                     },
                 };
                 return res;
@@ -193,6 +194,7 @@ pub const Monomorphizer = struct {
                         .is_extern = f.is_extern,
                         .abi = f.abi,
                         .no_mangle = f.no_mangle,
+                        .is_decl_only = f.is_decl_only,
                         .generics = &.{},
                         .params = try new_params.toOwnedSlice(),
                         .ret_ty = new_ret,
@@ -424,6 +426,11 @@ pub const Monomorphizer = struct {
                 res.* = .{ .await_expr = .{ .expr = new_expr } };
                 return res;
             },
+            .inline_asm_expr => |asm_expr| {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .inline_asm_expr = .{ .template = asm_expr.template, .operands = asm_expr.operands } };
+                return res;
+            },
             .binary_expr => |bin| {
                 const new_left = try self.specializeNode(bin.left);
                 const new_right = try self.specializeNode(bin.right);
@@ -555,6 +562,27 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .call_expr => |call| {
+                if (call.generics.len > 0 and !self.func_templates.contains(call.func_name)) {
+                    var new_args = std.ArrayList(*ast.Node).init(self.allocator);
+                    for (call.args) |arg| {
+                        try new_args.append(try self.specializeNode(arg));
+                    }
+                    var new_generics = std.ArrayList(*ast.Type).init(self.allocator);
+                    for (call.generics) |g| {
+                        try new_generics.append(try self.specializeType(g));
+                    }
+                    const res = try self.allocator.create(ast.Node);
+                    res.* = .{
+                        .call_expr = .{
+                            .func_name = call.func_name,
+                            .associated_target = call.associated_target,
+                            .generics = try new_generics.toOwnedSlice(),
+                            .args = try new_args.toOwnedSlice(),
+                        },
+                    };
+                    return res;
+                }
+
                 // If this is a generic function call (e.g. unwrap_or<int>(opt, default))
                 if (call.generics.len > 0) {
                     const mangled_name = try self.getMangledFuncName(call.func_name, call.generics);
@@ -761,6 +789,18 @@ pub const Monomorphizer = struct {
                 }
                 return try self.collectGenericBindings(generic_names, closure.ret, actual_ty.closure.ret, inferred);
             },
+            .fn_ptr => |fn_ptr| {
+                if (actual_ty.* != .fn_ptr or fn_ptr.params.len != actual_ty.fn_ptr.params.len) return false;
+                if (fn_ptr.abi == null) {
+                    if (actual_ty.fn_ptr.abi != null) return false;
+                } else if (actual_ty.fn_ptr.abi == null or !std.mem.eql(u8, fn_ptr.abi.?, actual_ty.fn_ptr.abi.?)) {
+                    return false;
+                }
+                for (fn_ptr.params, actual_ty.fn_ptr.params) |tp, ap| {
+                    if (!try self.collectGenericBindings(generic_names, tp, ap, inferred)) return false;
+                }
+                return try self.collectGenericBindings(generic_names, fn_ptr.ret, actual_ty.fn_ptr.ret, inferred);
+            },
             .infer => return true,
         }
     }
@@ -787,6 +827,18 @@ pub const Monomorphizer = struct {
                     if (!self.typesStructurallyEqual(pa, pb)) return false;
                 }
                 return self.typesStructurallyEqual(a.closure.ret, b.closure.ret);
+            },
+            .fn_ptr => {
+                if (a.fn_ptr.abi == null) {
+                    if (b.fn_ptr.abi != null) return false;
+                } else if (b.fn_ptr.abi == null or !std.mem.eql(u8, a.fn_ptr.abi.?, b.fn_ptr.abi.?)) {
+                    return false;
+                }
+                if (a.fn_ptr.params.len != b.fn_ptr.params.len) return false;
+                for (a.fn_ptr.params, b.fn_ptr.params) |pa, pb| {
+                    if (!self.typesStructurallyEqual(pa, pb)) return false;
+                }
+                return self.typesStructurallyEqual(a.fn_ptr.ret, b.fn_ptr.ret);
             },
             .user_defined => {
                 if (!std.mem.eql(u8, a.user_defined.name, b.user_defined.name)) return false;
@@ -852,6 +904,16 @@ pub const Monomorphizer = struct {
                 const new_ret = try self.specializeType(closure.ret);
                 const res = try self.allocator.create(ast.Type);
                 res.* = .{ .closure = .{ .params = try new_params.toOwnedSlice(), .ret = new_ret } };
+                return res;
+            },
+            .fn_ptr => |fn_ptr| {
+                var new_params = std.ArrayList(*ast.Type).init(self.allocator);
+                for (fn_ptr.params) |p| {
+                    try new_params.append(try self.specializeType(p));
+                }
+                const new_ret = try self.specializeType(fn_ptr.ret);
+                const res = try self.allocator.create(ast.Type);
+                res.* = .{ .fn_ptr = .{ .abi = fn_ptr.abi, .params = try new_params.toOwnedSlice(), .ret = new_ret } };
                 return res;
             },
             .user_defined => |ud| {
@@ -1016,6 +1078,18 @@ pub const Monomorphizer = struct {
                 }
                 try self.appendTypeName(buf, closure.ret);
             },
+            .fn_ptr => |fn_ptr| {
+                try buf.appendSlice("fnptr_");
+                if (fn_ptr.abi) |abi| {
+                    try buf.appendSlice(abi);
+                    try buf.append('_');
+                }
+                for (fn_ptr.params) |p| {
+                    try self.appendTypeName(buf, p);
+                    try buf.append('_');
+                }
+                try self.appendTypeName(buf, fn_ptr.ret);
+            },
             .user_defined => |ud| {
                 try buf.appendSlice(ud.name);
                 for (ud.generics) |g| {
@@ -1048,6 +1122,7 @@ pub const Monomorphizer = struct {
                 .generics = &.{},
                 .fields = try spec_fields.toOwnedSlice(),
                 .is_union = template.is_union,
+                .is_opaque = template.is_opaque,
             },
         };
         try self.new_decls.append(node);
@@ -1116,6 +1191,7 @@ pub const Monomorphizer = struct {
                 .is_extern = template.is_extern,
                 .abi = template.abi,
                 .no_mangle = template.no_mangle,
+                .is_decl_only = template.is_decl_only,
                 .generics = &.{},
                 .params = try spec_params.toOwnedSlice(),
                 .ret_ty = fully_spec_ret_ty,
@@ -1172,6 +1248,16 @@ pub const Monomorphizer = struct {
                 const spec_ret = try self.substituteType(closure.ret, params, args);
                 const res = try self.allocator.create(ast.Type);
                 res.* = .{ .closure = .{ .params = try spec_params.toOwnedSlice(), .ret = spec_ret } };
+                return res;
+            },
+            .fn_ptr => |fn_ptr| {
+                var spec_params = std.ArrayList(*ast.Type).init(self.allocator);
+                for (fn_ptr.params) |p| {
+                    try spec_params.append(try self.substituteType(p, params, args));
+                }
+                const spec_ret = try self.substituteType(fn_ptr.ret, params, args);
+                const res = try self.allocator.create(ast.Type);
+                res.* = .{ .fn_ptr = .{ .abi = fn_ptr.abi, .params = try spec_params.toOwnedSlice(), .ret = spec_ret } };
                 return res;
             },
             .user_defined => |ud| {
@@ -1401,6 +1487,11 @@ pub const Monomorphizer = struct {
                 const spec_expr = try self.substituteNode(aw.expr, params, args);
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .await_expr = .{ .expr = spec_expr } };
+                return res;
+            },
+            .inline_asm_expr => |asm_expr| {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .inline_asm_expr = .{ .template = asm_expr.template, .operands = asm_expr.operands } };
                 return res;
             },
             .binary_expr => |bin| {

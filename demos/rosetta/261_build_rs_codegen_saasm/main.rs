@@ -1,5 +1,9 @@
-// 261 - Build Rs Codegen Saasm
+fn generated_saasm_units() -> i32 {
+    let emitted_module = 1;
+    emitted_module
+}
+
 fn main() {
-    let value = 261;
-    println!("{}", value);
+    let result = generated_saasm_units();
+    println!("{}", result);
 }

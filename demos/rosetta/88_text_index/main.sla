@@ -1,22 +1,28 @@
-// Sla companion for SA rosetta demo 088 Text Index.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
 
-fn rosetta_088_value() -> int {
-    let seed = 6;
-    let shifted = seed + 88;
-    let scaled = shifted * 9;
-    let result = scaled - 24;
-    return result;
+fn postings_for(term: ptr) -> i32 {
+    if str_eq(term, "rust") == true {
+        return 2;
+    } else {
+        if str_eq(term, "sla") == true {
+            return 3;
+        } else {
+            return 0;
+        };
+    };
 }
 
-fn main() -> int {
-    let result = rosetta_088_value();
+fn main() -> i32 {
+    let result = postings_for("sla");
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 088 88_text_index"() {
-    let got = rosetta_088_value();
-    if got != 822 {
+    let got = postings_for("sla");
+    if got != 3 {
         panic(88);
     };
 };

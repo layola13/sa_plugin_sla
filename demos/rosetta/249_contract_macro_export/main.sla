@@ -1,24 +1,18 @@
-// Sla companion for SA rosetta demo 249 Contract Macro Export.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_249_value() -> int {
-    let base = (14 * 8) + 249;
-    let threshold = 273;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn contract_exported_macro_count() -> i32 {
+    let exported_macro = 1;
+    return exported_macro;
 }
 
-fn main() -> int {
-    let result = rosetta_249_value();
+fn main() -> i32 {
+    let result = contract_exported_macro_count();
+    println("{}", result);
     return result;
-};
+}
 
-@test "rosetta 249 249_contract_macro_export"() {
-    let got = rosetta_249_value();
-    if got != 88 {
-        panic(249);
-    };
-};
+@test "rosetta 249 contract macro export"() {
+    let got = contract_exported_macro_count();
+    if got != 1 { panic(249); };
+}

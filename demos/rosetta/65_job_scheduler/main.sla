@@ -1,3 +1,6 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
 fn job_scheduler_done() -> i32 {
     let jobs = [1, 2, 3, 4];
     let done = 0;

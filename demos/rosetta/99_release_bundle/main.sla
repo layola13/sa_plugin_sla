@@ -1,25 +1,32 @@
-// Sla companion for SA rosetta demo 099 Release Bundle.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_099_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+struct BundleManifest {
+    binary: bool,
+    config: bool,
+    checksums: bool,
 }
 
-fn rosetta_099_value() -> int {
-    let result = rosetta_099_mix(17, 14);
-    return result;
+fn release_ready(manifest: BundleManifest) -> bool {
+    if manifest.binary == true {
+        if manifest.config == true {
+            return manifest.checksums;
+        };
+    };
+    return false;
 }
 
-fn main() -> int {
-    let result = rosetta_099_value();
-    return result;
+fn main() -> i32 {
+    let manifest = BundleManifest { binary: true, config: true, checksums: true };
+    let result = release_ready(manifest);
+    println("{}", result);
+    return 0;
 };
 
 @test "rosetta 099 99_release_bundle"() {
-    let got = rosetta_099_value();
-    if got != 241 {
+    let manifest = BundleManifest { binary: true, config: true, checksums: true };
+    let got = release_ready(manifest);
+    if got != true {
         panic(99);
     };
 };

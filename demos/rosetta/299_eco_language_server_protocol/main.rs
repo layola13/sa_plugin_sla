@@ -1,5 +1,10 @@
-// 299 - Eco Language Server Protocol
+fn lsp_message_kinds() -> i32 {
+    let request = 1;
+    let response = 1;
+    request + response
+}
+
 fn main() {
-    let value = 299;
-    println!("{}", value);
+    let result = lsp_message_kinds();
+    println!("{}", result);
 }

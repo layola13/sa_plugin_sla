@@ -1,22 +1,10 @@
-// Sla companion for SA rosetta demo 216 Pkg Profile Release.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_216_value() -> int {
-    let seed = 15;
-    let shifted = seed + 216;
-    let scaled = shifted * 2;
-    let result = scaled - 14;
-    return result;
+fn pkg_release_profile_level() -> i32 {
+    let optimization_level = 3;
+    return optimization_level;
 }
 
-fn main() -> int {
-    let result = rosetta_216_value();
-    return result;
-};
-
-@test "rosetta 216 216_pkg_profile_release"() {
-    let got = rosetta_216_value();
-    if got != 448 {
-        panic(216);
-    };
-};
+fn main() -> i32 { let result = pkg_release_profile_level(); println("{}", result); return result; }
+@test "rosetta 216 pkg profile release"() { let got = pkg_release_profile_level(); if got != 3 { panic(216); }; }

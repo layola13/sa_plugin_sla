@@ -1,3 +1,9 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/core/slice.sa"
+
 fn serializer_json() -> String {
     let json = format("{{\"id\":{}}}", 7);
     return json;

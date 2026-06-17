@@ -1,7 +1,12 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
-@unwrap_or(opt: ptr, default: i32) -> i32:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_unwrap_or = vtable { call = @sla__unwrap_or }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__unwrap_or(opt: ptr, default: i32) -> i32:
 L_ENTRY:
     tmp_0 = load opt+0 as u8
     br tmp_0 -> L_THEN_0, L_ELSE_1
@@ -27,7 +32,7 @@ L_ENTRY:
     tmp_4 = 42
     store opt+1, tmp_4 as i32
     tmp_5 = 0
-    tmp_6 = call @unwrap_or(opt, tmp_5)
+    tmp_6 = call @sla__unwrap_or(opt, tmp_5)
     !tmp_5
     result = tmp_6
     tmp_7 = call @sa_fmt_u64(result, 10)
@@ -36,6 +41,8 @@ L_ENTRY:
     tmp_10 = tmp_8
     call @sa_print_bytes(&tmp_10, tmp_9)
     call @sa_fmt_buffer_free(^tmp_7)
+    !tmp_10
+    !tmp_9
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     tmp_11 = 0
@@ -51,7 +58,7 @@ L_TEST_ENTRY_3:
     tmp_13 = 42
     store opt+1, tmp_13 as i32
     tmp_14 = 0
-    tmp_15 = call @unwrap_or(opt, tmp_14)
+    tmp_15 = call @sla__unwrap_or(opt, tmp_14)
     !tmp_14
     result = tmp_15
     tmp_16 = 42

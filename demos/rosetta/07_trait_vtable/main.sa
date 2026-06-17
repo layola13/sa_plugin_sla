@@ -1,46 +1,75 @@
-@rosetta_007_mix(left: i64, right: i64) -> i64:
-L_ENTRY:
-    tmp_0 = mul left, right
-    product = tmp_0
-    tmp_1 = add product, left
-    tmp_2 = sub tmp_1, right
-    result = tmp_2
-    !product
-    !right
-    !left
-    return result
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/trait_object.sa"
 
-@rosetta_007_value() -> i64:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const VT_Button_Draw = vtable { draw = @sla__Button_draw }
+@const SLA_FNPTR_VT_render = vtable { call = @sla__render }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__Button_draw(&self: ptr) -> i32:
 L_ENTRY:
-    tmp_3 = 17
-    tmp_4 = 21
-    tmp_5 = call @rosetta_007_mix(tmp_3, tmp_4)
-    result = tmp_5
-    return result
+    tmp_0 = load self+0 as i32
+    return tmp_0
 
-@main() -> i64:
+@sla__render(&item: ptr) -> i32:
 L_ENTRY:
-    tmp_6 = call @rosetta_007_value()
-    result = tmp_6
-    return result
+    EXPAND DYN_CALL tmp_1, item, 0
+    return tmp_1
 
-@test "rosetta 007 07_trait_vtable"():
+@main() -> i32:
+L_ENTRY:
+    button = alloc 4
+    tmp_2 = 77
+    store button+0, tmp_2 as i32
+    tmp_3 = alloc Dyn_SIZE
+    store tmp_3+Dyn_data, button as ptr
+    store tmp_3+Dyn_vtable, &VT_Button_Draw as ptr
+    tmp_4 = call @sla__render(&tmp_3)
+    !tmp_3
+    result = tmp_4
+    tmp_5 = call @sa_fmt_u64(result, 10)
+    tmp_6 = call @sa_fmt_buffer_data(tmp_5)
+    tmp_7 = call @sa_fmt_buffer_len(tmp_5)
+    tmp_8 = tmp_6
+    call @sa_print_bytes(&tmp_8, tmp_7)
+    call @sa_fmt_buffer_free(^tmp_5)
+    !tmp_8
+    !tmp_7
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_9 = 0
+    !button
+    !result
+    return tmp_9
+
+@test "rosetta 007 trait vtable"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @rosetta_007_value()
-    got = tmp_7
-    tmp_8 = 353
-    tmp_9 = ne got, tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+    button = alloc 4
+    tmp_10 = 77
+    store button+0, tmp_10 as i32
+    tmp_11 = alloc Dyn_SIZE
+    store tmp_11+Dyn_data, button as ptr
+    store tmp_11+Dyn_vtable, &VT_Button_Draw as ptr
+    tmp_12 = call @sla__render(&tmp_11)
+    !tmp_11
+    result = tmp_12
+    tmp_13 = 77
+    tmp_14 = ne result, tmp_13
+    !tmp_13
+    br tmp_14 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_9
+    !tmp_14
     panic(7)
 
 L_ELSE_2:
-    !tmp_9
+    !tmp_14
     jmp L_MERGE_3
 
 L_MERGE_3:
-    !got
+    !button
+    !result
     return
 

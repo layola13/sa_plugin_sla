@@ -1,25 +1,10 @@
-// Sla companion for SA rosetta demo 203 Pkg Dependencies Git.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_203_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn pkg_git_dependency_count() -> i32 {
+    let pinned_git_dependency = 1;
+    return pinned_git_dependency;
 }
 
-fn rosetta_203_value() -> int {
-    let result = rosetta_203_mix(24, 31);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_203_value();
-    return result;
-};
-
-@test "rosetta 203 203_pkg_dependencies_git"() {
-    let got = rosetta_203_value();
-    if got != 737 {
-        panic(203);
-    };
-};
+fn main() -> i32 { let result = pkg_git_dependency_count(); println("{}", result); return result; }
+@test "rosetta 203 pkg dependencies git"() { let got = pkg_git_dependency_count(); if got != 1 { panic(203); }; }

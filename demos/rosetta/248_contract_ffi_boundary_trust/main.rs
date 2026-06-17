@@ -1,5 +1,10 @@
-// 248 - Contract Ffi Boundary Trust
+fn checked_ffi_boundary_parts() -> i32 {
+    let pointer_checked = 1;
+    let length_checked = 1;
+    pointer_checked + length_checked
+}
+
 fn main() {
-    let value = 248;
-    println!("{}", value);
+    let result = checked_ffi_boundary_parts();
+    println!("{}", result);
 }

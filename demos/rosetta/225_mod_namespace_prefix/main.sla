@@ -1,24 +1,6 @@
-// Sla companion for SA rosetta demo 225 Mod Namespace Prefix.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_225_value() -> int {
-    let base = (7 * 2) + 225;
-    let threshold = 248;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
-}
-
-fn main() -> int {
-    let result = rosetta_225_value();
-    return result;
-};
-
-@test "rosetta 225 225_mod_namespace_prefix"() {
-    let got = rosetta_225_value();
-    if got != 9 {
-        panic(225);
-    };
-};
+fn mod_namespace_prefix_segments() -> i32 { let namespace = 1; let symbol = 1; return namespace + symbol; }
+fn main() -> i32 { let result = mod_namespace_prefix_segments(); println("{}", result); return result; }
+@test "rosetta 225 mod namespace prefix"() { let got = mod_namespace_prefix_segments(); if got != 2 { panic(225); }; }

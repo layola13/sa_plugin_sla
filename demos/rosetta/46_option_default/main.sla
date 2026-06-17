@@ -1,5 +1,6 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/core/option.sa"
 
 fn choose(opt: Option<i32>, fallback: i32) -> i32 {
     opt.unwrap_or(fallback)

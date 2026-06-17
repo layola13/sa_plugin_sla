@@ -1,5 +1,9 @@
-// 296 - Eco Gpu Ptx Shader
+fn ptx_shader_kernels() -> i32 {
+    let compute_kernel = 1;
+    compute_kernel
+}
+
 fn main() {
-    let value = 296;
-    println!("{}", value);
+    let result = ptx_shader_kernels();
+    println!("{}", result);
 }

@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 152 Memory Layout Struct.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_152_value() -> int {
-    let seed = 19;
-    let shifted = seed + 152;
-    let scaled = shifted * 10;
-    let result = scaled - 19;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_152_value();
-    return result;
-};
-
-@test "rosetta 152 152_memory_layout_struct"() {
-    let got = rosetta_152_value();
-    if got != 1691 {
-        panic(152);
-    };
-};
+fn memory_layout_size_plus_align() -> usize { let size: usize = 8; let align: usize = 4; return size + align; }
+fn main() -> i32 { let result = memory_layout_size_plus_align(); println("{}", result); return 0; }
+@test "rosetta 152 152_memory_layout_struct"() { let got = memory_layout_size_plus_align(); if got != 12 { panic(152); }; }

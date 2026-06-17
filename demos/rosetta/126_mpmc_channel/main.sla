@@ -1,23 +1,28 @@
-// Sla companion for SA rosetta demo 126 Mpmc Channel.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_126_value() -> int {
+fn mpmc_channel_total() -> i32 {
     let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 16;
-    return result;
+    total = channel_send(total, 1);
+    total = channel_send(total, 2);
+    total = channel_send(total, 3);
+    total = channel_send(total, 4);
+    return total;
 }
 
-fn main() -> int {
-    let result = rosetta_126_value();
+fn channel_send(total: i32, message: i32) -> i32 {
+    return total + message;
+}
+
+fn main() -> i32 {
+    let result = mpmc_channel_total();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 126 126_mpmc_channel"() {
-    let got = rosetta_126_value();
-    if got != 52 {
+    let got = mpmc_channel_total();
+    if got != 10 {
         panic(126);
     };
 };

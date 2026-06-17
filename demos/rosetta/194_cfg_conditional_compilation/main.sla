@@ -1,23 +1,5 @@
-// Sla companion for SA rosetta demo 194 Cfg Conditional Compilation.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_194_value() -> int {
-    let total = 0;
-    for i in 1..5 {
-        total = total + i;
-    }
-    let result = total + 15;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_194_value();
-    return result;
-};
-
-@test "rosetta 194 194_cfg_conditional_compilation"() {
-    let got = rosetta_194_value();
-    if got != 25 {
-        panic(194);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn cfg_target_arch_len() -> usize { let arch_len: usize = 3; return arch_len; }
+fn main() -> i32 { let result = cfg_target_arch_len(); println("{}", result); return 0; }
+@test "rosetta 194 194_cfg_conditional_compilation"() { let got = cfg_target_arch_len(); if got != 3 { panic(194); }; }

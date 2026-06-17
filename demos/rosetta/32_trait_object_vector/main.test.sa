@@ -1,13 +1,16 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-@import "sa_std/string.sa"
-@import "sa_std/core/box.sal"
-@import "sa_std/core/mem.sa"
 @import "sa_std/vec.sa"
+@import "sa_std/core/box.sa"
 @import "sa_std/core/trait_object.sa"
-@const VT_AddOne_Score = vtable { score = @AddOne_score }
-@const VT_AddTwo_Score = vtable { score = @AddTwo_score }
-@AddOne_score(&self: ptr) -> i32:
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const VT_AddOne_Score = vtable { score = @sla__AddOne_score }
+@const VT_AddTwo_Score = vtable { score = @sla__AddTwo_score }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__AddOne_score(&self: ptr) -> i32:
 L_ENTRY:
     tmp_0 = load self+0 as i32
     tmp_1 = 1
@@ -16,7 +19,7 @@ L_ENTRY:
     !tmp_1
     return tmp_2
 
-@AddTwo_score(&self: ptr) -> i32:
+@sla__AddTwo_score(&self: ptr) -> i32:
 L_ENTRY:
     tmp_3 = load self+0 as i32
     tmp_4 = 2

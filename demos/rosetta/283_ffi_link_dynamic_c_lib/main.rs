@@ -1,5 +1,9 @@
-// 283 - Ffi Link Dynamic C Lib
+fn dynamic_library_imports() -> i32 {
+    let runtime_symbol = 1;
+    runtime_symbol
+}
+
 fn main() {
-    let value = 283;
-    println!("{}", value);
+    let result = dynamic_library_imports();
+    println!("{}", result);
 }

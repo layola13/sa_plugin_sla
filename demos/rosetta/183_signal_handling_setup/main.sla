@@ -1,25 +1,5 @@
-// Sla companion for SA rosetta demo 183 Signal Handling Setup.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_183_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
-}
-
-fn rosetta_183_value() -> int {
-    let result = rosetta_183_mix(23, 32);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_183_value();
-    return result;
-};
-
-@test "rosetta 183 183_signal_handling_setup"() {
-    let got = rosetta_183_value();
-    if got != 727 {
-        panic(183);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn signal_handler_signal() -> i32 { let signal_number = 2; return signal_number; }
+fn main() -> i32 { let result = signal_handler_signal(); println("{}", result); return result; }
+@test "rosetta 183 183_signal_handling_setup"() { let got = signal_handler_signal(); if got != 2 { panic(183); }; }

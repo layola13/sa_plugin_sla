@@ -36,6 +36,7 @@ pub const Node = union(enum) {
     match_expr: MatchExpr,
     unsafe_expr: UnsafeExpr,
     await_expr: AwaitExpr,
+    inline_asm_expr: InlineAsmExpr,
     binary_expr: BinaryExpr,
     call_expr: CallExpr,
     closure_literal: ClosureLiteral,
@@ -63,6 +64,7 @@ pub const StructDecl = struct {
     generics: []const []const u8,
     fields: []const Field,
     is_union: bool = false,
+    is_opaque: bool = false,
 };
 
 pub const EnumDecl = struct {
@@ -105,6 +107,7 @@ pub const FuncDecl = struct {
     is_extern: bool = false,
     abi: ?[]const u8 = null,
     no_mangle: bool = false,
+    is_decl_only: bool = false,
     generics: []const []const u8,
     params: []const Param,
     ret_ty: *Type,
@@ -234,11 +237,22 @@ pub const UnsafeExpr = struct {
 
 pub const MatchCase = struct {
     pattern: EnumPattern,
+    guard: ?*Node = null,
     body: []const *Node,
 };
 
 pub const AwaitExpr = struct {
     expr: *Node,
+};
+
+pub const InlineAsmOperand = struct {
+    constraint: []const u8,
+    var_name: []const u8,
+};
+
+pub const InlineAsmExpr = struct {
+    template: []const u8,
+    operands: []const InlineAsmOperand,
 };
 
 pub const ClosureLiteral = struct {
@@ -362,6 +376,7 @@ pub const Type = union(enum) {
     tuple: TupleType,
     future: *Type,
     closure: ClosureType,
+    fn_ptr: FnPtrType,
     user_defined: UserDefined,
 };
 
@@ -402,6 +417,12 @@ pub const TupleType = struct {
 };
 
 pub const ClosureType = struct {
+    params: []const *Type,
+    ret: *Type,
+};
+
+pub const FnPtrType = struct {
+    abi: ?[]const u8 = null,
     params: []const *Type,
     ret: *Type,
 };

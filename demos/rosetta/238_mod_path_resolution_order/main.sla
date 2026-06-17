@@ -1,23 +1,21 @@
-// Sla companion for SA rosetta demo 238 Mod Path Resolution Order.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_238_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 13;
+fn path_resolution_selected_scope() -> i32 {
+    let local_module_priority = 1;
+    let root_item_priority = 2;
+    return root_item_priority - local_module_priority;
+}
+
+fn main() -> i32 {
+    let result = path_resolution_selected_scope();
+    println("{}", result);
     return result;
 }
 
-fn main() -> int {
-    let result = rosetta_238_value();
-    return result;
-};
-
-@test "rosetta 238 238_mod_path_resolution_order"() {
-    let got = rosetta_238_value();
-    if got != 49 {
+@test "rosetta 238 mod path resolution order"() {
+    let got = path_resolution_selected_scope();
+    if got != 1 {
         panic(238);
     };
-};
+}

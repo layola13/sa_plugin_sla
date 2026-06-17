@@ -1,23 +1,11 @@
-// Sla companion for SA rosetta demo 214 Pkg Target Specific Deps.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_214_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 12;
-    return result;
+fn pkg_target_specific_dependency_count() -> i32 {
+    let linux_dependency = 1;
+    let wasm_dependency = 1;
+    return linux_dependency + wasm_dependency;
 }
 
-fn main() -> int {
-    let result = rosetta_214_value();
-    return result;
-};
-
-@test "rosetta 214 214_pkg_target_specific_deps"() {
-    let got = rosetta_214_value();
-    if got != 48 {
-        panic(214);
-    };
-};
+fn main() -> i32 { let result = pkg_target_specific_dependency_count(); println("{}", result); return result; }
+@test "rosetta 214 pkg target specific deps"() { let got = pkg_target_specific_dependency_count(); if got != 2 { panic(214); }; }

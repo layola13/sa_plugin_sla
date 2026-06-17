@@ -1,23 +1,5 @@
-// Sla companion for SA rosetta demo 174 Backtrace Capture.
-// Generated from the catalog name; Rust reference lives in main.rs.
-
-fn rosetta_174_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 18;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_174_value();
-    return result;
-};
-
-@test "rosetta 174 174_backtrace_capture"() {
-    let got = rosetta_174_value();
-    if got != 54 {
-        panic(174);
-    };
-};
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+fn backtrace_depth() -> i32 { let captured_depth = 1; return captured_depth; }
+fn main() -> i32 { let result = backtrace_depth(); println("{}", result); return result; }
+@test "rosetta 174 174_backtrace_capture"() { let got = backtrace_depth(); if got != 1 { panic(174); }; }

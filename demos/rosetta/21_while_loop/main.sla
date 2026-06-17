@@ -1,24 +1,25 @@
-// Sla companion for SA rosetta demo 021 While Loop.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_021_value() -> int {
-    let base = (7 * 5) + 21;
-    let threshold = 47;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn while_loop_sum() -> i32 {
+    let i = 1;
+    let sum = 0;
+    while i <= 5 {
+        sum = sum + i;
+        i = i + 1;
+    }
+    return sum;
 }
 
-fn main() -> int {
-    let result = rosetta_021_value();
+fn main() -> i32 {
+    let result = while_loop_sum();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 021 21_while_loop"() {
-    let got = rosetta_021_value();
-    if got != 9 {
+    let got = while_loop_sum();
+    if got != 15 {
         panic(21);
     };
 };

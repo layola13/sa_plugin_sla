@@ -1,25 +1,33 @@
-// Sla companion for SA rosetta demo 127 Hazard Pointers.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_127_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn hazard_pointer_score() -> i32 {
+    let loaded = hazard_load(9);
+    let protected = hazard_matches(loaded, 9);
+    return loaded + protected;
 }
 
-fn rosetta_127_value() -> int {
-    let result = rosetta_127_mix(17, 20);
-    return result;
+fn hazard_load(shared_value: i32) -> i32 {
+    return shared_value;
 }
 
-fn main() -> int {
-    let result = rosetta_127_value();
+fn hazard_matches(loaded: i32, retired: i32) -> i32 {
+    if loaded == retired {
+        return 1;
+    } else {
+        return 0;
+    };
+}
+
+fn main() -> i32 {
+    let result = hazard_pointer_score();
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 127 127_hazard_pointers"() {
-    let got = rosetta_127_value();
-    if got != 337 {
+    let got = hazard_pointer_score();
+    if got != 10 {
         panic(127);
     };
 };

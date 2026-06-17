@@ -1,22 +1,33 @@
-// Sla companion for SA rosetta demo 092 Query Plan.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_092_value() -> int {
-    let seed = 10;
-    let shifted = seed + 92;
-    let scaled = shifted * 4;
-    let result = scaled - 5;
-    return result;
+struct QueryPlan {
+    table_scan_rows: i32,
+    index_rows: i32,
+    filter_cost: i32,
 }
 
-fn main() -> int {
-    let result = rosetta_092_value();
+fn chosen_cost(plan: QueryPlan) -> i32 {
+    let table_cost = plan.table_scan_rows;
+    let index_cost = plan.index_rows + plan.filter_cost;
+    if index_cost < table_cost {
+        return index_cost;
+    } else {
+        return table_cost;
+    };
+}
+
+fn main() -> i32 {
+    let plan = QueryPlan { table_scan_rows: 120, index_rows: 18, filter_cost: 7 };
+    let result = chosen_cost(plan);
+    println("{}", result);
     return result;
 };
 
 @test "rosetta 092 92_query_plan"() {
-    let got = rosetta_092_value();
-    if got != 403 {
+    let plan = QueryPlan { table_scan_rows: 120, index_rows: 18, filter_cost: 7 };
+    let got = chosen_cost(plan);
+    if got != 25 {
         panic(92);
     };
 };

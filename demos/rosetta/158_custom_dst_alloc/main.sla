@@ -1,23 +1,6 @@
-// Sla companion for SA rosetta demo 158 Custom Dst Alloc.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_158_value() -> int {
-    let total = 0;
-    for i in 1..9 {
-        total = total + i;
-    }
-    let result = total + 25;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_158_value();
-    return result;
-};
-
-@test "rosetta 158 158_custom_dst_alloc"() {
-    let got = rosetta_158_value();
-    if got != 61 {
-        panic(158);
-    };
-};
+fn custom_dst_alloc_len() -> usize { let bytes_len: usize = 3; return bytes_len; }
+fn main() -> i32 { let result = custom_dst_alloc_len(); println("{}", result); return 0; }
+@test "rosetta 158 158_custom_dst_alloc"() { let got = custom_dst_alloc_len(); if got != 3 { panic(158); }; }

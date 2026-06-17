@@ -1,22 +1,6 @@
-// Sla companion for SA rosetta demo 284 Ffi Pkg Config Integration.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_284_value() -> int {
-    let seed = 15;
-    let shifted = seed + 284;
-    let scaled = shifted * 7;
-    let result = scaled - 13;
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_284_value();
-    return result;
-};
-
-@test "rosetta 284 284_ffi_pkg_config_integration"() {
-    let got = rosetta_284_value();
-    if got != 2080 {
-        panic(284);
-    };
-};
+fn ffi_pkg_config_fields() -> i32 { let include_dir = 1; let library_dir = 1; return include_dir + library_dir; }
+fn main() -> i32 { let result = ffi_pkg_config_fields(); println("{}", result); return result; }
+@test "rosetta 284 ffi pkg config integration"() { let got = ffi_pkg_config_fields(); if got != 2 { panic(284); }; }

@@ -1,25 +1,11 @@
-// Sla companion for SA rosetta demo 211 Pkg Workspace Inheritance.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_211_mix(left: int, right: int) -> int {
-    let product = left * right;
-    let result = product + left - right;
-    return result;
+fn pkg_workspace_inherited_fields() -> i32 {
+    let inherited_version = 1;
+    let inherited_license = 1;
+    return inherited_version + inherited_license;
 }
 
-fn rosetta_211_value() -> int {
-    let result = rosetta_211_mix(12, 15);
-    return result;
-}
-
-fn main() -> int {
-    let result = rosetta_211_value();
-    return result;
-};
-
-@test "rosetta 211 211_pkg_workspace_inheritance"() {
-    let got = rosetta_211_value();
-    if got != 177 {
-        panic(211);
-    };
-};
+fn main() -> i32 { let result = pkg_workspace_inherited_fields(); println("{}", result); return result; }
+@test "rosetta 211 pkg workspace inheritance"() { let got = pkg_workspace_inherited_fields(); if got != 2 { panic(211); }; }

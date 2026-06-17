@@ -1,24 +1,20 @@
-// Sla companion for SA rosetta demo 201 Pkg Manifest Basic.
-// Generated from the catalog name; Rust reference lives in main.rs.
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-fn rosetta_201_value() -> int {
-    let base = (17 * 5) + 201;
-    let threshold = 223;
-    if base > threshold {
-        return base - threshold;
-    } else {
-        return threshold - base;
-    };
+fn pkg_manifest_basic_fields() -> i32 {
+    let name = 1;
+    let version = 1;
+    let entry = 1;
+    return name + version + entry;
 }
 
-fn main() -> int {
-    let result = rosetta_201_value();
+fn main() -> i32 {
+    let result = pkg_manifest_basic_fields();
+    println("{}", result);
     return result;
-};
+}
 
-@test "rosetta 201 201_pkg_manifest_basic"() {
-    let got = rosetta_201_value();
-    if got != 63 {
-        panic(201);
-    };
-};
+@test "rosetta 201 pkg manifest basic"() {
+    let got = pkg_manifest_basic_fields();
+    if got != 3 { panic(201); };
+}

@@ -1,5 +1,6 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/vec_deque.sa"
 
 fn main() -> i32 {
     let queue = VecDeque::from([1, 2, 3]);

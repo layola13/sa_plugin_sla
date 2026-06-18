@@ -1,9 +1,9 @@
 # 176 Result Flattening
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the result-flattening catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/176_result_flattening/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for flattening nested `Result` values.
+- `main.sla`: Sla companion for flattening nested `Result` values.
 
 Commands:
 

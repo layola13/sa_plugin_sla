@@ -1,9 +1,9 @@
 # 256 Contract Panic Handler Propagate
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps panic propagation observable as both local and host handler hops.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/256_contract_panic_handler_propagate/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the local and host panic-handler hops.
+- `main.sla`: Sla companion for the local and host panic-handler hops.
 
 Commands:
 

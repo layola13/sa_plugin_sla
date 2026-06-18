@@ -1,9 +1,9 @@
 # 117 Inline Assembly
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current inline-assembly surrogate honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/117_inline_assembly/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: local Rust surrogate using a no-op inline assembly escape that preserves the observed value.
+- `main.sla`: matching Sla surrogate for the same value-stable assembly escape observable.
 
 Commands:
 

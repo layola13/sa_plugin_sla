@@ -1,10 +1,16 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/sync/atomic.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/sync/atomic.sa"
 @const SLA_FNPTR_VT_atomic_fetch_add_sum = vtable { call = @sla__atomic_fetch_add_sum }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
 @sla__atomic_fetch_add_sum() -> i32:
@@ -20,8 +26,6 @@ L_ENTRY:
     EXPAND ATOMIC_I32_LOAD tmp_3, value, seq_cst
     new = tmp_3
     tmp_4 = add old, new
-    !old
-    !new
     return tmp_4
 
 @main() -> i32:

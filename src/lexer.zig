@@ -48,10 +48,13 @@ pub const Token = struct {
         keyword_const,
         keyword_inline,
         keyword_macro,
+        keyword_mut,
 
         // Symbols
         plus,           // +
         plus_equal,     // +=
+        pipe_equal,     // |=
+        ampersand_equal,// &=
         minus,          // -
         asterisk,       // *
         slash,          // /
@@ -66,6 +69,8 @@ pub const Token = struct {
         caret,          // ^
         bang,           // !
         pipe,           // |
+        less_less,      // <<
+        greater_greater,// >>
         dot,            // .
         comma,          // ,
         semicolon,      // ;
@@ -152,6 +157,10 @@ pub const Lexer = struct {
                 return Token{ .tag = .equal, .loc = .{ .start = start, .end = self.index } };
             },
             '&' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
+                    self.index += 1;
+                    return Token{ .tag = .ampersand_equal, .loc = .{ .start = start, .end = self.index } };
+                }
                 if (self.index < self.buffer.len and self.buffer[self.index] == '&') {
                     self.index += 1;
                     return Token{ .tag = .amp_amp, .loc = .{ .start = start, .end = self.index } };
@@ -159,7 +168,13 @@ pub const Lexer = struct {
                 return Token{ .tag = .ampersand, .loc = .{ .start = start, .end = self.index } };
             },
             '^' => return Token{ .tag = .caret, .loc = .{ .start = start, .end = self.index } },
-            '|' => return Token{ .tag = .pipe, .loc = .{ .start = start, .end = self.index } },
+            '|' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
+                    self.index += 1;
+                    return Token{ .tag = .pipe_equal, .loc = .{ .start = start, .end = self.index } };
+                }
+                return Token{ .tag = .pipe, .loc = .{ .start = start, .end = self.index } };
+            },
             '!' => {
                 if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
                     self.index += 1;
@@ -190,6 +205,10 @@ pub const Lexer = struct {
             '[' => return Token{ .tag = .l_bracket, .loc = .{ .start = start, .end = self.index } },
             ']' => return Token{ .tag = .r_bracket, .loc = .{ .start = start, .end = self.index } },
             '<' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '<') {
+                    self.index += 1;
+                    return Token{ .tag = .less_less, .loc = .{ .start = start, .end = self.index } };
+                }
                 if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
                     self.index += 1;
                     return Token{ .tag = .less_equal, .loc = .{ .start = start, .end = self.index } };
@@ -197,6 +216,10 @@ pub const Lexer = struct {
                 return Token{ .tag = .less_than, .loc = .{ .start = start, .end = self.index } };
             },
             '>' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '>') {
+                    self.index += 1;
+                    return Token{ .tag = .greater_greater, .loc = .{ .start = start, .end = self.index } };
+                }
                 if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
                     self.index += 1;
                     return Token{ .tag = .greater_equal, .loc = .{ .start = start, .end = self.index } };
@@ -225,6 +248,13 @@ pub const Lexer = struct {
                 return Token{ .tag = tag, .loc = .{ .start = start, .end = self.index } };
             },
             '0'...'9' => {
+                if (c == '0' and self.index < self.buffer.len and (self.buffer[self.index] == 'x' or self.buffer[self.index] == 'X')) {
+                    self.index += 1;
+                    while (self.index < self.buffer.len and std.ascii.isHex(self.buffer[self.index])) : (self.index += 1) {}
+                    while (self.index < self.buffer.len and std.ascii.isAlphabetic(self.buffer[self.index])) : (self.index += 1) {}
+                    while (self.index < self.buffer.len and std.ascii.isDigit(self.buffer[self.index])) : (self.index += 1) {}
+                    return Token{ .tag = .int_literal, .loc = .{ .start = start, .end = self.index } };
+                }
                 var is_float = false;
                 while (self.index < self.buffer.len) : (self.index += 1) {
                     const next_c = self.buffer[self.index];
@@ -284,6 +314,7 @@ pub const Lexer = struct {
         if (std.mem.eql(u8, str, "const")) return .keyword_const;
         if (std.mem.eql(u8, str, "inline")) return .keyword_inline;
         if (std.mem.eql(u8, str, "macro")) return .keyword_macro;
+        if (std.mem.eql(u8, str, "mut")) return .keyword_mut;
         return .identifier;
     }
 };

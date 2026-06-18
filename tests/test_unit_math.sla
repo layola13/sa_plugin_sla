@@ -328,6 +328,14 @@ fn clamp(val: int, lo: int, hi: int) -> int {
     if ok { } else { panic(1); };
 }
 
-@test ignored "预留：浮点精度（暂跳过）"() {
-    // float support TBD
+@test "浮点加法 1.5 + 2.25 == 3.75"() {
+    let sum = 1.5 + 2.25;
+    let ok = sum == 3.75;
+    if ok { } else { panic(1); };
+}
+
+@test "浮点复合表达式 (1.5+2.5)*2.0/4.0 == 2.0"() {
+    let result = (1.5 + 2.5) * 2.0 / 4.0;
+    let ok = result == 2.0;
+    if ok { } else { panic(1); };
 }

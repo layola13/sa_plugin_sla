@@ -1,9 +1,9 @@
 # 173 Catch Unwind Panic
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the catch-unwind/panic catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/173_catch_unwind_panic/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for converting a panic path into an observable result.
+- `main.sla`: Sla companion for converting a panic path into an observable result.
 
 Commands:
 

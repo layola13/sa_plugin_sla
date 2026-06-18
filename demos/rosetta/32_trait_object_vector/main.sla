@@ -26,7 +26,7 @@ impl Score for AddTwo {
 fn main() -> i32 {
     let left: Box<dyn Score> = Box::new(AddOne(4));
     let right: Box<dyn Score> = Box::new(AddTwo(5));
-    let values: Vec<Box<dyn Score>> = vec(left, right);
+    let values: Vec<Box<dyn Score> > = vec(left, right);
     let total: i32 = values.iter().map(|v: Box<dyn Score>| v.score()).sum();
     println("{}", total);
     return 0;

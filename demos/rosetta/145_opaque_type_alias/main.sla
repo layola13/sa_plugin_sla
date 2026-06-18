@@ -1,7 +1,19 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-fn item_make() -> i32 { return 5; }
-fn opaque_alias_make_value() -> i32 { return item_make(); }
+trait Maker {
+    fn make(&self) -> i32;
+}
+
+struct Item {}
+
+impl Maker for Item {
+    fn make(&self) -> i32 { return 5; }
+}
+
+fn opaque_alias_make_value() -> i32 {
+    let item = Item {};
+    return item.make();
+}
 fn main() -> i32 { let result = opaque_alias_make_value(); println("{}", result); return result; }
 @test "rosetta 145 145_opaque_type_alias"() { let got = opaque_alias_make_value(); if got != 5 { panic(145); }; }

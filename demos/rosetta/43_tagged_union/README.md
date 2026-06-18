@@ -1,14 +1,6 @@
 # 043 Tagged Union
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the tagged-union topic for the catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/43_tagged_union/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/43_tagged_union/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/43_tagged_union/main.sla --out /tmp/43_tagged_union.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/43_tagged_union/main.sla
-```
+- `main.rs`: Rust reference for the shape-match semantics used by this slot.
+- `main.sla`: Sla companion for the shape-match semantics used by this slot.

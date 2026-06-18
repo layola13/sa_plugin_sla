@@ -1,9 +1,11 @@
 # 178 Panic Hook Override
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory keeps the panic-hook override slot as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/178_panic_hook_override/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for real `std::panic::set_hook(...)` installation followed by a panic.
+- `main.sla`: Sla surrogate for the observable "hook would print before panic" path.
+
+Because the Sla side does not override a real panic hook, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

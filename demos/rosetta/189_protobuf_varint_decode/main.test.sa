@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -8,43 +13,92 @@
 @const SLA_FNPTR_VT_main = vtable { call = @main }
 @sla__protobuf_varint_value() -> u32:
 L_ENTRY:
-    tmp_0 = 6
-    decoded_varint = tmp_0
-    return decoded_varint
+    tmp_0 = 0
+    tmp_1 = tmp_0 as u32
+    value = tmp_1
+    tmp_2 = 6
+    tmp_3 = tmp_2 as u32
+    tmp_4 = 127
+    tmp_5 = tmp_4 as u32
+    tmp_6 = and tmp_3, tmp_5
+    !tmp_3
+    !tmp_5
+    tmp_7 = 0
+    tmp_8 = tmp_7 as u32
+    tmp_9 = shl tmp_6, tmp_8
+    !tmp_6
+    !tmp_8
+    tmp_10 = or value, tmp_9
+    !tmp_9
+    !value
+    value = tmp_10
+    tmp_11 = 0
+    tmp_12 = tmp_11 as u32
+    tmp_13 = 127
+    tmp_14 = tmp_13 as u32
+    tmp_15 = and tmp_12, tmp_14
+    !tmp_12
+    !tmp_14
+    tmp_16 = 7
+    tmp_17 = tmp_16 as u32
+    tmp_18 = shl tmp_15, tmp_17
+    !tmp_15
+    !tmp_17
+    tmp_19 = or value, tmp_18
+    !tmp_18
+    !value
+    value = tmp_19
+    tmp_20 = 0
+    tmp_21 = tmp_20 as u32
+    tmp_22 = 127
+    tmp_23 = tmp_22 as u32
+    tmp_24 = and tmp_21, tmp_23
+    !tmp_21
+    !tmp_23
+    tmp_25 = 14
+    tmp_26 = tmp_25 as u32
+    tmp_27 = shl tmp_24, tmp_26
+    !tmp_24
+    !tmp_26
+    tmp_28 = or value, tmp_27
+    !tmp_27
+    !value
+    value = tmp_28
+    return value
 
 @main() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__protobuf_varint_value()
-    result = tmp_1
-    tmp_2 = call @sa_fmt_u64(result, 10)
-    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
-    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
-    tmp_5 = tmp_3
-    call @sa_print_bytes(&tmp_5, tmp_4)
-    call @sa_fmt_buffer_free(^tmp_2)
-    !tmp_5
-    !tmp_4
+    tmp_29 = call @sla__protobuf_varint_value()
+    result = tmp_29
+    tmp_30 = call @sa_fmt_u64(result, 10)
+    tmp_31 = call @sa_fmt_buffer_data(tmp_30)
+    tmp_32 = call @sa_fmt_buffer_len(tmp_30)
+    tmp_33 = tmp_31
+    call @sa_print_bytes(&tmp_33, tmp_32)
+    call @sa_fmt_buffer_free(^tmp_30)
+    !tmp_33
+    !tmp_32
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_6 = 0
+    tmp_34 = 0
     !result
-    return tmp_6
+    return tmp_34
 
 @test "rosetta 189 189_protobuf_varint_decode"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @sla__protobuf_varint_value()
-    got = tmp_7
-    tmp_8 = 6
-    tmp_9 = ne got, tmp_8
-    !tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+    tmp_35 = call @sla__protobuf_varint_value()
+    got = tmp_35
+    tmp_36 = 6
+    tmp_37 = ne got, tmp_36
+    !tmp_36
+    br tmp_37 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_9
+    !tmp_37
     panic(189)
 
 L_ELSE_2:
-    !tmp_9
+    !tmp_37
     jmp L_MERGE_3
 
 L_MERGE_3:

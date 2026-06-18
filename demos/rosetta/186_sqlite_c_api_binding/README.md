@@ -1,9 +1,11 @@
 # 186 Sqlite C Api Binding
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+SQLite-style C ABI slot kept as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/186_sqlite_c_api_binding/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the `extern "C"` row-pointer call.
+- `main.sla`: Sla surrogate with a local `sqlite_insert` shim returning `row.count`.
+
+Because the Sla side does not bind a real external SQLite C API, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 206 Pkg Version Resolution
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps version solving observable as the selected patch release.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/206_pkg_version_resolution/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for selecting the resolved patch release.
+- `main.sla`: Sla companion for selecting the resolved patch release.
 
 Commands:
 

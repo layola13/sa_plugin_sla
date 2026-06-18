@@ -1,9 +1,9 @@
 # 278 Build Reproducible Builds
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps reproducible build output observable as one deterministic hash match.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/278_build_reproducible_builds/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one deterministic hash match.
+- `main.sla`: Sla companion for one deterministic hash match.
 
 Commands:
 

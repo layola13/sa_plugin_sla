@@ -1,9 +1,9 @@
 # 270 Build Sysroot Custom
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps custom sysroot composition observable as both core and std layers.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/270_build_sysroot_custom/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the core and std sysroot layers.
+- `main.sla`: Sla companion for the core and std sysroot layers.
 
 Commands:
 

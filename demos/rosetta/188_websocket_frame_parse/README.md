@@ -1,9 +1,9 @@
 # 188 Websocket Frame Parse
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot checks a small frame header predicate through explicit boolean tests.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/188_websocket_frame_parse/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the frame-header boolean checks.
+- `main.sla`: Sla companion for the frame-header boolean checks.
 
 Commands:
 

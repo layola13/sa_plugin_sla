@@ -1,21 +1,57 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-fn park_unpark_result() -> i32 {
-    let parked = park_thread();
-    return unpark_thread(parked);
+struct ParkState {
+    thread_published: bool,
+    thread_parked: bool,
+    wake_requested: bool,
 }
 
-fn park_thread() -> i32 {
-    return 0;
+fn publish_thread() -> ParkState {
+    return ParkState {
+        thread_published: true,
+        thread_parked: false,
+        wake_requested: false,
+    };
 }
 
-fn unpark_thread(park_token: i32) -> i32 {
-    if park_token == 0 {
-        return 1;
+fn park_thread(state: ParkState) -> ParkState {
+    return ParkState {
+        thread_published: state.thread_published,
+        thread_parked: true,
+        wake_requested: state.wake_requested,
+    };
+}
+
+fn unpark_thread(state: ParkState) -> ParkState {
+    return ParkState {
+        thread_published: state.thread_published,
+        thread_parked: state.thread_parked,
+        wake_requested: true,
+    };
+}
+
+fn resume_after_unpark(state: ParkState) -> i32 {
+    if state.thread_published == true {
+        if state.thread_parked == true {
+            if state.wake_requested == true {
+                return 1;
+            } else {
+                return 0;
+            };
+        } else {
+            return 0;
+        };
     } else {
         return 0;
     };
+}
+
+fn park_unpark_result() -> i32 {
+    let published = publish_thread();
+    let parked = park_thread(published);
+    let unparked = unpark_thread(parked);
+    return resume_after_unpark(unparked);
 }
 
 fn main() -> i32 {

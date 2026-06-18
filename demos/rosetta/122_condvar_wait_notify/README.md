@@ -1,9 +1,9 @@
 # 122 Condvar Wait Notify
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the condvar wait-notify catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/122_condvar_wait_notify/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for waiting on a mutex-backed ready flag and waking through `notify_one()`.
+- `main.sla`: Sla companion for waiting on a mutex-backed ready flag and waking through `notify_one()`.
 
 Commands:
 

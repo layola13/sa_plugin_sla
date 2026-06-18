@@ -3,21 +3,18 @@
 @import "sa_std/core/option.sa"
 @import "sa_std/hashmap.sa"
 
-fn cache_hit_value() -> i32 {
+fn main() -> i32 {
     let cache = HashMap::new();
     cache.insert("a", 3);
     let hit = cache.get("a").copied().unwrap_or_default();
-    return hit;
-}
-
-fn main() -> i32 {
-    let hit = cache_hit_value();
     println("{}", hit);
     return hit;
 }
 
 @test "rosetta 053 cache hits"() {
-    let hit = cache_hit_value();
+    let cache = HashMap::new();
+    cache.insert("a", 3);
+    let hit = cache.get("a").copied().unwrap_or_default();
     if hit != 3 {
         panic(53);
     };

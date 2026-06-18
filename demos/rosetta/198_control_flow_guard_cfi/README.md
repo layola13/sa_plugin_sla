@@ -1,9 +1,11 @@
 # 198 Control Flow Guard Cfi
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps control-flow-integrity checking observable as a guarded-call surrogate returning `2`.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/198_control_flow_guard_cfi/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the guarded function-pointer call.
+- `main.sla`: Sla surrogate that calls the target directly.
+
+Because the current Sla path does not preserve the local function-pointer binding shape, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

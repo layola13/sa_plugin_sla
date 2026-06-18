@@ -1,9 +1,9 @@
 # 243 Contract Sig Mismatch Link
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps contract signature drift observable as one missing argument at link time.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/243_contract_sig_mismatch_link/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one missing argument at link time.
+- `main.sla`: Sla companion for one missing argument at link time.
 
 Commands:
 

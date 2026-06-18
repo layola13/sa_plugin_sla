@@ -1,9 +1,9 @@
 # 180 Try Trait V2
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current `Try` / residual gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/180_try_trait_v2/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference using `?` inside `fn add_one(...) -> Option<i32>`.
+- `main.sla`: Sla surrogate that keeps the same `Option` flow through an explicit `match` helper.
 
 Commands:
 

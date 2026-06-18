@@ -1,9 +1,9 @@
 # 155 Arena Allocator Bump
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the current local arena-allocator-bump slot shape.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/155_arena_allocator_bump/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the current local observable `a + b` over two arena-themed values.
+- `main.sla`: Sla companion for the same current local observable.
 
 Commands:
 

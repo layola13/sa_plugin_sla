@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -72,7 +77,7 @@ L_ENTRY:
 
 L_THEN_6:
     !tmp_19
-    tmp_21 = 1
+    tmp_21 = load a+1 as i32
     store tmp_20+0, tmp_21 as i32
     !tmp_21
     jmp L_MERGE_8
@@ -98,7 +103,7 @@ L_MERGE_8:
 
 L_THEN_9:
     !tmp_26
-    tmp_28 = 1
+    tmp_28 = load b+1 as i32
     store tmp_27+0, tmp_28 as i32
     !tmp_28
     jmp L_MERGE_11
@@ -124,7 +129,7 @@ L_MERGE_11:
 
 L_THEN_12:
     !tmp_33
-    tmp_35 = 1
+    tmp_35 = load c+1 as i32
     store tmp_34+0, tmp_35 as i32
     !tmp_35
     jmp L_MERGE_14
@@ -146,9 +151,6 @@ L_MERGE_14:
     !b
     !a
     !c
-    !av
-    !bv
-    !cv
     return tmp_39
 
 @main() -> i32:
@@ -171,7 +173,7 @@ L_ENTRY:
 L_TEST_ENTRY_15:
     tmp_45 = call @sla__scan_count()
     got = tmp_45
-    tmp_46 = 1
+    tmp_46 = 21
     tmp_47 = ne got, tmp_46
     !tmp_46
     br tmp_47 -> L_THEN_16, L_ELSE_17

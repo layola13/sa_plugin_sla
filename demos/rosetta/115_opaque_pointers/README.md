@@ -1,9 +1,9 @@
 # 115 Opaque Pointers
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current opaque-pointer surrogate honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/115_opaque_pointers/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for passing a null opaque pointer through an FFI-shaped call.
+- `main.sla`: matching Sla surrogate for the same null opaque-pointer call observable.
 
 Commands:
 

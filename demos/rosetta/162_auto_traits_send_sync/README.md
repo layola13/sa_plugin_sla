@@ -1,9 +1,11 @@
 # 162 Auto Traits Send Sync
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory keeps the auto-traits `Send`/`Sync` slot as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/162_auto_traits_send_sync/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `require_send<T: Send>(...)` over `Data`.
+- `main.sla`: Sla surrogate for the accepted result observable.
+
+Because the current Sla shape does not preserve the `require_send(d)` move path without a verifier failure, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

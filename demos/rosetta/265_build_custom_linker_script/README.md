@@ -1,9 +1,9 @@
 # 265 Build Custom Linker Script
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps linker-script customization observable as distinct text and data sections.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/265_build_custom_linker_script/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for distinct text and data sections.
+- `main.sla`: Sla companion for distinct text and data sections.
 
 Commands:
 

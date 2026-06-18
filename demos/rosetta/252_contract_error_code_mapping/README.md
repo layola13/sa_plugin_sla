@@ -1,9 +1,9 @@
 # 252 Contract Error Code Mapping
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps error-surface translation observable as two contract errors mapped into exported numeric codes.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/252_contract_error_code_mapping/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for mapping two errors into numeric codes.
+- `main.sla`: Sla companion for mapping two errors into numeric codes.
 
 Commands:
 

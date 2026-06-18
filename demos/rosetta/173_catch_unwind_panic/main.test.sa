@@ -1,38 +1,83 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/result.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/result.sa"
 @const SLA_FNPTR_VT_catch_unwind_observable = vtable { call = @sla__catch_unwind_observable }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
 @sla__catch_unwind_observable() -> i32:
 L_ENTRY:
-    tmp_0 = 0
-    caught_status = tmp_0
-    return caught_status
+    tmp_1 = 1
+    EXPAND RESULT_NEW_ERR tmp_0, tmp_1
+    !tmp_1
+    result = tmp_0
+    EXPAND RESULT_IS_OK tmp_2, result
+    tmp_3 = alloc 4
+    br tmp_2 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_2
+    tmp_4 = 1
+    store tmp_3+0, tmp_4 as i32
+    !tmp_4
+    jmp L_MERGE_2
+
+L_ELSE_1:
+    !tmp_2
+    tmp_5 = 0
+    store tmp_3+0, tmp_5 as i32
+    !tmp_5
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_6 = load tmp_3+0 as i32
+    !tmp_3
+    got = tmp_6
+    !result
+    return got
 
 @main() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__catch_unwind_observable()
-    return tmp_1
+    tmp_7 = call @sla__catch_unwind_observable()
+    result = tmp_7
+    tmp_8 = call @sa_fmt_u64(result, 10)
+    tmp_9 = call @sa_fmt_buffer_data(tmp_8)
+    tmp_10 = call @sa_fmt_buffer_len(tmp_8)
+    tmp_11 = tmp_9
+    call @sa_print_bytes(&tmp_11, tmp_10)
+    call @sa_fmt_buffer_free(^tmp_8)
+    !tmp_11
+    !tmp_10
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    return result
 
 @test "rosetta 173 173_catch_unwind_panic"():
-L_TEST_ENTRY_0:
-    tmp_2 = call @sla__catch_unwind_observable()
-    got = tmp_2
-    tmp_3 = 0
-    tmp_4 = ne got, tmp_3
-    !tmp_3
-    br tmp_4 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_3:
+    tmp_12 = call @sla__catch_unwind_observable()
+    got = tmp_12
+    tmp_13 = 0
+    tmp_14 = ne got, tmp_13
+    !tmp_13
+    br tmp_14 -> L_THEN_4, L_ELSE_5
 
-L_THEN_1:
-    !tmp_4
+L_THEN_4:
+    !tmp_14
     panic(173)
 
-L_ELSE_2:
-    !tmp_4
-    jmp L_MERGE_3
+L_ELSE_5:
+    !tmp_14
+    jmp L_MERGE_6
 
-L_MERGE_3:
+L_MERGE_6:
     !got
     return
 

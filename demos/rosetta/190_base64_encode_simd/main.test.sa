@@ -1,53 +1,360 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_base64_encoded_len = vtable { call = @sla__base64_encoded_len }
+@const SLA_FNPTR_VT_encode_block = vtable { call = @sla__encode_block }
+@const SLA_FNPTR_VT_encoded_text = vtable { call = @sla__encoded_text }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__base64_encoded_len() -> u64:
+@sla__encode_block(input: ptr) -> ptr:
 L_ENTRY:
-    tmp_0 = 4
-    encoded_len = tmp_0
-    return encoded_len
+    b64 = alloc 64
+    tmp_0 = 65
+    tmp_1 = tmp_0 as u8
+    store b64+0, tmp_1 as u8
+    tmp_2 = 66
+    store b64+1, tmp_2 as u8
+    tmp_3 = 67
+    store b64+2, tmp_3 as u8
+    tmp_4 = 68
+    store b64+3, tmp_4 as u8
+    tmp_5 = 69
+    store b64+4, tmp_5 as u8
+    tmp_6 = 70
+    store b64+5, tmp_6 as u8
+    tmp_7 = 71
+    store b64+6, tmp_7 as u8
+    tmp_8 = 72
+    store b64+7, tmp_8 as u8
+    tmp_9 = 73
+    store b64+8, tmp_9 as u8
+    tmp_10 = 74
+    store b64+9, tmp_10 as u8
+    tmp_11 = 75
+    store b64+10, tmp_11 as u8
+    tmp_12 = 76
+    store b64+11, tmp_12 as u8
+    tmp_13 = 77
+    store b64+12, tmp_13 as u8
+    tmp_14 = 78
+    store b64+13, tmp_14 as u8
+    tmp_15 = 79
+    store b64+14, tmp_15 as u8
+    tmp_16 = 80
+    store b64+15, tmp_16 as u8
+    tmp_17 = 81
+    store b64+16, tmp_17 as u8
+    tmp_18 = 82
+    store b64+17, tmp_18 as u8
+    tmp_19 = 83
+    store b64+18, tmp_19 as u8
+    tmp_20 = 84
+    store b64+19, tmp_20 as u8
+    tmp_21 = 85
+    store b64+20, tmp_21 as u8
+    tmp_22 = 86
+    store b64+21, tmp_22 as u8
+    tmp_23 = 87
+    store b64+22, tmp_23 as u8
+    tmp_24 = 88
+    store b64+23, tmp_24 as u8
+    tmp_25 = 89
+    store b64+24, tmp_25 as u8
+    tmp_26 = 90
+    store b64+25, tmp_26 as u8
+    tmp_27 = 97
+    store b64+26, tmp_27 as u8
+    tmp_28 = 98
+    store b64+27, tmp_28 as u8
+    tmp_29 = 99
+    store b64+28, tmp_29 as u8
+    tmp_30 = 100
+    store b64+29, tmp_30 as u8
+    tmp_31 = 101
+    store b64+30, tmp_31 as u8
+    tmp_32 = 102
+    store b64+31, tmp_32 as u8
+    tmp_33 = 103
+    store b64+32, tmp_33 as u8
+    tmp_34 = 104
+    store b64+33, tmp_34 as u8
+    tmp_35 = 105
+    store b64+34, tmp_35 as u8
+    tmp_36 = 106
+    store b64+35, tmp_36 as u8
+    tmp_37 = 107
+    store b64+36, tmp_37 as u8
+    tmp_38 = 108
+    store b64+37, tmp_38 as u8
+    tmp_39 = 109
+    store b64+38, tmp_39 as u8
+    tmp_40 = 110
+    store b64+39, tmp_40 as u8
+    tmp_41 = 111
+    store b64+40, tmp_41 as u8
+    tmp_42 = 112
+    store b64+41, tmp_42 as u8
+    tmp_43 = 113
+    store b64+42, tmp_43 as u8
+    tmp_44 = 114
+    store b64+43, tmp_44 as u8
+    tmp_45 = 115
+    store b64+44, tmp_45 as u8
+    tmp_46 = 116
+    store b64+45, tmp_46 as u8
+    tmp_47 = 117
+    store b64+46, tmp_47 as u8
+    tmp_48 = 118
+    store b64+47, tmp_48 as u8
+    tmp_49 = 119
+    store b64+48, tmp_49 as u8
+    tmp_50 = 120
+    store b64+49, tmp_50 as u8
+    tmp_51 = 121
+    store b64+50, tmp_51 as u8
+    tmp_52 = 122
+    store b64+51, tmp_52 as u8
+    tmp_53 = 48
+    store b64+52, tmp_53 as u8
+    tmp_54 = 49
+    store b64+53, tmp_54 as u8
+    tmp_55 = 50
+    store b64+54, tmp_55 as u8
+    tmp_56 = 51
+    store b64+55, tmp_56 as u8
+    tmp_57 = 52
+    store b64+56, tmp_57 as u8
+    tmp_58 = 53
+    store b64+57, tmp_58 as u8
+    tmp_59 = 54
+    store b64+58, tmp_59 as u8
+    tmp_60 = 55
+    store b64+59, tmp_60 as u8
+    tmp_61 = 56
+    store b64+60, tmp_61 as u8
+    tmp_62 = 57
+    store b64+61, tmp_62 as u8
+    tmp_63 = 43
+    store b64+62, tmp_63 as u8
+    tmp_64 = 47
+    store b64+63, tmp_64 as u8
+    tmp_65 = 0
+    tmp_66 = mul tmp_65, 1
+    tmp_67 = ptr_add input, tmp_66
+    !tmp_66
+    !tmp_65
+    tmp_68 = load tmp_67+0 as u8
+    !tmp_67
+    tmp_69 = 4
+    tmp_70 = div tmp_68, tmp_69
+    !tmp_68
+    !tmp_69
+    q0 = tmp_70
+    tmp_71 = 0
+    tmp_72 = mul tmp_71, 1
+    tmp_73 = ptr_add input, tmp_72
+    !tmp_72
+    !tmp_71
+    tmp_74 = load tmp_73+0 as u8
+    !tmp_73
+    tmp_75 = 4
+    tmp_76 = rem tmp_74, tmp_75
+    !tmp_74
+    !tmp_75
+    tmp_77 = 16
+    tmp_78 = mul tmp_76, tmp_77
+    !tmp_76
+    !tmp_77
+    tmp_79 = 1
+    tmp_80 = mul tmp_79, 1
+    tmp_81 = ptr_add input, tmp_80
+    !tmp_80
+    !tmp_79
+    tmp_82 = load tmp_81+0 as u8
+    !tmp_81
+    tmp_83 = 16
+    tmp_84 = div tmp_82, tmp_83
+    !tmp_82
+    !tmp_83
+    tmp_85 = add tmp_78, tmp_84
+    !tmp_78
+    !tmp_84
+    q1 = tmp_85
+    tmp_86 = 1
+    tmp_87 = mul tmp_86, 1
+    tmp_88 = ptr_add input, tmp_87
+    !tmp_87
+    !tmp_86
+    tmp_89 = load tmp_88+0 as u8
+    !tmp_88
+    tmp_90 = 16
+    tmp_91 = rem tmp_89, tmp_90
+    !tmp_89
+    !tmp_90
+    tmp_92 = 4
+    tmp_93 = mul tmp_91, tmp_92
+    !tmp_91
+    !tmp_92
+    tmp_94 = 2
+    tmp_95 = mul tmp_94, 1
+    tmp_96 = ptr_add input, tmp_95
+    !tmp_95
+    !tmp_94
+    tmp_97 = load tmp_96+0 as u8
+    !tmp_96
+    tmp_98 = 64
+    tmp_99 = div tmp_97, tmp_98
+    !tmp_97
+    !tmp_98
+    tmp_100 = add tmp_93, tmp_99
+    !tmp_93
+    !tmp_99
+    q2 = tmp_100
+    tmp_101 = 2
+    tmp_102 = mul tmp_101, 1
+    tmp_103 = ptr_add input, tmp_102
+    !tmp_102
+    !tmp_101
+    tmp_104 = load tmp_103+0 as u8
+    !tmp_103
+    tmp_105 = 64
+    tmp_106 = rem tmp_104, tmp_105
+    !tmp_104
+    !tmp_105
+    q3 = tmp_106
+    tmp_107 = alloc 4
+    tmp_108 = q0 as u64
+    tmp_109 = mul tmp_108, 1
+    tmp_110 = ptr_add b64, tmp_109
+    !tmp_109
+    !tmp_108
+    tmp_111 = load tmp_110+0 as u8
+    !tmp_110
+    store tmp_107+0, tmp_111 as u8
+    tmp_112 = q1 as u64
+    tmp_113 = mul tmp_112, 1
+    tmp_114 = ptr_add b64, tmp_113
+    !tmp_113
+    !tmp_112
+    tmp_115 = load tmp_114+0 as u8
+    !tmp_114
+    store tmp_107+1, tmp_115 as u8
+    tmp_116 = q2 as u64
+    tmp_117 = mul tmp_116, 1
+    tmp_118 = ptr_add b64, tmp_117
+    !tmp_117
+    !tmp_116
+    tmp_119 = load tmp_118+0 as u8
+    !tmp_118
+    store tmp_107+2, tmp_119 as u8
+    tmp_120 = q3 as u64
+    tmp_121 = mul tmp_120, 1
+    tmp_122 = ptr_add b64, tmp_121
+    !tmp_121
+    !tmp_120
+    tmp_123 = load tmp_122+0 as u8
+    !tmp_122
+    store tmp_107+3, tmp_123 as u8
+    !b64
+    return tmp_107
+
+@sla__encoded_text() -> ptr:
+L_ENTRY:
+    input = alloc 3
+    tmp_124 = 77
+    tmp_125 = tmp_124 as u8
+    store input+0, tmp_125 as u8
+    tmp_126 = 97
+    store input+1, tmp_126 as u8
+    tmp_127 = 110
+    store input+2, tmp_127 as u8
+    tmp_128 = call @sla__encode_block(&input)
+    encoded = tmp_128
+    EXPAND STRING_BUF_NEW tmp_129
+    tmp_130 = 0
+    tmp_131 = ptr_add encoded, tmp_130
+    tmp_132 = load tmp_131+0 as u8
+    EXPAND STRING_BUF_PUSH_BYTE tmp_129, tmp_132
+    !tmp_130
+    !tmp_131
+    !tmp_132
+    tmp_133 = 1
+    tmp_134 = ptr_add encoded, tmp_133
+    tmp_135 = load tmp_134+0 as u8
+    EXPAND STRING_BUF_PUSH_BYTE tmp_129, tmp_135
+    !tmp_133
+    !tmp_134
+    !tmp_135
+    tmp_136 = 2
+    tmp_137 = ptr_add encoded, tmp_136
+    tmp_138 = load tmp_137+0 as u8
+    EXPAND STRING_BUF_PUSH_BYTE tmp_129, tmp_138
+    !tmp_136
+    !tmp_137
+    !tmp_138
+    tmp_139 = 3
+    tmp_140 = ptr_add encoded, tmp_139
+    tmp_141 = load tmp_140+0 as u8
+    EXPAND STRING_BUF_PUSH_BYTE tmp_129, tmp_141
+    !tmp_139
+    !tmp_140
+    !tmp_141
+    text = tmp_129
+    !input
+    !encoded
+    return text
 
 @main() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__base64_encoded_len()
-    result = tmp_1
-    tmp_2 = call @sa_fmt_u64(result, 10)
-    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
-    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
-    tmp_5 = tmp_3
-    call @sa_print_bytes(&tmp_5, tmp_4)
-    call @sa_fmt_buffer_free(^tmp_2)
-    !tmp_5
-    !tmp_4
+    tmp_142 = call @sla__encoded_text()
+    text = tmp_142
+    EXPAND STRING_BUF_AS_STR tmp_143, text
+    EXPAND STRING_PTR tmp_144, tmp_143
+    EXPAND STRING_LEN tmp_145, tmp_143
+    call @sa_print_bytes(&tmp_144, tmp_145)
+    !tmp_144
+    !tmp_145
+    !tmp_143
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_6 = 0
-    !result
-    return tmp_6
+    tmp_146 = 0
+    EXPAND STRING_BUF_FREE text
+    return tmp_146
 
 @test "rosetta 190 190_base64_encode_simd"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @sla__base64_encoded_len()
-    got = tmp_7
-    tmp_8 = 4
-    tmp_9 = ne got, tmp_8
-    !tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+    tmp_147 = call @sla__encoded_text()
+    text = tmp_147
+    @const SLA_STR_1 = utf8:"TWFu"
+    tmp_149 = 4
+    tmp_148 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_148, &SLA_STR_1, tmp_149
+    !tmp_149
+    EXPAND STRING_BUF_AS_STR tmp_150, text
+    EXPAND STR_EQ tmp_151, tmp_150, tmp_148
+    !tmp_150
+    tmp_152 = 1
+    tmp_153 = ne tmp_151, tmp_152
+    !tmp_151
+    !tmp_152
+    br tmp_153 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_9
+    !tmp_153
     panic(190)
 
 L_ELSE_2:
-    !tmp_9
+    !tmp_153
     jmp L_MERGE_3
 
 L_MERGE_3:
-    !got
+    EXPAND STRING_BUF_FREE text
     return
 

@@ -1,9 +1,9 @@
 # 241 Contract Layout Stability
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps C-style contract layout stability observable as a two-field header with fixed field order.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/241_contract_layout_stability/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the two-field header layout.
+- `main.sla`: Sla companion for the two-field header layout.
 
 Commands:
 

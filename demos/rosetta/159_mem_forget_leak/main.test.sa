@@ -1,10 +1,17 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/core/box.sa"
+@import "sa_std/mem.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/box.sa"
 @const SLA_FNPTR_VT_mem_forget_observable_value = vtable { call = @sla__mem_forget_observable_value }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
 @sla__mem_forget_observable_value() -> i32:
@@ -13,8 +20,9 @@ L_ENTRY:
     EXPAND BOX_NEW tmp_1, tmp_0
     value = tmp_1
     tmp_2 = load value+0 as i32
-    !value
-    return tmp_2
+    result = tmp_2
+    EXPAND MEM_FORGET_U64 value
+    return result
 
 @main() -> i32:
 L_ENTRY:

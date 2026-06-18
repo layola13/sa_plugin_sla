@@ -1,9 +1,9 @@
 # 277 Build Parallel Compilation
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps parallel code generation observable as parser, checker, optimizer, and emitter units running concurrently.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/277_build_parallel_compilation/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for parser/checker/optimizer/emitter units in parallel.
+- `main.sla`: Sla companion for parser, checker, optimizer, and emitter units running concurrently.
 
 Commands:
 

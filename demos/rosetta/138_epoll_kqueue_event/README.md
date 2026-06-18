@@ -1,9 +1,9 @@
 # 138 Epoll Kqueue Event
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the epoll/kqueue event catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/138_epoll_kqueue_event/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for detecting a ready event.
+- `main.sla`: Sla companion for detecting a ready event.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 093 Log Aggregator
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the log-severity aggregation topic for the catalog slot, combining weighted severities with dropped-line accounting.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/93_log_aggregator/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the weighted severity-score semantics used by this slot.
+- `main.sla`: Sla companion for the weighted severity-score semantics used by this slot.
 
 Commands:
 

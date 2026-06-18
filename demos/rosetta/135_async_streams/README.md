@@ -1,9 +1,9 @@
 # 135 Async Streams
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current async-stream gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/135_async_streams/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference using `impl Stream`, `next().await`, and accumulation across yielded items.
+- `main.sla`: Sla surrogate that preserves only the three-item accumulation observable through explicit helper calls.
 
 Commands:
 

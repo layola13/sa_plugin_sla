@@ -1,9 +1,11 @@
 # 191 Macro Rules Ast Emit
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the `macro_rules!` theme as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/191_macro_rules_ast_emit/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `emit_sum!(left, right)` emitted through a real declarative macro.
+- `main.sla`: Sla surrogate that preserves the emitted-sum observable through a plain helper function.
+
+Because the Sla side does not execute a real `macro_rules!` expansion, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

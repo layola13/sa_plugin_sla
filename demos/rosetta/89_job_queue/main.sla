@@ -13,7 +13,9 @@ fn first_job_score() -> i32 {
     queue.push_back(Job { id: 7, cost: 3 });
     queue.push_back(Job { id: 9, cost: 5 });
     let first = queue.pop_front().unwrap();
-    return first.id + first.cost;
+    let id = first.id;
+    let cost = first.cost;
+    return id + cost;
 }
 
 fn main() -> i32 {

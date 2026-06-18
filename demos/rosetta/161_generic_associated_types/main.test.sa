@@ -1,48 +1,61 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@const VT_IntProvider_Provider = vtable { get = @sla__IntProvider_get }
 @const SLA_FNPTR_VT_generic_associated_item_value = vtable { call = @sla__generic_associated_item_value }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__IntProvider_get(&self: ptr) -> i32:
+L_ENTRY:
+    tmp_0 = load self+0 as i32
+    return tmp_0
+
 @sla__generic_associated_item_value() -> i32:
 L_ENTRY:
-    tmp_0 = 42
-    provider_value = tmp_0
-    return provider_value
+    p = alloc 4
+    tmp_1 = 42
+    store p+0, tmp_1 as i32
+    tmp_2 = call @sla__IntProvider_get(&p)
+    return tmp_2
 
 @main() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__generic_associated_item_value()
-    result = tmp_1
-    tmp_2 = call @sa_fmt_u64(result, 10)
-    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
-    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
-    tmp_5 = tmp_3
-    call @sa_print_bytes(&tmp_5, tmp_4)
-    call @sa_fmt_buffer_free(^tmp_2)
-    !tmp_5
-    !tmp_4
+    tmp_3 = call @sla__generic_associated_item_value()
+    result = tmp_3
+    tmp_4 = call @sa_fmt_u64(result, 10)
+    tmp_5 = call @sa_fmt_buffer_data(tmp_4)
+    tmp_6 = call @sa_fmt_buffer_len(tmp_4)
+    tmp_7 = tmp_5
+    call @sa_print_bytes(&tmp_7, tmp_6)
+    call @sa_fmt_buffer_free(^tmp_4)
+    !tmp_7
+    !tmp_6
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 161 161_generic_associated_types"():
 L_TEST_ENTRY_0:
-    tmp_6 = call @sla__generic_associated_item_value()
-    got = tmp_6
-    tmp_7 = 42
-    tmp_8 = ne got, tmp_7
-    !tmp_7
-    br tmp_8 -> L_THEN_1, L_ELSE_2
+    tmp_8 = call @sla__generic_associated_item_value()
+    got = tmp_8
+    tmp_9 = 42
+    tmp_10 = ne got, tmp_9
+    !tmp_9
+    br tmp_10 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_8
+    !tmp_10
     panic(161)
 
 L_ELSE_2:
-    !tmp_8
+    !tmp_10
     jmp L_MERGE_3
 
 L_MERGE_3:

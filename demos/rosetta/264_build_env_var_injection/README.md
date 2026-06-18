@@ -1,9 +1,9 @@
 # 264 Build Env Var Injection
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps build-environment configuration observable as one injected profile variable.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/264_build_env_var_injection/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one injected build profile variable.
+- `main.sla`: Sla companion for one injected build profile variable.
 
 Commands:
 

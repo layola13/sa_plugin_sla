@@ -22,9 +22,9 @@ fn scan_count() -> i32 {
     let a = Row { active: true, age: 21 };
     let b = Row { active: false, age: 40 };
     let c = Row { active: true, age: 17 };
-    let av = if qualifies(a) == true { 1 } else { 0 };
-    let bv = if qualifies(b) == true { 1 } else { 0 };
-    let cv = if qualifies(c) == true { 1 } else { 0 };
+    let av = if qualifies(a) == true { a.age } else { 0 };
+    let bv = if qualifies(b) == true { b.age } else { 0 };
+    let cv = if qualifies(c) == true { c.age } else { 0 };
     return av + bv + cv;
 }
 
@@ -36,7 +36,7 @@ fn main() -> i32 {
 
 @test "rosetta 082 82_sql_scan"() {
     let got = scan_count();
-    if got != 1 {
+    if got != 21 {
         panic(82);
     };
 };

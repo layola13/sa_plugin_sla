@@ -1,9 +1,11 @@
 # 165 Blanket Impl Resolution
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory keeps the blanket-impl-resolution slot as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/165_blanket_impl_resolution/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `trait Len` implemented over `[i32; 2]` and resolved via `arr.len()`.
+- `main.sla`: Sla surrogate that preserves the array-length observable through the built-in `.len()` path.
+
+The parser crash on array-target `impl` declarations is fixed locally now, but the full trait-resolution shape still does not type-check, so this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

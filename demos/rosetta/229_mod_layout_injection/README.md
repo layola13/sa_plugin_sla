@@ -1,9 +1,9 @@
 # 229 Mod Layout Injection
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps module-provided layout metadata observable as one injected field.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/229_mod_layout_injection/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one module-injected layout field.
+- `main.sla`: Sla companion for one module-injected layout field.
 
 Commands:
 

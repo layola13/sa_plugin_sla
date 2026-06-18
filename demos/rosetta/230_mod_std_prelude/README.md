@@ -1,9 +1,9 @@
 # 230 Mod Std Prelude
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the std prelude surface observable as three imported symbols: `Option`, `Result`, and `println`.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/230_mod_std_prelude/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `Option`, `Result`, and `println` from the prelude.
+- `main.sla`: Sla companion for `Option`, `Result`, and `println` from the prelude.
 
 Commands:
 

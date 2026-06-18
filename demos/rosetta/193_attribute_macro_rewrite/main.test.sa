@@ -1,22 +1,28 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_rewrite_value = vtable { call = @sla__rewrite_value }
+@const SLA_FNPTR_VT_rewrite_value_surrogate = vtable { call = @sla__rewrite_value_surrogate }
 @const SLA_FNPTR_VT_attribute_macro_rewrite_value = vtable { call = @sla__attribute_macro_rewrite_value }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__rewrite_value(rewrite_input: i32) -> i32:
+@sla__rewrite_value_surrogate(rewrite_input: i32) -> i32:
 L_ENTRY:
     return rewrite_input
 
 @sla__attribute_macro_rewrite_value() -> i32:
 L_ENTRY:
     tmp_0 = 2
-    tmp_1 = call @sla__rewrite_value(tmp_0)
-    !tmp_0
+    value = tmp_0
+    tmp_1 = call @sla__rewrite_value_surrogate(value)
     rewritten_value = tmp_1
+    !value
     return rewritten_value
 
 @main() -> i32:

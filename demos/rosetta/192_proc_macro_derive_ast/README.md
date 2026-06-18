@@ -1,9 +1,11 @@
 # 192 Proc Macro Derive Ast
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the derive-themed observable as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/192_proc_macro_derive_ast/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `#[derive(Clone, Copy)]` over `Pair`, followed by `let copy = pair` and field access.
+- `main.sla`: Sla surrogate that preserves the `Pair` field-sum observable without claiming support for derived `Clone`/`Copy` behavior.
+
+Because the Sla side does not model proc-macro derive expansion or the copied-value shape here, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

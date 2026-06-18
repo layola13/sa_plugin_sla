@@ -1,9 +1,9 @@
 # 275 Build Doc Generator
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps generated documentation observable as both API and guide pages.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/275_build_doc_generator/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for generated API and guide pages.
+- `main.sla`: Sla companion for generated API and guide pages.
 
 Commands:
 

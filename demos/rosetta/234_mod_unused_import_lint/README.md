@@ -1,9 +1,9 @@
 # 234 Mod Unused Import Lint
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps unused-import diagnostics observable as one imported symbol left unreferenced.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/234_mod_unused_import_lint/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one imported symbol left unreferenced.
+- `main.sla`: Sla companion for one imported symbol left unreferenced.
 
 Commands:
 

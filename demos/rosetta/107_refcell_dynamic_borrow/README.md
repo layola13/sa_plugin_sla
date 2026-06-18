@@ -1,9 +1,9 @@
 # 107 Refcell Dynamic Borrow
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the `RefCell` dynamic-borrow catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/107_refcell_dynamic_borrow/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for borrow, scoped release, mutable borrow, and later readback.
+- `main.sla`: Sla companion for borrow, scoped release, mutable borrow, and later readback.
 
 Commands:
 

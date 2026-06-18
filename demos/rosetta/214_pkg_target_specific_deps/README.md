@@ -1,9 +1,9 @@
 # 214 Pkg Target Specific Deps
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps target-gated dependency selection observable across Linux and Wasm branches.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/214_pkg_target_specific_deps/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for Linux and Wasm dependency branches.
+- `main.sla`: Sla companion for Linux and Wasm dependency branches.
 
 Commands:
 

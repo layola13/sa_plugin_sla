@@ -1,9 +1,9 @@
 # 242 Contract Opaque Struct
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps opaque-handle contracts observable as one public constructor returning an unreadable handle type.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/242_contract_opaque_struct/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one unreadable public handle constructor.
+- `main.sla`: Sla companion for one unreadable public handle constructor.
 
 Commands:
 

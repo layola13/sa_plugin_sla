@@ -1,9 +1,11 @@
 # 143 Never Type Diverge
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory keeps the never-type divergence slot as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/143_never_type_diverge/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a real `fn fail() -> !` divergence path that is intentionally not taken.
+- `main.sla`: Sla surrogate for the safe-path observable.
+
+Because the current Sla parser does not accept the `-> !` shape used by the Rust source, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

@@ -1,9 +1,11 @@
 # 144 Phantom Data Marker
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory keeps the phantom-data marker slot as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/144_phantom_data_marker/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `Wrapper<T>` carrying `PhantomData<T>` and a typed `Wrapper<i64>` value.
+- `main.sla`: Sla surrogate that preserves the `id` observable without claiming support for the full phantom generic shape.
+
+Because the current Sla path does not accept the typed phantom-parameter struct-literal shape here, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

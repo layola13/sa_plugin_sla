@@ -1,9 +1,9 @@
 # 219 Pkg Bin Multiple
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps multiple binary targets observable as a CLI plus worker executable pair.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/219_pkg_bin_multiple/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the CLI-plus-worker binary pair.
+- `main.sla`: Sla companion for the CLI-plus-worker binary pair.
 
 Commands:
 

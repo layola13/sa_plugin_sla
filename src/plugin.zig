@@ -158,6 +158,70 @@ fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allo
     }
 }
 
+fn appendExpandedSlaImportDecls(
+    allocator: std.mem.Allocator,
+    base_dir: []const u8,
+    import_path: []const u8,
+    visited: *std.StringHashMap(void),
+    out_decls: *std.ArrayList(*ast.Node),
+) !void {
+    const resolved = try resolveImportFile(allocator, base_dir, import_path);
+    if (!std.mem.endsWith(u8, resolved.path, ".sla")) {
+        return;
+    }
+    if (visited.contains(resolved.path)) return;
+    try visited.put(resolved.path, {});
+
+    var parser = parser_mod.Parser.init(allocator, resolved.source);
+    const imported_prog = try parser.parseProgram();
+    if (imported_prog.* != .program) return error.InvalidProgram;
+
+    const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
+    for (imported_prog.program.decls) |decl| {
+        if (decl.* == .import_decl) {
+            const child_resolved = try resolveImportFile(allocator, import_dir, decl.import_decl.path);
+            if (std.mem.endsWith(u8, child_resolved.path, ".sla")) {
+                try appendExpandedSlaImportDecls(allocator, import_dir, decl.import_decl.path, visited, out_decls);
+            } else {
+                try out_decls.append(decl);
+            }
+        } else {
+            try out_decls.append(decl);
+        }
+    }
+}
+
+fn expandSlaImports(
+    allocator: std.mem.Allocator,
+    program: *ast.Node,
+    source_file: []const u8,
+) !*ast.Node {
+    if (program.* != .program) return error.InvalidProgram;
+
+    var visited = std.StringHashMap(void).init(allocator);
+    defer visited.deinit();
+
+    var decls = std.ArrayList(*ast.Node).init(allocator);
+    const source_dir = std.fs.path.dirname(source_file) orelse ".";
+
+    for (program.program.decls) |decl| {
+        if (decl.* == .import_decl) {
+            const resolved = try resolveImportFile(allocator, source_dir, decl.import_decl.path);
+            if (std.mem.endsWith(u8, resolved.path, ".sla")) {
+                try appendExpandedSlaImportDecls(allocator, source_dir, decl.import_decl.path, &visited, &decls);
+            } else {
+                try decls.append(decl);
+            }
+        } else {
+            try decls.append(decl);
+        }
+    }
+
+    const expanded = try allocator.create(ast.Node);
+    expanded.* = .{ .program = .{ .decls = try decls.toOwnedSlice() } };
+    return expanded;
+}
+
 fn loadImportContractsRecursive(
     tc: *type_checker_mod.TypeChecker,
     allocator: std.mem.Allocator,
@@ -250,19 +314,24 @@ pub fn runSlaCommandImpl(
         };
 
         const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
-            try stderr.print("Error: failed to read file {s}: {}\n", .{file, err});
+            try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
             return 1;
         };
 
         var p = parser_mod.Parser.init(allocator, content);
         const prog = p.parseProgram() catch |err| {
-            try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{file, err});
+            try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
+            return 1;
+        };
+
+        const expanded_prog = expandSlaImports(allocator, prog, file) catch |err| {
+            try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
             return 1;
         };
 
         var mono = monomorphizer_mod.Monomorphizer.init(allocator);
         defer mono.deinit();
-        const specialized_prog = mono.monomorphize(prog) catch |err| {
+        const specialized_prog = mono.monomorphize(expanded_prog) catch |err| {
             try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
             return 1;
         };
@@ -274,9 +343,9 @@ pub fn runSlaCommandImpl(
             try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
             return 1;
         };
-        
+
         tc.checkProgram(specialized_prog) catch |err| {
-            try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{tc.last_error, err});
+            try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
             return 1;
         };
 
@@ -289,11 +358,11 @@ pub fn runSlaCommandImpl(
         };
 
         std.fs.cwd().writeFile(.{ .sub_path = final_out, .data = sa_code }) catch |err| {
-            try stderr.print("File Error: failed to write output {s}: {}\n", .{final_out, err});
+            try stderr.print("File Error: failed to write output {s}: {}\n", .{ final_out, err });
             return 1;
         };
 
-        try stdout.print("Sla Compiler: Successfully compiled {s} to {s}.\n", .{file, final_out});
+        try stdout.print("Sla Compiler: Successfully compiled {s} to {s}.\n", .{ file, final_out });
         return 0;
     } else if (std.mem.eql(u8, cmd, "check")) {
         if (args.len < 4) {
@@ -307,19 +376,24 @@ pub fn runSlaCommandImpl(
         const allocator = arena.allocator();
 
         const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
-            try stderr.print("Error: failed to read file {s}: {}\n", .{file, err});
+            try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
             return 1;
         };
 
         var p = parser_mod.Parser.init(allocator, content);
         const prog = p.parseProgram() catch |err| {
-            try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{file, err});
+            try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
+            return 1;
+        };
+
+        const expanded_prog = expandSlaImports(allocator, prog, file) catch |err| {
+            try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
             return 1;
         };
 
         var mono = monomorphizer_mod.Monomorphizer.init(allocator);
         defer mono.deinit();
-        const specialized_prog = mono.monomorphize(prog) catch |err| {
+        const specialized_prog = mono.monomorphize(expanded_prog) catch |err| {
             try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
             return 1;
         };
@@ -331,9 +405,9 @@ pub fn runSlaCommandImpl(
             try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
             return 1;
         };
-        
+
         tc.checkProgram(specialized_prog) catch |err| {
-            try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{tc.last_error, err});
+            try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
             return 1;
         };
 
@@ -368,9 +442,14 @@ pub fn runSlaCommandImpl(
             return 1;
         };
 
+        const expanded_prog = expandSlaImports(allocator, prog, file) catch |err| {
+            try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
+            return 1;
+        };
+
         var mono = monomorphizer_mod.Monomorphizer.init(allocator);
         defer mono.deinit();
-        const specialized_prog = mono.monomorphize(prog) catch |err| {
+        const specialized_prog = mono.monomorphize(expanded_prog) catch |err| {
             try stderr.print("Monomorphization Error: {}\n", .{err});
             return 1;
         };

@@ -1,19 +1,27 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/core/arc.sa"
+@import "sa_std/core/result.sa"
+@import "sa_std/sync/rwlock.sa"
+@import "sa_std/thread.sa"
+
+fn read_shared(shared: Arc<RwLock<i32> >) -> i32 {
+    return *(*shared).read().unwrap();
+}
 
 fn rwlock_reader_writer_total() -> i32 {
-    let first_read = rwlock_read(1);
-    let written = rwlock_write(first_read, 2);
-    let second_read = rwlock_read(written);
-    return first_read + second_read;
-}
+    let shared = Arc::new(RwLock::new(1));
+    let cloned = shared.clone();
+    let first_reader = thread::spawn(^|| read_shared(cloned));
 
-fn rwlock_read(value: i32) -> i32 {
-    return value;
-}
+    let first = first_reader.join().unwrap();
+    {
+        let writer = (*shared).write().unwrap();
+        *writer = *writer + 2;
+    }
 
-fn rwlock_write(value: i32, delta: i32) -> i32 {
-    return value + delta;
+    let second = *(*shared).read().unwrap();
+    return first + second;
 }
 
 fn main() -> i32 {

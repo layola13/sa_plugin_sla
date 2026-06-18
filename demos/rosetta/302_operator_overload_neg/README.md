@@ -2,7 +2,7 @@
 
 > **状态**：当前 Sla companion 已使用真实 `-a` 操作符。Parser 仍把一元负号表示为 `0 - expr`，类型检查和 codegen 已支持该形态作用于数值字段 struct。
 
-This directory pairs the Rust rosetta reference with a Sla companion.
+This directory documents the local unary `-Vec3` operator-overload demo.
 
 - `main.rs`：Rust 原版，演示 `impl Neg for Vec3` 实现 `-a`。
 - `main.sla`：Sla 等价实现，显式导入 `sa_std/ops.sa`，使用 `f32` 字段和 `let b = -a;`，验证结果为 `Vec3 { x: -1.0, y: 2.0, z: -3.0 }`。

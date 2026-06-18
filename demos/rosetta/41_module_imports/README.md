@@ -1,14 +1,6 @@
 # 041 Module Imports
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the module-import topic for the catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/41_module_imports/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/41_module_imports/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/41_module_imports/main.sla --out /tmp/41_module_imports.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/41_module_imports/main.sla
-```
+- `main.rs`: Rust reference for the local module function call semantics used by this slot.
+- `main.sla`: Sla companion for the local module function call semantics used by this slot.

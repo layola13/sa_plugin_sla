@@ -3,6 +3,11 @@
 @import "sa_std/string.sa"
 @import "sa_std/string_format.sa"
 @import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -30,7 +35,7 @@ L_ENTRY:
 L_ENTRY:
     tmp_7 = call @sla__serializer_json()
     json = tmp_7
-    EXPAND FORMAT_AS_STR tmp_8, json
+    EXPAND STRING_BUF_AS_STR tmp_8, json
     EXPAND STRING_PTR tmp_9, tmp_8
     EXPAND STRING_LEN tmp_10, tmp_8
     call @sa_print_bytes(&tmp_9, tmp_10)
@@ -40,7 +45,7 @@ L_ENTRY:
     @const SLA_STR_2 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_2, 1)
     tmp_11 = 0
-    EXPAND FORMAT_FREE json
+    EXPAND STRING_BUF_FREE json
     return tmp_11
 
 @test "rosetta 069 69_serializer"():
@@ -52,7 +57,7 @@ L_TEST_ENTRY_0:
     tmp_13 = stack_alloc Slice_SIZE
     EXPAND SLICE_NEW tmp_13, &SLA_STR_3, tmp_14
     !tmp_14
-    EXPAND FORMAT_AS_STR tmp_15, json
+    EXPAND STRING_BUF_AS_STR tmp_15, json
     EXPAND STR_EQ tmp_16, tmp_15, tmp_13
     !tmp_15
     tmp_17 = 1
@@ -70,6 +75,6 @@ L_ELSE_2:
     jmp L_MERGE_3
 
 L_MERGE_3:
-    EXPAND FORMAT_FREE json
+    EXPAND STRING_BUF_FREE json
     return
 

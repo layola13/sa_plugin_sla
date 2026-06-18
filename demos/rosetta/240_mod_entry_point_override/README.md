@@ -1,9 +1,9 @@
 # 240 Mod Entry Point Override
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps custom entry-point selection observable as one overridden startup path.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/240_mod_entry_point_override/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for selecting a custom startup path.
+- `main.sla`: Sla companion for selecting a custom startup path.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 271 Build Optimization Passes
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps optimizer scheduling observable as inline, dead-code-elimination, and constant-folding passes.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/271_build_optimization_passes/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for inline, DCE, and constant-folding passes.
+- `main.sla`: Sla companion for inline, DCE, and constant-folding passes.
 
 Commands:
 

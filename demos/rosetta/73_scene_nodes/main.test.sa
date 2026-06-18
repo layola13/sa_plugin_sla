@@ -1,115 +1,128 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_scene_nodes_sum = vtable { call = @sla__scene_nodes_sum }
+@const SLA_FNPTR_VT_visible_weight = vtable { call = @sla__visible_weight }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__scene_nodes_sum() -> i32:
+@sla__visible_weight(nodes: ptr) -> i32:
 L_ENTRY:
-    nodes = alloc 12
-    tmp_0 = 4
-    store nodes+0, tmp_0 as i32
-    tmp_1 = 5
-    store nodes+4, tmp_1 as i32
-    tmp_2 = 6
-    store nodes+8, tmp_2 as i32
-    tmp_3 = 0
-    tmp_4 = 0
-    tmp_5 = ptr_add nodes, tmp_4
-    tmp_6 = load tmp_5+0 as i32
-    tmp_7 = add tmp_3, tmp_6
+    node_slot = stack_alloc 8
+    tmp_0 = 0
+    total = tmp_0
+    store node_slot+0, 0 as i64
+    jmp L_LOOP_HEAD_0
+
+L_LOOP_HEAD_0:
+    tmp_1 = load node_slot+0 as i64
+    tmp_2 = slt tmp_1, 3
+    br tmp_2 -> L_LOOP_BODY_1, L_LOOP_COND_FALSE_3
+
+L_LOOP_BODY_1:
+    !tmp_2
+    tmp_3 = mul tmp_1, 8
+    tmp_4 = ptr_add nodes, tmp_3
+    node = load tmp_4+0 as ptr
+    !tmp_3
     !tmp_4
+    tmp_5 = load node+0 as u8
+    tmp_6 = 1
+    tmp_7 = eq tmp_5, tmp_6
     !tmp_5
     !tmp_6
-    !tmp_3
-    tmp_8 = 4
-    tmp_9 = ptr_add nodes, tmp_8
-    tmp_10 = load tmp_9+0 as i32
-    tmp_11 = add tmp_7, tmp_10
-    !tmp_8
-    !tmp_9
-    !tmp_10
+    br tmp_7 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
     !tmp_7
-    tmp_12 = 8
-    tmp_13 = ptr_add nodes, tmp_12
-    tmp_14 = load tmp_13+0 as i32
-    tmp_15 = add tmp_11, tmp_14
-    !tmp_12
-    !tmp_13
-    !tmp_14
+    tmp_8 = load node+1 as i32
+    weight = tmp_8
+    tmp_9 = add total, weight
+    !total
+    total = tmp_9
+    !weight
+    jmp L_MERGE_7
+
+L_ELSE_6:
+    !tmp_7
+    jmp L_MERGE_7
+
+L_MERGE_7:
+L_LOOP_CONTINUE_2:
+    tmp_11 = add tmp_1, 1
+    store node_slot+0, tmp_11 as i64
     !tmp_11
+    !tmp_1
+    !node
+    jmp L_LOOP_HEAD_0
+
+L_LOOP_COND_FALSE_3:
+    !tmp_2
+    !tmp_1
+    jmp L_LOOP_EXIT_4
+
+L_LOOP_EXIT_4:
     !nodes
-    return tmp_15
+    return total
 
 @main() -> i32:
 L_ENTRY:
-    nodes = alloc 12
-    tmp_16 = 4
-    store nodes+0, tmp_16 as i32
+    nodes = alloc 24
+    tmp_12 = alloc 5
+    tmp_13 = 1
+    store tmp_12+0, tmp_13 as u8
+    tmp_14 = 4
+    store tmp_12+1, tmp_14 as i32
+    store nodes+0, tmp_12 as ptr
+    tmp_15 = alloc 5
+    tmp_16 = 0
+    store tmp_15+0, tmp_16 as u8
     tmp_17 = 5
-    store nodes+4, tmp_17 as i32
-    tmp_18 = 6
-    store nodes+8, tmp_18 as i32
-    tmp_19 = 0
-    tmp_20 = 0
-    tmp_21 = ptr_add nodes, tmp_20
-    tmp_22 = load tmp_21+0 as i32
-    tmp_23 = add tmp_19, tmp_22
-    !tmp_20
-    !tmp_21
-    !tmp_22
-    !tmp_19
-    tmp_24 = 4
-    tmp_25 = ptr_add nodes, tmp_24
-    tmp_26 = load tmp_25+0 as i32
-    tmp_27 = add tmp_23, tmp_26
-    !tmp_24
+    store tmp_15+1, tmp_17 as i32
+    store nodes+8, tmp_15 as ptr
+    tmp_18 = alloc 5
+    tmp_19 = 1
+    store tmp_18+0, tmp_19 as u8
+    tmp_20 = 6
+    store tmp_18+1, tmp_20 as i32
+    store nodes+16, tmp_18 as ptr
+    tmp_21 = call @sla__visible_weight(nodes)
+    total = tmp_21
+    tmp_22 = call @sa_fmt_u64(total, 10)
+    tmp_23 = call @sa_fmt_buffer_data(tmp_22)
+    tmp_24 = call @sa_fmt_buffer_len(tmp_22)
+    tmp_25 = tmp_23
+    call @sa_print_bytes(&tmp_25, tmp_24)
+    call @sa_fmt_buffer_free(^tmp_22)
     !tmp_25
-    !tmp_26
-    !tmp_23
-    tmp_28 = 8
-    tmp_29 = ptr_add nodes, tmp_28
-    tmp_30 = load tmp_29+0 as i32
-    tmp_31 = add tmp_27, tmp_30
-    !tmp_28
-    !tmp_29
-    !tmp_30
-    !tmp_27
-    tmp_32 = call @sa_fmt_u64(tmp_31, 10)
-    tmp_33 = call @sa_fmt_buffer_data(tmp_32)
-    tmp_34 = call @sa_fmt_buffer_len(tmp_32)
-    tmp_35 = tmp_33
-    call @sa_print_bytes(&tmp_35, tmp_34)
-    call @sa_fmt_buffer_free(^tmp_32)
-    !tmp_35
-    !tmp_34
-    !tmp_31
+    !tmp_24
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_36 = 0
     !nodes
-    return tmp_36
+    return total
 
 @test "rosetta 073 73_scene_nodes"():
-L_TEST_ENTRY_0:
-    tmp_37 = call @sla__scene_nodes_sum()
-    got = tmp_37
-    tmp_38 = 15
-    tmp_39 = ne got, tmp_38
-    !tmp_38
-    br tmp_39 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_8:
+    tmp_26 = call @main()
+    tmp_27 = 10
+    tmp_28 = ne tmp_26, tmp_27
+    !tmp_26
+    !tmp_27
+    br tmp_28 -> L_THEN_9, L_ELSE_10
 
-L_THEN_1:
-    !tmp_39
+L_THEN_9:
+    !tmp_28
     panic(73)
 
-L_ELSE_2:
-    !tmp_39
-    jmp L_MERGE_3
+L_ELSE_10:
+    !tmp_28
+    jmp L_MERGE_11
 
-L_MERGE_3:
-    !got
+L_MERGE_11:
     return
 

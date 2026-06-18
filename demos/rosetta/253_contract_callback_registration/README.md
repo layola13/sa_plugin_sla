@@ -1,9 +1,9 @@
 # 253 Contract Callback Registration
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps callback registration observable as one host callback bound through the contract surface.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/253_contract_callback_registration/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one host callback registered through the contract layer.
+- `main.sla`: Sla companion for one host callback registered through the contract layer.
 
 Commands:
 

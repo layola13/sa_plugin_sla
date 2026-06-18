@@ -1,7 +1,14 @@
-fn chunk_count(bytes: i32, chunk_size: i32) -> i32 {
-    (bytes + chunk_size - 1) / chunk_size
+struct BlobRange {
+    bytes: i32,
+    chunk_size: i32,
+}
+
+fn chunk_layout(blob: BlobRange) -> i32 {
+    let chunks = (blob.bytes + blob.chunk_size - 1) / blob.chunk_size;
+    let tail = blob.bytes % blob.chunk_size;
+    chunks * 10 + tail
 }
 
 fn main() {
-    println!("{}", chunk_count(10, 4));
+    println!("{}", chunk_layout(BlobRange { bytes: 10, chunk_size: 4 }));
 }

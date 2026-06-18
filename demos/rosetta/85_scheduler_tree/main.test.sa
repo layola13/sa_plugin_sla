@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -26,10 +31,9 @@ L_ELSE_1:
 @sla__critical_path(root: i32, left: i32, right: i32) -> i32:
 L_ENTRY:
     tmp_2 = call @sla__max_i32(left, right)
-    tmp_3 = add root, tmp_2
-    !tmp_2
+    branch = tmp_2
+    tmp_3 = add root, branch
     !right
-    !root
     !left
     return tmp_3
 

@@ -1,9 +1,9 @@
 # 127 Hazard Pointers
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current hazard-pointer surrogate honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/127_hazard_pointers/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: local Rust surrogate that loads a raw pointer, mirrors it into a second atomic slot, and checks pointer equality before dereference.
+- `main.sla`: matching Sla surrogate for the same protected-pointer observable.
 
 Commands:
 

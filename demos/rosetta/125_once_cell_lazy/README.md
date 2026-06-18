@@ -1,9 +1,9 @@
 # 125 Once Cell Lazy
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current once-cell gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/125_once_cell_lazy/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference using a real static `OnceLock` and `get_or_init(...)` reuse.
+- `main.sla`: Sla surrogate using a local `ONCE_NEW()` handle and repeated `ONCE_GET_OR_INIT(...)` calls within one function.
 
 Commands:
 

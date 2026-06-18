@@ -1,14 +1,6 @@
 # 026 Reference Return
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the reference-return topic for the catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/26_reference_return/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/26_reference_return/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/26_reference_return/main.sla --out /tmp/26_reference_return.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/26_reference_return/main.sla
-```
+- `main.rs`: Rust reference for the returned-borrow semantics used by this slot.
+- `main.sla`: Sla companion for the returned-borrow semantics used by this slot.

@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/future.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -21,8 +26,6 @@ L_ENTRY:
     !tmp_2
     right = tmp_3
     tmp_4 = call @sla__select_first_ready(left, right)
-    !right
-    !left
     return tmp_4
 
 @sla__branch_a() -> ptr:

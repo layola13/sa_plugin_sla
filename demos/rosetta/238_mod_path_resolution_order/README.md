@@ -1,9 +1,9 @@
 # 238 Mod Path Resolution Order
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps path-priority rules observable as a root item winning over a local module path in the final score.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/238_mod_path_resolution_order/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for root-item priority over a local module path.
+- `main.sla`: Sla companion for root-item priority over a local module path.
 
 Commands:
 

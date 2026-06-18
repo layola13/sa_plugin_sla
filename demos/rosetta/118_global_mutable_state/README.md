@@ -1,9 +1,9 @@
 # 118 Global Mutable State
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the global-mutable-state catalog slot through the final counter observable.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/118_global_mutable_state/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for two unsafe global counter updates.
+- `main.sla`: Sla companion for two unsafe global counter updates.
 
 Commands:
 

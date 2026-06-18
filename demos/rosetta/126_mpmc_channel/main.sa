@@ -1,79 +1,219 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/core/result.sa"
+@import "sa_std/sync/mpsc.sa"
+@import "sa_std/thread.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@const SLA_THREAD_VT_1 = vtable { call = @sla_thread_worker_1 }
+@const SLA_THREAD_VT_0 = vtable { call = @sla_thread_worker_0 }
+
+@ffi_wrapper sla_thread_spawn_1(*slot: ptr) -> i32:
+L_ENTRY:
+    worker_vt = &SLA_THREAD_VT_1
+    worker_fn = load worker_vt+0 as ptr
+    worker_raw = *worker_fn
+    worker_safe = assume_safe worker_raw
+    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
+    !slot
+    return handle
+
+@sla_thread_worker_1(&slot: ptr) -> i32:
+L_ENTRY:
+    tmp_0 = load slot+16 as ptr
+    tmp_1 = 3
+    tmp_2 = 4
+    tmp_3 = call @sla__send_pair(tmp_0, tmp_1, tmp_2)
+    !tmp_1
+    !tmp_2
+    store slot+8, tmp_3 as i32
+    !slot
+    return tmp_3
+
+@ffi_wrapper sla_thread_spawn_0(*slot: ptr) -> i32:
+L_ENTRY:
+    worker_vt = &SLA_THREAD_VT_0
+    worker_fn = load worker_vt+0 as ptr
+    worker_raw = *worker_fn
+    worker_safe = assume_safe worker_raw
+    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
+    !slot
+    return handle
+
+@sla_thread_worker_0(&slot: ptr) -> i32:
+L_ENTRY:
+    tmp_4 = load slot+16 as ptr
+    tmp_5 = 1
+    tmp_6 = 2
+    tmp_7 = call @sla__send_pair(tmp_4, tmp_5, tmp_6)
+    !tmp_5
+    !tmp_6
+    store slot+8, tmp_7 as i32
+    !slot
+    return tmp_7
+
+@const SLA_FNPTR_VT_send_pair = vtable { call = @sla__send_pair }
 @const SLA_FNPTR_VT_mpmc_channel_total = vtable { call = @sla__mpmc_channel_total }
-@const SLA_FNPTR_VT_channel_send = vtable { call = @sla__channel_send }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__send_pair(tx: ptr, a: i32, b: i32) -> i32:
+L_ENTRY:
+    tmp_8 = add a, 0
+    EXPAND MPSC_SEND tx, tmp_8
+    EXPAND RESULT_NEW_OK tmp_9, 0
+    EXPAND RESULT_UNWRAP tmp_10, tmp_9
+    !tmp_9
+    !tmp_10
+    tmp_11 = add b, 0
+    EXPAND MPSC_SEND tx, tmp_11
+    EXPAND RESULT_NEW_OK tmp_12, 0
+    EXPAND RESULT_UNWRAP tmp_13, tmp_12
+    !tmp_12
+    !tmp_13
+    tmp_14 = 0
+    !b
+    !a
+    !tx
+    return tmp_14
+
 @sla__mpmc_channel_total() -> i32:
 L_ENTRY:
-    tmp_0 = 0
-    total = tmp_0
-    tmp_1 = 1
-    tmp_2 = call @sla__channel_send(total, tmp_1)
-    !tmp_1
-    !total
-    total = tmp_2
-    tmp_3 = 2
-    tmp_4 = call @sla__channel_send(total, tmp_3)
-    !tmp_3
-    !total
-    total = tmp_4
-    tmp_5 = 3
-    tmp_6 = call @sla__channel_send(total, tmp_5)
-    !tmp_5
-    !total
-    total = tmp_6
-    tmp_7 = 4
-    tmp_8 = call @sla__channel_send(total, tmp_7)
-    !tmp_7
-    !total
-    total = tmp_8
-    return total
+    tx = 0
+    EXPAND MPSC_NEW rx, 1024
+    tmp_15 = add rx, 0
+    left = tmp_15
+    tmp_16 = alloc 24
+    store tmp_16+0, 0 as i32
+    store tmp_16+8, 0 as i32
+    store tmp_16+16, rx as ptr
+    tmp_17 = call @sla_thread_spawn_0(*tmp_16)
+    store tmp_16+0, tmp_17 as i32
+    !tmp_17
+    producer_a = tmp_16
+    tmp_18 = alloc 24
+    store tmp_18+0, 0 as i32
+    store tmp_18+8, 0 as i32
+    store tmp_18+16, rx as ptr
+    tmp_19 = call @sla_thread_spawn_1(*tmp_18)
+    store tmp_18+0, tmp_19 as i32
+    !tmp_19
+    producer_b = tmp_18
+    tmp_20 = load producer_a+0 as i32
+    EXPAND THREAD_JOIN_STATUS tmp_21, tmp_20, *producer_a
+    EXPAND THREAD_DROP tmp_20
+    tmp_22 = eq tmp_21, 0
+    br tmp_22 -> L_THREAD_JOIN_OK_0, L_THREAD_JOIN_ERR_1
 
-@sla__channel_send(total: i32, message: i32) -> i32:
-L_ENTRY:
-    tmp_9 = add total, message
-    !total
-    !message
-    return tmp_9
+L_THREAD_JOIN_OK_0:
+    !tmp_22
+    tmp_24 = load producer_a+8 as i32
+    EXPAND RESULT_NEW_OK tmp_23, tmp_24
+    !tmp_24
+    jmp L_THREAD_JOIN_END_2
+
+L_THREAD_JOIN_ERR_1:
+    !tmp_22
+    EXPAND RESULT_NEW_ERR tmp_23, tmp_21
+    jmp L_THREAD_JOIN_END_2
+
+L_THREAD_JOIN_END_2:
+    !tmp_21
+    !tmp_20
+    !producer_a
+    EXPAND RESULT_UNWRAP tmp_25, tmp_23
+    !tmp_23
+    !tmp_25
+    tmp_26 = load producer_b+0 as i32
+    EXPAND THREAD_JOIN_STATUS tmp_27, tmp_26, *producer_b
+    EXPAND THREAD_DROP tmp_26
+    tmp_28 = eq tmp_27, 0
+    br tmp_28 -> L_THREAD_JOIN_OK_3, L_THREAD_JOIN_ERR_4
+
+L_THREAD_JOIN_OK_3:
+    !tmp_28
+    tmp_30 = load producer_b+8 as i32
+    EXPAND RESULT_NEW_OK tmp_29, tmp_30
+    !tmp_30
+    jmp L_THREAD_JOIN_END_5
+
+L_THREAD_JOIN_ERR_4:
+    !tmp_28
+    EXPAND RESULT_NEW_ERR tmp_29, tmp_27
+    jmp L_THREAD_JOIN_END_5
+
+L_THREAD_JOIN_END_5:
+    !tmp_27
+    !tmp_26
+    !producer_b
+    EXPAND RESULT_UNWRAP tmp_31, tmp_29
+    !tmp_29
+    !tmp_31
+    EXPAND MPSC_RECV tmp_32, rx
+    EXPAND RESULT_NEW_OK tmp_33, tmp_32
+    !tmp_32
+    EXPAND RESULT_UNWRAP tmp_34, tmp_33
+    !tmp_33
+    EXPAND MPSC_RECV tmp_35, rx
+    EXPAND RESULT_NEW_OK tmp_36, tmp_35
+    !tmp_35
+    EXPAND RESULT_UNWRAP tmp_37, tmp_36
+    !tmp_36
+    tmp_38 = add tmp_34, tmp_37
+    !tmp_34
+    !tmp_37
+    EXPAND MPSC_RECV tmp_39, rx
+    EXPAND RESULT_NEW_OK tmp_40, tmp_39
+    !tmp_39
+    EXPAND RESULT_UNWRAP tmp_41, tmp_40
+    !tmp_40
+    tmp_42 = add tmp_38, tmp_41
+    !tmp_38
+    !tmp_41
+    EXPAND MPSC_RECV tmp_43, rx
+    EXPAND RESULT_NEW_OK tmp_44, tmp_43
+    !tmp_43
+    EXPAND RESULT_UNWRAP tmp_45, tmp_44
+    !tmp_44
+    tmp_46 = add tmp_42, tmp_45
+    !tmp_42
+    !tmp_45
+    return tmp_46
 
 @main() -> i32:
 L_ENTRY:
-    tmp_10 = call @sla__mpmc_channel_total()
-    result = tmp_10
-    tmp_11 = call @sa_fmt_u64(result, 10)
-    tmp_12 = call @sa_fmt_buffer_data(tmp_11)
-    tmp_13 = call @sa_fmt_buffer_len(tmp_11)
-    tmp_14 = tmp_12
-    call @sa_print_bytes(&tmp_14, tmp_13)
-    call @sa_fmt_buffer_free(^tmp_11)
-    !tmp_14
-    !tmp_13
+    tmp_47 = call @sla__mpmc_channel_total()
+    result = tmp_47
+    tmp_48 = call @sa_fmt_u64(result, 10)
+    tmp_49 = call @sa_fmt_buffer_data(tmp_48)
+    tmp_50 = call @sa_fmt_buffer_len(tmp_48)
+    tmp_51 = tmp_49
+    call @sa_print_bytes(&tmp_51, tmp_50)
+    call @sa_fmt_buffer_free(^tmp_48)
+    !tmp_51
+    !tmp_50
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 126 126_mpmc_channel"():
-L_TEST_ENTRY_0:
-    tmp_15 = call @sla__mpmc_channel_total()
-    got = tmp_15
-    tmp_16 = 10
-    tmp_17 = ne got, tmp_16
-    !tmp_16
-    br tmp_17 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_6:
+    tmp_52 = call @sla__mpmc_channel_total()
+    got = tmp_52
+    tmp_53 = 10
+    tmp_54 = ne got, tmp_53
+    !tmp_53
+    br tmp_54 -> L_THEN_7, L_ELSE_8
 
-L_THEN_1:
-    !tmp_17
+L_THEN_7:
+    !tmp_54
     panic(126)
 
-L_ELSE_2:
-    !tmp_17
-    jmp L_MERGE_3
+L_ELSE_8:
+    !tmp_54
+    jmp L_MERGE_9
 
-L_MERGE_3:
+L_MERGE_9:
     !got
     return
 

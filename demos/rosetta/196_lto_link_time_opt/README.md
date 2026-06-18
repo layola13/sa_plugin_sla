@@ -1,9 +1,9 @@
 # 196 Lto Link Time Opt
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the link-time-optimization theme observable as a combined hot-path and cold-path call total.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/196_lto_link_time_opt/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the hot-path and cold-path call total.
+- `main.sla`: Sla companion for the combined hot-path and cold-path call total.
 
 Commands:
 

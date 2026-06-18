@@ -1,9 +1,9 @@
 # 269 Build Cross Compile Windows
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps Windows cross-compilation observable as one MSVC target triple.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/269_build_cross_compile_windows/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one MSVC Windows target triple.
+- `main.sla`: Sla companion for one MSVC Windows target triple.
 
 Commands:
 

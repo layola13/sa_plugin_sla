@@ -2,7 +2,7 @@
 
 > **状态**：当前 Sla companion 已使用真实 `a == b` / `a != c` 操作符。编译器在类型检查阶段允许可比较字段 struct 的同类型 `==`/`!=`，在 codegen 阶段生成逐字段 `eq` 与 `and`。
 
-This directory pairs the Rust rosetta reference with a Sla companion.
+This directory documents the local `Point == Point` / `Point != Point` operator-overload demo.
 
 - `main.rs`：Rust 原版，演示 `impl PartialEq for Point` 实现 `a == b` 和 `a != c`。
 - `main.sla`：Sla 等价实现，使用 `let` 绑定的 `Point` 直接比较，验证 `a == b` 且 `a != c`。

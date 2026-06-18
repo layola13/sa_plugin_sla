@@ -1,9 +1,9 @@
 # 099 Release Bundle
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the release-readiness topic for the catalog slot, combining binary, config, checksum, and signature manifest requirements.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/99_release_bundle/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the bundle-manifest readiness semantics used by this slot.
+- `main.sla`: Sla companion for the bundle-manifest readiness semantics used by this slot.
 
 Commands:
 

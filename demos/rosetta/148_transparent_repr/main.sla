@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-fn transparent_repr_inner() -> i32 { let value = 7; return value; }
+struct Wrap(i32)
+
+fn transparent_repr_inner() -> i32 {
+    let value = Wrap(7).0;
+    return value;
+}
 fn main() -> i32 { let result = transparent_repr_inner(); println("{}", result); return result; }
 @test "rosetta 148 148_transparent_repr"() { let got = transparent_repr_inner(); if got != 7 { panic(148); }; }

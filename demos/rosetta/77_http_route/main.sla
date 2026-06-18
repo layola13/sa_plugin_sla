@@ -7,37 +7,46 @@ struct Request {
     path: ptr,
 }
 
-fn route_status(req: Request) -> i32 {
-    if str_eq(req.method, "GET") == true {
-        if str_eq(req.path, "/health") == true {
-            return 200;
-        } else {
-            return 404;
-        };
-    } else {
-        if str_eq(req.method, "POST") == true {
-            if str_eq(req.path, "/jobs") == true {
-                return 202;
-            } else {
-                return 404;
-            };
-        } else {
-            return 404;
-        };
+fn get_route_status(path: ptr) -> i32 {
+    if str_eq(path, "/health") {
+        return 200;
     };
+    return 404;
+}
+
+fn post_route_status(path: ptr) -> i32 {
+    if str_eq(path, "/jobs") {
+        return 202;
+    };
+    return 404;
+}
+
+fn route_status(req: Request) -> i32 {
+    if str_eq(req.method, "GET") {
+        return get_route_status(req.path);
+    };
+    if str_eq(req.method, "POST") {
+        return post_route_status(req.path);
+    };
+    return 404;
 }
 
 fn main() -> i32 {
-    let request = Request { method: "POST", path: "/jobs" };
+    let request = Request {
+        method: "POST",
+        path: "/jobs",
+    };
     let status = route_status(request);
     println("{}", status);
     return status;
 };
 
 @test "rosetta 077 77_http_route"() {
-    let request = Request { method: "POST", path: "/jobs" };
-    let got = route_status(request);
-    if got != 202 {
+    let request = Request {
+        method: "POST",
+        path: "/jobs",
+    };
+    if route_status(request) != 202 {
         panic(77);
     };
 };

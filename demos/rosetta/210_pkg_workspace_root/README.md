@@ -1,9 +1,9 @@
 # 210 Pkg Workspace Root
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps workspace membership observable as one app member plus one library member.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/210_pkg_workspace_root/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one app member plus one library member.
+- `main.sla`: Sla companion for one app member plus one library member.
 
 Commands:
 

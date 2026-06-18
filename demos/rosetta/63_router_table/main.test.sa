@@ -2,10 +2,17 @@
 @import "sa_std/fmt.sai"
 @import "sa_std/core/option.sa"
 @import "sa_std/hashmap.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/option.sa"
+@import "sa_std/hashmap.sa"
 
 [MACRO] SLA_MAP_TRY_GET_OPTION %out_opt, %map_reg, %key_reg
     EXPAND MAP_TRY_GET __sla_map_get_ok_%out_opt, __sla_map_get_ptr_%out_opt, %map_reg, %key_reg

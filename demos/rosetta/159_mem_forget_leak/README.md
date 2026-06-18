@@ -1,9 +1,9 @@
 # 159 Mem Forget Leak
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the `mem::forget` leak/ownership-transfer catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/159_mem_forget_leak/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for consuming ownership without running normal cleanup.
+- `main.sla`: Sla companion for consuming ownership without running normal cleanup.
 
 Commands:
 

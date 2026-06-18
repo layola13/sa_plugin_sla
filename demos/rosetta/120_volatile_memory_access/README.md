@@ -1,9 +1,9 @@
 # 120 Volatile Memory Access
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the volatile-memory-access catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/120_volatile_memory_access/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `std::ptr::read_volatile` on an integer pointer.
+- `main.sla`: Sla companion that explicitly imports `sa_std/ptr.sa` and calls `ptr::read_volatile` through the SLA-side facade.
 
 Commands:
 

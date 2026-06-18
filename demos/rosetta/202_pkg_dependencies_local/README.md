@@ -1,9 +1,9 @@
 # 202 Pkg Dependencies Local
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps local path dependency resolution observable as a single linked local package.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/202_pkg_dependencies_local/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one linked local path dependency.
+- `main.sla`: Sla companion for one linked local path dependency.
 
 Commands:
 

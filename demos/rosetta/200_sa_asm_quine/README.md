@@ -1,9 +1,11 @@
 # 200 Sa Asm Quine
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the SA-ASM quine theme observable as a fixed source-snippet surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/200_sa_asm_quine/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for printing the source text via `include_str!`.
+- `main.sla`: Sla surrogate that prints a fixed source snippet and checks its length.
+
+Because the Sla side does not emit its own full source text, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

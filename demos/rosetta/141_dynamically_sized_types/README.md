@@ -1,9 +1,9 @@
 # 141 Dynamically Sized Types
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the dynamically-sized-types catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/141_dynamically_sized_types/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a DST length observable.
+- `main.sla`: Sla companion for a DST length observable.
 
 Commands:
 

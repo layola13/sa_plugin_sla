@@ -1,20 +1,32 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-fn component_store_len() -> usize {
-    let positions = [(1, 2), (3, 4)];
-    return positions.len();
+struct Position {
+    entity: i32,
+    x: i32,
+    y: i32,
+}
+
+fn component_sum(store: [Position; 2]) -> i32 {
+    let pos = store[1];
+    let entity = pos.entity;
+    let x = pos.x;
+    let y = pos.y;
+    return entity + x + y;
 }
 
 fn main() -> i32 {
-    let positions = [(1, 2), (3, 4)];
-    println("{}", positions.len());
-    return 0;
+    let positions = [
+        Position { entity: 1, x: 1, y: 2 },
+        Position { entity: 2, x: 3, y: 4 },
+    ];
+    let total = component_sum(positions);
+    println("{}", total);
+    return total;
 }
 
 @test "rosetta 074 74_component_store"() {
-    let got = component_store_len();
-    if got != 2 {
+    if main() != 9 {
         panic(74);
     };
 }

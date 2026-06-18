@@ -1,6 +1,7 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/core/box.sa"
+@import "sa_std/mem.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -13,8 +14,9 @@ L_ENTRY:
     EXPAND BOX_NEW tmp_1, tmp_0
     value = tmp_1
     tmp_2 = load value+0 as i32
-    !value
-    return tmp_2
+    result = tmp_2
+    EXPAND MEM_FORGET_U64 value
+    return result
 
 @main() -> i32:
 L_ENTRY:

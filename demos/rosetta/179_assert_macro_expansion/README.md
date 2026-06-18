@@ -1,9 +1,11 @@
 # 179 Assert Macro Expansion
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory keeps the assert-macro expansion slot as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/179_assert_macro_expansion/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a real `assert!(1 + 1 == 2)` expansion.
+- `main.sla`: Sla surrogate that preserves the assertion-success observable through an explicit conditional panic.
+
+Because the current Sla path does not support the `assert!` macro surface directly here, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

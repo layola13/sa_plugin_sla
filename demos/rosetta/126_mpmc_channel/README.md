@@ -1,9 +1,9 @@
 # 126 Mpmc Channel
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current channel-surrogate boundary honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/126_mpmc_channel/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a multi-producer send path that drains four values through one receiver.
+- `main.sla`: matching Sla surrogate for the same multi-producer single-receiver observable.
 
 Commands:
 

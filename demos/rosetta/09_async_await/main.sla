@@ -5,12 +5,34 @@
 @import "sa_std/pin.sa"
 @import "sa_std/ptr.sa"
 @import "sa_std/core/box.sa"
-@import "sa_std/time.sa"
+@import "sa_std/time.sla"
+
+fn unix_now_millis() -> u64 {
+    return SystemTime::now().duration_since(SystemTime::unix_epoch()).unwrap().as_millis();
+}
+
+fn sleep_for_millis(delay_ms: u64) -> void {
+    thread::sleep(Duration::from_millis(delay_ms));
+}
+
+fn instant_now_ns() -> u64 {
+    let started = Instant::now();
+    return started.raw_ns();
+}
+
+fn elapsed_millis_since_ns(started_ns: u64) -> u64 {
+    let started = Instant::from_raw_ns(started_ns);
+    return started.elapsed().as_millis();
+}
+
+fn duration_millis(ms: u64) -> u64 {
+    return Duration::from_millis(ms).as_millis();
+}
 
 async fn step_one_after_delay(delay_ms: u64) -> i32 {
-    let unix_before: i64 = TIME_NOW_UNIX_MS();
-    TIME_SLEEP_MS(delay_ms);
-    let unix_after: i64 = TIME_NOW_UNIX_MS();
+    let unix_before = unix_now_millis();
+    sleep_for_millis(delay_ms);
+    let unix_after = unix_now_millis();
     if unix_after < unix_before {
         panic(91);
     };
@@ -18,13 +40,12 @@ async fn step_one_after_delay(delay_ms: u64) -> i32 {
 }
 
 async fn run() -> i32 {
-    let started_ns: u64 = TIME_NOW_NS();
     let delay_ms: u64 = 5;
+    let started_ns = instant_now_ns();
     let value = step_one_after_delay(delay_ms).await;
-    let ended_ns: u64 = TIME_NOW_NS();
-    let elapsed_ns: u64 = ended_ns - started_ns;
-    let min_elapsed_ns: u64 = TIME_DURATION_FROM_MILLIS(1);
-    if elapsed_ns < min_elapsed_ns {
+    let elapsed_ms = elapsed_millis_since_ns(started_ns);
+    let min_elapsed_ms = duration_millis(1);
+    if elapsed_ms < min_elapsed_ms {
         panic(92);
     };
     return value + 1;

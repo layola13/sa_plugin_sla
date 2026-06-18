@@ -1,9 +1,9 @@
 # 110 Trait Super Vtable
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current super-trait vtable gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/110_trait_super_vtable/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a trait inheriting another trait and dispatching both methods.
+- `main.sla`: current Sla companion shape for the same intent, but the shared super-trait dispatch path no longer type-checks locally.
 
 Commands:
 

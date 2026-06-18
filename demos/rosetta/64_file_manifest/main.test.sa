@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -29,7 +34,6 @@ L_ENTRY:
     !tmp_5
     store files+16, tmp_4 as ptr
     tmp_6 = 3
-    !files
     return tmp_6
 
 @main() -> i32:

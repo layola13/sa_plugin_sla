@@ -1,51 +1,127 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@const SLA_FNPTR_VT_synthetic_backtrace_depth = vtable { call = @sla__synthetic_backtrace_depth }
 @const SLA_FNPTR_VT_backtrace_depth = vtable { call = @sla__backtrace_depth }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__synthetic_backtrace_depth(frames: ptr) -> i32:
+L_ENTRY:
+    i_slot = stack_alloc 8
+    tmp_0 = 0
+    depth = tmp_0
+    tmp_1 = 0
+    tmp_2 = 4
+    store i_slot+0, tmp_1 as i64
+    !tmp_1
+    jmp L_LOOP_HEAD_0
+
+L_LOOP_HEAD_0:
+    tmp_3 = load i_slot+0 as i64
+    tmp_4 = slt tmp_3, tmp_2
+    br tmp_4 -> L_LOOP_BODY_1, L_LOOP_COND_FALSE_3
+
+L_LOOP_BODY_1:
+    !tmp_4
+    i = add tmp_3, 0
+    tmp_5 = mul i, 4
+    tmp_6 = ptr_add frames, tmp_5
+    !tmp_5
+    tmp_7 = load tmp_6+0 as i32
+    !tmp_6
+    tmp_8 = 0
+    tmp_9 = ne tmp_7, tmp_8
+    !tmp_7
+    !tmp_8
+    br tmp_9 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
+    !tmp_9
+    tmp_10 = 1
+    tmp_11 = add depth, tmp_10
+    !tmp_10
+    !depth
+    depth = tmp_11
+    jmp L_MERGE_7
+
+L_ELSE_6:
+    !tmp_9
+    jmp L_MERGE_7
+
+L_MERGE_7:
+L_LOOP_CONTINUE_2:
+    tmp_13 = add tmp_3, 1
+    store i_slot+0, tmp_13 as i64
+    !tmp_13
+    !tmp_3
+    !i
+    jmp L_LOOP_HEAD_0
+
+L_LOOP_COND_FALSE_3:
+    !tmp_4
+    !tmp_3
+    jmp L_LOOP_EXIT_4
+
+L_LOOP_EXIT_4:
+    !tmp_2
+    !frames
+    return depth
+
 @sla__backtrace_depth() -> i32:
 L_ENTRY:
-    tmp_0 = 1
-    captured_depth = tmp_0
-    return captured_depth
+    frames = alloc 16
+    tmp_14 = 101
+    store frames+0, tmp_14 as i32
+    tmp_15 = 202
+    store frames+4, tmp_15 as i32
+    tmp_16 = 303
+    store frames+8, tmp_16 as i32
+    tmp_17 = 0
+    store frames+12, tmp_17 as i32
+    tmp_18 = call @sla__synthetic_backtrace_depth(frames)
+    return tmp_18
 
 @main() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__backtrace_depth()
-    result = tmp_1
-    tmp_2 = call @sa_fmt_u64(result, 10)
-    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
-    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
-    tmp_5 = tmp_3
-    call @sa_print_bytes(&tmp_5, tmp_4)
-    call @sa_fmt_buffer_free(^tmp_2)
-    !tmp_5
-    !tmp_4
+    tmp_19 = call @sla__backtrace_depth()
+    result = tmp_19
+    tmp_20 = call @sa_fmt_u64(result, 10)
+    tmp_21 = call @sa_fmt_buffer_data(tmp_20)
+    tmp_22 = call @sa_fmt_buffer_len(tmp_20)
+    tmp_23 = tmp_21
+    call @sa_print_bytes(&tmp_23, tmp_22)
+    call @sa_fmt_buffer_free(^tmp_20)
+    !tmp_23
+    !tmp_22
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 174 174_backtrace_capture"():
-L_TEST_ENTRY_0:
-    tmp_6 = call @sla__backtrace_depth()
-    got = tmp_6
-    tmp_7 = 1
-    tmp_8 = ne got, tmp_7
-    !tmp_7
-    br tmp_8 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_8:
+    tmp_24 = call @sla__backtrace_depth()
+    got = tmp_24
+    tmp_25 = 3
+    tmp_26 = ne got, tmp_25
+    !tmp_25
+    br tmp_26 -> L_THEN_9, L_ELSE_10
 
-L_THEN_1:
-    !tmp_8
+L_THEN_9:
+    !tmp_26
     panic(174)
 
-L_ELSE_2:
-    !tmp_8
-    jmp L_MERGE_3
+L_ELSE_10:
+    !tmp_26
+    jmp L_MERGE_11
 
-L_MERGE_3:
+L_MERGE_11:
     !got
     return
 

@@ -1,9 +1,9 @@
 # 218 Pkg Metadata Custom
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps custom package metadata observable as owner and category fields.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/218_pkg_metadata_custom/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for owner and category metadata fields.
+- `main.sla`: Sla companion for owner and category metadata fields.
 
 Commands:
 

@@ -1,53 +1,82 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_thiserror_message_len = vtable { call = @sla__thiserror_message_len }
+@const SLA_FNPTR_VT_config_error_message = vtable { call = @sla__config_error_message }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__thiserror_message_len() -> u64:
+@sla__config_error_message(path: ptr) -> ptr:
 L_ENTRY:
-    tmp_0 = 4
-    error_message_len = tmp_0
-    return error_message_len
+    EXPAND FORMAT_BEGIN tmp_0, 42
+    @const SLA_STR_0 = utf8:"invalid config: "
+    tmp_1 = &SLA_STR_0
+    EXPAND FORMAT_PUSH_BYTES tmp_2, tmp_0, tmp_1, 16
+    !tmp_1
+    EXPAND FORMAT_PUSH_SLICE tmp_3, tmp_0, path
+    return tmp_0
 
 @main() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__thiserror_message_len()
-    result = tmp_1
-    tmp_2 = call @sa_fmt_u64(result, 10)
-    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
-    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
-    tmp_5 = tmp_3
-    call @sa_print_bytes(&tmp_5, tmp_4)
-    call @sa_fmt_buffer_free(^tmp_2)
+    @const SLA_STR_1 = utf8:"oops"
+    tmp_5 = 4
+    tmp_4 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_4, &SLA_STR_1, tmp_5
     !tmp_5
-    !tmp_4
-    @const SLA_STR_0 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_6 = 0
-    !result
-    return tmp_6
+    tmp_6 = call @sla__config_error_message(tmp_4)
+    err = tmp_6
+    EXPAND STRING_BUF_AS_STR tmp_7, err
+    EXPAND STRING_PTR tmp_8, tmp_7
+    EXPAND STRING_LEN tmp_9, tmp_7
+    call @sa_print_bytes(&tmp_8, tmp_9)
+    !tmp_8
+    !tmp_9
+    !tmp_7
+    @const SLA_STR_2 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_2, 1)
+    tmp_10 = 0
+    EXPAND STRING_BUF_FREE err
+    return tmp_10
 
 @test "rosetta 175 175_thiserror_macro_derive"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @sla__thiserror_message_len()
-    got = tmp_7
-    tmp_8 = 4
-    tmp_9 = ne got, tmp_8
-    !tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+    @const SLA_STR_3 = utf8:"oops"
+    tmp_12 = 4
+    tmp_11 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_11, &SLA_STR_3, tmp_12
+    !tmp_12
+    tmp_13 = call @sla__config_error_message(tmp_11)
+    err = tmp_13
+    @const SLA_STR_4 = utf8:"invalid config: oops"
+    tmp_15 = 20
+    tmp_14 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_14, &SLA_STR_4, tmp_15
+    !tmp_15
+    EXPAND STRING_BUF_AS_STR tmp_16, err
+    EXPAND STR_EQ tmp_17, tmp_16, tmp_14
+    !tmp_16
+    tmp_18 = 1
+    tmp_19 = ne tmp_17, tmp_18
+    !tmp_17
+    !tmp_18
+    br tmp_19 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_9
+    !tmp_19
     panic(175)
 
 L_ELSE_2:
-    !tmp_9
+    !tmp_19
     jmp L_MERGE_3
 
 L_MERGE_3:
-    !got
+    EXPAND STRING_BUF_FREE err
     return
 

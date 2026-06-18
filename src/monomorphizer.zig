@@ -407,8 +407,9 @@ pub const Monomorphizer = struct {
                 const new_val = try self.specializeNode(mat.val);
                 var new_cases = std.ArrayList(ast.MatchCase).init(self.allocator);
                 for (mat.cases) |case| {
+                    const new_guard = if (case.guard) |guard| try self.specializeNode(guard) else null;
                     const new_body = try self.specializeBlock(case.body);
-                    try new_cases.append(.{ .pattern = case.pattern, .body = new_body });
+                    try new_cases.append(.{ .pattern = case.pattern, .guard = new_guard, .body = new_body });
                 }
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .match_expr = .{ .val = new_val, .cases = try new_cases.toOwnedSlice() } };
@@ -1470,8 +1471,9 @@ pub const Monomorphizer = struct {
                 const spec_val = try self.substituteNode(mat.val, params, args);
                 var spec_cases = std.ArrayList(ast.MatchCase).init(self.allocator);
                 for (mat.cases) |case| {
+                    const spec_guard = if (case.guard) |guard| try self.substituteNode(guard, params, args) else null;
                     const spec_body = try self.substituteBlock(case.body, params, args);
-                    try spec_cases.append(.{ .pattern = case.pattern, .body = spec_body });
+                    try spec_cases.append(.{ .pattern = case.pattern, .guard = spec_guard, .body = spec_body });
                 }
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .match_expr = .{ .val = spec_val, .cases = try spec_cases.toOwnedSlice() } };
@@ -1655,8 +1657,8 @@ test "monomorphize generic struct" {
         \\    value: T
         \\}
         \\fn process(opt: Option<i32>) -> i32 {
-            \\    return opt.value;
-            \\}
+        \\    return opt.value;
+        \\}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

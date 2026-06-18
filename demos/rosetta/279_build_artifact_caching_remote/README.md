@@ -1,9 +1,9 @@
 # 279 Build Artifact Caching Remote
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps remote artifact cache reuse observable as one downloaded build artifact.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/279_build_artifact_caching_remote/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one downloaded remote-cache artifact.
+- `main.sla`: Sla companion for one downloaded remote-cache artifact.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 280 Build Ci Cd Integration
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps CI/CD pipeline composition observable as build, test, and publish stages.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/280_build_ci_cd_integration/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for build, test, and publish pipeline stages.
+- `main.sla`: Sla companion for build, test, and publish pipeline stages.
 
 Commands:
 

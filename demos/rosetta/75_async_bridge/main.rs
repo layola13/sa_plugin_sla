@@ -1,5 +1,7 @@
 async fn compute() -> i32 {
-    5
+    let left = 2;
+    let right = 3;
+    left + right
 }
 
 fn main() {

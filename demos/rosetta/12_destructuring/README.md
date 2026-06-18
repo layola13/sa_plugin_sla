@@ -1,14 +1,6 @@
 # 012 Destructuring
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the destructuring topic for the catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/12_destructuring/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/12_destructuring/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/12_destructuring/main.sla --out /tmp/12_destructuring.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/12_destructuring/main.sla
-```
+- `main.rs`: Rust reference for tuple destructuring semantics used by this slot.
+- `main.sla`: Sla companion for tuple destructuring semantics used by this slot.

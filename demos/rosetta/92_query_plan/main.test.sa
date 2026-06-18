@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -11,10 +16,10 @@ L_ENTRY:
     tmp_0 = load plan+0 as i32
     table_cost = tmp_0
     tmp_1 = load plan+4 as i32
+    index_rows = tmp_1
     tmp_2 = load plan+8 as i32
-    tmp_3 = add tmp_1, tmp_2
-    !tmp_1
-    !tmp_2
+    filter_cost = tmp_2
+    tmp_3 = add index_rows, filter_cost
     index_cost = tmp_3
     tmp_4 = slt index_cost, table_cost
     br tmp_4 -> L_THEN_0, L_ELSE_1
@@ -22,12 +27,16 @@ L_ENTRY:
 L_THEN_0:
     !tmp_4
     !table_cost
+    !index_rows
+    !filter_cost
     !plan
     return index_cost
 
 L_ELSE_1:
     !tmp_4
+    !index_rows
     !index_cost
+    !filter_cost
     !plan
     return table_cost
 

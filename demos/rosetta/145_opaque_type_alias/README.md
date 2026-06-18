@@ -1,9 +1,9 @@
 # 145 Opaque Type Alias
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the opaque-type-alias catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/145_opaque_type_alias/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for an opaque alias observable.
+- `main.sla`: Sla companion for an opaque alias observable.
 
 Commands:
 

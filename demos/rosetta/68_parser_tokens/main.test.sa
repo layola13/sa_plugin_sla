@@ -1,79 +1,207 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/core/slice.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_parser_token_count = vtable { call = @sla__parser_token_count }
+@const SLA_FNPTR_VT_token_value = vtable { call = @sla__token_value }
+@const SLA_FNPTR_VT_token_score = vtable { call = @sla__token_score }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__parser_token_count() -> u64:
+@sla__token_value(token: ptr) -> i32:
 L_ENTRY:
-    tokens = alloc 32
     @const SLA_STR_0 = utf8:"let"
     tmp_1 = 3
     tmp_0 = stack_alloc Slice_SIZE
     EXPAND SLICE_NEW tmp_0, &SLA_STR_0, tmp_1
     !tmp_1
-    store tokens+0, tmp_0 as ptr
-    @const SLA_STR_1 = utf8:"x"
-    tmp_3 = 1
-    tmp_2 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_2, &SLA_STR_1, tmp_3
-    !tmp_3
-    store tokens+8, tmp_2 as ptr
-    @const SLA_STR_2 = utf8:"="
-    tmp_5 = 1
-    tmp_4 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_4, &SLA_STR_2, tmp_5
-    !tmp_5
-    store tokens+16, tmp_4 as ptr
-    @const SLA_STR_3 = utf8:"1"
-    tmp_7 = 1
-    tmp_6 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_6, &SLA_STR_3, tmp_7
+    EXPAND STR_EQ tmp_2, token, tmp_0
+    br tmp_2 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_2
+    tmp_3 = 10
+    return tmp_3
+
+L_ELSE_1:
+    !tmp_2
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    @const SLA_STR_1 = utf8:"="
+    tmp_6 = 1
+    tmp_5 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_5, &SLA_STR_1, tmp_6
+    !tmp_6
+    EXPAND STR_EQ tmp_7, token, tmp_5
+    br tmp_7 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
     !tmp_7
-    store tokens+24, tmp_6 as ptr
-    tmp_8 = 4
-    !tokens
+    tmp_8 = 3
     return tmp_8
+
+L_ELSE_4:
+    !tmp_7
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    @const SLA_STR_2 = utf8:"x"
+    tmp_11 = 1
+    tmp_10 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_10, &SLA_STR_2, tmp_11
+    !tmp_11
+    EXPAND STR_EQ tmp_12, token, tmp_10
+    br tmp_12 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_12
+    tmp_13 = 1
+    return tmp_13
+
+L_ELSE_7:
+    !tmp_12
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    tmp_15 = 1
+    return tmp_15
+
+@sla__token_score(tokens: ptr) -> i32:
+L_ENTRY:
+    token_slot = stack_alloc 8
+    tmp_16 = 0
+    score = tmp_16
+    store token_slot+0, 0 as i64
+    jmp L_LOOP_HEAD_9
+
+L_LOOP_HEAD_9:
+    tmp_17 = load token_slot+0 as i64
+    tmp_18 = slt tmp_17, 4
+    br tmp_18 -> L_LOOP_BODY_10, L_LOOP_COND_FALSE_12
+
+L_LOOP_BODY_10:
+    !tmp_18
+    tmp_19 = mul tmp_17, 8
+    tmp_20 = ptr_add tokens, tmp_19
+    token = load tmp_20+0 as ptr
+    !tmp_19
+    !tmp_20
+    tmp_21 = call @sla__token_value(token)
+    value = tmp_21
+    tmp_22 = add score, value
+    !score
+    score = tmp_22
+    !value
+L_LOOP_CONTINUE_11:
+    tmp_23 = add tmp_17, 1
+    store token_slot+0, tmp_23 as i64
+    !tmp_23
+    !tmp_17
+    !token
+    jmp L_LOOP_HEAD_9
+
+L_LOOP_COND_FALSE_12:
+    !tmp_18
+    !tmp_17
+    jmp L_LOOP_EXIT_13
+
+L_LOOP_EXIT_13:
+    !tokens
+    return score
 
 @main() -> i32:
 L_ENTRY:
-    tmp_9 = call @sla__parser_token_count()
-    count = tmp_9
-    tmp_10 = call @sa_fmt_u64(count, 10)
-    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
-    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
-    tmp_13 = tmp_11
-    call @sa_print_bytes(&tmp_13, tmp_12)
-    call @sa_fmt_buffer_free(^tmp_10)
-    !tmp_13
-    !tmp_12
-    @const SLA_STR_4 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_4, 1)
-    tmp_14 = 0
-    !count
-    return tmp_14
+    tokens = alloc 32
+    @const SLA_STR_3 = utf8:"let"
+    tmp_25 = 3
+    tmp_24 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_24, &SLA_STR_3, tmp_25
+    !tmp_25
+    store tokens+0, tmp_24 as ptr
+    @const SLA_STR_4 = utf8:"x"
+    tmp_27 = 1
+    tmp_26 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_26, &SLA_STR_4, tmp_27
+    !tmp_27
+    store tokens+8, tmp_26 as ptr
+    @const SLA_STR_5 = utf8:"="
+    tmp_29 = 1
+    tmp_28 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_28, &SLA_STR_5, tmp_29
+    !tmp_29
+    store tokens+16, tmp_28 as ptr
+    @const SLA_STR_6 = utf8:"1"
+    tmp_31 = 1
+    tmp_30 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_30, &SLA_STR_6, tmp_31
+    !tmp_31
+    store tokens+24, tmp_30 as ptr
+    tmp_32 = call @sla__token_score(tokens)
+    score = tmp_32
+    tmp_33 = call @sa_fmt_u64(score, 10)
+    tmp_34 = call @sa_fmt_buffer_data(tmp_33)
+    tmp_35 = call @sa_fmt_buffer_len(tmp_33)
+    tmp_36 = tmp_34
+    call @sa_print_bytes(&tmp_36, tmp_35)
+    call @sa_fmt_buffer_free(^tmp_33)
+    !tmp_36
+    !tmp_35
+    @const SLA_STR_7 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_7, 1)
+    !tokens
+    return score
 
 @test "rosetta 068 68_parser_tokens"():
-L_TEST_ENTRY_0:
-    tmp_15 = call @sla__parser_token_count()
-    got = tmp_15
-    tmp_16 = 4
-    tmp_17 = ne got, tmp_16
-    !tmp_16
-    br tmp_17 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_14:
+    tokens = alloc 32
+    @const SLA_STR_8 = utf8:"let"
+    tmp_38 = 3
+    tmp_37 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_37, &SLA_STR_8, tmp_38
+    !tmp_38
+    store tokens+0, tmp_37 as ptr
+    @const SLA_STR_9 = utf8:"x"
+    tmp_40 = 1
+    tmp_39 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_39, &SLA_STR_9, tmp_40
+    !tmp_40
+    store tokens+8, tmp_39 as ptr
+    @const SLA_STR_10 = utf8:"="
+    tmp_42 = 1
+    tmp_41 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_41, &SLA_STR_10, tmp_42
+    !tmp_42
+    store tokens+16, tmp_41 as ptr
+    @const SLA_STR_11 = utf8:"1"
+    tmp_44 = 1
+    tmp_43 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_43, &SLA_STR_11, tmp_44
+    !tmp_44
+    store tokens+24, tmp_43 as ptr
+    tmp_45 = call @sla__token_score(tokens)
+    got = tmp_45
+    tmp_46 = 15
+    tmp_47 = ne got, tmp_46
+    !tmp_46
+    br tmp_47 -> L_THEN_15, L_ELSE_16
 
-L_THEN_1:
-    !tmp_17
+L_THEN_15:
+    !tmp_47
     panic(68)
 
-L_ELSE_2:
-    !tmp_17
-    jmp L_MERGE_3
+L_ELSE_16:
+    !tmp_47
+    jmp L_MERGE_17
 
-L_MERGE_3:
+L_MERGE_17:
+    !tokens
     !got
     return
 

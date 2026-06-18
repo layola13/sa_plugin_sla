@@ -1,9 +1,11 @@
 # 166 Specialization Fallback
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory keeps the specialization-fallback slot as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/166_specialization_fallback/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `min_specialization` with a specialized `i32` branch and a fallback branch.
+- `main.sla`: Sla surrogate for the specialized-plus-fallback observable total.
+
+Because the Sla side does not execute real specialization resolution, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

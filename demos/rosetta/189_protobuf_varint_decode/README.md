@@ -1,9 +1,9 @@
 # 189 Protobuf Varint Decode
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps a small decoded varint observable as a plain integer.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/189_protobuf_varint_decode/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for decoding the varint into a plain integer.
+- `main.sla`: Sla companion for the plain integer decode.
 
 Commands:
 

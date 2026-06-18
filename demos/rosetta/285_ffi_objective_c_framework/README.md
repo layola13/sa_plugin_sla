@@ -1,9 +1,9 @@
 # 285 Ffi Objective C Framework
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps Objective-C framework linkage observable as one imported `Foundation`-style framework.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/285_ffi_objective_c_framework/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one imported `Foundation`-style framework.
+- `main.sla`: Sla companion for one imported `Foundation`-style framework.
 
 Commands:
 

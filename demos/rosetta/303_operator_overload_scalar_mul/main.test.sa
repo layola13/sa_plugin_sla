@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/ops.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -10,14 +15,14 @@
 @sla__vec3_scalar_product_score() -> i32:
 L_ENTRY:
     a = alloc 12
-    tmp_0 = 1
+    tmp_0 = 1.0
     store a+0, tmp_0 as f32
-    tmp_1 = 2
+    tmp_1 = 2.0
     store a+4, tmp_1 as f32
-    tmp_2 = 3
+    tmp_2 = 3.0
     store a+8, tmp_2 as f32
     tmp_3 = alloc 12
-    tmp_4 = 4
+    tmp_4 = 4.0
     tmp_5 = load a+0 as f32
     tmp_6 = mul tmp_5, tmp_4
     store tmp_3+0, tmp_6 as f32
@@ -30,8 +35,8 @@ L_ENTRY:
     !tmp_4
     b = tmp_3
     tmp_11 = load b+0 as f32
-    tmp_12 = 4
-    tmp_13 = ne tmp_11, tmp_12
+    tmp_12 = 4.0
+    tmp_13 = fcmp_ne tmp_11, tmp_12
     !tmp_11
     !tmp_12
     br tmp_13 -> L_THEN_0, L_ELSE_1
@@ -49,8 +54,8 @@ L_ELSE_1:
 
 L_MERGE_2:
     tmp_16 = load b+4 as f32
-    tmp_17 = 8
-    tmp_18 = ne tmp_16, tmp_17
+    tmp_17 = 8.0
+    tmp_18 = fcmp_ne tmp_16, tmp_17
     !tmp_16
     !tmp_17
     br tmp_18 -> L_THEN_3, L_ELSE_4
@@ -68,8 +73,8 @@ L_ELSE_4:
 
 L_MERGE_5:
     tmp_21 = load b+8 as f32
-    tmp_22 = 12
-    tmp_23 = ne tmp_21, tmp_22
+    tmp_22 = 12.0
+    tmp_23 = fcmp_ne tmp_21, tmp_22
     !tmp_21
     !tmp_22
     br tmp_23 -> L_THEN_6, L_ELSE_7
@@ -110,14 +115,14 @@ L_ENTRY:
 @test "rosetta 303 operator_overload_scalar_mul"():
 L_TEST_ENTRY_9:
     a = alloc 12
-    tmp_32 = 1
+    tmp_32 = 1.0
     store a+0, tmp_32 as f32
-    tmp_33 = 2
+    tmp_33 = 2.0
     store a+4, tmp_33 as f32
-    tmp_34 = 3
+    tmp_34 = 3.0
     store a+8, tmp_34 as f32
     tmp_35 = alloc 12
-    tmp_36 = 4
+    tmp_36 = 4.0
     tmp_37 = load a+0 as f32
     tmp_38 = mul tmp_37, tmp_36
     store tmp_35+0, tmp_38 as f32
@@ -130,8 +135,8 @@ L_TEST_ENTRY_9:
     !tmp_36
     b = tmp_35
     tmp_43 = load b+0 as f32
-    tmp_44 = 4
-    tmp_45 = ne tmp_43, tmp_44
+    tmp_44 = 4.0
+    tmp_45 = fcmp_ne tmp_43, tmp_44
     !tmp_43
     !tmp_44
     br tmp_45 -> L_THEN_10, L_ELSE_11
@@ -146,8 +151,8 @@ L_ELSE_11:
 
 L_MERGE_12:
     tmp_48 = load b+4 as f32
-    tmp_49 = 8
-    tmp_50 = ne tmp_48, tmp_49
+    tmp_49 = 8.0
+    tmp_50 = fcmp_ne tmp_48, tmp_49
     !tmp_48
     !tmp_49
     br tmp_50 -> L_THEN_13, L_ELSE_14
@@ -162,8 +167,8 @@ L_ELSE_14:
 
 L_MERGE_15:
     tmp_53 = load b+8 as f32
-    tmp_54 = 12
-    tmp_55 = ne tmp_53, tmp_54
+    tmp_54 = 12.0
+    tmp_55 = fcmp_ne tmp_53, tmp_54
     !tmp_53
     !tmp_54
     br tmp_55 -> L_THEN_16, L_ELSE_17

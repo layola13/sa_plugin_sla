@@ -1,5 +1,26 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-fn file_descriptor_raw_fd() -> i32 { let raw_fd = 3; return raw_fd; }
-fn main() -> i32 { let result = file_descriptor_raw_fd(); println("{}", result); return result; }
-@test "rosetta 181 181_file_descriptor_raii"() { let got = file_descriptor_raw_fd(); if got != 3 { panic(181); }; }
+@import "sa_std/core/result.sa"
+@import "sa_std/fs.sa"
+
+fn file_descriptor_raw_fd() -> i32 {
+    let raw_fd = 0;
+    {
+        let file = File::open("/dev/null").unwrap();
+        raw_fd = file.as_raw_fd();
+    }
+    return raw_fd;
+}
+
+fn main() -> i32 {
+    let result = file_descriptor_raw_fd();
+    println("{}", result);
+    return result;
+}
+
+@test "rosetta 181 181_file_descriptor_raii"() {
+    let got = file_descriptor_raw_fd();
+    if got < 0 {
+        panic(181);
+    };
+}

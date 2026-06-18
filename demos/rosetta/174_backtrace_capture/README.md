@@ -1,9 +1,9 @@
 # 174 Backtrace Capture
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the backtrace-capture catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/174_backtrace_capture/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a backtrace-depth observable.
+- `main.sla`: Sla companion for a backtrace-depth observable.
 
 Commands:
 

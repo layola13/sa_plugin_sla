@@ -6,14 +6,13 @@ fn success_per_thousand(ok: i32, failed: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    let result = success_per_thousand(95, 5);
-    println("{}", result);
-    return result;
+    let value = success_per_thousand(95, 5);
+    println("{}", value);
+    return value;
 };
 
 @test "rosetta 079 79_metrics"() {
-    let got = success_per_thousand(95, 5);
-    if got != 950 {
+    if success_per_thousand(95, 5) != 950 {
         panic(79);
     };
 };

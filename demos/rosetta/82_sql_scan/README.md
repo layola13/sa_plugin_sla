@@ -1,14 +1,6 @@
 # 082 Sql Scan
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the SQL-scan filtering topic for the catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/82_sql_scan/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/82_sql_scan/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/82_sql_scan/main.sla --out /tmp/82_sql_scan.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/82_sql_scan/main.sla
-```
+- `main.rs`: Rust reference for the qualifying-row score aggregation semantics used by this slot.
+- `main.sla`: Sla companion for the qualifying-row score aggregation semantics used by this slot.

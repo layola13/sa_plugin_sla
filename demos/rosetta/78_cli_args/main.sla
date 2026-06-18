@@ -8,28 +8,30 @@ struct CliCommand {
 }
 
 fn exit_code(cmd: CliCommand) -> i32 {
-    if str_eq(cmd.command, "build") == true {
-        if cmd.release == true {
+    if str_eq(cmd.command, "build") {
+        if cmd.release {
             return 0;
-        } else {
-            return 2;
         };
-    } else {
-        return 2;
     };
+    return 2;
 }
 
 fn main() -> i32 {
-    let cmd = CliCommand { command: "build", release: true };
-    let result = exit_code(cmd);
-    println("{}", result);
-    return result;
+    let cmd = CliCommand {
+        command: "build",
+        release: true,
+    };
+    let code = exit_code(cmd);
+    println("{}", code);
+    return code;
 };
 
 @test "rosetta 078 78_cli_args"() {
-    let cmd = CliCommand { command: "build", release: true };
-    let got = exit_code(cmd);
-    if got != 0 {
+    let cmd = CliCommand {
+        command: "build",
+        release: true,
+    };
+    if exit_code(cmd) != 0 {
         panic(78);
     };
 };

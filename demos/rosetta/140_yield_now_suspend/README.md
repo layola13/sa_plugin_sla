@@ -1,9 +1,9 @@
 # 140 Yield Now Suspend
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current yield/suspend gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/140_yield_now_suspend/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference using a real `tokio::task::yield_now().await` suspension point.
+- `main.sla`: Sla surrogate that keeps only the resumed-value observable.
 
 Commands:
 

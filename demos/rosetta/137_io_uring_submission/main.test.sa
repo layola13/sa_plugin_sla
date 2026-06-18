@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -16,8 +21,6 @@ L_ENTRY:
     !tmp_1
     submitted = tmp_2
     tmp_3 = call @sla__submit_io(queue_depth, submitted)
-    !queue_depth
-    !submitted
     return tmp_3
 
 @sla__submit_io(depth: i32, used: i32) -> i32:
@@ -31,7 +34,6 @@ L_THEN_0:
     tmp_6 = add used, tmp_5
     !tmp_5
     !depth
-    !used
     return tmp_6
 
 L_ELSE_1:

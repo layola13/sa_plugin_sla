@@ -9,7 +9,9 @@ struct QueryPlan {
 
 fn chosen_cost(plan: QueryPlan) -> i32 {
     let table_cost = plan.table_scan_rows;
-    let index_cost = plan.index_rows + plan.filter_cost;
+    let index_rows = plan.index_rows;
+    let filter_cost = plan.filter_cost;
+    let index_cost = index_rows + filter_cost;
     if index_cost < table_cost {
         return index_cost;
     } else {

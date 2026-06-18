@@ -1,9 +1,9 @@
 # 296 Eco Gpu Ptx Shader
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps PTX-style GPU integration observable as one compute kernel entry.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/296_eco_gpu_ptx_shader/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one PTX-style compute kernel entry.
+- `main.sla`: Sla companion for one compute kernel entry.
 
 Commands:
 

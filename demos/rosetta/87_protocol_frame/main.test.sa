@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -19,9 +24,6 @@ L_THEN_0:
     tmp_3 = add kind, len
     tmp_4 = eq checksum, tmp_3
     !tmp_3
-    !checksum
-    !len
-    !kind
     return tmp_4
 
 L_ELSE_1:

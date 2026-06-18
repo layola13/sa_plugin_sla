@@ -1,9 +1,9 @@
 # 112 Raw Pointer Arithmetic
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the raw-pointer arithmetic catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/112_raw_pointer_arithmetic/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for pointer offset and unsafe dereference observation.
+- `main.sla`: Sla companion for pointer offset and unsafe dereference observation.
 
 Commands:
 

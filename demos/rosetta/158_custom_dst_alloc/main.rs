@@ -1,4 +1,8 @@
+fn custom_dst_alloc_len_surrogate() -> usize {
+    let owned = String::from("hey");
+    owned.len()
+}
+
 fn main() {
-    let bytes: &[u8] = b"hey";
-    println!("{}", bytes.len());
+    println!("{}", custom_dst_alloc_len_surrogate());
 }

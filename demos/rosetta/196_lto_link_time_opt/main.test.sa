@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -12,8 +17,6 @@
 @sla__leaf(a: i32, b: i32) -> i32:
 L_ENTRY:
     tmp_0 = add a, b
-    !b
-    !a
     return tmp_0
 
 @sla__inner(x: i32) -> i32:
@@ -21,26 +24,26 @@ L_ENTRY:
     tmp_1 = 1
     tmp_2 = call @sla__leaf(x, tmp_1)
     !tmp_1
+    left = tmp_2
     tmp_3 = 2
     tmp_4 = call @sla__leaf(x, tmp_3)
     !tmp_3
-    tmp_5 = add tmp_2, tmp_4
-    !tmp_2
-    !tmp_4
+    right = tmp_4
+    tmp_5 = add left, right
     !x
     return tmp_5
 
 @sla__cold_path(x: i32) -> i32:
 L_ENTRY:
     tmp_6 = call @sla__inner(x)
+    warm = tmp_6
     tmp_7 = 3
     tmp_8 = 4
     tmp_9 = call @sla__leaf(tmp_7, tmp_8)
     !tmp_7
     !tmp_8
-    tmp_10 = add tmp_6, tmp_9
-    !tmp_6
-    !tmp_9
+    cold = tmp_9
+    tmp_10 = add warm, cold
     !x
     return tmp_10
 
@@ -55,8 +58,6 @@ L_ENTRY:
     !tmp_13
     cold_path_result = tmp_14
     tmp_15 = add hot_path, cold_path_result
-    !cold_path_result
-    !hot_path
     return tmp_15
 
 @main() -> i32:

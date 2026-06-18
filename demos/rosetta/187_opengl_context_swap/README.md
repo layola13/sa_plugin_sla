@@ -1,9 +1,11 @@
 # 187 Opengl Context Swap
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+OpenGL-style context slot kept as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/187_opengl_context_swap/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the unsafe `gl_make_current` and `gl_swap_buffers` calls.
+- `main.sla`: Sla surrogate using `ptr::null::<u8>()` and local extern stubs.
+
+Because the Sla side does not bind a real external OpenGL context API, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

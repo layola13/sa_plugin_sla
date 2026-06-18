@@ -1,14 +1,6 @@
 # 028 Borrow Chains
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the borrow-chain topic for the catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/28_borrow_chains/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/28_borrow_chains/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/28_borrow_chains/main.sla --out /tmp/28_borrow_chains.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/28_borrow_chains/main.sla
-```
+- `main.rs`: Rust reference for repeated shared-borrow read semantics used by this slot.
+- `main.sla`: Sla companion for repeated shared-borrow read semantics used by this slot.

@@ -1,9 +1,9 @@
 # 216 Pkg Profile Release
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps release profile tuning observable as the selected optimization level.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/216_pkg_profile_release/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the selected release optimization level.
+- `main.sla`: Sla companion for the selected release optimization level.
 
 Commands:
 

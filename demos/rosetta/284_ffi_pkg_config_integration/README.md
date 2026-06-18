@@ -1,9 +1,9 @@
 # 284 Ffi Pkg Config Integration
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps `pkg-config` integration observable as include and library search paths.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/284_ffi_pkg_config_integration/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for include and library search paths from `pkg-config`.
+- `main.sla`: Sla companion for include and library search paths.
 
 Commands:
 

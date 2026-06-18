@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -23,7 +28,6 @@ L_ENTRY:
     tmp_5 = call @sla__cancel_cleanup(committed, tmp_4)
     !tmp_4
     !reserved
-    !committed
     return tmp_5
 
 @sla__reserve_slot(value: i32) -> i32:

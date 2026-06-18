@@ -1,9 +1,9 @@
 # 227 Mod Shadowing Prevention
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps module-name shadowing diagnostics observable as one rejected duplicate binding.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/227_mod_shadowing_prevention/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for rejecting one duplicate module binding.
+- `main.sla`: Sla companion for rejecting one duplicate module binding.
 
 Commands:
 

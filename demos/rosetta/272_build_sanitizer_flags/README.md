@@ -1,9 +1,9 @@
 # 272 Build Sanitizer Flags
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps sanitizer configuration observable as address and undefined-behavior flags enabled together.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/272_build_sanitizer_flags/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for address and UB sanitizers enabled together.
+- `main.sla`: Sla companion for address and UB sanitizers enabled together.
 
 Commands:
 

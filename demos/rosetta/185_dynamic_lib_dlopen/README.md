@@ -1,9 +1,9 @@
 # 185 Dynamic Lib Dlopen
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This demo keeps the `extern "C"` pointer-return and unsafe-call shape of `dlopen` / `dlclose` inside the current Sla compiler surface.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/185_dynamic_lib_dlopen/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: the Rust catalog reference using libc-style dynamic library entry points.
+- `main.sla`: Deterministic Sla companion for local extern pointer-call lowering through `@no_mangle extern "C"` shims.
 
 Commands:
 

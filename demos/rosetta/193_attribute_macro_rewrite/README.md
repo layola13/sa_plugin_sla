@@ -1,9 +1,11 @@
 # 193 Attribute Macro Rewrite
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the attribute-rewrite theme as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/193_attribute_macro_rewrite/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a real `#[rewrite]` attribute on `rewrite_value(&mut value)`.
+- `main.sla`: Sla surrogate that preserves the value-flow observable without claiming real attribute-macro rewriting.
+
+Because the Sla side does not execute a real attribute macro rewrite, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

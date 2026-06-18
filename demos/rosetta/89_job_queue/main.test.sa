@@ -2,10 +2,17 @@
 @import "sa_std/fmt.sai"
 @import "sa_std/core/option.sa"
 @import "sa_std/vec_deque.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/option.sa"
+@import "sa_std/vec_deque.sa"
 @const SLA_FNPTR_VT_first_job_score = vtable { call = @sla__first_job_score }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
 @sla__first_job_score() -> i32:
@@ -46,10 +53,10 @@ L_VEC_DEQUE_POP_FRONT_END_2:
     !tmp_9
     first = tmp_10
     tmp_11 = load first+0 as i32
+    id = tmp_11
     tmp_12 = load first+4 as i32
-    tmp_13 = add tmp_11, tmp_12
-    !tmp_11
-    !tmp_12
+    cost = tmp_12
+    tmp_13 = add id, cost
     !queue
     !first
     return tmp_13

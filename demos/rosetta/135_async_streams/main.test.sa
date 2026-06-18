@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/future.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -41,14 +46,11 @@ L_ENTRY:
     tmp_10 = 1
     tmp_11 = add index, tmp_10
     !tmp_10
-    !index
     return tmp_11
 
 @sla__stream_accumulate(total: i32, item: i32) -> i32:
 L_ENTRY:
     tmp_12 = add total, item
-    !item
-    !total
     return tmp_12
 
 @main() -> i32:

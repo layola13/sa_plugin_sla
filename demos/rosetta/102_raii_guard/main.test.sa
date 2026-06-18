@@ -2,10 +2,16 @@
 @import "sa_std/fmt.sai"
 @import "sa_std/core/result.sa"
 @import "sa_std/sync/mutex.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/result.sa"
 @const SLA_FNPTR_VT_inspect = vtable { call = @sla__inspect }
 @const SLA_FNPTR_VT_raii_guard_total = vtable { call = @sla__raii_guard_total }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
@@ -24,7 +30,7 @@ L_THEN_0:
     !skip
     tmp_3 = load guard+0 as i32
     EXPAND MUTEX_UNLOCK counter
-    !counter
+    !guard
     return tmp_3
 
 L_ELSE_1:
@@ -41,7 +47,7 @@ L_MERGE_2:
     !tmp_7
     tmp_8 = load guard+0 as i32
     EXPAND MUTEX_UNLOCK counter
-    !counter
+    !guard
     return tmp_8
 
 @sla__raii_guard_total() -> i32:
@@ -59,9 +65,7 @@ L_ENTRY:
     !tmp_13
     second = tmp_14
     tmp_15 = add first, second
-    !first
     !counter
-    !second
     return tmp_15
 
 @main() -> i32:

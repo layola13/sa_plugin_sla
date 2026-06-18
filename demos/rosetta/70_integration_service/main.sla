@@ -1,21 +1,45 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-fn integration_service_total() -> i32 {
-    let users = 2;
-    let orders = 4;
+struct ServiceSnapshot {
+    users_ok: bool,
+    orders_ok: bool,
+    users: i32,
+    orders: i32,
+}
+
+fn integrated_total(snapshot: ServiceSnapshot) -> i32 {
+    if snapshot.users_ok == false {
+        return -1;
+    };
+    if snapshot.orders_ok == false {
+        return -2;
+    };
+    let users = snapshot.users;
+    let orders = snapshot.orders;
     return users + orders;
 }
 
 fn main() -> i32 {
-    let users = 2;
-    let orders = 4;
-    println("{}", users + orders);
-    return 0;
+    let snapshot = ServiceSnapshot {
+        users_ok: true,
+        orders_ok: true,
+        users: 2,
+        orders: 4,
+    };
+    let total = integrated_total(snapshot);
+    println("{}", total);
+    return total;
 }
 
 @test "rosetta 070 70_integration_service"() {
-    let got = integration_service_total();
+    let snapshot = ServiceSnapshot {
+        users_ok: true,
+        orders_ok: true,
+        users: 2,
+        orders: 4,
+    };
+    let got = integrated_total(snapshot);
     if got != 6 {
         panic(70);
     };

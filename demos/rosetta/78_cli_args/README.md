@@ -1,9 +1,9 @@
 # 078 Cli Args
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the CLI-decision topic for the catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/78_cli_args/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the command/release semantics used by this slot.
+- `main.sla`: Sla companion for the command/release semantics used by this slot.
 
 Commands:
 

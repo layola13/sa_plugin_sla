@@ -1,9 +1,9 @@
 # 151 Global Alloc Trait
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the global-allocator trait catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/151_global_alloc_trait/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for an allocator-themed observable.
+- `main.sla`: Sla companion for an allocator-themed observable.
 
 Commands:
 

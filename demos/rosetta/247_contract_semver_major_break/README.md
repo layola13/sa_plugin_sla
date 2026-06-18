@@ -1,9 +1,9 @@
 # 247 Contract Semver Major Break
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps breaking contract evolution observable as one removed required field.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/247_contract_semver_major_break/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a removed required field.
+- `main.sla`: Sla companion for a removed required field.
 
 Commands:
 

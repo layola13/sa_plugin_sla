@@ -1,62 +1,108 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_gate_open = vtable { call = @sla__gate_open }
+@const SLA_FNPTR_VT_gate_code = vtable { call = @sla__gate_code }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__gate_open(arrived: i32, required: i32) -> u8:
+@sla__gate_code(state: ptr) -> i32:
 L_ENTRY:
-    tmp_0 = sge arrived, required
-    !arrived
-    !required
-    return tmp_0
+    tmp_0 = load state+8 as u8
+    tmp_1 = 1
+    tmp_2 = eq tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    br tmp_2 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_2
+    tmp_3 = 2
+    !state
+    return tmp_3
+
+L_ELSE_1:
+    !tmp_2
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_5 = load state+0 as i32
+    tmp_6 = load state+4 as i32
+    tmp_7 = sge tmp_5, tmp_6
+    !tmp_5
+    !tmp_6
+    br tmp_7 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_7
+    tmp_8 = 1
+    !state
+    return tmp_8
+
+L_ELSE_4:
+    !tmp_7
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_10 = 0
+    !state
+    return tmp_10
 
 @main() -> i32:
 L_ENTRY:
-    tmp_1 = 3
-    tmp_2 = 3
-    tmp_3 = call @sla__gate_open(tmp_1, tmp_2)
-    !tmp_1
-    !tmp_2
-    ready = tmp_3
-    tmp_4 = call @sa_fmt_bool(ready)
-    tmp_5 = call @sa_fmt_buffer_data(tmp_4)
-    tmp_6 = call @sa_fmt_buffer_len(tmp_4)
-    tmp_7 = tmp_5
-    call @sa_print_bytes(&tmp_7, tmp_6)
-    call @sa_fmt_buffer_free(^tmp_4)
-    !tmp_7
-    !tmp_6
+    tmp_11 = alloc 9
+    tmp_12 = 3
+    store tmp_11+0, tmp_12 as i32
+    tmp_13 = 3
+    store tmp_11+4, tmp_13 as i32
+    tmp_14 = 0
+    store tmp_11+8, tmp_14 as u8
+    tmp_15 = call @sla__gate_code(tmp_11)
+    !tmp_11
+    code = tmp_15
+    tmp_16 = call @sa_fmt_u64(code, 10)
+    tmp_17 = call @sa_fmt_buffer_data(tmp_16)
+    tmp_18 = call @sa_fmt_buffer_len(tmp_16)
+    tmp_19 = tmp_17
+    call @sa_print_bytes(&tmp_19, tmp_18)
+    call @sa_fmt_buffer_free(^tmp_16)
+    !tmp_19
+    !tmp_18
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_8 = 0
-    !ready
-    return tmp_8
+    return code
 
 @test "rosetta 084 84_sync_gate"():
-L_TEST_ENTRY_0:
-    tmp_9 = 3
-    tmp_10 = 3
-    tmp_11 = call @sla__gate_open(tmp_9, tmp_10)
-    !tmp_9
-    !tmp_10
-    got = tmp_11
-    tmp_12 = 1
-    tmp_13 = ne got, tmp_12
-    !tmp_12
-    br tmp_13 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_6:
+    tmp_20 = alloc 9
+    tmp_21 = 3
+    store tmp_20+0, tmp_21 as i32
+    tmp_22 = 3
+    store tmp_20+4, tmp_22 as i32
+    tmp_23 = 0
+    store tmp_20+8, tmp_23 as u8
+    tmp_24 = call @sla__gate_code(tmp_20)
+    !tmp_20
+    got = tmp_24
+    tmp_25 = 1
+    tmp_26 = ne got, tmp_25
+    !tmp_25
+    br tmp_26 -> L_THEN_7, L_ELSE_8
 
-L_THEN_1:
-    !tmp_13
+L_THEN_7:
+    !tmp_26
     panic(84)
 
-L_ELSE_2:
-    !tmp_13
-    jmp L_MERGE_3
+L_ELSE_8:
+    !tmp_26
+    jmp L_MERGE_9
 
-L_MERGE_3:
+L_MERGE_9:
     !got
     return
 

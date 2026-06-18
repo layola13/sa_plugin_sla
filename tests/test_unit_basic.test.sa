@@ -1,14 +1,24 @@
-@add(a: i64, b: i64) -> i64:
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_add = vtable { call = @sla__add }
+@const SLA_FNPTR_VT_factorial = vtable { call = @sla__factorial }
+@sla__add(a: i64, b: i64) -> i64:
 L_ENTRY:
     tmp_0 = add a, b
-    !b
-    !a
     return tmp_0
 
-@factorial(n: i64) -> i64:
+@sla__factorial(n: i64) -> i64:
 L_ENTRY:
     tmp_1 = 1
     tmp_2 = sle n, tmp_1
+    !tmp_1
     br tmp_2 -> L_THEN_0, L_ELSE_1
 
 L_THEN_0:
@@ -21,9 +31,11 @@ L_ELSE_1:
     !tmp_2
     tmp_4 = 1
     tmp_5 = sub n, tmp_4
-    tmp_6 = call @factorial(tmp_5)
+    !tmp_4
+    tmp_6 = call @sla__factorial(tmp_5)
+    !tmp_5
     tmp_7 = mul n, tmp_6
-    !n
+    !tmp_6
     return tmp_7
 
 
@@ -31,10 +43,13 @@ L_ELSE_1:
 L_TEST_ENTRY_3:
     tmp_9 = 3
     tmp_10 = 4
-    tmp_11 = call @add(tmp_9, tmp_10)
+    tmp_11 = call @sla__add(tmp_9, tmp_10)
+    !tmp_9
+    !tmp_10
     result = tmp_11
     tmp_12 = 7
     tmp_13 = eq result, tmp_12
+    !tmp_12
     ok = tmp_13
     br ok -> L_THEN_4, L_ELSE_5
 
@@ -54,10 +69,13 @@ L_MERGE_6:
 L_TEST_ENTRY_7:
     tmp_16 = 0
     tmp_17 = 42
-    tmp_18 = call @add(tmp_16, tmp_17)
+    tmp_18 = call @sla__add(tmp_16, tmp_17)
+    !tmp_16
+    !tmp_17
     result = tmp_18
     tmp_19 = 42
     tmp_20 = eq result, tmp_19
+    !tmp_19
     ok = tmp_20
     br ok -> L_THEN_8, L_ELSE_9
 
@@ -76,10 +94,12 @@ L_MERGE_10:
 @test "factorial of 5"():
 L_TEST_ENTRY_11:
     tmp_23 = 5
-    tmp_24 = call @factorial(tmp_23)
+    tmp_24 = call @sla__factorial(tmp_23)
+    !tmp_23
     result = tmp_24
     tmp_25 = 120
     tmp_26 = eq result, tmp_25
+    !tmp_25
     ok = tmp_26
     br ok -> L_THEN_12, L_ELSE_13
 
@@ -99,11 +119,15 @@ L_MERGE_14:
 L_TEST_ENTRY_15:
     tmp_29 = 2
     tmp_30 = 3
-    tmp_31 = call @add(tmp_29, tmp_30)
+    tmp_31 = call @sla__add(tmp_29, tmp_30)
+    !tmp_29
+    !tmp_30
     ab = tmp_31
     tmp_32 = 3
     tmp_33 = 2
-    tmp_34 = call @add(tmp_32, tmp_33)
+    tmp_34 = call @sla__add(tmp_32, tmp_33)
+    !tmp_32
+    !tmp_33
     ba = tmp_34
     tmp_35 = eq ab, ba
     ok = tmp_35
@@ -126,7 +150,9 @@ L_MERGE_18:
 L_TEST_ENTRY_19:
     tmp_38 = 1
     tmp_39 = 1
-    tmp_40 = call @add(tmp_38, tmp_39)
+    tmp_40 = call @sla__add(tmp_38, tmp_39)
+    !tmp_38
+    !tmp_39
     x = tmp_40
     !x
     return

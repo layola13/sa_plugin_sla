@@ -1,9 +1,9 @@
 # 225 Mod Namespace Prefix
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps namespace-qualified lookup observable as a namespace plus symbol pair.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/225_mod_namespace_prefix/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the namespace-plus-symbol lookup pair.
+- `main.sla`: Sla companion for the namespace-plus-symbol lookup pair.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 221 Mod Relative Import
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps relative module lookup observable as one sibling-module hop.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/221_mod_relative_import/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one sibling-module lookup hop.
+- `main.sla`: Sla companion for one sibling-module lookup hop.
 
 Commands:
 

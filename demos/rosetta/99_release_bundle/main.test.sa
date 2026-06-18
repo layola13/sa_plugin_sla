@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -27,8 +32,24 @@ L_THEN_0:
 L_THEN_3:
     !tmp_5
     tmp_6 = load manifest+2 as u8
+    tmp_7 = 1
+    tmp_8 = eq tmp_6, tmp_7
+    !tmp_6
+    !tmp_7
+    br tmp_8 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_8
+    tmp_9 = load manifest+3 as u8
     !manifest
-    return tmp_6
+    return tmp_9
+
+L_ELSE_7:
+    !tmp_8
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    jmp L_MERGE_5
 
 L_ELSE_4:
     !tmp_5
@@ -42,61 +63,65 @@ L_ELSE_1:
     jmp L_MERGE_2
 
 L_MERGE_2:
-    tmp_9 = 0
+    tmp_13 = 0
     !manifest
-    return tmp_9
+    return tmp_13
 
 @main() -> i32:
 L_ENTRY:
-    manifest = alloc 3
-    tmp_10 = 1
-    store manifest+0, tmp_10 as u8
-    tmp_11 = 1
-    store manifest+1, tmp_11 as u8
-    tmp_12 = 1
-    store manifest+2, tmp_12 as u8
-    tmp_13 = call @sla__release_ready(manifest)
-    result = tmp_13
-    tmp_14 = call @sa_fmt_bool(result)
-    tmp_15 = call @sa_fmt_buffer_data(tmp_14)
-    tmp_16 = call @sa_fmt_buffer_len(tmp_14)
-    tmp_17 = tmp_15
-    call @sa_print_bytes(&tmp_17, tmp_16)
-    call @sa_fmt_buffer_free(^tmp_14)
-    !tmp_17
-    !tmp_16
+    manifest = alloc 4
+    tmp_14 = 1
+    store manifest+0, tmp_14 as u8
+    tmp_15 = 1
+    store manifest+1, tmp_15 as u8
+    tmp_16 = 1
+    store manifest+2, tmp_16 as u8
+    tmp_17 = 1
+    store manifest+3, tmp_17 as u8
+    tmp_18 = call @sla__release_ready(manifest)
+    result = tmp_18
+    tmp_19 = call @sa_fmt_bool(result)
+    tmp_20 = call @sa_fmt_buffer_data(tmp_19)
+    tmp_21 = call @sa_fmt_buffer_len(tmp_19)
+    tmp_22 = tmp_20
+    call @sa_print_bytes(&tmp_22, tmp_21)
+    call @sa_fmt_buffer_free(^tmp_19)
+    !tmp_22
+    !tmp_21
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_18 = 0
+    tmp_23 = 0
     !result
     !manifest
-    return tmp_18
+    return tmp_23
 
 @test "rosetta 099 99_release_bundle"():
-L_TEST_ENTRY_6:
-    manifest = alloc 3
-    tmp_19 = 1
-    store manifest+0, tmp_19 as u8
-    tmp_20 = 1
-    store manifest+1, tmp_20 as u8
-    tmp_21 = 1
-    store manifest+2, tmp_21 as u8
-    tmp_22 = call @sla__release_ready(manifest)
-    got = tmp_22
-    tmp_23 = 1
-    tmp_24 = ne got, tmp_23
-    !tmp_23
-    br tmp_24 -> L_THEN_7, L_ELSE_8
+L_TEST_ENTRY_9:
+    manifest = alloc 4
+    tmp_24 = 1
+    store manifest+0, tmp_24 as u8
+    tmp_25 = 1
+    store manifest+1, tmp_25 as u8
+    tmp_26 = 1
+    store manifest+2, tmp_26 as u8
+    tmp_27 = 1
+    store manifest+3, tmp_27 as u8
+    tmp_28 = call @sla__release_ready(manifest)
+    got = tmp_28
+    tmp_29 = 1
+    tmp_30 = ne got, tmp_29
+    !tmp_29
+    br tmp_30 -> L_THEN_10, L_ELSE_11
 
-L_THEN_7:
-    !tmp_24
+L_THEN_10:
+    !tmp_30
     panic(99)
 
-L_ELSE_8:
-    !tmp_24
-    jmp L_MERGE_9
+L_ELSE_11:
+    !tmp_30
+    jmp L_MERGE_12
 
-L_MERGE_9:
+L_MERGE_12:
     !got
     !manifest
     return

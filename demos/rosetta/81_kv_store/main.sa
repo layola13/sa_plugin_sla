@@ -38,9 +38,9 @@ L_SLA_BTREE_GET_NONE_%out_opt:
     !__sla_btree_get_ok_%out_opt
 L_SLA_BTREE_GET_END_%out_opt:
 [END_MACRO]
-@const SLA_FNPTR_VT_kv_lookup_beta = vtable { call = @sla__kv_lookup_beta }
+@const SLA_FNPTR_VT_kv_lookup_alpha = vtable { call = @sla__kv_lookup_alpha }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__kv_lookup_beta() -> i32:
+@sla__kv_lookup_alpha() -> i32:
 L_ENTRY:
     EXPAND BTREE_MAP_NEW tmp_0
     kv = tmp_0
@@ -53,59 +53,50 @@ L_ENTRY:
     EXPAND SLA_BTREE_MAP_INSERT_OPTION_U64 tmp_4, kv, tmp_1, tmp_3
     !tmp_3
     !tmp_4
-    @const SLA_STR_1 = utf8:"beta"
-    tmp_6 = 4
-    tmp_5 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_5, &SLA_STR_1, tmp_6
-    !tmp_6
-    tmp_7 = 8
-    EXPAND SLA_BTREE_MAP_INSERT_OPTION_U64 tmp_8, kv, tmp_5, tmp_7
-    !tmp_7
-    !tmp_8
-    EXPAND BTREE_MAP_TRY_GET tmp_10, tmp_9, kv, tmp_5
-    br tmp_10 -> L_BTREE_MAP_INDEX_HIT_0, L_BTREE_MAP_INDEX_MISS_1
+    EXPAND BTREE_MAP_TRY_GET tmp_6, tmp_5, kv, tmp_1
+    br tmp_6 -> L_BTREE_MAP_INDEX_HIT_0, L_BTREE_MAP_INDEX_MISS_1
 
 L_BTREE_MAP_INDEX_MISS_1:
-    !tmp_10
+    !tmp_6
     panic(404)
 
 L_BTREE_MAP_INDEX_HIT_0:
-    !tmp_10
-    tmp_11 = tmp_9 as i32
+    !tmp_6
+    tmp_7 = tmp_5 as i32
     EXPAND BTREE_MAP_FREE kv
-    return tmp_11
+    return tmp_7
 
 @main() -> i32:
 L_ENTRY:
-    tmp_12 = call @sla__kv_lookup_beta()
-    result = tmp_12
-    tmp_13 = call @sa_fmt_u64(result, 10)
-    tmp_14 = call @sa_fmt_buffer_data(tmp_13)
-    tmp_15 = call @sa_fmt_buffer_len(tmp_13)
-    tmp_16 = tmp_14
-    call @sa_print_bytes(&tmp_16, tmp_15)
-    call @sa_fmt_buffer_free(^tmp_13)
-    !tmp_16
-    !tmp_15
-    @const SLA_STR_2 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_2, 1)
+    tmp_8 = call @sla__kv_lookup_alpha()
+    result = tmp_8
+    tmp_9 = call @sa_fmt_u64(result, 10)
+    tmp_10 = call @sa_fmt_buffer_data(tmp_9)
+    tmp_11 = call @sa_fmt_buffer_len(tmp_9)
+    tmp_12 = tmp_10
+    call @sa_print_bytes(&tmp_12, tmp_11)
+    call @sa_fmt_buffer_free(^tmp_9)
+    !tmp_12
+    !tmp_11
+    @const SLA_STR_1 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_1, 1)
     return result
 
 @test "rosetta 081 81_kv_store"():
 L_TEST_ENTRY_2:
-    tmp_17 = call @sla__kv_lookup_beta()
-    got = tmp_17
-    tmp_18 = 8
-    tmp_19 = ne got, tmp_18
-    !tmp_18
-    br tmp_19 -> L_THEN_3, L_ELSE_4
+    tmp_13 = call @sla__kv_lookup_alpha()
+    got = tmp_13
+    tmp_14 = 5
+    tmp_15 = ne got, tmp_14
+    !tmp_14
+    br tmp_15 -> L_THEN_3, L_ELSE_4
 
 L_THEN_3:
-    !tmp_19
+    !tmp_15
     panic(81)
 
 L_ELSE_4:
-    !tmp_19
+    !tmp_15
     jmp L_MERGE_5
 
 L_MERGE_5:

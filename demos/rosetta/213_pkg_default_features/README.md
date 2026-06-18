@@ -1,9 +1,9 @@
 # 213 Pkg Default Features
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps default feature enablement observable as the standard shared feature set.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/213_pkg_default_features/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the standard default feature set.
+- `main.sla`: Sla companion for the standard default feature set.
 
 Commands:
 

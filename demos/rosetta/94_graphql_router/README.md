@@ -1,9 +1,9 @@
 # 094 Graphql Router
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the GraphQL routing topic for the catalog slot, selecting a resolver from operation, field, and nesting state.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/94_graphql_router/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the operation/field resolver selection semantics used by this slot.
+- `main.sla`: Sla companion for the operation/field resolver selection semantics used by this slot.
 
 Commands:
 

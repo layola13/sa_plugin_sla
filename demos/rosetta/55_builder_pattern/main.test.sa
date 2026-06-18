@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -26,13 +31,11 @@ L_ENTRY:
 @sla__Builder_method(self: ptr, method: ptr) -> ptr:
 L_ENTRY:
     store self+0, method as ptr
-    !method
     return self
 
 @sla__Builder_path(self: ptr, path: ptr) -> ptr:
 L_ENTRY:
     store self+8, path as ptr
-    !path
     return self
 
 @sla__Builder_build(self: ptr) -> ptr:

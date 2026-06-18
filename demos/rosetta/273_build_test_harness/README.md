@@ -1,9 +1,9 @@
 # 273 Build Test Harness
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the build test harness observable as separate unit and integration test cases.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/273_build_test_harness/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for separate unit and integration test cases.
+- `main.sla`: Sla companion for separate unit and integration test cases.
 
 Commands:
 

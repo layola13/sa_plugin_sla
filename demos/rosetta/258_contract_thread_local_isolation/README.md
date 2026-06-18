@@ -1,9 +1,9 @@
 # 258 Contract Thread Local Isolation
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps thread-local isolation observable as two independent per-thread slots.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/258_contract_thread_local_isolation/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for two isolated per-thread slots.
+- `main.sla`: Sla companion for two isolated per-thread slots.
 
 Commands:
 

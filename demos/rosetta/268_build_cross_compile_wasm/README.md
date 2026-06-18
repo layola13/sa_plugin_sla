@@ -1,9 +1,9 @@
 # 268 Build Cross Compile Wasm
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps cross-compilation targeting observable as one Wasm target triple.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/268_build_cross_compile_wasm/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one Wasm target triple.
+- `main.sla`: Sla companion for one Wasm target triple.
 
 Commands:
 

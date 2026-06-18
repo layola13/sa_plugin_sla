@@ -1,9 +1,9 @@
 # 215 Pkg Patch Override
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps patch override application observable as a replaced package source.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/215_pkg_patch_override/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for replacing a package source via patching.
+- `main.sla`: Sla companion for replacing a package source via patching.
 
 Commands:
 

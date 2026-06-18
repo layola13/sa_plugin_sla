@@ -1,51 +1,102 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/core/option.sa"
+@import "sa_std/core/result.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_unwrap_value = vtable { call = @sla__unwrap_value }
+@import "sa_std/core/option.sa"
+@import "sa_std/core/result.sa"
+@const SLA_FNPTR_VT_unwrap_observable_sum = vtable { call = @sla__unwrap_observable_sum }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__unwrap_value() -> i32:
+@sla__unwrap_observable_sum() -> i32:
 L_ENTRY:
     tmp_0 = 5
-    unwrapped_value = tmp_0
-    return unwrapped_value
+    EXPAND OPTION_NEW_SOME tmp_1, tmp_0
+    !tmp_0
+    EXPAND OPTION_UNWRAP tmp_2, tmp_1
+    !tmp_1
+    value = tmp_2
+    tmp_3 = 7
+    EXPAND RESULT_NEW_ERR tmp_4, tmp_3
+    !tmp_3
+    tmp_5 = alloc 4
+    jmp L_OPTION_MATCH_CHECK_0_2
+
+L_OPTION_MATCH_CHECK_0_2:
+    EXPAND RESULT_IS_OK tmp_6, tmp_4
+    br tmp_6 -> L_OPTION_MATCH_CHECK_1_2, L_OPTION_MATCH_CASE_0_2
+
+L_OPTION_MATCH_CASE_0_2:
+    EXPAND RESULT_GET_ERR inner, tmp_4
+    !tmp_6
+    tmp_7 = add inner, 0
+    store tmp_5+0, tmp_7 as i32
+    !tmp_7
+    !inner
+    jmp L_OPTION_MATCH_MERGE_0
+
+L_OPTION_MATCH_CHECK_1_2:
+    !tmp_6
+    EXPAND RESULT_IS_OK tmp_8, tmp_4
+    br tmp_8 -> L_OPTION_MATCH_CASE_1_2, L_OPTION_MATCH_NO_MATCH_1
+
+L_OPTION_MATCH_CASE_1_2:
+    EXPAND RESULT_GET_OK _, tmp_4
+    !tmp_8
+    panic(177)
+
+L_OPTION_MATCH_NO_MATCH_1:
+    !tmp_8
+    panic(1)
+
+L_OPTION_MATCH_MERGE_0:
+    tmp_10 = load tmp_5+0 as i32
+    !tmp_5
+    err = tmp_10
+    tmp_11 = add value, err
+    return tmp_11
 
 @main() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__unwrap_value()
-    result = tmp_1
-    tmp_2 = call @sa_fmt_u64(result, 10)
-    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
-    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
-    tmp_5 = tmp_3
-    call @sa_print_bytes(&tmp_5, tmp_4)
-    call @sa_fmt_buffer_free(^tmp_2)
-    !tmp_5
-    !tmp_4
+    tmp_12 = call @sla__unwrap_observable_sum()
+    result = tmp_12
+    tmp_13 = call @sa_fmt_u64(result, 10)
+    tmp_14 = call @sa_fmt_buffer_data(tmp_13)
+    tmp_15 = call @sa_fmt_buffer_len(tmp_13)
+    tmp_16 = tmp_14
+    call @sa_print_bytes(&tmp_16, tmp_15)
+    call @sa_fmt_buffer_free(^tmp_13)
+    !tmp_16
+    !tmp_15
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 177 177_unwrap_unwrap_err"():
-L_TEST_ENTRY_0:
-    tmp_6 = call @sla__unwrap_value()
-    got = tmp_6
-    tmp_7 = 5
-    tmp_8 = ne got, tmp_7
-    !tmp_7
-    br tmp_8 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_3:
+    tmp_17 = call @sla__unwrap_observable_sum()
+    got = tmp_17
+    tmp_18 = 12
+    tmp_19 = ne got, tmp_18
+    !tmp_18
+    br tmp_19 -> L_THEN_4, L_ELSE_5
 
-L_THEN_1:
-    !tmp_8
+L_THEN_4:
+    !tmp_19
     panic(177)
 
-L_ELSE_2:
-    !tmp_8
-    jmp L_MERGE_3
+L_ELSE_5:
+    !tmp_19
+    jmp L_MERGE_6
 
-L_MERGE_3:
+L_MERGE_6:
     !got
     return
 

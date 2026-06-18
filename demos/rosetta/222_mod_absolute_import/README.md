@@ -1,9 +1,9 @@
 # 222 Mod Absolute Import
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps absolute import lookup observable as a two-segment crate-root path.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/222_mod_absolute_import/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the two-segment crate-root path.
+- `main.sla`: Sla companion for the two-segment crate-root path.
 
 Commands:
 

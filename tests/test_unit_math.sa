@@ -1,7 +1,24 @@
-@abs(x: i64) -> i64:
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_abs = vtable { call = @sla__abs }
+@const SLA_FNPTR_VT_max = vtable { call = @sla__max }
+@const SLA_FNPTR_VT_min = vtable { call = @sla__min }
+@const SLA_FNPTR_VT_gcd = vtable { call = @sla__gcd }
+@const SLA_FNPTR_VT_lcm = vtable { call = @sla__lcm }
+@const SLA_FNPTR_VT_power = vtable { call = @sla__power }
+@const SLA_FNPTR_VT_clamp = vtable { call = @sla__clamp }
+@sla__abs(x: i64) -> i64:
 L_ENTRY:
     tmp_0 = 0
     tmp_1 = slt x, tmp_0
+    !tmp_0
     neg = tmp_1
     br neg -> L_THEN_0, L_ELSE_1
 
@@ -9,7 +26,7 @@ L_THEN_0:
     !neg
     tmp_2 = 0
     tmp_3 = sub tmp_2, x
-    !x
+    !tmp_2
     return tmp_3
 
 L_ELSE_1:
@@ -17,7 +34,7 @@ L_ELSE_1:
     return x
 
 
-@max(a: i64, b: i64) -> i64:
+@sla__max(a: i64, b: i64) -> i64:
 L_ENTRY:
     tmp_5 = sgt a, b
     gt = tmp_5
@@ -34,7 +51,7 @@ L_ELSE_4:
     return b
 
 
-@min(a: i64, b: i64) -> i64:
+@sla__min(a: i64, b: i64) -> i64:
 L_ENTRY:
     tmp_7 = slt a, b
     lt = tmp_7
@@ -51,10 +68,11 @@ L_ELSE_7:
     return b
 
 
-@gcd(a: i64, b: i64) -> i64:
+@sla__gcd(a: i64, b: i64) -> i64:
 L_ENTRY:
     tmp_9 = 0
     tmp_10 = eq b, tmp_9
+    !tmp_9
     is_zero = tmp_10
     br is_zero -> L_THEN_9, L_ELSE_10
 
@@ -67,7 +85,7 @@ L_ELSE_10:
     !is_zero
     tmp_11 = rem a, b
     rem = tmp_11
-    tmp_12 = call @gcd(b, rem)
+    tmp_12 = call @sla__gcd(b, rem)
     result = tmp_12
     !rem
     !b
@@ -75,22 +93,24 @@ L_ELSE_10:
     return result
 
 
-@lcm(a: i64, b: i64) -> i64:
+@sla__lcm(a: i64, b: i64) -> i64:
 L_ENTRY:
-    tmp_14 = call @gcd(a, b)
+    tmp_14 = call @sla__gcd(a, b)
     g = tmp_14
     tmp_15 = div a, g
     tmp_16 = mul tmp_15, b
+    !tmp_15
     result = tmp_16
     !g
     !b
     !a
     return result
 
-@power(base: i64, exp: i64) -> i64:
+@sla__power(base: i64, exp: i64) -> i64:
 L_ENTRY:
     tmp_17 = 0
     tmp_18 = eq exp, tmp_17
+    !tmp_17
     is_zero = tmp_18
     br is_zero -> L_THEN_12, L_ELSE_13
 
@@ -105,13 +125,17 @@ L_ELSE_13:
     !is_zero
     tmp_20 = 2
     tmp_21 = div exp, tmp_20
+    !tmp_20
     half = tmp_21
-    tmp_22 = call @power(base, half)
+    tmp_22 = call @sla__power(base, half)
     sub_result = tmp_22
     tmp_23 = 2
     tmp_24 = rem exp, tmp_23
+    !tmp_23
     tmp_25 = 0
     tmp_26 = eq tmp_24, tmp_25
+    !tmp_24
+    !tmp_25
     even = tmp_26
     br even -> L_THEN_15, L_ELSE_16
 
@@ -129,6 +153,7 @@ L_ELSE_16:
     !even
     tmp_28 = mul sub_result, sub_result
     tmp_29 = mul tmp_28, base
+    !tmp_28
     result = tmp_29
     !half
     !sub_result
@@ -138,7 +163,7 @@ L_ELSE_16:
 
 
 
-@clamp(val: i64, lo: i64, hi: i64) -> i64:
+@sla__clamp(val: i64, lo: i64, hi: i64) -> i64:
 L_ENTRY:
     tmp_32 = slt val, lo
     below = tmp_32
@@ -175,11 +200,16 @@ L_TEST_ENTRY_24:
     tmp_36 = 2
     tmp_37 = 3
     tmp_38 = add tmp_36, tmp_37
+    !tmp_36
+    !tmp_37
     tmp_39 = 4
     tmp_40 = mul tmp_38, tmp_39
+    !tmp_38
+    !tmp_39
     result = tmp_40
     tmp_41 = 20
     tmp_42 = eq result, tmp_41
+    !tmp_41
     ok = tmp_42
     br ok -> L_THEN_25, L_ELSE_26
 
@@ -201,10 +231,15 @@ L_TEST_ENTRY_28:
     tmp_46 = 3
     tmp_47 = 4
     tmp_48 = mul tmp_46, tmp_47
+    !tmp_46
+    !tmp_47
     tmp_49 = add tmp_45, tmp_48
+    !tmp_45
+    !tmp_48
     result = tmp_49
     tmp_50 = 14
     tmp_51 = eq result, tmp_50
+    !tmp_50
     ok = tmp_51
     br ok -> L_THEN_29, L_ELSE_30
 
@@ -225,15 +260,24 @@ L_TEST_ENTRY_32:
     tmp_54 = 3
     tmp_55 = 2
     tmp_56 = add tmp_54, tmp_55
+    !tmp_54
+    !tmp_55
     tmp_57 = 4
     tmp_58 = 1
     tmp_59 = sub tmp_57, tmp_58
+    !tmp_57
+    !tmp_58
     tmp_60 = mul tmp_56, tmp_59
+    !tmp_56
+    !tmp_59
     tmp_61 = 5
     tmp_62 = div tmp_60, tmp_61
+    !tmp_60
+    !tmp_61
     result = tmp_62
     tmp_63 = 3
     tmp_64 = eq result, tmp_63
+    !tmp_63
     ok = tmp_64
     br ok -> L_THEN_33, L_ELSE_34
 
@@ -255,12 +299,19 @@ L_TEST_ENTRY_36:
     tmp_68 = 5
     tmp_69 = 3
     tmp_70 = add tmp_68, tmp_69
+    !tmp_68
+    !tmp_69
     tmp_71 = sub tmp_67, tmp_70
+    !tmp_67
+    !tmp_70
     result = tmp_71
     tmp_72 = 0
     tmp_73 = 8
     tmp_74 = sub tmp_72, tmp_73
+    !tmp_72
+    !tmp_73
     tmp_75 = eq result, tmp_74
+    !tmp_74
     ok = tmp_75
     br ok -> L_THEN_37, L_ELSE_38
 
@@ -282,10 +333,15 @@ L_TEST_ENTRY_40:
     tmp_79 = 0
     tmp_80 = 10
     tmp_81 = sub tmp_79, tmp_80
+    !tmp_79
+    !tmp_80
     tmp_82 = sub tmp_78, tmp_81
+    !tmp_78
+    !tmp_81
     result = tmp_82
     tmp_83 = 10
     tmp_84 = eq result, tmp_83
+    !tmp_83
     ok = tmp_84
     br ok -> L_THEN_41, L_ELSE_42
 
@@ -306,9 +362,12 @@ L_TEST_ENTRY_44:
     tmp_87 = 17
     tmp_88 = 5
     tmp_89 = rem tmp_87, tmp_88
+    !tmp_87
+    !tmp_88
     result = tmp_89
     tmp_90 = 2
     tmp_91 = eq result, tmp_90
+    !tmp_90
     ok = tmp_91
     br ok -> L_THEN_45, L_ELSE_46
 
@@ -329,13 +388,20 @@ L_TEST_ENTRY_48:
     tmp_94 = 100
     tmp_95 = 7
     tmp_96 = add tmp_94, tmp_95
+    !tmp_94
+    !tmp_95
     tmp_97 = 3
     tmp_98 = 4
     tmp_99 = mul tmp_97, tmp_98
+    !tmp_97
+    !tmp_98
     tmp_100 = rem tmp_96, tmp_99
+    !tmp_96
+    !tmp_99
     result = tmp_100
     tmp_101 = 11
     tmp_102 = eq result, tmp_101
+    !tmp_101
     ok = tmp_102
     br ok -> L_THEN_49, L_ELSE_50
 
@@ -356,10 +422,14 @@ L_TEST_ENTRY_52:
     tmp_105 = 0
     tmp_106 = 42
     tmp_107 = sub tmp_105, tmp_106
-    tmp_108 = call @abs(tmp_107)
+    !tmp_105
+    !tmp_106
+    tmp_108 = call @sla__abs(tmp_107)
+    !tmp_107
     result = tmp_108
     tmp_109 = 42
     tmp_110 = eq result, tmp_109
+    !tmp_109
     ok = tmp_110
     br ok -> L_THEN_53, L_ELSE_54
 
@@ -378,10 +448,12 @@ L_MERGE_55:
 @test "绝对值 abs-7- == 7"():
 L_TEST_ENTRY_56:
     tmp_113 = 7
-    tmp_114 = call @abs(tmp_113)
+    tmp_114 = call @sla__abs(tmp_113)
+    !tmp_113
     result = tmp_114
     tmp_115 = 7
     tmp_116 = eq result, tmp_115
+    !tmp_115
     ok = tmp_116
     br ok -> L_THEN_57, L_ELSE_58
 
@@ -401,10 +473,13 @@ L_MERGE_59:
 L_TEST_ENTRY_60:
     tmp_119 = 3
     tmp_120 = 7
-    tmp_121 = call @max(tmp_119, tmp_120)
+    tmp_121 = call @sla__max(tmp_119, tmp_120)
+    !tmp_119
+    !tmp_120
     result = tmp_121
     tmp_122 = 7
     tmp_123 = eq result, tmp_122
+    !tmp_122
     ok = tmp_123
     br ok -> L_THEN_61, L_ELSE_62
 
@@ -424,10 +499,13 @@ L_MERGE_63:
 L_TEST_ENTRY_64:
     tmp_126 = 3
     tmp_127 = 7
-    tmp_128 = call @min(tmp_126, tmp_127)
+    tmp_128 = call @sla__min(tmp_126, tmp_127)
+    !tmp_126
+    !tmp_127
     result = tmp_128
     tmp_129 = 3
     tmp_130 = eq result, tmp_129
+    !tmp_129
     ok = tmp_130
     br ok -> L_THEN_65, L_ELSE_66
 
@@ -447,10 +525,13 @@ L_MERGE_67:
 L_TEST_ENTRY_68:
     tmp_133 = 48
     tmp_134 = 18
-    tmp_135 = call @gcd(tmp_133, tmp_134)
+    tmp_135 = call @sla__gcd(tmp_133, tmp_134)
+    !tmp_133
+    !tmp_134
     result = tmp_135
     tmp_136 = 6
     tmp_137 = eq result, tmp_136
+    !tmp_136
     ok = tmp_137
     br ok -> L_THEN_69, L_ELSE_70
 
@@ -470,10 +551,13 @@ L_MERGE_71:
 L_TEST_ENTRY_72:
     tmp_140 = 100
     tmp_141 = 75
-    tmp_142 = call @gcd(tmp_140, tmp_141)
+    tmp_142 = call @sla__gcd(tmp_140, tmp_141)
+    !tmp_140
+    !tmp_141
     result = tmp_142
     tmp_143 = 25
     tmp_144 = eq result, tmp_143
+    !tmp_143
     ok = tmp_144
     br ok -> L_THEN_73, L_ELSE_74
 
@@ -493,10 +577,13 @@ L_MERGE_75:
 L_TEST_ENTRY_76:
     tmp_147 = 4
     tmp_148 = 6
-    tmp_149 = call @lcm(tmp_147, tmp_148)
+    tmp_149 = call @sla__lcm(tmp_147, tmp_148)
+    !tmp_147
+    !tmp_148
     result = tmp_149
     tmp_150 = 12
     tmp_151 = eq result, tmp_150
+    !tmp_150
     ok = tmp_151
     br ok -> L_THEN_77, L_ELSE_78
 
@@ -516,10 +603,13 @@ L_MERGE_79:
 L_TEST_ENTRY_80:
     tmp_154 = 2
     tmp_155 = 10
-    tmp_156 = call @power(tmp_154, tmp_155)
+    tmp_156 = call @sla__power(tmp_154, tmp_155)
+    !tmp_154
+    !tmp_155
     result = tmp_156
     tmp_157 = 1024
     tmp_158 = eq result, tmp_157
+    !tmp_157
     ok = tmp_158
     br ok -> L_THEN_81, L_ELSE_82
 
@@ -539,10 +629,13 @@ L_MERGE_83:
 L_TEST_ENTRY_84:
     tmp_161 = 3
     tmp_162 = 5
-    tmp_163 = call @power(tmp_161, tmp_162)
+    tmp_163 = call @sla__power(tmp_161, tmp_162)
+    !tmp_161
+    !tmp_162
     result = tmp_163
     tmp_164 = 243
     tmp_165 = eq result, tmp_164
+    !tmp_164
     ok = tmp_165
     br ok -> L_THEN_85, L_ELSE_86
 
@@ -563,10 +656,14 @@ L_TEST_ENTRY_88:
     tmp_168 = 15
     tmp_169 = 0
     tmp_170 = 10
-    tmp_171 = call @clamp(tmp_168, tmp_169, tmp_170)
+    tmp_171 = call @sla__clamp(tmp_168, tmp_169, tmp_170)
+    !tmp_168
+    !tmp_169
+    !tmp_170
     result = tmp_171
     tmp_172 = 10
     tmp_173 = eq result, tmp_172
+    !tmp_172
     ok = tmp_173
     br ok -> L_THEN_89, L_ELSE_90
 
@@ -587,12 +684,18 @@ L_TEST_ENTRY_92:
     tmp_176 = 0
     tmp_177 = 5
     tmp_178 = sub tmp_176, tmp_177
+    !tmp_176
+    !tmp_177
     tmp_179 = 0
     tmp_180 = 10
-    tmp_181 = call @clamp(tmp_178, tmp_179, tmp_180)
+    tmp_181 = call @sla__clamp(tmp_178, tmp_179, tmp_180)
+    !tmp_178
+    !tmp_179
+    !tmp_180
     result = tmp_181
     tmp_182 = 0
     tmp_183 = eq result, tmp_182
+    !tmp_182
     ok = tmp_183
     br ok -> L_THEN_93, L_ELSE_94
 
@@ -613,10 +716,14 @@ L_TEST_ENTRY_96:
     tmp_186 = 7
     tmp_187 = 0
     tmp_188 = 10
-    tmp_189 = call @clamp(tmp_186, tmp_187, tmp_188)
+    tmp_189 = call @sla__clamp(tmp_186, tmp_187, tmp_188)
+    !tmp_186
+    !tmp_187
+    !tmp_188
     result = tmp_189
     tmp_190 = 7
     tmp_191 = eq result, tmp_190
+    !tmp_190
     ok = tmp_191
     br ok -> L_THEN_97, L_ELSE_98
 
@@ -643,6 +750,8 @@ L_TEST_ENTRY_100:
     tmp_197 = mul a, a
     tmp_198 = mul b, b
     tmp_199 = add tmp_197, tmp_198
+    !tmp_197
+    !tmp_198
     lhs = tmp_199
     tmp_200 = mul c, c
     rhs = tmp_200
@@ -677,6 +786,8 @@ L_TEST_ENTRY_104:
     tmp_207 = mul a, a
     tmp_208 = mul b, b
     tmp_209 = add tmp_207, tmp_208
+    !tmp_207
+    !tmp_208
     lhs = tmp_209
     tmp_210 = mul c, c
     rhs = tmp_210
@@ -711,11 +822,16 @@ L_TEST_ENTRY_108:
     tmp_217 = mul b, b
     tmp_218 = 4
     tmp_219 = mul tmp_218, a
+    !tmp_218
     tmp_220 = mul tmp_219, c
+    !tmp_219
     tmp_221 = sub tmp_217, tmp_220
+    !tmp_217
+    !tmp_220
     disc = tmp_221
     tmp_222 = 1
     tmp_223 = eq disc, tmp_222
+    !tmp_222
     ok = tmp_223
     br ok -> L_THEN_109, L_ELSE_110
 
@@ -740,12 +856,17 @@ L_TEST_ENTRY_112:
     n = tmp_226
     tmp_227 = 1
     tmp_228 = add n, tmp_227
+    !tmp_227
     tmp_229 = mul n, tmp_228
+    !tmp_228
     tmp_230 = 2
     tmp_231 = div tmp_229, tmp_230
+    !tmp_229
+    !tmp_230
     result = tmp_231
     tmp_232 = 55
     tmp_233 = eq result, tmp_232
+    !tmp_232
     ok = tmp_233
     br ok -> L_THEN_113, L_ELSE_114
 
@@ -766,13 +887,17 @@ L_MERGE_115:
 L_TEST_ENTRY_116:
     tmp_236 = 2
     tmp_237 = 8
-    tmp_238 = call @power(tmp_236, tmp_237)
+    tmp_238 = call @sla__power(tmp_236, tmp_237)
+    !tmp_236
+    !tmp_237
     r8 = tmp_238
     tmp_239 = 1
     tmp_240 = sub r8, tmp_239
+    !tmp_239
     result = tmp_240
     tmp_241 = 255
     tmp_242 = eq result, tmp_241
+    !tmp_241
     ok = tmp_242
     br ok -> L_THEN_117, L_ELSE_118
 
@@ -794,9 +919,12 @@ L_TEST_ENTRY_120:
     tmp_245 = 120
     tmp_246 = 6
     tmp_247 = rem tmp_245, tmp_246
+    !tmp_245
+    !tmp_246
     result = tmp_247
     tmp_248 = 0
     tmp_249 = eq result, tmp_248
+    !tmp_248
     ok = tmp_249
     br ok -> L_THEN_121, L_ELSE_122
 
@@ -817,17 +945,28 @@ L_TEST_ENTRY_124:
     tmp_252 = 10
     tmp_253 = 3
     tmp_254 = sub tmp_252, tmp_253
+    !tmp_252
+    !tmp_253
     tmp_255 = 8
     tmp_256 = 2
     tmp_257 = add tmp_255, tmp_256
+    !tmp_255
+    !tmp_256
     tmp_258 = mul tmp_254, tmp_257
+    !tmp_254
+    !tmp_257
     tmp_259 = 5
     tmp_260 = div tmp_258, tmp_259
+    !tmp_258
+    !tmp_259
     tmp_261 = 7
     tmp_262 = rem tmp_260, tmp_261
+    !tmp_260
+    !tmp_261
     result = tmp_262
     tmp_263 = 0
     tmp_264 = eq result, tmp_263
+    !tmp_263
     ok = tmp_264
     br ok -> L_THEN_125, L_ELSE_126
 
@@ -852,9 +991,12 @@ L_TEST_ENTRY_128:
     tmp_269 = add ch, shift
     tmp_270 = 26
     tmp_271 = rem tmp_269, tmp_270
+    !tmp_269
+    !tmp_270
     result = tmp_271
     tmp_272 = 7
     tmp_273 = eq result, tmp_272
+    !tmp_272
     ok = tmp_273
     br ok -> L_THEN_129, L_ELSE_130
 
@@ -878,13 +1020,19 @@ L_TEST_ENTRY_132:
     f = tmp_276
     tmp_277 = 32
     tmp_278 = sub f, tmp_277
+    !tmp_277
     tmp_279 = 5
     tmp_280 = mul tmp_278, tmp_279
+    !tmp_278
+    !tmp_279
     tmp_281 = 9
     tmp_282 = div tmp_280, tmp_281
+    !tmp_280
+    !tmp_281
     c = tmp_282
     tmp_283 = 0
     tmp_284 = eq c, tmp_283
+    !tmp_283
     ok = tmp_284
     br ok -> L_THEN_133, L_ELSE_134
 
@@ -907,13 +1055,19 @@ L_TEST_ENTRY_136:
     f = tmp_287
     tmp_288 = 32
     tmp_289 = sub f, tmp_288
+    !tmp_288
     tmp_290 = 5
     tmp_291 = mul tmp_289, tmp_290
+    !tmp_289
+    !tmp_290
     tmp_292 = 9
     tmp_293 = div tmp_291, tmp_292
+    !tmp_291
+    !tmp_292
     c = tmp_293
     tmp_294 = 100
     tmp_295 = eq c, tmp_294
+    !tmp_294
     ok = tmp_295
     br ok -> L_THEN_137, L_ELSE_138
 
@@ -936,9 +1090,11 @@ L_TEST_ENTRY_140:
     n = tmp_298
     tmp_299 = 2
     tmp_300 = rem n, tmp_299
+    !tmp_299
     rem = tmp_300
     tmp_301 = 0
     tmp_302 = eq rem, tmp_301
+    !tmp_301
     ok = tmp_302
     br ok -> L_THEN_141, L_ELSE_142
 
@@ -961,9 +1117,11 @@ L_TEST_ENTRY_144:
     n = tmp_305
     tmp_306 = 2
     tmp_307 = rem n, tmp_306
+    !tmp_306
     rem = tmp_307
     tmp_308 = 1
     tmp_309 = eq rem, tmp_308
+    !tmp_308
     ok = tmp_309
     br ok -> L_THEN_145, L_ELSE_146
 
@@ -990,13 +1148,19 @@ L_TEST_ENTRY_148:
     z = tmp_314
     tmp_315 = 3
     tmp_316 = mul tmp_315, x
+    !tmp_315
     tmp_317 = 2
     tmp_318 = mul tmp_317, y
+    !tmp_317
     tmp_319 = add tmp_316, tmp_318
+    !tmp_316
+    !tmp_318
     tmp_320 = sub tmp_319, z
+    !tmp_319
     result = tmp_320
     tmp_321 = 17
     tmp_322 = eq result, tmp_321
+    !tmp_321
     ok = tmp_322
     br ok -> L_THEN_149, L_ELSE_150
 
@@ -1019,10 +1183,13 @@ L_MERGE_151:
 L_TEST_ENTRY_152:
     tmp_325 = 2
     tmp_326 = 6
-    tmp_327 = call @power(tmp_325, tmp_326)
+    tmp_327 = call @sla__power(tmp_325, tmp_326)
+    !tmp_325
+    !tmp_326
     p = tmp_327
     tmp_328 = 64
     tmp_329 = eq p, tmp_328
+    !tmp_328
     ok = tmp_329
     br ok -> L_THEN_153, L_ELSE_154
 
@@ -1048,11 +1215,15 @@ L_TEST_ENTRY_156:
     h = tmp_334
     tmp_335 = add a, b
     tmp_336 = mul tmp_335, h
+    !tmp_335
     tmp_337 = 2
     tmp_338 = div tmp_336, tmp_337
+    !tmp_336
+    !tmp_337
     area = tmp_338
     tmp_339 = 20
     tmp_340 = eq area, tmp_339
+    !tmp_339
     ok = tmp_340
     br ok -> L_THEN_157, L_ELSE_158
 
@@ -1088,9 +1259,12 @@ L_TEST_ENTRY_160:
     tmp_349 = mul dx, dx
     tmp_350 = mul dy, dy
     tmp_351 = add tmp_349, tmp_350
+    !tmp_349
+    !tmp_350
     d2 = tmp_351
     tmp_352 = 25
     tmp_353 = eq d2, tmp_352
+    !tmp_352
     ok = tmp_353
     br ok -> L_THEN_161, L_ELSE_162
 
@@ -1112,7 +1286,63 @@ L_MERGE_163:
     !x1
     return
 
-@test ignored "预留：浮点精度（暂跳过）"():
+@test "浮点加法 1.5 + 2.25 == 3.75"():
 L_TEST_ENTRY_164:
+    tmp_356 = 1.5
+    tmp_357 = 2.25
+    tmp_358 = fadd tmp_356, tmp_357
+    !tmp_356
+    !tmp_357
+    sum = tmp_358
+    tmp_359 = 3.75
+    tmp_360 = fcmp_eq sum, tmp_359
+    !tmp_359
+    ok = tmp_360
+    br ok -> L_THEN_165, L_ELSE_166
+
+L_THEN_165:
+    !ok
+    jmp L_MERGE_167
+
+L_ELSE_166:
+    !ok
+    panic(1)
+
+L_MERGE_167:
+    !sum
+    return
+
+@test "浮点复合表达式 -1.5+2.5-*2.0/4.0 == 2.0"():
+L_TEST_ENTRY_168:
+    tmp_363 = 1.5
+    tmp_364 = 2.5
+    tmp_365 = fadd tmp_363, tmp_364
+    !tmp_363
+    !tmp_364
+    tmp_366 = 2.0
+    tmp_367 = fmul tmp_365, tmp_366
+    !tmp_365
+    !tmp_366
+    tmp_368 = 4.0
+    tmp_369 = fdiv tmp_367, tmp_368
+    !tmp_367
+    !tmp_368
+    result = tmp_369
+    tmp_370 = 2.0
+    tmp_371 = fcmp_eq result, tmp_370
+    !tmp_370
+    ok = tmp_371
+    br ok -> L_THEN_169, L_ELSE_170
+
+L_THEN_169:
+    !ok
+    jmp L_MERGE_171
+
+L_ELSE_170:
+    !ok
+    panic(1)
+
+L_MERGE_171:
+    !result
     return
 

@@ -1,18 +1,20 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/sync/once.sa"
+
+fn init_42() -> i32 {
+    return 42;
+}
+
+fn init_99() -> i32 {
+    return 99;
+}
 
 fn once_cell_lazy_total() -> i32 {
-    let first = once_cell_get_or_init(21);
-    let second = once_cell_get_existing();
+    let value = ONCE_NEW();
+    let first: i32 = ONCE_GET_OR_INIT(value, init_42);
+    let second: i32 = ONCE_GET_OR_INIT(value, init_99);
     return first + second;
-}
-
-fn once_cell_get_or_init(seed: i32) -> i32 {
-    return seed + 21;
-}
-
-fn once_cell_get_existing() -> i32 {
-    return 42;
 }
 
 fn main() -> i32 {

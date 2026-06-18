@@ -1,14 +1,6 @@
 # 084 Sync Gate
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current sync-gate mismatch honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/84_sync_gate/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/84_sync_gate/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/84_sync_gate/main.sla --out /tmp/84_sync_gate.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/84_sync_gate/main.sla
-```
+- `main.rs`: Rust reference for gate-state code semantics where `arrived < required` takes precedence over `drained`.
+- `main.sla`: current Sla companion shape, whose branch order checks `drained` first and therefore does not preserve the same semantics for all states.

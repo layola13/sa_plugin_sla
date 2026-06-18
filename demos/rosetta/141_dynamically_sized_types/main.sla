@@ -2,8 +2,8 @@
 @import "sa_std/fmt.sai"
 
 fn dynamically_sized_bytes_len() -> usize {
-    let bytes_len: usize = 2;
-    return bytes_len;
+    let bytes = "hi";
+    return bytes.len();
 }
 
 fn main() -> i32 { let result = dynamically_sized_bytes_len(); println("{}", result); return 0; }

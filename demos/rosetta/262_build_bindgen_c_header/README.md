@@ -1,9 +1,9 @@
 # 262 Build Bindgen C Header
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps C-header bindgen output observable as one type declaration plus one function declaration.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/262_build_bindgen_c_header/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one type plus one function declaration.
+- `main.sla`: Sla companion for one type plus one function declaration.
 
 Commands:
 

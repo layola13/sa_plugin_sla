@@ -1,9 +1,9 @@
 # 184 Pthread Spawn Join
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+Thread spawn-and-join demo that runs `worker(1)` on a spawned thread and returns the joined value `5`.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/184_pthread_spawn_join/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference using `thread::spawn(...).join().unwrap()`.
+- `main.sla`: Sla companion for the worker spawn-and-join flow.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 291 Eco Wasm Host Imports
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps Wasm host integration observable as imported log and clock functions.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/291_eco_wasm_host_imports/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for imported log and clock host functions.
+- `main.sla`: Sla companion for imported log and clock host functions.
 
 Commands:
 

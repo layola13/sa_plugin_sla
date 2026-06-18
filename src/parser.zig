@@ -91,6 +91,13 @@ pub const Parser = struct {
         return false;
     }
 
+    fn recordImplTargetType(self: *Parser, target_ty: *ast.Type) !void {
+        switch (target_ty.*) {
+            .user_defined => try self.known_types.append(target_ty.user_defined.name),
+            else => {},
+        }
+    }
+
     pub fn parseProgram(self: *Parser) ParserError!*ast.Node {
         var decls = std.ArrayList(*ast.Node).init(self.allocator);
         errdefer decls.deinit();
@@ -111,7 +118,7 @@ pub const Parser = struct {
                             try self.known_types.append(inner_decl.enum_decl.name);
                             try self.known_enums.append(inner_decl.enum_decl.name);
                         },
-                        .impl_decl => try self.known_types.append(inner_decl.impl_decl.target_ty.user_defined.name),
+                        .impl_decl => try self.recordImplTargetType(inner_decl.impl_decl.target_ty),
                         else => {},
                     }
                 }
@@ -123,7 +130,7 @@ pub const Parser = struct {
                         try self.known_types.append(decl.enum_decl.name);
                         try self.known_enums.append(decl.enum_decl.name);
                     },
-                    .impl_decl => try self.known_types.append(decl.impl_decl.target_ty.user_defined.name),
+                    .impl_decl => try self.recordImplTargetType(decl.impl_decl.target_ty),
                     else => {},
                 }
             }
@@ -806,6 +813,24 @@ pub const Parser = struct {
                 node.* = .{ .assign_stmt = .{ .target = expr, .value = sum } };
                 return node;
             }
+            if (self.match(.pipe_equal)) {
+                const rhs = try self.parseExpr(0);
+                try self.expect(.semicolon);
+                const value = try self.allocator.create(ast.Node);
+                value.* = .{ .binary_expr = .{ .op = .bit_or, .left = expr, .right = rhs } };
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{ .assign_stmt = .{ .target = expr, .value = value } };
+                return node;
+            }
+            if (self.match(.ampersand_equal)) {
+                const rhs = try self.parseExpr(0);
+                try self.expect(.semicolon);
+                const value = try self.allocator.create(ast.Node);
+                value.* = .{ .binary_expr = .{ .op = .bit_and, .left = expr, .right = rhs } };
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{ .assign_stmt = .{ .target = expr, .value = value } };
+                return node;
+            }
             if (!self.match(.semicolon)) {
                 if (self.peek() != .r_brace) {
                     try self.expect(.semicolon);
@@ -819,6 +844,7 @@ pub const Parser = struct {
 
     fn parseLetStmt(self: *Parser) ParserError!*ast.Node {
         try self.expect(.keyword_let);
+        _ = self.match(.keyword_mut);
 
         if (self.peek() == .identifier) {
             const first_name = self.lexeme(self.tok.loc);
@@ -1437,8 +1463,17 @@ pub const Parser = struct {
                 self.advance();
                 const str = self.lexeme(tok.loc);
                 var digit_len: usize = 0;
-                while (digit_len < str.len and std.ascii.isDigit(str[digit_len])) : (digit_len += 1) {}
-                const val = std.fmt.parseInt(i64, str[0..digit_len], 10) catch return ParserError.InvalidCharacter;
+                var base: u8 = 10;
+                var digits_start: usize = 0;
+                if (str.len >= 2 and str[0] == '0' and (str[1] == 'x' or str[1] == 'X')) {
+                    base = 16;
+                    digits_start = 2;
+                    digit_len = 2;
+                    while (digit_len < str.len and std.ascii.isHex(str[digit_len])) : (digit_len += 1) {}
+                } else {
+                    while (digit_len < str.len and std.ascii.isDigit(str[digit_len])) : (digit_len += 1) {}
+                }
+                const val = std.fmt.parseInt(i64, str[digits_start..digit_len], base) catch return ParserError.InvalidCharacter;
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .literal = .{ .int_val = val } };
                 if (digit_len < str.len) {
@@ -1645,7 +1680,7 @@ pub const Parser = struct {
         self.advance();
 
         switch (tag) {
-            .plus, .minus, .asterisk, .slash, .percent, .less_than, .greater_than, .less_equal, .greater_equal, .equal_equal, .bang_equal => {
+            .plus, .minus, .asterisk, .slash, .percent, .ampersand, .pipe, .caret, .less_less, .greater_greater, .less_than, .greater_than, .less_equal, .greater_equal, .equal_equal, .bang_equal => {
                 if (tag == .less_than and left.* == .identifier and self.looksLikeGenericStructLiteralTail()) {
                     return try self.parseGenericStructLiteralTail(left.identifier);
                 }
@@ -1659,6 +1694,11 @@ pub const Parser = struct {
                     .asterisk => ast.BinaryOp.mul,
                     .slash => ast.BinaryOp.div,
                     .percent => ast.BinaryOp.mod,
+                    .ampersand => ast.BinaryOp.bit_and,
+                    .pipe => ast.BinaryOp.bit_or,
+                    .caret => ast.BinaryOp.bit_xor,
+                    .less_less => ast.BinaryOp.shl,
+                    .greater_greater => ast.BinaryOp.shr,
                     .less_than => ast.BinaryOp.lt,
                     .less_equal => ast.BinaryOp.le,
                     .greater_than => ast.BinaryOp.gt,
@@ -1803,12 +1843,16 @@ pub const Parser = struct {
     fn getInfixPrecedence(self: *Parser, tag: lexer.Token.Tag) u8 {
         _ = self;
         return switch (tag) {
-            .plus, .minus => 4,
-            .asterisk, .slash, .percent => 5,
-            .less_than, .greater_than, .less_equal, .greater_equal => 3,
-            .equal_equal, .bang_equal => 2,
+            .pipe => 1,
+            .caret => 2,
+            .ampersand => 3,
+            .equal_equal, .bang_equal => 4,
+            .less_than, .greater_than, .less_equal, .greater_equal => 5,
+            .less_less, .greater_greater => 6,
+            .plus, .minus => 7,
+            .asterisk, .slash, .percent => 8,
             .dot, .bang, .l_paren, .l_bracket, .question_mark => 7,
-            .keyword_as => 6,
+            .keyword_as => 9,
             else => 0,
         };
     }

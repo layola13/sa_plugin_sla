@@ -1,9 +1,9 @@
 # 295 Eco Bpf Ebpf Bytecode
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps eBPF-style program structure observable as load and return instruction kinds.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/295_eco_bpf_ebpf_bytecode/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for load and return eBPF instruction kinds.
+- `main.sla`: Sla companion for load and return instruction kinds.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 245 Contract Generic Monomorph Share
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps shared generic contract instantiation observable across both integer and boolean call paths.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/245_contract_generic_monomorph_share/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for shared generic instantiation across call paths.
+- `main.sla`: Sla companion for shared generic instantiation across call paths.
 
 Commands:
 

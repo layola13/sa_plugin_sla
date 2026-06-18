@@ -1,9 +1,9 @@
 # 237 Mod Inline Submodule
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps inline child-module wiring observable as one nested layer.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/237_mod_inline_submodule/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one nested inline child module.
+- `main.sla`: Sla companion for one nested inline child module.
 
 Commands:
 

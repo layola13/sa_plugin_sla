@@ -1,9 +1,9 @@
 # 104 If Let Chains
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the if-let-chain catalog slot, combining multiple `Option` matches into one branch result.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/104_if_let_chains/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for chained `if let` matching.
+- `main.sla`: Sla companion for chained `if let` matching.
 
 Commands:
 

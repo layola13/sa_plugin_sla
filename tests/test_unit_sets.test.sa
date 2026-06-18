@@ -1,0 +1,234 @@
+@import "sa_std/hashset.sa"
+@import "sa_std/btree_set.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@import "sa_std/hashset.sa"
+@import "sa_std/btree_set.sa"
+@const SLA_FNPTR_VT_hash_set_smoke = vtable { call = @sla__hash_set_smoke }
+@const SLA_FNPTR_VT_btree_set_smoke = vtable { call = @sla__btree_set_smoke }
+@sla__hash_set_smoke() -> u64:
+L_ENTRY:
+    EXPAND SET_NEW tmp_0
+    set = tmp_0
+    tmp_1 = 1
+    EXPAND SET_INSERT tmp_2, set, tmp_1
+    !tmp_1
+    inserted_alpha = tmp_2
+    tmp_3 = 2
+    EXPAND SET_INSERT tmp_4, set, tmp_3
+    !tmp_3
+    inserted_beta = tmp_4
+    tmp_5 = 1
+    EXPAND SET_CONTAINS tmp_6, set, tmp_5
+    !tmp_5
+    contains_alpha = tmp_6
+    tmp_7 = 3
+    EXPAND SET_CONTAINS tmp_8, set, tmp_7
+    !tmp_7
+    contains_gamma = tmp_8
+    EXPAND SET_LEN tmp_9, set
+    len = tmp_9
+    tmp_10 = 0
+    tmp_11 = eq inserted_alpha, tmp_10
+    !tmp_10
+    br tmp_11 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_11
+    panic(101)
+
+L_ELSE_1:
+    !tmp_11
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_14 = 0
+    tmp_15 = eq inserted_beta, tmp_14
+    !tmp_14
+    br tmp_15 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_15
+    panic(102)
+
+L_ELSE_4:
+    !tmp_15
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_18 = 0
+    tmp_19 = eq contains_alpha, tmp_18
+    !tmp_18
+    br tmp_19 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_19
+    panic(103)
+
+L_ELSE_7:
+    !tmp_19
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    tmp_22 = 1
+    tmp_23 = eq contains_gamma, tmp_22
+    !tmp_22
+    br tmp_23 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_23
+    panic(104)
+
+L_ELSE_10:
+    !tmp_23
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    !contains_alpha
+    !inserted_beta
+    !inserted_alpha
+    EXPAND SET_FREE set
+    !contains_gamma
+    return len
+
+@sla__btree_set_smoke() -> u64:
+L_ENTRY:
+    EXPAND BTREE_SET_NEW tmp_26
+    set = tmp_26
+    @const SLA_STR_0 = utf8:"alpha"
+    tmp_28 = 5
+    tmp_27 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_27, &SLA_STR_0, tmp_28
+    !tmp_28
+    EXPAND BTREE_SET_INSERT tmp_29, set, tmp_27
+    inserted_alpha = tmp_29
+    @const SLA_STR_1 = utf8:"beta"
+    tmp_31 = 4
+    tmp_30 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_30, &SLA_STR_1, tmp_31
+    !tmp_31
+    EXPAND BTREE_SET_INSERT tmp_32, set, tmp_30
+    inserted_beta = tmp_32
+    EXPAND BTREE_SET_CONTAINS tmp_33, set, tmp_30
+    contains_beta = tmp_33
+    @const SLA_STR_2 = utf8:"gamma"
+    tmp_35 = 5
+    tmp_34 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_34, &SLA_STR_2, tmp_35
+    !tmp_35
+    EXPAND BTREE_SET_CONTAINS tmp_36, set, tmp_34
+    contains_gamma = tmp_36
+    EXPAND BTREE_SET_LEN tmp_37, set
+    len = tmp_37
+    tmp_38 = 0
+    tmp_39 = eq inserted_alpha, tmp_38
+    !tmp_38
+    br tmp_39 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_39
+    panic(201)
+
+L_ELSE_13:
+    !tmp_39
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    tmp_42 = 0
+    tmp_43 = eq inserted_beta, tmp_42
+    !tmp_42
+    br tmp_43 -> L_THEN_15, L_ELSE_16
+
+L_THEN_15:
+    !tmp_43
+    panic(202)
+
+L_ELSE_16:
+    !tmp_43
+    jmp L_MERGE_17
+
+L_MERGE_17:
+    tmp_46 = 0
+    tmp_47 = eq contains_beta, tmp_46
+    !tmp_46
+    br tmp_47 -> L_THEN_18, L_ELSE_19
+
+L_THEN_18:
+    !tmp_47
+    panic(203)
+
+L_ELSE_19:
+    !tmp_47
+    jmp L_MERGE_20
+
+L_MERGE_20:
+    tmp_50 = 1
+    tmp_51 = eq contains_gamma, tmp_50
+    !tmp_50
+    br tmp_51 -> L_THEN_21, L_ELSE_22
+
+L_THEN_21:
+    !tmp_51
+    panic(204)
+
+L_ELSE_22:
+    !tmp_51
+    jmp L_MERGE_23
+
+L_MERGE_23:
+    !contains_beta
+    !inserted_beta
+    !inserted_alpha
+    EXPAND BTREE_SET_FREE set
+    !contains_gamma
+    return len
+
+@test "hash set smoke"():
+L_TEST_ENTRY_24:
+    tmp_54 = call @sla__hash_set_smoke()
+    got = tmp_54
+    tmp_55 = 2
+    tmp_56 = ne got, tmp_55
+    !tmp_55
+    br tmp_56 -> L_THEN_25, L_ELSE_26
+
+L_THEN_25:
+    !tmp_56
+    panic(301)
+
+L_ELSE_26:
+    !tmp_56
+    jmp L_MERGE_27
+
+L_MERGE_27:
+    !got
+    return
+
+@test "btree set smoke"():
+L_TEST_ENTRY_28:
+    tmp_59 = call @sla__btree_set_smoke()
+    got = tmp_59
+    tmp_60 = 2
+    tmp_61 = ne got, tmp_60
+    !tmp_60
+    br tmp_61 -> L_THEN_29, L_ELSE_30
+
+L_THEN_29:
+    !tmp_61
+    panic(302)
+
+L_ELSE_30:
+    !tmp_61
+    jmp L_MERGE_31
+
+L_MERGE_31:
+    !got
+    return
+

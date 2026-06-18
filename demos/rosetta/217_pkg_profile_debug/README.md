@@ -1,9 +1,9 @@
 # 217 Pkg Profile Debug
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps debug profile tuning observable as debug info enabled with no optimization.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/217_pkg_profile_debug/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for debug info enabled with no optimization.
+- `main.sla`: Sla companion for debug info enabled with no optimization.
 
 Commands:
 

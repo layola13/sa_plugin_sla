@@ -1,5 +1,26 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-fn unwrap_value() -> i32 { let unwrapped_value = 5; return unwrapped_value; }
-fn main() -> i32 { let result = unwrap_value(); println("{}", result); return result; }
-@test "rosetta 177 177_unwrap_unwrap_err"() { let got = unwrap_value(); if got != 5 { panic(177); }; }
+@import "sa_std/core/option.sa"
+@import "sa_std/core/result.sa"
+
+fn unwrap_observable_sum() -> i32 {
+    let value = Some(5).unwrap();
+    let err = match Err(7) {
+        Err(inner) => { inner },
+        Ok(_) => { panic(177) },
+    };
+    return value + err;
+}
+
+fn main() -> i32 {
+    let result = unwrap_observable_sum();
+    println("{}", result);
+    return result;
+}
+
+@test "rosetta 177 177_unwrap_unwrap_err"() {
+    let got = unwrap_observable_sum();
+    if got != 12 {
+        panic(177);
+    };
+}

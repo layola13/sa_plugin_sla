@@ -1,63 +1,89 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_chunk_count = vtable { call = @sla__chunk_count }
+@const SLA_FNPTR_VT_chunk_layout = vtable { call = @sla__chunk_layout }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__chunk_count(bytes: i32, chunk_size: i32) -> i32:
+@sla__chunk_layout(blob: ptr) -> i32:
 L_ENTRY:
-    tmp_0 = add bytes, chunk_size
-    tmp_1 = 1
-    tmp_2 = sub tmp_0, tmp_1
+    tmp_0 = load blob+0 as i32
+    tmp_1 = load blob+4 as i32
+    tmp_2 = add tmp_0, tmp_1
     !tmp_0
     !tmp_1
-    tmp_3 = div tmp_2, chunk_size
+    tmp_3 = 1
+    tmp_4 = sub tmp_2, tmp_3
     !tmp_2
-    !bytes
-    !chunk_size
-    return tmp_3
+    !tmp_3
+    tmp_5 = load blob+4 as i32
+    tmp_6 = div tmp_4, tmp_5
+    !tmp_4
+    !tmp_5
+    chunks = tmp_6
+    tmp_7 = load blob+0 as i32
+    tmp_8 = load blob+4 as i32
+    tmp_9 = rem tmp_7, tmp_8
+    !tmp_7
+    !tmp_8
+    tail = tmp_9
+    tmp_10 = 10
+    tmp_11 = mul chunks, tmp_10
+    !tmp_10
+    tmp_12 = add tmp_11, tail
+    !tmp_11
+    !blob
+    return tmp_12
 
 @main() -> i32:
 L_ENTRY:
-    tmp_4 = 10
-    tmp_5 = 4
-    tmp_6 = call @sla__chunk_count(tmp_4, tmp_5)
-    !tmp_4
-    !tmp_5
-    result = tmp_6
-    tmp_7 = call @sa_fmt_u64(result, 10)
-    tmp_8 = call @sa_fmt_buffer_data(tmp_7)
-    tmp_9 = call @sa_fmt_buffer_len(tmp_7)
-    tmp_10 = tmp_8
-    call @sa_print_bytes(&tmp_10, tmp_9)
-    call @sa_fmt_buffer_free(^tmp_7)
-    !tmp_10
-    !tmp_9
+    tmp_13 = alloc 8
+    tmp_14 = 10
+    store tmp_13+0, tmp_14 as i32
+    tmp_15 = 4
+    store tmp_13+4, tmp_15 as i32
+    tmp_16 = call @sla__chunk_layout(tmp_13)
+    !tmp_13
+    result = tmp_16
+    tmp_17 = call @sa_fmt_u64(result, 10)
+    tmp_18 = call @sa_fmt_buffer_data(tmp_17)
+    tmp_19 = call @sa_fmt_buffer_len(tmp_17)
+    tmp_20 = tmp_18
+    call @sa_print_bytes(&tmp_20, tmp_19)
+    call @sa_fmt_buffer_free(^tmp_17)
+    !tmp_20
+    !tmp_19
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 083 83_blob_chunk"():
 L_TEST_ENTRY_0:
-    tmp_11 = 10
-    tmp_12 = 4
-    tmp_13 = call @sla__chunk_count(tmp_11, tmp_12)
-    !tmp_11
-    !tmp_12
-    got = tmp_13
-    tmp_14 = 3
-    tmp_15 = ne got, tmp_14
-    !tmp_14
-    br tmp_15 -> L_THEN_1, L_ELSE_2
+    tmp_21 = alloc 8
+    tmp_22 = 10
+    store tmp_21+0, tmp_22 as i32
+    tmp_23 = 4
+    store tmp_21+4, tmp_23 as i32
+    tmp_24 = call @sla__chunk_layout(tmp_21)
+    !tmp_21
+    got = tmp_24
+    tmp_25 = 32
+    tmp_26 = ne got, tmp_25
+    !tmp_25
+    br tmp_26 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_15
+    !tmp_26
     panic(83)
 
 L_ELSE_2:
-    !tmp_15
+    !tmp_26
     jmp L_MERGE_3
 
 L_MERGE_3:

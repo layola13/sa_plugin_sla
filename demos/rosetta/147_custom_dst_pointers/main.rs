@@ -1,9 +1,8 @@
-struct Blob {
-    len: usize,
-    data: [u8],
+fn custom_dst_pointer_bytes_len_surrogate() -> usize {
+    let bytes: &[u8] = b"abc";
+    bytes.len()
 }
 
 fn main() {
-    let bytes: &[u8] = b"abc";
-    println!("{}", bytes.len());
+    println!("{}", custom_dst_pointer_bytes_len_surrogate());
 }

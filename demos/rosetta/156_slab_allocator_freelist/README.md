@@ -1,9 +1,9 @@
 # 156 Slab Allocator Freelist
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the current local slab-allocator-freelist slot shape.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/156_slab_allocator_freelist/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the current local observable `node1 + node2`.
+- `main.sla`: Sla companion for the same current local observable.
 
 Commands:
 

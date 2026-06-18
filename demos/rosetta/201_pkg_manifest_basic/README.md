@@ -1,9 +1,9 @@
 # 201 Pkg Manifest Basic
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the package manifest surface observable as three required fields: name, version, and entry point.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/201_pkg_manifest_basic/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the required manifest-field shape.
+- `main.sla`: Sla companion for the required manifest-field shape.
 
 Commands:
 

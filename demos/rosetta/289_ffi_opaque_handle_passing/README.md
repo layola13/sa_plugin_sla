@@ -1,9 +1,9 @@
 # 289 Ffi Opaque Handle Passing
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps opaque foreign-handle passing observable as one round-trip transfer.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/289_ffi_opaque_handle_passing/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one opaque handle round-trip transfer.
+- `main.sla`: Sla companion for one round-trip transfer.
 
 Commands:
 

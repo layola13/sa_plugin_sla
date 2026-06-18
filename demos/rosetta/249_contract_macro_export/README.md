@@ -1,9 +1,9 @@
 # 249 Contract Macro Export
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps contract macro export observable as one macro surfaced to downstream callers.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/249_contract_macro_export/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one macro exported to downstream callers.
+- `main.sla`: Sla companion for one macro exported to downstream callers.
 
 Commands:
 

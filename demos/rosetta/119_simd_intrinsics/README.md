@@ -1,9 +1,9 @@
 # 119 Simd Intrinsics
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current SIMD surrogate honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/119_simd_intrinsics/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: local Rust surrogate that sums four lanes across cfg branches without using real SIMD intrinsics.
+- `main.sla`: matching Sla surrogate for the same lane-sum observable.
 
 Commands:
 

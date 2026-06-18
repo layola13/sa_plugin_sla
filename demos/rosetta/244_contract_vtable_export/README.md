@@ -1,9 +1,9 @@
 # 244 Contract Vtable Export
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps trait-style contract export observable as two vtable slots: `init` and `run`.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/244_contract_vtable_export/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the `init` and `run` vtable slots.
+- `main.sla`: Sla companion for the `init` and `run` vtable slots.
 
 Commands:
 

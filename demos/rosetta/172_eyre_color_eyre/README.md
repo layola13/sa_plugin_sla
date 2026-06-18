@@ -1,9 +1,9 @@
 # 172 Eyre Color Eyre
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current `eyre` / `color-eyre` gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/172_eyre_color_eyre/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: local Rust surrogate that materializes a context string and measures its length.
+- `main.sla`: matching Sla surrogate for the same context-string observable.
 
 Commands:
 

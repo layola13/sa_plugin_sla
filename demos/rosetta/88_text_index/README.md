@@ -1,9 +1,9 @@
 # 088 Text Index
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot models a text index lookup that counts token hits across a small corpus.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/88_text_index/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the index lookup.
+- `main.sla`: Sla companion for the index lookup.
 
 Commands:
 

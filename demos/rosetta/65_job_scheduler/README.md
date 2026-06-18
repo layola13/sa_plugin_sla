@@ -1,14 +1,6 @@
 # 065 Job Scheduler
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the job-scheduler readiness topic for the catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/65_job_scheduler/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/65_job_scheduler/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/65_job_scheduler/main.sla --out /tmp/65_job_scheduler.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/65_job_scheduler/main.sla
-```
+- `main.rs`: Rust reference for the ready-job cost accumulation semantics used by this slot.
+- `main.sla`: Sla companion for the ready-job cost accumulation semantics used by this slot.

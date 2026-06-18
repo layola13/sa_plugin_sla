@@ -1,9 +1,11 @@
 # 194 Cfg Conditional Compilation
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps conditional-compilation shape observable as a selected target-architecture string length surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/194_cfg_conditional_compilation/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the real `#[cfg(...)]` target-arch branch selection.
+- `main.sla`: Sla surrogate for the selected target-architecture string observable.
+
+Because the Sla side does not perform real conditional compilation, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

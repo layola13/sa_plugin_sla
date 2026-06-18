@@ -1,138 +1,365 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/option.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_eval_guard = vtable { call = @sla__eval_guard }
+@import "sa_std/core/option.sa"
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__eval_guard(opt: ptr) -> i32:
-L_ENTRY:
-    tmp_0 = 0
-    miss_value = tmp_0
-    tmp_1 = 0
-    tmp_2 = 1
-    tmp_3 = sub tmp_1, tmp_2
-    !tmp_1
-    !tmp_2
-    none_value = tmp_3
-    tmp_4 = alloc 4
-    jmp L_MATCH_CHECK_0_2
-
-L_MATCH_CHECK_0_2:
-    tmp_5 = load opt+0 as i64
-    tmp_6 = 1
-    tmp_7 = eq tmp_5, tmp_6
-    !tmp_5
-    !tmp_6
-    br tmp_7 -> L_MATCH_CASE_0_2, L_MATCH_CHECK_1_2
-
-L_MATCH_CASE_0_2:
-    !tmp_7
-    value = load opt+8 as i32
-    tmp_8 = 3
-    tmp_9 = sgt value, tmp_8
-    !tmp_8
-    tmp_10 = alloc 4
-    br tmp_9 -> L_THEN_3, L_ELSE_4
-
-L_THEN_3:
-    !tmp_9
-    tmp_11 = add value, 0
-    store tmp_10+0, tmp_11 as i32
-    !tmp_11
-    jmp L_MERGE_5
-
-L_ELSE_4:
-    !tmp_9
-    tmp_12 = add miss_value, 0
-    store tmp_10+0, tmp_12 as i32
-    !tmp_12
-    jmp L_MERGE_5
-
-L_MERGE_5:
-    tmp_13 = load tmp_10+0 as i32
-    !tmp_10
-    store tmp_4+0, tmp_13 as i32
-    !tmp_13
-    !value
-    jmp L_MATCH_MERGE_0
-
-L_MATCH_CHECK_1_2:
-    !tmp_7
-    tmp_14 = load opt+0 as i64
-    tmp_15 = 0
-    tmp_16 = eq tmp_14, tmp_15
-    !tmp_14
-    !tmp_15
-    br tmp_16 -> L_MATCH_CASE_1_2, L_MATCH_NO_MATCH_1
-
-L_MATCH_CASE_1_2:
-    !tmp_16
-    tmp_17 = add none_value, 0
-    store tmp_4+0, tmp_17 as i32
-    !tmp_17
-    jmp L_MATCH_MERGE_0
-
-L_MATCH_NO_MATCH_1:
-    !tmp_16
-    panic(1)
-
-L_MATCH_MERGE_0:
-    tmp_18 = load tmp_4+0 as i32
-    !tmp_4
-    result = tmp_18
-    !none_value
-    !miss_value
-    !opt
-    return result
-
 @main() -> i32:
 L_ENTRY:
-    value = alloc 12
-    store value+0, 1 as i64
-    tmp_19 = 5
-    store value+8, tmp_19 as i32
-    tmp_20 = call @sla__eval_guard(value)
-    result = tmp_20
-    tmp_21 = call @sa_fmt_u64(result, 10)
-    tmp_22 = call @sa_fmt_buffer_data(tmp_21)
-    tmp_23 = call @sa_fmt_buffer_len(tmp_21)
-    tmp_24 = tmp_22
-    call @sa_print_bytes(&tmp_24, tmp_23)
-    call @sa_fmt_buffer_free(^tmp_21)
-    !tmp_24
-    !tmp_23
+    tmp_0 = 5
+    EXPAND OPTION_NEW_SOME tmp_1, tmp_0
+    !tmp_0
+    value = tmp_1
+    tmp_2 = alloc 4
+    jmp L_OPTION_MATCH_CHECK_0_2
+
+L_OPTION_MATCH_CHECK_0_2:
+    EXPAND OPTION_IS_SOME tmp_3, value
+    br tmp_3 -> L_OPTION_MATCH_CASE_0_2, L_OPTION_MATCH_CHECK_1_2
+
+L_OPTION_MATCH_CASE_0_2:
+    EXPAND OPTION_GET x, value
+    tmp_4 = 3
+    tmp_5 = sgt x, tmp_4
+    !tmp_4
+    br tmp_5 -> L_OPTION_MATCH_GUARD_BODY_3, L_OPTION_MATCH_GUARD_FAIL_4
+
+L_OPTION_MATCH_GUARD_FAIL_4:
+    !tmp_5
+    !x
+    jmp L_OPTION_MATCH_CHECK_1_2
+
+L_OPTION_MATCH_GUARD_BODY_3:
+    !tmp_5
+    !tmp_3
+    tmp_6 = add x, 0
+    store tmp_2+0, tmp_6 as i32
+    !tmp_6
+    !x
+    jmp L_OPTION_MATCH_MERGE_0
+
+L_OPTION_MATCH_CHECK_1_2:
+    !tmp_3
+    EXPAND OPTION_IS_SOME tmp_7, value
+    br tmp_7 -> L_OPTION_MATCH_CASE_1_2, L_OPTION_MATCH_CHECK_2_2
+
+L_OPTION_MATCH_CASE_1_2:
+    EXPAND OPTION_GET _, value
+    !tmp_7
+    tmp_8 = 0
+    store tmp_2+0, tmp_8 as i32
+    !tmp_8
+    !_
+    jmp L_OPTION_MATCH_MERGE_0
+
+L_OPTION_MATCH_CHECK_2_2:
+    !tmp_7
+    EXPAND OPTION_IS_SOME tmp_9, value
+    br tmp_9 -> L_OPTION_MATCH_NO_MATCH_1, L_OPTION_MATCH_CASE_2_2
+
+L_OPTION_MATCH_CASE_2_2:
+    !tmp_9
+    tmp_10 = 0
+    tmp_11 = 1
+    tmp_12 = sub tmp_10, tmp_11
+    !tmp_10
+    !tmp_11
+    store tmp_2+0, tmp_12 as i32
+    !tmp_12
+    jmp L_OPTION_MATCH_MERGE_0
+
+L_OPTION_MATCH_NO_MATCH_1:
+    !tmp_9
+    panic(1)
+
+L_OPTION_MATCH_MERGE_0:
+    tmp_13 = load tmp_2+0 as i32
+    !tmp_2
+    result = tmp_13
+    tmp_14 = call @sa_fmt_u64(result, 10)
+    tmp_15 = call @sa_fmt_buffer_data(tmp_14)
+    tmp_16 = call @sa_fmt_buffer_len(tmp_14)
+    tmp_17 = tmp_15
+    call @sa_print_bytes(&tmp_17, tmp_16)
+    call @sa_fmt_buffer_free(^tmp_14)
+    !tmp_17
+    !tmp_16
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_25 = 0
+    tmp_18 = 0
     !value
     !result
-    return tmp_25
+    return tmp_18
 
 @test "rosetta 030 manual guard branch"():
-L_TEST_ENTRY_6:
-    value = alloc 12
-    store value+0, 1 as i64
-    tmp_26 = 5
-    store value+8, tmp_26 as i32
-    tmp_27 = call @sla__eval_guard(value)
-    result = tmp_27
-    tmp_28 = 5
-    tmp_29 = ne result, tmp_28
-    !tmp_28
-    br tmp_29 -> L_THEN_7, L_ELSE_8
+L_TEST_ENTRY_5:
+    tmp_19 = 5
+    EXPAND OPTION_NEW_SOME tmp_20, tmp_19
+    !tmp_19
+    value = tmp_20
+    tmp_21 = alloc 4
+    jmp L_OPTION_MATCH_CHECK_0_8
 
-L_THEN_7:
+L_OPTION_MATCH_CHECK_0_8:
+    EXPAND OPTION_IS_SOME tmp_22, value
+    br tmp_22 -> L_OPTION_MATCH_CASE_0_8, L_OPTION_MATCH_CHECK_1_8
+
+L_OPTION_MATCH_CASE_0_8:
+    EXPAND OPTION_GET x, value
+    tmp_23 = 3
+    tmp_24 = sgt x, tmp_23
+    !tmp_23
+    br tmp_24 -> L_OPTION_MATCH_GUARD_BODY_9, L_OPTION_MATCH_GUARD_FAIL_10
+
+L_OPTION_MATCH_GUARD_FAIL_10:
+    !tmp_24
+    !x
+    jmp L_OPTION_MATCH_CHECK_1_8
+
+L_OPTION_MATCH_GUARD_BODY_9:
+    !tmp_24
+    !tmp_22
+    tmp_25 = add x, 0
+    store tmp_21+0, tmp_25 as i32
+    !tmp_25
+    !x
+    jmp L_OPTION_MATCH_MERGE_6
+
+L_OPTION_MATCH_CHECK_1_8:
+    !tmp_22
+    EXPAND OPTION_IS_SOME tmp_26, value
+    br tmp_26 -> L_OPTION_MATCH_CASE_1_8, L_OPTION_MATCH_CHECK_2_8
+
+L_OPTION_MATCH_CASE_1_8:
+    EXPAND OPTION_GET _, value
+    !tmp_26
+    tmp_27 = 0
+    store tmp_21+0, tmp_27 as i32
+    !tmp_27
+    !_
+    jmp L_OPTION_MATCH_MERGE_6
+
+L_OPTION_MATCH_CHECK_2_8:
+    !tmp_26
+    EXPAND OPTION_IS_SOME tmp_28, value
+    br tmp_28 -> L_OPTION_MATCH_NO_MATCH_7, L_OPTION_MATCH_CASE_2_8
+
+L_OPTION_MATCH_CASE_2_8:
+    !tmp_28
+    tmp_29 = 0
+    tmp_30 = 1
+    tmp_31 = sub tmp_29, tmp_30
     !tmp_29
+    !tmp_30
+    store tmp_21+0, tmp_31 as i32
+    !tmp_31
+    jmp L_OPTION_MATCH_MERGE_6
+
+L_OPTION_MATCH_NO_MATCH_7:
+    !tmp_28
+    panic(1)
+
+L_OPTION_MATCH_MERGE_6:
+    tmp_32 = load tmp_21+0 as i32
+    !tmp_21
+    result = tmp_32
+    tmp_33 = 5
+    tmp_34 = ne result, tmp_33
+    !tmp_33
+    br tmp_34 -> L_THEN_11, L_ELSE_12
+
+L_THEN_11:
+    !tmp_34
     panic(30)
 
-L_ELSE_8:
-    !tmp_29
-    jmp L_MERGE_9
+L_ELSE_12:
+    !tmp_34
+    jmp L_MERGE_13
 
-L_MERGE_9:
+L_MERGE_13:
+    tmp_37 = 2
+    EXPAND OPTION_NEW_SOME tmp_38, tmp_37
+    !tmp_37
+    low_value = tmp_38
+    tmp_39 = alloc 4
+    jmp L_OPTION_MATCH_CHECK_0_16
+
+L_OPTION_MATCH_CHECK_0_16:
+    EXPAND OPTION_IS_SOME tmp_40, low_value
+    br tmp_40 -> L_OPTION_MATCH_CASE_0_16, L_OPTION_MATCH_CHECK_1_16
+
+L_OPTION_MATCH_CASE_0_16:
+    EXPAND OPTION_GET x, low_value
+    tmp_41 = 3
+    tmp_42 = sgt x, tmp_41
+    !tmp_41
+    br tmp_42 -> L_OPTION_MATCH_GUARD_BODY_17, L_OPTION_MATCH_GUARD_FAIL_18
+
+L_OPTION_MATCH_GUARD_FAIL_18:
+    !tmp_42
+    !x
+    jmp L_OPTION_MATCH_CHECK_1_16
+
+L_OPTION_MATCH_GUARD_BODY_17:
+    !tmp_42
+    !tmp_40
+    tmp_43 = add x, 0
+    store tmp_39+0, tmp_43 as i32
+    !tmp_43
+    !x
+    jmp L_OPTION_MATCH_MERGE_14
+
+L_OPTION_MATCH_CHECK_1_16:
+    !tmp_40
+    EXPAND OPTION_IS_SOME tmp_44, low_value
+    br tmp_44 -> L_OPTION_MATCH_CASE_1_16, L_OPTION_MATCH_CHECK_2_16
+
+L_OPTION_MATCH_CASE_1_16:
+    EXPAND OPTION_GET _, low_value
+    !tmp_44
+    tmp_45 = 0
+    store tmp_39+0, tmp_45 as i32
+    !tmp_45
+    !_
+    jmp L_OPTION_MATCH_MERGE_14
+
+L_OPTION_MATCH_CHECK_2_16:
+    !tmp_44
+    EXPAND OPTION_IS_SOME tmp_46, low_value
+    br tmp_46 -> L_OPTION_MATCH_NO_MATCH_15, L_OPTION_MATCH_CASE_2_16
+
+L_OPTION_MATCH_CASE_2_16:
+    !tmp_46
+    tmp_47 = 0
+    tmp_48 = 1
+    tmp_49 = sub tmp_47, tmp_48
+    !tmp_47
+    !tmp_48
+    store tmp_39+0, tmp_49 as i32
+    !tmp_49
+    jmp L_OPTION_MATCH_MERGE_14
+
+L_OPTION_MATCH_NO_MATCH_15:
+    !tmp_46
+    panic(1)
+
+L_OPTION_MATCH_MERGE_14:
+    tmp_50 = load tmp_39+0 as i32
+    !tmp_39
+    low_result = tmp_50
+    tmp_51 = 0
+    tmp_52 = ne low_result, tmp_51
+    !tmp_51
+    br tmp_52 -> L_THEN_19, L_ELSE_20
+
+L_THEN_19:
+    !tmp_52
+    panic(31)
+
+L_ELSE_20:
+    !tmp_52
+    jmp L_MERGE_21
+
+L_MERGE_21:
+    EXPAND OPTION_NEW_NONE tmp_55
+    none_value = tmp_55
+    tmp_56 = alloc 4
+    jmp L_OPTION_MATCH_CHECK_0_24
+
+L_OPTION_MATCH_CHECK_0_24:
+    EXPAND OPTION_IS_SOME tmp_57, none_value
+    br tmp_57 -> L_OPTION_MATCH_CASE_0_24, L_OPTION_MATCH_CHECK_1_24
+
+L_OPTION_MATCH_CASE_0_24:
+    EXPAND OPTION_GET x, none_value
+    tmp_58 = 3
+    tmp_59 = sgt x, tmp_58
+    !tmp_58
+    br tmp_59 -> L_OPTION_MATCH_GUARD_BODY_25, L_OPTION_MATCH_GUARD_FAIL_26
+
+L_OPTION_MATCH_GUARD_FAIL_26:
+    !tmp_59
+    !x
+    jmp L_OPTION_MATCH_CHECK_1_24
+
+L_OPTION_MATCH_GUARD_BODY_25:
+    !tmp_59
+    !tmp_57
+    tmp_60 = add x, 0
+    store tmp_56+0, tmp_60 as i32
+    !tmp_60
+    !x
+    jmp L_OPTION_MATCH_MERGE_22
+
+L_OPTION_MATCH_CHECK_1_24:
+    !tmp_57
+    EXPAND OPTION_IS_SOME tmp_61, none_value
+    br tmp_61 -> L_OPTION_MATCH_CASE_1_24, L_OPTION_MATCH_CHECK_2_24
+
+L_OPTION_MATCH_CASE_1_24:
+    EXPAND OPTION_GET _, none_value
+    !tmp_61
+    tmp_62 = 0
+    store tmp_56+0, tmp_62 as i32
+    !tmp_62
+    !_
+    jmp L_OPTION_MATCH_MERGE_22
+
+L_OPTION_MATCH_CHECK_2_24:
+    !tmp_61
+    EXPAND OPTION_IS_SOME tmp_63, none_value
+    br tmp_63 -> L_OPTION_MATCH_NO_MATCH_23, L_OPTION_MATCH_CASE_2_24
+
+L_OPTION_MATCH_CASE_2_24:
+    !tmp_63
+    tmp_64 = 0
+    tmp_65 = 1
+    tmp_66 = sub tmp_64, tmp_65
+    !tmp_64
+    !tmp_65
+    store tmp_56+0, tmp_66 as i32
+    !tmp_66
+    jmp L_OPTION_MATCH_MERGE_22
+
+L_OPTION_MATCH_NO_MATCH_23:
+    !tmp_63
+    panic(1)
+
+L_OPTION_MATCH_MERGE_22:
+    tmp_67 = load tmp_56+0 as i32
+    !tmp_56
+    none_result = tmp_67
+    tmp_68 = 0
+    tmp_69 = 1
+    tmp_70 = sub tmp_68, tmp_69
+    !tmp_68
+    !tmp_69
+    tmp_71 = ne none_result, tmp_70
+    !tmp_70
+    br tmp_71 -> L_THEN_27, L_ELSE_28
+
+L_THEN_27:
+    !tmp_71
+    panic(32)
+
+L_ELSE_28:
+    !tmp_71
+    jmp L_MERGE_29
+
+L_MERGE_29:
     !value
+    !low_result
+    !none_value
     !result
+    !none_result
+    !low_value
     return
 

@@ -1,9 +1,9 @@
 # 232 Mod Conditional Import
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps cfg-driven module selection observable as one active platform branch.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/232_mod_conditional_import/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for choosing one active platform branch.
+- `main.sla`: Sla companion for choosing one active platform branch.
 
 Commands:
 

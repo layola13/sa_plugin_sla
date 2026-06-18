@@ -1,9 +1,9 @@
 # 235 Mod Transitive Dependency
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps transitive module reachability observable as one leaf export propagated through an intermediate module.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/235_mod_transitive_dependency/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a leaf export propagated through an intermediate module.
+- `main.sla`: Sla companion for a leaf export propagated through an intermediate module.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 113 Union Ffi Types
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current union-FFI surrogate honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/113_union_ffi_types/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a `#[repr(C)]` union payload read.
+- `main.sla`: Sla surrogate that preserves the same union payload read observable without an explicit `repr(C)` layout contract.
 
 Commands:
 

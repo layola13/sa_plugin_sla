@@ -1,20 +1,27 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_process_unit = vtable { call = @sla__process_unit }
+@const SLA_FNPTR_VT_process = vtable { call = @sla__process }
 @const SLA_FNPTR_VT_zero_sized_process_result = vtable { call = @sla__zero_sized_process_result }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__process_unit() -> i32:
+@sla__process(_u: ptr) -> i32:
 L_ENTRY:
     tmp_0 = 42
+    !_u
     return tmp_0
 
 @sla__zero_sized_process_result() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__process_unit()
+    u = alloc 1
+    tmp_1 = call @sla__process(u)
     return tmp_1
 
 @main() -> i32:

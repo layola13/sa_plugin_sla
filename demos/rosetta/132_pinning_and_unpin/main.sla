@@ -3,20 +3,20 @@
 @import "sa_std/pin.sa"
 
 fn pinning_stability_score() -> i32 {
-    let pinned_value = pin_value(8);
-    let address_stable = pin_address_is_stable(1, 1);
-    return pinned_value + address_stable;
-}
+    let value = 8;
+    let pinned = stack_alloc();
+    PIN_NEW(pinned, value);
 
-fn pin_value(value: i32) -> i32 {
-    return value;
-}
+    let pinned_ref = stack_alloc();
+    PIN_AS_REF(pinned_ref, pinned);
 
-fn pin_address_is_stable(before: i32, after: i32) -> i32 {
-    if before == after {
-        return 1;
+    let before = PIN_GET_REF(pinned);
+    let after = PIN_GET_REF(pinned_ref);
+    let stable = before == after;
+    if stable == true {
+        return value + 1;
     } else {
-        return 0;
+        return value;
     };
 }
 

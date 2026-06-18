@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -34,12 +39,10 @@ L_MATCH_CHECK_1_2:
     br tmp_6 -> L_MATCH_CASE_1_2, L_MATCH_NO_MATCH_1
 
 L_MATCH_CASE_1_2:
-    !tmp_6
     x = load msg+8 as i32
     y = load msg+12 as i32
+    !tmp_6
     tmp_7 = add x, y
-    !x
-    !y
     !msg
     return tmp_7
 

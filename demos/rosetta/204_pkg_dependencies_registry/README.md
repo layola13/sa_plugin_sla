@@ -1,9 +1,9 @@
 # 204 Pkg Dependencies Registry
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps registry dependency selection observable as one resolved package from the shared registry.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/204_pkg_dependencies_registry/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one resolved registry package.
+- `main.sla`: Sla companion for one resolved registry package.
 
 Commands:
 

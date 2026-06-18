@@ -1,54 +1,56 @@
-@rosetta_037_value() -> i64:
-L_ENTRY:
-    tmp_0 = 6
-    tmp_1 = 3
-    tmp_2 = mul tmp_0, tmp_1
-    tmp_3 = 37
-    tmp_4 = add tmp_2, tmp_3
-    base = tmp_4
-    tmp_5 = 56
-    threshold = tmp_5
-    tmp_6 = sgt base, threshold
-    br tmp_6 -> L_THEN_0, L_ELSE_1
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
 
-L_THEN_0:
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@main() -> i32:
+L_ENTRY:
+    tmp_0 = alloc 4
+    tmp_1 = 42
+    store tmp_0+0, tmp_1 as u32
+    !tmp_1
+    user = tmp_0
+    tmp_2 = load user+0 as u32
+    tmp_3 = call @sa_fmt_u64(tmp_2, 10)
+    tmp_4 = call @sa_fmt_buffer_data(tmp_3)
+    tmp_5 = call @sa_fmt_buffer_len(tmp_3)
+    tmp_6 = tmp_4
+    call @sa_print_bytes(&tmp_6, tmp_5)
+    call @sa_fmt_buffer_free(^tmp_3)
     !tmp_6
-    tmp_7 = sub base, threshold
-    !threshold
-    !base
+    !tmp_5
+    !tmp_2
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_7 = 0
+    !user
     return tmp_7
 
-L_ELSE_1:
-    !tmp_6
-    tmp_8 = sub threshold, base
-    !threshold
-    !base
-    return tmp_8
+@test "rosetta 037 newtype"():
+L_TEST_ENTRY_0:
+    tmp_8 = alloc 4
+    tmp_9 = 42
+    store tmp_8+0, tmp_9 as u32
+    !tmp_9
+    user = tmp_8
+    tmp_10 = load user+0 as u32
+    tmp_11 = 42
+    tmp_12 = ne tmp_10, tmp_11
+    !tmp_10
+    !tmp_11
+    br tmp_12 -> L_THEN_1, L_ELSE_2
 
-
-@main() -> i64:
-L_ENTRY:
-    tmp_10 = call @rosetta_037_value()
-    result = tmp_10
-    return result
-
-@test "rosetta 037 37_newtype"():
-L_TEST_ENTRY_3:
-    tmp_11 = call @rosetta_037_value()
-    got = tmp_11
-    tmp_12 = 1
-    tmp_13 = ne got, tmp_12
-    br tmp_13 -> L_THEN_4, L_ELSE_5
-
-L_THEN_4:
-    !tmp_13
+L_THEN_1:
+    !tmp_12
     panic(37)
 
-L_ELSE_5:
-    !tmp_13
-    jmp L_MERGE_6
+L_ELSE_2:
+    !tmp_12
+    jmp L_MERGE_3
 
-L_MERGE_6:
-    !got
+L_MERGE_3:
+    !user
     return
 

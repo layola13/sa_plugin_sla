@@ -1,9 +1,9 @@
 # 091 Db Session
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot models a database session with connection and transaction state.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/91_db_session/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the commitability check.
+- `main.sla`: Sla companion for the commitability check.
 
 Commands:
 

@@ -1,14 +1,6 @@
 # 068 Parser Tokens
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current parser-token surrogate honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/68_parser_tokens/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/68_parser_tokens/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/68_parser_tokens/main.sla --out /tmp/68_parser_tokens.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/68_parser_tokens/main.sla
-```
+- `main.rs`: Rust reference for token classification with an unknown-token fallback based on `value.len()`.
+- `main.sla`: Sla surrogate that preserves the current local observable through explicit token cases and a fixed fallback.

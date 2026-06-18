@@ -1,9 +1,9 @@
 # 205 Pkg Cyclic Dependency Reject
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps cycle detection observable as a rejected package graph.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/205_pkg_cyclic_dependency_reject/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for cycle detection in the package graph.
+- `main.sla`: Sla companion for cycle detection in the package graph.
 
 Commands:
 

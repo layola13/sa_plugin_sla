@@ -1,9 +1,9 @@
 # 109 Atomic Fetch Add
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the atomic fetch-add catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/109_atomic_fetch_add/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for old-value and new-value observation around `fetch_add`.
+- `main.sla`: Sla companion for old-value and new-value observation around `fetch_add`.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 292 Eco Wasm Memory Export
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps exported Wasm linear memory observable as one published memory surface.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/292_eco_wasm_memory_export/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one published linear-memory surface.
+- `main.sla`: Sla companion for one published memory surface.
 
 Commands:
 

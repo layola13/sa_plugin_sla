@@ -1,9 +1,9 @@
 # 133 Select Macro Race
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current `select!` gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/133_select_macro_race/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference using a real biased `tokio::select!` over three async branches.
+- `main.sla`: Sla surrogate that preserves only the chosen-value observable through a sequential await plus helper path.
 
 Commands:
 

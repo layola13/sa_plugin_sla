@@ -1,5 +1,10 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -30,9 +35,6 @@ L_ENTRY:
     tmp_9 = add ready_read, ready_write
     tmp_10 = add tmp_9, blocked
     !tmp_9
-    !ready_read
-    !ready_write
-    !blocked
     return tmp_10
 
 @sla__event_ready(token: i32, ready: u8) -> i32:

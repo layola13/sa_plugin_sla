@@ -1,9 +1,9 @@
 # 228 Mod Iface Separation
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps interface and implementation separation observable as two distinct module layers.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/228_mod_iface_separation/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the interface and implementation module layers.
+- `main.sla`: Sla companion for the interface and implementation module layers.
 
 Commands:
 

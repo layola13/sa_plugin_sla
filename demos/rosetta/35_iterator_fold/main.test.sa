@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -36,135 +41,141 @@ L_ENTRY:
     tmp_11 = load tmp_10+0 as ptr
     tmp_12 = load tmp_8+0 as u64
     EXPAND STRING_LEN tmp_13, tmp_11
-    tmp_14 = add tmp_12, tmp_13
-    !tmp_13
-    store tmp_8+0, tmp_14 as u64
+    tmp_14 = tmp_13 as u64
+    tmp_15 = add tmp_12, tmp_14
+    !tmp_14
+    store tmp_8+0, tmp_15 as u64
     !tmp_9
     !tmp_10
     !tmp_11
     !tmp_12
-    !tmp_14
-    tmp_15 = 8
-    tmp_16 = ptr_add tmp_0, tmp_15
-    tmp_17 = load tmp_16+0 as ptr
-    tmp_18 = load tmp_8+0 as u64
-    EXPAND STRING_LEN tmp_19, tmp_17
-    tmp_20 = add tmp_18, tmp_19
-    !tmp_19
-    store tmp_8+0, tmp_20 as u64
     !tmp_15
+    tmp_16 = 8
+    tmp_17 = ptr_add tmp_0, tmp_16
+    tmp_18 = load tmp_17+0 as ptr
+    tmp_19 = load tmp_8+0 as u64
+    EXPAND STRING_LEN tmp_20, tmp_18
+    tmp_21 = tmp_20 as u64
+    tmp_22 = add tmp_19, tmp_21
+    !tmp_21
+    store tmp_8+0, tmp_22 as u64
     !tmp_16
     !tmp_17
     !tmp_18
-    !tmp_20
-    tmp_21 = 16
-    tmp_22 = ptr_add tmp_0, tmp_21
-    tmp_23 = load tmp_22+0 as ptr
-    tmp_24 = load tmp_8+0 as u64
-    EXPAND STRING_LEN tmp_25, tmp_23
-    tmp_26 = add tmp_24, tmp_25
-    !tmp_25
-    store tmp_8+0, tmp_26 as u64
-    !tmp_21
+    !tmp_19
     !tmp_22
+    tmp_23 = 16
+    tmp_24 = ptr_add tmp_0, tmp_23
+    tmp_25 = load tmp_24+0 as ptr
+    tmp_26 = load tmp_8+0 as u64
+    EXPAND STRING_LEN tmp_27, tmp_25
+    tmp_28 = tmp_27 as u64
+    tmp_29 = add tmp_26, tmp_28
+    !tmp_28
+    store tmp_8+0, tmp_29 as u64
     !tmp_23
     !tmp_24
+    !tmp_25
     !tmp_26
+    !tmp_29
     !tmp_0
-    tmp_27 = load tmp_8+0 as u64
-    total = tmp_27
-    tmp_28 = call @sa_fmt_u64(total, 10)
-    tmp_29 = call @sa_fmt_buffer_data(tmp_28)
-    tmp_30 = call @sa_fmt_buffer_len(tmp_28)
-    tmp_31 = tmp_29
-    call @sa_print_bytes(&tmp_31, tmp_30)
-    call @sa_fmt_buffer_free(^tmp_28)
-    !tmp_31
-    !tmp_30
+    tmp_30 = load tmp_8+0 as u64
+    total = tmp_30
+    tmp_31 = call @sa_fmt_u64(total, 10)
+    tmp_32 = call @sa_fmt_buffer_data(tmp_31)
+    tmp_33 = call @sa_fmt_buffer_len(tmp_31)
+    tmp_34 = tmp_32
+    call @sa_print_bytes(&tmp_34, tmp_33)
+    call @sa_fmt_buffer_free(^tmp_31)
+    !tmp_34
+    !tmp_33
     @const SLA_STR_3 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_3, 1)
-    tmp_32 = 0
+    tmp_35 = 0
     !total
-    return tmp_32
+    return tmp_35
 
 @test "rosetta 035 iterator fold"():
 L_TEST_ENTRY_0:
-    tmp_33 = alloc 24
+    tmp_36 = alloc 24
     @const SLA_STR_4 = utf8:"sa"
-    tmp_35 = 2
-    tmp_34 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_34, &SLA_STR_4, tmp_35
-    !tmp_35
-    store tmp_33+0, tmp_34 as ptr
+    tmp_38 = 2
+    tmp_37 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_37, &SLA_STR_4, tmp_38
+    !tmp_38
+    store tmp_36+0, tmp_37 as ptr
     @const SLA_STR_5 = utf8:"asm"
-    tmp_37 = 3
-    tmp_36 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_36, &SLA_STR_5, tmp_37
-    !tmp_37
-    store tmp_33+8, tmp_36 as ptr
-    @const SLA_STR_6 = utf8:"!!"
-    tmp_39 = 2
-    tmp_38 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_38, &SLA_STR_6, tmp_39
-    !tmp_39
-    store tmp_33+16, tmp_38 as ptr
-    tmp_40 = 0
-    tmp_41 = stack_alloc 8
-    store tmp_41+0, tmp_40 as u64
+    tmp_40 = 3
+    tmp_39 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_39, &SLA_STR_5, tmp_40
     !tmp_40
-    tmp_42 = 0
-    tmp_43 = ptr_add tmp_33, tmp_42
-    tmp_44 = load tmp_43+0 as ptr
-    tmp_45 = load tmp_41+0 as u64
-    EXPAND STRING_LEN tmp_46, tmp_44
-    tmp_47 = add tmp_45, tmp_46
-    !tmp_46
-    store tmp_41+0, tmp_47 as u64
+    store tmp_36+8, tmp_39 as ptr
+    @const SLA_STR_6 = utf8:"!!"
+    tmp_42 = 2
+    tmp_41 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_41, &SLA_STR_6, tmp_42
     !tmp_42
+    store tmp_36+16, tmp_41 as ptr
+    tmp_43 = 0
+    tmp_44 = stack_alloc 8
+    store tmp_44+0, tmp_43 as u64
     !tmp_43
-    !tmp_44
-    !tmp_45
-    !tmp_47
-    tmp_48 = 8
-    tmp_49 = ptr_add tmp_33, tmp_48
-    tmp_50 = load tmp_49+0 as ptr
-    tmp_51 = load tmp_41+0 as u64
-    EXPAND STRING_LEN tmp_52, tmp_50
-    tmp_53 = add tmp_51, tmp_52
-    !tmp_52
-    store tmp_41+0, tmp_53 as u64
-    !tmp_48
-    !tmp_49
+    tmp_45 = 0
+    tmp_46 = ptr_add tmp_36, tmp_45
+    tmp_47 = load tmp_46+0 as ptr
+    tmp_48 = load tmp_44+0 as u64
+    EXPAND STRING_LEN tmp_49, tmp_47
+    tmp_50 = tmp_49 as u64
+    tmp_51 = add tmp_48, tmp_50
     !tmp_50
+    store tmp_44+0, tmp_51 as u64
+    !tmp_45
+    !tmp_46
+    !tmp_47
+    !tmp_48
     !tmp_51
+    tmp_52 = 8
+    tmp_53 = ptr_add tmp_36, tmp_52
+    tmp_54 = load tmp_53+0 as ptr
+    tmp_55 = load tmp_44+0 as u64
+    EXPAND STRING_LEN tmp_56, tmp_54
+    tmp_57 = tmp_56 as u64
+    tmp_58 = add tmp_55, tmp_57
+    !tmp_57
+    store tmp_44+0, tmp_58 as u64
+    !tmp_52
     !tmp_53
-    tmp_54 = 16
-    tmp_55 = ptr_add tmp_33, tmp_54
-    tmp_56 = load tmp_55+0 as ptr
-    tmp_57 = load tmp_41+0 as u64
-    EXPAND STRING_LEN tmp_58, tmp_56
-    tmp_59 = add tmp_57, tmp_58
-    !tmp_58
-    store tmp_41+0, tmp_59 as u64
     !tmp_54
     !tmp_55
-    !tmp_56
-    !tmp_57
+    !tmp_58
+    tmp_59 = 16
+    tmp_60 = ptr_add tmp_36, tmp_59
+    tmp_61 = load tmp_60+0 as ptr
+    tmp_62 = load tmp_44+0 as u64
+    EXPAND STRING_LEN tmp_63, tmp_61
+    tmp_64 = tmp_63 as u64
+    tmp_65 = add tmp_62, tmp_64
+    !tmp_64
+    store tmp_44+0, tmp_65 as u64
     !tmp_59
-    !tmp_33
-    tmp_60 = load tmp_41+0 as u64
-    total = tmp_60
-    tmp_61 = 7
-    tmp_62 = ne total, tmp_61
+    !tmp_60
     !tmp_61
-    br tmp_62 -> L_THEN_1, L_ELSE_2
+    !tmp_62
+    !tmp_65
+    !tmp_36
+    tmp_66 = load tmp_44+0 as u64
+    total = tmp_66
+    tmp_67 = 7
+    tmp_68 = ne total, tmp_67
+    !tmp_67
+    br tmp_68 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_62
+    !tmp_68
     panic(35)
 
 L_ELSE_2:
-    !tmp_62
+    !tmp_68
     jmp L_MERGE_3
 
 L_MERGE_3:

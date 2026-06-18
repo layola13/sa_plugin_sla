@@ -1,9 +1,9 @@
 # 177 Unwrap Unwrap Err
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the `unwrap_err` gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/177_unwrap_unwrap_err/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference using both `unwrap()` and `unwrap_err()`.
+- `main.sla`: Sla companion that keeps the same final observable, but models the `unwrap_err()` half with an explicit `match Err(...)` surrogate.
 
 Commands:
 

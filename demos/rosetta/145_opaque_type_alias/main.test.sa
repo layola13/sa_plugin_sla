@@ -1,20 +1,26 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_item_make = vtable { call = @sla__item_make }
+@const VT_Item_Maker = vtable { make = @sla__Item_make }
 @const SLA_FNPTR_VT_opaque_alias_make_value = vtable { call = @sla__opaque_alias_make_value }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__item_make() -> i32:
+@sla__Item_make(&self: ptr) -> i32:
 L_ENTRY:
     tmp_0 = 5
     return tmp_0
 
 @sla__opaque_alias_make_value() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__item_make()
+    item = alloc 1
+    tmp_1 = call @sla__Item_make(&item)
     return tmp_1
 
 @main() -> i32:

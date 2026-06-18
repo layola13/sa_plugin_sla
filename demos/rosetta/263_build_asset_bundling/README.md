@@ -1,9 +1,9 @@
 # 263 Build Asset Bundling
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps build-time asset bundling observable as manifest, shader, and config artifacts packaged together.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/263_build_asset_bundling/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for bundling manifest, shader, and config artifacts.
+- `main.sla`: Sla companion for packaging manifest, shader, and config artifacts.
 
 Commands:
 

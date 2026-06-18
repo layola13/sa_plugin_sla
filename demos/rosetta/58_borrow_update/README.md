@@ -1,14 +1,6 @@
 # 058 Borrow Update
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current borrow-update surrogate honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/58_borrow_update/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/58_borrow_update/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/58_borrow_update/main.sla --out /tmp/58_borrow_update.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/58_borrow_update/main.sla
-```
+- `main.rs`: Rust reference using a real `&mut i32` borrow passed into `bump(...)`.
+- `main.sla`: Sla surrogate that preserves the same final value observable through `Cell<i32>` interior mutation.

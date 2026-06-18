@@ -10,6 +10,10 @@ fn qualifies(row: Row) -> bool {
 
 fn main() {
     let rows = [Row { active: true, age: 21 }, Row { active: false, age: 40 }, Row { active: true, age: 17 }];
-    let count = rows.into_iter().filter(|row| qualifies(*row)).count();
-    println!("{count}");
+    let score: i32 = rows
+        .into_iter()
+        .filter(|row| qualifies(*row))
+        .map(|row| row.age)
+        .sum();
+    println!("{score}");
 }

@@ -1,14 +1,6 @@
 # 014 Slice Window
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the slice-window topic for the catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/14_slice_window/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
-
-Commands:
-
-```bash
-SA_PLUGIN_DEV=1 sa sla check demos/rosetta/14_slice_window/main.sla
-SA_PLUGIN_DEV=1 sa sla build demos/rosetta/14_slice_window/main.sla --out /tmp/14_slice_window.sa
-SA_PLUGIN_DEV=1 sa sla test demos/rosetta/14_slice_window/main.sla
-```
+- `main.rs`: Rust reference for the windowed slice sum semantics used by this slot.
+- `main.sla`: Sla companion for the windowed slice sum semantics used by this slot.

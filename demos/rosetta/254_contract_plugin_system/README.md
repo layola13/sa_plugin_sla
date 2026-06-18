@@ -1,9 +1,9 @@
 # 254 Contract Plugin System
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps plugin-contract discovery observable as two enabled plugins on the active surface.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/254_contract_plugin_system/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for two enabled plugins on the active surface.
+- `main.sla`: Sla companion for two enabled plugins on the active surface.
 
 Commands:
 

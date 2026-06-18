@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -24,13 +29,12 @@ L_ENTRY:
 L_THEN_0:
     !tmp_4
     tmp_5 = 0
-    !line
     return tmp_5
 
 L_ELSE_1:
     !tmp_4
-    @const SLA_STR_1 = utf8:"help"
-    tmp_7 = 4
+    @const SLA_STR_1 = utf8:":mode"
+    tmp_7 = 5
     tmp_6 = stack_alloc Slice_SIZE
     EXPAND SLICE_NEW tmp_6, &SLA_STR_1, tmp_7
     !tmp_7
@@ -43,62 +47,80 @@ L_ELSE_1:
 
 L_THEN_3:
     !tmp_10
-    tmp_11 = 1
-    !line
+    tmp_11 = 3
     return tmp_11
 
 L_ELSE_4:
     !tmp_10
-    tmp_12 = 2
-    !line
-    return tmp_12
+    @const SLA_STR_2 = utf8:"help"
+    tmp_13 = 4
+    tmp_12 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_12, &SLA_STR_2, tmp_13
+    !tmp_13
+    EXPAND STR_EQ tmp_14, line, tmp_12
+    tmp_15 = 1
+    tmp_16 = eq tmp_14, tmp_15
+    !tmp_14
+    !tmp_15
+    br tmp_16 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_16
+    tmp_17 = 1
+    return tmp_17
+
+L_ELSE_7:
+    !tmp_16
+    tmp_18 = 2
+    return tmp_18
+
 
 
 
 @main() -> i32:
 L_ENTRY:
-    @const SLA_STR_2 = utf8:"help"
-    tmp_16 = 4
-    tmp_15 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_15, &SLA_STR_2, tmp_16
-    !tmp_16
-    tmp_17 = call @sla__eval_line(tmp_15)
-    result = tmp_17
-    tmp_18 = call @sa_fmt_u64(result, 10)
-    tmp_19 = call @sa_fmt_buffer_data(tmp_18)
-    tmp_20 = call @sa_fmt_buffer_len(tmp_18)
-    tmp_21 = tmp_19
-    call @sa_print_bytes(&tmp_21, tmp_20)
-    call @sa_fmt_buffer_free(^tmp_18)
-    !tmp_21
-    !tmp_20
-    @const SLA_STR_3 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_3, 1)
+    @const SLA_STR_3 = utf8:":mode"
+    tmp_23 = 5
+    tmp_22 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_22, &SLA_STR_3, tmp_23
+    !tmp_23
+    tmp_24 = call @sla__eval_line(tmp_22)
+    result = tmp_24
+    tmp_25 = call @sa_fmt_u64(result, 10)
+    tmp_26 = call @sa_fmt_buffer_data(tmp_25)
+    tmp_27 = call @sa_fmt_buffer_len(tmp_25)
+    tmp_28 = tmp_26
+    call @sa_print_bytes(&tmp_28, tmp_27)
+    call @sa_fmt_buffer_free(^tmp_25)
+    !tmp_28
+    !tmp_27
+    @const SLA_STR_4 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_4, 1)
     return result
 
 @test "rosetta 095 95_repl_shell"():
-L_TEST_ENTRY_6:
-    @const SLA_STR_4 = utf8:"help"
-    tmp_23 = 4
-    tmp_22 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_22, &SLA_STR_4, tmp_23
-    !tmp_23
-    tmp_24 = call @sla__eval_line(tmp_22)
-    got = tmp_24
-    tmp_25 = 1
-    tmp_26 = ne got, tmp_25
-    !tmp_25
-    br tmp_26 -> L_THEN_7, L_ELSE_8
+L_TEST_ENTRY_9:
+    @const SLA_STR_5 = utf8:":mode"
+    tmp_30 = 5
+    tmp_29 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_29, &SLA_STR_5, tmp_30
+    !tmp_30
+    tmp_31 = call @sla__eval_line(tmp_29)
+    got = tmp_31
+    tmp_32 = 3
+    tmp_33 = ne got, tmp_32
+    !tmp_32
+    br tmp_33 -> L_THEN_10, L_ELSE_11
 
-L_THEN_7:
-    !tmp_26
+L_THEN_10:
+    !tmp_33
     panic(95)
 
-L_ELSE_8:
-    !tmp_26
-    jmp L_MERGE_9
+L_ELSE_11:
+    !tmp_33
+    jmp L_MERGE_12
 
-L_MERGE_9:
+L_MERGE_12:
     !got
     return
 

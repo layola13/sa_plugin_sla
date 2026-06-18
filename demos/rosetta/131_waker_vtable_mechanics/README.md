@@ -1,9 +1,9 @@
 # 131 Waker Vtable Mechanics
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the waker vtable mechanics catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/131_waker_vtable_mechanics/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a custom `RawWakerVTable` whose clone, wake, and wake-by-ref callbacks update a shared atomic wake count.
+- `main.sla`: Sla companion for a custom `RawWakerVTable` whose clone, wake, and wake-by-ref callbacks update a shared atomic wake count.
 
 Commands:
 

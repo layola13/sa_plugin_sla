@@ -1,9 +1,9 @@
 # 085 Scheduler Tree
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot models a small scheduler tree that reduces a root task with the heaviest child path.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/85_scheduler_tree/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the tree-shaped critical-path reduction.
+- `main.sla`: Sla companion for the tree-shaped critical-path reduction.
 
 Commands:
 

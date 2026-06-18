@@ -1,9 +1,9 @@
 # 171 Anyhow Dynamic Error
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current dynamic-error gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/171_anyhow_dynamic_error/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference with a boxed dynamic-error path before `map(...).unwrap_or(0)`.
+- `main.sla`: Sla surrogate using a plain `Result<i32, i32>` error path for the same fallback observable.
 
 Commands:
 

@@ -10,11 +10,6 @@ fn create_point(x: i32, y: i32) -> Point {
     Point { x: x, y: y }
 }
 
-fn point_coordinate_sum() -> i32 {
-    let point = create_point(10, 20);
-    return point.x + point.y;
-}
-
 fn main() -> i32 {
     let point = create_point(10, 20);
     println("({},{})", point.x, point.y);
@@ -22,8 +17,10 @@ fn main() -> i32 {
 };
 
 @test "rosetta 005 05_struct"() {
-    let got = point_coordinate_sum();
-    if got != 30 {
+    let point = create_point(10, 20);
+    let x = point.x;
+    let y = point.y;
+    if x + y != 30 {
         panic(5);
     };
 };

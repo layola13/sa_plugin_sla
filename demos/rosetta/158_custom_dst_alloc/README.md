@@ -1,9 +1,11 @@
 # 158 Custom Dst Alloc
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory keeps the custom-DST allocation slot as an explicit surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/158_custom_dst_alloc/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust surrogate that owns bytes and observes their length.
+- `main.sla`: Sla companion for the same owned-byte-length observable.
+
+It is not a literal custom DST allocation demo, so this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

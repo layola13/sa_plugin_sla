@@ -1,9 +1,9 @@
 # 282 Ffi Link Static C Lib
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps static-library linkage observable as one archive member pulled into the final link.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/282_ffi_link_static_c_lib/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one archive member linked from a static C library.
+- `main.sla`: Sla companion for one archive member pulled into the final link.
 
 Commands:
 

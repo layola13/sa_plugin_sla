@@ -1,9 +1,9 @@
 # 290 Ffi Callback Thunk
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps foreign-to-local callback bridging observable as one callback thunk layer.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/290_ffi_callback_thunk/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one foreign-to-local callback thunk layer.
+- `main.sla`: Sla companion for one callback thunk layer.
 
 Commands:
 

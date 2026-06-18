@@ -1,9 +1,9 @@
 # 181 File Descriptor Raii
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+File-open RAII demo that opens `/dev/null`, reads its raw file descriptor, and returns it.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/181_file_descriptor_raii/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the file-handle lifecycle.
+- `main.sla`: Sla companion using `File::open(...).unwrap()` and `as_raw_fd()`.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 105 Let Else
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the `let else` catalog slot, unwrapping an `Option` through the early-exit pattern.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/105_let_else/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `let Some(x) = value else { ... }`.
+- `main.sla`: Sla companion for `let Some(x) = value else { ... }`.
 
 Commands:
 

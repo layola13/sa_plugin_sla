@@ -1,9 +1,9 @@
 # 123 Barrier Sync
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the barrier sync catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/123_barrier_sync/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for three threads waiting on a shared barrier and each resuming with `1`.
+- `main.sla`: Sla companion for three threads waiting on a shared barrier and each resuming with `1`.
 
 Commands:
 

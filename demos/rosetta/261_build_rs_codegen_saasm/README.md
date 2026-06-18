@@ -1,9 +1,9 @@
 # 261 Build Rs Codegen Saasm
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps Rust-side SA-ASM code generation observable as one emitted module.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/261_build_rs_codegen_saasm/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one emitted SA-ASM module.
+- `main.sla`: Sla companion for one emitted SA-ASM module.
 
 Commands:
 

@@ -1,36 +1,51 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/core/waker.sa"
+@import "sa_std/ptr.sa"
+@import "sa_std/sync/atomic.sa"
 
-fn waker_vtable_wake_count() -> i32 {
-    let wakes = 0;
-    wakes = raw_waker_clone(wakes);
-    wakes = raw_waker_wake_by_ref(wakes);
-    wakes = raw_waker_wake(wakes);
-    return wakes;
+const VTABLE: ptr = RAW_WAKER_VTABLE_NEW(clone_waker, wake_waker, wake_by_ref_waker, drop_waker);
+
+extern "C" fn clone_waker(data: ptr, out_raw: *RawWaker) -> void {
+    let _old = (data as AtomicUsize).fetch_add(1, Ordering::Relaxed);
+    let raw = RAW_WAKER_NEW(data, VTABLE);
+    *out_raw = raw;
 }
 
-fn raw_waker_clone(wakes: i32) -> i32 {
-    return wakes + 1;
+extern "C" fn wake_waker(data: ptr) -> i32 {
+    let old = (data as AtomicUsize).fetch_add(1, Ordering::Relaxed);
+    return old as i32;
 }
 
-fn raw_waker_wake_by_ref(wakes: i32) -> i32 {
-    return wakes + 1;
+extern "C" fn wake_by_ref_waker(data: ptr) -> i32 {
+    let old = (data as AtomicUsize).fetch_add(1, Ordering::Relaxed);
+    return old as i32;
 }
 
-fn raw_waker_wake(wakes: i32) -> i32 {
-    return wakes + 1;
+extern "C" fn drop_waker(data: ptr) -> void {
+    let _data = data;
+}
+
+fn waker_vtable_wake_count() -> usize {
+    let count = AtomicUsize::new(0);
+    let data: ptr = PTR_CAST(count);
+    let raw = RAW_WAKER_NEW(data, VTABLE);
+    let waker = WAKER_FROM_RAW(raw);
+    let cloned = WAKER_CLONE(waker);
+    let _by_ref = WAKER_WAKE_BY_REF(cloned);
+    let _wake = WAKER_WAKE(cloned);
+    return count.load(Ordering::Relaxed);
 }
 
 fn main() -> i32 {
     let result = waker_vtable_wake_count();
     println("{}", result);
-    return result;
-};
+    return result as i32;
+}
 
 @test "rosetta 131 131_waker_vtable_mechanics"() {
     let got = waker_vtable_wake_count();
     if got != 3 {
         panic(131);
     };
-};
+}

@@ -1,9 +1,9 @@
 # 111 Extern C Abi
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the extern-C ABI catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/111_extern_c_abi/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for exporting and calling an `extern "C"` function.
+- `main.sla`: Sla companion for exporting and calling an `extern "C"` function.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 300 Eco Sa Lang Registry Publish
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps SA language-registry publication observable as package, checksum, and index update steps.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/300_eco_sa_lang_registry_publish/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for package, checksum, and index-update publish steps.
+- `main.sla`: Sla companion for package, checksum, and index-update steps.
 
 Commands:
 

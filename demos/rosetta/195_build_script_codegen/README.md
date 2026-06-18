@@ -1,9 +1,11 @@
 # 195 Build Script Codegen
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps build-script code generation observable as a generated-value surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/195_build_script_codegen/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a real generated include via `include!(concat!(env!("OUT_DIR"), "/generated.rs"))`.
+- `main.sla`: Sla surrogate for consuming a generated constant value.
+
+Because the Sla side does not execute a real build-script include path, this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

@@ -1,135 +1,142 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@const SLA_FNPTR_VT_get_route_status = vtable { call = @sla__get_route_status }
+@const SLA_FNPTR_VT_post_route_status = vtable { call = @sla__post_route_status }
 @const SLA_FNPTR_VT_route_status = vtable { call = @sla__route_status }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__route_status(req: ptr) -> i32:
+@sla__get_route_status(path: ptr) -> i32:
 L_ENTRY:
-    tmp_0 = load req+0 as ptr
-    @const SLA_STR_0 = utf8:"GET"
-    tmp_2 = 3
-    tmp_1 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_1, &SLA_STR_0, tmp_2
-    !tmp_2
-    EXPAND STR_EQ tmp_3, tmp_0, tmp_1
-    !tmp_0
-    tmp_4 = 1
-    tmp_5 = eq tmp_3, tmp_4
-    !tmp_3
-    !tmp_4
-    br tmp_5 -> L_THEN_0, L_ELSE_1
+    @const SLA_STR_0 = utf8:"/health"
+    tmp_1 = 7
+    tmp_0 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_0, &SLA_STR_0, tmp_1
+    !tmp_1
+    EXPAND STR_EQ tmp_2, path, tmp_0
+    br tmp_2 -> L_THEN_0, L_ELSE_1
 
 L_THEN_0:
-    !tmp_5
-    tmp_6 = load req+8 as ptr
-    @const SLA_STR_1 = utf8:"/health"
-    tmp_8 = 7
-    tmp_7 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_7, &SLA_STR_1, tmp_8
-    !tmp_8
-    EXPAND STR_EQ tmp_9, tmp_6, tmp_7
-    !tmp_6
-    tmp_10 = 1
-    tmp_11 = eq tmp_9, tmp_10
-    !tmp_9
-    !tmp_10
-    br tmp_11 -> L_THEN_3, L_ELSE_4
-
-L_THEN_3:
-    !tmp_11
-    tmp_12 = 200
-    !req
-    return tmp_12
-
-L_ELSE_4:
-    !tmp_11
-    tmp_13 = 404
-    !req
-    return tmp_13
-
+    !tmp_2
+    tmp_3 = 200
+    return tmp_3
 
 L_ELSE_1:
-    !tmp_5
-    tmp_15 = load req+0 as ptr
-    @const SLA_STR_2 = utf8:"POST"
-    tmp_17 = 4
-    tmp_16 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_16, &SLA_STR_2, tmp_17
-    !tmp_17
-    EXPAND STR_EQ tmp_18, tmp_15, tmp_16
-    !tmp_15
-    tmp_19 = 1
-    tmp_20 = eq tmp_18, tmp_19
-    !tmp_18
-    !tmp_19
-    br tmp_20 -> L_THEN_6, L_ELSE_7
+    !tmp_2
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_5 = 404
+    return tmp_5
+
+@sla__post_route_status(path: ptr) -> i32:
+L_ENTRY:
+    @const SLA_STR_1 = utf8:"/jobs"
+    tmp_7 = 5
+    tmp_6 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_6, &SLA_STR_1, tmp_7
+    !tmp_7
+    EXPAND STR_EQ tmp_8, path, tmp_6
+    br tmp_8 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_8
+    tmp_9 = 202
+    return tmp_9
+
+L_ELSE_4:
+    !tmp_8
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_11 = 404
+    return tmp_11
+
+@sla__route_status(req: ptr) -> i32:
+L_ENTRY:
+    tmp_12 = load req+0 as ptr
+    @const SLA_STR_2 = utf8:"GET"
+    tmp_14 = 3
+    tmp_13 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_13, &SLA_STR_2, tmp_14
+    !tmp_14
+    EXPAND STR_EQ tmp_15, tmp_12, tmp_13
+    !tmp_12
+    br tmp_15 -> L_THEN_6, L_ELSE_7
 
 L_THEN_6:
-    !tmp_20
-    tmp_21 = load req+8 as ptr
-    @const SLA_STR_3 = utf8:"/jobs"
-    tmp_23 = 5
-    tmp_22 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_22, &SLA_STR_3, tmp_23
-    !tmp_23
-    EXPAND STR_EQ tmp_24, tmp_21, tmp_22
-    !tmp_21
-    tmp_25 = 1
-    tmp_26 = eq tmp_24, tmp_25
-    !tmp_24
-    !tmp_25
-    br tmp_26 -> L_THEN_9, L_ELSE_10
-
-L_THEN_9:
-    !tmp_26
-    tmp_27 = 202
+    !tmp_15
+    tmp_16 = load req+8 as ptr
+    tmp_17 = call @sla__get_route_status(tmp_16)
+    !tmp_16
     !req
-    return tmp_27
-
-L_ELSE_10:
-    !tmp_26
-    tmp_28 = 404
-    !req
-    return tmp_28
-
+    return tmp_17
 
 L_ELSE_7:
-    !tmp_20
-    tmp_30 = 404
+    !tmp_15
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    tmp_19 = load req+0 as ptr
+    @const SLA_STR_3 = utf8:"POST"
+    tmp_21 = 4
+    tmp_20 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_20, &SLA_STR_3, tmp_21
+    !tmp_21
+    EXPAND STR_EQ tmp_22, tmp_19, tmp_20
+    !tmp_19
+    br tmp_22 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_22
+    tmp_23 = load req+8 as ptr
+    tmp_24 = call @sla__post_route_status(tmp_23)
+    !tmp_23
     !req
-    return tmp_30
+    return tmp_24
 
+L_ELSE_10:
+    !tmp_22
+    jmp L_MERGE_11
 
+L_MERGE_11:
+    tmp_26 = 404
+    !req
+    return tmp_26
 
 @main() -> i32:
 L_ENTRY:
     request = alloc 16
     @const SLA_STR_4 = utf8:"POST"
-    tmp_34 = 4
-    tmp_33 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_33, &SLA_STR_4, tmp_34
-    !tmp_34
-    store request+0, tmp_33 as ptr
+    tmp_28 = 4
+    tmp_27 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_27, &SLA_STR_4, tmp_28
+    !tmp_28
+    store request+0, tmp_27 as ptr
     @const SLA_STR_5 = utf8:"/jobs"
-    tmp_36 = 5
-    tmp_35 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_35, &SLA_STR_5, tmp_36
-    !tmp_36
-    store request+8, tmp_35 as ptr
-    tmp_37 = call @sla__route_status(request)
-    status = tmp_37
-    tmp_38 = call @sa_fmt_u64(status, 10)
-    tmp_39 = call @sa_fmt_buffer_data(tmp_38)
-    tmp_40 = call @sa_fmt_buffer_len(tmp_38)
-    tmp_41 = tmp_39
-    call @sa_print_bytes(&tmp_41, tmp_40)
-    call @sa_fmt_buffer_free(^tmp_38)
-    !tmp_41
-    !tmp_40
+    tmp_30 = 5
+    tmp_29 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_29, &SLA_STR_5, tmp_30
+    !tmp_30
+    store request+8, tmp_29 as ptr
+    tmp_31 = call @sla__route_status(request)
+    status = tmp_31
+    tmp_32 = call @sa_fmt_u64(status, 10)
+    tmp_33 = call @sa_fmt_buffer_data(tmp_32)
+    tmp_34 = call @sa_fmt_buffer_len(tmp_32)
+    tmp_35 = tmp_33
+    call @sa_print_bytes(&tmp_35, tmp_34)
+    call @sa_fmt_buffer_free(^tmp_32)
+    !tmp_35
+    !tmp_34
     @const SLA_STR_6 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_6, 1)
     !request
@@ -139,34 +146,33 @@ L_ENTRY:
 L_TEST_ENTRY_12:
     request = alloc 16
     @const SLA_STR_7 = utf8:"POST"
-    tmp_43 = 4
-    tmp_42 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_42, &SLA_STR_7, tmp_43
-    !tmp_43
-    store request+0, tmp_42 as ptr
+    tmp_37 = 4
+    tmp_36 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_36, &SLA_STR_7, tmp_37
+    !tmp_37
+    store request+0, tmp_36 as ptr
     @const SLA_STR_8 = utf8:"/jobs"
-    tmp_45 = 5
-    tmp_44 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_44, &SLA_STR_8, tmp_45
-    !tmp_45
-    store request+8, tmp_44 as ptr
-    tmp_46 = call @sla__route_status(request)
-    got = tmp_46
-    tmp_47 = 202
-    tmp_48 = ne got, tmp_47
-    !tmp_47
-    br tmp_48 -> L_THEN_13, L_ELSE_14
+    tmp_39 = 5
+    tmp_38 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_38, &SLA_STR_8, tmp_39
+    !tmp_39
+    store request+8, tmp_38 as ptr
+    tmp_40 = call @sla__route_status(request)
+    tmp_41 = 202
+    tmp_42 = ne tmp_40, tmp_41
+    !tmp_40
+    !tmp_41
+    br tmp_42 -> L_THEN_13, L_ELSE_14
 
 L_THEN_13:
-    !tmp_48
+    !tmp_42
     panic(77)
 
 L_ELSE_14:
-    !tmp_48
+    !tmp_42
     jmp L_MERGE_15
 
 L_MERGE_15:
     !request
-    !got
     return
 

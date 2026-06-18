@@ -1,9 +1,9 @@
 # 132 Pinning And Unpin
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current pinning surrogate honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/132_pinning_and_unpin/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for observing stable address identity through `Pin`, `Pin::as_ref`, and `get_ref()`.
+- `main.sla`: Sla surrogate that preserves the stable-address observable through the current local pin helper surface.
 
 Commands:
 

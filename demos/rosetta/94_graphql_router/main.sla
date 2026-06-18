@@ -2,17 +2,25 @@
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sa"
 
-fn resolver_id(operation: ptr, field: ptr) -> i32 {
+fn resolver_id(operation: ptr, field: ptr, nested: bool) -> i32 {
     if str_eq(operation, "query") == true {
         if str_eq(field, "user") == true {
-            return 11;
+            if nested == true {
+                return 12;
+            } else {
+                return 11;
+            };
         } else {
             return 0;
         };
     } else {
         if str_eq(operation, "mutation") == true {
             if str_eq(field, "createUser") == true {
-                return 21;
+                if nested == true {
+                    return 0;
+                } else {
+                    return 21;
+                };
             } else {
                 return 0;
             };
@@ -23,13 +31,13 @@ fn resolver_id(operation: ptr, field: ptr) -> i32 {
 }
 
 fn main() -> i32 {
-    let result = resolver_id("query", "user");
+    let result = resolver_id("query", "user", false);
     println("{}", result);
     return result;
 };
 
 @test "rosetta 094 94_graphql_router"() {
-    let got = resolver_id("query", "user");
+    let got = resolver_id("query", "user", false);
     if got != 11 {
         panic(94);
     };

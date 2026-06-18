@@ -1,54 +1,65 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_job_scheduler_done = vtable { call = @sla__job_scheduler_done }
+@const SLA_FNPTR_VT_scheduled_cost = vtable { call = @sla__scheduled_cost }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__job_scheduler_done() -> i32:
+@sla__scheduled_cost(jobs: ptr) -> i32:
 L_ENTRY:
-    jobs = alloc 16
-    tmp_0 = 1
-    store jobs+0, tmp_0 as i32
-    tmp_1 = 2
-    store jobs+4, tmp_1 as i32
-    tmp_2 = 3
-    store jobs+8, tmp_2 as i32
-    tmp_3 = 4
-    store jobs+12, tmp_3 as i32
-    tmp_4 = 0
-    done = tmp_4
     job_slot = stack_alloc 8
+    tmp_0 = 0
+    done = tmp_0
     store job_slot+0, 0 as i64
     jmp L_LOOP_HEAD_0
 
 L_LOOP_HEAD_0:
-    tmp_5 = load job_slot+0 as i64
-    tmp_6 = slt tmp_5, 4
-    br tmp_6 -> L_LOOP_BODY_1, L_LOOP_COND_FALSE_3
+    tmp_1 = load job_slot+0 as i64
+    tmp_2 = slt tmp_1, 4
+    br tmp_2 -> L_LOOP_BODY_1, L_LOOP_COND_FALSE_3
 
 L_LOOP_BODY_1:
-    !tmp_6
-    tmp_7 = mul tmp_5, 4
-    tmp_8 = ptr_add jobs, tmp_7
-    job = load tmp_8+0 as i32
-    !tmp_7
-    !tmp_8
-    tmp_9 = add done, job
-    !done
-    done = tmp_9
-L_LOOP_CONTINUE_2:
-    tmp_10 = add tmp_5, 1
-    store job_slot+0, tmp_10 as i64
-    !tmp_10
+    !tmp_2
+    tmp_3 = mul tmp_1, 8
+    tmp_4 = ptr_add jobs, tmp_3
+    job = load tmp_4+0 as ptr
+    !tmp_3
+    !tmp_4
+    tmp_5 = load job+0 as u8
+    br tmp_5 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
     !tmp_5
+    tmp_6 = load job+1 as i32
+    cost = tmp_6
+    tmp_7 = add done, cost
+    !done
+    done = tmp_7
+    !cost
+    jmp L_MERGE_7
+
+L_ELSE_6:
+    !tmp_5
+    jmp L_MERGE_7
+
+L_MERGE_7:
+L_LOOP_CONTINUE_2:
+    tmp_9 = add tmp_1, 1
+    store job_slot+0, tmp_9 as i64
+    !tmp_9
+    !tmp_1
     !job
     jmp L_LOOP_HEAD_0
 
 L_LOOP_COND_FALSE_3:
-    !tmp_6
-    !tmp_5
+    !tmp_2
+    !tmp_1
     jmp L_LOOP_EXIT_4
 
 L_LOOP_EXIT_4:
@@ -57,40 +68,65 @@ L_LOOP_EXIT_4:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_11 = call @sla__job_scheduler_done()
-    done = tmp_11
-    tmp_12 = call @sa_fmt_u64(done, 10)
-    tmp_13 = call @sa_fmt_buffer_data(tmp_12)
-    tmp_14 = call @sa_fmt_buffer_len(tmp_12)
-    tmp_15 = tmp_13
-    call @sa_print_bytes(&tmp_15, tmp_14)
-    call @sa_fmt_buffer_free(^tmp_12)
-    !tmp_15
-    !tmp_14
+    jobs = alloc 32
+    tmp_10 = alloc 5
+    tmp_11 = 1
+    store tmp_10+0, tmp_11 as u8
+    tmp_12 = 1
+    store tmp_10+1, tmp_12 as i32
+    store jobs+0, tmp_10 as ptr
+    tmp_13 = alloc 5
+    tmp_14 = 0
+    store tmp_13+0, tmp_14 as u8
+    tmp_15 = 2
+    store tmp_13+1, tmp_15 as i32
+    store jobs+8, tmp_13 as ptr
+    tmp_16 = alloc 5
+    tmp_17 = 1
+    store tmp_16+0, tmp_17 as u8
+    tmp_18 = 3
+    store tmp_16+1, tmp_18 as i32
+    store jobs+16, tmp_16 as ptr
+    tmp_19 = alloc 5
+    tmp_20 = 1
+    store tmp_19+0, tmp_20 as u8
+    tmp_21 = 4
+    store tmp_19+1, tmp_21 as i32
+    store jobs+24, tmp_19 as ptr
+    tmp_22 = call @sla__scheduled_cost(jobs)
+    done = tmp_22
+    tmp_23 = call @sa_fmt_u64(done, 10)
+    tmp_24 = call @sa_fmt_buffer_data(tmp_23)
+    tmp_25 = call @sa_fmt_buffer_len(tmp_23)
+    tmp_26 = tmp_24
+    call @sa_print_bytes(&tmp_26, tmp_25)
+    call @sa_fmt_buffer_free(^tmp_23)
+    !tmp_26
+    !tmp_25
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_16 = 0
+    tmp_27 = 0
     !done
-    return tmp_16
+    !jobs
+    return tmp_27
 
 @test "rosetta 065 65_job_scheduler"():
-L_TEST_ENTRY_5:
-    tmp_17 = call @sla__job_scheduler_done()
-    got = tmp_17
-    tmp_18 = 10
-    tmp_19 = ne got, tmp_18
-    !tmp_18
-    br tmp_19 -> L_THEN_6, L_ELSE_7
+L_TEST_ENTRY_8:
+    tmp_28 = call @main()
+    tmp_29 = 0
+    tmp_30 = ne tmp_28, tmp_29
+    !tmp_28
+    !tmp_29
+    br tmp_30 -> L_THEN_9, L_ELSE_10
 
-L_THEN_6:
-    !tmp_19
+L_THEN_9:
+    !tmp_30
     panic(65)
 
-L_ELSE_7:
-    !tmp_19
-    jmp L_MERGE_8
+L_ELSE_10:
+    !tmp_30
+    jmp L_MERGE_11
 
-L_MERGE_8:
-    !got
+L_MERGE_11:
     return
 

@@ -1,6 +1,19 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
-fn aligned_simd_lane_count() -> i32 { let lanes = 4; return lanes; }
-fn main() -> i32 { let result = aligned_simd_lane_count(); println("{}", result); return result; }
-@test "rosetta 157 157_aligned_alloc_simd"() { let got = aligned_simd_lane_count(); if got != 4 { panic(157); }; }
+fn aligned_simd_lane_count_surrogate() -> usize {
+    let alignment_bytes: usize = 16;
+    let lane_bytes: usize = 4;
+    return alignment_bytes / lane_bytes;
+}
+
+fn main() -> i32 {
+    let result = aligned_simd_lane_count_surrogate();
+    println("{}", result);
+    return 0;
+}
+
+@test "rosetta 157 157_aligned_alloc_simd"() {
+    let got = aligned_simd_lane_count_surrogate();
+    if got != 4 { panic(157); };
+}

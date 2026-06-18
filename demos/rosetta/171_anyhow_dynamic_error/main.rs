@@ -1,5 +1,7 @@
-fn fail() -> Result<&'static str, &'static str> {
-    Err("anyhow")
+type DynError = Box<dyn std::error::Error>;
+
+fn fail() -> Result<&'static str, DynError> {
+    Err("anyhow".into())
 }
 
 fn main() {

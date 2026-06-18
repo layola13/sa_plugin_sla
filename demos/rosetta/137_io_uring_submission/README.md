@@ -1,9 +1,9 @@
 # 137 Io Uring Submission
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the io_uring submission catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/137_io_uring_submission/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for building a submission depth observable.
+- `main.sla`: Sla companion for building a submission depth observable.
 
 Commands:
 

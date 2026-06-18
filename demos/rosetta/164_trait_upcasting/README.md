@@ -1,9 +1,11 @@
 # 164 Trait Upcasting
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory keeps the trait-upcasting slot as an explicit partial surrogate.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/164_trait_upcasting/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the current local `A`/`B` trait sum observable.
+- `main.sla`: Sla attempt at the same supertrait/upcast observable.
+
+A focused local smoke still shows that the simpler dyn-dispatch subset works, but the fuller `dyn B` supertrait/upcast arithmetic path in this checked-in demo currently fails in type checking, so this slot should stay `❌` in `demos/rosetta/demo.md`.
 
 Commands:
 

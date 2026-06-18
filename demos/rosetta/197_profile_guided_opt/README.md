@@ -1,9 +1,9 @@
 # 197 Profile Guided Opt
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps profile-guided optimization observable as a hot-hot-hot-cold call mix totaling `10`.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/197_profile_guided_opt/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the hot-call profile mix.
+- `main.sla`: Sla companion for the hot-call profile mix.
 
 Commands:
 

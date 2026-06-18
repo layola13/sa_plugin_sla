@@ -1,9 +1,9 @@
 # 299 Eco Language Server Protocol
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps language-server message flow observable as request and response kinds.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/299_eco_language_server_protocol/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for request and response message kinds.
+- `main.sla`: Sla companion for request and response kinds.
 
 Commands:
 

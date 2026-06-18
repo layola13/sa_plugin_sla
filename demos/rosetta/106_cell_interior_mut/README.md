@@ -1,9 +1,9 @@
 # 106 Cell Interior Mut
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the `Cell` interior-update catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/106_cell_interior_mut/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for `Cell::get` / `Cell::set` observable behavior.
+- `main.sla`: Sla companion for `Cell::get` / `Cell::set` observable behavior.
 
 Commands:
 

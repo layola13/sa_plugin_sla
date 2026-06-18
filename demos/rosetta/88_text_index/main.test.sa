@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/string.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -24,7 +29,6 @@ L_ENTRY:
 L_THEN_0:
     !tmp_4
     tmp_5 = 2
-    !term
     return tmp_5
 
 L_ELSE_1:
@@ -44,13 +48,11 @@ L_ELSE_1:
 L_THEN_3:
     !tmp_10
     tmp_11 = 3
-    !term
     return tmp_11
 
 L_ELSE_4:
     !tmp_10
     tmp_12 = 0
-    !term
     return tmp_12
 
 

@@ -1,10 +1,16 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/core/trait_object.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/trait_object.sa"
 @const VT_Button_Draw = vtable { draw = @sla__Button_draw }
 @const SLA_FNPTR_VT_render = vtable { call = @sla__render }
 @const SLA_FNPTR_VT_main = vtable { call = @main }

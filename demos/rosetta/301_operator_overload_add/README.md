@@ -2,7 +2,7 @@
 
 > **状态**：当前 Sla companion 已使用真实 `a + b` 操作符。编译器在类型检查阶段允许数值字段 struct 的同类型 `+`，在 codegen 阶段生成逐字段 `add`。
 
-This directory pairs the Rust rosetta reference with a Sla companion.
+This directory documents the local `Vec3 + Vec3` operator-overload demo.
 
 - `main.rs`：Rust 原版，演示 `impl Add for Vec3` 实现 `a + b`。
 - `main.sla`：Sla 等价实现，显式导入 `sa_std/ops.sa`，使用 `f32` 字段和 `let c = a + b;`，验证结果为 `Vec3 { x: 5.0, y: 7.0, z: 9.0 }`。

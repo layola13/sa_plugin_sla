@@ -1,9 +1,9 @@
 # 121 Rwlock Reader Writer
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current rwlock gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/121_rwlock_reader_writer/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference using `Arc<RwLock<i32>>`, a spawned reader, joined result, exclusive write, and final read.
+- `main.sla`: Sla surrogate for the same observable flow, but the current checked path still leaves the shared `Arc` live at function exit.
 
 Commands:
 

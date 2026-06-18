@@ -1,50 +1,59 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_custom_dst_alloc_len = vtable { call = @sla__custom_dst_alloc_len }
+@const SLA_FNPTR_VT_custom_dst_alloc_len_surrogate = vtable { call = @sla__custom_dst_alloc_len_surrogate }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
-@sla__custom_dst_alloc_len() -> u64:
+@sla__custom_dst_alloc_len_surrogate() -> u64:
 L_ENTRY:
+    @const SLA_STR_0 = utf8:"hey"
     tmp_0 = 3
-    bytes_len = tmp_0
-    return bytes_len
+    bytes = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW bytes, &SLA_STR_0, tmp_0
+    !tmp_0
+    EXPAND STRING_LEN tmp_1, bytes
+    return tmp_1
 
 @main() -> i32:
 L_ENTRY:
-    tmp_1 = call @sla__custom_dst_alloc_len()
-    result = tmp_1
-    tmp_2 = call @sa_fmt_u64(result, 10)
-    tmp_3 = call @sa_fmt_buffer_data(tmp_2)
-    tmp_4 = call @sa_fmt_buffer_len(tmp_2)
-    tmp_5 = tmp_3
-    call @sa_print_bytes(&tmp_5, tmp_4)
-    call @sa_fmt_buffer_free(^tmp_2)
+    tmp_2 = call @sla__custom_dst_alloc_len_surrogate()
+    result = tmp_2
+    tmp_3 = call @sa_fmt_u64(result, 10)
+    tmp_4 = call @sa_fmt_buffer_data(tmp_3)
+    tmp_5 = call @sa_fmt_buffer_len(tmp_3)
+    tmp_6 = tmp_4
+    call @sa_print_bytes(&tmp_6, tmp_5)
+    call @sa_fmt_buffer_free(^tmp_3)
+    !tmp_6
     !tmp_5
-    !tmp_4
-    @const SLA_STR_0 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_6 = 0
+    @const SLA_STR_1 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    tmp_7 = 0
     !result
-    return tmp_6
+    return tmp_7
 
 @test "rosetta 158 158_custom_dst_alloc"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @sla__custom_dst_alloc_len()
-    got = tmp_7
-    tmp_8 = 3
-    tmp_9 = ne got, tmp_8
-    !tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+    tmp_8 = call @sla__custom_dst_alloc_len_surrogate()
+    got = tmp_8
+    tmp_9 = 3
+    tmp_10 = ne got, tmp_9
+    !tmp_9
+    br tmp_10 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_9
+    !tmp_10
     panic(158)
 
 L_ELSE_2:
-    !tmp_9
+    !tmp_10
     jmp L_MERGE_3
 
 L_MERGE_3:

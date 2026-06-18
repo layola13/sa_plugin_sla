@@ -1,9 +1,9 @@
 # 101 Custom Drop
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the custom-drop catalog slot, using guard-style cleanup accounting as the observable behavior.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/101_custom_drop/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for drop-order tallying around scoped guards.
+- `main.sla`: Sla companion for drop-order tallying around scoped guards.
 
 Commands:
 

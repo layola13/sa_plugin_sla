@@ -1,9 +1,9 @@
 # 220 Pkg Lib Dynamic
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps library output selection observable as both static and dynamic artifacts.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/220_pkg_lib_dynamic/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for static and dynamic library outputs.
+- `main.sla`: Sla companion for static and dynamic library outputs.
 
 Commands:
 

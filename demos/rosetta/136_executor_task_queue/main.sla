@@ -21,7 +21,8 @@ fn executor_task_queue_sum() -> i32 {
     let total = 0;
 
     while let Some(task) = queue.pop() {
-        total = total + task.await;
+        let resolved = task.await;
+        total = total + resolved;
     }
 
     return total;

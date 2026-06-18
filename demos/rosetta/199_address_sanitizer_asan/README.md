@@ -1,9 +1,9 @@
 # 199 Address Sanitizer Asan
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the address-sanitizer theme observable as the sum of the first and last buffer-edge bytes.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/199_address_sanitizer_asan/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the buffer-edge byte sum.
+- `main.sla`: Sla companion for the buffer-edge byte sum.
 
 Commands:
 

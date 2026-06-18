@@ -1,9 +1,9 @@
 # 100 Full App
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the full-request handling topic for the catalog slot, combining authentication, routing, database, and rate-limit status.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/100_full_app/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the authenticated/route/db status semantics used by this slot.
+- `main.sla`: Sla companion for the authenticated/route/db status semantics used by this slot.
 
 Commands:
 

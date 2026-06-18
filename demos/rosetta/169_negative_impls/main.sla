@@ -1,5 +1,20 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-fn negative_impl_marker_result() -> i32 { return 0; }
-fn main() -> i32 { let result = negative_impl_marker_result(); println("{}", result); return result; }
-@test "rosetta 169 169_negative_impls"() { let got = negative_impl_marker_result(); if got != 0 { panic(169); }; }
+
+struct UnsafeData {}
+
+fn negative_impl_observable_surrogate() -> i32 {
+    let _value = UnsafeData {};
+    return 0;
+}
+
+fn main() -> i32 {
+    let result = negative_impl_observable_surrogate();
+    println("{}", result);
+    return result;
+}
+
+@test "rosetta 169 169_negative_impls"() {
+    let got = negative_impl_observable_surrogate();
+    if got != 0 { panic(169); };
+}

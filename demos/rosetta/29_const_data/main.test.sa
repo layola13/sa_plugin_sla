@@ -1,9 +1,15 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/iter.sa"
 @const VALUES = struct { f0: 4 = hex:\x01\x00\x00\x00, f1: 4 = hex:\x02\x00\x00\x00, f2: 4 = hex:\x03\x00\x00\x00 }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
 @main() -> i32:

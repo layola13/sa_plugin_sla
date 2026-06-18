@@ -1,9 +1,9 @@
 # 257 Contract Log Facade
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps the contract logging surface observable as three enabled levels: info, warn, and error.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/257_contract_log_facade/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the info/warn/error logging surface.
+- `main.sla`: Sla companion for the info/warn/error logging surface.
 
 Commands:
 

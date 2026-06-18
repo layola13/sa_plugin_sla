@@ -1,6 +1,11 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 @import "sa_std/ops.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
 
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
@@ -10,15 +15,15 @@
 @sla__negated_vec3_score() -> i32:
 L_ENTRY:
     a = alloc 12
-    tmp_0 = 1
+    tmp_0 = 1.0
     store a+0, tmp_0 as f32
     tmp_1 = 0
-    tmp_2 = 2
-    tmp_3 = sub tmp_1, tmp_2
+    tmp_2 = 2.0
+    tmp_3 = fsub tmp_1, tmp_2
     !tmp_1
     !tmp_2
     store a+4, tmp_3 as f32
-    tmp_4 = 3
+    tmp_4 = 3.0
     store a+8, tmp_4 as f32
     tmp_5 = alloc 12
     tmp_6 = 0
@@ -35,11 +40,11 @@ L_ENTRY:
     b = tmp_5
     tmp_13 = load b+0 as f32
     tmp_14 = 0
-    tmp_15 = 1
-    tmp_16 = sub tmp_14, tmp_15
+    tmp_15 = 1.0
+    tmp_16 = fsub tmp_14, tmp_15
     !tmp_14
     !tmp_15
-    tmp_17 = ne tmp_13, tmp_16
+    tmp_17 = fcmp_ne tmp_13, tmp_16
     !tmp_13
     !tmp_16
     br tmp_17 -> L_THEN_0, L_ELSE_1
@@ -57,8 +62,8 @@ L_ELSE_1:
 
 L_MERGE_2:
     tmp_20 = load b+4 as f32
-    tmp_21 = 2
-    tmp_22 = ne tmp_20, tmp_21
+    tmp_21 = 2.0
+    tmp_22 = fcmp_ne tmp_20, tmp_21
     !tmp_20
     !tmp_21
     br tmp_22 -> L_THEN_3, L_ELSE_4
@@ -77,11 +82,11 @@ L_ELSE_4:
 L_MERGE_5:
     tmp_25 = load b+8 as f32
     tmp_26 = 0
-    tmp_27 = 3
-    tmp_28 = sub tmp_26, tmp_27
+    tmp_27 = 3.0
+    tmp_28 = fsub tmp_26, tmp_27
     !tmp_26
     !tmp_27
-    tmp_29 = ne tmp_25, tmp_28
+    tmp_29 = fcmp_ne tmp_25, tmp_28
     !tmp_25
     !tmp_28
     br tmp_29 -> L_THEN_6, L_ELSE_7
@@ -122,15 +127,15 @@ L_ENTRY:
 @test "rosetta 302 operator_overload_neg"():
 L_TEST_ENTRY_9:
     a = alloc 12
-    tmp_38 = 1
+    tmp_38 = 1.0
     store a+0, tmp_38 as f32
     tmp_39 = 0
-    tmp_40 = 2
-    tmp_41 = sub tmp_39, tmp_40
+    tmp_40 = 2.0
+    tmp_41 = fsub tmp_39, tmp_40
     !tmp_39
     !tmp_40
     store a+4, tmp_41 as f32
-    tmp_42 = 3
+    tmp_42 = 3.0
     store a+8, tmp_42 as f32
     tmp_43 = alloc 12
     tmp_44 = 0
@@ -147,11 +152,11 @@ L_TEST_ENTRY_9:
     b = tmp_43
     tmp_51 = load b+0 as f32
     tmp_52 = 0
-    tmp_53 = 1
-    tmp_54 = sub tmp_52, tmp_53
+    tmp_53 = 1.0
+    tmp_54 = fsub tmp_52, tmp_53
     !tmp_52
     !tmp_53
-    tmp_55 = ne tmp_51, tmp_54
+    tmp_55 = fcmp_ne tmp_51, tmp_54
     !tmp_51
     !tmp_54
     br tmp_55 -> L_THEN_10, L_ELSE_11
@@ -166,8 +171,8 @@ L_ELSE_11:
 
 L_MERGE_12:
     tmp_58 = load b+4 as f32
-    tmp_59 = 2
-    tmp_60 = ne tmp_58, tmp_59
+    tmp_59 = 2.0
+    tmp_60 = fcmp_ne tmp_58, tmp_59
     !tmp_58
     !tmp_59
     br tmp_60 -> L_THEN_13, L_ELSE_14
@@ -183,11 +188,11 @@ L_ELSE_14:
 L_MERGE_15:
     tmp_63 = load b+8 as f32
     tmp_64 = 0
-    tmp_65 = 3
-    tmp_66 = sub tmp_64, tmp_65
+    tmp_65 = 3.0
+    tmp_66 = fsub tmp_64, tmp_65
     !tmp_64
     !tmp_65
-    tmp_67 = ne tmp_63, tmp_66
+    tmp_67 = fcmp_ne tmp_63, tmp_66
     !tmp_63
     !tmp_66
     br tmp_67 -> L_THEN_16, L_ELSE_17

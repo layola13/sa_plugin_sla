@@ -1,9 +1,9 @@
 # 287 Ffi Zig Export Integration
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps Zig export integration observable as one symbol surfaced to foreign callers.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/287_ffi_zig_export_integration/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one Zig-exported symbol visible to foreign callers.
+- `main.sla`: Sla companion for one symbol surfaced to foreign callers.
 
 Commands:
 

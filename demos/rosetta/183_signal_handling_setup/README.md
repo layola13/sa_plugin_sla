@@ -1,9 +1,9 @@
 # 183 Signal Handling Setup
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+Minimal signal-setup slot that returns the configured signal number `2` as its observable result.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/183_signal_handling_setup/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the fixed signal constant.
+- `main.sla`: Sla companion for the fixed signal constant.
 
 Commands:
 

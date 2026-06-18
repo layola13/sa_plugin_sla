@@ -1,9 +1,9 @@
 # 248 Contract Ffi Boundary Trust
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps foreign-boundary validation observable as both pointer and length checks crossing the ABI edge.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/248_contract_ffi_boundary_trust/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for pointer and length checks across the ABI edge.
+- `main.sla`: Sla companion for pointer and length checks across the ABI edge.
 
 Commands:
 

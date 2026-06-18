@@ -3,7 +3,9 @@
 @import "sa_std/future.sa"
 
 async fn compute() -> i32 {
-    5
+    let left = 2;
+    let right = 3;
+    return left + right;
 }
 
 fn async_bridge_value() -> i32 {

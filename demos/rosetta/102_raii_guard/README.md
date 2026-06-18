@@ -1,9 +1,9 @@
 # 102 Raii Guard
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current RAII-guard gap honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/102_raii_guard/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for scoped mutex guard acquisition, early return, and guarded update behavior.
+- `main.sla`: current Sla companion shape for the same observable intent, but the guarded update path no longer type-checks locally.
 
 Commands:
 

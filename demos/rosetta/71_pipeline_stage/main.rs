@@ -1,5 +1,16 @@
+struct StageInput {
+    raw: i32,
+    scale: i32,
+    offset: i32,
+}
+
+fn pipeline_stage_value(input: StageInput) -> i32 {
+    let stage1 = input.raw * input.scale;
+    let stage2 = stage1 + input.offset;
+    stage2
+}
+
 fn main() {
-    let stage1 = 2;
-    let stage2 = stage1 * 3;
-    println!("{stage2}");
+    let input = StageInput { raw: 2, scale: 3, offset: 1 };
+    println!("{}", pipeline_stage_value(input));
 }

@@ -1,9 +1,9 @@
 # 154 Box From Raw
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the `Box::from_raw` catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/154_box_from_raw/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for reconstructing box ownership from a raw pointer.
+- `main.sla`: Sla companion for reconstructing box ownership from a raw pointer.
 
 Commands:
 

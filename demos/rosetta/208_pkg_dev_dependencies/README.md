@@ -1,9 +1,9 @@
 # 208 Pkg Dev Dependencies
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps development-only dependency wiring observable as one test-only package.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/208_pkg_dev_dependencies/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a test-only dependency.
+- `main.sla`: Sla companion for a test-only dependency.
 
 Commands:
 

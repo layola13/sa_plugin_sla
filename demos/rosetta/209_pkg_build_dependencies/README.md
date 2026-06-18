@@ -1,9 +1,9 @@
 # 209 Pkg Build Dependencies
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps build-script dependency wiring observable as one build-time package.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/209_pkg_build_dependencies/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a build-time dependency.
+- `main.sla`: Sla companion for a build-time dependency.
 
 Commands:
 

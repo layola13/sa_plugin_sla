@@ -1,9 +1,9 @@
 # 134 Join All Futures
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory now records the current join-all surrogate honestly.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/134_join_all_futures/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: local Rust surrogate that awaits three futures in sequence and sums them.
+- `main.sla`: matching Sla surrogate for the same sequential-await observable.
 
 Commands:
 

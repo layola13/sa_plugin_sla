@@ -2,15 +2,21 @@ trait Draw {
     fn draw(&self) -> i32;
 }
 
-struct Item;
+struct Item {
+    value: i32,
+}
 
 impl Draw for Item {
     fn draw(&self) -> i32 {
-        4
+        self.value
     }
 }
 
+fn render(item: &dyn Draw) -> i32 {
+    item.draw()
+}
+
 fn main() {
-    let item = Item;
-    println!("{}", item.draw());
+    let item = Item { value: 4 };
+    println!("{}", render(&item));
 }

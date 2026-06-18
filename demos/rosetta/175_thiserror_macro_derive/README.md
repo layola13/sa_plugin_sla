@@ -1,9 +1,9 @@
 # 175 Thiserror Macro Derive
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the thiserror-style derive catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/175_thiserror_macro_derive/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for derived error-format observation.
+- `main.sla`: Sla companion for derived error-format observation.
 
 Commands:
 

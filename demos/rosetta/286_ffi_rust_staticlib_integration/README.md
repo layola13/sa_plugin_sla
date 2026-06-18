@@ -1,9 +1,9 @@
 # 286 Ffi Rust Staticlib Integration
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps Rust staticlib export integration observable as one exposed symbol.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/286_ffi_rust_staticlib_integration/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for one exposed symbol from a Rust staticlib.
+- `main.sla`: Sla companion for one exposed symbol from a Rust staticlib.
 
 Commands:
 

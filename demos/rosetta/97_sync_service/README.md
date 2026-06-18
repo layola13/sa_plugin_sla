@@ -1,9 +1,9 @@
 # 097 Sync Service
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the sync-decision topic for the catalog slot, combining dirty state, remote freshness, and offline blocking.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/97_sync_service/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for the dirty/version-based sync semantics used by this slot.
+- `main.sla`: Sla companion for the dirty/version-based sync semantics used by this slot.
 
 Commands:
 

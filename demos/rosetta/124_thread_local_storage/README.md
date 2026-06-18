@@ -1,9 +1,9 @@
 # 124 Thread Local Storage
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This directory matches the thread-local storage catalog slot.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/124_thread_local_storage/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a TLS `Cell<i32>` slot that is read, incremented, and read again through `with(...)`.
+- `main.sla`: Sla companion for a TLS `Cell<i32>` slot that is read, incremented, and read again through `with(...)`.
 
 Commands:
 

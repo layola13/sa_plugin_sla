@@ -1,5 +1,57 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
-fn trait_upcast_method_sum() -> i32 { let base_method = 2; let derived_method = 3; return base_method + derived_method; }
-fn main() -> i32 { let result = trait_upcast_method_sum(); println("{}", result); return result; }
-@test "rosetta 164 164_trait_upcasting"() { let got = trait_upcast_method_sum(); if got != 5 { panic(164); }; }
+@import "sa_std/core/trait_object.sa"
+
+trait A {
+    fn a(&self) -> i32;
+}
+
+trait B: A {
+    fn b(&self) -> i32;
+}
+
+struct Item {
+    value: i32,
+}
+
+impl A for Item {
+    fn a(&self) -> i32 {
+        self.value
+    }
+}
+
+impl B for Item {
+    fn b(&self) -> i32 {
+        self.value + 1
+    }
+}
+
+fn sum_a(&item: dyn A) -> i32 {
+    item.a()
+}
+
+fn sum_b(&item: dyn B) -> i32 {
+    item.a() + item.b()
+}
+
+fn upcast_and_sum(&item: dyn B) -> i32 {
+    sum_a(item) + item.b()
+}
+
+fn trait_upcast_total() -> i32 {
+    let item = Item { value: 5 };
+    return upcast_and_sum(&item) + sum_b(&item);
+}
+
+fn main() -> i32 {
+    let result = trait_upcast_total();
+    println("{}", result);
+    return result;
+}
+
+@test "rosetta 164 164_trait_upcasting"() {
+    let got = trait_upcast_total();
+    if got != 22 {
+        panic(164);
+    };
+};

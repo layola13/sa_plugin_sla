@@ -1,9 +1,9 @@
 # 246 Contract Semver Minor Update
 
-This directory pairs the original Rust rosetta reference with a Sla companion.
+This slot keeps backward-compatible contract growth observable as one added field in a minor version update.
 
-- `main.rs`: copied from `/home/vscode/projects/sci/demos/rosetta/246_contract_semver_minor_update/main.rs`.
-- `main.sla`: Sla code for the same catalog slot, kept within the current Sla compiler surface so it can be checked, built, and tested.
+- `main.rs`: Rust reference for a backward-compatible added field.
+- `main.sla`: Sla companion for a backward-compatible added field.
 
 Commands:
 

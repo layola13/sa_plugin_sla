@@ -6,5 +6,5 @@ fn pkg_git_dependency_count() -> i32 {
     return pinned_git_dependency;
 }
 
-fn main() -> i32 { let result = pkg_git_dependency_count(); println("{}", result); return result; }
+fn main() -> i32 { let pinned_git_dependency = 1; println("{}", pinned_git_dependency); return pinned_git_dependency; }
 @test "rosetta 203 pkg dependencies git"() { let got = pkg_git_dependency_count(); if got != 1 { panic(203); }; }

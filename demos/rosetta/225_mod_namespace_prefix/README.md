@@ -1,9 +1,9 @@
 # 225 Mod Namespace Prefix
 
-This slot keeps namespace-qualified lookup observable as a namespace plus symbol pair.
+This slot now uses a real namespace-prefix fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a namespace-plus-symbol count instead of true namespace lookup.
 
-- `main.rs`: Rust reference for the namespace-plus-symbol lookup pair.
-- `main.sla`: Sla companion for the namespace-plus-symbol lookup pair.
+- `main.rs`: Rust reference that reads the `ns/prefix` aggregate and both prefixed symbol modules.
+- `main.sla`: current surrogate that only preserves a namespace-plus-symbol count.
 
 Commands:
 

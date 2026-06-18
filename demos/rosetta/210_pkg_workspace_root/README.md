@@ -1,9 +1,9 @@
 # 210 Pkg Workspace Root
 
-This slot keeps workspace membership observable as one app member plus one library member.
+This slot now uses a real workspace-member fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a member-count observable instead of true workspace package resolution.
 
-- `main.rs`: Rust reference for one app member plus one library member.
-- `main.sla`: Sla companion for one app member plus one library member.
+- `main.rs`: Rust reference that reads the workspace manifest plus both member manifests and checks the aggregator imports.
+- `main.sla`: current surrogate that only preserves a two-member count.
 
 Commands:
 

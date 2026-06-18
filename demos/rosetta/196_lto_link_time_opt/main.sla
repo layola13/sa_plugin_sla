@@ -12,5 +12,5 @@ fn cold_path(x: i32) -> i32 {
     return warm + cold;
 }
 fn lto_hot_cold_sum() -> i32 { let hot_path = inner(1); let cold_path_result = cold_path(2); return hot_path + cold_path_result; }
-fn main() -> i32 { let result = lto_hot_cold_sum(); println("{}", result); return result; }
+fn main() -> i32 { let hot_path = inner(1); let cold_path_result = cold_path(2); let result = hot_path + cold_path_result; println("{}", result); return result; }
 @test "rosetta 196 196_lto_link_time_opt"() { let got = lto_hot_cold_sum(); if got != 19 { panic(196); }; }

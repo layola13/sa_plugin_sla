@@ -12,30 +12,9 @@
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
 @import "sa_std/core/result.sa"
-@const SLA_THREAD_VT_2 = vtable { call = @sla_thread_worker_2 }
 @const SLA_THREAD_VT_0 = vtable { call = @sla_thread_worker_0 }
 @const SLA_THREAD_VT_1 = vtable { call = @sla_thread_worker_1 }
-
-@ffi_wrapper sla_thread_spawn_2(*slot: ptr) -> i32:
-L_ENTRY:
-    worker_vt = &SLA_THREAD_VT_2
-    worker_fn = load worker_vt+0 as ptr
-    worker_raw = *worker_fn
-    worker_safe = assume_safe worker_raw
-    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
-    !slot
-    return handle
-
-@sla_thread_worker_2(&slot: ptr) -> i32:
-L_ENTRY:
-    tmp_0 = 3
-    tmp_1 = 4
-    tmp_2 = call @sla__worker_score(tmp_0, tmp_1)
-    !tmp_0
-    !tmp_1
-    store slot+8, tmp_2 as i32
-    !slot
-    return tmp_2
+@const SLA_THREAD_VT_2 = vtable { call = @sla_thread_worker_2 }
 
 @ffi_wrapper sla_thread_spawn_0(*slot: ptr) -> i32:
 L_ENTRY:
@@ -49,14 +28,14 @@ L_ENTRY:
 
 @sla_thread_worker_0(&slot: ptr) -> i32:
 L_ENTRY:
-    tmp_3 = 1
-    tmp_4 = 2
-    tmp_5 = call @sla__worker_score(tmp_3, tmp_4)
-    !tmp_3
-    !tmp_4
-    store slot+8, tmp_5 as i32
+    tmp_0 = 1
+    tmp_1 = 2
+    tmp_2 = call @sla__worker_score(tmp_0, tmp_1)
+    !tmp_0
+    !tmp_1
+    store slot+8, tmp_2 as i32
     !slot
-    return tmp_5
+    return tmp_2
 
 @ffi_wrapper sla_thread_spawn_1(*slot: ptr) -> i32:
 L_ENTRY:
@@ -70,8 +49,29 @@ L_ENTRY:
 
 @sla_thread_worker_1(&slot: ptr) -> i32:
 L_ENTRY:
-    tmp_6 = 2
-    tmp_7 = 3
+    tmp_3 = 2
+    tmp_4 = 3
+    tmp_5 = call @sla__worker_score(tmp_3, tmp_4)
+    !tmp_3
+    !tmp_4
+    store slot+8, tmp_5 as i32
+    !slot
+    return tmp_5
+
+@ffi_wrapper sla_thread_spawn_2(*slot: ptr) -> i32:
+L_ENTRY:
+    worker_vt = &SLA_THREAD_VT_2
+    worker_fn = load worker_vt+0 as ptr
+    worker_raw = *worker_fn
+    worker_safe = assume_safe worker_raw
+    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
+    !slot
+    return handle
+
+@sla_thread_worker_2(&slot: ptr) -> i32:
+L_ENTRY:
+    tmp_6 = 3
+    tmp_7 = 4
     tmp_8 = call @sla__worker_score(tmp_6, tmp_7)
     !tmp_6
     !tmp_7

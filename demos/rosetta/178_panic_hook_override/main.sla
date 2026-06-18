@@ -13,7 +13,13 @@ fn panic_hook_observable_surrogate() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = panic_hook_observable_surrogate();
+    let hook_installed = true;
+    let panic_triggered = true;
+    let result = if hook_installed == true {
+        if panic_triggered == true { 1 } else { 0 }
+    } else {
+        0
+    };
     println("{}", result);
     return result;
 }

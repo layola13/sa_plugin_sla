@@ -15,5 +15,10 @@ fn generic_associated_item_value() -> i32 {
     let p = IntProvider { val: 42 };
     return p.get();
 }
-fn main() -> i32 { let result = generic_associated_item_value(); println("{}", result); return result; }
+fn main() -> i32 {
+    let p = IntProvider { val: 42 };
+    let result = p.get();
+    println("{}", result);
+    return result;
+}
 @test "rosetta 161 161_generic_associated_types"() { let got = generic_associated_item_value(); if got != 42 { panic(161); }; }

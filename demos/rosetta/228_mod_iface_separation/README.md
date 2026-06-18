@@ -1,9 +1,9 @@
 # 228 Mod Iface Separation
 
-This slot keeps interface and implementation separation observable as two distinct module layers.
+This slot now uses a real interface/layout/implementation fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a layer count instead of true interface/implementation contract handling.
 
-- `main.rs`: Rust reference for the interface and implementation module layers.
-- `main.sla`: Sla companion for the interface and implementation module layers.
+- `main.rs`: Rust reference that reads `api/contract.sai`, `layout/contract.sal`, and `impl/contract.sa` separately.
+- `main.sla`: current surrogate that only preserves a two-layer count.
 
 Commands:
 

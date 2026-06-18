@@ -2,5 +2,5 @@
 @import "sa_std/fmt.sai"
 
 fn ffi_pkg_config_fields() -> i32 { let include_dir = 1; let library_dir = 1; return include_dir + library_dir; }
-fn main() -> i32 { let result = ffi_pkg_config_fields(); println("{}", result); return result; }
+fn main() -> i32 { let include_dir = 1; let library_dir = 1; let result = include_dir + library_dir; println("{}", result); return result; }
 @test "rosetta 284 ffi pkg config integration"() { let got = ffi_pkg_config_fields(); if got != 2 { panic(284); }; }

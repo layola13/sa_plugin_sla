@@ -10,9 +10,12 @@ fn atomic_fetch_add_sum() -> i32 {
 }
 
 fn main() -> i32 {
-    let value = atomic_fetch_add_sum();
-    println("{}", value);
-    return value;
+    let value = AtomicI32::new(5);
+    let old = value.fetch_add(3, Ordering::SeqCst);
+    let new = value.load(Ordering::SeqCst);
+    let result = old + new;
+    println("{}", result);
+    return result;
 }
 
 @test "rosetta 109 109_atomic_fetch_add"() {

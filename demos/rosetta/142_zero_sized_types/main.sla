@@ -9,5 +9,10 @@ fn zero_sized_process_result() -> i32 {
     let u = Unit {};
     return process(u);
 }
-fn main() -> i32 { let result = zero_sized_process_result(); println("{}", result); return result; }
+fn main() -> i32 {
+    let u = Unit {};
+    let result = process(u);
+    println("{}", result);
+    return result;
+}
 @test "rosetta 142 142_zero_sized_types"() { let got = zero_sized_process_result(); if got != 42 { panic(142); }; }

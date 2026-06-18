@@ -1,9 +1,9 @@
 # 214 Pkg Target Specific Deps
 
-This slot keeps target-gated dependency selection observable across Linux and Wasm branches.
+This slot now uses a real target-specific fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a target-branch count instead of true target-specific dependency resolution.
 
-- `main.rs`: Rust reference for Linux and Wasm dependency branches.
-- `main.sla`: Sla companion for Linux and Wasm dependency branches.
+- `main.rs`: Rust reference that reads the target selector, native helper, portable helper, and dispatch module.
+- `main.sla`: current surrogate that only preserves a two-branch dependency count.
 
 Commands:
 

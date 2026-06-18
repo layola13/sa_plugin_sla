@@ -1,9 +1,9 @@
 # 233 Mod Alias Import
 
-This slot keeps import aliasing observable as one service surface reached through an alternate module name.
+This slot now uses a real alias-style module fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves an alias-count observable instead of true module aliasing.
 
-- `main.rs`: Rust reference for reaching one service through an alias import.
-- `main.sla`: Sla companion for reaching one service through an alias import.
+- `main.rs`: Rust reference that reads the alias wrapper, deep module, and seed module.
+- `main.sla`: current surrogate that only preserves a one-alias count.
 
 Commands:
 

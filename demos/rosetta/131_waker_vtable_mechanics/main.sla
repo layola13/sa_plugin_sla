@@ -38,7 +38,14 @@ fn waker_vtable_wake_count() -> usize {
 }
 
 fn main() -> i32 {
-    let result = waker_vtable_wake_count();
+    let count = AtomicUsize::new(0);
+    let data: ptr = PTR_CAST(count);
+    let raw = RAW_WAKER_NEW(data, VTABLE);
+    let waker = WAKER_FROM_RAW(raw);
+    let cloned = WAKER_CLONE(waker);
+    let _by_ref = WAKER_WAKE_BY_REF(cloned);
+    let _wake = WAKER_WAKE(cloned);
+    let result = count.load(Ordering::Relaxed);
     println("{}", result);
     return result as i32;
 }

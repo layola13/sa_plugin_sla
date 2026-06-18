@@ -30,35 +30,45 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_5 = call @sla__manually_drop_union_value()
-    result = tmp_5
-    tmp_6 = call @sa_fmt_u64(result, 10)
-    tmp_7 = call @sa_fmt_buffer_data(tmp_6)
-    tmp_8 = call @sa_fmt_buffer_len(tmp_6)
-    tmp_9 = tmp_7
-    call @sa_print_bytes(&tmp_9, tmp_8)
-    call @sa_fmt_buffer_free(^tmp_6)
-    !tmp_9
+    slot = alloc 8
+    tmp_5 = 11
+    tmp_6 = ptr_add slot, 0
+    EXPAND MANUALLY_DROP_U64_NEW tmp_6, tmp_5
+    !tmp_6
+    !tmp_5
+    tmp_8 = ptr_add slot, 0
+    EXPAND MANUALLY_DROP_U64_INTO_INNER tmp_9, tmp_8
     !tmp_8
+    tmp_7 = tmp_9
+    result = tmp_7
+    tmp_10 = call @sa_fmt_u64(result, 10)
+    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
+    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
+    tmp_13 = tmp_11
+    call @sa_print_bytes(&tmp_13, tmp_12)
+    call @sa_fmt_buffer_free(^tmp_10)
+    !tmp_13
+    !tmp_12
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !slot
     return result
 
 @test "rosetta 160 160_manually_drop_union"():
 L_TEST_ENTRY_0:
-    tmp_10 = call @sla__manually_drop_union_value()
-    got = tmp_10
-    tmp_11 = 11
-    tmp_12 = ne got, tmp_11
-    !tmp_11
-    br tmp_12 -> L_THEN_1, L_ELSE_2
+    tmp_14 = call @sla__manually_drop_union_value()
+    got = tmp_14
+    tmp_15 = 11
+    tmp_16 = ne got, tmp_15
+    !tmp_15
+    br tmp_16 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_12
+    !tmp_16
     panic(160)
 
 L_ELSE_2:
-    !tmp_12
+    !tmp_16
     jmp L_MERGE_3
 
 L_MERGE_3:

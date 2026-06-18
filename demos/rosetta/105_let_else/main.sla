@@ -13,9 +13,14 @@ fn let_else_unwrapped_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let value = let_else_unwrapped_value();
-    println("{}", value);
-    return value;
+    let value = Some(5);
+    let Some(x) = value else {
+        println("{}", 0);
+        return 0;
+    };
+
+    println("{}", x);
+    return x;
 }
 
 @test "rosetta 105 105_let_else"() {

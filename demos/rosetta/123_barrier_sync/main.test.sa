@@ -15,27 +15,9 @@
 [END_MACRO]
 @import "sa_std/core/result.sa"
 @import "sa_std/sync/atomic.sa"
-@const SLA_THREAD_VT_1 = vtable { call = @sla_thread_worker_1 }
 @const SLA_THREAD_VT_2 = vtable { call = @sla_thread_worker_2 }
 @const SLA_THREAD_VT_0 = vtable { call = @sla_thread_worker_0 }
-
-@ffi_wrapper sla_thread_spawn_1(*slot: ptr) -> i32:
-L_ENTRY:
-    worker_vt = &SLA_THREAD_VT_1
-    worker_fn = load worker_vt+0 as ptr
-    worker_raw = *worker_fn
-    worker_safe = assume_safe worker_raw
-    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
-    !slot
-    return handle
-
-@sla_thread_worker_1(&slot: ptr) -> i32:
-L_ENTRY:
-    tmp_0 = load slot+16 as ptr
-    tmp_1 = call @sla__barrier_worker(tmp_0)
-    store slot+8, tmp_1 as i32
-    !slot
-    return tmp_1
+@const SLA_THREAD_VT_1 = vtable { call = @sla_thread_worker_1 }
 
 @ffi_wrapper sla_thread_spawn_2(*slot: ptr) -> i32:
 L_ENTRY:
@@ -49,11 +31,11 @@ L_ENTRY:
 
 @sla_thread_worker_2(&slot: ptr) -> i32:
 L_ENTRY:
-    tmp_2 = load slot+16 as ptr
-    tmp_3 = call @sla__barrier_worker(tmp_2)
-    store slot+8, tmp_3 as i32
+    tmp_0 = load slot+16 as ptr
+    tmp_1 = call @sla__barrier_worker(tmp_0)
+    store slot+8, tmp_1 as i32
     !slot
-    return tmp_3
+    return tmp_1
 
 @ffi_wrapper sla_thread_spawn_0(*slot: ptr) -> i32:
 L_ENTRY:
@@ -66,6 +48,24 @@ L_ENTRY:
     return handle
 
 @sla_thread_worker_0(&slot: ptr) -> i32:
+L_ENTRY:
+    tmp_2 = load slot+16 as ptr
+    tmp_3 = call @sla__barrier_worker(tmp_2)
+    store slot+8, tmp_3 as i32
+    !slot
+    return tmp_3
+
+@ffi_wrapper sla_thread_spawn_1(*slot: ptr) -> i32:
+L_ENTRY:
+    worker_vt = &SLA_THREAD_VT_1
+    worker_fn = load worker_vt+0 as ptr
+    worker_raw = *worker_fn
+    worker_safe = assume_safe worker_raw
+    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
+    !slot
+    return handle
+
+@sla_thread_worker_1(&slot: ptr) -> i32:
 L_ENTRY:
     tmp_4 = load slot+16 as ptr
     tmp_5 = call @sla__barrier_worker(tmp_4)
@@ -83,7 +83,7 @@ L_ENTRY:
     EXPAND ATOMIC_I32_FETCH_ADD tmp_8, tmp_6, tmp_7, seq_cst
     !tmp_6
     !tmp_7
-    !tmp_8
+    _old = tmp_8
     jmp L_WHILE_HEAD_0
 
 L_WHILE_HEAD_0:
@@ -106,6 +106,7 @@ L_WHILE_COND_FALSE_2:
 
 L_WHILE_EXIT_3:
     tmp_13 = 1
+    !_old
     !barrier
     return tmp_13
 
@@ -165,106 +166,112 @@ L_THREAD_JOIN_OK_4:
 
 L_THREAD_JOIN_ERR_5:
     !tmp_28
-    EXPAND RESULT_NEW_ERR tmp_29, tmp_27
+    tmp_31 = add tmp_27, 0
+    EXPAND RESULT_NEW_ERR tmp_29, tmp_31
+    !tmp_31
     jmp L_THREAD_JOIN_END_6
 
 L_THREAD_JOIN_END_6:
     !tmp_27
     !tmp_26
     !a
-    EXPAND RESULT_UNWRAP tmp_31, tmp_29
+    EXPAND RESULT_UNWRAP tmp_32, tmp_29
     !tmp_29
-    tmp_32 = load b+0 as i32
-    EXPAND THREAD_JOIN_STATUS tmp_33, tmp_32, *b
-    EXPAND THREAD_DROP tmp_32
-    tmp_34 = eq tmp_33, 0
-    br tmp_34 -> L_THREAD_JOIN_OK_7, L_THREAD_JOIN_ERR_8
+    av = tmp_32
+    tmp_33 = load b+0 as i32
+    EXPAND THREAD_JOIN_STATUS tmp_34, tmp_33, *b
+    EXPAND THREAD_DROP tmp_33
+    tmp_35 = eq tmp_34, 0
+    br tmp_35 -> L_THREAD_JOIN_OK_7, L_THREAD_JOIN_ERR_8
 
 L_THREAD_JOIN_OK_7:
-    !tmp_34
-    tmp_36 = load b+8 as i32
-    EXPAND RESULT_NEW_OK tmp_35, tmp_36
-    !tmp_36
+    !tmp_35
+    tmp_37 = load b+8 as i32
+    EXPAND RESULT_NEW_OK tmp_36, tmp_37
+    !tmp_37
     jmp L_THREAD_JOIN_END_9
 
 L_THREAD_JOIN_ERR_8:
-    !tmp_34
-    EXPAND RESULT_NEW_ERR tmp_35, tmp_33
+    !tmp_35
+    tmp_38 = add tmp_34, 0
+    EXPAND RESULT_NEW_ERR tmp_36, tmp_38
+    !tmp_38
     jmp L_THREAD_JOIN_END_9
 
 L_THREAD_JOIN_END_9:
+    !tmp_34
     !tmp_33
-    !tmp_32
     !b
-    EXPAND RESULT_UNWRAP tmp_37, tmp_35
-    !tmp_35
-    tmp_38 = add tmp_31, tmp_37
-    !tmp_31
-    !tmp_37
-    tmp_39 = load c+0 as i32
-    EXPAND THREAD_JOIN_STATUS tmp_40, tmp_39, *c
-    EXPAND THREAD_DROP tmp_39
-    tmp_41 = eq tmp_40, 0
-    br tmp_41 -> L_THREAD_JOIN_OK_10, L_THREAD_JOIN_ERR_11
+    EXPAND RESULT_UNWRAP tmp_39, tmp_36
+    !tmp_36
+    bv = tmp_39
+    tmp_40 = load c+0 as i32
+    EXPAND THREAD_JOIN_STATUS tmp_41, tmp_40, *c
+    EXPAND THREAD_DROP tmp_40
+    tmp_42 = eq tmp_41, 0
+    br tmp_42 -> L_THREAD_JOIN_OK_10, L_THREAD_JOIN_ERR_11
 
 L_THREAD_JOIN_OK_10:
-    !tmp_41
-    tmp_43 = load c+8 as i32
-    EXPAND RESULT_NEW_OK tmp_42, tmp_43
-    !tmp_43
+    !tmp_42
+    tmp_44 = load c+8 as i32
+    EXPAND RESULT_NEW_OK tmp_43, tmp_44
+    !tmp_44
     jmp L_THREAD_JOIN_END_12
 
 L_THREAD_JOIN_ERR_11:
-    !tmp_41
-    EXPAND RESULT_NEW_ERR tmp_42, tmp_40
+    !tmp_42
+    tmp_45 = add tmp_41, 0
+    EXPAND RESULT_NEW_ERR tmp_43, tmp_45
+    !tmp_45
     jmp L_THREAD_JOIN_END_12
 
 L_THREAD_JOIN_END_12:
+    !tmp_41
     !tmp_40
-    !tmp_39
     !c
-    EXPAND RESULT_UNWRAP tmp_44, tmp_42
-    !tmp_42
-    tmp_45 = add tmp_38, tmp_44
-    !tmp_38
-    !tmp_44
+    EXPAND RESULT_UNWRAP tmp_46, tmp_43
+    !tmp_43
+    cv = tmp_46
+    tmp_47 = add av, bv
+    tmp_48 = add tmp_47, cv
+    !tmp_47
     !left
     !barrier
     !middle
     !right
-    return tmp_45
+    return tmp_48
 
 @main() -> i32:
 L_ENTRY:
-    tmp_46 = call @sla__barrier_release_count()
-    result = tmp_46
-    tmp_47 = call @sa_fmt_u64(result, 10)
-    tmp_48 = call @sa_fmt_buffer_data(tmp_47)
-    tmp_49 = call @sa_fmt_buffer_len(tmp_47)
-    tmp_50 = tmp_48
-    call @sa_print_bytes(&tmp_50, tmp_49)
-    call @sa_fmt_buffer_free(^tmp_47)
-    !tmp_50
-    !tmp_49
+    tmp_49 = call @sla__barrier_release_count()
+    result = tmp_49
+    tmp_50 = call @sa_fmt_u64(result, 10)
+    tmp_51 = call @sa_fmt_buffer_data(tmp_50)
+    tmp_52 = call @sa_fmt_buffer_len(tmp_50)
+    tmp_53 = tmp_51
+    call @sa_print_bytes(&tmp_53, tmp_52)
+    call @sa_fmt_buffer_free(^tmp_50)
+    !tmp_53
+    !tmp_52
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 123 123_barrier_sync"():
 L_TEST_ENTRY_13:
-    tmp_51 = call @sla__barrier_release_count()
-    got = tmp_51
-    tmp_52 = 3
-    tmp_53 = ne got, tmp_52
-    !tmp_52
-    br tmp_53 -> L_THEN_14, L_ELSE_15
+    tmp_54 = call @sla__barrier_release_count()
+    got = tmp_54
+    tmp_55 = 3
+    tmp_56 = ne got, tmp_55
+    !tmp_55
+    br tmp_56 -> L_THEN_14, L_ELSE_15
 
 L_THEN_14:
-    !tmp_53
+    !tmp_56
     panic(123)
 
 L_ELSE_15:
-    !tmp_53
+    !tmp_56
     jmp L_MERGE_16
 
 L_MERGE_16:

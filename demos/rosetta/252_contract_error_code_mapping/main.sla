@@ -8,7 +8,9 @@ fn contract_error_code_mappings() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_error_code_mappings();
+    let not_found_mapping = 1;
+    let denied_mapping = 1;
+    let result = not_found_mapping + denied_mapping;
     println("{}", result);
     return result;
 }

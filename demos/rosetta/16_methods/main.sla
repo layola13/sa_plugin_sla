@@ -8,7 +8,9 @@ struct Vec2 {
 
 impl Vec2 {
     fn square_len(&self) -> i32 {
-        return self.x * self.x + self.y * self.y;
+        let xx = self.x * self.x;
+        let yy = self.y * self.y;
+        return xx + yy;
     }
 }
 

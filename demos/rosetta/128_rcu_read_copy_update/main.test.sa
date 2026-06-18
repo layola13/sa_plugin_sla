@@ -39,35 +39,57 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_9 = call @sla__rcu_snapshot_total()
-    result = tmp_9
-    tmp_10 = call @sa_fmt_u64(result, 10)
-    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
-    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
-    tmp_13 = tmp_11
-    call @sa_print_bytes(&tmp_13, tmp_12)
-    call @sa_fmt_buffer_free(^tmp_10)
+    tmp_9 = 1
+    EXPAND ARC_NEW tmp_10, tmp_9
+    !tmp_9
+    old_snapshot = tmp_10
+    EXPAND ARC_GET tmp_11, old_snapshot
+    reader_seen = tmp_11
+    EXPAND ARC_GET tmp_12, old_snapshot
+    old_value = tmp_12
+    tmp_13 = 1
+    tmp_14 = add old_value, tmp_13
     !tmp_13
-    !tmp_12
+    next_value = tmp_14
+    EXPAND ARC_NEW tmp_15, next_value
+    new_snapshot = tmp_15
+    EXPAND ARC_GET tmp_16, new_snapshot
+    updater_seen = tmp_16
+    tmp_17 = add reader_seen, updater_seen
+    result = tmp_17
+    tmp_18 = call @sa_fmt_u64(result, 10)
+    tmp_19 = call @sa_fmt_buffer_data(tmp_18)
+    tmp_20 = call @sa_fmt_buffer_len(tmp_18)
+    tmp_21 = tmp_19
+    call @sa_print_bytes(&tmp_21, tmp_20)
+    call @sa_fmt_buffer_free(^tmp_18)
+    !tmp_21
+    !tmp_20
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !reader_seen
+    !old_snapshot
+    !next_value
+    !new_snapshot
+    !updater_seen
+    !old_value
     return result
 
 @test "rosetta 128 128_rcu_read_copy_update"():
 L_TEST_ENTRY_0:
-    tmp_14 = call @sla__rcu_snapshot_total()
-    got = tmp_14
-    tmp_15 = 3
-    tmp_16 = ne got, tmp_15
-    !tmp_15
-    br tmp_16 -> L_THEN_1, L_ELSE_2
+    tmp_22 = call @sla__rcu_snapshot_total()
+    got = tmp_22
+    tmp_23 = 3
+    tmp_24 = ne got, tmp_23
+    !tmp_23
+    br tmp_24 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_16
+    !tmp_24
     panic(128)
 
 L_ELSE_2:
-    !tmp_16
+    !tmp_24
     jmp L_MERGE_3
 
 L_MERGE_3:

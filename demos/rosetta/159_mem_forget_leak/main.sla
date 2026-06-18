@@ -10,5 +10,11 @@ fn mem_forget_observable_value() -> i32 {
     return result;
 }
 
-fn main() -> i32 { let result = mem_forget_observable_value(); println("{}", result); return result; }
+fn main() -> i32 {
+    let value = Box::new(9);
+    let result = *value;
+    mem::forget(value);
+    println("{}", result);
+    return result;
+}
 @test "rosetta 159 159_mem_forget_leak"() { let got = mem_forget_observable_value(); if got != 9 { panic(159); }; }

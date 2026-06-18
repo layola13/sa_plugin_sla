@@ -40,35 +40,43 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_5 = call @sla__object_safe_draw_result()
-    result = tmp_5
-    tmp_6 = call @sa_fmt_u64(result, 10)
-    tmp_7 = call @sa_fmt_buffer_data(tmp_6)
-    tmp_8 = call @sa_fmt_buffer_len(tmp_6)
-    tmp_9 = tmp_7
-    call @sa_print_bytes(&tmp_9, tmp_8)
-    call @sa_fmt_buffer_free(^tmp_6)
-    !tmp_9
-    !tmp_8
+    item = alloc 4
+    tmp_5 = 4
+    store item+0, tmp_5 as i32
+    tmp_6 = alloc Dyn_SIZE
+    store tmp_6+Dyn_data, item as ptr
+    store tmp_6+Dyn_vtable, &VT_Item_Draw as ptr
+    tmp_7 = call @sla__render(&tmp_6)
+    !tmp_6
+    result = tmp_7
+    tmp_8 = call @sa_fmt_u64(result, 10)
+    tmp_9 = call @sa_fmt_buffer_data(tmp_8)
+    tmp_10 = call @sa_fmt_buffer_len(tmp_8)
+    tmp_11 = tmp_9
+    call @sa_print_bytes(&tmp_11, tmp_10)
+    call @sa_fmt_buffer_free(^tmp_8)
+    !tmp_11
+    !tmp_10
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !item
     return result
 
 @test "rosetta 163 163_object_safety_rules"():
 L_TEST_ENTRY_0:
-    tmp_10 = call @sla__object_safe_draw_result()
-    got = tmp_10
-    tmp_11 = 4
-    tmp_12 = ne got, tmp_11
-    !tmp_11
-    br tmp_12 -> L_THEN_1, L_ELSE_2
+    tmp_12 = call @sla__object_safe_draw_result()
+    got = tmp_12
+    tmp_13 = 4
+    tmp_14 = ne got, tmp_13
+    !tmp_13
+    br tmp_14 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_12
+    !tmp_14
     panic(163)
 
 L_ELSE_2:
-    !tmp_12
+    !tmp_14
     jmp L_MERGE_3
 
 L_MERGE_3:

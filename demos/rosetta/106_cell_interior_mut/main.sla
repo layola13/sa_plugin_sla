@@ -11,7 +11,11 @@ fn cell_update_sum() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = cell_update_sum();
+    let value = Cell::new(10);
+    let first = value.get();
+    value.set(20);
+    let second = value.get();
+    let result = first + second;
     println("{}", result);
     return result;
 }

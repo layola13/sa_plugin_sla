@@ -31,35 +31,48 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_5 = call @sla__cell_update_sum()
-    result = tmp_5
-    tmp_6 = call @sa_fmt_u64(result, 10)
-    tmp_7 = call @sa_fmt_buffer_data(tmp_6)
-    tmp_8 = call @sa_fmt_buffer_len(tmp_6)
-    tmp_9 = tmp_7
-    call @sa_print_bytes(&tmp_9, tmp_8)
-    call @sa_fmt_buffer_free(^tmp_6)
-    !tmp_9
-    !tmp_8
+    tmp_5 = 10
+    value = stack_alloc Cell_SIZE
+    EXPAND CELL_SET value, tmp_5
+    !tmp_5
+    EXPAND CELL_GET tmp_6, value
+    first = tmp_6
+    tmp_7 = 20
+    EXPAND CELL_SET value, tmp_7
+    !tmp_7
+    EXPAND CELL_GET tmp_8, value
+    second = tmp_8
+    tmp_9 = add first, second
+    result = tmp_9
+    tmp_10 = call @sa_fmt_u64(result, 10)
+    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
+    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
+    tmp_13 = tmp_11
+    call @sa_print_bytes(&tmp_13, tmp_12)
+    call @sa_fmt_buffer_free(^tmp_10)
+    !tmp_13
+    !tmp_12
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !first
+    !second
     return result
 
 @test "rosetta 106 106_cell_interior_mut"():
 L_TEST_ENTRY_0:
-    tmp_10 = call @sla__cell_update_sum()
-    got = tmp_10
-    tmp_11 = 30
-    tmp_12 = ne got, tmp_11
-    !tmp_11
-    br tmp_12 -> L_THEN_1, L_ELSE_2
+    tmp_14 = call @sla__cell_update_sum()
+    got = tmp_14
+    tmp_15 = 30
+    tmp_16 = ne got, tmp_15
+    !tmp_15
+    br tmp_16 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_12
+    !tmp_16
     panic(106)
 
 L_ELSE_2:
-    !tmp_12
+    !tmp_16
     jmp L_MERGE_3
 
 L_MERGE_3:

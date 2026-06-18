@@ -26,7 +26,8 @@ fn object_safe_draw_result() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = object_safe_draw_result();
+    let item = Item { value: 4 };
+    let result = render(&item);
     println("{}", result);
     return result;
 }

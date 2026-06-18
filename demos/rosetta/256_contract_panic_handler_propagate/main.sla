@@ -8,7 +8,9 @@ fn contract_panic_handler_hops() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_panic_handler_hops();
+    let local_handler = 1;
+    let host_handler = 1;
+    let result = local_handler + host_handler;
     println("{}", result);
     return result;
 }

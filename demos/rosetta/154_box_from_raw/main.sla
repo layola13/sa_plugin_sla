@@ -9,7 +9,9 @@ fn box_from_raw_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = box_from_raw_value();
+    let raw = Box::into_raw(Box::new(11));
+    let boxed = unsafe { Box::from_raw(raw) };
+    let result = *boxed;
     println("{}", result);
     return result;
 }

@@ -16,7 +16,14 @@ fn hazard_pointer_result() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = hazard_pointer_result();
+    let raw = Box::into_raw(Box::new(9));
+    let shared = AtomicPtr::new(raw);
+    let loaded = shared.load(Ordering::Acquire);
+    let hazard = AtomicPtr::new(loaded);
+    let still_protected = hazard.load(Ordering::Acquire) == loaded;
+    let protected = if still_protected == true { 1 } else { 0 };
+    let result = unsafe { *loaded } + protected;
+    let boxed = unsafe { Box::from_raw(shared.load(Ordering::Acquire)) };
     println("{}", result);
     return result;
 };

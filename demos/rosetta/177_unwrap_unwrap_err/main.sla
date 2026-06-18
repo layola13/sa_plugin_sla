@@ -13,7 +13,12 @@ fn unwrap_observable_sum() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = unwrap_observable_sum();
+    let value = Some(5).unwrap();
+    let err = match Err(7) {
+        Err(inner) => { inner },
+        Ok(_) => { panic(177) },
+    };
+    let result = value + err;
     println("{}", result);
     return result;
 }

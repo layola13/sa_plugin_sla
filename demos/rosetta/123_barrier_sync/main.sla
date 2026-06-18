@@ -6,7 +6,7 @@
 @import "sa_std/core/result.sa"
 
 fn barrier_worker(barrier: Arc<AtomicI32>) -> i32 {
-    (*barrier).fetch_add(1, Ordering::SeqCst);
+    let _old = (*barrier).fetch_add(1, Ordering::SeqCst);
     while (*barrier).load(Ordering::SeqCst) < 3 {
     }
     return 1;
@@ -23,7 +23,10 @@ fn barrier_release_count() -> i32 {
     let b = thread::spawn(^|| barrier_worker(middle));
     let c = thread::spawn(^|| barrier_worker(right));
 
-    return a.join().unwrap() + b.join().unwrap() + c.join().unwrap();
+    let av = a.join().unwrap();
+    let bv = b.join().unwrap();
+    let cv = c.join().unwrap();
+    return av + bv + cv;
 }
 
 fn main() -> i32 {

@@ -25,7 +25,13 @@ fn thread_local_cell_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = thread_local_cell_value();
+    let slot = current_thread_slot();
+    slot.value.set(slot.value.get() + 2);
+    let result = if slot.thread_id == 1 {
+        slot.value.get()
+    } else {
+        0
+    };
     println("{}", result);
     return result;
 };

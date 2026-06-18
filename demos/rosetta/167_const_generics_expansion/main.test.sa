@@ -27,37 +27,47 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_5 = call @sla__const_generic_array_len()
-    result = tmp_5
-    tmp_6 = call @sa_fmt_u64(result, 10)
-    tmp_7 = call @sa_fmt_buffer_data(tmp_6)
-    tmp_8 = call @sa_fmt_buffer_len(tmp_6)
-    tmp_9 = tmp_7
-    call @sa_print_bytes(&tmp_9, tmp_8)
-    call @sa_fmt_buffer_free(^tmp_6)
-    !tmp_9
-    !tmp_8
+    fixed_array = alloc 16
+    tmp_5 = 1
+    store fixed_array+0, tmp_5 as i32
+    tmp_6 = 2
+    store fixed_array+4, tmp_6 as i32
+    tmp_7 = 3
+    store fixed_array+8, tmp_7 as i32
+    tmp_8 = 4
+    store fixed_array+12, tmp_8 as i32
+    tmp_9 = 4
+    result = tmp_9
+    tmp_10 = call @sa_fmt_u64(result, 10)
+    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
+    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
+    tmp_13 = tmp_11
+    call @sa_print_bytes(&tmp_13, tmp_12)
+    call @sa_fmt_buffer_free(^tmp_10)
+    !tmp_13
+    !tmp_12
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_10 = 0
+    tmp_14 = 0
     !result
-    return tmp_10
+    !fixed_array
+    return tmp_14
 
 @test "rosetta 167 167_const_generics_expansion"():
 L_TEST_ENTRY_0:
-    tmp_11 = call @sla__const_generic_array_len()
-    got = tmp_11
-    tmp_12 = 4
-    tmp_13 = ne got, tmp_12
-    !tmp_12
-    br tmp_13 -> L_THEN_1, L_ELSE_2
+    tmp_15 = call @sla__const_generic_array_len()
+    got = tmp_15
+    tmp_16 = 4
+    tmp_17 = ne got, tmp_16
+    !tmp_16
+    br tmp_17 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_13
+    !tmp_17
     panic(167)
 
 L_ELSE_2:
-    !tmp_13
+    !tmp_17
     jmp L_MERGE_3
 
 L_MERGE_3:

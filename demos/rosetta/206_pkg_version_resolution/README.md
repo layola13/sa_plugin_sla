@@ -1,9 +1,9 @@
 # 206 Pkg Version Resolution
 
-This slot keeps version solving observable as the selected patch release.
+This slot now uses a real versioned-package fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves the selected patch observable instead of true package version resolution.
 
-- `main.rs`: Rust reference for selecting the resolved patch release.
-- `main.sla`: Sla companion for selecting the resolved patch release.
+- `main.rs`: Rust reference that reads the root `sa.pkg`, both version manifests, and the resolver module before selecting the newer version.
+- `main.sla`: current surrogate that only preserves a selected patch value.
 
 Commands:
 

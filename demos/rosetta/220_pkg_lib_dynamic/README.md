@@ -1,9 +1,9 @@
 # 220 Pkg Lib Dynamic
 
-This slot keeps library output selection observable as both static and dynamic artifacts.
+This slot now uses a real host/library fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a static-plus-dynamic artifact count instead of true library packaging.
 
-- `main.rs`: Rust reference for static and dynamic library outputs.
-- `main.sla`: Sla companion for static and dynamic library outputs.
+- `main.rs`: Rust reference that reads the host tree, the library tree, and the exported interface.
+- `main.sla`: current surrogate that only preserves a two-artifact count.
 
 Commands:
 

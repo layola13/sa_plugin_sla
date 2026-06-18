@@ -11,6 +11,7 @@
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/result.sa"
 @const SLA_FNPTR_VT_mmap_mapped_fd = vtable { call = @sla__mmap_mapped_fd }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
 @sla__mmap_mapped_fd() -> i32:
@@ -62,38 +63,76 @@ L_FILE_OPEN_END_2:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_15 = call @sla__mmap_mapped_fd()
-    result = tmp_15
-    tmp_16 = call @sa_fmt_u64(result, 10)
-    tmp_17 = call @sa_fmt_buffer_data(tmp_16)
-    tmp_18 = call @sa_fmt_buffer_len(tmp_16)
-    tmp_19 = tmp_17
-    call @sa_print_bytes(&tmp_19, tmp_18)
-    call @sa_fmt_buffer_free(^tmp_16)
+    @const SLA_STR_1 = utf8:"/dev/zero"
+    tmp_16 = 9
+    tmp_15 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_15, &SLA_STR_1, tmp_16
+    !tmp_16
+    tmp_17 = load tmp_15+Slice_ptr as ptr
+    tmp_18 = load tmp_15+Slice_len as u64
+    EXPAND FS_OPEN_READ tmp_19, tmp_20, tmp_17, tmp_18
+    tmp_22 = eq tmp_19, SA_FS_OK
+    br tmp_22 -> L_FILE_OPEN_OK_3, L_FILE_OPEN_ERR_4
+
+L_FILE_OPEN_OK_3:
+    EXPAND RESULT_NEW_OK tmp_21, tmp_20
     !tmp_19
+    !tmp_20
+    jmp L_FILE_OPEN_END_5
+
+L_FILE_OPEN_ERR_4:
+    EXPAND RESULT_NEW_ERR tmp_21, tmp_19
+    !tmp_19
+    !tmp_20
+    jmp L_FILE_OPEN_END_5
+
+L_FILE_OPEN_END_5:
+    !tmp_22
     !tmp_18
-    @const SLA_STR_1 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_1, 1)
+    !tmp_17
+    EXPAND RESULT_UNWRAP tmp_23, tmp_21
+    !tmp_21
+    file = tmp_23
+    tmp_24 = add file, 0
+    tmp_25 = tmp_24 as i32
+    raw_fd = tmp_25
+    tmp_26 = 1
+    tmp_27 = add raw_fd, tmp_26
+    !tmp_26
+    result = tmp_27
+    tmp_28 = call @sa_fmt_u64(result, 10)
+    tmp_29 = call @sa_fmt_buffer_data(tmp_28)
+    tmp_30 = call @sa_fmt_buffer_len(tmp_28)
+    tmp_31 = tmp_29
+    call @sa_print_bytes(&tmp_31, tmp_30)
+    call @sa_fmt_buffer_free(^tmp_28)
+    !tmp_31
+    !tmp_30
+    @const SLA_STR_2 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_2, 1)
+    EXPAND FS_CLOSE tmp_32, file
+    !tmp_32
+    !raw_fd
     return result
 
 @test "rosetta 182 182_mmap_memory_mapping"():
-L_TEST_ENTRY_3:
-    tmp_20 = call @sla__mmap_mapped_fd()
-    got = tmp_20
-    tmp_21 = 0
-    tmp_22 = sle got, tmp_21
-    !tmp_21
-    br tmp_22 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_6:
+    tmp_33 = call @sla__mmap_mapped_fd()
+    got = tmp_33
+    tmp_34 = 0
+    tmp_35 = sle got, tmp_34
+    !tmp_34
+    br tmp_35 -> L_THEN_7, L_ELSE_8
 
-L_THEN_4:
-    !tmp_22
+L_THEN_7:
+    !tmp_35
     panic(182)
 
-L_ELSE_5:
-    !tmp_22
-    jmp L_MERGE_6
+L_ELSE_8:
+    !tmp_35
+    jmp L_MERGE_9
 
-L_MERGE_6:
+L_MERGE_9:
     !got
     return
 

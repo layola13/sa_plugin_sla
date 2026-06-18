@@ -1,9 +1,9 @@
 # 215 Pkg Patch Override
 
-This slot keeps patch override application observable as a replaced package source.
+This slot now uses a real patch-override fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a patched-source flag instead of true package patch resolution.
 
-- `main.rs`: Rust reference for replacing a package source via patching.
-- `main.sla`: Sla companion for replacing a package source via patching.
+- `main.rs`: Rust reference that reads the package manifest, upstream helper, override helper, and patch-bias definition.
+- `main.sla`: current surrogate that only preserves a one-patch-applied flag.
 
 Commands:
 

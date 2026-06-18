@@ -8,7 +8,9 @@ fn contract_shared_monomorph_paths() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_shared_monomorph_paths();
+    let int_path = 1;
+    let bool_path = 1;
+    let result = int_path + bool_path;
     println("{}", result);
     return result;
 }

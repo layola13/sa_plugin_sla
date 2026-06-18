@@ -27,35 +27,39 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_3 = call @sla__generic_associated_item_value()
-    result = tmp_3
-    tmp_4 = call @sa_fmt_u64(result, 10)
-    tmp_5 = call @sa_fmt_buffer_data(tmp_4)
-    tmp_6 = call @sa_fmt_buffer_len(tmp_4)
-    tmp_7 = tmp_5
-    call @sa_print_bytes(&tmp_7, tmp_6)
-    call @sa_fmt_buffer_free(^tmp_4)
+    p = alloc 4
+    tmp_3 = 42
+    store p+0, tmp_3 as i32
+    tmp_4 = call @sla__IntProvider_get(&p)
+    result = tmp_4
+    tmp_5 = call @sa_fmt_u64(result, 10)
+    tmp_6 = call @sa_fmt_buffer_data(tmp_5)
+    tmp_7 = call @sa_fmt_buffer_len(tmp_5)
+    tmp_8 = tmp_6
+    call @sa_print_bytes(&tmp_8, tmp_7)
+    call @sa_fmt_buffer_free(^tmp_5)
+    !tmp_8
     !tmp_7
-    !tmp_6
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !p
     return result
 
 @test "rosetta 161 161_generic_associated_types"():
 L_TEST_ENTRY_0:
-    tmp_8 = call @sla__generic_associated_item_value()
-    got = tmp_8
-    tmp_9 = 42
-    tmp_10 = ne got, tmp_9
-    !tmp_9
-    br tmp_10 -> L_THEN_1, L_ELSE_2
+    tmp_9 = call @sla__generic_associated_item_value()
+    got = tmp_9
+    tmp_10 = 42
+    tmp_11 = ne got, tmp_10
+    !tmp_10
+    br tmp_11 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_10
+    !tmp_11
     panic(161)
 
 L_ELSE_2:
-    !tmp_10
+    !tmp_11
     jmp L_MERGE_3
 
 L_MERGE_3:

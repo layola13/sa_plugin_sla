@@ -2,7 +2,9 @@
 @import "sa_std/fmt.sai"
 
 fn read_twice(&value: i32) -> i32 {
-    *value + *value
+    let left = *value;
+    let right = *value;
+    left + right
 }
 
 fn main() -> i32 {

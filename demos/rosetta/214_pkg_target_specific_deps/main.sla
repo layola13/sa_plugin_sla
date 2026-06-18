@@ -7,5 +7,5 @@ fn pkg_target_specific_dependency_count() -> i32 {
     return linux_dependency + wasm_dependency;
 }
 
-fn main() -> i32 { let result = pkg_target_specific_dependency_count(); println("{}", result); return result; }
+fn main() -> i32 { let linux_dependency = 1; let wasm_dependency = 1; let result = linux_dependency + wasm_dependency; println("{}", result); return result; }
 @test "rosetta 214 pkg target specific deps"() { let got = pkg_target_specific_dependency_count(); if got != 2 { panic(214); }; }

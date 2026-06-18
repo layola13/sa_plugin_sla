@@ -65,35 +65,41 @@ L_ELSE_1:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_14 = call @sla__seqlock_optimistic_value()
-    result = tmp_14
-    tmp_15 = call @sa_fmt_u64(result, 10)
-    tmp_16 = call @sa_fmt_buffer_data(tmp_15)
-    tmp_17 = call @sa_fmt_buffer_len(tmp_15)
-    tmp_18 = tmp_16
-    call @sa_print_bytes(&tmp_18, tmp_17)
-    call @sa_fmt_buffer_free(^tmp_15)
-    !tmp_18
-    !tmp_17
+    tmp_14 = 2
+    tmp_15 = 10
+    tmp_16 = 2
+    tmp_17 = call @sla__seqlock_read(tmp_14, tmp_15, tmp_16)
+    !tmp_14
+    !tmp_15
+    !tmp_16
+    result = tmp_17
+    tmp_18 = call @sa_fmt_u64(result, 10)
+    tmp_19 = call @sa_fmt_buffer_data(tmp_18)
+    tmp_20 = call @sa_fmt_buffer_len(tmp_18)
+    tmp_21 = tmp_19
+    call @sa_print_bytes(&tmp_21, tmp_20)
+    call @sa_fmt_buffer_free(^tmp_18)
+    !tmp_21
+    !tmp_20
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 129 129_seqlock_optimistic"():
 L_TEST_ENTRY_6:
-    tmp_19 = call @sla__seqlock_optimistic_value()
-    got = tmp_19
-    tmp_20 = 12
-    tmp_21 = ne got, tmp_20
-    !tmp_20
-    br tmp_21 -> L_THEN_7, L_ELSE_8
+    tmp_22 = call @sla__seqlock_optimistic_value()
+    got = tmp_22
+    tmp_23 = 12
+    tmp_24 = ne got, tmp_23
+    !tmp_23
+    br tmp_24 -> L_THEN_7, L_ELSE_8
 
 L_THEN_7:
-    !tmp_21
+    !tmp_24
     panic(129)
 
 L_ELSE_8:
-    !tmp_21
+    !tmp_24
     jmp L_MERGE_9
 
 L_MERGE_9:

@@ -8,7 +8,9 @@ fn unused_import_lint_count() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = unused_import_lint_count();
+    let imported_symbols = 2;
+    let referenced_symbols = 1;
+    let result = imported_symbols - referenced_symbols;
     println("{}", result);
     return result;
 }

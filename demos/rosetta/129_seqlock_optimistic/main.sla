@@ -18,7 +18,7 @@ fn seqlock_read(begin_version: i32, value: i32, end_version: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    let result = seqlock_optimistic_value();
+    let result = seqlock_read(2, 10, 2);
     println("{}", result);
     return result;
 };

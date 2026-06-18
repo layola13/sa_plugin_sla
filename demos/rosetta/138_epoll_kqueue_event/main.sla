@@ -17,7 +17,10 @@ fn event_ready(token: i32, ready: bool) -> i32 {
 }
 
 fn main() -> i32 {
-    let result = event_loop_ready_mask();
+    let ready_read = event_ready(1, true);
+    let ready_write = event_ready(2, true);
+    let blocked = event_ready(4, false);
+    let result = ready_read + ready_write + blocked;
     println("{}", result);
     return result;
 };

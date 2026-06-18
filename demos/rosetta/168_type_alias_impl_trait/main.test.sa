@@ -33,35 +33,38 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_6 = call @sla__type_alias_impl_trait_result()
-    result = tmp_6
-    tmp_7 = call @sa_fmt_u64(result, 10)
-    tmp_8 = call @sa_fmt_buffer_data(tmp_7)
-    tmp_9 = call @sa_fmt_buffer_len(tmp_7)
-    tmp_10 = tmp_8
-    call @sa_print_bytes(&tmp_10, tmp_9)
-    call @sa_fmt_buffer_free(^tmp_7)
+    tmp_6 = call @sla__make_iter_surrogate()
+    _iter = tmp_6
+    tmp_7 = 0
+    result = tmp_7
+    tmp_8 = call @sa_fmt_u64(result, 10)
+    tmp_9 = call @sa_fmt_buffer_data(tmp_8)
+    tmp_10 = call @sa_fmt_buffer_len(tmp_8)
+    tmp_11 = tmp_9
+    call @sa_print_bytes(&tmp_11, tmp_10)
+    call @sa_fmt_buffer_free(^tmp_8)
+    !tmp_11
     !tmp_10
-    !tmp_9
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !_iter
     return result
 
 @test "rosetta 168 168_type_alias_impl_trait"():
 L_TEST_ENTRY_0:
-    tmp_11 = call @sla__type_alias_impl_trait_result()
-    got = tmp_11
-    tmp_12 = 0
-    tmp_13 = ne got, tmp_12
-    !tmp_12
-    br tmp_13 -> L_THEN_1, L_ELSE_2
+    tmp_12 = call @sla__type_alias_impl_trait_result()
+    got = tmp_12
+    tmp_13 = 0
+    tmp_14 = ne got, tmp_13
+    !tmp_13
+    br tmp_14 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_13
+    !tmp_14
     panic(168)
 
 L_ELSE_2:
-    !tmp_13
+    !tmp_14
     jmp L_MERGE_3
 
 L_MERGE_3:

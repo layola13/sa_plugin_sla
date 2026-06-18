@@ -1,9 +1,9 @@
 # 203 Pkg Dependencies Git
 
-This slot keeps git-backed dependency selection observable as one pinned remote package.
+This slot now uses a real git-dependency reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count observable instead of true git package-resolution behavior.
 
-- `main.rs`: Rust reference for one pinned git dependency.
-- `main.sla`: Sla companion for one pinned git dependency.
+- `main.rs`: Rust reference that reads `sa.pkg` plus `vendor/git_dep.sa` and checks the vendored git-dependency shape.
+- `main.sla`: current surrogate that only preserves a one-dependency count observable.
 
 Commands:
 

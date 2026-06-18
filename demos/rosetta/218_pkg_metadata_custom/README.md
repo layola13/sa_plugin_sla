@@ -1,9 +1,9 @@
 # 218 Pkg Metadata Custom
 
-This slot keeps custom package metadata observable as owner and category fields.
+This slot now uses a real custom-metadata fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a metadata-field count instead of true custom metadata handling.
 
-- `main.rs`: Rust reference for owner and category metadata fields.
-- `main.sla`: Sla companion for owner and category metadata fields.
+- `main.rs`: Rust reference that reads the custom-key manifest field and nested metadata module tree.
+- `main.sla`: current surrogate that only preserves a two-field metadata count.
 
 Commands:
 

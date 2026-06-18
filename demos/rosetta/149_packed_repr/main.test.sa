@@ -30,35 +30,49 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_7 = call @sla__packed_pair_sum()
-    result = tmp_7
-    tmp_8 = call @sa_fmt_u64(result, 10)
-    tmp_9 = call @sa_fmt_buffer_data(tmp_8)
-    tmp_10 = call @sa_fmt_buffer_len(tmp_8)
-    tmp_11 = tmp_9
-    call @sa_print_bytes(&tmp_11, tmp_10)
-    call @sa_fmt_buffer_free(^tmp_8)
-    !tmp_11
-    !tmp_10
+    pair = alloc 2
+    tmp_7 = 1
+    store pair+0, tmp_7 as u8
+    tmp_8 = 2
+    store pair+1, tmp_8 as u8
+    tmp_9 = load pair+0 as u8
+    tmp_10 = tmp_9 as i32
+    left = tmp_10
+    tmp_11 = load pair+1 as u8
+    tmp_12 = tmp_11 as i32
+    right = tmp_12
+    tmp_13 = add left, right
+    result = tmp_13
+    tmp_14 = call @sa_fmt_u64(result, 10)
+    tmp_15 = call @sa_fmt_buffer_data(tmp_14)
+    tmp_16 = call @sa_fmt_buffer_len(tmp_14)
+    tmp_17 = tmp_15
+    call @sa_print_bytes(&tmp_17, tmp_16)
+    call @sa_fmt_buffer_free(^tmp_14)
+    !tmp_17
+    !tmp_16
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !right
+    !pair
+    !left
     return result
 
 @test "rosetta 149 149_packed_repr"():
 L_TEST_ENTRY_0:
-    tmp_12 = call @sla__packed_pair_sum()
-    got = tmp_12
-    tmp_13 = 3
-    tmp_14 = ne got, tmp_13
-    !tmp_13
-    br tmp_14 -> L_THEN_1, L_ELSE_2
+    tmp_18 = call @sla__packed_pair_sum()
+    got = tmp_18
+    tmp_19 = 3
+    tmp_20 = ne got, tmp_19
+    !tmp_19
+    br tmp_20 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_14
+    !tmp_20
     panic(149)
 
 L_ELSE_2:
-    !tmp_14
+    !tmp_20
     jmp L_MERGE_3
 
 L_MERGE_3:

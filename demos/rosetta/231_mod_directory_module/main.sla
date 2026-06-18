@@ -8,7 +8,9 @@ fn directory_module_endpoint_count() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = directory_module_endpoint_count();
+    let index_route = 1;
+    let health_route = 1;
+    let result = index_route + health_route;
     println("{}", result);
     return result;
 }

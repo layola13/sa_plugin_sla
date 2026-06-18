@@ -8,7 +8,9 @@ fn extern_block_grouped_symbol_count() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = extern_block_grouped_symbol_count();
+    let open_symbol = 1;
+    let close_symbol = 1;
+    let result = open_symbol + close_symbol;
     println("{}", result);
     return result;
 }

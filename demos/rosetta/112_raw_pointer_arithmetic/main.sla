@@ -9,9 +9,10 @@ fn raw_pointer_third_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = raw_pointer_third_value();
-    println("{}", result);
-    return result;
+    let data: [i32; 4] = [1, 2, 3, 4];
+    let third = unsafe { *data.as_ptr().add(2) };
+    println("{}", third);
+    return third;
 }
 
 @test "rosetta 112 112_raw_pointer_arithmetic"() {

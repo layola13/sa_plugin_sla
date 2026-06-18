@@ -1,9 +1,9 @@
 # 237 Mod Inline Submodule
 
-This slot keeps inline child-module wiring observable as one nested layer.
+This slot now uses a real nested submodule fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a layer-count observable instead of true inline submodule semantics.
 
-- `main.rs`: Rust reference for one nested inline child module.
-- `main.sla`: Sla companion for one nested inline child module.
+- `main.rs`: Rust reference that reads the outer submodule, inline module, and deep seed module.
+- `main.sla`: current surrogate that only preserves a one-layer count.
 
 Commands:
 

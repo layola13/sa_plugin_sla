@@ -66,35 +66,50 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_12 = call @sla__result_flattened_value()
-    result = tmp_12
-    tmp_13 = call @sa_fmt_u64(result, 10)
-    tmp_14 = call @sa_fmt_buffer_data(tmp_13)
-    tmp_15 = call @sa_fmt_buffer_len(tmp_13)
-    tmp_16 = tmp_14
-    call @sa_print_bytes(&tmp_16, tmp_15)
-    call @sa_fmt_buffer_free(^tmp_13)
+    tmp_12 = 2
+    EXPAND RESULT_NEW_OK tmp_13, tmp_12
+    !tmp_12
+    EXPAND RESULT_NEW_OK tmp_14, tmp_13
+    !tmp_13
+    nested = tmp_14
+    tmp_15 = call @sla__flatten_result(nested)
+    tmp_16 = 0
+    tmp_17 = 1
+    tmp_18 = sub tmp_16, tmp_17
     !tmp_16
+    !tmp_17
+    EXPAND RESULT_UNWRAP_OR tmp_19, tmp_15, tmp_18
     !tmp_15
+    !tmp_18
+    result = tmp_19
+    tmp_20 = call @sa_fmt_u64(result, 10)
+    tmp_21 = call @sa_fmt_buffer_data(tmp_20)
+    tmp_22 = call @sa_fmt_buffer_len(tmp_20)
+    tmp_23 = tmp_21
+    call @sa_print_bytes(&tmp_23, tmp_22)
+    call @sa_fmt_buffer_free(^tmp_20)
+    !tmp_23
+    !tmp_22
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !nested
     return result
 
 @test "rosetta 176 176_result_flattening"():
 L_TEST_ENTRY_3:
-    tmp_17 = call @sla__result_flattened_value()
-    got = tmp_17
-    tmp_18 = 2
-    tmp_19 = ne got, tmp_18
-    !tmp_18
-    br tmp_19 -> L_THEN_4, L_ELSE_5
+    tmp_24 = call @sla__result_flattened_value()
+    got = tmp_24
+    tmp_25 = 2
+    tmp_26 = ne got, tmp_25
+    !tmp_25
+    br tmp_26 -> L_THEN_4, L_ELSE_5
 
 L_THEN_4:
-    !tmp_19
+    !tmp_26
     panic(176)
 
 L_ELSE_5:
-    !tmp_19
+    !tmp_26
     jmp L_MERGE_6
 
 L_MERGE_6:

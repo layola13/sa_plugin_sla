@@ -1,9 +1,9 @@
 # 238 Mod Path Resolution Order
 
-This slot keeps path-priority rules observable as a root item winning over a local module path in the final score.
+This slot now uses a real ordered-path fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a priority-count observable instead of true path resolution ordering.
 
-- `main.rs`: Rust reference for root-item priority over a local module path.
-- `main.sla`: Sla companion for root-item priority over a local module path.
+- `main.rs`: Rust reference that reads the aggregate path module plus first/second branch modules and checks their explicit order.
+- `main.sla`: current surrogate that only preserves a one-priority count.
 
 Commands:
 

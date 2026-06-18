@@ -5,7 +5,7 @@
 @import "sa_std/sync/mutex.sa"
 @import "sa_std/thread.sa"
 
-fn notify_ready(shared: Arc<Mutex<i32>>) -> i32 {
+fn notify_ready(shared: Arc<Mutex<i32> >) -> i32 {
     let ready = (*shared).lock().unwrap();
     *ready = 4;
     return 0;

@@ -36,35 +36,51 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_9 = call @sla__raw_pointer_third_value()
-    result = tmp_9
-    tmp_10 = call @sa_fmt_u64(result, 10)
-    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
-    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
-    tmp_13 = tmp_11
-    call @sa_print_bytes(&tmp_13, tmp_12)
-    call @sa_fmt_buffer_free(^tmp_10)
-    !tmp_13
-    !tmp_12
+    data = alloc 16
+    tmp_9 = 1
+    store data+0, tmp_9 as i32
+    tmp_10 = 2
+    store data+4, tmp_10 as i32
+    tmp_11 = 3
+    store data+8, tmp_11 as i32
+    tmp_12 = 4
+    store data+12, tmp_12 as i32
+    tmp_14 = 2
+    tmp_15 = mul tmp_14, 4
+    tmp_16 = ptr_add data, tmp_15
+    !tmp_15
+    !tmp_14
+    tmp_17 = load tmp_16+0 as i32
+    tmp_13 = tmp_17
+    third = tmp_13
+    tmp_18 = call @sa_fmt_u64(third, 10)
+    tmp_19 = call @sa_fmt_buffer_data(tmp_18)
+    tmp_20 = call @sa_fmt_buffer_len(tmp_18)
+    tmp_21 = tmp_19
+    call @sa_print_bytes(&tmp_21, tmp_20)
+    call @sa_fmt_buffer_free(^tmp_18)
+    !tmp_21
+    !tmp_20
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    return result
+    !data
+    return third
 
 @test "rosetta 112 112_raw_pointer_arithmetic"():
 L_TEST_ENTRY_0:
-    tmp_14 = call @sla__raw_pointer_third_value()
-    got = tmp_14
-    tmp_15 = 3
-    tmp_16 = ne got, tmp_15
-    !tmp_15
-    br tmp_16 -> L_THEN_1, L_ELSE_2
+    tmp_22 = call @sla__raw_pointer_third_value()
+    got = tmp_22
+    tmp_23 = 3
+    tmp_24 = ne got, tmp_23
+    !tmp_23
+    br tmp_24 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_16
+    !tmp_24
     panic(112)
 
 L_ELSE_2:
-    !tmp_16
+    !tmp_24
     jmp L_MERGE_3
 
 L_MERGE_3:

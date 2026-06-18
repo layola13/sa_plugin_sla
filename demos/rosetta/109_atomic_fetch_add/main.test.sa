@@ -30,35 +30,47 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_5 = call @sla__atomic_fetch_add_sum()
-    value = tmp_5
-    tmp_6 = call @sa_fmt_u64(value, 10)
-    tmp_7 = call @sa_fmt_buffer_data(tmp_6)
-    tmp_8 = call @sa_fmt_buffer_len(tmp_6)
-    tmp_9 = tmp_7
-    call @sa_print_bytes(&tmp_9, tmp_8)
-    call @sa_fmt_buffer_free(^tmp_6)
-    !tmp_9
-    !tmp_8
+    tmp_5 = 5
+    value = stack_alloc AtomicI32_SIZE
+    EXPAND ATOMIC_I32_INIT value, tmp_5
+    !tmp_5
+    tmp_6 = 3
+    EXPAND ATOMIC_I32_FETCH_ADD tmp_7, value, tmp_6, seq_cst
+    !tmp_6
+    old = tmp_7
+    EXPAND ATOMIC_I32_LOAD tmp_8, value, seq_cst
+    new = tmp_8
+    tmp_9 = add old, new
+    result = tmp_9
+    tmp_10 = call @sa_fmt_u64(result, 10)
+    tmp_11 = call @sa_fmt_buffer_data(tmp_10)
+    tmp_12 = call @sa_fmt_buffer_len(tmp_10)
+    tmp_13 = tmp_11
+    call @sa_print_bytes(&tmp_13, tmp_12)
+    call @sa_fmt_buffer_free(^tmp_10)
+    !tmp_13
+    !tmp_12
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    return value
+    !old
+    !new
+    return result
 
 @test "rosetta 109 109_atomic_fetch_add"():
 L_TEST_ENTRY_0:
-    tmp_10 = call @sla__atomic_fetch_add_sum()
-    got = tmp_10
-    tmp_11 = 13
-    tmp_12 = ne got, tmp_11
-    !tmp_11
-    br tmp_12 -> L_THEN_1, L_ELSE_2
+    tmp_14 = call @sla__atomic_fetch_add_sum()
+    got = tmp_14
+    tmp_15 = 13
+    tmp_16 = ne got, tmp_15
+    !tmp_15
+    br tmp_16 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_12
+    !tmp_16
     panic(109)
 
 L_ELSE_2:
-    !tmp_12
+    !tmp_16
     jmp L_MERGE_3
 
 L_MERGE_3:

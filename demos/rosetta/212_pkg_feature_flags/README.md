@@ -1,9 +1,9 @@
 # 212 Pkg Feature Flags
 
-This slot keeps feature activation observable as one default feature plus one explicit feature.
+This slot now uses a real nested feature-flag fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves an enabled-feature count instead of true feature resolution.
 
-- `main.rs`: Rust reference for one default feature plus one explicit feature.
-- `main.sla`: Sla companion for one default feature plus one explicit feature.
+- `main.rs`: Rust reference that reads the package manifest, nested `src/flags` modules, and all feature constants.
+- `main.sla`: current surrogate that only preserves a two-feature count.
 
 Commands:
 

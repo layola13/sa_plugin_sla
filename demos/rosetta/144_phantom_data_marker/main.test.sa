@@ -22,35 +22,39 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_2 = call @sla__phantom_marker_id()
-    result = tmp_2
-    tmp_3 = call @sa_fmt_u64(result, 10)
-    tmp_4 = call @sa_fmt_buffer_data(tmp_3)
-    tmp_5 = call @sa_fmt_buffer_len(tmp_3)
-    tmp_6 = tmp_4
-    call @sa_print_bytes(&tmp_6, tmp_5)
-    call @sa_fmt_buffer_free(^tmp_3)
+    w = alloc 4
+    tmp_2 = 7
+    store w+0, tmp_2 as i32
+    tmp_3 = load w+0 as i32
+    result = tmp_3
+    tmp_4 = call @sa_fmt_u64(result, 10)
+    tmp_5 = call @sa_fmt_buffer_data(tmp_4)
+    tmp_6 = call @sa_fmt_buffer_len(tmp_4)
+    tmp_7 = tmp_5
+    call @sa_print_bytes(&tmp_7, tmp_6)
+    call @sa_fmt_buffer_free(^tmp_4)
+    !tmp_7
     !tmp_6
-    !tmp_5
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !w
     return result
 
 @test "rosetta 144 144_phantom_data_marker"():
 L_TEST_ENTRY_0:
-    tmp_7 = call @sla__phantom_marker_id()
-    got = tmp_7
-    tmp_8 = 7
-    tmp_9 = ne got, tmp_8
-    !tmp_8
-    br tmp_9 -> L_THEN_1, L_ELSE_2
+    tmp_8 = call @sla__phantom_marker_id()
+    got = tmp_8
+    tmp_9 = 7
+    tmp_10 = ne got, tmp_9
+    !tmp_9
+    br tmp_10 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_9
+    !tmp_10
     panic(144)
 
 L_ELSE_2:
-    !tmp_9
+    !tmp_10
     jmp L_MERGE_3
 
 L_MERGE_3:

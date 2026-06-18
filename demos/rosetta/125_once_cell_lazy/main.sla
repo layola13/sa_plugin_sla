@@ -18,7 +18,10 @@ fn once_cell_lazy_total() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = once_cell_lazy_total();
+    let value = ONCE_NEW();
+    let first: i32 = ONCE_GET_OR_INIT(value, init_42);
+    let second: i32 = ONCE_GET_OR_INIT(value, init_99);
+    let result = first + second;
     println("{}", result);
     return result;
 };

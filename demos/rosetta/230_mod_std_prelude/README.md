@@ -1,9 +1,9 @@
 # 230 Mod Std Prelude
 
-This slot keeps the std prelude surface observable as three imported symbols: `Option`, `Result`, and `println`.
+This slot now uses a real local-prelude fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a prelude-symbol count instead of true std prelude import behavior.
 
-- `main.rs`: Rust reference for `Option`, `Result`, and `println` from the prelude.
-- `main.sla`: Sla companion for `Option`, `Result`, and `println` from the prelude.
+- `main.rs`: Rust reference that reads the prelude aggregate, interface, layout, and core seed module.
+- `main.sla`: current surrogate that only preserves a three-symbol count.
 
 Commands:
 

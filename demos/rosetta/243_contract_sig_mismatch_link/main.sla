@@ -8,7 +8,9 @@ fn contract_signature_mismatch_count() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_signature_mismatch_count();
+    let expected_args = 2;
+    let provided_args = 1;
+    let result = expected_args - provided_args;
     println("{}", result);
     return result;
 }

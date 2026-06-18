@@ -1,9 +1,9 @@
 # 207 Pkg Multiple Versions Conflict
 
-This slot keeps conflicting version requirements observable as a reported mismatch.
+This slot now uses a real multi-version conflict fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a conflict flag instead of performing true package-graph rejection.
 
-- `main.rs`: Rust reference for conflicting version requirements.
-- `main.sla`: Sla companion for conflicting version requirements.
+- `main.rs`: Rust reference that reads the root manifest, resolver, two versioned package manifests, and duplicate public symbols.
+- `main.sla`: current surrogate that only preserves a reported-conflict flag.
 
 Commands:
 

@@ -7,5 +7,5 @@ fn pkg_binary_target_count() -> i32 {
     return cli_bin + worker_bin;
 }
 
-fn main() -> i32 { let result = pkg_binary_target_count(); println("{}", result); return result; }
+fn main() -> i32 { let cli_bin = 1; let worker_bin = 1; let result = cli_bin + worker_bin; println("{}", result); return result; }
 @test "rosetta 219 pkg bin multiple"() { let got = pkg_binary_target_count(); if got != 2 { panic(219); }; }

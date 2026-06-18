@@ -15,7 +15,7 @@ fn c_callback_result() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = c_callback_result();
+    let result = apply(add_one, 41);
     println("{}", result);
     return result;
 }

@@ -1,9 +1,9 @@
 # 211 Pkg Workspace Inheritance
 
-This slot keeps inherited workspace metadata observable as shared version and license fields.
+This slot now uses a real workspace-inheritance fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves inherited-field counts instead of true workspace metadata inheritance.
 
-- `main.rs`: Rust reference for inherited version and license metadata.
-- `main.sla`: Sla companion for inherited version and license metadata.
+- `main.rs`: Rust reference that reads the workspace manifest, shared config, shared package, and both inheriting member packages.
+- `main.sla`: current surrogate that only preserves a two-field inheritance count.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 209 Pkg Build Dependencies
 
-This slot keeps build-script dependency wiring observable as one build-time package.
+This slot now uses a real build-generated fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a build-dependency count instead of true build-script execution or generated-source lifecycle behavior.
 
-- `main.rs`: Rust reference for a build-time dependency.
-- `main.sla`: Sla companion for a build-time dependency.
+- `main.rs`: Rust reference that checks `sa.pkg`, the generated artifact module, and the `src` import of the generated output.
+- `main.sla`: current surrogate that only preserves a one-build-dependency count.
 
 Commands:
 

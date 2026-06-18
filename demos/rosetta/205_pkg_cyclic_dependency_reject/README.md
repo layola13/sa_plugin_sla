@@ -1,9 +1,9 @@
 # 205 Pkg Cyclic Dependency Reject
 
-This slot keeps cycle detection observable as a rejected package graph.
+This slot now uses a real cyclic-import reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a cycle-count observable instead of performing true package-graph rejection.
 
-- `main.rs`: Rust reference for cycle detection in the package graph.
-- `main.sla`: Sla companion for cycle detection in the package graph.
+- `main.rs`: Rust reference that reads `pkg_a/main.sa` and `pkg_b/main.sa` and checks the explicit cycle shape.
+- `main.sla`: current surrogate that only preserves a one-cycle count observable.
 
 Commands:
 

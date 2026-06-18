@@ -9,7 +9,10 @@ fn contract_log_facade_levels() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_log_facade_levels();
+    let info = 1;
+    let warn = 1;
+    let error = 1;
+    let result = info + warn + error;
     println("{}", result);
     return result;
 }

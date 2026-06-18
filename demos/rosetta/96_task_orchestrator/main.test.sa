@@ -38,10 +38,10 @@ L_THEN_3:
 L_ELSE_4:
     !tmp_5
     tmp_7 = load task+1 as i32
+    priority = tmp_7
     tmp_8 = load task+5 as i32
-    tmp_9 = sub tmp_7, tmp_8
-    !tmp_7
-    !tmp_8
+    retries = tmp_8
+    tmp_9 = sub priority, retries
     !task
     return tmp_9
 

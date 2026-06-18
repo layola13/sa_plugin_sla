@@ -65,38 +65,78 @@ L_ELSE_1:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_17 = call @sla__thread_local_cell_value()
-    result = tmp_17
-    tmp_18 = call @sa_fmt_u64(result, 10)
-    tmp_19 = call @sa_fmt_buffer_data(tmp_18)
-    tmp_20 = call @sa_fmt_buffer_len(tmp_18)
-    tmp_21 = tmp_19
-    call @sa_print_bytes(&tmp_21, tmp_20)
-    call @sa_fmt_buffer_free(^tmp_18)
-    !tmp_21
+    tmp_17 = call @sla__current_thread_slot()
+    slot = tmp_17
+    tmp_18 = load slot+8 as ptr
+    tmp_19 = load slot+8 as ptr
+    EXPAND CELL_GET tmp_20, tmp_19
+    !tmp_19
+    tmp_21 = 2
+    tmp_22 = add tmp_20, tmp_21
     !tmp_20
+    !tmp_21
+    EXPAND CELL_SET tmp_18, tmp_22
+    !tmp_18
+    !tmp_22
+    tmp_23 = load slot+0 as i32
+    tmp_24 = 1
+    tmp_25 = eq tmp_23, tmp_24
+    !tmp_23
+    !tmp_24
+    tmp_26 = alloc 4
+    br tmp_25 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_25
+    tmp_27 = load slot+8 as ptr
+    EXPAND CELL_GET tmp_28, tmp_27
+    !tmp_27
+    store tmp_26+0, tmp_28 as i32
+    !tmp_28
+    jmp L_MERGE_5
+
+L_ELSE_4:
+    !tmp_25
+    tmp_29 = 0
+    store tmp_26+0, tmp_29 as i32
+    !tmp_29
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_30 = load tmp_26+0 as i32
+    !tmp_26
+    result = tmp_30
+    tmp_31 = call @sa_fmt_u64(result, 10)
+    tmp_32 = call @sa_fmt_buffer_data(tmp_31)
+    tmp_33 = call @sa_fmt_buffer_len(tmp_31)
+    tmp_34 = tmp_32
+    call @sa_print_bytes(&tmp_34, tmp_33)
+    call @sa_fmt_buffer_free(^tmp_31)
+    !tmp_34
+    !tmp_33
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !slot
     return result
 
 @test "rosetta 124 124_thread_local_storage"():
-L_TEST_ENTRY_3:
-    tmp_22 = call @sla__thread_local_cell_value()
-    got = tmp_22
-    tmp_23 = 8
-    tmp_24 = ne got, tmp_23
-    !tmp_23
-    br tmp_24 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_6:
+    tmp_35 = call @sla__thread_local_cell_value()
+    got = tmp_35
+    tmp_36 = 8
+    tmp_37 = ne got, tmp_36
+    !tmp_36
+    br tmp_37 -> L_THEN_7, L_ELSE_8
 
-L_THEN_4:
-    !tmp_24
+L_THEN_7:
+    !tmp_37
     panic(124)
 
-L_ELSE_5:
-    !tmp_24
-    jmp L_MERGE_6
+L_ELSE_8:
+    !tmp_37
+    jmp L_MERGE_9
 
-L_MERGE_6:
+L_MERGE_9:
     !got
     return
 

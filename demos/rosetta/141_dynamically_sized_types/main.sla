@@ -6,6 +6,11 @@ fn dynamically_sized_bytes_len() -> usize {
     return bytes.len();
 }
 
-fn main() -> i32 { let result = dynamically_sized_bytes_len(); println("{}", result); return 0; }
+fn main() -> i32 {
+    let bytes = "hi";
+    let result = bytes.len();
+    println("{}", result);
+    return 0;
+}
 
 @test "rosetta 141 141_dynamically_sized_types"() { let got = dynamically_sized_bytes_len(); if got != 2 { panic(141); }; }

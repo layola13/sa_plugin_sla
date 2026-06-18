@@ -8,7 +8,9 @@ fn contract_static_init_stages() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_static_init_stages();
+    let config_loaded = 1;
+    let service_started = 1;
+    let result = config_loaded + service_started;
     println("{}", result);
     return result;
 }

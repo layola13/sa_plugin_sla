@@ -1,9 +1,9 @@
 # 232 Mod Conditional Import
 
-This slot keeps cfg-driven module selection observable as one active platform branch.
+This slot now uses a real profile-branch fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a branch-count observable instead of true conditional module selection.
 
-- `main.rs`: Rust reference for choosing one active platform branch.
-- `main.sla`: Sla companion for choosing one active platform branch.
+- `main.rs`: Rust reference that reads the selector plus both native and portable profile trees.
+- `main.sla`: current surrogate that only preserves a one-branch count.
 
 Commands:
 

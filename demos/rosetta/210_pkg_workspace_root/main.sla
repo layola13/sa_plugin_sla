@@ -7,5 +7,5 @@ fn pkg_workspace_member_count() -> i32 {
     return app_member + lib_member;
 }
 
-fn main() -> i32 { let result = pkg_workspace_member_count(); println("{}", result); return result; }
+fn main() -> i32 { let app_member = 1; let lib_member = 1; let result = app_member + lib_member; println("{}", result); return result; }
 @test "rosetta 210 pkg workspace root"() { let got = pkg_workspace_member_count(); if got != 2 { panic(210); }; }

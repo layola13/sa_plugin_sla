@@ -7,7 +7,8 @@ fn eyre_context_len() -> usize {
 }
 
 fn main() -> i32 {
-    let result = eyre_context_len();
+    let context = "context: boom";
+    let result = context.len();
     println("{}", result);
     return 0;
 }

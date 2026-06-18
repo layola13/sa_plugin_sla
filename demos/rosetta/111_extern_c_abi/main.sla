@@ -11,7 +11,7 @@ fn extern_c_add_pair_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = extern_c_add_pair_value();
+    let result = unsafe { add_pair(11, 12) };
     println("{}", result);
     return result;
 }

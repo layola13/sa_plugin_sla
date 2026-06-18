@@ -1,9 +1,9 @@
 # 229 Mod Layout Injection
 
-This slot keeps module-provided layout metadata observable as one injected field.
+This slot now uses a real layout-injection fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves an injected-field count instead of true layout-driven wrapper behavior.
 
-- `main.rs`: Rust reference for one module-injected layout field.
-- `main.sla`: Sla companion for one module-injected layout field.
+- `main.rs`: Rust reference that reads the FFI contract, record layout, and wrapper code that uses the injected offsets.
+- `main.sla`: current surrogate that only preserves a one-field count.
 
 Commands:
 

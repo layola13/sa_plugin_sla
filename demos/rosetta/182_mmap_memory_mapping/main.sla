@@ -14,7 +14,9 @@ fn mmap_mapped_fd() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = mmap_mapped_fd();
+    let file = File::open("/dev/zero").unwrap();
+    let raw_fd = file.as_raw_fd();
+    let result = raw_fd + 1;
     println("{}", result);
     return result;
 }

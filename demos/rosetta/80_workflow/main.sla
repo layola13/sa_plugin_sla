@@ -8,8 +8,10 @@ struct WorkflowState {
 }
 
 fn completed_steps(state: WorkflowState) -> i32 {
-    let mut_count = bool_to_i32(state.lint_ok) + bool_to_i32(state.tests_ok) + bool_to_i32(state.package_ok);
-    return mut_count;
+    let lint = bool_to_i32(state.lint_ok);
+    let tests = bool_to_i32(state.tests_ok);
+    let package = bool_to_i32(state.package_ok);
+    return lint + tests + package;
 }
 
 fn bool_to_i32(value: bool) -> i32 {

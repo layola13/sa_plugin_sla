@@ -84,36 +84,57 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_17 = call @sla__waker_vtable_wake_count()
-    result = tmp_17
-    tmp_18 = call @sa_fmt_u64(result, 10)
-    tmp_19 = call @sa_fmt_buffer_data(tmp_18)
-    tmp_20 = call @sa_fmt_buffer_len(tmp_18)
-    tmp_21 = tmp_19
-    call @sa_print_bytes(&tmp_21, tmp_20)
-    call @sa_fmt_buffer_free(^tmp_18)
-    !tmp_21
-    !tmp_20
+    tmp_17 = 0
+    count = stack_alloc AtomicUsize_SIZE
+    EXPAND ATOMIC_USIZE_INIT count, tmp_17
+    !tmp_17
+    EXPAND PTR_CAST tmp_18, count
+    data = tmp_18
+    EXPAND RAW_WAKER_NEW tmp_19, data, VTABLE
+    raw = tmp_19
+    EXPAND WAKER_FROM_RAW tmp_20, raw
+    waker = tmp_20
+    EXPAND WAKER_CLONE tmp_21, waker
+    cloned = tmp_21
+    EXPAND WAKER_WAKE_BY_REF tmp_22, cloned
+    _by_ref = tmp_22
+    EXPAND WAKER_WAKE tmp_23, cloned
+    _wake = tmp_23
+    EXPAND ATOMIC_USIZE_LOAD tmp_24, count, relaxed
+    result = tmp_24
+    tmp_25 = call @sa_fmt_u64(result, 10)
+    tmp_26 = call @sa_fmt_buffer_data(tmp_25)
+    tmp_27 = call @sa_fmt_buffer_len(tmp_25)
+    tmp_28 = tmp_26
+    call @sa_print_bytes(&tmp_28, tmp_27)
+    call @sa_fmt_buffer_free(^tmp_25)
+    !tmp_28
+    !tmp_27
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    tmp_22 = result as i32
-    return tmp_22
+    tmp_29 = result as i32
+    !_by_ref
+    !_wake
+    !waker
+    !raw
+    !cloned
+    return tmp_29
 
 @test "rosetta 131 131_waker_vtable_mechanics"():
 L_TEST_ENTRY_0:
-    tmp_23 = call @sla__waker_vtable_wake_count()
-    got = tmp_23
-    tmp_24 = 3
-    tmp_25 = ne got, tmp_24
-    !tmp_24
-    br tmp_25 -> L_THEN_1, L_ELSE_2
+    tmp_30 = call @sla__waker_vtable_wake_count()
+    got = tmp_30
+    tmp_31 = 3
+    tmp_32 = ne got, tmp_31
+    !tmp_31
+    br tmp_32 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_25
+    !tmp_32
     panic(131)
 
 L_ELSE_2:
-    !tmp_25
+    !tmp_32
     jmp L_MERGE_3
 
 L_MERGE_3:

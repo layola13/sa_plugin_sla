@@ -8,7 +8,9 @@ fn contract_thread_local_slots() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_thread_local_slots();
+    let main_thread_slot = 1;
+    let worker_thread_slot = 1;
+    let result = main_thread_slot + worker_thread_slot;
     println("{}", result);
     return result;
 }

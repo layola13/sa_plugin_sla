@@ -13,7 +13,14 @@ fn asan_buffer_edge_sum() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = asan_buffer_edge_sum();
+    let buf = [0u8; 4];
+    buf[0] = 1;
+    buf[1] = 2;
+    buf[2] = 3;
+    buf[3] = 4;
+    let first = buf[0] as i32;
+    let last = buf[3] as i32;
+    let result = first + last;
     println("{}", result);
     return 0;
 }

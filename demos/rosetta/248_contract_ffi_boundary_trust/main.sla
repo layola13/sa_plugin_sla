@@ -8,7 +8,9 @@ fn contract_ffi_boundary_checks() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_ffi_boundary_checks();
+    let pointer_checked = 1;
+    let length_checked = 1;
+    let result = pointer_checked + length_checked;
     println("{}", result);
     return result;
 }

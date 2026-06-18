@@ -12,7 +12,7 @@ fn anyhow_fallback_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = anyhow_fallback_value();
+    let result = fail().map(|msg| msg + 1).unwrap_or(0);
     println("{}", result);
     return result;
 }

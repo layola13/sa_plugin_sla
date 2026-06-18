@@ -1,9 +1,9 @@
 # 102 Raii Guard
 
-This directory now records the current RAII-guard gap honestly.
+This slot models scoped mutex guard acquisition, early return, and guarded update behavior.
 
 - `main.rs`: Rust reference for scoped mutex guard acquisition, early return, and guarded update behavior.
-- `main.sla`: current Sla companion shape for the same observable intent, but the guarded update path no longer type-checks locally.
+- `main.sla`: Sla companion for the same guard path, with minimal dereference staging that is currently required for the checked update path to type-check locally.
 
 Commands:
 

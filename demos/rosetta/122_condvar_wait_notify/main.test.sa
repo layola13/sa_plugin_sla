@@ -91,82 +91,84 @@ L_THREAD_JOIN_OK_0:
 
 L_THREAD_JOIN_ERR_1:
     !tmp_16
-    EXPAND RESULT_NEW_ERR tmp_17, tmp_15
+    tmp_19 = add tmp_15, 0
+    EXPAND RESULT_NEW_ERR tmp_17, tmp_19
+    !tmp_19
     jmp L_THREAD_JOIN_END_2
 
 L_THREAD_JOIN_END_2:
     !tmp_15
     !tmp_14
     !handle
-    EXPAND RESULT_UNWRAP tmp_19, tmp_17
+    EXPAND RESULT_UNWRAP tmp_20, tmp_17
     !tmp_17
-    !tmp_19
-    EXPAND ARC_GET tmp_20, pair
-    EXPAND MUTEX_LOCK tmp_20
-    tmp_21 = ptr_add tmp_20, Mutex_data
-    EXPAND RESULT_NEW_OK tmp_22, tmp_21
-    !tmp_21
-    EXPAND RESULT_UNWRAP tmp_23, tmp_22
+    !tmp_20
+    EXPAND ARC_GET tmp_21, pair
+    EXPAND MUTEX_LOCK tmp_21
+    tmp_22 = ptr_add tmp_21, Mutex_data
+    EXPAND RESULT_NEW_OK tmp_23, tmp_22
     !tmp_22
-    ready = tmp_23
-    tmp_24 = load ready+0 as i32
-    tmp_25 = 4
-    tmp_26 = eq tmp_24, tmp_25
-    !tmp_24
+    EXPAND RESULT_UNWRAP tmp_24, tmp_23
+    !tmp_23
+    ready = tmp_24
+    tmp_25 = load ready+0 as i32
+    tmp_26 = 4
+    tmp_27 = eq tmp_25, tmp_26
     !tmp_25
-    br tmp_26 -> L_THEN_3, L_ELSE_4
+    !tmp_26
+    br tmp_27 -> L_THEN_3, L_ELSE_4
 
 L_THEN_3:
-    !tmp_26
-    tmp_27 = load ready+0 as i32
-    EXPAND MUTEX_UNLOCK tmp_20
-    !tmp_20
-    !ready
-    !pair
-    !notifier
-    return tmp_27
-
-L_ELSE_4:
-    !tmp_26
-    tmp_28 = 0
-    EXPAND MUTEX_UNLOCK tmp_20
+    !tmp_27
+    tmp_28 = load ready+0 as i32
+    EXPAND MUTEX_UNLOCK tmp_21
+    !tmp_21
     !ready
     !pair
     !notifier
     return tmp_28
 
+L_ELSE_4:
+    !tmp_27
+    tmp_29 = 0
+    EXPAND MUTEX_UNLOCK tmp_21
+    !ready
+    !pair
+    !notifier
+    return tmp_29
+
 
 @main() -> i32:
 L_ENTRY:
-    tmp_30 = call @sla__condvar_wait_result()
-    result = tmp_30
-    tmp_31 = call @sa_fmt_u64(result, 10)
-    tmp_32 = call @sa_fmt_buffer_data(tmp_31)
-    tmp_33 = call @sa_fmt_buffer_len(tmp_31)
-    tmp_34 = tmp_32
-    call @sa_print_bytes(&tmp_34, tmp_33)
-    call @sa_fmt_buffer_free(^tmp_31)
+    tmp_31 = call @sla__condvar_wait_result()
+    result = tmp_31
+    tmp_32 = call @sa_fmt_u64(result, 10)
+    tmp_33 = call @sa_fmt_buffer_data(tmp_32)
+    tmp_34 = call @sa_fmt_buffer_len(tmp_32)
+    tmp_35 = tmp_33
+    call @sa_print_bytes(&tmp_35, tmp_34)
+    call @sa_fmt_buffer_free(^tmp_32)
+    !tmp_35
     !tmp_34
-    !tmp_33
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
     return result
 
 @test "rosetta 122 122_condvar_wait_notify"():
 L_TEST_ENTRY_6:
-    tmp_35 = call @sla__condvar_wait_result()
-    got = tmp_35
-    tmp_36 = 4
-    tmp_37 = ne got, tmp_36
-    !tmp_36
-    br tmp_37 -> L_THEN_7, L_ELSE_8
+    tmp_36 = call @sla__condvar_wait_result()
+    got = tmp_36
+    tmp_37 = 4
+    tmp_38 = ne got, tmp_37
+    !tmp_37
+    br tmp_38 -> L_THEN_7, L_ELSE_8
 
 L_THEN_7:
-    !tmp_37
+    !tmp_38
     panic(122)
 
 L_ELSE_8:
-    !tmp_37
+    !tmp_38
     jmp L_MERGE_9
 
 L_MERGE_9:

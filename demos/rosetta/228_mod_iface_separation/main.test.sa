@@ -22,35 +22,41 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_3 = call @sla__mod_iface_layers()
-    result = tmp_3
-    tmp_4 = call @sa_fmt_u64(result, 10)
-    tmp_5 = call @sa_fmt_buffer_data(tmp_4)
-    tmp_6 = call @sa_fmt_buffer_len(tmp_4)
-    tmp_7 = tmp_5
-    call @sa_print_bytes(&tmp_7, tmp_6)
-    call @sa_fmt_buffer_free(^tmp_4)
-    !tmp_7
-    !tmp_6
+    tmp_3 = 1
+    interface_layer = tmp_3
+    tmp_4 = 1
+    implementation_layer = tmp_4
+    tmp_5 = add interface_layer, implementation_layer
+    result = tmp_5
+    tmp_6 = call @sa_fmt_u64(result, 10)
+    tmp_7 = call @sa_fmt_buffer_data(tmp_6)
+    tmp_8 = call @sa_fmt_buffer_len(tmp_6)
+    tmp_9 = tmp_7
+    call @sa_print_bytes(&tmp_9, tmp_8)
+    call @sa_fmt_buffer_free(^tmp_6)
+    !tmp_9
+    !tmp_8
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !implementation_layer
+    !interface_layer
     return result
 
 @test "rosetta 228 mod iface separation"():
 L_TEST_ENTRY_0:
-    tmp_8 = call @sla__mod_iface_layers()
-    got = tmp_8
-    tmp_9 = 2
-    tmp_10 = ne got, tmp_9
-    !tmp_9
-    br tmp_10 -> L_THEN_1, L_ELSE_2
+    tmp_10 = call @sla__mod_iface_layers()
+    got = tmp_10
+    tmp_11 = 2
+    tmp_12 = ne got, tmp_11
+    !tmp_11
+    br tmp_12 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_10
+    !tmp_12
     panic(228)
 
 L_ELSE_2:
-    !tmp_10
+    !tmp_12
     jmp L_MERGE_3
 
 L_MERGE_3:

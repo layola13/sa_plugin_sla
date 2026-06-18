@@ -8,7 +8,9 @@ fn contract_layout_stable_field_count() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_layout_stable_field_count();
+    let tag_field = 1;
+    let len_field = 1;
+    let result = tag_field + len_field;
     println("{}", result);
     return result;
 }

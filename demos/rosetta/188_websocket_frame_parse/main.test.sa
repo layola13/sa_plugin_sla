@@ -91,38 +91,124 @@ L_MERGE_2:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_18 = call @sla__websocket_text_frame_flag()
-    result = tmp_18
-    tmp_19 = call @sa_fmt_u64(result, 10)
-    tmp_20 = call @sa_fmt_buffer_data(tmp_19)
-    tmp_21 = call @sa_fmt_buffer_len(tmp_19)
-    tmp_22 = tmp_20
-    call @sa_print_bytes(&tmp_22, tmp_21)
-    call @sa_fmt_buffer_free(^tmp_19)
+    tmp_18 = 1
+    fin = tmp_18
+    tmp_19 = 1
+    opcode = tmp_19
+    tmp_20 = 0
+    masked = tmp_20
+    tmp_21 = 3
+    payload_len = tmp_21
+    tmp_22 = 1
+    tmp_23 = eq fin, tmp_22
     !tmp_22
-    !tmp_21
+    br tmp_23 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_23
+    tmp_24 = 1
+    tmp_25 = eq opcode, tmp_24
+    !tmp_24
+    br tmp_25 -> L_THEN_15, L_ELSE_16
+
+L_THEN_15:
+    !tmp_25
+    tmp_26 = 0
+    tmp_27 = eq masked, tmp_26
+    !tmp_26
+    br tmp_27 -> L_THEN_18, L_ELSE_19
+
+L_THEN_18:
+    !tmp_27
+    tmp_28 = 3
+    tmp_29 = eq payload_len, tmp_28
+    !tmp_28
+    br tmp_29 -> L_THEN_21, L_ELSE_22
+
+L_THEN_21:
+    !tmp_29
+    tmp_30 = 1
+    tmp_31 = call @sa_fmt_u64(tmp_30, 10)
+    tmp_32 = call @sa_fmt_buffer_data(tmp_31)
+    tmp_33 = call @sa_fmt_buffer_len(tmp_31)
+    tmp_34 = tmp_32
+    call @sa_print_bytes(&tmp_34, tmp_33)
+    call @sa_fmt_buffer_free(^tmp_31)
+    !tmp_34
+    !tmp_33
+    !tmp_30
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    return result
+    tmp_35 = 1
+    !opcode
+    !masked
+    !payload_len
+    !fin
+    return tmp_35
+
+L_ELSE_22:
+    !tmp_29
+    jmp L_MERGE_23
+
+L_MERGE_23:
+    jmp L_MERGE_20
+
+L_ELSE_19:
+    !tmp_27
+    jmp L_MERGE_20
+
+L_MERGE_20:
+    jmp L_MERGE_17
+
+L_ELSE_16:
+    !tmp_25
+    jmp L_MERGE_17
+
+L_MERGE_17:
+    jmp L_MERGE_14
+
+L_ELSE_13:
+    !tmp_23
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    tmp_40 = 0
+    tmp_41 = call @sa_fmt_u64(tmp_40, 10)
+    tmp_42 = call @sa_fmt_buffer_data(tmp_41)
+    tmp_43 = call @sa_fmt_buffer_len(tmp_41)
+    tmp_44 = tmp_42
+    call @sa_print_bytes(&tmp_44, tmp_43)
+    call @sa_fmt_buffer_free(^tmp_41)
+    !tmp_44
+    !tmp_43
+    !tmp_40
+    @const SLA_STR_1 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    tmp_45 = 0
+    !opcode
+    !masked
+    !payload_len
+    !fin
+    return tmp_45
 
 @test "rosetta 188 188_websocket_frame_parse"():
-L_TEST_ENTRY_12:
-    tmp_23 = call @sla__websocket_text_frame_flag()
-    got = tmp_23
-    tmp_24 = 1
-    tmp_25 = ne got, tmp_24
-    !tmp_24
-    br tmp_25 -> L_THEN_13, L_ELSE_14
+L_TEST_ENTRY_24:
+    tmp_46 = call @sla__websocket_text_frame_flag()
+    got = tmp_46
+    tmp_47 = 1
+    tmp_48 = ne got, tmp_47
+    !tmp_47
+    br tmp_48 -> L_THEN_25, L_ELSE_26
 
-L_THEN_13:
-    !tmp_25
+L_THEN_25:
+    !tmp_48
     panic(188)
 
-L_ELSE_14:
-    !tmp_25
-    jmp L_MERGE_15
+L_ELSE_26:
+    !tmp_48
+    jmp L_MERGE_27
 
-L_MERGE_15:
+L_MERGE_27:
     !got
     return
 

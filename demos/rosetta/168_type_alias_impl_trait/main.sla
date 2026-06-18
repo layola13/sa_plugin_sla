@@ -11,7 +11,8 @@ fn type_alias_impl_trait_result() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = type_alias_impl_trait_result();
+    let _iter = make_iter_surrogate();
+    let result = 0;
     println("{}", result);
     return result;
 }

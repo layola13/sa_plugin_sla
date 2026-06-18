@@ -32,35 +32,46 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_6 = call @sla__macro_rules_ast_sum()
-    result = tmp_6
-    tmp_7 = call @sa_fmt_u64(result, 10)
-    tmp_8 = call @sa_fmt_buffer_data(tmp_7)
-    tmp_9 = call @sa_fmt_buffer_len(tmp_7)
-    tmp_10 = tmp_8
-    call @sa_print_bytes(&tmp_10, tmp_9)
-    call @sa_fmt_buffer_free(^tmp_7)
-    !tmp_10
+    tmp_6 = 1
+    left = tmp_6
+    tmp_7 = 2
+    right = tmp_7
+    tmp_8 = call @sla__emit_sum(left, right)
+    emitted_total = tmp_8
+    tmp_9 = add emitted_total, left
+    tmp_10 = add tmp_9, right
     !tmp_9
+    result = tmp_10
+    tmp_11 = call @sa_fmt_u64(result, 10)
+    tmp_12 = call @sa_fmt_buffer_data(tmp_11)
+    tmp_13 = call @sa_fmt_buffer_len(tmp_11)
+    tmp_14 = tmp_12
+    call @sa_print_bytes(&tmp_14, tmp_13)
+    call @sa_fmt_buffer_free(^tmp_11)
+    !tmp_14
+    !tmp_13
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !right
+    !left
+    !emitted_total
     return result
 
 @test "rosetta 191 191_macro_rules_ast_emit"():
 L_TEST_ENTRY_0:
-    tmp_11 = call @sla__macro_rules_ast_sum()
-    got = tmp_11
-    tmp_12 = 6
-    tmp_13 = ne got, tmp_12
-    !tmp_12
-    br tmp_13 -> L_THEN_1, L_ELSE_2
+    tmp_15 = call @sla__macro_rules_ast_sum()
+    got = tmp_15
+    tmp_16 = 6
+    tmp_17 = ne got, tmp_16
+    !tmp_16
+    br tmp_17 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_13
+    !tmp_17
     panic(191)
 
 L_ELSE_2:
-    !tmp_13
+    !tmp_17
     jmp L_MERGE_3
 
 L_MERGE_3:

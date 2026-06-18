@@ -15,9 +15,14 @@ fn spin_lock_roundtrip() -> i32 {
 }
 
 fn main() -> i32 {
-    let value = spin_lock_roundtrip();
-    println("{}", value);
-    return value;
+    let lock = AtomicI32::new(0);
+
+    while lock.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+    }
+
+    lock.store(0, Ordering::Release);
+    println("{}", 1);
+    return 1;
 }
 
 @test "rosetta 108 108_atomic_spin_lock"() {

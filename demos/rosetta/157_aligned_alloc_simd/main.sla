@@ -8,7 +8,9 @@ fn aligned_simd_lane_count_surrogate() -> usize {
 }
 
 fn main() -> i32 {
-    let result = aligned_simd_lane_count_surrogate();
+    let alignment_bytes: usize = 16;
+    let lane_bytes: usize = 4;
+    let result = alignment_bytes / lane_bytes;
     println("{}", result);
     return 0;
 }

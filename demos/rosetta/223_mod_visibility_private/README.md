@@ -1,9 +1,9 @@
 # 223 Mod Visibility Private
 
-This slot keeps private module visibility observable as one internal helper remaining reachable only inside the module.
+This slot now uses a real public/internal visibility fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a private-helper count instead of true visibility enforcement.
 
-- `main.rs`: Rust reference for one private helper staying module-local.
-- `main.sla`: Sla companion for one private helper staying module-local.
+- `main.rs`: Rust reference that checks the public wrapper, internal bridge, and private detail module boundary.
+- `main.sla`: current surrogate that only preserves a one-private-helper count.
 
 Commands:
 

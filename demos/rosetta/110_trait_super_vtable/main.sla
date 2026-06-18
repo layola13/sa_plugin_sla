@@ -27,11 +27,16 @@ impl B for Item {
 
 fn super_trait_total() -> i32 {
     let item = Item { value: 7 };
-    return item.a() + item.b();
+    let left = item.a();
+    let right = item.b();
+    return left + right;
 }
 
 fn main() -> i32 {
-    let result = super_trait_total();
+    let item = Item { value: 7 };
+    let left = item.a();
+    let right = item.b();
+    let result = left + right;
     println("{}", result);
     return result;
 }

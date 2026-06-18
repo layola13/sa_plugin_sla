@@ -88,38 +88,105 @@ L_IF_LET_MERGE_2:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_17 = call @sla__if_let_chain_sum()
-    value = tmp_17
-    tmp_18 = call @sa_fmt_u64(value, 10)
-    tmp_19 = call @sa_fmt_buffer_data(tmp_18)
-    tmp_20 = call @sa_fmt_buffer_len(tmp_18)
-    tmp_21 = tmp_19
-    call @sa_print_bytes(&tmp_21, tmp_20)
-    call @sa_fmt_buffer_free(^tmp_18)
+    tmp_17 = 2
+    EXPAND OPTION_NEW_SOME tmp_18, tmp_17
+    !tmp_17
+    left = tmp_18
+    tmp_19 = 3
+    EXPAND OPTION_NEW_SOME tmp_20, tmp_19
+    !tmp_19
+    middle = tmp_20
+    tmp_21 = 4
+    EXPAND OPTION_NEW_SOME tmp_22, tmp_21
     !tmp_21
-    !tmp_20
+    right = tmp_22
+    tmp_23 = alloc 4
+    EXPAND OPTION_IS_SOME tmp_24, left
+    br tmp_24 -> L_IF_LET_NEXT_11, L_IF_LET_FAIL_12
+
+L_IF_LET_FAIL_12:
+    !tmp_24
+    jmp L_IF_LET_ELSE_9
+
+L_IF_LET_NEXT_11:
+    !tmp_24
+    EXPAND OPTION_GET tmp_25, left
+    EXPAND OPTION_IS_SOME tmp_26, middle
+    br tmp_26 -> L_IF_LET_NEXT_13, L_IF_LET_FAIL_14
+
+L_IF_LET_FAIL_14:
+    !tmp_26
+    !tmp_25
+    jmp L_IF_LET_ELSE_9
+
+L_IF_LET_NEXT_13:
+    !tmp_26
+    EXPAND OPTION_GET tmp_27, middle
+    EXPAND OPTION_IS_SOME tmp_28, right
+    br tmp_28 -> L_IF_LET_THEN_8, L_IF_LET_FAIL_15
+
+L_IF_LET_FAIL_15:
+    !tmp_28
+    !tmp_25
+    !tmp_27
+    jmp L_IF_LET_ELSE_9
+
+L_IF_LET_THEN_8:
+    !tmp_28
+    EXPAND OPTION_GET tmp_29, right
+    tmp_30 = add tmp_25, tmp_27
+    tmp_31 = add tmp_30, tmp_29
+    !tmp_30
+    store tmp_23+0, tmp_31 as i32
+    !tmp_31
+    !tmp_25
+    !tmp_27
+    !tmp_29
+    jmp L_IF_LET_MERGE_10
+
+L_IF_LET_ELSE_9:
+    tmp_32 = 0
+    store tmp_23+0, tmp_32 as i32
+    !tmp_32
+    jmp L_IF_LET_MERGE_10
+
+L_IF_LET_MERGE_10:
+    tmp_33 = load tmp_23+0 as i32
+    !tmp_23
+    result = tmp_33
+    tmp_34 = call @sa_fmt_u64(result, 10)
+    tmp_35 = call @sa_fmt_buffer_data(tmp_34)
+    tmp_36 = call @sa_fmt_buffer_len(tmp_34)
+    tmp_37 = tmp_35
+    call @sa_print_bytes(&tmp_37, tmp_36)
+    call @sa_fmt_buffer_free(^tmp_34)
+    !tmp_37
+    !tmp_36
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
-    return value
+    !middle
+    !right
+    !left
+    return result
 
 @test "rosetta 104 104_if_let_chains"():
-L_TEST_ENTRY_8:
-    tmp_22 = call @sla__if_let_chain_sum()
-    got = tmp_22
-    tmp_23 = 9
-    tmp_24 = ne got, tmp_23
-    !tmp_23
-    br tmp_24 -> L_THEN_9, L_ELSE_10
+L_TEST_ENTRY_16:
+    tmp_38 = call @sla__if_let_chain_sum()
+    got = tmp_38
+    tmp_39 = 9
+    tmp_40 = ne got, tmp_39
+    !tmp_39
+    br tmp_40 -> L_THEN_17, L_ELSE_18
 
-L_THEN_9:
-    !tmp_24
+L_THEN_17:
+    !tmp_40
     panic(104)
 
-L_ELSE_10:
-    !tmp_24
-    jmp L_MERGE_11
+L_ELSE_18:
+    !tmp_40
+    jmp L_MERGE_19
 
-L_MERGE_11:
+L_MERGE_19:
     !got
     return
 

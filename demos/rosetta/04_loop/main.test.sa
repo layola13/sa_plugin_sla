@@ -42,6 +42,7 @@ L_ENTRY:
     tmp_10 = load tmp_9+0 as u8
     !tmp_9
     tmp_11 = tmp_10 as i32
+    a = tmp_11
     tmp_12 = 1
     tmp_13 = mul tmp_12, 1
     tmp_14 = ptr_add zeroed, tmp_13
@@ -50,30 +51,29 @@ L_ENTRY:
     tmp_15 = load tmp_14+0 as u8
     !tmp_14
     tmp_16 = tmp_15 as i32
-    tmp_17 = add tmp_11, tmp_16
-    !tmp_11
-    !tmp_16
-    tmp_18 = 2
-    tmp_19 = mul tmp_18, 1
-    tmp_20 = ptr_add zeroed, tmp_19
-    !tmp_19
+    b = tmp_16
+    tmp_17 = 2
+    tmp_18 = mul tmp_17, 1
+    tmp_19 = ptr_add zeroed, tmp_18
     !tmp_18
-    tmp_21 = load tmp_20+0 as u8
-    !tmp_20
-    tmp_22 = tmp_21 as i32
-    tmp_23 = add tmp_17, tmp_22
     !tmp_17
-    !tmp_22
-    tmp_24 = 3
-    tmp_25 = mul tmp_24, 1
-    tmp_26 = ptr_add zeroed, tmp_25
-    !tmp_25
-    !tmp_24
-    tmp_27 = load tmp_26+0 as u8
-    !tmp_26
-    tmp_28 = tmp_27 as i32
-    tmp_29 = add tmp_23, tmp_28
+    tmp_20 = load tmp_19+0 as u8
+    !tmp_19
+    tmp_21 = tmp_20 as i32
+    c = tmp_21
+    tmp_22 = 3
+    tmp_23 = mul tmp_22, 1
+    tmp_24 = ptr_add zeroed, tmp_23
     !tmp_23
+    !tmp_22
+    tmp_25 = load tmp_24+0 as u8
+    !tmp_24
+    tmp_26 = tmp_25 as i32
+    d = tmp_26
+    tmp_27 = add a, b
+    tmp_28 = add tmp_27, c
+    !tmp_27
+    tmp_29 = add tmp_28, d
     !tmp_28
     !zeroed
     !buffer

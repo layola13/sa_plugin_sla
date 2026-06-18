@@ -55,7 +55,10 @@ fn park_unpark_result() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = park_unpark_result();
+    let published = publish_thread();
+    let parked = park_thread(published);
+    let unparked = unpark_thread(parked);
+    let result = resume_after_unpark(unparked);
     println("{}", result);
     return result;
 };

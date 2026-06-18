@@ -2,5 +2,11 @@
 @import "sa_std/fmt.sai"
 
 fn memory_layout_size_plus_align() -> usize { let size: usize = 8; let align: usize = 4; return size + align; }
-fn main() -> i32 { let result = memory_layout_size_plus_align(); println("{}", result); return 0; }
+fn main() -> i32 {
+    let size: usize = 8;
+    let align: usize = 4;
+    let result = size + align;
+    println("{}", result);
+    return 0;
+}
 @test "rosetta 152 152_memory_layout_struct"() { let got = memory_layout_size_plus_align(); if got != 12 { panic(152); }; }

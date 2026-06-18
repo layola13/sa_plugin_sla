@@ -1,9 +1,9 @@
 # 240 Mod Entry Point Override
 
-This slot keeps custom entry-point selection observable as one overridden startup path.
+This slot now uses a real default/override entry fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves an override-selected count instead of true entry-point override behavior.
 
-- `main.rs`: Rust reference for selecting a custom startup path.
-- `main.sla`: Sla companion for selecting a custom startup path.
+- `main.rs`: Rust reference that reads the default and override entry trees and checks the aggregate selects the override branch.
+- `main.sla`: current surrogate that only preserves a one-override count.
 
 Commands:
 

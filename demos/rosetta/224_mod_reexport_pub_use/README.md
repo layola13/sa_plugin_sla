@@ -1,9 +1,9 @@
 # 224 Mod Reexport Pub Use
 
-This slot keeps public re-export behavior observable as one item surfaced through `pub use`.
+This slot now uses a real re-export-style bridge fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a re-export count instead of true `pub use` semantics.
 
-- `main.rs`: Rust reference for one item surfaced through `pub use`.
-- `main.sla`: Sla companion for one item surfaced through `pub use`.
+- `main.rs`: Rust reference that reads the bridge module, deep value module, and hidden seed module.
+- `main.sla`: current surrogate that only preserves a one-reexport count.
 
 Commands:
 

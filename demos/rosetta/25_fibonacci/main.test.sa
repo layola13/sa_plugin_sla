@@ -33,16 +33,18 @@ L_ELSE_1:
     !tmp_4
     tmp_6 = call @sla__fib(tmp_5)
     !tmp_5
+    left = tmp_6
     tmp_7 = 2
     tmp_8 = sub n, tmp_7
     !tmp_7
     tmp_9 = call @sla__fib(tmp_8)
     !tmp_8
-    tmp_10 = add tmp_6, tmp_9
-    !tmp_6
-    !tmp_9
+    right = tmp_9
+    tmp_10 = add left, right
     store tmp_2+0, tmp_10 as i32
     !tmp_10
+    !right
+    !left
     jmp L_MERGE_2
 
 L_MERGE_2:

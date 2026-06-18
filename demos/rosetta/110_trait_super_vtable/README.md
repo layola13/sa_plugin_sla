@@ -1,9 +1,9 @@
 # 110 Trait Super Vtable
 
-This directory now records the current super-trait vtable gap honestly.
+This slot models a trait inheriting another trait and dispatching both methods.
 
 - `main.rs`: Rust reference for a trait inheriting another trait and dispatching both methods.
-- `main.sla`: current Sla companion shape for the same intent, but the shared super-trait dispatch path no longer type-checks locally.
+- `main.sla`: Sla companion for the same dispatch path, with minimal call-result staging that is currently required for the checked addition path to type-check locally.
 
 Commands:
 

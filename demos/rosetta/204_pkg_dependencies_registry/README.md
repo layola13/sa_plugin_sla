@@ -1,9 +1,9 @@
 # 204 Pkg Dependencies Registry
 
-This slot keeps registry dependency selection observable as one resolved package from the shared registry.
+This slot now uses a real registry-dependency reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count observable instead of true registry resolution behavior.
 
-- `main.rs`: Rust reference for one resolved registry package.
-- `main.sla`: Sla companion for one resolved registry package.
+- `main.rs`: Rust reference that reads `sa.pkg` plus `registry/codec.sa` and checks the cached registry-dependency shape.
+- `main.sla`: current surrogate that only preserves a one-dependency count observable.
 
 Commands:
 

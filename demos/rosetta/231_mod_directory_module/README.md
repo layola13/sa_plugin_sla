@@ -1,9 +1,9 @@
 # 231 Mod Directory Module
 
-This slot keeps directory-backed module wiring observable as two exported routes.
+This slot now uses a real directory-backed fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a route-count observable instead of true directory-module resolution.
 
-- `main.rs`: Rust reference for two routes exported from a directory-backed module.
-- `main.sla`: Sla companion for two routes exported from a directory-backed module.
+- `main.rs`: Rust reference that reads `module/index.sa`, `module/tree/index.sa`, and the leaf modules beneath them.
+- `main.sla`: current surrogate that only preserves a two-route count.
 
 Commands:
 

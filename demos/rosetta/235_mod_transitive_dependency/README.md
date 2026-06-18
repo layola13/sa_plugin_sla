@@ -1,9 +1,9 @@
 # 235 Mod Transitive Dependency
 
-This slot keeps transitive module reachability observable as one leaf export propagated through an intermediate module.
+This slot now uses a real transitive-dependency fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a transitive-count observable instead of true reachability analysis.
 
-- `main.rs`: Rust reference for a leaf export propagated through an intermediate module.
-- `main.sla`: Sla companion for a leaf export propagated through an intermediate module.
+- `main.rs`: Rust reference that reads the `dep/` chain and the legacy flat path files.
+- `main.sla`: current surrogate that only preserves a one-leaf count.
 
 Commands:
 

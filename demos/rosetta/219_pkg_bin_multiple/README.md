@@ -1,9 +1,9 @@
 # 219 Pkg Bin Multiple
 
-This slot keeps multiple binary targets observable as a CLI plus worker executable pair.
+This slot now uses a real multi-bin fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a binary-count observable instead of true multiple binary target handling.
 
-- `main.rs`: Rust reference for the CLI-plus-worker binary pair.
-- `main.sla`: Sla companion for the CLI-plus-worker binary pair.
+- `main.rs`: Rust reference that reads the root manifest plus both sibling bin modules and their helper constants.
+- `main.sla`: current surrogate that only preserves a two-bin count.
 
 Commands:
 

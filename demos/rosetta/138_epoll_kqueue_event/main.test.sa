@@ -54,35 +54,58 @@ L_ELSE_1:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_13 = call @sla__event_loop_ready_mask()
-    result = tmp_13
-    tmp_14 = call @sa_fmt_u64(result, 10)
-    tmp_15 = call @sa_fmt_buffer_data(tmp_14)
-    tmp_16 = call @sa_fmt_buffer_len(tmp_14)
-    tmp_17 = tmp_15
-    call @sa_print_bytes(&tmp_17, tmp_16)
-    call @sa_fmt_buffer_free(^tmp_14)
-    !tmp_17
+    tmp_13 = 1
+    tmp_14 = 1
+    tmp_15 = call @sla__event_ready(tmp_13, tmp_14)
+    !tmp_13
+    !tmp_14
+    ready_read = tmp_15
+    tmp_16 = 2
+    tmp_17 = 1
+    tmp_18 = call @sla__event_ready(tmp_16, tmp_17)
     !tmp_16
+    !tmp_17
+    ready_write = tmp_18
+    tmp_19 = 4
+    tmp_20 = 0
+    tmp_21 = call @sla__event_ready(tmp_19, tmp_20)
+    !tmp_19
+    !tmp_20
+    blocked = tmp_21
+    tmp_22 = add ready_read, ready_write
+    tmp_23 = add tmp_22, blocked
+    !tmp_22
+    result = tmp_23
+    tmp_24 = call @sa_fmt_u64(result, 10)
+    tmp_25 = call @sa_fmt_buffer_data(tmp_24)
+    tmp_26 = call @sa_fmt_buffer_len(tmp_24)
+    tmp_27 = tmp_25
+    call @sa_print_bytes(&tmp_27, tmp_26)
+    call @sa_fmt_buffer_free(^tmp_24)
+    !tmp_27
+    !tmp_26
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !ready_read
+    !ready_write
+    !blocked
     return result
 
 @test "rosetta 138 138_epoll_kqueue_event"():
 L_TEST_ENTRY_3:
-    tmp_18 = call @sla__event_loop_ready_mask()
-    got = tmp_18
-    tmp_19 = 3
-    tmp_20 = ne got, tmp_19
-    !tmp_19
-    br tmp_20 -> L_THEN_4, L_ELSE_5
+    tmp_28 = call @sla__event_loop_ready_mask()
+    got = tmp_28
+    tmp_29 = 3
+    tmp_30 = ne got, tmp_29
+    !tmp_29
+    br tmp_30 -> L_THEN_4, L_ELSE_5
 
 L_THEN_4:
-    !tmp_20
+    !tmp_30
     panic(138)
 
 L_ELSE_5:
-    !tmp_20
+    !tmp_30
     jmp L_MERGE_6
 
 L_MERGE_6:

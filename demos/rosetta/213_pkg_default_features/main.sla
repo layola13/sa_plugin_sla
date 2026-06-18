@@ -6,5 +6,5 @@ fn pkg_default_feature_count() -> i32 {
     return std_feature;
 }
 
-fn main() -> i32 { let result = pkg_default_feature_count(); println("{}", result); return result; }
+fn main() -> i32 { let std_feature = 1; println("{}", std_feature); return std_feature; }
 @test "rosetta 213 pkg default features"() { let got = pkg_default_feature_count(); if got != 1 { panic(213); }; }

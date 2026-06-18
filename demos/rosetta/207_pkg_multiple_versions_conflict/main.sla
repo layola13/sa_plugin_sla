@@ -6,5 +6,5 @@ fn pkg_multiple_versions_conflict() -> i32 {
     return conflict_reported;
 }
 
-fn main() -> i32 { let result = pkg_multiple_versions_conflict(); println("{}", result); return result; }
+fn main() -> i32 { let conflict_reported = 1; println("{}", conflict_reported); return conflict_reported; }
 @test "rosetta 207 pkg multiple versions conflict"() { let got = pkg_multiple_versions_conflict(); if got != 1 { panic(207); }; }

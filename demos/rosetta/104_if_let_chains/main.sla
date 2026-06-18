@@ -17,9 +17,18 @@ fn if_let_chain_sum() -> i32 {
 }
 
 fn main() -> i32 {
-    let value = if_let_chain_sum();
-    println("{}", value);
-    return value;
+    let left = Some(2);
+    let middle = Some(3);
+    let right = Some(4);
+
+    let result = if let Some(x) = left && let Some(y) = middle && let Some(z) = right {
+        x + y + z
+    } else {
+        0
+    };
+
+    println("{}", result);
+    return result;
 }
 
 @test "rosetta 104 104_if_let_chains"() {

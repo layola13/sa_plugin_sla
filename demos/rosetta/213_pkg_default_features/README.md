@@ -1,9 +1,9 @@
 # 213 Pkg Default Features
 
-This slot keeps default feature enablement observable as the standard shared feature set.
+This slot now uses a real default-feature fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a default-feature count instead of true default feature activation.
 
-- `main.rs`: Rust reference for the standard default feature set.
-- `main.sla`: Sla companion for the standard default feature set.
+- `main.rs`: Rust reference that reads the package manifest, nested `src/defaults` modules, and the default feature constant.
+- `main.sla`: current surrogate that only preserves a one-default-feature count.
 
 Commands:
 

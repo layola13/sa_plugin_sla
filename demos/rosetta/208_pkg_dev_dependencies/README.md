@@ -1,9 +1,9 @@
 # 208 Pkg Dev Dependencies
 
-This slot keeps development-only dependency wiring observable as one test-only package.
+This slot now uses a real dev-dependency fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a one-dependency observable instead of true dev-only package resolution.
 
-- `main.rs`: Rust reference for a test-only dependency.
-- `main.sla`: Sla companion for a test-only dependency.
+- `main.rs`: Rust reference that checks the `dev/` helper/test path is declared separately from the release `src/` path.
+- `main.sla`: current surrogate that only preserves a one-dev-dependency count.
 
 Commands:
 

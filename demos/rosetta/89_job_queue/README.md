@@ -1,9 +1,9 @@
 # 089 Job Queue
 
-This slot models a job queue that drains work in FIFO order.
+This slot currently records the FIFO queue example honestly rather than pretending the checked-in helper shape is literal 1:1.
 
 - `main.rs`: Rust reference for the queue pop semantics.
-- `main.sla`: Sla companion for the queue pop semantics.
+- `main.sla`: current Sla companion, but the main path routes the queue flow through `first_job_score()` instead of keeping the queue operations directly in `main` like Rust.
 
 Commands:
 

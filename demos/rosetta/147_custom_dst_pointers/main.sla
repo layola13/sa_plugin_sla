@@ -7,7 +7,8 @@ fn custom_dst_pointer_bytes_len_surrogate() -> usize {
 }
 
 fn main() -> i32 {
-    let result = custom_dst_pointer_bytes_len_surrogate();
+    let bytes = "abc";
+    let result = bytes.len();
     println("{}", result);
     return 0;
 }

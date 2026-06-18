@@ -11,6 +11,7 @@
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/result.sa"
 @const SLA_FNPTR_VT_file_descriptor_raw_fd = vtable { call = @sla__file_descriptor_raw_fd }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
 @sla__file_descriptor_raw_fd() -> i32:
@@ -57,38 +58,71 @@ L_FILE_OPEN_END_2:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_13 = call @sla__file_descriptor_raw_fd()
-    result = tmp_13
-    tmp_14 = call @sa_fmt_u64(result, 10)
-    tmp_15 = call @sa_fmt_buffer_data(tmp_14)
-    tmp_16 = call @sa_fmt_buffer_len(tmp_14)
-    tmp_17 = tmp_15
-    call @sa_print_bytes(&tmp_17, tmp_16)
-    call @sa_fmt_buffer_free(^tmp_14)
+    @const SLA_STR_1 = utf8:"/dev/null"
+    tmp_14 = 9
+    tmp_13 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_13, &SLA_STR_1, tmp_14
+    !tmp_14
+    tmp_15 = load tmp_13+Slice_ptr as ptr
+    tmp_16 = load tmp_13+Slice_len as u64
+    EXPAND FS_OPEN_READ tmp_17, tmp_18, tmp_15, tmp_16
+    tmp_20 = eq tmp_17, SA_FS_OK
+    br tmp_20 -> L_FILE_OPEN_OK_3, L_FILE_OPEN_ERR_4
+
+L_FILE_OPEN_OK_3:
+    EXPAND RESULT_NEW_OK tmp_19, tmp_18
     !tmp_17
+    !tmp_18
+    jmp L_FILE_OPEN_END_5
+
+L_FILE_OPEN_ERR_4:
+    EXPAND RESULT_NEW_ERR tmp_19, tmp_17
+    !tmp_17
+    !tmp_18
+    jmp L_FILE_OPEN_END_5
+
+L_FILE_OPEN_END_5:
+    !tmp_20
     !tmp_16
-    @const SLA_STR_1 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_1, 1)
+    !tmp_15
+    EXPAND RESULT_UNWRAP tmp_21, tmp_19
+    !tmp_19
+    file = tmp_21
+    tmp_22 = add file, 0
+    tmp_23 = tmp_22 as i32
+    result = tmp_23
+    tmp_24 = call @sa_fmt_u64(result, 10)
+    tmp_25 = call @sa_fmt_buffer_data(tmp_24)
+    tmp_26 = call @sa_fmt_buffer_len(tmp_24)
+    tmp_27 = tmp_25
+    call @sa_print_bytes(&tmp_27, tmp_26)
+    call @sa_fmt_buffer_free(^tmp_24)
+    !tmp_27
+    !tmp_26
+    @const SLA_STR_2 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_2, 1)
+    EXPAND FS_CLOSE tmp_28, file
+    !tmp_28
     return result
 
 @test "rosetta 181 181_file_descriptor_raii"():
-L_TEST_ENTRY_3:
-    tmp_18 = call @sla__file_descriptor_raw_fd()
-    got = tmp_18
-    tmp_19 = 0
-    tmp_20 = slt got, tmp_19
-    !tmp_19
-    br tmp_20 -> L_THEN_4, L_ELSE_5
+L_TEST_ENTRY_6:
+    tmp_29 = call @sla__file_descriptor_raw_fd()
+    got = tmp_29
+    tmp_30 = 0
+    tmp_31 = slt got, tmp_30
+    !tmp_30
+    br tmp_31 -> L_THEN_7, L_ELSE_8
 
-L_THEN_4:
-    !tmp_20
+L_THEN_7:
+    !tmp_31
     panic(181)
 
-L_ELSE_5:
-    !tmp_20
-    jmp L_MERGE_6
+L_ELSE_8:
+    !tmp_31
+    jmp L_MERGE_9
 
-L_MERGE_6:
+L_MERGE_9:
     !got
     return
 

@@ -1,9 +1,9 @@
 # 222 Mod Absolute Import
 
-This slot keeps absolute import lookup observable as a two-segment crate-root path.
+This slot now uses a real absolute-looking module-root fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a segment-count observable instead of true crate-root import resolution.
 
-- `main.rs`: Rust reference for the two-segment crate-root path.
-- `main.sla`: Sla companion for the two-segment crate-root path.
+- `main.rs`: Rust reference that reads `shared/root/index.sa`, `shared/root/codec/index.sa`, and the leaf module.
+- `main.sla`: current surrogate that only preserves a two-segment count.
 
 Commands:
 

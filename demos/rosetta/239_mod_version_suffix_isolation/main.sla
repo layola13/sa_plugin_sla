@@ -8,7 +8,9 @@ fn version_suffix_isolated_versions() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = version_suffix_isolated_versions();
+    let codec_v1 = 1;
+    let codec_v2 = 1;
+    let result = codec_v1 + codec_v2;
     println("{}", result);
     return result;
 }

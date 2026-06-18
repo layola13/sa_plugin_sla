@@ -10,5 +10,10 @@ fn manually_drop_union_value() -> i32 {
     return value;
 }
 
-fn main() -> i32 { let result = manually_drop_union_value(); println("{}", result); return result; }
+fn main() -> i32 {
+    let slot = Slot { a: ManuallyDrop::new(11) };
+    let result = unsafe { ManuallyDrop::into_inner(slot.a) };
+    println("{}", result);
+    return result;
+}
 @test "rosetta 160 160_manually_drop_union"() { let got = manually_drop_union_value(); if got != 11 { panic(160); }; }

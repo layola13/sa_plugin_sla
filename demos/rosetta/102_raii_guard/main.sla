@@ -6,11 +6,14 @@
 fn inspect(counter: &Mutex<i32>, skip: bool) -> i32 {
     let guard = counter.lock().unwrap();
     if skip {
-        return *guard;
+        let value = *guard;
+        return value;
     };
 
-    *guard = *guard + 3;
-    return *guard;
+    let current = *guard;
+    let updated = current + 3;
+    *guard = updated;
+    return updated;
 }
 
 fn raii_guard_total() -> i32 {
@@ -21,7 +24,10 @@ fn raii_guard_total() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = raii_guard_total();
+    let counter = Mutex::new(0);
+    let first = inspect(&counter, true);
+    let second = inspect(&counter, false);
+    let result = first + second;
     println("{}", result);
     return result;
 }

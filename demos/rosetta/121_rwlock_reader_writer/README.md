@@ -1,9 +1,9 @@
 # 121 Rwlock Reader Writer
 
-This directory now records the current rwlock gap honestly.
+This slot models `Arc<RwLock<i32>>`, a spawned reader, joined result, exclusive write, and final read.
 
 - `main.rs`: Rust reference using `Arc<RwLock<i32>>`, a spawned reader, joined result, exclusive write, and final read.
-- `main.sla`: Sla surrogate for the same observable flow, but the current checked path still leaves the shared `Arc` live at function exit.
+- `main.sla`: Sla companion for the same flow, with minimal read/write staging that is currently required for the checked dereference and update path to type-check locally.
 
 Commands:
 

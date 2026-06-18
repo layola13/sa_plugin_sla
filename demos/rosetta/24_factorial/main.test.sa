@@ -33,10 +33,11 @@ L_ELSE_1:
     !tmp_4
     tmp_6 = call @sla__factorial(tmp_5)
     !tmp_5
-    tmp_7 = mul n, tmp_6
-    !tmp_6
+    prev = tmp_6
+    tmp_7 = mul n, prev
     store tmp_2+0, tmp_7 as i32
     !tmp_7
+    !prev
     jmp L_MERGE_2
 
 L_MERGE_2:

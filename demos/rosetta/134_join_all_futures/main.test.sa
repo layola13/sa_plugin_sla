@@ -54,35 +54,52 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_14 = call @sla__join_all_futures_sum()
-    result = tmp_14
-    tmp_15 = call @sa_fmt_u64(result, 10)
-    tmp_16 = call @sa_fmt_buffer_data(tmp_15)
-    tmp_17 = call @sa_fmt_buffer_len(tmp_15)
-    tmp_18 = tmp_16
-    call @sa_print_bytes(&tmp_18, tmp_17)
-    call @sa_fmt_buffer_free(^tmp_15)
+    tmp_14 = call @sla__job_a()
+    EXPAND FUTURE_READY_STATE_INTO_INNER tmp_15, tmp_14
+    !tmp_14
+    a = tmp_15
+    tmp_16 = call @sla__job_b()
+    EXPAND FUTURE_READY_STATE_INTO_INNER tmp_17, tmp_16
+    !tmp_16
+    b = tmp_17
+    tmp_18 = call @sla__job_c()
+    EXPAND FUTURE_READY_STATE_INTO_INNER tmp_19, tmp_18
     !tmp_18
-    !tmp_17
+    c = tmp_19
+    tmp_20 = add a, b
+    tmp_21 = add tmp_20, c
+    !tmp_20
+    result = tmp_21
+    tmp_22 = call @sa_fmt_u64(result, 10)
+    tmp_23 = call @sa_fmt_buffer_data(tmp_22)
+    tmp_24 = call @sa_fmt_buffer_len(tmp_22)
+    tmp_25 = tmp_23
+    call @sa_print_bytes(&tmp_25, tmp_24)
+    call @sa_fmt_buffer_free(^tmp_22)
+    !tmp_25
+    !tmp_24
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !b
+    !a
+    !c
     return result
 
 @test "rosetta 134 134_join_all_futures"():
 L_TEST_ENTRY_0:
-    tmp_19 = call @sla__join_all_futures_sum()
-    got = tmp_19
-    tmp_20 = 6
-    tmp_21 = ne got, tmp_20
-    !tmp_20
-    br tmp_21 -> L_THEN_1, L_ELSE_2
+    tmp_26 = call @sla__join_all_futures_sum()
+    got = tmp_26
+    tmp_27 = 6
+    tmp_28 = ne got, tmp_27
+    !tmp_27
+    br tmp_28 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_21
+    !tmp_28
     panic(134)
 
 L_ELSE_2:
-    !tmp_21
+    !tmp_28
     jmp L_MERGE_3
 
 L_MERGE_3:

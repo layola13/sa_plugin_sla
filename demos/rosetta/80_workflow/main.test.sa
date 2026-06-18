@@ -17,21 +17,20 @@ L_ENTRY:
     tmp_0 = load state+0 as u8
     tmp_1 = call @sla__bool_to_i32(tmp_0)
     !tmp_0
+    lint = tmp_1
     tmp_2 = load state+1 as u8
     tmp_3 = call @sla__bool_to_i32(tmp_2)
     !tmp_2
-    tmp_4 = add tmp_1, tmp_3
-    !tmp_1
-    !tmp_3
-    tmp_5 = load state+2 as u8
-    tmp_6 = call @sla__bool_to_i32(tmp_5)
-    !tmp_5
-    tmp_7 = add tmp_4, tmp_6
+    tests = tmp_3
+    tmp_4 = load state+2 as u8
+    tmp_5 = call @sla__bool_to_i32(tmp_4)
     !tmp_4
+    package = tmp_5
+    tmp_6 = add lint, tests
+    tmp_7 = add tmp_6, package
     !tmp_6
-    mut_count = tmp_7
     !state
-    return mut_count
+    return tmp_7
 
 @sla__bool_to_i32(value: u8) -> i32:
 L_ENTRY:

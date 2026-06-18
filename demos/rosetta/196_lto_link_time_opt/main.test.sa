@@ -62,35 +62,45 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_16 = call @sla__lto_hot_cold_sum()
-    result = tmp_16
-    tmp_17 = call @sa_fmt_u64(result, 10)
-    tmp_18 = call @sa_fmt_buffer_data(tmp_17)
-    tmp_19 = call @sa_fmt_buffer_len(tmp_17)
-    tmp_20 = tmp_18
-    call @sa_print_bytes(&tmp_20, tmp_19)
-    call @sa_fmt_buffer_free(^tmp_17)
-    !tmp_20
-    !tmp_19
+    tmp_16 = 1
+    tmp_17 = call @sla__inner(tmp_16)
+    !tmp_16
+    hot_path = tmp_17
+    tmp_18 = 2
+    tmp_19 = call @sla__cold_path(tmp_18)
+    !tmp_18
+    cold_path_result = tmp_19
+    tmp_20 = add hot_path, cold_path_result
+    result = tmp_20
+    tmp_21 = call @sa_fmt_u64(result, 10)
+    tmp_22 = call @sa_fmt_buffer_data(tmp_21)
+    tmp_23 = call @sa_fmt_buffer_len(tmp_21)
+    tmp_24 = tmp_22
+    call @sa_print_bytes(&tmp_24, tmp_23)
+    call @sa_fmt_buffer_free(^tmp_21)
+    !tmp_24
+    !tmp_23
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !cold_path_result
+    !hot_path
     return result
 
 @test "rosetta 196 196_lto_link_time_opt"():
 L_TEST_ENTRY_0:
-    tmp_21 = call @sla__lto_hot_cold_sum()
-    got = tmp_21
-    tmp_22 = 19
-    tmp_23 = ne got, tmp_22
-    !tmp_22
-    br tmp_23 -> L_THEN_1, L_ELSE_2
+    tmp_25 = call @sla__lto_hot_cold_sum()
+    got = tmp_25
+    tmp_26 = 19
+    tmp_27 = ne got, tmp_26
+    !tmp_26
+    br tmp_27 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_23
+    !tmp_27
     panic(196)
 
 L_ELSE_2:
-    !tmp_23
+    !tmp_27
     jmp L_MERGE_3
 
 L_MERGE_3:

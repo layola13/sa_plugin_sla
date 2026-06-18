@@ -9,9 +9,10 @@ fn catch_unwind_observable() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = catch_unwind_observable();
-    println("{}", result);
-    return result;
+    let result = std::panic::catch_unwind(|| panic("stop"));
+    let got = if result.is_ok() { 1 } else { 0 };
+    println("{}", got);
+    return got;
 }
 
 @test "rosetta 173 173_catch_unwind_panic"() {

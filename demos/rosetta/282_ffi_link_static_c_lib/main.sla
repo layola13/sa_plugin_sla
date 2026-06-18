@@ -2,5 +2,5 @@
 @import "sa_std/fmt.sai"
 
 fn ffi_static_library_objects() -> i32 { let archive_member = 1; return archive_member; }
-fn main() -> i32 { let result = ffi_static_library_objects(); println("{}", result); return result; }
+fn main() -> i32 { let archive_member = 1; println("{}", archive_member); return archive_member; }
 @test "rosetta 282 ffi link static c lib"() { let got = ffi_static_library_objects(); if got != 1 { panic(282); }; }

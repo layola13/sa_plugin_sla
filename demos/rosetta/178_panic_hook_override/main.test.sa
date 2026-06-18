@@ -55,38 +55,88 @@ L_MERGE_2:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_10 = call @sla__panic_hook_observable_surrogate()
-    result = tmp_10
-    tmp_11 = call @sa_fmt_u64(result, 10)
-    tmp_12 = call @sa_fmt_buffer_data(tmp_11)
-    tmp_13 = call @sa_fmt_buffer_len(tmp_11)
-    tmp_14 = tmp_12
-    call @sa_print_bytes(&tmp_14, tmp_13)
-    call @sa_fmt_buffer_free(^tmp_11)
-    !tmp_14
+    tmp_10 = 1
+    hook_installed = tmp_10
+    tmp_11 = 1
+    panic_triggered = tmp_11
+    tmp_12 = 1
+    tmp_13 = eq hook_installed, tmp_12
+    !tmp_12
+    tmp_14 = alloc 4
+    br tmp_13 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
     !tmp_13
+    tmp_15 = 1
+    tmp_16 = eq panic_triggered, tmp_15
+    !tmp_15
+    tmp_17 = alloc 4
+    br tmp_16 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_16
+    tmp_18 = 1
+    store tmp_17+0, tmp_18 as i32
+    !tmp_18
+    jmp L_MERGE_11
+
+L_ELSE_10:
+    !tmp_16
+    tmp_19 = 0
+    store tmp_17+0, tmp_19 as i32
+    !tmp_19
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    tmp_20 = load tmp_17+0 as i32
+    !tmp_17
+    store tmp_14+0, tmp_20 as i32
+    !tmp_20
+    jmp L_MERGE_8
+
+L_ELSE_7:
+    !tmp_13
+    tmp_21 = 0
+    store tmp_14+0, tmp_21 as i32
+    !tmp_21
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    tmp_22 = load tmp_14+0 as i32
+    !tmp_14
+    result = tmp_22
+    tmp_23 = call @sa_fmt_u64(result, 10)
+    tmp_24 = call @sa_fmt_buffer_data(tmp_23)
+    tmp_25 = call @sa_fmt_buffer_len(tmp_23)
+    tmp_26 = tmp_24
+    call @sa_print_bytes(&tmp_26, tmp_25)
+    call @sa_fmt_buffer_free(^tmp_23)
+    !tmp_26
+    !tmp_25
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !panic_triggered
+    !hook_installed
     return result
 
 @test "rosetta 178 178_panic_hook_override"():
-L_TEST_ENTRY_6:
-    tmp_15 = call @sla__panic_hook_observable_surrogate()
-    got = tmp_15
-    tmp_16 = 1
-    tmp_17 = ne got, tmp_16
-    !tmp_16
-    br tmp_17 -> L_THEN_7, L_ELSE_8
+L_TEST_ENTRY_12:
+    tmp_27 = call @sla__panic_hook_observable_surrogate()
+    got = tmp_27
+    tmp_28 = 1
+    tmp_29 = ne got, tmp_28
+    !tmp_28
+    br tmp_29 -> L_THEN_13, L_ELSE_14
 
-L_THEN_7:
-    !tmp_17
+L_THEN_13:
+    !tmp_29
     panic(178)
 
-L_ELSE_8:
-    !tmp_17
-    jmp L_MERGE_9
+L_ELSE_14:
+    !tmp_29
+    jmp L_MERGE_15
 
-L_MERGE_9:
+L_MERGE_15:
     !got
     return
 

@@ -14,30 +14,10 @@
 [END_MACRO]
 @import "sa_std/core/result.sa"
 @import "sa_std/sync/mpsc.sa"
-@const SLA_THREAD_VT_0 = vtable { call = @sla_thread_worker_0 }
 @const SLA_THREAD_VT_1 = vtable { call = @sla_thread_worker_1 }
-
-@ffi_wrapper sla_thread_spawn_0(*slot: ptr) -> i32:
-L_ENTRY:
-    worker_vt = &SLA_THREAD_VT_0
-    worker_fn = load worker_vt+0 as ptr
-    worker_raw = *worker_fn
-    worker_safe = assume_safe worker_raw
-    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
-    !slot
-    return handle
-
-@sla_thread_worker_0(&slot: ptr) -> i32:
-L_ENTRY:
-    tmp_0 = load slot+16 as ptr
-    tmp_1 = 1
-    tmp_2 = 2
-    tmp_3 = call @sla__send_pair(tmp_0, tmp_1, tmp_2)
-    !tmp_1
-    !tmp_2
-    store slot+8, tmp_3 as i32
-    !slot
-    return tmp_3
+@const SLA_THREAD_VT_0 = vtable { call = @sla_thread_worker_0 }
+@const SLA_THREAD_VT_2 = vtable { call = @sla_thread_worker_2 }
+@const SLA_THREAD_VT_3 = vtable { call = @sla_thread_worker_3 }
 
 @ffi_wrapper sla_thread_spawn_1(*slot: ptr) -> i32:
 L_ENTRY:
@@ -51,9 +31,31 @@ L_ENTRY:
 
 @sla_thread_worker_1(&slot: ptr) -> i32:
 L_ENTRY:
+    tmp_0 = load slot+16 as ptr
+    tmp_1 = 3
+    tmp_2 = 4
+    tmp_3 = call @sla__send_pair(tmp_0, tmp_1, tmp_2)
+    !tmp_1
+    !tmp_2
+    store slot+8, tmp_3 as i32
+    !slot
+    return tmp_3
+
+@ffi_wrapper sla_thread_spawn_0(*slot: ptr) -> i32:
+L_ENTRY:
+    worker_vt = &SLA_THREAD_VT_0
+    worker_fn = load worker_vt+0 as ptr
+    worker_raw = *worker_fn
+    worker_safe = assume_safe worker_raw
+    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
+    !slot
+    return handle
+
+@sla_thread_worker_0(&slot: ptr) -> i32:
+L_ENTRY:
     tmp_4 = load slot+16 as ptr
-    tmp_5 = 3
-    tmp_6 = 4
+    tmp_5 = 1
+    tmp_6 = 2
     tmp_7 = call @sla__send_pair(tmp_4, tmp_5, tmp_6)
     !tmp_5
     !tmp_6
@@ -61,171 +63,322 @@ L_ENTRY:
     !slot
     return tmp_7
 
+@ffi_wrapper sla_thread_spawn_2(*slot: ptr) -> i32:
+L_ENTRY:
+    worker_vt = &SLA_THREAD_VT_2
+    worker_fn = load worker_vt+0 as ptr
+    worker_raw = *worker_fn
+    worker_safe = assume_safe worker_raw
+    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
+    !slot
+    return handle
+
+@sla_thread_worker_2(&slot: ptr) -> i32:
+L_ENTRY:
+    tmp_8 = load slot+16 as ptr
+    tmp_9 = 1
+    tmp_10 = 2
+    tmp_11 = call @sla__send_pair(tmp_8, tmp_9, tmp_10)
+    !tmp_9
+    !tmp_10
+    store slot+8, tmp_11 as i32
+    !slot
+    return tmp_11
+
+@ffi_wrapper sla_thread_spawn_3(*slot: ptr) -> i32:
+L_ENTRY:
+    worker_vt = &SLA_THREAD_VT_3
+    worker_fn = load worker_vt+0 as ptr
+    worker_raw = *worker_fn
+    worker_safe = assume_safe worker_raw
+    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
+    !slot
+    return handle
+
+@sla_thread_worker_3(&slot: ptr) -> i32:
+L_ENTRY:
+    tmp_12 = load slot+16 as ptr
+    tmp_13 = 3
+    tmp_14 = 4
+    tmp_15 = call @sla__send_pair(tmp_12, tmp_13, tmp_14)
+    !tmp_13
+    !tmp_14
+    store slot+8, tmp_15 as i32
+    !slot
+    return tmp_15
+
 @const SLA_FNPTR_VT_send_pair = vtable { call = @sla__send_pair }
 @const SLA_FNPTR_VT_mpmc_channel_total = vtable { call = @sla__mpmc_channel_total }
 @const SLA_FNPTR_VT_main = vtable { call = @main }
 @sla__send_pair(tx: ptr, a: i32, b: i32) -> i32:
 L_ENTRY:
-    tmp_8 = add a, 0
-    EXPAND MPSC_SEND tx, tmp_8
-    EXPAND RESULT_NEW_OK tmp_9, 0
-    EXPAND RESULT_UNWRAP tmp_10, tmp_9
-    !tmp_9
-    !tmp_10
-    tmp_11 = add b, 0
-    EXPAND MPSC_SEND tx, tmp_11
-    EXPAND RESULT_NEW_OK tmp_12, 0
-    EXPAND RESULT_UNWRAP tmp_13, tmp_12
-    !tmp_12
-    !tmp_13
-    tmp_14 = 0
+    tmp_16 = add a, 0
+    EXPAND MPSC_SEND tx, tmp_16
+    EXPAND RESULT_NEW_OK tmp_17, 0
+    EXPAND RESULT_UNWRAP tmp_18, tmp_17
+    !tmp_17
+    !tmp_18
+    tmp_19 = add b, 0
+    EXPAND MPSC_SEND tx, tmp_19
+    EXPAND RESULT_NEW_OK tmp_20, 0
+    EXPAND RESULT_UNWRAP tmp_21, tmp_20
+    !tmp_20
+    !tmp_21
+    tmp_22 = 0
     !b
     !a
     !tx
-    return tmp_14
+    return tmp_22
 
 @sla__mpmc_channel_total() -> i32:
 L_ENTRY:
     tx = 0
     EXPAND MPSC_NEW rx, 1024
-    tmp_15 = add rx, 0
-    left = tmp_15
-    tmp_16 = alloc 24
-    store tmp_16+0, 0 as i32
-    store tmp_16+8, 0 as i32
-    store tmp_16+16, rx as ptr
-    tmp_17 = call @sla_thread_spawn_0(*tmp_16)
-    store tmp_16+0, tmp_17 as i32
-    !tmp_17
-    producer_a = tmp_16
-    tmp_18 = alloc 24
-    store tmp_18+0, 0 as i32
-    store tmp_18+8, 0 as i32
-    store tmp_18+16, rx as ptr
-    tmp_19 = call @sla_thread_spawn_1(*tmp_18)
-    store tmp_18+0, tmp_19 as i32
-    !tmp_19
-    producer_b = tmp_18
-    tmp_20 = load producer_a+0 as i32
-    EXPAND THREAD_JOIN_STATUS tmp_21, tmp_20, *producer_a
-    EXPAND THREAD_DROP tmp_20
-    tmp_22 = eq tmp_21, 0
-    br tmp_22 -> L_THREAD_JOIN_OK_0, L_THREAD_JOIN_ERR_1
+    tmp_23 = add rx, 0
+    left = tmp_23
+    tmp_24 = alloc 24
+    store tmp_24+0, 0 as i32
+    store tmp_24+8, 0 as i32
+    store tmp_24+16, rx as ptr
+    tmp_25 = call @sla_thread_spawn_0(*tmp_24)
+    store tmp_24+0, tmp_25 as i32
+    !tmp_25
+    producer_a = tmp_24
+    tmp_26 = alloc 24
+    store tmp_26+0, 0 as i32
+    store tmp_26+8, 0 as i32
+    store tmp_26+16, rx as ptr
+    tmp_27 = call @sla_thread_spawn_1(*tmp_26)
+    store tmp_26+0, tmp_27 as i32
+    !tmp_27
+    producer_b = tmp_26
+    tmp_28 = load producer_a+0 as i32
+    EXPAND THREAD_JOIN_STATUS tmp_29, tmp_28, *producer_a
+    EXPAND THREAD_DROP tmp_28
+    tmp_30 = eq tmp_29, 0
+    br tmp_30 -> L_THREAD_JOIN_OK_0, L_THREAD_JOIN_ERR_1
 
 L_THREAD_JOIN_OK_0:
-    !tmp_22
-    tmp_24 = load producer_a+8 as i32
-    EXPAND RESULT_NEW_OK tmp_23, tmp_24
-    !tmp_24
+    !tmp_30
+    tmp_32 = load producer_a+8 as i32
+    EXPAND RESULT_NEW_OK tmp_31, tmp_32
+    !tmp_32
     jmp L_THREAD_JOIN_END_2
 
 L_THREAD_JOIN_ERR_1:
-    !tmp_22
-    tmp_25 = add tmp_21, 0
-    EXPAND RESULT_NEW_ERR tmp_23, tmp_25
-    !tmp_25
+    !tmp_30
+    tmp_33 = add tmp_29, 0
+    EXPAND RESULT_NEW_ERR tmp_31, tmp_33
+    !tmp_33
     jmp L_THREAD_JOIN_END_2
 
 L_THREAD_JOIN_END_2:
-    !tmp_21
-    !tmp_20
+    !tmp_29
+    !tmp_28
     !producer_a
-    EXPAND RESULT_UNWRAP tmp_26, tmp_23
-    !tmp_23
-    !tmp_26
-    tmp_27 = load producer_b+0 as i32
-    EXPAND THREAD_JOIN_STATUS tmp_28, tmp_27, *producer_b
-    EXPAND THREAD_DROP tmp_27
-    tmp_29 = eq tmp_28, 0
-    br tmp_29 -> L_THREAD_JOIN_OK_3, L_THREAD_JOIN_ERR_4
+    EXPAND RESULT_UNWRAP tmp_34, tmp_31
+    !tmp_31
+    !tmp_34
+    tmp_35 = load producer_b+0 as i32
+    EXPAND THREAD_JOIN_STATUS tmp_36, tmp_35, *producer_b
+    EXPAND THREAD_DROP tmp_35
+    tmp_37 = eq tmp_36, 0
+    br tmp_37 -> L_THREAD_JOIN_OK_3, L_THREAD_JOIN_ERR_4
 
 L_THREAD_JOIN_OK_3:
-    !tmp_29
-    tmp_31 = load producer_b+8 as i32
-    EXPAND RESULT_NEW_OK tmp_30, tmp_31
-    !tmp_31
+    !tmp_37
+    tmp_39 = load producer_b+8 as i32
+    EXPAND RESULT_NEW_OK tmp_38, tmp_39
+    !tmp_39
     jmp L_THREAD_JOIN_END_5
 
 L_THREAD_JOIN_ERR_4:
-    !tmp_29
-    tmp_32 = add tmp_28, 0
-    EXPAND RESULT_NEW_ERR tmp_30, tmp_32
-    !tmp_32
+    !tmp_37
+    tmp_40 = add tmp_36, 0
+    EXPAND RESULT_NEW_ERR tmp_38, tmp_40
+    !tmp_40
     jmp L_THREAD_JOIN_END_5
 
 L_THREAD_JOIN_END_5:
-    !tmp_28
-    !tmp_27
-    !producer_b
-    EXPAND RESULT_UNWRAP tmp_33, tmp_30
-    !tmp_30
-    !tmp_33
-    EXPAND MPSC_RECV tmp_34, rx
-    EXPAND RESULT_NEW_OK tmp_35, tmp_34
-    !tmp_34
-    EXPAND RESULT_UNWRAP tmp_36, tmp_35
+    !tmp_36
     !tmp_35
-    first = tmp_36
-    EXPAND MPSC_RECV tmp_37, rx
-    EXPAND RESULT_NEW_OK tmp_38, tmp_37
-    !tmp_37
-    EXPAND RESULT_UNWRAP tmp_39, tmp_38
+    !producer_b
+    EXPAND RESULT_UNWRAP tmp_41, tmp_38
     !tmp_38
-    second = tmp_39
-    EXPAND MPSC_RECV tmp_40, rx
-    EXPAND RESULT_NEW_OK tmp_41, tmp_40
-    !tmp_40
-    EXPAND RESULT_UNWRAP tmp_42, tmp_41
     !tmp_41
-    third = tmp_42
-    EXPAND MPSC_RECV tmp_43, rx
-    EXPAND RESULT_NEW_OK tmp_44, tmp_43
+    EXPAND MPSC_RECV tmp_42, rx
+    EXPAND RESULT_NEW_OK tmp_43, tmp_42
+    !tmp_42
+    EXPAND RESULT_UNWRAP tmp_44, tmp_43
     !tmp_43
-    EXPAND RESULT_UNWRAP tmp_45, tmp_44
-    !tmp_44
-    fourth = tmp_45
-    tmp_46 = add first, second
-    tmp_47 = add tmp_46, third
+    first = tmp_44
+    EXPAND MPSC_RECV tmp_45, rx
+    EXPAND RESULT_NEW_OK tmp_46, tmp_45
+    !tmp_45
+    EXPAND RESULT_UNWRAP tmp_47, tmp_46
     !tmp_46
-    tmp_48 = add tmp_47, fourth
-    !tmp_47
+    second = tmp_47
+    EXPAND MPSC_RECV tmp_48, rx
+    EXPAND RESULT_NEW_OK tmp_49, tmp_48
+    !tmp_48
+    EXPAND RESULT_UNWRAP tmp_50, tmp_49
+    !tmp_49
+    third = tmp_50
+    EXPAND MPSC_RECV tmp_51, rx
+    EXPAND RESULT_NEW_OK tmp_52, tmp_51
+    !tmp_51
+    EXPAND RESULT_UNWRAP tmp_53, tmp_52
+    !tmp_52
+    fourth = tmp_53
+    tmp_54 = add first, second
+    tmp_55 = add tmp_54, third
+    !tmp_54
+    tmp_56 = add tmp_55, fourth
+    !tmp_55
     EXPAND MPSC_FREE rx
-    return tmp_48
+    return tmp_56
 
 @main() -> i32:
 L_ENTRY:
-    tmp_49 = call @sla__mpmc_channel_total()
-    result = tmp_49
-    tmp_50 = call @sa_fmt_u64(result, 10)
-    tmp_51 = call @sa_fmt_buffer_data(tmp_50)
-    tmp_52 = call @sa_fmt_buffer_len(tmp_50)
-    tmp_53 = tmp_51
-    call @sa_print_bytes(&tmp_53, tmp_52)
-    call @sa_fmt_buffer_free(^tmp_50)
-    !tmp_53
-    !tmp_52
+    tx = 0
+    EXPAND MPSC_NEW rx, 1024
+    tmp_57 = add rx, 0
+    left = tmp_57
+    tmp_58 = alloc 24
+    store tmp_58+0, 0 as i32
+    store tmp_58+8, 0 as i32
+    store tmp_58+16, rx as ptr
+    tmp_59 = call @sla_thread_spawn_2(*tmp_58)
+    store tmp_58+0, tmp_59 as i32
+    !tmp_59
+    producer_a = tmp_58
+    tmp_60 = alloc 24
+    store tmp_60+0, 0 as i32
+    store tmp_60+8, 0 as i32
+    store tmp_60+16, rx as ptr
+    tmp_61 = call @sla_thread_spawn_3(*tmp_60)
+    store tmp_60+0, tmp_61 as i32
+    !tmp_61
+    producer_b = tmp_60
+    tmp_62 = load producer_a+0 as i32
+    EXPAND THREAD_JOIN_STATUS tmp_63, tmp_62, *producer_a
+    EXPAND THREAD_DROP tmp_62
+    tmp_64 = eq tmp_63, 0
+    br tmp_64 -> L_THREAD_JOIN_OK_6, L_THREAD_JOIN_ERR_7
+
+L_THREAD_JOIN_OK_6:
+    !tmp_64
+    tmp_66 = load producer_a+8 as i32
+    EXPAND RESULT_NEW_OK tmp_65, tmp_66
+    !tmp_66
+    jmp L_THREAD_JOIN_END_8
+
+L_THREAD_JOIN_ERR_7:
+    !tmp_64
+    tmp_67 = add tmp_63, 0
+    EXPAND RESULT_NEW_ERR tmp_65, tmp_67
+    !tmp_67
+    jmp L_THREAD_JOIN_END_8
+
+L_THREAD_JOIN_END_8:
+    !tmp_63
+    !tmp_62
+    !producer_a
+    EXPAND RESULT_UNWRAP tmp_68, tmp_65
+    !tmp_65
+    !tmp_68
+    tmp_69 = load producer_b+0 as i32
+    EXPAND THREAD_JOIN_STATUS tmp_70, tmp_69, *producer_b
+    EXPAND THREAD_DROP tmp_69
+    tmp_71 = eq tmp_70, 0
+    br tmp_71 -> L_THREAD_JOIN_OK_9, L_THREAD_JOIN_ERR_10
+
+L_THREAD_JOIN_OK_9:
+    !tmp_71
+    tmp_73 = load producer_b+8 as i32
+    EXPAND RESULT_NEW_OK tmp_72, tmp_73
+    !tmp_73
+    jmp L_THREAD_JOIN_END_11
+
+L_THREAD_JOIN_ERR_10:
+    !tmp_71
+    tmp_74 = add tmp_70, 0
+    EXPAND RESULT_NEW_ERR tmp_72, tmp_74
+    !tmp_74
+    jmp L_THREAD_JOIN_END_11
+
+L_THREAD_JOIN_END_11:
+    !tmp_70
+    !tmp_69
+    !producer_b
+    EXPAND RESULT_UNWRAP tmp_75, tmp_72
+    !tmp_72
+    !tmp_75
+    EXPAND MPSC_RECV tmp_76, rx
+    EXPAND RESULT_NEW_OK tmp_77, tmp_76
+    !tmp_76
+    EXPAND RESULT_UNWRAP tmp_78, tmp_77
+    !tmp_77
+    first = tmp_78
+    EXPAND MPSC_RECV tmp_79, rx
+    EXPAND RESULT_NEW_OK tmp_80, tmp_79
+    !tmp_79
+    EXPAND RESULT_UNWRAP tmp_81, tmp_80
+    !tmp_80
+    second = tmp_81
+    EXPAND MPSC_RECV tmp_82, rx
+    EXPAND RESULT_NEW_OK tmp_83, tmp_82
+    !tmp_82
+    EXPAND RESULT_UNWRAP tmp_84, tmp_83
+    !tmp_83
+    third = tmp_84
+    EXPAND MPSC_RECV tmp_85, rx
+    EXPAND RESULT_NEW_OK tmp_86, tmp_85
+    !tmp_85
+    EXPAND RESULT_UNWRAP tmp_87, tmp_86
+    !tmp_86
+    fourth = tmp_87
+    tmp_88 = add first, second
+    tmp_89 = add tmp_88, third
+    !tmp_88
+    tmp_90 = add tmp_89, fourth
+    !tmp_89
+    result = tmp_90
+    tmp_91 = call @sa_fmt_u64(result, 10)
+    tmp_92 = call @sa_fmt_buffer_data(tmp_91)
+    tmp_93 = call @sa_fmt_buffer_len(tmp_91)
+    tmp_94 = tmp_92
+    call @sa_print_bytes(&tmp_94, tmp_93)
+    call @sa_fmt_buffer_free(^tmp_91)
+    !tmp_94
+    !tmp_93
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !second
+    !first
+    !third
+    !fourth
+    EXPAND MPSC_FREE rx
     return result
 
 @test "rosetta 126 126_mpmc_channel"():
-L_TEST_ENTRY_6:
-    tmp_54 = call @sla__mpmc_channel_total()
-    got = tmp_54
-    tmp_55 = 10
-    tmp_56 = ne got, tmp_55
-    !tmp_55
-    br tmp_56 -> L_THEN_7, L_ELSE_8
+L_TEST_ENTRY_12:
+    tmp_95 = call @sla__mpmc_channel_total()
+    got = tmp_95
+    tmp_96 = 10
+    tmp_97 = ne got, tmp_96
+    !tmp_96
+    br tmp_97 -> L_THEN_13, L_ELSE_14
 
-L_THEN_7:
-    !tmp_56
+L_THEN_13:
+    !tmp_97
     panic(126)
 
-L_ELSE_8:
-    !tmp_56
-    jmp L_MERGE_9
+L_ELSE_14:
+    !tmp_97
+    jmp L_MERGE_15
 
-L_MERGE_9:
+L_MERGE_15:
     !got
     return
 

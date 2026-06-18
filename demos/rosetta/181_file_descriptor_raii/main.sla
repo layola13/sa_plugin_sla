@@ -13,7 +13,8 @@ fn file_descriptor_raw_fd() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = file_descriptor_raw_fd();
+    let file = File::open("/dev/null").unwrap();
+    let result = file.as_raw_fd();
     println("{}", result);
     return result;
 }

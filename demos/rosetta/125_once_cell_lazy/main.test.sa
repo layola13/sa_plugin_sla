@@ -44,35 +44,50 @@ L_ENTRY:
 
 @main() -> i32:
 L_ENTRY:
-    tmp_8 = call @sla__once_cell_lazy_total()
-    result = tmp_8
-    tmp_9 = call @sa_fmt_u64(result, 10)
-    tmp_10 = call @sa_fmt_buffer_data(tmp_9)
-    tmp_11 = call @sa_fmt_buffer_len(tmp_9)
-    tmp_12 = tmp_10
-    call @sa_print_bytes(&tmp_12, tmp_11)
-    call @sa_fmt_buffer_free(^tmp_9)
-    !tmp_12
-    !tmp_11
+    EXPAND ONCE_NEW tmp_8
+    value = tmp_8
+    tmp_10 = stack_alloc 16
+    store tmp_10+0, 0 as ptr
+    store tmp_10+8, &SLA_FNPTR_VT_init_42 as ptr
+    EXPAND ONCE_GET_OR_INIT tmp_9, value, tmp_10
+    first = tmp_9
+    tmp_12 = stack_alloc 16
+    store tmp_12+0, 0 as ptr
+    store tmp_12+8, &SLA_FNPTR_VT_init_99 as ptr
+    EXPAND ONCE_GET_OR_INIT tmp_11, value, tmp_12
+    second = tmp_11
+    tmp_13 = add first, second
+    result = tmp_13
+    tmp_14 = call @sa_fmt_u64(result, 10)
+    tmp_15 = call @sa_fmt_buffer_data(tmp_14)
+    tmp_16 = call @sa_fmt_buffer_len(tmp_14)
+    tmp_17 = tmp_15
+    call @sa_print_bytes(&tmp_17, tmp_16)
+    call @sa_fmt_buffer_free(^tmp_14)
+    !tmp_17
+    !tmp_16
     @const SLA_STR_0 = utf8:"\n"
     call @sa_print_bytes(&SLA_STR_0, 1)
+    !value
+    !first
+    !second
     return result
 
 @test "rosetta 125 125_once_cell_lazy"():
 L_TEST_ENTRY_0:
-    tmp_13 = call @sla__once_cell_lazy_total()
-    got = tmp_13
-    tmp_14 = 84
-    tmp_15 = ne got, tmp_14
-    !tmp_14
-    br tmp_15 -> L_THEN_1, L_ELSE_2
+    tmp_18 = call @sla__once_cell_lazy_total()
+    got = tmp_18
+    tmp_19 = 84
+    tmp_20 = ne got, tmp_19
+    !tmp_19
+    br tmp_20 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_15
+    !tmp_20
     panic(125)
 
 L_ELSE_2:
-    !tmp_15
+    !tmp_20
     jmp L_MERGE_3
 
 L_MERGE_3:

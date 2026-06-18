@@ -1,9 +1,9 @@
 # 201 Pkg Manifest Basic
 
-This slot keeps the package manifest surface observable as three required fields: name, version, and entry point.
+This slot now uses a real manifest-file reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a small surrogate observable instead of a true package-manifest parser.
 
-- `main.rs`: Rust reference for the required manifest-field shape.
-- `main.sla`: Sla companion for the required manifest-field shape.
+- `main.rs`: Rust reference that reads `sa.pkg` and checks the required manifest fields.
+- `main.sla`: current surrogate that only preserves a three-field count observable.
 
 Commands:
 

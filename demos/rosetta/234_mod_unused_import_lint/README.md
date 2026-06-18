@@ -1,9 +1,9 @@
 # 234 Mod Unused Import Lint
 
-This slot keeps unused-import diagnostics observable as one imported symbol left unreferenced.
+This slot now uses a real lint fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a lint-count observable instead of true unused-import diagnostics.
 
-- `main.rs`: Rust reference for one imported symbol left unreferenced.
-- `main.sla`: Sla companion for one imported symbol left unreferenced.
+- `main.rs`: Rust reference that reads the used and unused branches and their seed modules.
+- `main.sla`: current surrogate that only preserves a one-lint count.
 
 Commands:
 

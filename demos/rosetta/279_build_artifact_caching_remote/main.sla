@@ -2,5 +2,5 @@
 @import "sa_std/fmt.sai"
 
 fn build_remote_cache_hits() -> i32 { let downloaded_artifact = 1; return downloaded_artifact; }
-fn main() -> i32 { let result = build_remote_cache_hits(); println("{}", result); return result; }
+fn main() -> i32 { let downloaded_artifact = 1; println("{}", downloaded_artifact); return downloaded_artifact; }
 @test "rosetta 279 build artifact caching remote"() { let got = build_remote_cache_hits(); if got != 1 { panic(279); }; }

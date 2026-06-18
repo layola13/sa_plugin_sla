@@ -10,7 +10,11 @@ fn fill_zero(arr: [u8; 4]) -> [u8; 4] {
 fn zeroed_buffer_sum() -> i32 {
     let buffer = [1u8, 2, 3, 4];
     let zeroed = fill_zero(buffer);
-    return zeroed[0] as i32 + zeroed[1] as i32 + zeroed[2] as i32 + zeroed[3] as i32;
+    let a = zeroed[0] as i32;
+    let b = zeroed[1] as i32;
+    let c = zeroed[2] as i32;
+    let d = zeroed[3] as i32;
+    return a + b + c + d;
 }
 
 fn main() -> i32 {

@@ -1,9 +1,9 @@
 # 239 Mod Version Suffix Isolation
 
-This slot keeps version-suffixed module coexistence observable as two isolated codec variants.
+This slot now uses a real version-suffixed fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a variant-count observable instead of true suffix-isolated module resolution.
 
-- `main.rs`: Rust reference for two isolated version-suffixed codec variants.
-- `main.sla`: Sla companion for two isolated version-suffixed codec variants.
+- `main.rs`: Rust reference that reads the `versions/v1` and `versions/v2` module/layout/seed trees and checks they stay isolated.
+- `main.sla`: current surrogate that only preserves a two-variant count.
 
 Commands:
 

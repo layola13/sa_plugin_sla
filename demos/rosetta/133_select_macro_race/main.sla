@@ -25,7 +25,9 @@ fn select_first_ready(left: i32, right: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    let result = select_first_ready_value();
+    let left = branch_a().await;
+    let right = branch_b().await;
+    let result = select_first_ready(left, right);
     println("{}", result);
     return result;
 };

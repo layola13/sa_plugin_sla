@@ -8,7 +8,9 @@ fn contract_enabled_plugin_count() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = contract_enabled_plugin_count();
+    let formatter_plugin = 1;
+    let analyzer_plugin = 1;
+    let result = formatter_plugin + analyzer_plugin;
     println("{}", result);
     return result;
 }

@@ -1,9 +1,9 @@
 # 216 Pkg Profile Release
 
-This slot keeps release profile tuning observable as the selected optimization level.
+This slot now uses a real release-profile fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a release-profile count instead of true profile resolution.
 
-- `main.rs`: Rust reference for the selected release optimization level.
-- `main.sla`: Sla companion for the selected release optimization level.
+- `main.rs`: Rust reference that reads the profile tree, helper constants, and package metadata.
+- `main.sla`: current surrogate that only preserves a one-release-profile count.
 
 Commands:
 

@@ -13,7 +13,13 @@ fn rcu_snapshot_total() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = rcu_snapshot_total();
+    let old_snapshot = Arc::new(1);
+    let reader_seen = *old_snapshot;
+    let old_value = *old_snapshot;
+    let next_value = old_value + 1;
+    let new_snapshot = Arc::new(next_value);
+    let updater_seen = *new_snapshot;
+    let result = reader_seen + updater_seen;
     println("{}", result);
     return result;
 };

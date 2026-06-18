@@ -15,7 +15,8 @@ fn result_flattened_value() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = result_flattened_value();
+    let nested = Ok(Ok(2));
+    let result = flatten_result(nested).unwrap_or(-1);
     println("{}", result);
     return result;
 }

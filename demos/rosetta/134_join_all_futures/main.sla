@@ -22,7 +22,10 @@ fn join_all_futures_sum() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = join_all_futures_sum();
+    let a = job_a().await;
+    let b = job_b().await;
+    let c = job_c().await;
+    let result = a + b + c;
     println("{}", result);
     return result;
 };

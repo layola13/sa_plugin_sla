@@ -9,7 +9,8 @@ fn negative_impl_observable_surrogate() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = negative_impl_observable_surrogate();
+    let _value = UnsafeData {};
+    let result = 0;
     println("{}", result);
     return result;
 }

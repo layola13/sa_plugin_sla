@@ -28,7 +28,9 @@ fn cancel_cleanup(value: i32, cancelled: bool) -> i32 {
 }
 
 fn main() -> i32 {
-    let result = cancellation_safe_value();
+    let reserved = reserve_slot(4);
+    let committed = commit_slot(reserved, true);
+    let result = cancel_cleanup(committed, false);
     println("{}", result);
     return result;
 };

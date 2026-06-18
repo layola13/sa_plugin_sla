@@ -1,9 +1,9 @@
 # 227 Mod Shadowing Prevention
 
-This slot keeps module-name shadowing diagnostics observable as one rejected duplicate binding.
+This slot now uses a real duplicate-layout fixture on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a diagnostic count instead of true shadowing rejection.
 
-- `main.rs`: Rust reference for rejecting one duplicate module binding.
-- `main.sla`: Sla companion for rejecting one duplicate module binding.
+- `main.rs`: Rust reference that reads the registry plus left/right branches with conflicting `SHADOW_SIZE` definitions.
+- `main.sla`: current surrogate that only preserves a one-shadowing-diagnostic count.
 
 Commands:
 

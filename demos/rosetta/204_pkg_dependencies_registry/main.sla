@@ -6,5 +6,5 @@ fn pkg_registry_dependency_count() -> i32 {
     return registry_dependency;
 }
 
-fn main() -> i32 { let result = pkg_registry_dependency_count(); println("{}", result); return result; }
+fn main() -> i32 { let registry_dependency = 1; println("{}", registry_dependency); return registry_dependency; }
 @test "rosetta 204 pkg dependencies registry"() { let got = pkg_registry_dependency_count(); if got != 1 { panic(204); }; }

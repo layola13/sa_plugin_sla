@@ -13,7 +13,9 @@ fn ready_score(task: Task) -> i32 {
         if task.cooldown == true {
             return 0;
         } else {
-            return task.priority - task.retries;
+            let priority = task.priority;
+            let retries = task.retries;
+            return priority - retries;
         };
     } else {
         return 0;

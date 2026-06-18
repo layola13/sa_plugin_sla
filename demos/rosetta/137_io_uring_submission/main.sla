@@ -16,7 +16,9 @@ fn submit_io(depth: i32, used: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    let result = io_uring_submission_count();
+    let queue_depth = 2;
+    let submitted = submit_io(queue_depth, 0);
+    let result = submit_io(queue_depth, submitted);
     println("{}", result);
     return result;
 };

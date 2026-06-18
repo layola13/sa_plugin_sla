@@ -7,5 +7,5 @@ fn pkg_enabled_feature_count() -> i32 {
     return default_feature + explicit_feature;
 }
 
-fn main() -> i32 { let result = pkg_enabled_feature_count(); println("{}", result); return result; }
+fn main() -> i32 { let default_feature = 1; let explicit_feature = 1; let result = default_feature + explicit_feature; println("{}", result); return result; }
 @test "rosetta 212 pkg feature flags"() { let got = pkg_enabled_feature_count(); if got != 2 { panic(212); }; }

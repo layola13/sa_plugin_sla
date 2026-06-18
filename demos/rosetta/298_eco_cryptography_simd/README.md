@@ -1,9 +1,9 @@
 # 298 Eco Cryptography Simd
 
-This slot keeps cryptography-oriented SIMD work observable as four active lanes.
+This slot now uses a real fixture-backed cryptography SIMD integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for four active cryptography SIMD lanes.
-- `main.sla`: Sla companion for four active lanes.
+- `main.rs`: Rust reference that reads `crypto/hash.*`, SIMD docs, crypto header, and benchmark metadata.
+- `main.sla`: current surrogate that only preserves the SIMD-lane count.
 
 Commands:
 

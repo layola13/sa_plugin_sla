@@ -1,9 +1,9 @@
 # 281 Ffi Link System Libc
 
-This slot keeps system-libc linkage observable as one imported `puts`-style symbol.
+This slot now uses a real fixture-backed system-libc FFI linkage reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for one imported `puts`-style libc symbol.
-- `main.sla`: Sla companion for one imported `puts`-style libc symbol.
+- `main.rs`: Rust reference that reads `bridge/libc_gate.*`, `ffi/libc.sai`, `host/libc.h`, linker notes, and `system-libc.pc`.
+- `main.sla`: current surrogate that only preserves the system-libc symbol count.
 
 Commands:
 

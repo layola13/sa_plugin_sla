@@ -1,9 +1,9 @@
 # 291 Eco Wasm Host Imports
 
-This slot keeps Wasm host integration observable as imported log and clock functions.
+This slot now uses a real fixture-backed Wasm host-import integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for imported log and clock host functions.
-- `main.sla`: Sla companion for imported log and clock host functions.
+- `main.rs`: Rust reference that reads `guest/guest_entry.*`, `host/host_imports.sai`, WIT notes, and runtime docs.
+- `main.sla`: current surrogate that only preserves the host-import count.
 
 Commands:
 

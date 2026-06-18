@@ -1,9 +1,9 @@
 # 296 Eco Gpu Ptx Shader
 
-This slot keeps PTX-style GPU integration observable as one compute kernel entry.
+This slot now uses a real fixture-backed GPU PTX shader integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for one PTX-style compute kernel entry.
-- `main.sla`: Sla companion for one compute kernel entry.
+- `main.rs`: Rust reference that reads `guest/shader.*`, kernel args, launch config, and PTX note.
+- `main.sla`: current surrogate that only preserves the compute-kernel count.
 
 Commands:
 

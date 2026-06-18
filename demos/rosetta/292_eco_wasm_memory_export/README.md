@@ -1,9 +1,9 @@
 # 292 Eco Wasm Memory Export
 
-This slot keeps exported Wasm linear memory observable as one published memory surface.
+This slot now uses a real fixture-backed Wasm memory export integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for one published linear-memory surface.
-- `main.sla`: Sla companion for one published memory surface.
+- `main.rs`: Rust reference that reads `guest/memory_export.*`, memory layout JSON, host note, and memory map.
+- `main.sla`: current surrogate that only preserves the memory-surface count.
 
 Commands:
 

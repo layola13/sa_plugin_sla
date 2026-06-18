@@ -1,9 +1,9 @@
 # 299 Eco Language Server Protocol
 
-This slot keeps language-server message flow observable as request and response kinds.
+This slot now uses a real fixture-backed language-server protocol integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for request and response message kinds.
-- `main.sla`: Sla companion for request and response kinds.
+- `main.rs`: Rust reference that reads `lsp/server.*`, server docs, protocol capabilities, and LSP JSON.
+- `main.sla`: current surrogate that only preserves the message-kind count.
 
 Commands:
 

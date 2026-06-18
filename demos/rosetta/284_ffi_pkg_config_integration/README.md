@@ -1,9 +1,9 @@
 # 284 Ffi Pkg Config Integration
 
-This slot keeps `pkg-config` integration observable as include and library search paths.
+This slot now uses a real fixture-backed pkg-config FFI integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for include and library search paths from `pkg-config`.
-- `main.sla`: Sla companion for include and library search paths.
+- `main.rs`: Rust reference that reads `config/pkg-config.toml`, `bridge/pkg_config_gate.*`, `ffi/pkg_config.sai`, host header, and `.pc` metadata.
+- `main.sla`: current surrogate that only preserves the include/library path count.
 
 Commands:
 

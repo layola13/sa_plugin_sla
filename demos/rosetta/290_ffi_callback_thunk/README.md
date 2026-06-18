@@ -1,9 +1,9 @@
 # 290 Ffi Callback Thunk
 
-This slot keeps foreign-to-local callback bridging observable as one callback thunk layer.
+This slot now uses a real fixture-backed FFI callback thunk registration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for one foreign-to-local callback thunk layer.
-- `main.sla`: Sla companion for one callback thunk layer.
+- `main.rs`: Rust reference that reads `bridge/callback_thunk.*`, `ffi/callback.sai`, callback registry header, loader note, and thunk docs.
+- `main.sla`: current surrogate that only preserves the callback-thunk count.
 
 Commands:
 

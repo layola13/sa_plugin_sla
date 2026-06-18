@@ -1,9 +1,9 @@
 # 293 Eco Embedded No Os
 
-This slot keeps bare-metal embedded startup observable as one reset-handler hook without an OS runtime.
+This slot now uses a real fixture-backed bare-metal no-OS integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for one reset-handler hook without an OS runtime.
-- `main.sla`: Sla companion for one reset-handler hook without an OS runtime.
+- `main.rs`: Rust reference that reads `guest/startup.*`, board docs, linker script, and memory map.
+- `main.sla`: current surrogate that only preserves the reset-handler count.
 
 Commands:
 

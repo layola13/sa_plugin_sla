@@ -1,9 +1,9 @@
 # 287 Ffi Zig Export Integration
 
-This slot keeps Zig export integration observable as one symbol surfaced to foreign callers.
+This slot now uses a real fixture-backed Zig export FFI integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for one Zig-exported symbol visible to foreign callers.
-- `main.sla`: Sla companion for one symbol surfaced to foreign callers.
+- `main.rs`: Rust reference that reads `guest/zig_export.*` and `host/zig/*` export bridge files.
+- `main.sla`: current surrogate that only preserves the exported-symbol count.
 
 Commands:
 

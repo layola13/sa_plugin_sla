@@ -1,9 +1,9 @@
 # 282 Ffi Link Static C Lib
 
-This slot keeps static-library linkage observable as one archive member pulled into the final link.
+This slot now uses a real fixture-backed static C library FFI linkage reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for one archive member linked from a static C library.
-- `main.sla`: Sla companion for one archive member pulled into the final link.
+- `main.rs`: Rust reference that reads `bridge/static_gate.*`, `ffi/static_lib.sai`, static header, archive note, and linker script.
+- `main.sla`: current surrogate that only preserves the static archive-member count.
 
 Commands:
 

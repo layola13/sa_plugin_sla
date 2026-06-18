@@ -1,9 +1,9 @@
 # 295 Eco Bpf Ebpf Bytecode
 
-This slot keeps eBPF-style program structure observable as load and return instruction kinds.
+This slot now uses a real fixture-backed eBPF bytecode integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for load and return eBPF instruction kinds.
-- `main.sla`: Sla companion for load and return instruction kinds.
+- `main.rs`: Rust reference that reads `guest/program.*`, bytecode docs, attach metadata, and pin path.
+- `main.sla`: current surrogate that only preserves the instruction-kind count.
 
 Commands:
 

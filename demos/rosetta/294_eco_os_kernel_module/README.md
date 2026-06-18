@@ -1,9 +1,9 @@
 # 294 Eco Os Kernel Module
 
-This slot keeps kernel-module integration observable as init and exit hooks.
+This slot now uses a real fixture-backed OS kernel module integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for kernel-module init and exit hooks.
-- `main.sla`: Sla companion for init and exit hooks.
+- `main.rs`: Rust reference that reads `kernel/module.*`, module manifest, insmod notes, and linker script.
+- `main.sla`: current surrogate that only preserves the kernel hook count.
 
 Commands:
 

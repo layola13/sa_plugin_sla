@@ -1,9 +1,9 @@
 # 286 Ffi Rust Staticlib Integration
 
-This slot keeps Rust staticlib export integration observable as one exposed symbol.
+This slot now uses a real fixture-backed Rust staticlib FFI integration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a count-style observable instead of checking the full FFI/ecosystem fixture graph.
 
-- `main.rs`: Rust reference for one exposed symbol from a Rust staticlib.
-- `main.sla`: Sla companion for one exposed symbol from a Rust staticlib.
+- `main.rs`: Rust reference that reads `bridge/rust_static_gate.*`, `ffi/rust_staticlib.sai`, Cargo bridge metadata, header, and archive note.
+- `main.sla`: current surrogate that only preserves the Rust staticlib symbol count.
 
 Commands:
 

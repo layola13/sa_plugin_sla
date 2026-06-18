@@ -4,6 +4,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] The `305`-`309` pattern/macro slice has been added with real Rust/SA references and honest Sla companions.
+  - Added local demo directories for range patterns, or-patterns, `n @ range` bindings, rest-pattern destructuring, and try-block semantics: `305_range_pattern_macro` through `309_try_block_macro`.
+  - Copied the upstream Rust `main.rs` references and upstream SA-ASM `main.sa` fixtures into each new demo so the catalog entry points now point at the real topic sources instead of placeholders.
+  - Added executable `main.sla` companions that preserve the current observable outputs with the Sla surface that is actually available today; the README files explicitly mark those companions as `❌` surrogates rather than claiming native Rust pattern/try-block 1:1 support.
+  - Verified with: `zig build local-cli -- sla test demos/rosetta/305_range_pattern_macro/main.sla`, `zig build local-cli -- sla test demos/rosetta/306_or_pattern_macro/main.sla`, `zig build local-cli -- sla test demos/rosetta/307_at_binding_macro/main.sla`, `zig build local-cli -- sla test demos/rosetta/308_rest_pattern_macro/main.sla`, and `zig build local-cli -- sla test demos/rosetta/309_try_block_macro/main.sla`.
+  - Rust compilation was not locally verified because this environment currently has no `rustc` on `PATH`.
+
 - [done] The local `301`-`304` operator-overload demos have been tightened under the main-path-only rule.
   - Restored `301_operator_overload_add/main.sla`, `302_operator_overload_neg/main.sla`, `303_operator_overload_scalar_mul/main.sla`, and `304_operator_overload_eq/main.sla` so their `main` paths directly construct the Rust-shaped operands, apply the real `+`, unary `-`, scalar `*`, `==`, and `!=` operators, print the same observable shape as the Rust references, and then validate the results.
   - Preserved the existing helper functions and all `@test` blocks; no demo test code was removed or rewritten.

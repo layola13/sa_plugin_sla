@@ -1,0 +1,261 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_is_primary = vtable { call = @sla__is_primary }
+@const SLA_FNPTR_VT_primary_score = vtable { call = @sla__primary_score }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__is_primary(c: ptr) -> u8:
+L_ENTRY:
+    tmp_0 = alloc 1
+    jmp L_MATCH_CHECK_0_2
+
+L_MATCH_CHECK_0_2:
+    tmp_1 = load c+0 as i64
+    tmp_2 = 0
+    tmp_3 = eq tmp_1, tmp_2
+    !tmp_1
+    !tmp_2
+    br tmp_3 -> L_MATCH_CASE_0_2, L_MATCH_CHECK_1_2
+
+L_MATCH_CASE_0_2:
+    !tmp_3
+    tmp_4 = 1
+    store tmp_0+0, tmp_4 as u8
+    !tmp_4
+    jmp L_MATCH_MERGE_0
+
+L_MATCH_CHECK_1_2:
+    !tmp_3
+    tmp_5 = load c+0 as i64
+    tmp_6 = 1
+    tmp_7 = eq tmp_5, tmp_6
+    !tmp_5
+    !tmp_6
+    br tmp_7 -> L_MATCH_CASE_1_2, L_MATCH_CHECK_2_2
+
+L_MATCH_CASE_1_2:
+    !tmp_7
+    tmp_8 = 1
+    store tmp_0+0, tmp_8 as u8
+    !tmp_8
+    jmp L_MATCH_MERGE_0
+
+L_MATCH_CHECK_2_2:
+    !tmp_7
+    tmp_9 = load c+0 as i64
+    tmp_10 = 2
+    tmp_11 = eq tmp_9, tmp_10
+    !tmp_9
+    !tmp_10
+    br tmp_11 -> L_MATCH_CASE_2_2, L_MATCH_CHECK_3_2
+
+L_MATCH_CASE_2_2:
+    !tmp_11
+    tmp_12 = 1
+    store tmp_0+0, tmp_12 as u8
+    !tmp_12
+    jmp L_MATCH_MERGE_0
+
+L_MATCH_CHECK_3_2:
+    !tmp_11
+    tmp_13 = load c+0 as i64
+    tmp_14 = 3
+    tmp_15 = eq tmp_13, tmp_14
+    !tmp_13
+    !tmp_14
+    br tmp_15 -> L_MATCH_CASE_3_2, L_MATCH_CHECK_4_2
+
+L_MATCH_CASE_3_2:
+    !tmp_15
+    tmp_16 = 0
+    store tmp_0+0, tmp_16 as u8
+    !tmp_16
+    jmp L_MATCH_MERGE_0
+
+L_MATCH_CHECK_4_2:
+    !tmp_15
+    tmp_17 = load c+0 as i64
+    tmp_18 = 4
+    tmp_19 = eq tmp_17, tmp_18
+    !tmp_17
+    !tmp_18
+    br tmp_19 -> L_MATCH_CASE_4_2, L_MATCH_CHECK_5_2
+
+L_MATCH_CASE_4_2:
+    !tmp_19
+    tmp_20 = 0
+    store tmp_0+0, tmp_20 as u8
+    !tmp_20
+    jmp L_MATCH_MERGE_0
+
+L_MATCH_CHECK_5_2:
+    !tmp_19
+    tmp_21 = load c+0 as i64
+    tmp_22 = 5
+    tmp_23 = eq tmp_21, tmp_22
+    !tmp_21
+    !tmp_22
+    br tmp_23 -> L_MATCH_CASE_5_2, L_MATCH_NO_MATCH_1
+
+L_MATCH_CASE_5_2:
+    !tmp_23
+    tmp_24 = 0
+    store tmp_0+0, tmp_24 as u8
+    !tmp_24
+    jmp L_MATCH_MERGE_0
+
+L_MATCH_NO_MATCH_1:
+    !tmp_23
+    panic(1)
+
+L_MATCH_MERGE_0:
+    tmp_25 = load tmp_0+0 as u8
+    !tmp_0
+    return tmp_25
+
+@sla__primary_score() -> i32:
+L_ENTRY:
+    tmp_26 = 0
+    count = tmp_26
+    tmp_27 = alloc 8
+    store tmp_27+0, 0 as i64
+    tmp_28 = call @sla__is_primary(tmp_27)
+    !tmp_27
+    br tmp_28 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_28
+    tmp_29 = 1
+    tmp_30 = add count, tmp_29
+    !tmp_29
+    !count
+    count = tmp_30
+    jmp L_MERGE_5
+
+L_ELSE_4:
+    !tmp_28
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_32 = alloc 8
+    store tmp_32+0, 3 as i64
+    tmp_33 = call @sla__is_primary(tmp_32)
+    !tmp_32
+    br tmp_33 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_33
+    tmp_34 = 1
+    tmp_35 = add count, tmp_34
+    !tmp_34
+    !count
+    count = tmp_35
+    jmp L_MERGE_8
+
+L_ELSE_7:
+    !tmp_33
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    tmp_37 = alloc 8
+    store tmp_37+0, 2 as i64
+    tmp_38 = call @sla__is_primary(tmp_37)
+    !tmp_37
+    br tmp_38 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_38
+    tmp_39 = 1
+    tmp_40 = add count, tmp_39
+    !tmp_39
+    !count
+    count = tmp_40
+    jmp L_MERGE_11
+
+L_ELSE_10:
+    !tmp_38
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    tmp_42 = alloc 8
+    store tmp_42+0, 4 as i64
+    tmp_43 = call @sla__is_primary(tmp_42)
+    !tmp_42
+    br tmp_43 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_43
+    tmp_44 = 1
+    tmp_45 = add count, tmp_44
+    !tmp_44
+    !count
+    count = tmp_45
+    jmp L_MERGE_14
+
+L_ELSE_13:
+    !tmp_43
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    return count
+
+@main() -> i32:
+L_ENTRY:
+    tmp_47 = call @sla__primary_score()
+    count = tmp_47
+    tmp_48 = call @sa_fmt_u64(count, 10)
+    tmp_49 = call @sa_fmt_buffer_data(tmp_48)
+    tmp_50 = call @sa_fmt_buffer_len(tmp_48)
+    tmp_51 = tmp_49
+    call @sa_print_bytes(&tmp_51, tmp_50)
+    call @sa_fmt_buffer_free(^tmp_48)
+    !tmp_51
+    !tmp_50
+    @const SLA_STR_0 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_52 = 2
+    tmp_53 = eq count, tmp_52
+    !tmp_52
+    br tmp_53 -> L_THEN_15, L_ELSE_16
+
+L_THEN_15:
+    !tmp_53
+    tmp_54 = 0
+    !count
+    return tmp_54
+
+L_ELSE_16:
+    !tmp_53
+    tmp_55 = 1
+    !count
+    return tmp_55
+
+
+@test "rosetta 306 or pattern macro"():
+L_TEST_ENTRY_18:
+    tmp_57 = call @sla__primary_score()
+    tmp_58 = 2
+    tmp_59 = ne tmp_57, tmp_58
+    !tmp_57
+    !tmp_58
+    br tmp_59 -> L_THEN_19, L_ELSE_20
+
+L_THEN_19:
+    !tmp_59
+    panic(306)
+
+L_ELSE_20:
+    !tmp_59
+    jmp L_MERGE_21
+
+L_MERGE_21:
+    return
+

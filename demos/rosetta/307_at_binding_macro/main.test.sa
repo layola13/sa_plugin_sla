@@ -1,0 +1,245 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_transform = vtable { call = @sla__transform }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__transform(x: i32) -> i32:
+L_ENTRY:
+    tmp_0 = 1
+    tmp_1 = sge x, tmp_0
+    !tmp_0
+    br tmp_1 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_1
+    tmp_2 = 5
+    tmp_3 = sle x, tmp_2
+    !tmp_2
+    br tmp_3 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_3
+    tmp_4 = 10
+    tmp_5 = mul x, tmp_4
+    !tmp_4
+    return tmp_5
+
+L_ELSE_4:
+    !tmp_3
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    jmp L_MERGE_2
+
+L_ELSE_1:
+    !tmp_1
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_8 = 6
+    tmp_9 = sge x, tmp_8
+    !tmp_8
+    br tmp_9 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_9
+    tmp_10 = 10
+    tmp_11 = sle x, tmp_10
+    !tmp_10
+    br tmp_11 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_11
+    tmp_12 = 100
+    tmp_13 = mul x, tmp_12
+    !tmp_12
+    return tmp_13
+
+L_ELSE_10:
+    !tmp_11
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    jmp L_MERGE_8
+
+L_ELSE_7:
+    !tmp_9
+    tmp_15 = 0
+    !x
+    return tmp_15
+
+L_MERGE_8:
+    tmp_17 = 0
+    !x
+    return tmp_17
+
+@main() -> i32:
+L_ENTRY:
+    tmp_18 = 3
+    tmp_19 = call @sla__transform(tmp_18)
+    !tmp_18
+    a = tmp_19
+    tmp_20 = 8
+    tmp_21 = call @sla__transform(tmp_20)
+    !tmp_20
+    b = tmp_21
+    tmp_22 = 15
+    tmp_23 = call @sla__transform(tmp_22)
+    !tmp_22
+    c = tmp_23
+    tmp_24 = call @sa_fmt_u64(a, 10)
+    tmp_25 = call @sa_fmt_buffer_data(tmp_24)
+    tmp_26 = call @sa_fmt_buffer_len(tmp_24)
+    tmp_27 = tmp_25
+    call @sa_print_bytes(&tmp_27, tmp_26)
+    call @sa_fmt_buffer_free(^tmp_24)
+    !tmp_27
+    !tmp_26
+    @const SLA_STR_0 = utf8:","
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_28 = call @sa_fmt_u64(b, 10)
+    tmp_29 = call @sa_fmt_buffer_data(tmp_28)
+    tmp_30 = call @sa_fmt_buffer_len(tmp_28)
+    tmp_31 = tmp_29
+    call @sa_print_bytes(&tmp_31, tmp_30)
+    call @sa_fmt_buffer_free(^tmp_28)
+    !tmp_31
+    !tmp_30
+    @const SLA_STR_1 = utf8:","
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    tmp_32 = call @sa_fmt_u64(c, 10)
+    tmp_33 = call @sa_fmt_buffer_data(tmp_32)
+    tmp_34 = call @sa_fmt_buffer_len(tmp_32)
+    tmp_35 = tmp_33
+    call @sa_print_bytes(&tmp_35, tmp_34)
+    call @sa_fmt_buffer_free(^tmp_32)
+    !tmp_35
+    !tmp_34
+    @const SLA_STR_2 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_2, 1)
+    tmp_36 = 30
+    tmp_37 = ne a, tmp_36
+    !tmp_36
+    br tmp_37 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_37
+    tmp_38 = 1
+    !b
+    !a
+    !c
+    return tmp_38
+
+L_ELSE_13:
+    !tmp_37
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    tmp_40 = 800
+    tmp_41 = ne b, tmp_40
+    !tmp_40
+    br tmp_41 -> L_THEN_15, L_ELSE_16
+
+L_THEN_15:
+    !tmp_41
+    tmp_42 = 1
+    !b
+    !a
+    !c
+    return tmp_42
+
+L_ELSE_16:
+    !tmp_41
+    jmp L_MERGE_17
+
+L_MERGE_17:
+    tmp_44 = 0
+    tmp_45 = ne c, tmp_44
+    !tmp_44
+    br tmp_45 -> L_THEN_18, L_ELSE_19
+
+L_THEN_18:
+    !tmp_45
+    tmp_46 = 1
+    !b
+    !a
+    !c
+    return tmp_46
+
+L_ELSE_19:
+    !tmp_45
+    jmp L_MERGE_20
+
+L_MERGE_20:
+    tmp_48 = 0
+    !b
+    !a
+    !c
+    return tmp_48
+
+@test "rosetta 307 at binding macro"():
+L_TEST_ENTRY_21:
+    tmp_49 = 3
+    tmp_50 = call @sla__transform(tmp_49)
+    !tmp_49
+    tmp_51 = 30
+    tmp_52 = ne tmp_50, tmp_51
+    !tmp_50
+    !tmp_51
+    br tmp_52 -> L_THEN_22, L_ELSE_23
+
+L_THEN_22:
+    !tmp_52
+    panic(307)
+
+L_ELSE_23:
+    !tmp_52
+    jmp L_MERGE_24
+
+L_MERGE_24:
+    tmp_55 = 8
+    tmp_56 = call @sla__transform(tmp_55)
+    !tmp_55
+    tmp_57 = 800
+    tmp_58 = ne tmp_56, tmp_57
+    !tmp_56
+    !tmp_57
+    br tmp_58 -> L_THEN_25, L_ELSE_26
+
+L_THEN_25:
+    !tmp_58
+    panic(308)
+
+L_ELSE_26:
+    !tmp_58
+    jmp L_MERGE_27
+
+L_MERGE_27:
+    tmp_61 = 15
+    tmp_62 = call @sla__transform(tmp_61)
+    !tmp_61
+    tmp_63 = 0
+    tmp_64 = ne tmp_62, tmp_63
+    !tmp_62
+    !tmp_63
+    br tmp_64 -> L_THEN_28, L_ELSE_29
+
+L_THEN_28:
+    !tmp_64
+    panic(309)
+
+L_ELSE_29:
+    !tmp_64
+    jmp L_MERGE_30
+
+L_MERGE_30:
+    return
+

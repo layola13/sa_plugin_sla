@@ -1,0 +1,431 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_grade = vtable { call = @sla__grade }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__grade(score: i32) -> i32:
+L_ENTRY:
+    tmp_0 = 0
+    tmp_1 = sge score, tmp_0
+    !tmp_0
+    br tmp_1 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_1
+    tmp_2 = 59
+    tmp_3 = sle score, tmp_2
+    !tmp_2
+    br tmp_3 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_3
+    tmp_4 = 0
+    !score
+    return tmp_4
+
+L_ELSE_4:
+    !tmp_3
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    jmp L_MERGE_2
+
+L_ELSE_1:
+    !tmp_1
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_7 = 60
+    tmp_8 = sge score, tmp_7
+    !tmp_7
+    br tmp_8 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_8
+    tmp_9 = 79
+    tmp_10 = sle score, tmp_9
+    !tmp_9
+    br tmp_10 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_10
+    tmp_11 = 1
+    !score
+    return tmp_11
+
+L_ELSE_10:
+    !tmp_10
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    jmp L_MERGE_8
+
+L_ELSE_7:
+    !tmp_8
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    tmp_14 = 80
+    tmp_15 = sge score, tmp_14
+    !tmp_14
+    br tmp_15 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_15
+    tmp_16 = 89
+    tmp_17 = sle score, tmp_16
+    !tmp_16
+    br tmp_17 -> L_THEN_15, L_ELSE_16
+
+L_THEN_15:
+    !tmp_17
+    tmp_18 = 2
+    !score
+    return tmp_18
+
+L_ELSE_16:
+    !tmp_17
+    jmp L_MERGE_17
+
+L_MERGE_17:
+    jmp L_MERGE_14
+
+L_ELSE_13:
+    !tmp_15
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    tmp_21 = 90
+    tmp_22 = sge score, tmp_21
+    !tmp_21
+    br tmp_22 -> L_THEN_18, L_ELSE_19
+
+L_THEN_18:
+    !tmp_22
+    tmp_23 = 100
+    tmp_24 = sle score, tmp_23
+    !tmp_23
+    br tmp_24 -> L_THEN_21, L_ELSE_22
+
+L_THEN_21:
+    !tmp_24
+    tmp_25 = 3
+    !score
+    return tmp_25
+
+L_ELSE_22:
+    !tmp_24
+    jmp L_MERGE_23
+
+L_MERGE_23:
+    jmp L_MERGE_20
+
+L_ELSE_19:
+    !tmp_22
+    tmp_27 = 0
+    tmp_28 = 1
+    tmp_29 = sub tmp_27, tmp_28
+    !tmp_27
+    !tmp_28
+    !score
+    return tmp_29
+
+L_MERGE_20:
+    tmp_31 = 0
+    tmp_32 = 1
+    tmp_33 = sub tmp_31, tmp_32
+    !tmp_31
+    !tmp_32
+    !score
+    return tmp_33
+
+@main() -> i32:
+L_ENTRY:
+    tmp_34 = 45
+    tmp_35 = call @sla__grade(tmp_34)
+    !tmp_34
+    a = tmp_35
+    tmp_36 = 72
+    tmp_37 = call @sla__grade(tmp_36)
+    !tmp_36
+    b = tmp_37
+    tmp_38 = 85
+    tmp_39 = call @sla__grade(tmp_38)
+    !tmp_38
+    c = tmp_39
+    tmp_40 = 95
+    tmp_41 = call @sla__grade(tmp_40)
+    !tmp_40
+    d = tmp_41
+    tmp_42 = 101
+    tmp_43 = call @sla__grade(tmp_42)
+    !tmp_42
+    e = tmp_43
+    tmp_44 = call @sa_fmt_u64(a, 10)
+    tmp_45 = call @sa_fmt_buffer_data(tmp_44)
+    tmp_46 = call @sa_fmt_buffer_len(tmp_44)
+    tmp_47 = tmp_45
+    call @sa_print_bytes(&tmp_47, tmp_46)
+    call @sa_fmt_buffer_free(^tmp_44)
+    !tmp_47
+    !tmp_46
+    @const SLA_STR_0 = utf8:","
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_48 = call @sa_fmt_u64(b, 10)
+    tmp_49 = call @sa_fmt_buffer_data(tmp_48)
+    tmp_50 = call @sa_fmt_buffer_len(tmp_48)
+    tmp_51 = tmp_49
+    call @sa_print_bytes(&tmp_51, tmp_50)
+    call @sa_fmt_buffer_free(^tmp_48)
+    !tmp_51
+    !tmp_50
+    @const SLA_STR_1 = utf8:","
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    tmp_52 = call @sa_fmt_u64(c, 10)
+    tmp_53 = call @sa_fmt_buffer_data(tmp_52)
+    tmp_54 = call @sa_fmt_buffer_len(tmp_52)
+    tmp_55 = tmp_53
+    call @sa_print_bytes(&tmp_55, tmp_54)
+    call @sa_fmt_buffer_free(^tmp_52)
+    !tmp_55
+    !tmp_54
+    @const SLA_STR_2 = utf8:","
+    call @sa_print_bytes(&SLA_STR_2, 1)
+    tmp_56 = call @sa_fmt_u64(d, 10)
+    tmp_57 = call @sa_fmt_buffer_data(tmp_56)
+    tmp_58 = call @sa_fmt_buffer_len(tmp_56)
+    tmp_59 = tmp_57
+    call @sa_print_bytes(&tmp_59, tmp_58)
+    call @sa_fmt_buffer_free(^tmp_56)
+    !tmp_59
+    !tmp_58
+    @const SLA_STR_3 = utf8:","
+    call @sa_print_bytes(&SLA_STR_3, 1)
+    tmp_60 = call @sa_fmt_u64(e, 10)
+    tmp_61 = call @sa_fmt_buffer_data(tmp_60)
+    tmp_62 = call @sa_fmt_buffer_len(tmp_60)
+    tmp_63 = tmp_61
+    call @sa_print_bytes(&tmp_63, tmp_62)
+    call @sa_fmt_buffer_free(^tmp_60)
+    !tmp_63
+    !tmp_62
+    @const SLA_STR_4 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_4, 1)
+    tmp_64 = 0
+    tmp_65 = ne a, tmp_64
+    !tmp_64
+    br tmp_65 -> L_THEN_24, L_ELSE_25
+
+L_THEN_24:
+    !tmp_65
+    tmp_66 = 1
+    !b
+    !a
+    !c
+    !e
+    !d
+    return tmp_66
+
+L_ELSE_25:
+    !tmp_65
+    jmp L_MERGE_26
+
+L_MERGE_26:
+    tmp_68 = 1
+    tmp_69 = ne b, tmp_68
+    !tmp_68
+    br tmp_69 -> L_THEN_27, L_ELSE_28
+
+L_THEN_27:
+    !tmp_69
+    tmp_70 = 1
+    !b
+    !a
+    !c
+    !e
+    !d
+    return tmp_70
+
+L_ELSE_28:
+    !tmp_69
+    jmp L_MERGE_29
+
+L_MERGE_29:
+    tmp_72 = 2
+    tmp_73 = ne c, tmp_72
+    !tmp_72
+    br tmp_73 -> L_THEN_30, L_ELSE_31
+
+L_THEN_30:
+    !tmp_73
+    tmp_74 = 1
+    !b
+    !a
+    !c
+    !e
+    !d
+    return tmp_74
+
+L_ELSE_31:
+    !tmp_73
+    jmp L_MERGE_32
+
+L_MERGE_32:
+    tmp_76 = 3
+    tmp_77 = ne d, tmp_76
+    !tmp_76
+    br tmp_77 -> L_THEN_33, L_ELSE_34
+
+L_THEN_33:
+    !tmp_77
+    tmp_78 = 1
+    !b
+    !a
+    !c
+    !e
+    !d
+    return tmp_78
+
+L_ELSE_34:
+    !tmp_77
+    jmp L_MERGE_35
+
+L_MERGE_35:
+    tmp_80 = 0
+    tmp_81 = 1
+    tmp_82 = sub tmp_80, tmp_81
+    !tmp_80
+    !tmp_81
+    tmp_83 = ne e, tmp_82
+    !tmp_82
+    br tmp_83 -> L_THEN_36, L_ELSE_37
+
+L_THEN_36:
+    !tmp_83
+    tmp_84 = 1
+    !b
+    !a
+    !c
+    !e
+    !d
+    return tmp_84
+
+L_ELSE_37:
+    !tmp_83
+    jmp L_MERGE_38
+
+L_MERGE_38:
+    tmp_86 = 0
+    !b
+    !a
+    !c
+    !e
+    !d
+    return tmp_86
+
+@test "rosetta 305 range pattern macro"():
+L_TEST_ENTRY_39:
+    tmp_87 = 45
+    tmp_88 = call @sla__grade(tmp_87)
+    !tmp_87
+    tmp_89 = 0
+    tmp_90 = ne tmp_88, tmp_89
+    !tmp_88
+    !tmp_89
+    br tmp_90 -> L_THEN_40, L_ELSE_41
+
+L_THEN_40:
+    !tmp_90
+    panic(305)
+
+L_ELSE_41:
+    !tmp_90
+    jmp L_MERGE_42
+
+L_MERGE_42:
+    tmp_93 = 72
+    tmp_94 = call @sla__grade(tmp_93)
+    !tmp_93
+    tmp_95 = 1
+    tmp_96 = ne tmp_94, tmp_95
+    !tmp_94
+    !tmp_95
+    br tmp_96 -> L_THEN_43, L_ELSE_44
+
+L_THEN_43:
+    !tmp_96
+    panic(306)
+
+L_ELSE_44:
+    !tmp_96
+    jmp L_MERGE_45
+
+L_MERGE_45:
+    tmp_99 = 85
+    tmp_100 = call @sla__grade(tmp_99)
+    !tmp_99
+    tmp_101 = 2
+    tmp_102 = ne tmp_100, tmp_101
+    !tmp_100
+    !tmp_101
+    br tmp_102 -> L_THEN_46, L_ELSE_47
+
+L_THEN_46:
+    !tmp_102
+    panic(307)
+
+L_ELSE_47:
+    !tmp_102
+    jmp L_MERGE_48
+
+L_MERGE_48:
+    tmp_105 = 95
+    tmp_106 = call @sla__grade(tmp_105)
+    !tmp_105
+    tmp_107 = 3
+    tmp_108 = ne tmp_106, tmp_107
+    !tmp_106
+    !tmp_107
+    br tmp_108 -> L_THEN_49, L_ELSE_50
+
+L_THEN_49:
+    !tmp_108
+    panic(308)
+
+L_ELSE_50:
+    !tmp_108
+    jmp L_MERGE_51
+
+L_MERGE_51:
+    tmp_111 = 101
+    tmp_112 = call @sla__grade(tmp_111)
+    !tmp_111
+    tmp_113 = 0
+    tmp_114 = 1
+    tmp_115 = sub tmp_113, tmp_114
+    !tmp_113
+    !tmp_114
+    tmp_116 = ne tmp_112, tmp_115
+    !tmp_112
+    !tmp_115
+    br tmp_116 -> L_THEN_52, L_ELSE_53
+
+L_THEN_52:
+    !tmp_116
+    panic(309)
+
+L_ELSE_53:
+    !tmp_116
+    jmp L_MERGE_54
+
+L_MERGE_54:
+    return
+

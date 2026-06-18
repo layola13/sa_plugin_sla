@@ -1,0 +1,160 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_sum_first_two = vtable { call = @sla__sum_first_two }
+@const SLA_FNPTR_VT_head = vtable { call = @sla__head }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__sum_first_two(a: i32, b: i32, _c: i32, _d: i32) -> i32:
+L_ENTRY:
+    tmp_0 = add a, b
+    !_c
+    !_d
+    return tmp_0
+
+@sla__head(t: ptr) -> i32:
+L_ENTRY:
+    tmp_1 = load t+0 as i32
+    !t
+    return tmp_1
+
+@main() -> i32:
+L_ENTRY:
+    tmp_2 = 10
+    tmp_3 = 20
+    tmp_4 = 30
+    tmp_5 = 40
+    tmp_6 = call @sla__sum_first_two(tmp_2, tmp_3, tmp_4, tmp_5)
+    !tmp_2
+    !tmp_3
+    !tmp_4
+    !tmp_5
+    s = tmp_6
+    tmp_7 = alloc 12
+    tmp_8 = 100
+    store tmp_7+0, tmp_8 as i32
+    tmp_9 = 200
+    store tmp_7+4, tmp_9 as i32
+    tmp_10 = 300
+    store tmp_7+8, tmp_10 as i32
+    tmp_11 = call @sla__head(tmp_7)
+    !tmp_7
+    h = tmp_11
+    tmp_12 = call @sa_fmt_u64(s, 10)
+    tmp_13 = call @sa_fmt_buffer_data(tmp_12)
+    tmp_14 = call @sa_fmt_buffer_len(tmp_12)
+    tmp_15 = tmp_13
+    call @sa_print_bytes(&tmp_15, tmp_14)
+    call @sa_fmt_buffer_free(^tmp_12)
+    !tmp_15
+    !tmp_14
+    @const SLA_STR_0 = utf8:","
+    call @sa_print_bytes(&SLA_STR_0, 1)
+    tmp_16 = call @sa_fmt_u64(h, 10)
+    tmp_17 = call @sa_fmt_buffer_data(tmp_16)
+    tmp_18 = call @sa_fmt_buffer_len(tmp_16)
+    tmp_19 = tmp_17
+    call @sa_print_bytes(&tmp_19, tmp_18)
+    call @sa_fmt_buffer_free(^tmp_16)
+    !tmp_19
+    !tmp_18
+    @const SLA_STR_1 = utf8:"\n"
+    call @sa_print_bytes(&SLA_STR_1, 1)
+    tmp_20 = 30
+    tmp_21 = ne s, tmp_20
+    !tmp_20
+    br tmp_21 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_21
+    tmp_22 = 1
+    !s
+    !h
+    return tmp_22
+
+L_ELSE_1:
+    !tmp_21
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_24 = 100
+    tmp_25 = ne h, tmp_24
+    !tmp_24
+    br tmp_25 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_25
+    tmp_26 = 1
+    !s
+    !h
+    return tmp_26
+
+L_ELSE_4:
+    !tmp_25
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_28 = 0
+    !s
+    !h
+    return tmp_28
+
+@test "rosetta 308 rest pattern macro"():
+L_TEST_ENTRY_6:
+    tmp_29 = 10
+    tmp_30 = 20
+    tmp_31 = 30
+    tmp_32 = 40
+    tmp_33 = call @sla__sum_first_two(tmp_29, tmp_30, tmp_31, tmp_32)
+    !tmp_29
+    !tmp_30
+    !tmp_31
+    !tmp_32
+    tmp_34 = 30
+    tmp_35 = ne tmp_33, tmp_34
+    !tmp_33
+    !tmp_34
+    br tmp_35 -> L_THEN_7, L_ELSE_8
+
+L_THEN_7:
+    !tmp_35
+    panic(308)
+
+L_ELSE_8:
+    !tmp_35
+    jmp L_MERGE_9
+
+L_MERGE_9:
+    tmp_38 = alloc 12
+    tmp_39 = 100
+    store tmp_38+0, tmp_39 as i32
+    tmp_40 = 200
+    store tmp_38+4, tmp_40 as i32
+    tmp_41 = 300
+    store tmp_38+8, tmp_41 as i32
+    tmp_42 = call @sla__head(tmp_38)
+    !tmp_38
+    tmp_43 = 100
+    tmp_44 = ne tmp_42, tmp_43
+    !tmp_42
+    !tmp_43
+    br tmp_44 -> L_THEN_10, L_ELSE_11
+
+L_THEN_10:
+    !tmp_44
+    panic(309)
+
+L_ELSE_11:
+    !tmp_44
+    jmp L_MERGE_12
+
+L_MERGE_12:
+    return
+

@@ -1,9 +1,9 @@
 # 267 Build Post Compile Hook
 
-This slot keeps post-compile processing observable as one stripped binary artifact.
+This slot now uses a real fixture-backed post-compile hook reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves one artifact count instead of checking post-hook config, report manifest, script, and generated output.
 
-- `main.rs`: Rust reference for one stripped binary artifact.
-- `main.sla`: Sla companion for one stripped binary artifact.
+- `main.rs`: Rust reference that reads `build/post-hooks.toml`, `hooks/post-compile.sh`, `artifacts/post-build/*`, and `generated/postcompile.sa`.
+- `main.sla`: current surrogate that only preserves the post-compile artifact count.
 
 Commands:
 

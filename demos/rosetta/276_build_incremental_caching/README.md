@@ -1,9 +1,9 @@
 # 276 Build Incremental Caching
 
-This slot keeps incremental compilation reuse observable as one unchanged module cache hit.
+This slot now uses a real fixture-backed incremental-cache reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves cache-hit counts instead of checking cache strategy, index, hashes, and generated cache state.
 
-- `main.rs`: Rust reference for one unchanged-module cache hit.
-- `main.sla`: Sla companion for one unchanged module cache hit.
+- `main.rs`: Rust reference that reads `build/cache.toml`, `cache/index.json`, `cache/hashes.txt`, and `generated/cache/state.sa`.
+- `main.sla`: current surrogate that only preserves the unchanged-module count.
 
 Commands:
 

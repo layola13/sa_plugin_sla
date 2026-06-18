@@ -1,9 +1,9 @@
 # 275 Build Doc Generator
 
-This slot keeps generated documentation observable as both API and guide pages.
+This slot now uses a real fixture-backed doc-generator reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves page counts instead of checking docgen config, source docs, and generated documentation index.
 
-- `main.rs`: Rust reference for generated API and guide pages.
-- `main.sla`: Sla companion for generated API and guide pages.
+- `main.rs`: Rust reference that reads `build/docgen.toml`, `docs/spec.md`, `docs/api/index.md`, and `generated/docs/index.sa`.
+- `main.sla`: current surrogate that only preserves the generated-page count.
 
 Commands:
 

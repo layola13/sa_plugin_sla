@@ -1,9 +1,9 @@
 # 273 Build Test Harness
 
-This slot keeps the build test harness observable as separate unit and integration test cases.
+This slot now uses a real fixture-backed test-harness reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves case counts instead of checking harness manifest, case files, and generated index output.
 
-- `main.rs`: Rust reference for separate unit and integration test cases.
-- `main.sla`: Sla companion for separate unit and integration test cases.
+- `main.rs`: Rust reference that reads `harness/manifest.toml`, `harness/cases/*.toml`, and `generated/harness/index.sa`.
+- `main.sla`: current surrogate that only preserves the harness-case count.
 
 Commands:
 

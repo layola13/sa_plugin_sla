@@ -1,9 +1,9 @@
 # 270 Build Sysroot Custom
 
-This slot keeps custom sysroot composition observable as both core and std layers.
+This slot now uses a real fixture-backed custom-sysroot reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves layer counts instead of checking sysroot config, headers, and generated layout.
 
-- `main.rs`: Rust reference for the core and std sysroot layers.
-- `main.sla`: Sla companion for the core and std sysroot layers.
+- `main.rs`: Rust reference that reads `build/sysroot.toml`, `include/sysroot/*.h`, and `generated/sysroot/layout.sa`.
+- `main.sla`: current surrogate that only preserves the sysroot-layer count.
 
 Commands:
 

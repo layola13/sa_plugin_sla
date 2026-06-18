@@ -1,9 +1,9 @@
 # 272 Build Sanitizer Flags
 
-This slot keeps sanitizer configuration observable as address and undefined-behavior flags enabled together.
+This slot now uses a real fixture-backed sanitizer-config reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves flag counts instead of checking requested sanitizers, resolved flags, and generated output.
 
-- `main.rs`: Rust reference for address and UB sanitizers enabled together.
-- `main.sla`: Sla companion for address and UB sanitizers enabled together.
+- `main.rs`: Rust reference that reads `build/sanitizer.toml`, `config/sanitizer/flags.toml`, and `generated/sanitizer/flags.sa`.
+- `main.sla`: current surrogate that only preserves the sanitizer-flag count.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 277 Build Parallel Compilation
 
-This slot keeps parallel code generation observable as parser, checker, optimizer, and emitter units running concurrently.
+This slot now uses a real fixture-backed parallel-compilation reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves codegen-unit counts instead of checking parallel job manifests and generated schedule output.
 
-- `main.rs`: Rust reference for parser/checker/optimizer/emitter units in parallel.
-- `main.sla`: Sla companion for parser, checker, optimizer, and emitter units running concurrently.
+- `main.rs`: Rust reference that reads `build/parallel/jobs/*.toml` and `generated/parallel/schedule.sa`.
+- `main.sla`: current surrogate that only preserves the parallel-unit count.
 
 Commands:
 

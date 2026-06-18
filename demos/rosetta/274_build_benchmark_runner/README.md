@@ -1,9 +1,9 @@
 # 274 Build Benchmark Runner
 
-This slot keeps benchmark scheduling observable as one throughput benchmark group.
+This slot now uses a real fixture-backed benchmark-runner reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves benchmark counts instead of checking bench manifest, case files, and generated runner output.
 
-- `main.rs`: Rust reference for one throughput benchmark group.
-- `main.sla`: Sla companion for one throughput benchmark group.
+- `main.rs`: Rust reference that reads `bench/manifest.toml`, `bench/cases/*.toml`, and `generated/bench/runner.sa`.
+- `main.sla`: current surrogate that only preserves the benchmark-group count.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 263 Build Asset Bundling
 
-This slot keeps build-time asset bundling observable as manifest, shader, and config artifacts packaged together.
+This slot now uses a real fixture-backed asset-bundling reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves artifact counts instead of checking the asset manifest, input files, and generated bundle.
 
-- `main.rs`: Rust reference for bundling manifest, shader, and config artifacts.
-- `main.sla`: Sla companion for packaging manifest, shader, and config artifacts.
+- `main.rs`: Rust reference that reads `bundle/manifest.toml`, `assets/text/*.txt`, and `generated/asset_bundle.sa`.
+- `main.sla`: current surrogate that only preserves the packaged-artifact count.
 
 Commands:
 

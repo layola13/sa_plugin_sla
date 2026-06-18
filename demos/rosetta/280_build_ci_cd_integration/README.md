@@ -1,9 +1,9 @@
 # 280 Build Ci Cd Integration
 
-This slot keeps CI/CD pipeline composition observable as build, test, and publish stages.
+This slot now uses a real fixture-backed CI/CD reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves stage counts instead of checking CI config, workflow files, and generated pipeline output.
 
-- `main.rs`: Rust reference for build, test, and publish pipeline stages.
-- `main.sla`: Sla companion for build, test, and publish pipeline stages.
+- `main.rs`: Rust reference that reads `build/ci.toml`, `ci/workflows/*.yml`, and `generated/ci/pipeline.sa`.
+- `main.sla`: current surrogate that only preserves the CI/CD stage count.
 
 Commands:
 

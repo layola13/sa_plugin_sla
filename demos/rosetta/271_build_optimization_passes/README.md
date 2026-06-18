@@ -1,9 +1,9 @@
 # 271 Build Optimization Passes
 
-This slot keeps optimizer scheduling observable as inline, dead-code-elimination, and constant-folding passes.
+This slot now uses a real fixture-backed optimizer-pass reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves pass counts instead of checking pass config, cached order, and generated schedule output.
 
-- `main.rs`: Rust reference for inline, DCE, and constant-folding passes.
-- `main.sla`: Sla companion for inline, DCE, and constant-folding passes.
+- `main.rs`: Rust reference that reads `build/optimizations/passes.toml`, `cache/optimizations/order.txt`, and `generated/optimizations/passes.sa`.
+- `main.sla`: current surrogate that only preserves the optimization-pass count.
 
 Commands:
 

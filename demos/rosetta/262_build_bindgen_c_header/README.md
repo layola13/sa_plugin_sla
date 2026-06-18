@@ -1,9 +1,9 @@
 # 262 Build Bindgen C Header
 
-This slot keeps C-header bindgen output observable as one type declaration plus one function declaration.
+This slot now uses a real fixture-backed bindgen reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves declaration counts instead of checking the bindgen config, C headers, and generated binding output.
 
-- `main.rs`: Rust reference for one type plus one function declaration.
-- `main.sla`: Sla companion for one type plus one function declaration.
+- `main.rs`: Rust reference that reads `bindgen/bindgen.toml`, `bindgen/include/*.h`, and `generated/bindings.sa`.
+- `main.sla`: current surrogate that only preserves the type/function declaration count.
 
 Commands:
 

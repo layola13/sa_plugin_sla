@@ -1,9 +1,9 @@
 # 279 Build Artifact Caching Remote
 
-This slot keeps remote artifact cache reuse observable as one downloaded build artifact.
+This slot now uses a real fixture-backed remote-cache reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves one downloaded-artifact count instead of checking remote cache index, state, and generated cache metadata.
 
-- `main.rs`: Rust reference for one downloaded remote-cache artifact.
-- `main.sla`: Sla companion for one downloaded remote-cache artifact.
+- `main.rs`: Rust reference that reads `cache/remote/index.json`, `cache/remote/state.txt`, and `generated/remote/cache.sa`.
+- `main.sla`: current surrogate that only preserves the remote-cache artifact count.
 
 Commands:
 

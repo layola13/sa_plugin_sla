@@ -1,9 +1,9 @@
 # 266 Build Pre Compile Hook
 
-This slot keeps pre-compile hook execution observable as one schema-check phase before code generation.
+This slot now uses a real fixture-backed pre-compile hook reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves one phase count instead of checking hook config, script, notes, and generated output.
 
-- `main.rs`: Rust reference for one schema-check phase before codegen.
-- `main.sla`: Sla companion for one schema-check phase before code generation.
+- `main.rs`: Rust reference that reads `build/pre-hooks.toml`, `hooks/pre-compile.sh`, `hooks/pre-compile.txt`, and `generated/precompile.sa`.
+- `main.sla`: current surrogate that only preserves the pre-compile phase count.
 
 Commands:
 

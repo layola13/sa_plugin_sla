@@ -1,9 +1,9 @@
 # 261 Build Rs Codegen Saasm
 
-This slot keeps Rust-side SA-ASM code generation observable as one emitted module.
+This slot now uses a real fixture-backed codegen reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves one emitted-module count instead of checking the build manifest, plan, and generated SA-ASM output.
 
-- `main.rs`: Rust reference for one emitted SA-ASM module.
-- `main.sla`: Sla companion for one emitted SA-ASM module.
+- `main.rs`: Rust reference that reads `build/codegen.toml`, `build/codegen-plan.txt`, and `generated/codegen.sa`.
+- `main.sla`: current surrogate that only preserves the emitted-module count.
 
 Commands:
 

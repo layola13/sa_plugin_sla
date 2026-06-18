@@ -1,9 +1,9 @@
 # 259 Contract Static Init Order
 
-This slot keeps static initialization order observable as two staged ready flags.
+This slot now uses a real fixture-backed static-init reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves two stage counts instead of checking the ordered bridge calls and layout stores.
 
-- `main.rs`: Rust reference for the config-loaded and service-started stages.
-- `main.sla`: Sla companion for the config-loaded and service-started stages.
+- `main.rs`: Rust reference that reads `layout/init_order.sal`, `bridge/init_bridge.sa`, and `consumer/init_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the two-stage count.
 
 Commands:
 

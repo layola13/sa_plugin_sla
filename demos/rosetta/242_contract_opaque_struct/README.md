@@ -1,9 +1,9 @@
 # 242 Contract Opaque Struct
 
-This slot keeps opaque-handle contracts observable as one public constructor returning an unreadable handle type.
+This slot now uses a real fixture-backed opaque-struct reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a handle-count observable instead of separating public and private layout contracts.
 
-- `main.rs`: Rust reference for one unreadable public handle constructor.
-- `main.sla`: Sla companion for one unreadable public handle constructor.
+- `main.rs`: Rust reference that reads the public/private layout split, bridge, and consumer files.
+- `main.sla`: current surrogate that only preserves the public-constructor count.
 
 Commands:
 

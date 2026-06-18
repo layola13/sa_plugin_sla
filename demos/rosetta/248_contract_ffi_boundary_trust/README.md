@@ -1,9 +1,9 @@
 # 248 Contract Ffi Boundary Trust
 
-This slot keeps foreign-boundary validation observable as both pointer and length checks crossing the ABI edge.
+This slot now uses a real fixture-backed FFI-boundary reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves pointer/length check counts instead of modeling the `@ffi_wrapper` raw-pointer trust boundary.
 
-- `main.rs`: Rust reference for pointer and length checks across the ABI edge.
-- `main.sla`: Sla companion for pointer and length checks across the ABI edge.
+- `main.rs`: Rust reference that reads the slot layout, `@ffi_wrapper` bridge, and raw-edge consumer.
+- `main.sla`: current surrogate that only preserves the two-check count.
 
 Commands:
 

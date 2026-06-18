@@ -1,9 +1,9 @@
 # 244 Contract Vtable Export
 
-This slot keeps trait-style contract export observable as two vtable slots: `init` and `run`.
+This slot now uses a real fixture-backed vtable reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a slot-count observable instead of constructing the exported vtable and indirect-call consumer path.
 
-- `main.rs`: Rust reference for the `init` and `run` vtable slots.
-- `main.sla`: Sla companion for the `init` and `run` vtable slots.
+- `main.rs`: Rust reference that reads `button_vtable.sa` and `vtable_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the two-slot count.
 
 Commands:
 

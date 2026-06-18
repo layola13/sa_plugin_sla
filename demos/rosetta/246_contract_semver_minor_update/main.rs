@@ -1,14 +1,15 @@
-struct ApiV1 {
-    stable: i32,
-}
-
-struct ApiV1_1 {
-    stable: i32,
-    added: i32,
-}
-
 fn main() {
-    let old = ApiV1 { stable: 1 };
-    let new = ApiV1_1 { stable: old.stable, added: 1 };
-    println!("{}", new.added);
+    let iface = include_str!("iface/minor.sai");
+    let implementation = include_str!("impl/minor_impl.sa");
+    let consumer = include_str!("consumer/minor_consumer.sa");
+
+    let iface_keeps_original = iface.contains("@extern minor_value() -> i32");
+    let iface_adds_extension = iface.contains("@extern minor_extension() -> i32");
+    let impl_exports_both = implementation.contains("@export minor_value() -> i32")
+        && implementation.contains("@export minor_extension() -> i32");
+    let consumer_accepts_added_api = consumer.contains("call @minor_value()")
+        && consumer.contains("call @minor_extension()");
+    let semver_minor_contract = iface_keeps_original && iface_adds_extension && impl_exports_both && consumer_accepts_added_api;
+
+    println!("{}", semver_minor_contract as i32);
 }

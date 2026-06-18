@@ -1,9 +1,9 @@
 # 250 Contract Const Export
 
-This slot keeps exported contract constants observable as one published ABI version value.
+This slot now uses a real fixture-backed const-export reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves one exported-const count instead of checking the iface declaration, implementation constant, and consumer call.
 
-- `main.rs`: Rust reference for one published ABI version constant.
-- `main.sla`: Sla companion for one published ABI version constant.
+- `main.rs`: Rust reference that reads `iface/consts.sai`, `impl/const_impl.sa`, and `consumer/const_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the one-const count.
 
 Commands:
 

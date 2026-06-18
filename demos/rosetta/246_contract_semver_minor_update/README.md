@@ -1,9 +1,9 @@
 # 246 Contract Semver Minor Update
 
-This slot keeps backward-compatible contract growth observable as one added field in a minor version update.
+This slot now uses a real fixture-backed semver-minor reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves an added-field count instead of checking the retained and added externs across iface/impl/consumer files.
 
-- `main.rs`: Rust reference for a backward-compatible added field.
-- `main.sla`: Sla companion for a backward-compatible added field.
+- `main.rs`: Rust reference that reads `iface/minor.sai`, `impl/minor_impl.sa`, and `consumer/minor_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the one-added-field count.
 
 Commands:
 

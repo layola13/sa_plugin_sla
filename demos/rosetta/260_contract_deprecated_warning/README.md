@@ -1,9 +1,9 @@
 # 260 Contract Deprecated Warning
 
-This slot keeps the deprecated-warning observable as a single counted entry.
+This slot now uses a real fixture-backed deprecation reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves one deprecated-entry count instead of checking the legacy note, extern, and consumer call.
 
-- `main.rs`: Rust reference for the deprecated-entry warning path.
-- `main.sla`: Sla companion for the deprecated-entry warning path.
+- `main.rs`: Rust reference that reads `iface/deprecated.sai`, `bridge/deprecated_bridge.sa`, and `consumer/deprecated_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the one-entry count.
 
 Commands:
 

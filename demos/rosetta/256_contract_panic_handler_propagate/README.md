@@ -1,9 +1,9 @@
 # 256 Contract Panic Handler Propagate
 
-This slot keeps panic propagation observable as both local and host handler hops.
+This slot now uses a real fixture-backed panic-handler reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves two handler-hop counts instead of checking the iface, host hook, and consumer route.
 
-- `main.rs`: Rust reference for the local and host panic-handler hops.
-- `main.sla`: Sla companion for the local and host panic-handler hops.
+- `main.rs`: Rust reference that reads `iface/panic.sai`, `host/panic_handler.sa`, and `consumer/panic_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the two-hop count.
 
 Commands:
 

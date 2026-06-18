@@ -1,9 +1,9 @@
 # 243 Contract Sig Mismatch Link
 
-This slot keeps contract signature drift observable as one missing argument at link time.
+This slot now uses a real fixture-backed signature-mismatch reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves an argument-count delta instead of exercising the broken link edge.
 
-- `main.rs`: Rust reference for one missing argument at link time.
-- `main.sla`: Sla companion for one missing argument at link time.
+- `main.rs`: Rust reference that reads the `i32` target, slot layout, and pointer-passing broken consumer.
+- `main.sla`: current surrogate that only preserves the one-mismatch count.
 
 Commands:
 

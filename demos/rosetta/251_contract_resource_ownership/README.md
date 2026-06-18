@@ -1,9 +1,9 @@
 # 251 Contract Resource Ownership
 
-This slot keeps ownership transfer across the contract boundary observable as one moved resource.
+This slot now uses a real fixture-backed ownership-transfer reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves one transfer count instead of checking the extern, mutating bridge, and handle-passing consumer.
 
-- `main.rs`: Rust reference for moving one resource across the boundary.
-- `main.sla`: Sla companion for moving one resource across the boundary.
+- `main.rs`: Rust reference that reads `iface/ownership.sai`, `bridge/ownership_bridge.sa`, and `consumer/ownership_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the moved-resource count.
 
 Commands:
 

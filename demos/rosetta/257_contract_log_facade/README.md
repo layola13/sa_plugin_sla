@@ -1,9 +1,9 @@
 # 257 Contract Log Facade
 
-This slot keeps the contract logging surface observable as three enabled levels: info, warn, and error.
+This slot now uses a real fixture-backed log-facade reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves three log-level counts instead of checking the message-bearing ABI signature and consumer call.
 
-- `main.rs`: Rust reference for the info/warn/error logging surface.
-- `main.sla`: Sla companion for the info/warn/error logging surface.
+- `main.rs`: Rust reference that reads `iface/log.sai`, `bridge/log_bridge.sa`, and `consumer/log_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the three-level count.
 
 Commands:
 

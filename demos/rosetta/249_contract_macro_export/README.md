@@ -1,9 +1,9 @@
 # 249 Contract Macro Export
 
-This slot keeps contract macro export observable as one macro surfaced to downstream callers.
+This slot now uses a real fixture-backed macro-export reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a macro-count observable instead of checking macro definition/import/expansion structure.
 
-- `main.rs`: Rust reference for one macro exported to downstream callers.
-- `main.sla`: Sla companion for one macro exported to downstream callers.
+- `main.rs`: Rust reference that reads `macros/store.sa`, `bridge/macro_bridge.sa`, and `consumer/macro_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the one-macro count.
 
 Commands:
 

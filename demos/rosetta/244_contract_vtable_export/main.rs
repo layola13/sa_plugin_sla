@@ -1,17 +1,17 @@
-trait Plugin {
-    fn init(&self) -> i32;
-    fn run(&self) -> i32;
-}
-
-struct Worker;
-
-impl Plugin for Worker {
-    fn init(&self) -> i32 { 1 }
-    fn run(&self) -> i32 { 1 }
-}
-
 fn main() {
-    let plugin = Worker;
-    let result = plugin.init() + plugin.run();
-    println!("{}", result);
+    let bridge = include_str!("bridge/button_vtable.sa");
+    let consumer = include_str!("consumer/vtable_consumer.sa");
+
+    let vtable_layout = bridge.contains("#def DynDraw_DATA = +0")
+        && bridge.contains("#def DynDraw_VTABLE = +8")
+        && bridge.contains("#def VTable_draw = +0");
+    let exported_vtable = bridge.contains("@export button_draw(&self: ptr) -> i32")
+        && bridge.contains("@const BUTTON_VT = vtable { draw = @button_draw }");
+    let indirect_consumer = consumer.contains("load item+DynDraw_DATA as ptr")
+        && consumer.contains("load item+DynDraw_VTABLE as ptr")
+        && consumer.contains("call_indirect draw_fn(&data_ptr)")
+        && consumer.contains("store fat+DynDraw_VTABLE, &BUTTON_VT as ptr");
+    let vtable_contract = vtable_layout && exported_vtable && indirect_consumer;
+
+    println!("{}", vtable_contract as i32);
 }

@@ -1,9 +1,9 @@
 # 241 Contract Layout Stability
 
-This slot keeps C-style contract layout stability observable as a two-field header with fixed field order.
+This slot now uses a real fixture-backed contract layout reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves a two-field count observable instead of importing and enforcing the `layout/point.sal` plus bridge/consumer contract graph.
 
-- `main.rs`: Rust reference for the two-field header layout.
-- `main.sla`: Sla companion for the two-field header layout.
+- `main.rs`: Rust reference that reads `layout/point.sal`, `bridge/point_bridge.sa`, and `consumer/point_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the two-field count.
 
 Commands:
 

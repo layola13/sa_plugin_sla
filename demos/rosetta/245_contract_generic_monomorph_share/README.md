@@ -1,9 +1,9 @@
 # 245 Contract Generic Monomorph Share
 
-This slot keeps shared generic contract instantiation observable across both integer and boolean call paths.
+This slot now uses a real fixture-backed shared-contract reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves two call-path counts instead of checking iface/impl/consumer symbol sharing.
 
-- `main.rs`: Rust reference for shared generic instantiation across call paths.
-- `main.sla`: Sla companion for shared generic instantiation across call paths.
+- `main.rs`: Rust reference that reads `iface/generic.sai`, `impl/generic_impl.sa`, and `consumer/generic_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the two-path count.
 
 Commands:
 

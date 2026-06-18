@@ -1,9 +1,9 @@
 # 252 Contract Error Code Mapping
 
-This slot keeps error-surface translation observable as two contract errors mapped into exported numeric codes.
+This slot now uses a real fixture-backed error-code reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves two mapping counts instead of checking the branch-bearing bridge and consumer call.
 
-- `main.rs`: Rust reference for mapping two errors into numeric codes.
-- `main.sla`: Sla companion for mapping two errors into numeric codes.
+- `main.rs`: Rust reference that reads `iface/error_codes.sai`, `bridge/error_map.sa`, and `consumer/error_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the two-mapping count.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 254 Contract Plugin System
 
-This slot keeps plugin-contract discovery observable as two enabled plugins on the active surface.
+This slot now uses a real fixture-backed plugin-system reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves two enabled-plugin counts instead of checking host extern, implementation export, and consumer dispatch wiring.
 
-- `main.rs`: Rust reference for two enabled plugins on the active surface.
-- `main.sla`: Sla companion for two enabled plugins on the active surface.
+- `main.rs`: Rust reference that reads `host/plugin_host.sa`, `impl/plugin_impl.sa`, and `consumer/plugin_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the two-plugin count.
 
 Commands:
 

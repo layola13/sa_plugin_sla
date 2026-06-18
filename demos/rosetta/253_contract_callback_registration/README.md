@@ -1,9 +1,9 @@
 # 253 Contract Callback Registration
 
-This slot keeps callback registration observable as one host callback bound through the contract surface.
+This slot now uses a real fixture-backed callback-registration reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves one callback count instead of checking the vtable slot, indirect call, and registration consumer.
 
-- `main.rs`: Rust reference for one host callback registered through the contract layer.
-- `main.sla`: Sla companion for one host callback registered through the contract layer.
+- `main.rs`: Rust reference that reads `bridge/callback_vtable.sa` and `consumer/callback_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the one-callback count.
 
 Commands:
 

@@ -1,9 +1,9 @@
 # 255 Contract Memory Allocator Swap
 
-This slot keeps allocator selection observable as one alternate allocator chosen through the contract layer.
+This slot now uses a real fixture-backed allocator-swap reference on the Rust side, but it should still be treated as `❌` because the Sla side only preserves one allocator-selection count instead of checking the allocator extern, bridge mutation, and consumer handle flow.
 
-- `main.rs`: Rust reference for one alternate allocator selected through the contract layer.
-- `main.sla`: Sla companion for one alternate allocator selected through the contract layer.
+- `main.rs`: Rust reference that reads `iface/allocator.sai`, `bridge/allocator_bridge.sa`, and `consumer/allocator_consumer.sa`.
+- `main.sla`: current surrogate that only preserves the alternate-allocator count.
 
 Commands:
 

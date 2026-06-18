@@ -4,6 +4,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] The local `301`-`304` operator-overload demos have been tightened under the main-path-only rule.
+  - Restored `301_operator_overload_add/main.sla`, `302_operator_overload_neg/main.sla`, `303_operator_overload_scalar_mul/main.sla`, and `304_operator_overload_eq/main.sla` so their `main` paths directly construct the Rust-shaped operands, apply the real `+`, unary `-`, scalar `*`, `==`, and `!=` operators, print the same observable shape as the Rust references, and then validate the results.
+  - Preserved the existing helper functions and all `@test` blocks; no demo test code was removed or rewritten.
+  - Updated the four README files to state that the Sla companion now exercises the operator on the direct `main` path rather than routing the checked observable through a helper-main wrapper.
+  - Verified with: `zig build local-cli -- sla test demos/rosetta/301_operator_overload_add/main.sla`, `zig build local-cli -- sla test demos/rosetta/302_operator_overload_neg/main.sla`, `zig build local-cli -- sla test demos/rosetta/303_operator_overload_scalar_mul/main.sla`, and `zig build local-cli -- sla test demos/rosetta/304_operator_overload_eq/main.sla`.
+  - Rust compilation was not locally verified because this environment currently has no `rustc` on `PATH`.
+
 - [done] The `281`-`300` FFI/ecosystem slice has now been tightened from thin count-style Rust references into fixture-backed integration-structure checks.
   - Added real local fixtures under each demo directory for system/static/dynamic C library linkage, pkg-config metadata, Objective-C framework bundles, Rust staticlib bridge metadata, Zig exports, C++ symbol maps, opaque handle ownership, callback thunks, WASM host imports and memory exports, embedded no-OS startup, kernel module metadata, eBPF attach/pin metadata, GPU PTX launch notes, ECS scene assets, cryptography SIMD bench/header metadata, LSP protocol files, and SA registry publish records.
   - Replaced `281_ffi_link_system_libc/main.rs` through `300_eco_sa_lang_registry_publish/main.rs` with `include_str!`-backed checks over the actual `bridge`, `ffi`, `host`, `config`, `guest`, `docs`, `assets`, `kernel`, `linker`, `engine`, `crypto`, `lsp`, `registry`, and `bench` fixture files instead of preserving only final counts or equivalent Rust snippets.

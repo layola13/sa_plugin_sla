@@ -18,9 +18,16 @@ fn struct_equality_score() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = struct_equality_score();
-    println("{}", result);
-    return result;
+    let a = Point { x: 10, y: 20 };
+    let b = Point { x: 10, y: 20 };
+    let c = Point { x: 99, y: 0 };
+
+    println("a == b: {}, a != c: {}", a == b, a != c);
+    if a == b {
+        if a != c { return 11; } else { return 0; };
+    } else {
+        return 0;
+    };
 }
 
 @test "rosetta 304 operator_overload_eq"() {

@@ -5,7 +5,7 @@
 This directory documents the local `Vec3 * f32` operator-overload demo.
 
 - `main.rs`：Rust 原版，演示 `impl Mul<f32> for Vec3` 实现 `a * 4.0`。
-- `main.sla`：Sla 等价实现，显式导入 `sa_std/ops.sa`，使用 `f32` 字段和 `let b = a * 4.0;`，验证结果为 `Vec3 { x: 4.0, y: 8.0, z: 12.0 }`。
+- `main.sla`：Sla 等价实现，显式导入 `sa_std/ops.sa`，在 `main` 路径直接使用 `f32` 字段和 `let b = a * 4.0;`，验证结果为 `Vec3 { x: 4.0, y: 8.0, z: 12.0 }`。
 
 ## 命令
 

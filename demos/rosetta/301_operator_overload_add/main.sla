@@ -19,9 +19,14 @@ fn added_vec3_score() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = added_vec3_score();
-    println("{}", result);
-    return result;
+    let a = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+    let b = Vec3 { x: 4.0, y: 5.0, z: 6.0 };
+    let c = a + b;
+    println("({}, {}, {})", c.x, c.y, c.z);
+    if c.x != 5.0 { return 0; };
+    if c.y != 7.0 { return 0; };
+    if c.z != 9.0 { return 0; };
+    return 579;
 }
 
 @test "rosetta 301 operator_overload_add"() {

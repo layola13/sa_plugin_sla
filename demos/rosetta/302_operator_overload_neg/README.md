@@ -5,7 +5,7 @@
 This directory documents the local unary `-Vec3` operator-overload demo.
 
 - `main.rs`：Rust 原版，演示 `impl Neg for Vec3` 实现 `-a`。
-- `main.sla`：Sla 等价实现，显式导入 `sa_std/ops.sa`，使用 `f32` 字段和 `let b = -a;`，验证结果为 `Vec3 { x: -1.0, y: 2.0, z: -3.0 }`。
+- `main.sla`：Sla 等价实现，显式导入 `sa_std/ops.sa`，在 `main` 路径直接使用 `f32` 字段和 `let b = -a;`，验证结果为 `Vec3 { x: -1.0, y: 2.0, z: -3.0 }`。
 
 ## 命令
 

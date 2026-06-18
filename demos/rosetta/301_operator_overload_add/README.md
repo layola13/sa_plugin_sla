@@ -5,7 +5,7 @@
 This directory documents the local `Vec3 + Vec3` operator-overload demo.
 
 - `main.rs`：Rust 原版，演示 `impl Add for Vec3` 实现 `a + b`。
-- `main.sla`：Sla 等价实现，显式导入 `sa_std/ops.sa`，使用 `f32` 字段和 `let c = a + b;`，验证结果为 `Vec3 { x: 5.0, y: 7.0, z: 9.0 }`。
+- `main.sla`：Sla 等价实现，显式导入 `sa_std/ops.sa`，在 `main` 路径直接使用 `f32` 字段和 `let c = a + b;`，验证结果为 `Vec3 { x: 5.0, y: 7.0, z: 9.0 }`。
 
 ## 命令
 

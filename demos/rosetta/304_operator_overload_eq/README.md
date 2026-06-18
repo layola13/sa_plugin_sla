@@ -5,7 +5,7 @@
 This directory documents the local `Point == Point` / `Point != Point` operator-overload demo.
 
 - `main.rs`：Rust 原版，演示 `impl PartialEq for Point` 实现 `a == b` 和 `a != c`。
-- `main.sla`：Sla 等价实现，使用 `let` 绑定的 `Point` 直接比较，验证 `a == b` 且 `a != c`。
+- `main.sla`：Sla 等价实现，在 `main` 路径使用 `let` 绑定的 `Point` 直接比较，验证 `a == b` 且 `a != c`。
 
 ## 命令
 

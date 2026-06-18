@@ -18,9 +18,13 @@ fn negated_vec3_score() -> i32 {
 }
 
 fn main() -> i32 {
-    let result = negated_vec3_score();
-    println("{}", result);
-    return result;
+    let a = Vec3 { x: 1.0, y: -2.0, z: 3.0 };
+    let b = -a;
+    println("({}, {}, {})", b.x, b.y, b.z);
+    if b.x != -1.0 { return 0; };
+    if b.y != 2.0 { return 0; };
+    if b.z != -3.0 { return 0; };
+    return 123;
 }
 
 @test "rosetta 302 operator_overload_neg"() {

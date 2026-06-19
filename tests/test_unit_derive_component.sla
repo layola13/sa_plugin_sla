@@ -26,6 +26,11 @@ struct DerivedMessageDamage {
     amount: i32,
 }
 
+@derive(Event)
+struct DerivedEventSpeak {
+    code: i32,
+}
+
 fn derived_component_metadata_score() -> i32 {
     let position_id = DerivedComponentPosition::component_type_id();
     let position_id_again = DerivedComponentPosition::component_type_id();
@@ -59,6 +64,17 @@ fn derived_message_metadata_score() -> i32 {
     return 13;
 }
 
+fn derived_event_metadata_score() -> i32 {
+    let speak_id = DerivedEventSpeak::event_type_id();
+    let speak_id_again = DerivedEventSpeak::event_type_id();
+    if speak_id <= 0 { panic(9131); };
+    if speak_id != speak_id_again { panic(9132); };
+    if speak_id == DerivedComponentPosition::component_type_id() { panic(9133); };
+    if speak_id == DerivedResourceTime::resource_type_id() { panic(9134); };
+    if speak_id == DerivedMessageDamage::message_type_id() { panic(9135); };
+    return 17;
+}
+
 @test "derive component exposes stable metadata"() {
     if derived_component_metadata_score() != 7 { panic(9105); };
 }
@@ -69,4 +85,8 @@ fn derived_message_metadata_score() -> i32 {
 
 @test "derive message exposes stable metadata"() {
     if derived_message_metadata_score() != 13 { panic(9125); };
+}
+
+@test "derive event exposes stable metadata"() {
+    if derived_event_metadata_score() != 17 { panic(9136); };
 }

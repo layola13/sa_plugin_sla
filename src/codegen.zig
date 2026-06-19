@@ -437,6 +437,7 @@ pub const Codegen = struct {
         if (structHasDerive(decl, "Component") and std.mem.eql(u8, func_name, "component_storage_kind")) return componentStorageKindValue(decl.component_storage_kind);
         if (structHasDerive(decl, "Resource") and std.mem.eql(u8, func_name, "resource_type_id")) return componentTypeIdForName(target_name);
         if (structHasDerive(decl, "Message") and std.mem.eql(u8, func_name, "message_type_id")) return componentTypeIdForName(target_name);
+        if (structHasDerive(decl, "Event") and std.mem.eql(u8, func_name, "event_type_id")) return componentTypeIdForName(target_name);
         return null;
     }
 

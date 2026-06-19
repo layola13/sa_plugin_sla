@@ -346,7 +346,7 @@ pub const TypeChecker = struct {
     }
 
     fn isSupportedDeriveName(name: []const u8) bool {
-        return std.mem.eql(u8, name, "Component") or std.mem.eql(u8, name, "Resource") or std.mem.eql(u8, name, "Message");
+        return std.mem.eql(u8, name, "Component") or std.mem.eql(u8, name, "Resource") or std.mem.eql(u8, name, "Message") or std.mem.eql(u8, name, "Event");
     }
 
     fn structHasDerive(decl: *const ast.StructDecl, name: []const u8) bool {
@@ -378,6 +378,10 @@ pub const TypeChecker = struct {
             return try self.makeI32Type();
         }
         if (structHasDerive(decl, "Message") and std.mem.eql(u8, func_name, "message_type_id")) {
+            if (args_len != 0) return TypeError.InvalidArgsCount;
+            return try self.makeI32Type();
+        }
+        if (structHasDerive(decl, "Event") and std.mem.eql(u8, func_name, "event_type_id")) {
             if (args_len != 0) return TypeError.InvalidArgsCount;
             return try self.makeI32Type();
         }

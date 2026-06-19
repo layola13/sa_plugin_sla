@@ -10,6 +10,7 @@
 @const SLA_FNPTR_VT_derived_component_metadata_score = vtable { call = @sla__derived_component_metadata_score }
 @const SLA_FNPTR_VT_derived_resource_metadata_score = vtable { call = @sla__derived_resource_metadata_score }
 @const SLA_FNPTR_VT_derived_message_metadata_score = vtable { call = @sla__derived_message_metadata_score }
+@const SLA_FNPTR_VT_derived_event_metadata_score = vtable { call = @sla__derived_event_metadata_score }
 @sla__derived_component_metadata_score() -> i32:
 L_ENTRY:
     tmp_0 = 927450922
@@ -225,63 +226,162 @@ L_MERGE_38:
     !damage_id_again
     return tmp_59
 
-@test "derive component exposes stable metadata"():
-L_TEST_ENTRY_39:
-    tmp_60 = call @sla__derived_component_metadata_score()
-    tmp_61 = 7
-    tmp_62 = ne tmp_60, tmp_61
-    !tmp_60
-    !tmp_61
-    br tmp_62 -> L_THEN_40, L_ELSE_41
-
-L_THEN_40:
+@sla__derived_event_metadata_score() -> i32:
+L_ENTRY:
+    tmp_60 = 119740028
+    speak_id = tmp_60
+    tmp_61 = 119740028
+    speak_id_again = tmp_61
+    tmp_62 = 0
+    tmp_63 = sle speak_id, tmp_62
     !tmp_62
-    panic(9105)
+    br tmp_63 -> L_THEN_39, L_ELSE_40
 
-L_ELSE_41:
-    !tmp_62
-    jmp L_MERGE_42
+L_THEN_39:
+    !tmp_63
+    panic(9131)
 
-L_MERGE_42:
-    return
+L_ELSE_40:
+    !tmp_63
+    jmp L_MERGE_41
 
-@test "derive resource exposes stable metadata"():
-L_TEST_ENTRY_43:
-    tmp_65 = call @sla__derived_resource_metadata_score()
-    tmp_66 = 11
-    tmp_67 = ne tmp_65, tmp_66
-    !tmp_65
+L_MERGE_41:
+    tmp_66 = ne speak_id, speak_id_again
+    br tmp_66 -> L_THEN_42, L_ELSE_43
+
+L_THEN_42:
     !tmp_66
-    br tmp_67 -> L_THEN_44, L_ELSE_45
+    panic(9132)
 
-L_THEN_44:
-    !tmp_67
-    panic(9114)
+L_ELSE_43:
+    !tmp_66
+    jmp L_MERGE_44
 
-L_ELSE_45:
-    !tmp_67
-    jmp L_MERGE_46
+L_MERGE_44:
+    tmp_69 = 927450922
+    tmp_70 = eq speak_id, tmp_69
+    !tmp_69
+    br tmp_70 -> L_THEN_45, L_ELSE_46
 
-L_MERGE_46:
-    return
-
-@test "derive message exposes stable metadata"():
-L_TEST_ENTRY_47:
-    tmp_70 = call @sla__derived_message_metadata_score()
-    tmp_71 = 13
-    tmp_72 = ne tmp_70, tmp_71
+L_THEN_45:
     !tmp_70
-    !tmp_71
-    br tmp_72 -> L_THEN_48, L_ELSE_49
+    panic(9133)
+
+L_ELSE_46:
+    !tmp_70
+    jmp L_MERGE_47
+
+L_MERGE_47:
+    tmp_73 = 2064793383
+    tmp_74 = eq speak_id, tmp_73
+    !tmp_73
+    br tmp_74 -> L_THEN_48, L_ELSE_49
 
 L_THEN_48:
-    !tmp_72
-    panic(9125)
+    !tmp_74
+    panic(9134)
 
 L_ELSE_49:
-    !tmp_72
+    !tmp_74
     jmp L_MERGE_50
 
 L_MERGE_50:
+    tmp_77 = 632534256
+    tmp_78 = eq speak_id, tmp_77
+    !tmp_77
+    br tmp_78 -> L_THEN_51, L_ELSE_52
+
+L_THEN_51:
+    !tmp_78
+    panic(9135)
+
+L_ELSE_52:
+    !tmp_78
+    jmp L_MERGE_53
+
+L_MERGE_53:
+    tmp_81 = 17
+    !speak_id
+    !speak_id_again
+    return tmp_81
+
+@test "derive component exposes stable metadata"():
+L_TEST_ENTRY_54:
+    tmp_82 = call @sla__derived_component_metadata_score()
+    tmp_83 = 7
+    tmp_84 = ne tmp_82, tmp_83
+    !tmp_82
+    !tmp_83
+    br tmp_84 -> L_THEN_55, L_ELSE_56
+
+L_THEN_55:
+    !tmp_84
+    panic(9105)
+
+L_ELSE_56:
+    !tmp_84
+    jmp L_MERGE_57
+
+L_MERGE_57:
+    return
+
+@test "derive resource exposes stable metadata"():
+L_TEST_ENTRY_58:
+    tmp_87 = call @sla__derived_resource_metadata_score()
+    tmp_88 = 11
+    tmp_89 = ne tmp_87, tmp_88
+    !tmp_87
+    !tmp_88
+    br tmp_89 -> L_THEN_59, L_ELSE_60
+
+L_THEN_59:
+    !tmp_89
+    panic(9114)
+
+L_ELSE_60:
+    !tmp_89
+    jmp L_MERGE_61
+
+L_MERGE_61:
+    return
+
+@test "derive message exposes stable metadata"():
+L_TEST_ENTRY_62:
+    tmp_92 = call @sla__derived_message_metadata_score()
+    tmp_93 = 13
+    tmp_94 = ne tmp_92, tmp_93
+    !tmp_92
+    !tmp_93
+    br tmp_94 -> L_THEN_63, L_ELSE_64
+
+L_THEN_63:
+    !tmp_94
+    panic(9125)
+
+L_ELSE_64:
+    !tmp_94
+    jmp L_MERGE_65
+
+L_MERGE_65:
+    return
+
+@test "derive event exposes stable metadata"():
+L_TEST_ENTRY_66:
+    tmp_97 = call @sla__derived_event_metadata_score()
+    tmp_98 = 17
+    tmp_99 = ne tmp_97, tmp_98
+    !tmp_97
+    !tmp_98
+    br tmp_99 -> L_THEN_67, L_ELSE_68
+
+L_THEN_67:
+    !tmp_99
+    panic(9136)
+
+L_ELSE_68:
+    !tmp_99
+    jmp L_MERGE_69
+
+L_MERGE_69:
     return
 

@@ -1401,6 +1401,36 @@ pub const Parser = struct {
         return false;
     }
 
+    fn looksLikeGenericMethodCallTail(self: *Parser) bool {
+        if (self.peek() != .less_than) return false;
+        var lex_copy = self.lex;
+        var tok_copy = lex_copy.next();
+        var depth: usize = 1;
+
+        while (tok_copy.tag != .eof) {
+            switch (tok_copy.tag) {
+                .less_than => depth += 1,
+                .greater_than => {
+                    depth -= 1;
+                    if (depth == 0) {
+                        tok_copy = lex_copy.next();
+                        return tok_copy.tag == .l_paren;
+                    }
+                },
+                .greater_greater => {
+                    if (depth <= 2) {
+                        tok_copy = lex_copy.next();
+                        return tok_copy.tag == .l_paren;
+                    }
+                    depth -= 2;
+                },
+                else => {},
+            }
+            tok_copy = lex_copy.next();
+        }
+        return false;
+    }
+
     fn parseGenericCallTail(self: *Parser, func_name: []const u8) ParserError!*ast.Node {
         var generics = std.ArrayList(*ast.Type).init(self.allocator);
         while (true) {
@@ -1879,7 +1909,7 @@ pub const Parser = struct {
                 self.advance();
                 const field_name = self.lexeme(field_tok.loc);
 
-                if (self.peek() == .l_paren or self.peek() == .less_than) {
+                if (self.peek() == .l_paren or self.looksLikeGenericMethodCallTail()) {
                     var generic_args = std.ArrayList(*ast.Type).init(self.allocator);
                     if (self.match(.less_than)) {
                         while (true) {

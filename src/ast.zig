@@ -62,16 +62,10 @@ pub const Program = struct {
 pub const StructDecl = struct {
     name: []const u8,
     derives: []const []const u8 = &.{},
-    component_storage_kind: ComponentStorageKind = .table,
     generics: []const []const u8,
     fields: []const Field,
     is_union: bool = false,
     is_opaque: bool = false,
-};
-
-pub const ComponentStorageKind = enum {
-    table,
-    sparse_set,
 };
 
 pub const EnumDecl = struct {

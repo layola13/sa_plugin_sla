@@ -7,381 +7,68 @@
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
-@const SLA_FNPTR_VT_derived_component_metadata_score = vtable { call = @sla__derived_component_metadata_score }
-@const SLA_FNPTR_VT_derived_resource_metadata_score = vtable { call = @sla__derived_resource_metadata_score }
-@const SLA_FNPTR_VT_derived_message_metadata_score = vtable { call = @sla__derived_message_metadata_score }
-@const SLA_FNPTR_VT_derived_event_metadata_score = vtable { call = @sla__derived_event_metadata_score }
-@sla__derived_component_metadata_score() -> i32:
+@const SLA_FNPTR_VT_derived_annotation_score = vtable { call = @sla__derived_annotation_score }
+@sla__DerivedAnnotationOne_metadata_score() -> i32:
 L_ENTRY:
-    tmp_0 = 927450922
-    position_id = tmp_0
-    tmp_1 = 927450922
-    position_id_again = tmp_1
-    tmp_2 = 252253522
-    velocity_id = tmp_2
-    tmp_3 = 1009436600
-    marker_id = tmp_3
-    tmp_4 = 0
-    tmp_5 = sle position_id, tmp_4
+    tmp_0 = 7
+    return tmp_0
+
+@sla__DerivedAnnotationTwo_metadata_score() -> i32:
+L_ENTRY:
+    tmp_1 = 11
+    return tmp_1
+
+@sla__derived_annotation_score() -> i32:
+L_ENTRY:
+    one = alloc 4
+    tmp_2 = 3
+    store one+0, tmp_2 as i32
+    !tmp_2
+    two = alloc 8
+    tmp_3 = 5
+    store two+0, tmp_3 as i32
+    !tmp_3
+    tmp_4 = 9
+    store two+4, tmp_4 as i32
     !tmp_4
-    br tmp_5 -> L_THEN_0, L_ELSE_1
-
-L_THEN_0:
+    tmp_5 = load one+0 as i32
+    tmp_6 = load two+0 as i32
+    tmp_7 = add tmp_5, tmp_6
     !tmp_5
-    panic(9101)
-
-L_ELSE_1:
-    !tmp_5
-    jmp L_MERGE_2
-
-L_MERGE_2:
-    tmp_8 = ne position_id, position_id_again
-    br tmp_8 -> L_THEN_3, L_ELSE_4
-
-L_THEN_3:
+    !tmp_6
+    tmp_8 = load two+4 as i32
+    tmp_9 = add tmp_7, tmp_8
+    !tmp_7
     !tmp_8
-    panic(9102)
-
-L_ELSE_4:
-    !tmp_8
-    jmp L_MERGE_5
-
-L_MERGE_5:
-    tmp_11 = eq position_id, velocity_id
-    br tmp_11 -> L_THEN_6, L_ELSE_7
-
-L_THEN_6:
+    tmp_10 = call @sla__DerivedAnnotationOne_metadata_score()
+    tmp_11 = add tmp_9, tmp_10
+    !tmp_9
+    !tmp_10
+    tmp_12 = call @sla__DerivedAnnotationTwo_metadata_score()
+    tmp_13 = add tmp_11, tmp_12
     !tmp_11
-    panic(9103)
+    !tmp_12
+    !one
+    !two
+    return tmp_13
 
-L_ELSE_7:
-    !tmp_11
-    jmp L_MERGE_8
-
-L_MERGE_8:
-    tmp_14 = 0
-    tmp_15 = 0
+@test "derive annotations are language-neutral"():
+L_TEST_ENTRY_0:
+    tmp_14 = call @sla__derived_annotation_score()
+    tmp_15 = 35
     tmp_16 = ne tmp_14, tmp_15
     !tmp_14
     !tmp_15
-    br tmp_16 -> L_THEN_9, L_ELSE_10
+    br tmp_16 -> L_THEN_1, L_ELSE_2
 
-L_THEN_9:
+L_THEN_1:
     !tmp_16
-    panic(9104)
+    panic(9101)
 
-L_ELSE_10:
+L_ELSE_2:
     !tmp_16
-    jmp L_MERGE_11
+    jmp L_MERGE_3
 
-L_MERGE_11:
-    tmp_19 = eq marker_id, position_id
-    br tmp_19 -> L_THEN_12, L_ELSE_13
-
-L_THEN_12:
-    !tmp_19
-    panic(9106)
-
-L_ELSE_13:
-    !tmp_19
-    jmp L_MERGE_14
-
-L_MERGE_14:
-    tmp_22 = 1
-    tmp_23 = 1
-    tmp_24 = ne tmp_22, tmp_23
-    !tmp_22
-    !tmp_23
-    br tmp_24 -> L_THEN_15, L_ELSE_16
-
-L_THEN_15:
-    !tmp_24
-    panic(9107)
-
-L_ELSE_16:
-    !tmp_24
-    jmp L_MERGE_17
-
-L_MERGE_17:
-    tmp_27 = 7
-    !marker_id
-    !velocity_id
-    !position_id_again
-    !position_id
-    return tmp_27
-
-@sla__derived_resource_metadata_score() -> i32:
-L_ENTRY:
-    tmp_28 = 2064793383
-    time_id = tmp_28
-    tmp_29 = 2064793383
-    time_id_again = tmp_29
-    tmp_30 = 0
-    tmp_31 = sle time_id, tmp_30
-    !tmp_30
-    br tmp_31 -> L_THEN_18, L_ELSE_19
-
-L_THEN_18:
-    !tmp_31
-    panic(9111)
-
-L_ELSE_19:
-    !tmp_31
-    jmp L_MERGE_20
-
-L_MERGE_20:
-    tmp_34 = ne time_id, time_id_again
-    br tmp_34 -> L_THEN_21, L_ELSE_22
-
-L_THEN_21:
-    !tmp_34
-    panic(9112)
-
-L_ELSE_22:
-    !tmp_34
-    jmp L_MERGE_23
-
-L_MERGE_23:
-    tmp_37 = 927450922
-    tmp_38 = eq time_id, tmp_37
-    !tmp_37
-    br tmp_38 -> L_THEN_24, L_ELSE_25
-
-L_THEN_24:
-    !tmp_38
-    panic(9113)
-
-L_ELSE_25:
-    !tmp_38
-    jmp L_MERGE_26
-
-L_MERGE_26:
-    tmp_41 = 11
-    !time_id_again
-    !time_id
-    return tmp_41
-
-@sla__derived_message_metadata_score() -> i32:
-L_ENTRY:
-    tmp_42 = 632534256
-    damage_id = tmp_42
-    tmp_43 = 632534256
-    damage_id_again = tmp_43
-    tmp_44 = 0
-    tmp_45 = sle damage_id, tmp_44
-    !tmp_44
-    br tmp_45 -> L_THEN_27, L_ELSE_28
-
-L_THEN_27:
-    !tmp_45
-    panic(9121)
-
-L_ELSE_28:
-    !tmp_45
-    jmp L_MERGE_29
-
-L_MERGE_29:
-    tmp_48 = ne damage_id, damage_id_again
-    br tmp_48 -> L_THEN_30, L_ELSE_31
-
-L_THEN_30:
-    !tmp_48
-    panic(9122)
-
-L_ELSE_31:
-    !tmp_48
-    jmp L_MERGE_32
-
-L_MERGE_32:
-    tmp_51 = 927450922
-    tmp_52 = eq damage_id, tmp_51
-    !tmp_51
-    br tmp_52 -> L_THEN_33, L_ELSE_34
-
-L_THEN_33:
-    !tmp_52
-    panic(9123)
-
-L_ELSE_34:
-    !tmp_52
-    jmp L_MERGE_35
-
-L_MERGE_35:
-    tmp_55 = 2064793383
-    tmp_56 = eq damage_id, tmp_55
-    !tmp_55
-    br tmp_56 -> L_THEN_36, L_ELSE_37
-
-L_THEN_36:
-    !tmp_56
-    panic(9124)
-
-L_ELSE_37:
-    !tmp_56
-    jmp L_MERGE_38
-
-L_MERGE_38:
-    tmp_59 = 13
-    !damage_id
-    !damage_id_again
-    return tmp_59
-
-@sla__derived_event_metadata_score() -> i32:
-L_ENTRY:
-    tmp_60 = 119740028
-    speak_id = tmp_60
-    tmp_61 = 119740028
-    speak_id_again = tmp_61
-    tmp_62 = 0
-    tmp_63 = sle speak_id, tmp_62
-    !tmp_62
-    br tmp_63 -> L_THEN_39, L_ELSE_40
-
-L_THEN_39:
-    !tmp_63
-    panic(9131)
-
-L_ELSE_40:
-    !tmp_63
-    jmp L_MERGE_41
-
-L_MERGE_41:
-    tmp_66 = ne speak_id, speak_id_again
-    br tmp_66 -> L_THEN_42, L_ELSE_43
-
-L_THEN_42:
-    !tmp_66
-    panic(9132)
-
-L_ELSE_43:
-    !tmp_66
-    jmp L_MERGE_44
-
-L_MERGE_44:
-    tmp_69 = 927450922
-    tmp_70 = eq speak_id, tmp_69
-    !tmp_69
-    br tmp_70 -> L_THEN_45, L_ELSE_46
-
-L_THEN_45:
-    !tmp_70
-    panic(9133)
-
-L_ELSE_46:
-    !tmp_70
-    jmp L_MERGE_47
-
-L_MERGE_47:
-    tmp_73 = 2064793383
-    tmp_74 = eq speak_id, tmp_73
-    !tmp_73
-    br tmp_74 -> L_THEN_48, L_ELSE_49
-
-L_THEN_48:
-    !tmp_74
-    panic(9134)
-
-L_ELSE_49:
-    !tmp_74
-    jmp L_MERGE_50
-
-L_MERGE_50:
-    tmp_77 = 632534256
-    tmp_78 = eq speak_id, tmp_77
-    !tmp_77
-    br tmp_78 -> L_THEN_51, L_ELSE_52
-
-L_THEN_51:
-    !tmp_78
-    panic(9135)
-
-L_ELSE_52:
-    !tmp_78
-    jmp L_MERGE_53
-
-L_MERGE_53:
-    tmp_81 = 17
-    !speak_id
-    !speak_id_again
-    return tmp_81
-
-@test "derive component exposes stable metadata"():
-L_TEST_ENTRY_54:
-    tmp_82 = call @sla__derived_component_metadata_score()
-    tmp_83 = 7
-    tmp_84 = ne tmp_82, tmp_83
-    !tmp_82
-    !tmp_83
-    br tmp_84 -> L_THEN_55, L_ELSE_56
-
-L_THEN_55:
-    !tmp_84
-    panic(9105)
-
-L_ELSE_56:
-    !tmp_84
-    jmp L_MERGE_57
-
-L_MERGE_57:
-    return
-
-@test "derive resource exposes stable metadata"():
-L_TEST_ENTRY_58:
-    tmp_87 = call @sla__derived_resource_metadata_score()
-    tmp_88 = 11
-    tmp_89 = ne tmp_87, tmp_88
-    !tmp_87
-    !tmp_88
-    br tmp_89 -> L_THEN_59, L_ELSE_60
-
-L_THEN_59:
-    !tmp_89
-    panic(9114)
-
-L_ELSE_60:
-    !tmp_89
-    jmp L_MERGE_61
-
-L_MERGE_61:
-    return
-
-@test "derive message exposes stable metadata"():
-L_TEST_ENTRY_62:
-    tmp_92 = call @sla__derived_message_metadata_score()
-    tmp_93 = 13
-    tmp_94 = ne tmp_92, tmp_93
-    !tmp_92
-    !tmp_93
-    br tmp_94 -> L_THEN_63, L_ELSE_64
-
-L_THEN_63:
-    !tmp_94
-    panic(9125)
-
-L_ELSE_64:
-    !tmp_94
-    jmp L_MERGE_65
-
-L_MERGE_65:
-    return
-
-@test "derive event exposes stable metadata"():
-L_TEST_ENTRY_66:
-    tmp_97 = call @sla__derived_event_metadata_score()
-    tmp_98 = 17
-    tmp_99 = ne tmp_97, tmp_98
-    !tmp_97
-    !tmp_98
-    br tmp_99 -> L_THEN_67, L_ELSE_68
-
-L_THEN_67:
-    !tmp_99
-    panic(9136)
-
-L_ELSE_68:
-    !tmp_99
-    jmp L_MERGE_69
-
-L_MERGE_69:
+L_MERGE_3:
     return
 

@@ -1,0 +1,56 @@
+@import "sa_std/vec.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@import "sa_std/vec.sa"
+@const SLA_FNPTR_VT_imported_vec_sum = vtable { call = @sla__imported_vec_sum }
+@sla__imported_vec_sum() -> i32:
+L_ENTRY:
+    EXPAND VEC_NEW tmp_0
+    values = tmp_0
+    tmp_1 = 2
+    EXPAND VEC_PUSH values, tmp_1, 8
+    !tmp_1
+    tmp_2 = 3
+    EXPAND VEC_PUSH values, tmp_2, 8
+    !tmp_2
+    tmp_3 = 0
+    EXPAND VEC_GET tmp_4, values, tmp_3
+    !tmp_3
+    tmp_5 = tmp_4 as i32
+    tmp_6 = 1
+    EXPAND VEC_GET tmp_7, values, tmp_6
+    !tmp_6
+    tmp_8 = tmp_7 as i32
+    tmp_9 = add tmp_5, tmp_8
+    !tmp_5
+    !tmp_8
+    !values
+    return tmp_9
+
+@test "nested sla import keeps sa_std output path global"():
+L_TEST_ENTRY_0:
+    tmp_10 = call @sla__imported_vec_sum()
+    tmp_11 = 5
+    tmp_12 = ne tmp_10, tmp_11
+    !tmp_10
+    !tmp_11
+    br tmp_12 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_12
+    panic(1501)
+
+L_ELSE_2:
+    !tmp_12
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    return
+

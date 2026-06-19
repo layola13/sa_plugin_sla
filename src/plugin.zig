@@ -22,6 +22,7 @@ const max_import_bytes = 16 * 1024 * 1024;
 
 const ResolvedImport = struct {
     path: []const u8,
+    output_path: []const u8,
     source: []const u8,
 };
 
@@ -30,7 +31,7 @@ fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
 }
 
 fn resolvedImportLessThan(_: void, a: ResolvedImport, b: ResolvedImport) bool {
-    return std.mem.lessThan(u8, a.path, b.path);
+    return std.mem.lessThan(u8, a.output_path, b.output_path);
 }
 
 fn isGlobImportPath(path: []const u8) bool {
@@ -50,19 +51,23 @@ fn isSaStdImport(path: []const u8) bool {
     return std.mem.eql(u8, path, "sa_std") or std.mem.startsWith(u8, path, "sa_std/");
 }
 
-fn readImportFileIfExists(allocator: std.mem.Allocator, path: []const u8) !?ResolvedImport {
+fn readImportFileIfExistsWithOutputPath(allocator: std.mem.Allocator, path: []const u8, output_path: []const u8) !?ResolvedImport {
     const source = std.fs.cwd().readFileAlloc(allocator, path, max_import_bytes) catch |err| {
         if (err == error.FileNotFound or err == error.NotDir or err == error.IsDir) return null;
         return err;
     };
     const real_path = std.fs.cwd().realpathAlloc(allocator, path) catch try allocator.dupe(u8, path);
-    return .{ .path = real_path, .source = source };
+    return .{ .path = real_path, .output_path = try allocator.dupe(u8, output_path), .source = source };
 }
 
-fn readImportFromRoot(allocator: std.mem.Allocator, root: []const u8, rel_path: []const u8) !?ResolvedImport {
+fn readImportFileIfExists(allocator: std.mem.Allocator, path: []const u8) !?ResolvedImport {
+    return try readImportFileIfExistsWithOutputPath(allocator, path, path);
+}
+
+fn readImportFromRoot(allocator: std.mem.Allocator, root: []const u8, rel_path: []const u8, output_path: []const u8) !?ResolvedImport {
     if (rel_path.len == 0) return null;
     const candidate = try std.fs.path.join(allocator, &.{ root, rel_path });
-    return try readImportFileIfExists(allocator, candidate);
+    return try readImportFileIfExistsWithOutputPath(allocator, candidate, output_path);
 }
 
 fn resolveSaStdImport(allocator: std.mem.Allocator, import_path: []const u8) !?ResolvedImport {
@@ -72,12 +77,12 @@ fn resolveSaStdImport(allocator: std.mem.Allocator, import_path: []const u8) !?R
     const rel_path = import_path["sa_std/".len..];
 
     if (std.process.getEnvVarOwned(allocator, "SA_STD_DIR")) |env_root| {
-        if (try readImportFromRoot(allocator, env_root, rel_path)) |resolved| return resolved;
+        if (try readImportFromRoot(allocator, env_root, rel_path, import_path)) |resolved| return resolved;
     } else |_| {}
 
     if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
         const home_std_root = try std.fs.path.join(allocator, &.{ home, "projects", "sci", "sa_std" });
-        if (try readImportFromRoot(allocator, home_std_root, rel_path)) |resolved| return resolved;
+        if (try readImportFromRoot(allocator, home_std_root, rel_path, import_path)) |resolved| return resolved;
     } else |_| {}
 
     const candidate_roots = [_][]const u8{
@@ -91,7 +96,7 @@ fn resolveSaStdImport(allocator: std.mem.Allocator, import_path: []const u8) !?R
     };
 
     for (candidate_roots) |root| {
-        if (try readImportFromRoot(allocator, root, rel_path)) |resolved| return resolved;
+        if (try readImportFromRoot(allocator, root, rel_path, import_path)) |resolved| return resolved;
     }
 
     return null;
@@ -279,7 +284,7 @@ fn appendExpandedSlaImportDecls(
                         try appendExpandedSlaImportDecls(allocator, import_dir, decl.import_decl.path, resolved.path, visited, out_decls);
                     } else {
                         const import_decl = try allocator.create(ast.Node);
-                        import_decl.* = .{ .import_decl = .{ .path = child_resolved.path } };
+                        import_decl.* = .{ .import_decl = .{ .path = child_resolved.output_path } };
                         try out_decls.append(import_decl);
                     }
                 }
@@ -312,7 +317,7 @@ fn expandSlaImports(
                     try appendExpandedSlaImportDecls(allocator, source_dir, decl.import_decl.path, source_abs, &visited, &decls);
                 } else {
                     const import_decl = try allocator.create(ast.Node);
-                    import_decl.* = .{ .import_decl = .{ .path = resolved.path } };
+                    import_decl.* = .{ .import_decl = .{ .path = resolved.output_path } };
                     try decls.append(import_decl);
                 }
             }

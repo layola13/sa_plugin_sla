@@ -1,4 +1,4 @@
-@import "/home/vscode/.sa/std/vec.sa"
+@import "sa_std/vec.sa"
 @import "sa_std/string.sa"
 @import "sa_std/string_format.sa"
 @import "sa_std/io/print.sai"

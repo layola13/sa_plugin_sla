@@ -10,6 +10,12 @@ struct DerivedComponentVelocity {
     dy: i32,
 }
 
+@derive(Component)
+@component(storage = "SparseSet")
+struct DerivedSparseMarker {
+    value: i32,
+}
+
 @derive(Resource)
 struct DerivedResourceTime {
     tick: i32,
@@ -19,10 +25,13 @@ fn derived_component_metadata_score() -> i32 {
     let position_id = DerivedComponentPosition::component_type_id();
     let position_id_again = DerivedComponentPosition::component_type_id();
     let velocity_id = DerivedComponentVelocity::component_type_id();
+    let marker_id = DerivedSparseMarker::component_type_id();
     if position_id <= 0 { panic(9101); };
     if position_id != position_id_again { panic(9102); };
     if position_id == velocity_id { panic(9103); };
     if DerivedComponentPosition::component_storage_kind() != 0 { panic(9104); };
+    if marker_id == position_id { panic(9106); };
+    if DerivedSparseMarker::component_storage_kind() != 1 { panic(9107); };
     return 7;
 }
 

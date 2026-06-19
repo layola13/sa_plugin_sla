@@ -424,10 +424,17 @@ pub const Codegen = struct {
         return @as(i64, @intCast(positive));
     }
 
+    fn componentStorageKindValue(kind: ast.ComponentStorageKind) i64 {
+        return switch (kind) {
+            .table => 0,
+            .sparse_set => 1,
+        };
+    }
+
     fn derivedComponentMetadataValue(self: *Codegen, target_name: []const u8, func_name: []const u8) ?i64 {
         const decl = self.tc.structs.get(target_name) orelse return null;
         if (structHasDerive(decl, "Component") and std.mem.eql(u8, func_name, "component_type_id")) return componentTypeIdForName(target_name);
-        if (structHasDerive(decl, "Component") and std.mem.eql(u8, func_name, "component_storage_kind")) return 0;
+        if (structHasDerive(decl, "Component") and std.mem.eql(u8, func_name, "component_storage_kind")) return componentStorageKindValue(decl.component_storage_kind);
         if (structHasDerive(decl, "Resource") and std.mem.eql(u8, func_name, "resource_type_id")) return componentTypeIdForName(target_name);
         return null;
     }

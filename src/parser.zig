@@ -336,10 +336,41 @@ pub const Parser = struct {
         }
         try self.expect(.r_paren);
 
+        var component_storage_kind: ast.ComponentStorageKind = .table;
+        while (self.peek() == .at) {
+            try self.expect(.at);
+            const attr_tok = self.tok;
+            try self.expect(.identifier);
+            const attr_name = self.lexeme(attr_tok.loc);
+            if (std.mem.eql(u8, attr_name, "component")) {
+                component_storage_kind = try self.parseComponentAttrAfterAt();
+            } else {
+                return ParserError.SyntaxError;
+            }
+        }
+
         _ = self.match(.keyword_pub);
         if (self.peek() != .keyword_struct) return ParserError.ExpectedDeclaration;
         try self.expect(.keyword_struct);
-        return try self.parseAggregateDecl(false, try derives.toOwnedSlice());
+        return try self.parseAggregateDecl(false, try derives.toOwnedSlice(), component_storage_kind);
+    }
+
+    fn parseComponentAttrAfterAt(self: *Parser) ParserError!ast.ComponentStorageKind {
+        try self.expect(.l_paren);
+        const key_tok = self.tok;
+        try self.expect(.identifier);
+        const key = self.lexeme(key_tok.loc);
+        if (!std.mem.eql(u8, key, "storage")) return ParserError.SyntaxError;
+        try self.expect(.equal);
+        const value_tok = self.tok;
+        try self.expect(.string_literal);
+        const raw = self.lexeme(value_tok.loc);
+        if (raw.len < 2 or raw[0] != '"' or raw[raw.len - 1] != '"') return ParserError.SyntaxError;
+        const value = raw[1 .. raw.len - 1];
+        try self.expect(.r_paren);
+        if (std.mem.eql(u8, value, "Table")) return .table;
+        if (std.mem.eql(u8, value, "SparseSet")) return .sparse_set;
+        return ParserError.SyntaxError;
     }
 
     fn parseOptionalExternAbi(self: *Parser) ParserError!?[]const u8 {
@@ -353,12 +384,12 @@ pub const Parser = struct {
 
     fn parseStructDecl(self: *Parser) ParserError!*ast.Node {
         try self.expect(.keyword_struct);
-        return try self.parseAggregateDecl(false, &.{});
+        return try self.parseAggregateDecl(false, &.{}, .table);
     }
 
     fn parseUnionDecl(self: *Parser) ParserError!*ast.Node {
         try self.expect(.keyword_union);
-        return try self.parseAggregateDecl(true, &.{});
+        return try self.parseAggregateDecl(true, &.{}, .table);
     }
 
     fn parseExternBlock(self: *Parser, abi: ?[]const u8) ParserError!*ast.Node {
@@ -378,7 +409,7 @@ pub const Parser = struct {
         return node;
     }
 
-    fn parseAggregateDecl(self: *Parser, is_union: bool, derives: []const []const u8) ParserError!*ast.Node {
+    fn parseAggregateDecl(self: *Parser, is_union: bool, derives: []const []const u8, component_storage_kind: ast.ComponentStorageKind) ParserError!*ast.Node {
         const name_tok = self.tok;
         try self.expect(.identifier);
         const name = self.lexeme(name_tok.loc);
@@ -427,6 +458,7 @@ pub const Parser = struct {
             .struct_decl = .{
                 .name = name,
                 .derives = derives,
+                .component_storage_kind = component_storage_kind,
                 .generics = try generics.toOwnedSlice(),
                 .fields = try fields.toOwnedSlice(),
                 .is_union = is_union,

@@ -21,6 +21,11 @@ struct DerivedResourceTime {
     tick: i32,
 }
 
+@derive(Message)
+struct DerivedMessageDamage {
+    amount: i32,
+}
+
 fn derived_component_metadata_score() -> i32 {
     let position_id = DerivedComponentPosition::component_type_id();
     let position_id_again = DerivedComponentPosition::component_type_id();
@@ -44,10 +49,24 @@ fn derived_resource_metadata_score() -> i32 {
     return 11;
 }
 
+fn derived_message_metadata_score() -> i32 {
+    let damage_id = DerivedMessageDamage::message_type_id();
+    let damage_id_again = DerivedMessageDamage::message_type_id();
+    if damage_id <= 0 { panic(9121); };
+    if damage_id != damage_id_again { panic(9122); };
+    if damage_id == DerivedComponentPosition::component_type_id() { panic(9123); };
+    if damage_id == DerivedResourceTime::resource_type_id() { panic(9124); };
+    return 13;
+}
+
 @test "derive component exposes stable metadata"() {
     if derived_component_metadata_score() != 7 { panic(9105); };
 }
 
 @test "derive resource exposes stable metadata"() {
     if derived_resource_metadata_score() != 11 { panic(9114); };
+}
+
+@test "derive message exposes stable metadata"() {
+    if derived_message_metadata_score() != 13 { panic(9125); };
 }

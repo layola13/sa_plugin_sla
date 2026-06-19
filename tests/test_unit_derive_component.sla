@@ -10,6 +10,11 @@ struct DerivedComponentVelocity {
     dy: i32,
 }
 
+@derive(Resource)
+struct DerivedResourceTime {
+    tick: i32,
+}
+
 fn derived_component_metadata_score() -> i32 {
     let position_id = DerivedComponentPosition::component_type_id();
     let position_id_again = DerivedComponentPosition::component_type_id();
@@ -21,6 +26,19 @@ fn derived_component_metadata_score() -> i32 {
     return 7;
 }
 
+fn derived_resource_metadata_score() -> i32 {
+    let time_id = DerivedResourceTime::resource_type_id();
+    let time_id_again = DerivedResourceTime::resource_type_id();
+    if time_id <= 0 { panic(9111); };
+    if time_id != time_id_again { panic(9112); };
+    if time_id == DerivedComponentPosition::component_type_id() { panic(9113); };
+    return 11;
+}
+
 @test "derive component exposes stable metadata"() {
     if derived_component_metadata_score() != 7 { panic(9105); };
+}
+
+@test "derive resource exposes stable metadata"() {
+    if derived_resource_metadata_score() != 11 { panic(9114); };
 }

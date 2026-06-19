@@ -1,0 +1,431 @@
+@import "/home/vscode/.sa/std/vec.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@import "sa_std/vec.sa"
+@test "vec index assignment updates scalar slot"():
+L_TEST_ENTRY_0:
+    EXPAND VEC_NEW tmp_0
+    values = tmp_0
+    tmp_1 = 10
+    EXPAND VEC_PUSH values, tmp_1, 8
+    !tmp_1
+    tmp_2 = 20
+    EXPAND VEC_PUSH values, tmp_2, 8
+    !tmp_2
+    tmp_3 = 0
+    tmp_4 = 30
+    tmp_5 = &values
+    tmp_6 = load tmp_5+Vec_len as u64
+    tmp_7 = ult tmp_3, tmp_6
+    br tmp_7 -> L_VEC_INDEX_ASSIGN_OK_1, L_VEC_INDEX_ASSIGN_OOB_2
+
+L_VEC_INDEX_ASSIGN_OOB_2:
+    panic(87)
+
+L_VEC_INDEX_ASSIGN_OK_1:
+    !tmp_7
+    tmp_8 = load tmp_5+Vec_ptr as ptr
+    tmp_9 = mul tmp_3, 8
+    tmp_10 = ptr_add tmp_8, tmp_9
+    store tmp_10+0, tmp_4 as u64
+    !tmp_10
+    !tmp_9
+    !tmp_8
+    !tmp_6
+    !tmp_5
+    !tmp_3
+    !tmp_4
+    tmp_11 = 0
+    EXPAND VEC_GET tmp_12, values, tmp_11
+    !tmp_11
+    tmp_13 = tmp_12 as i32
+    tmp_14 = 30
+    tmp_15 = ne tmp_13, tmp_14
+    !tmp_13
+    !tmp_14
+    br tmp_15 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_15
+    panic(9100)
+
+L_ELSE_4:
+    !tmp_15
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_18 = 1
+    EXPAND VEC_GET tmp_19, values, tmp_18
+    !tmp_18
+    tmp_20 = tmp_19 as i32
+    tmp_21 = 20
+    tmp_22 = ne tmp_20, tmp_21
+    !tmp_20
+    !tmp_21
+    br tmp_22 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_22
+    panic(9101)
+
+L_ELSE_7:
+    !tmp_22
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    !values
+    return
+
+@test "vec index assignment updates struct slot"():
+L_TEST_ENTRY_9:
+    EXPAND VEC_NEW tmp_25
+    values = tmp_25
+    tmp_26 = alloc 8
+    tmp_27 = 1
+    store tmp_26+0, tmp_27 as i32
+    !tmp_27
+    tmp_28 = 2
+    store tmp_26+4, tmp_28 as i32
+    !tmp_28
+    EXPAND VEC_PUSH values, tmp_26, 8
+    !tmp_26
+    tmp_29 = alloc 8
+    tmp_30 = 3
+    store tmp_29+0, tmp_30 as i32
+    !tmp_30
+    tmp_31 = 4
+    store tmp_29+4, tmp_31 as i32
+    !tmp_31
+    EXPAND VEC_PUSH values, tmp_29, 8
+    !tmp_29
+    tmp_32 = 1
+    tmp_33 = alloc 8
+    tmp_34 = 7
+    store tmp_33+0, tmp_34 as i32
+    !tmp_34
+    tmp_35 = 9
+    store tmp_33+4, tmp_35 as i32
+    !tmp_35
+    tmp_36 = &values
+    tmp_37 = load tmp_36+Vec_len as u64
+    tmp_38 = ult tmp_32, tmp_37
+    br tmp_38 -> L_VEC_INDEX_ASSIGN_OK_10, L_VEC_INDEX_ASSIGN_OOB_11
+
+L_VEC_INDEX_ASSIGN_OOB_11:
+    panic(87)
+
+L_VEC_INDEX_ASSIGN_OK_10:
+    !tmp_38
+    tmp_39 = load tmp_36+Vec_ptr as ptr
+    tmp_40 = mul tmp_32, 8
+    tmp_41 = ptr_add tmp_39, tmp_40
+    store tmp_41+0, tmp_33 as u64
+    !tmp_41
+    !tmp_40
+    !tmp_39
+    !tmp_37
+    !tmp_36
+    !tmp_32
+    !tmp_33
+    tmp_42 = 0
+    EXPAND VEC_GET tmp_43, values, tmp_42
+    !tmp_42
+    tmp_44 = tmp_43 as ptr
+    a = tmp_44
+    tmp_45 = 1
+    EXPAND VEC_GET tmp_46, values, tmp_45
+    !tmp_45
+    tmp_47 = tmp_46 as ptr
+    b = tmp_47
+    tmp_48 = load a+0 as i32
+    tmp_49 = 1
+    tmp_50 = ne tmp_48, tmp_49
+    !tmp_48
+    !tmp_49
+    br tmp_50 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_50
+    panic(9110)
+
+L_ELSE_13:
+    !tmp_50
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    tmp_53 = load a+4 as i32
+    tmp_54 = 2
+    tmp_55 = ne tmp_53, tmp_54
+    !tmp_53
+    !tmp_54
+    br tmp_55 -> L_THEN_15, L_ELSE_16
+
+L_THEN_15:
+    !tmp_55
+    panic(9111)
+
+L_ELSE_16:
+    !tmp_55
+    jmp L_MERGE_17
+
+L_MERGE_17:
+    tmp_58 = load b+0 as i32
+    tmp_59 = 7
+    tmp_60 = ne tmp_58, tmp_59
+    !tmp_58
+    !tmp_59
+    br tmp_60 -> L_THEN_18, L_ELSE_19
+
+L_THEN_18:
+    !tmp_60
+    panic(9112)
+
+L_ELSE_19:
+    !tmp_60
+    jmp L_MERGE_20
+
+L_MERGE_20:
+    tmp_63 = load b+4 as i32
+    tmp_64 = 9
+    tmp_65 = ne tmp_63, tmp_64
+    !tmp_63
+    !tmp_64
+    br tmp_65 -> L_THEN_21, L_ELSE_22
+
+L_THEN_21:
+    !tmp_65
+    panic(9113)
+
+L_ELSE_22:
+    !tmp_65
+    jmp L_MERGE_23
+
+L_MERGE_23:
+    !b
+    !a
+    !values
+    return
+
+@test "vec field index read and write in loop"():
+L_TEST_ENTRY_24:
+    EXPAND VEC_NEW tmp_68
+    values = tmp_68
+    tmp_69 = 1
+    EXPAND VEC_PUSH values, tmp_69, 8
+    !tmp_69
+    tmp_70 = 2
+    EXPAND VEC_PUSH values, tmp_70, 8
+    !tmp_70
+    tmp_71 = 3
+    EXPAND VEC_PUSH values, tmp_71, 8
+    !tmp_71
+    holder = alloc 8
+    store holder+0, values as ptr
+    tmp_72 = 0
+    i = tmp_72
+    tmp_73 = 0
+    total = tmp_73
+    jmp L_WHILE_HEAD_25
+
+L_WHILE_HEAD_25:
+    tmp_74 = 3
+    tmp_75 = slt i, tmp_74
+    !tmp_74
+    br tmp_75 -> L_WHILE_BODY_26, L_WHILE_COND_FALSE_27
+
+L_WHILE_BODY_26:
+    !tmp_75
+    tmp_76 = load holder+0 as ptr
+    EXPAND VEC_GET tmp_77, tmp_76, i
+    !tmp_76
+    tmp_78 = tmp_77 as i32
+    tmp_79 = add total, tmp_78
+    !tmp_78
+    !total
+    total = tmp_79
+    tmp_80 = 1
+    tmp_81 = add i, tmp_80
+    !tmp_80
+    !i
+    i = tmp_81
+    jmp L_WHILE_HEAD_25
+
+L_WHILE_COND_FALSE_27:
+    !tmp_75
+    jmp L_WHILE_EXIT_28
+
+L_WHILE_EXIT_28:
+    tmp_82 = load holder+0 as ptr
+    tmp_83 = 1
+    tmp_84 = 7
+    tmp_85 = &tmp_82
+    tmp_86 = load tmp_85+Vec_len as u64
+    tmp_87 = ult tmp_83, tmp_86
+    br tmp_87 -> L_VEC_INDEX_ASSIGN_OK_29, L_VEC_INDEX_ASSIGN_OOB_30
+
+L_VEC_INDEX_ASSIGN_OOB_30:
+    panic(87)
+
+L_VEC_INDEX_ASSIGN_OK_29:
+    !tmp_87
+    tmp_88 = load tmp_85+Vec_ptr as ptr
+    tmp_89 = mul tmp_83, 8
+    tmp_90 = ptr_add tmp_88, tmp_89
+    store tmp_90+0, tmp_84 as u64
+    !tmp_90
+    !tmp_89
+    !tmp_88
+    !tmp_86
+    !tmp_85
+    !tmp_83
+    !tmp_84
+    !tmp_82
+    tmp_91 = 6
+    tmp_92 = ne total, tmp_91
+    !tmp_91
+    br tmp_92 -> L_THEN_31, L_ELSE_32
+
+L_THEN_31:
+    !tmp_92
+    panic(9120)
+
+L_ELSE_32:
+    !tmp_92
+    jmp L_MERGE_33
+
+L_MERGE_33:
+    tmp_95 = load holder+0 as ptr
+    tmp_96 = 1
+    EXPAND VEC_GET tmp_97, tmp_95, tmp_96
+    !tmp_96
+    !tmp_95
+    tmp_98 = tmp_97 as i32
+    tmp_99 = 7
+    tmp_100 = ne tmp_98, tmp_99
+    !tmp_98
+    !tmp_99
+    br tmp_100 -> L_THEN_34, L_ELSE_35
+
+L_THEN_34:
+    !tmp_100
+    panic(9121)
+
+L_ELSE_35:
+    !tmp_100
+    jmp L_MERGE_36
+
+L_MERGE_36:
+    !i
+    !values
+    !total
+    !holder
+    return
+
+@test "vec field push releases receiver temporary"():
+L_TEST_ENTRY_37:
+    EXPAND VEC_NEW tmp_103
+    values = tmp_103
+    holder = alloc 8
+    store holder+0, values as ptr
+    tmp_104 = 0
+    i = tmp_104
+    jmp L_WHILE_HEAD_38
+
+L_WHILE_HEAD_38:
+    tmp_105 = 2
+    tmp_106 = slt i, tmp_105
+    !tmp_105
+    br tmp_106 -> L_WHILE_BODY_39, L_WHILE_COND_FALSE_40
+
+L_WHILE_BODY_39:
+    !tmp_106
+    tmp_107 = 0
+    tmp_108 = sge i, tmp_107
+    !tmp_107
+    br tmp_108 -> L_THEN_42, L_ELSE_43
+
+L_THEN_42:
+    !tmp_108
+    tmp_109 = load holder+0 as ptr
+    tmp_110 = alloc 8
+    store tmp_110+0, i as i32
+    tmp_111 = 1
+    tmp_112 = add i, tmp_111
+    !tmp_111
+    store tmp_110+4, tmp_112 as i32
+    !tmp_112
+    EXPAND VEC_PUSH tmp_109, tmp_110, 8
+    !tmp_110
+    !tmp_109
+    jmp L_MERGE_44
+
+L_ELSE_43:
+    !tmp_108
+    jmp L_MERGE_44
+
+L_MERGE_44:
+    tmp_114 = 1
+    tmp_115 = add i, tmp_114
+    !tmp_114
+    !i
+    i = tmp_115
+    jmp L_WHILE_HEAD_38
+
+L_WHILE_COND_FALSE_40:
+    !tmp_106
+    jmp L_WHILE_EXIT_41
+
+L_WHILE_EXIT_41:
+    tmp_116 = load holder+0 as ptr
+    EXPAND VEC_LEN tmp_117, tmp_116
+    !tmp_116
+    tmp_118 = 2
+    tmp_119 = ne tmp_117, tmp_118
+    !tmp_117
+    !tmp_118
+    br tmp_119 -> L_THEN_45, L_ELSE_46
+
+L_THEN_45:
+    !tmp_119
+    panic(9130)
+
+L_ELSE_46:
+    !tmp_119
+    jmp L_MERGE_47
+
+L_MERGE_47:
+    tmp_122 = load holder+0 as ptr
+    tmp_123 = 1
+    EXPAND VEC_GET tmp_124, tmp_122, tmp_123
+    !tmp_123
+    !tmp_122
+    tmp_125 = tmp_124 as ptr
+    tmp_126 = load tmp_125+4 as i32
+    !tmp_125
+    tmp_127 = 2
+    tmp_128 = ne tmp_126, tmp_127
+    !tmp_126
+    !tmp_127
+    br tmp_128 -> L_THEN_48, L_ELSE_49
+
+L_THEN_48:
+    !tmp_128
+    panic(9131)
+
+L_ELSE_49:
+    !tmp_128
+    jmp L_MERGE_50
+
+L_MERGE_50:
+    !i
+    !values
+    !holder
+    return
+

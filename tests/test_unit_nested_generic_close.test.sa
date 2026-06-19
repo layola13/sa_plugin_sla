@@ -1,0 +1,55 @@
+@import "/home/vscode/.sa/std/vec.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@import "sa_std/vec.sa"
+@const SLA_FNPTR_VT_nested_len = vtable { call = @sla__nested_len }
+@sla__nested_len(values: ptr) -> i32:
+L_ENTRY:
+    EXPAND VEC_LEN tmp_0, values
+    tmp_1 = tmp_0 as i32
+    return tmp_1
+
+@test "nested generic close parses without spacing workaround"():
+L_TEST_ENTRY_0:
+    EXPAND VEC_NEW tmp_2
+    inner_a = tmp_2
+    EXPAND VEC_NEW tmp_3
+    inner_b = tmp_3
+    tmp_4 = 1
+    EXPAND VEC_PUSH inner_a, tmp_4, 8
+    !tmp_4
+    tmp_5 = 2
+    EXPAND VEC_PUSH inner_b, tmp_5, 8
+    !tmp_5
+    EXPAND VEC_NEW tmp_6
+    outer = tmp_6
+    EXPAND VEC_PUSH outer, inner_a, 8
+    EXPAND VEC_PUSH outer, inner_b, 8
+    tmp_7 = call @sla__nested_len(outer)
+    tmp_8 = 2
+    tmp_9 = ne tmp_7, tmp_8
+    !tmp_7
+    !tmp_8
+    br tmp_9 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_9
+    panic(9200)
+
+L_ELSE_2:
+    !tmp_9
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !inner_b
+    !inner_a
+    !outer
+    return
+

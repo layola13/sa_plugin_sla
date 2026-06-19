@@ -53,6 +53,7 @@ pub const Codegen = struct {
     stack_alloc_bindings: std.StringHashMap(void),
     addressable_bindings: std.StringHashMap(void),
     global_const_bindings: std.StringHashMap(void),
+    global_scalar_consts: std.StringHashMap(*const ast.Node),
     hashmap_key_slots: std.StringHashMap([]const u8),
     thread_spawn_helpers: std.AutoHashMap(*const ast.Node, ThreadSpawnHelper),
     thread_capture_regs: std.StringHashMap([]const u8),
@@ -95,6 +96,7 @@ pub const Codegen = struct {
             .stack_alloc_bindings = std.StringHashMap(void).init(allocator),
             .addressable_bindings = std.StringHashMap(void).init(allocator),
             .global_const_bindings = std.StringHashMap(void).init(allocator),
+            .global_scalar_consts = std.StringHashMap(*const ast.Node).init(allocator),
             .hashmap_key_slots = std.StringHashMap([]const u8).init(allocator),
             .thread_spawn_helpers = std.AutoHashMap(*const ast.Node, ThreadSpawnHelper).init(allocator),
             .thread_capture_regs = std.StringHashMap([]const u8).init(allocator),
@@ -136,6 +138,7 @@ pub const Codegen = struct {
         self.stack_alloc_bindings.deinit();
         self.addressable_bindings.deinit();
         self.global_const_bindings.deinit();
+        self.global_scalar_consts.deinit();
         var key_slot_iter = self.hashmap_key_slots.valueIterator();
         while (key_slot_iter.next()) |slot| {
             self.allocator.free(slot.*);
@@ -401,6 +404,26 @@ pub const Codegen = struct {
             return;
         }
         self.out.writer().print("    {s} = {d}\n", .{ target, value }) catch return CodegenError.CodegenError;
+    }
+
+    fn genLiteralValue(self: *Codegen, lit: ast.Literal) CodegenError![]const u8 {
+        const reg = try self.newTmp();
+        switch (lit) {
+            .int_val => |v| try self.emitIntConst(reg, v),
+            .float_val => |v| try self.emitFloatConst(reg, v),
+            .bool_val => |v| try self.emitIntConst(reg, if (v) 1 else 0),
+            .string_val => |v| {
+                const label = try self.newStringConst();
+                self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, v }) catch return CodegenError.CodegenError;
+                const len_reg = try self.newTmp();
+                try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(v))));
+                self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
+                self.out.writer().print("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ reg, label, len_reg }) catch return CodegenError.CodegenError;
+                try self.emitRelease(len_reg);
+            },
+        }
+        return reg;
     }
 
     fn blockTerminates(block: []const *ast.Node) bool {
@@ -1330,7 +1353,7 @@ pub const Codegen = struct {
                 .integer, .float => 8,
                 .void_type => 8,
             },
-            .array => |arr| typeSize(arr.elem) * arr.len,
+            .array => 8,
             .tuple => |tuple| tupleSize(tuple),
             else => 8,
         };
@@ -1606,10 +1629,10 @@ pub const Codegen = struct {
     fn emitTopLevelConstDecl(self: *Codegen, c: *const ast.ConstStmt) CodegenError!void {
         switch (c.value.*) {
             .literal => |lit| switch (lit) {
+                .int_val, .float_val, .bool_val => {},
                 .string_val => |value| {
                     self.out.writer().print("@const {s} = utf8:\"{s}\"\n", .{ c.name, value }) catch return CodegenError.CodegenError;
                 },
-                else => return CodegenError.CodegenError,
             },
             .array_literal => |array| {
                 const const_ty = c.ty orelse self.tc.expr_types.get(c.value) orelse return CodegenError.CodegenError;
@@ -5094,6 +5117,7 @@ pub const Codegen = struct {
     pub fn generate(self: *Codegen, program: *ast.Node) CodegenError![]const u8 {
         if (program.* != .program) return CodegenError.CodegenError;
         self.global_const_bindings.clearRetainingCapacity();
+        self.global_scalar_consts.clearRetainingCapacity();
         try self.collectThreadSpawnHelpers(program);
 
         // Struct layouts are compile-time Sla metadata. The generated SA uses
@@ -5181,6 +5205,12 @@ pub const Codegen = struct {
         for (program.program.decls) |decl| {
             if (decl.* == .const_stmt) {
                 self.global_const_bindings.put(decl.const_stmt.name, {}) catch return CodegenError.OutOfMemory;
+                if (decl.const_stmt.value.* == .literal) {
+                    switch (decl.const_stmt.value.literal) {
+                        .int_val, .float_val, .bool_val => self.global_scalar_consts.put(decl.const_stmt.name, decl.const_stmt.value) catch return CodegenError.OutOfMemory,
+                        .string_val => {},
+                    }
+                }
                 try self.emitTopLevelConstDecl(&decl.const_stmt);
             }
         }
@@ -6017,6 +6047,21 @@ pub const Codegen = struct {
         };
     }
 
+    fn exprResultNeedsRelease(expr: *const ast.Node) bool {
+        return expr.* != .identifier;
+    }
+
+    fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
+        if (arg.* != .identifier) return false;
+        if (!self.tc.funcs.contains(arg.identifier)) return false;
+        const arg_ty = self.tc.expr_types.get(arg) orelse return false;
+        return arg_ty.* == .fn_ptr;
+    }
+
+    fn storedIdentifierNeedsRelease(value: *const ast.Node, value_ty: *const ast.Type) bool {
+        return value.* == .identifier and value_ty.* != .primitive;
+    }
+
     fn isNonOwningPointerCarrierCastArg(arg: *const ast.Node) bool {
         return switch (arg.*) {
             .cast_expr => |cast| cast.expr.* == .identifier and isPointerCarrierCastType(cast.ty),
@@ -6441,7 +6486,7 @@ pub const Codegen = struct {
                     if (self.refcell_borrow_handles.contains(target_reg)) try self.emitRelease(target_reg);
                     if (assign.target.deref_expr.expr.* != .identifier and self.mutex_guard_handles.contains(target_reg)) try self.emitRelease(target_reg);
                     if (assign.target.deref_expr.expr.* != .identifier and self.rwlock_guard_handles.contains(target_reg)) try self.emitRelease(target_reg);
-                    if (callArgNeedsRelease(assign.value)) try self.emitRelease(val_reg);
+                    if (callArgNeedsRelease(assign.value) or storedIdentifierNeedsRelease(assign.value, inner_ty)) try self.emitRelease(val_reg);
                 } else if (assign.target.* == .field_expr) {
                     const field = assign.target.field_expr;
                     const base_reg = try self.genExpr(field.expr, hoisted_allocs);
@@ -6468,12 +6513,15 @@ pub const Codegen = struct {
                         const layout = fieldLayout(struct_decl, field.field_name) orelse return CodegenError.CodegenError;
                         self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ base_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     }
+                    if (exprResultNeedsRelease(field.expr)) try self.emitRelease(base_reg);
+                    if (callArgNeedsRelease(assign.value) or storedIdentifierNeedsRelease(assign.value, target_ty)) try self.emitRelease(val_reg);
                 } else if (assign.target.* == .identifier) {
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
                     const target_name = self.resolveBindingName(assign.target.identifier);
                     if (self.addressable_bindings.contains(target_name)) {
                         const target_ty = self.tc.expr_types.get(assign.target) orelse return CodegenError.CodegenError;
                         self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(assign.value)) try self.emitRelease(val_reg);
                     } else {
                         try self.emitRelease(assign.target.identifier);
                         self.out.writer().print("    {s} = {s}\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError;
@@ -6520,6 +6568,33 @@ pub const Codegen = struct {
 
                 const start_reg = try self.genExpr(f.start, hoisted_allocs);
                 const end_reg = if (f.end) |end_expr| try self.genExpr(end_expr, hoisted_allocs) else null;
+                const source_ty = self.tc.expr_types.get(f.start) orelse return CodegenError.CodegenError;
+                const source_arr = if (end_reg == null) arrayType(source_ty) else null;
+                var protocol_len_key: ?[]const u8 = null;
+                var protocol_at_key: ?[]const u8 = null;
+                defer if (protocol_len_key) |key| self.allocator.free(key);
+                defer if (protocol_at_key) |key| self.allocator.free(key);
+                var protocol_len_func: ?*ast.FuncDecl = null;
+                var protocol_at_func: ?*ast.FuncDecl = null;
+                var protocol_len_reg: ?[]const u8 = null;
+
+                if (end_reg == null and source_arr == null) {
+                    const type_name = concreteTypeName(source_ty) orelse return CodegenError.CodegenError;
+                    protocol_len_key = try self.mangleMethodName(type_name, "iter_len");
+                    protocol_at_key = try self.mangleMethodName(type_name, "iter_at");
+                    protocol_len_func = self.tc.funcs.get(protocol_len_key.?) orelse return CodegenError.CodegenError;
+                    protocol_at_func = self.tc.funcs.get(protocol_at_key.?) orelse return CodegenError.CodegenError;
+
+                    const len_reg = try self.newTmp();
+                    const lowered_len = try self.loweredFuncSymbol(protocol_len_key.?);
+                    defer self.allocator.free(lowered_len);
+                    if (protocol_len_func.?.params.len > 0 and protocol_len_func.?.params[0].is_borrow) {
+                        self.out.writer().print("    {s} = call @{s}(&{s})\n", .{ len_reg, lowered_len, start_reg }) catch return CodegenError.CodegenError;
+                    } else {
+                        self.out.writer().print("    {s} = call @{s}({s})\n", .{ len_reg, lowered_len, start_reg }) catch return CodegenError.CodegenError;
+                    }
+                    protocol_len_reg = len_reg;
+                }
 
                 const counter_slot = std.fmt.allocPrint(self.allocator, "{s}_slot", .{f.var_name}) catch return CodegenError.OutOfMemory;
                 defer self.allocator.free(counter_slot);
@@ -6539,9 +6614,11 @@ pub const Codegen = struct {
                 if (end_reg) |er| {
                     self.out.writer().print("    {s} = slt {s}, {s}\n", .{ is_less, index_reg, er }) catch return CodegenError.CodegenError;
                 } else {
-                    const source_ty = self.tc.expr_types.get(f.start) orelse return CodegenError.CodegenError;
-                    const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = slt {s}, {}\n", .{ is_less, index_reg, arr.len }) catch return CodegenError.CodegenError;
+                    if (source_arr) |arr| {
+                        self.out.writer().print("    {s} = slt {s}, {}\n", .{ is_less, index_reg, arr.len }) catch return CodegenError.CodegenError;
+                    } else if (protocol_len_reg) |len_reg| {
+                        self.out.writer().print("    {s} = slt {s}, {s}\n", .{ is_less, index_reg, len_reg }) catch return CodegenError.CodegenError;
+                    } else return CodegenError.CodegenError;
                 }
                 self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_less, loop_body, loop_cond_false }) catch return CodegenError.CodegenError;
 
@@ -6550,20 +6627,30 @@ pub const Codegen = struct {
                 if (end_reg != null) {
                     self.out.writer().print("    {s} = add {s}, 0\n", .{ f.var_name, index_reg }) catch return CodegenError.CodegenError;
                 } else {
-                    const source_ty = self.tc.expr_types.get(f.start) orelse return CodegenError.CodegenError;
-                    const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
-                    const elem_size = typeSize(arr.elem);
-                    const byte_offset = try self.newTmp();
-                    if (elem_size == 1) {
-                        self.out.writer().print("    {s} = {s}\n", .{ byte_offset, index_reg }) catch return CodegenError.CodegenError;
+                    if (source_arr) |arr| {
+                        const elem_size = typeSize(arr.elem);
+                        const byte_offset = try self.newTmp();
+                        if (elem_size == 1) {
+                            self.out.writer().print("    {s} = {s}\n", .{ byte_offset, index_reg }) catch return CodegenError.CodegenError;
+                        } else {
+                            self.out.writer().print("    {s} = mul {s}, {}\n", .{ byte_offset, index_reg, elem_size }) catch return CodegenError.CodegenError;
+                        }
+                        const elem_ptr = try self.newTmp();
+                        self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ elem_ptr, start_reg, byte_offset }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ f.var_name, elem_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
+                        try self.emitRelease(byte_offset);
+                        try self.emitRelease(elem_ptr);
+                    } else if (protocol_at_key) |at_key| {
+                        const lowered_at = try self.loweredFuncSymbol(at_key);
+                        defer self.allocator.free(lowered_at);
+                        if (protocol_at_func.?.params.len > 0 and protocol_at_func.?.params[0].is_borrow) {
+                            self.out.writer().print("    {s} = call @{s}(&{s}, {s})\n", .{ f.var_name, lowered_at, start_reg, index_reg }) catch return CodegenError.CodegenError;
+                        } else {
+                            self.out.writer().print("    {s} = call @{s}({s}, {s})\n", .{ f.var_name, lowered_at, start_reg, index_reg }) catch return CodegenError.CodegenError;
+                        }
                     } else {
-                        self.out.writer().print("    {s} = mul {s}, {}\n", .{ byte_offset, index_reg, elem_size }) catch return CodegenError.CodegenError;
+                        return CodegenError.CodegenError;
                     }
-                    const elem_ptr = try self.newTmp();
-                    self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ elem_ptr, start_reg, byte_offset }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ f.var_name, elem_ptr, typeString(arr.elem) }) catch return CodegenError.CodegenError;
-                    try self.emitRelease(byte_offset);
-                    try self.emitRelease(elem_ptr);
                 }
                 self.loop_continue_labels.append(loop_continue) catch return CodegenError.OutOfMemory;
                 self.loop_break_labels.append(loop_exit) catch return CodegenError.OutOfMemory;
@@ -6594,7 +6681,10 @@ pub const Codegen = struct {
                 }
                 if (end_reg) |er| {
                     if (callArgNeedsRelease(f.end.?)) try self.emitRelease(er);
-                } else if (callArgNeedsRelease(f.start)) try self.emitRelease(start_reg);
+                } else {
+                    if (protocol_len_reg) |len_reg| try self.emitRelease(len_reg);
+                    if (callArgNeedsRelease(f.start)) try self.emitRelease(start_reg);
+                }
             },
             .while_stmt => |w| {
                 const loop_head = try self.newLabel("L_WHILE_HEAD");
@@ -6778,6 +6868,7 @@ pub const Codegen = struct {
                 }
                 const val_reg = try self.genExpr(literal_field.value, hoisted_allocs);
                 self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                if (callArgNeedsRelease(literal_field.value)) try self.emitRelease(val_reg);
             }
             return;
         }
@@ -6807,6 +6898,7 @@ pub const Codegen = struct {
             }
             const val_reg = try self.genExpr(value, hoisted_allocs);
             self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+            if (callArgNeedsRelease(value)) try self.emitRelease(val_reg);
         }
     }
 
@@ -6826,6 +6918,7 @@ pub const Codegen = struct {
         for (lit.elements, 0..) |elem, i| {
             const val_reg = try self.genExpr(elem, hoisted_allocs);
             self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, elem_size * i, val_reg, elem_ty_str }) catch return CodegenError.CodegenError;
+            if (callArgNeedsRelease(elem)) try self.emitRelease(val_reg);
         }
     }
 
@@ -7132,7 +7225,7 @@ pub const Codegen = struct {
         self: *Codegen,
         idx: *const ast.IndexExpr,
         hoisted_allocs: *const std.ArrayList([]const u8),
-    ) CodegenError!struct { ptr: []const u8, elem_ty: *ast.Type, base_tmp: ?[]const u8 } {
+    ) CodegenError!struct { ptr: []const u8, elem_ty: *ast.Type, base_tmp: ?[]const u8, base_reg: []const u8, release_base_reg: bool } {
         const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
         const arr = arrayType(target_ty) orelse return CodegenError.CodegenError;
 
@@ -7150,7 +7243,13 @@ pub const Codegen = struct {
         self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(offset_reg);
         if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
-        return .{ .ptr = ptr_reg, .elem_ty = arr.elem, .base_tmp = base_tmp };
+        return .{
+            .ptr = ptr_reg,
+            .elem_ty = arr.elem,
+            .base_tmp = base_tmp,
+            .base_reg = base_source_reg,
+            .release_base_reg = base_tmp == null and exprResultNeedsRelease(idx.target),
+        };
     }
 
     fn genIndexAssign(
@@ -7159,11 +7258,48 @@ pub const Codegen = struct {
         value: *ast.Node,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!void {
+        const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
+        if (vecElementType(target_ty)) |elem_ty| {
+            const vec_reg = try self.genExpr(idx.target, hoisted_allocs);
+            const index_reg = try self.genExpr(idx.index, hoisted_allocs);
+            const val_reg = try self.genExpr(value, hoisted_allocs);
+            const view_reg = try self.newTmp();
+            const len_reg = try self.newTmp();
+            const in_bounds_reg = try self.newTmp();
+            const hit_label = try self.newLabel("L_VEC_INDEX_ASSIGN_OK");
+            const miss_label = try self.newLabel("L_VEC_INDEX_ASSIGN_OOB");
+            self.out.writer().print("    {s} = &{s}\n", .{ view_reg, vec_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, view_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    panic(87)\n\n", .{}) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+            const data_reg = try self.newTmp();
+            const offset_reg = try self.newTmp();
+            const ptr_reg = try self.newTmp();
+            self.out.writer().print("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, view_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    store {s}+0, {s} as u64\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+            try self.emitRelease(ptr_reg);
+            try self.emitRelease(offset_reg);
+            try self.emitRelease(data_reg);
+            try self.emitRelease(len_reg);
+            try self.emitRelease(view_reg);
+            if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+            if (callArgNeedsRelease(value) or storedIdentifierNeedsRelease(value, elem_ty)) try self.emitRelease(val_reg);
+            if (exprResultNeedsRelease(idx.target)) try self.emitRelease(vec_reg);
+            return;
+        }
         const addr = try self.genIndexAddress(idx, hoisted_allocs);
         const val_reg = try self.genExpr(value, hoisted_allocs);
         self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ addr.ptr, val_reg, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
         try self.emitRelease(addr.ptr);
         if (addr.base_tmp) |base_tmp| try self.emitRelease(base_tmp);
+        if (addr.release_base_reg) try self.emitRelease(addr.base_reg);
+        if (callArgNeedsRelease(value) or storedIdentifierNeedsRelease(value, addr.elem_ty)) try self.emitRelease(val_reg);
     }
 
     fn genSliceExpr(
@@ -7696,23 +7832,7 @@ pub const Codegen = struct {
     fn genExpr(self: *Codegen, expr: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
         switch (expr.*) {
             .literal => |lit| {
-                const reg = try self.newTmp();
-                switch (lit) {
-                    .int_val => |v| try self.emitIntConst(reg, v),
-                    .float_val => |v| try self.emitFloatConst(reg, v),
-                    .bool_val => |v| try self.emitIntConst(reg, if (v) 1 else 0),
-                    .string_val => |v| {
-                        const label = try self.newStringConst();
-                        self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, v }) catch return CodegenError.CodegenError;
-                        const len_reg = try self.newTmp();
-                        try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(v))));
-                        self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND SLICE_NEW {s}, &{s}, {s}\n", .{ reg, label, len_reg }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(len_reg);
-                    },
-                }
-                return reg;
+                return try self.genLiteralValue(lit);
             },
             .identifier => |name| {
                 if (std.mem.eql(u8, name, "None")) {
@@ -7726,6 +7846,10 @@ pub const Codegen = struct {
                 const resolved_name = self.resolveBindingName(name);
                 if (!std.mem.eql(u8, resolved_name, name)) return resolved_name;
                 if (self.closure_param_regs.get(name)) |mapped| return mapped;
+                if (self.global_scalar_consts.get(name)) |literal_node| {
+                    if (literal_node.* != .literal) return CodegenError.CodegenError;
+                    return try self.genLiteralValue(literal_node.literal);
+                }
                 if (self.global_const_bindings.contains(name)) return name;
                 if (self.tc.funcs.contains(name)) {
                     const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
@@ -7733,8 +7857,7 @@ pub const Codegen = struct {
                         const reg = try self.newTmp();
                         const vt_name = try self.fnPtrVTableName(name);
                         defer self.allocator.free(vt_name);
-                        self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                        self.out.writer().print("    {s} = stack_alloc 16\n", .{reg}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = alloc 16\n", .{reg}) catch return CodegenError.CodegenError;
                         self.out.writer().print("    store {s}+0, 0 as ptr\n", .{reg}) catch return CodegenError.CodegenError;
                         self.out.writer().print("    store {s}+8, &{s} as ptr\n", .{ reg, vt_name }) catch return CodegenError.CodegenError;
                         return reg;
@@ -7833,6 +7956,7 @@ pub const Codegen = struct {
                     const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
                     const layout = tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
                     self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                    if (exprResultNeedsRelease(field.expr)) try self.emitRelease(inner);
                     return reg;
                 }
 
@@ -7882,10 +8006,12 @@ pub const Codegen = struct {
                 for (struct_decl.fields) |decl_field| {
                     if (std.mem.eql(u8, decl_field.name, field.field_name) and manuallyDropInnerType(decl_field.ty) != null) {
                         self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ reg, inner, layout.offset }) catch return CodegenError.CodegenError;
+                        if (exprResultNeedsRelease(field.expr)) try self.emitRelease(inner);
                         return reg;
                     }
                 }
                 self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                if (exprResultNeedsRelease(field.expr)) try self.emitRelease(inner);
                 return reg;
             },
             .struct_literal => |lit| {
@@ -7989,6 +8115,7 @@ pub const Codegen = struct {
                     const raw_reg = try self.newTmp();
                     self.out.writer().print("    EXPAND VEC_GET {s}, {s}, {s}\n", .{ raw_reg, vec_reg, index_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+                    if (exprResultNeedsRelease(idx.target)) try self.emitRelease(vec_reg);
                     if (std.mem.eql(u8, typeString(elem_ty), "u64")) return raw_reg;
                     const reg = try self.newTmp();
                     self.out.writer().print("    {s} = {s} as {s}\n", .{ reg, raw_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
@@ -8007,6 +8134,7 @@ pub const Codegen = struct {
                 self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, addr.ptr, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
                 try self.emitRelease(addr.ptr);
                 if (addr.base_tmp) |base_tmp| try self.emitRelease(base_tmp);
+                if (addr.release_base_reg) try self.emitRelease(addr.base_reg);
                 return reg;
             },
             .slice_expr => |slc| {
@@ -8378,7 +8506,7 @@ pub const Codegen = struct {
                         }
                         self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
                         for (call.args, arg_regs.items) |arg, arg_reg| {
-                            if (callArgNeedsRelease(arg)) try self.emitRelease(arg_reg);
+                            if (callArgNeedsRelease(arg) or self.generatedFnPtrIdentifierArg(arg)) try self.emitRelease(arg_reg);
                         }
                         return reg;
                     }
@@ -8492,6 +8620,7 @@ pub const Codegen = struct {
                     const arg_reg = try self.genExpr(call.args[1], hoisted_allocs);
                     self.out.writer().print("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[1])) try self.emitRelease(arg_reg);
+                    if (exprResultNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                     return "return_ty_sentinel";
                 }
                 if (std.mem.eql(u8, call.func_name, "pop") and call.args.len == 1) {
@@ -9584,7 +9713,7 @@ pub const Codegen = struct {
                     self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
                     for (call.args, arg_regs.items) |arg, arg_reg| {
                         if (self.tc.dyn_borrow_args.contains(arg)) continue;
-                        if (callArgNeedsRelease(arg) and !std.mem.eql(u8, call.func_name, "sum")) {
+                        if ((callArgNeedsRelease(arg) or self.generatedFnPtrIdentifierArg(arg)) and !std.mem.eql(u8, call.func_name, "sum")) {
                             try self.emitRelease(arg_reg);
                         }
                     }

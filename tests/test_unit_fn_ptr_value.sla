@@ -1,0 +1,18 @@
+fn fn_ptr_inc(x: i32) -> i32 {
+    return x + 1;
+}
+
+fn fn_ptr_apply(f: fn(i32) -> i32, value: i32) -> i32 {
+    return f(value);
+}
+
+@test "function pointer can be stored and called"() {
+    let f: fn(i32) -> i32 = fn_ptr_inc;
+    let got = f(4);
+    if got != 5 { panic(1401); };
+}
+
+@test "function pointer can be passed as argument"() {
+    let got = fn_ptr_apply(fn_ptr_inc, 9);
+    if got != 10 { panic(1402); };
+}

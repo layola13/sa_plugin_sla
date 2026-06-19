@@ -1,4 +1,15 @@
-@closure_capture_value() -> i64:
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_closure_capture_value = vtable { call = @sla__closure_capture_value }
+@const SLA_FNPTR_VT_closure_two_args = vtable { call = @sla__closure_two_args }
+@sla__closure_capture_value() -> i64:
 L_ENTRY:
     tmp_0 = 5
     offset = tmp_0
@@ -9,7 +20,7 @@ L_ENTRY:
     !offset
     return tmp_2
 
-@closure_two_args() -> i64:
+@sla__closure_two_args() -> i64:
 L_ENTRY:
     tmp_3 = 2
     scale = tmp_3
@@ -18,16 +29,18 @@ L_ENTRY:
     tmp_5 = 3
     tmp_6 = mul tmp_4, scale
     tmp_7 = add tmp_6, tmp_5
+    !tmp_6
     !mix
     !scale
     return tmp_7
 
 @test "closure captures outer value"():
 L_TEST_ENTRY_0:
-    tmp_8 = call @closure_capture_value()
+    tmp_8 = call @sla__closure_capture_value()
     result = tmp_8
     tmp_9 = 15
     tmp_10 = ne result, tmp_9
+    !tmp_9
     br tmp_10 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
@@ -44,10 +57,11 @@ L_MERGE_3:
 
 @test "closure supports multiple params"():
 L_TEST_ENTRY_4:
-    tmp_13 = call @closure_two_args()
+    tmp_13 = call @sla__closure_two_args()
     result = tmp_13
     tmp_14 = 15
     tmp_15 = ne result, tmp_14
+    !tmp_14
     br tmp_15 -> L_THEN_5, L_ELSE_6
 
 L_THEN_5:

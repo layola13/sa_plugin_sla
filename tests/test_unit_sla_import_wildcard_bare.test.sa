@@ -1,0 +1,70 @@
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_wild_point_sum = vtable { call = @sla__wild_point_sum }
+@const SLA_FNPTR_VT_wild_value = vtable { call = @sla__wild_value }
+@sla__wild_point_sum(p: ptr) -> i32:
+L_ENTRY:
+    tmp_0 = load p+0 as i32
+    tmp_1 = load p+4 as i32
+    tmp_2 = add tmp_0, tmp_1
+    !tmp_0
+    !tmp_1
+    !p
+    return tmp_2
+
+@sla__wild_value() -> i32:
+L_ENTRY:
+    tmp_3 = 7
+    return tmp_3
+
+@test "bare wildcard sla import parses"():
+L_TEST_ENTRY_0:
+    p = alloc 8
+    tmp_4 = 4
+    store p+0, tmp_4 as i32
+    !tmp_4
+    tmp_5 = 6
+    store p+4, tmp_5 as i32
+    !tmp_5
+    tmp_6 = call @sla__wild_point_sum(p)
+    tmp_7 = 10
+    tmp_8 = ne tmp_6, tmp_7
+    !tmp_6
+    !tmp_7
+    br tmp_8 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_8
+    panic(7210)
+
+L_ELSE_2:
+    !tmp_8
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    tmp_11 = call @sla__wild_value()
+    tmp_12 = 7
+    tmp_13 = ne tmp_11, tmp_12
+    !tmp_11
+    !tmp_12
+    br tmp_13 -> L_THEN_4, L_ELSE_5
+
+L_THEN_4:
+    !tmp_13
+    panic(7211)
+
+L_ELSE_5:
+    !tmp_13
+    jmp L_MERGE_6
+
+L_MERGE_6:
+    !p
+    return
+

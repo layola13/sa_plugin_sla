@@ -1,0 +1,18 @@
+struct Item {
+    value: i32,
+}
+
+struct Holder {
+    item: Item,
+}
+
+fn replace_item(holder: Holder) -> Holder {
+    let next = Item { value: holder.item.value + 1 };
+    holder.item = next;
+    return holder;
+}
+
+@test "field assign moved local cleanup"() {
+    let out = replace_item(Holder { item: Item { value: 4 } });
+    if out.item.value != 5 { panic(1600); };
+}

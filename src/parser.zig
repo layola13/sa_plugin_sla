@@ -26,8 +26,14 @@ pub const Parser = struct {
     known_enums: std.ArrayList([]const u8),
     known_modules: std.ArrayList([]const u8),
     current_impl_target: ?*ast.Type,
+    base_dir: []const u8,
+    import_scan_depth: usize,
 
     pub fn init(allocator: std.mem.Allocator, buffer: []const u8) Parser {
+        return initWithDir(allocator, buffer, ".");
+    }
+
+    pub fn initWithDir(allocator: std.mem.Allocator, buffer: []const u8, base_dir: []const u8) Parser {
         var p = Parser{
             .allocator = allocator,
             .lex = lexer.Lexer.init(buffer),
@@ -36,6 +42,8 @@ pub const Parser = struct {
             .known_enums = std.ArrayList([]const u8).init(allocator),
             .known_modules = std.ArrayList([]const u8).init(allocator),
             .current_impl_target = null,
+            .base_dir = base_dir,
+            .import_scan_depth = 0,
         };
         p.tok = p.lex.next();
         return p;
@@ -65,8 +73,68 @@ pub const Parser = struct {
         self.advance();
     }
 
+    fn expectGenericClose(self: *Parser) ParserError!void {
+        switch (self.tok.tag) {
+            .greater_than => self.advance(),
+            .greater_greater => {
+                self.tok = lexer.Token{
+                    .tag = .greater_than,
+                    .loc = .{
+                        .start = self.tok.loc.start + 1,
+                        .end = self.tok.loc.end,
+                    },
+                };
+            },
+            else => {
+                std.debug.print("Expected generic close token, found {s} at index {}\n", .{ @tagName(self.tok.tag), self.tok.loc.start });
+                return ParserError.SyntaxError;
+            },
+        }
+    }
+
     fn lexeme(self: *Parser, loc: lexer.Token.Loc) []const u8 {
         return self.lex.buffer[loc.start..loc.end];
+    }
+
+    fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
+        return std.mem.lessThan(u8, a, b);
+    }
+
+    fn isImportPathToken(tag: lexer.Token.Tag) bool {
+        return switch (tag) {
+            .identifier,
+            .asterisk,
+            .slash,
+            .dot,
+            .range,
+            .minus,
+            => true,
+            else => false,
+        };
+    }
+
+    fn parseImportPathTokenSequence(self: *Parser) ParserError![]const u8 {
+        var buf = std.ArrayList(u8).init(self.allocator);
+        while (isImportPathToken(self.peek())) {
+            const part = self.lexeme(self.tok.loc);
+            try buf.appendSlice(part);
+            self.advance();
+        }
+        if (buf.items.len == 0) return ParserError.SyntaxError;
+        return try buf.toOwnedSlice();
+    }
+
+    fn isGlobImportPath(path: []const u8) bool {
+        return std.mem.indexOfScalar(u8, path, '*') != null;
+    }
+
+    fn globNameMatches(pattern: []const u8, name: []const u8) bool {
+        const star = std.mem.indexOfScalar(u8, pattern, '*') orelse return std.mem.eql(u8, pattern, name);
+        if (std.mem.indexOfScalarPos(u8, pattern, star + 1, '*') != null) return false;
+        const prefix = pattern[0..star];
+        const suffix = pattern[star + 1 ..];
+        if (name.len < prefix.len + suffix.len) return false;
+        return std.mem.startsWith(u8, name, prefix) and std.mem.endsWith(u8, name, suffix);
     }
 
     fn isKnownTypeName(self: *Parser, name: []const u8) bool {
@@ -304,7 +372,7 @@ pub const Parser = struct {
                 try generics.append(self.lexeme(g_tok.loc));
                 if (!self.match(.comma)) break;
             }
-            try self.expect(.greater_than);
+            try self.expectGenericClose();
         }
 
         var fields = std.ArrayList(ast.Field).init(self.allocator);
@@ -362,7 +430,7 @@ pub const Parser = struct {
                 try generics.append(self.lexeme(g_tok.loc));
                 if (!self.match(.comma)) break;
             }
-            try self.expect(.greater_than);
+            try self.expectGenericClose();
         }
 
         try self.expect(.l_brace);
@@ -536,7 +604,7 @@ pub const Parser = struct {
                 }
                 if (!self.match(.comma)) break;
             }
-            try self.expect(.greater_than);
+            try self.expectGenericClose();
         }
         return try generics.toOwnedSlice();
     }
@@ -707,17 +775,88 @@ pub const Parser = struct {
     }
 
     fn parseImportDeclAfterAt(self: *Parser) ParserError!*ast.Node {
-        const path_tok = self.tok;
-        try self.expect(.string_literal);
-        const raw_path = self.lexeme(path_tok.loc);
-        if (raw_path.len < 2 or raw_path[0] != '"' or raw_path[raw_path.len - 1] != '"') {
-            return ParserError.SyntaxError;
-        }
+        const import_path = if (self.peek() == .string_literal) blk: {
+            const path_tok = self.tok;
+            try self.expect(.string_literal);
+            const raw_path = self.lexeme(path_tok.loc);
+            if (raw_path.len < 2 or raw_path[0] != '"' or raw_path[raw_path.len - 1] != '"') {
+                return ParserError.SyntaxError;
+            }
+            break :blk raw_path[1 .. raw_path.len - 1];
+        } else try self.parseImportPathTokenSequence();
         _ = self.match(.semicolon);
 
+        // For cross-file .sla imports, pre-scan the imported file for declared
+        // type/enum names so the rest of this file can recognize struct literals
+        // like `ImportedType { ... }`. This mirrors how plugin.zig later merges
+        // the imported AST, but the parser needs the names earlier to disambiguate
+        // `Name { ... }` from a block during its single forward pass.
+        if (std.mem.endsWith(u8, import_path, ".sla")) {
+            self.prescanSlaImportTypes(import_path) catch {};
+        }
+
         const node = try self.allocator.create(ast.Node);
-        node.* = .{ .import_decl = .{ .path = raw_path[1 .. raw_path.len - 1] } };
+        node.* = .{ .import_decl = .{ .path = import_path } };
         return node;
+    }
+
+    fn prescanSlaImportTypes(self: *Parser, import_path: []const u8) !void {
+        // Bound recursion depth to avoid pathological import graphs.
+        if (self.import_scan_depth >= 32) return;
+
+        if (isGlobImportPath(import_path)) {
+            const pattern_path = if (std.fs.path.isAbsolute(import_path))
+                try self.allocator.dupe(u8, import_path)
+            else
+                try std.fs.path.join(self.allocator, &.{ self.base_dir, import_path });
+
+            const dir_path = std.fs.path.dirname(pattern_path) orelse ".";
+            const pattern_name = std.fs.path.basename(pattern_path);
+            var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+            defer dir.close();
+
+            var matches = std.ArrayList([]const u8).init(self.allocator);
+            var it = dir.iterate();
+            while (try it.next()) |entry| {
+                if (entry.kind != .file and entry.kind != .sym_link) continue;
+                if (!globNameMatches(pattern_name, entry.name)) continue;
+                if (!std.mem.endsWith(u8, entry.name, ".sla")) continue;
+                const child_path = try std.fs.path.join(self.allocator, &.{ dir_path, entry.name });
+                try matches.append(child_path);
+            }
+            std.mem.sort([]const u8, matches.items, {}, stringSliceLessThan);
+            for (matches.items) |child_path| {
+                try self.prescanResolvedSlaImportTypes(child_path);
+            }
+            return;
+        }
+
+        const resolved_path = if (std.fs.path.isAbsolute(import_path))
+            try self.allocator.dupe(u8, import_path)
+        else
+            try std.fs.path.join(self.allocator, &.{ self.base_dir, import_path });
+
+        try self.prescanResolvedSlaImportTypes(resolved_path);
+    }
+
+    fn prescanResolvedSlaImportTypes(self: *Parser, resolved_path: []const u8) !void {
+        const source = std.fs.cwd().readFileAlloc(self.allocator, resolved_path, 16 * 1024 * 1024) catch return;
+
+        const import_dir = std.fs.path.dirname(resolved_path) orelse ".";
+
+        var sub = initWithDir(self.allocator, source, import_dir);
+        sub.import_scan_depth = self.import_scan_depth + 1;
+        const prog = sub.parseProgram() catch return;
+        if (prog.* != .program) return;
+
+        // Merge the names the sub-parser collected (it recursively pre-scans its
+        // own .sla imports too, so transitive types come along).
+        for (sub.known_types.items) |name| {
+            if (!self.isKnownTypeName(name)) try self.known_types.append(name);
+        }
+        for (sub.known_enums.items) |name| {
+            if (!self.isKnownEnumName(name)) try self.known_enums.append(name);
+        }
     }
 
     fn parseTestDeclAfterAt(self: *Parser) ParserError!*ast.Node {
@@ -1061,6 +1200,13 @@ pub const Parser = struct {
                         return tok_copy.tag == .l_brace;
                     }
                 },
+                .greater_greater => {
+                    if (depth <= 2) {
+                        tok_copy = lex_copy.next();
+                        return tok_copy.tag == .l_brace;
+                    }
+                    depth -= 2;
+                },
                 else => {},
             }
             tok_copy = lex_copy.next();
@@ -1101,7 +1247,7 @@ pub const Parser = struct {
             try generics.append(ty);
             if (!self.match(.comma)) break;
         }
-        try self.expect(.greater_than);
+        try self.expectGenericClose();
         const lit_ty = try self.makeUserDefinedType(name, try generics.toOwnedSlice());
         return try self.parseStructLiteral(lit_ty);
     }
@@ -1169,7 +1315,7 @@ pub const Parser = struct {
                 try generics.append(ty);
                 if (!self.match(.comma)) break;
             }
-            try self.expect(.greater_than);
+            try self.expectGenericClose();
         }
 
         try self.expect(.l_paren);
@@ -1241,6 +1387,13 @@ pub const Parser = struct {
                         return tok_copy.tag == .l_paren;
                     }
                 },
+                .greater_greater => {
+                    if (depth <= 2) {
+                        tok_copy = lex_copy.next();
+                        return tok_copy.tag == .l_paren;
+                    }
+                    depth -= 2;
+                },
                 else => {},
             }
             tok_copy = lex_copy.next();
@@ -1255,7 +1408,7 @@ pub const Parser = struct {
             try generics.append(ty);
             if (!self.match(.comma)) break;
         }
-        try self.expect(.greater_than);
+        try self.expectGenericClose();
         try self.expect(.l_paren);
 
         var args = std.ArrayList(*ast.Node).init(self.allocator);
@@ -1734,7 +1887,7 @@ pub const Parser = struct {
                             try generic_args.append(t);
                             if (!self.match(.comma)) break;
                         }
-                        try self.expect(.greater_than);
+                        try self.expectGenericClose();
                     }
 
                     try self.expect(.l_paren);
@@ -1851,7 +2004,7 @@ pub const Parser = struct {
             .less_less, .greater_greater => 6,
             .plus, .minus => 7,
             .asterisk, .slash, .percent => 8,
-            .dot, .bang, .l_paren, .l_bracket, .question_mark => 7,
+            .dot, .bang, .l_paren, .l_bracket, .question_mark => 10,
             .keyword_as => 9,
             else => 0,
         };
@@ -1987,7 +2140,7 @@ pub const Parser = struct {
                         try generics.append(t);
                         if (!self.match(.comma)) break;
                     }
-                    try self.expect(.greater_than);
+                    try self.expectGenericClose();
                 }
 
                 if (std.mem.eql(u8, name, "future")) {

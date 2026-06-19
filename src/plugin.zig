@@ -25,6 +25,27 @@ const ResolvedImport = struct {
     source: []const u8,
 };
 
+fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
+fn resolvedImportLessThan(_: void, a: ResolvedImport, b: ResolvedImport) bool {
+    return std.mem.lessThan(u8, a.path, b.path);
+}
+
+fn isGlobImportPath(path: []const u8) bool {
+    return std.mem.indexOfScalar(u8, path, '*') != null;
+}
+
+fn globNameMatches(pattern: []const u8, name: []const u8) bool {
+    const star = std.mem.indexOfScalar(u8, pattern, '*') orelse return std.mem.eql(u8, pattern, name);
+    if (std.mem.indexOfScalarPos(u8, pattern, star + 1, '*') != null) return false;
+    const prefix = pattern[0..star];
+    const suffix = pattern[star + 1 ..];
+    if (name.len < prefix.len + suffix.len) return false;
+    return std.mem.startsWith(u8, name, prefix) and std.mem.endsWith(u8, name, suffix);
+}
+
 fn isSaStdImport(path: []const u8) bool {
     return std.mem.eql(u8, path, "sa_std") or std.mem.startsWith(u8, path, "sa_std/");
 }
@@ -94,12 +115,84 @@ fn resolveImportFile(
     return error.FileNotFound;
 }
 
+fn appendResolvedImportFiles(
+    allocator: std.mem.Allocator,
+    base_dir: []const u8,
+    raw_import_path: []const u8,
+    exclude_path: ?[]const u8,
+    out: *std.ArrayList(ResolvedImport),
+) !void {
+    if (!isGlobImportPath(raw_import_path)) {
+        const resolved = try resolveImportFile(allocator, base_dir, raw_import_path);
+        if (exclude_path) |exclude| {
+            if (std.mem.eql(u8, resolved.path, exclude)) return;
+        }
+        try out.append(resolved);
+        return;
+    }
+
+    if (isSaStdImport(raw_import_path)) return error.FileNotFound;
+
+    const pattern_path = if (std.fs.path.isAbsolute(raw_import_path))
+        try allocator.dupe(u8, raw_import_path)
+    else
+        try std.fs.path.join(allocator, &.{ base_dir, raw_import_path });
+
+    const dir_path = std.fs.path.dirname(pattern_path) orelse ".";
+    const pattern_name = std.fs.path.basename(pattern_path);
+
+    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+    defer dir.close();
+
+    var matched_paths = std.ArrayList([]const u8).init(allocator);
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .file and entry.kind != .sym_link) continue;
+        if (!globNameMatches(pattern_name, entry.name)) continue;
+        const candidate = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
+        try matched_paths.append(candidate);
+    }
+
+    std.mem.sort([]const u8, matched_paths.items, {}, stringSliceLessThan);
+
+    var matched_count: usize = 0;
+    for (matched_paths.items) |candidate| {
+        if (try readImportFileIfExists(allocator, candidate)) |resolved| {
+            if (exclude_path) |exclude| {
+                if (std.mem.eql(u8, resolved.path, exclude)) continue;
+            }
+            try out.append(resolved);
+            matched_count += 1;
+        }
+    }
+    if (matched_count == 0) return error.FileNotFound;
+}
+
+fn resolveImportFiles(
+    allocator: std.mem.Allocator,
+    base_dir: []const u8,
+    raw_import_path: []const u8,
+    exclude_path: ?[]const u8,
+) ![]ResolvedImport {
+    var out = std.ArrayList(ResolvedImport).init(allocator);
+    try appendResolvedImportFiles(allocator, base_dir, raw_import_path, exclude_path, &out);
+    std.mem.sort(ResolvedImport, out.items, {}, resolvedImportLessThan);
+    return try out.toOwnedSlice();
+}
+
 fn importPathFromLine(raw_line: []const u8) ?[]const u8 {
     const line = std.mem.trim(u8, raw_line, " \t\r");
     if (!std.mem.startsWith(u8, line, "@import")) return null;
 
     var rest = std.mem.trim(u8, line["@import".len..], " \t");
-    if (rest.len < 2 or rest[0] != '"') return null;
+    if (rest.len == 0) return null;
+    if (rest[0] != '"') {
+        if (std.mem.indexOf(u8, rest, "//")) |comment_idx| rest = rest[0..comment_idx];
+        rest = std.mem.trim(u8, rest, " \t\r;");
+        if (rest.len == 0) return null;
+        return rest;
+    }
+    if (rest.len < 2) return null;
     rest = rest[1..];
 
     var idx: usize = 0;
@@ -162,31 +255,37 @@ fn appendExpandedSlaImportDecls(
     allocator: std.mem.Allocator,
     base_dir: []const u8,
     import_path: []const u8,
+    exclude_path: ?[]const u8,
     visited: *std.StringHashMap(void),
     out_decls: *std.ArrayList(*ast.Node),
 ) !void {
-    const resolved = try resolveImportFile(allocator, base_dir, import_path);
-    if (!std.mem.endsWith(u8, resolved.path, ".sla")) {
-        return;
-    }
-    if (visited.contains(resolved.path)) return;
-    try visited.put(resolved.path, {});
+    const resolved_imports = try resolveImportFiles(allocator, base_dir, import_path, exclude_path);
+    for (resolved_imports) |resolved| {
+        if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
+        if (visited.contains(resolved.path)) continue;
+        try visited.put(resolved.path, {});
 
-    var parser = parser_mod.Parser.init(allocator, resolved.source);
-    const imported_prog = try parser.parseProgram();
-    if (imported_prog.* != .program) return error.InvalidProgram;
+        const imported_base_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
+        var parser = parser_mod.Parser.initWithDir(allocator, resolved.source, imported_base_dir);
+        const imported_prog = try parser.parseProgram();
+        if (imported_prog.* != .program) return error.InvalidProgram;
 
-    const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-    for (imported_prog.program.decls) |decl| {
-        if (decl.* == .import_decl) {
-            const child_resolved = try resolveImportFile(allocator, import_dir, decl.import_decl.path);
-            if (std.mem.endsWith(u8, child_resolved.path, ".sla")) {
-                try appendExpandedSlaImportDecls(allocator, import_dir, decl.import_decl.path, visited, out_decls);
+        const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
+        for (imported_prog.program.decls) |decl| {
+            if (decl.* == .import_decl) {
+                const child_resolved_imports = try resolveImportFiles(allocator, import_dir, decl.import_decl.path, resolved.path);
+                for (child_resolved_imports) |child_resolved| {
+                    if (std.mem.endsWith(u8, child_resolved.path, ".sla")) {
+                        try appendExpandedSlaImportDecls(allocator, import_dir, decl.import_decl.path, resolved.path, visited, out_decls);
+                    } else {
+                        const import_decl = try allocator.create(ast.Node);
+                        import_decl.* = .{ .import_decl = .{ .path = child_resolved.path } };
+                        try out_decls.append(import_decl);
+                    }
+                }
             } else {
                 try out_decls.append(decl);
             }
-        } else {
-            try out_decls.append(decl);
         }
     }
 }
@@ -203,14 +302,19 @@ fn expandSlaImports(
 
     var decls = std.ArrayList(*ast.Node).init(allocator);
     const source_dir = std.fs.path.dirname(source_file) orelse ".";
+    const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch source_file;
 
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
-            const resolved = try resolveImportFile(allocator, source_dir, decl.import_decl.path);
-            if (std.mem.endsWith(u8, resolved.path, ".sla")) {
-                try appendExpandedSlaImportDecls(allocator, source_dir, decl.import_decl.path, &visited, &decls);
-            } else {
-                try decls.append(decl);
+            const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
+            for (resolved_imports) |resolved| {
+                if (std.mem.endsWith(u8, resolved.path, ".sla")) {
+                    try appendExpandedSlaImportDecls(allocator, source_dir, decl.import_decl.path, source_abs, &visited, &decls);
+                } else {
+                    const import_decl = try allocator.create(ast.Node);
+                    import_decl.* = .{ .import_decl = .{ .path = resolved.path } };
+                    try decls.append(import_decl);
+                }
             }
         } else {
             try decls.append(decl);
@@ -227,26 +331,29 @@ fn loadImportContractsRecursive(
     allocator: std.mem.Allocator,
     base_dir: []const u8,
     import_path: []const u8,
+    exclude_path: ?[]const u8,
     visited: *std.StringHashMap(void),
 ) !void {
-    const resolved = try resolveImportFile(allocator, base_dir, import_path);
-    if (visited.contains(resolved.path)) return;
-    try visited.put(resolved.path, {});
+    const resolved_imports = try resolveImportFiles(allocator, base_dir, import_path, exclude_path);
+    for (resolved_imports) |resolved| {
+        if (visited.contains(resolved.path)) continue;
+        try visited.put(resolved.path, {});
 
-    const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-    var lines = std.mem.splitScalar(u8, resolved.source, '\n');
-    while (lines.next()) |line| {
-        if (importPathFromLine(line)) |child_import| {
-            try loadImportContractsRecursive(tc, allocator, import_dir, child_import, visited);
+        const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
+        var lines = std.mem.splitScalar(u8, resolved.source, '\n');
+        while (lines.next()) |line| {
+            if (importPathFromLine(line)) |child_import| {
+                try loadImportContractsRecursive(tc, allocator, import_dir, child_import, resolved.path, visited);
+            }
         }
-    }
 
-    if (std.mem.endsWith(u8, resolved.path, ".sai")) {
-        try tc.loadContracts(resolved.source, "");
-    } else if (std.mem.endsWith(u8, resolved.path, ".sal")) {
-        try tc.loadContracts("", resolved.source);
+        if (std.mem.endsWith(u8, resolved.path, ".sai")) {
+            try tc.loadContracts(resolved.source, "");
+        } else if (std.mem.endsWith(u8, resolved.path, ".sal")) {
+            try tc.loadContracts("", resolved.source);
+        }
+        try loadImportedMacros(tc, allocator, resolved.source);
     }
-    try loadImportedMacros(tc, allocator, resolved.source);
 }
 
 fn loadImportedContracts(
@@ -261,9 +368,10 @@ fn loadImportedContracts(
     defer visited.deinit();
 
     const source_dir = std.fs.path.dirname(source_file) orelse ".";
+    const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch source_file;
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
-            try loadImportContractsRecursive(tc, allocator, source_dir, decl.import_decl.path, &visited);
+            try loadImportContractsRecursive(tc, allocator, source_dir, decl.import_decl.path, source_abs, &visited);
         }
     }
 }
@@ -318,7 +426,8 @@ pub fn runSlaCommandImpl(
             return 1;
         };
 
-        var p = parser_mod.Parser.init(allocator, content);
+        const sla_base_dir = std.fs.path.dirname(file) orelse ".";
+        var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
         const prog = p.parseProgram() catch |err| {
             try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
             return 1;
@@ -380,7 +489,8 @@ pub fn runSlaCommandImpl(
             return 1;
         };
 
-        var p = parser_mod.Parser.init(allocator, content);
+        const sla_base_dir = std.fs.path.dirname(file) orelse ".";
+        var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
         const prog = p.parseProgram() catch |err| {
             try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
             return 1;
@@ -436,7 +546,8 @@ pub fn runSlaCommandImpl(
             return 1;
         };
 
-        var p = parser_mod.Parser.init(allocator, content);
+        const sla_base_dir = std.fs.path.dirname(file) orelse ".";
+        var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
         const prog = p.parseProgram() catch |err| {
             try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
             return 1;

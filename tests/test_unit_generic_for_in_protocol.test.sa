@@ -1,0 +1,108 @@
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@import "sa_std/vec.sa"
+@const SLA_FNPTR_VT_query_new_Item = vtable { call = @sla__query_new_Item }
+@sla__Query_Item_iter_len(&self: ptr) -> i64:
+L_ENTRY:
+    tmp_0 = load self+0 as ptr
+    EXPAND VEC_LEN tmp_1, tmp_0
+    !tmp_0
+    tmp_2 = tmp_1 as i64
+    return tmp_2
+
+@sla__Query_Item_iter_at(&self: ptr, index: i64) -> ptr:
+L_ENTRY:
+    tmp_3 = load self+0 as ptr
+    EXPAND VEC_GET tmp_4, tmp_3, index
+    !tmp_3
+    tmp_5 = tmp_4 as ptr
+    return tmp_5
+
+@sla__query_new_Item() -> ptr:
+L_ENTRY:
+    EXPAND VEC_NEW tmp_6
+    items = tmp_6
+    tmp_7 = alloc 8
+    store tmp_7+0, items as ptr
+    return tmp_7
+
+@test "generic for in uses protocol impl"():
+L_TEST_ENTRY_0:
+    item_slot = stack_alloc 8
+    tmp_8 = call @sla__query_new_Item()
+    q = tmp_8
+    tmp_9 = load q+0 as ptr
+    tmp_10 = alloc 4
+    tmp_11 = 2
+    store tmp_10+0, tmp_11 as i32
+    !tmp_11
+    EXPAND VEC_PUSH tmp_9, tmp_10, 8
+    !tmp_10
+    !tmp_9
+    tmp_12 = load q+0 as ptr
+    tmp_13 = alloc 4
+    tmp_14 = 3
+    store tmp_13+0, tmp_14 as i32
+    !tmp_14
+    EXPAND VEC_PUSH tmp_12, tmp_13, 8
+    !tmp_13
+    !tmp_12
+    tmp_15 = 0
+    total = tmp_15
+    tmp_16 = call @sla__Query_Item_iter_len(&q)
+    store item_slot+0, 0 as i64
+    jmp L_LOOP_HEAD_1
+
+L_LOOP_HEAD_1:
+    tmp_17 = load item_slot+0 as i64
+    tmp_18 = slt tmp_17, tmp_16
+    br tmp_18 -> L_LOOP_BODY_2, L_LOOP_COND_FALSE_4
+
+L_LOOP_BODY_2:
+    !tmp_18
+    item = call @sla__Query_Item_iter_at(&q, tmp_17)
+    tmp_19 = load item+0 as i32
+    tmp_20 = add total, tmp_19
+    !tmp_19
+    !total
+    total = tmp_20
+L_LOOP_CONTINUE_3:
+    tmp_21 = add tmp_17, 1
+    store item_slot+0, tmp_21 as i64
+    !tmp_21
+    !tmp_17
+    !item
+    jmp L_LOOP_HEAD_1
+
+L_LOOP_COND_FALSE_4:
+    !tmp_18
+    !tmp_17
+    jmp L_LOOP_EXIT_5
+
+L_LOOP_EXIT_5:
+    !tmp_16
+    tmp_22 = 5
+    tmp_23 = ne total, tmp_22
+    !tmp_22
+    br tmp_23 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_23
+    panic(1301)
+
+L_ELSE_7:
+    !tmp_23
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    !q
+    !total
+    return
+

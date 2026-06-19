@@ -1,0 +1,5 @@
+@import "local_contract.sai"
+
+fn imported_nested_contract_value() -> i32 {
+    return nested_contract_value();
+}

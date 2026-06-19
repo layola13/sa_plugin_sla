@@ -1,5 +1,3 @@
-@import "sa_std/hashset.sa"
-@import "sa_std/btree_set.sa"
 @import "sa_std/string.sa"
 @import "sa_std/string_format.sa"
 @import "sa_std/io/print.sai"

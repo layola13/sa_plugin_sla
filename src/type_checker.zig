@@ -246,6 +246,42 @@ pub const TypeChecker = struct {
         return null;
     }
 
+    fn unwrappedReceiverType(ty: *ast.Type) *ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .borrow => |b| curr = b,
+                .pointer => |p| curr = p,
+                else => return curr,
+            }
+        }
+    }
+
+    fn methodForType(self: *TypeChecker, ty: *ast.Type, method_name: []const u8) ?*ast.FuncDecl {
+        const recv = unwrappedReceiverType(ty);
+        if (recv.* != .user_defined) return null;
+        var method_buf: [256]u8 = undefined;
+        const key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ recv.user_defined.name, method_name }) catch return null;
+        return self.funcs.get(key);
+    }
+
+    fn receiverParamMatches(self: *TypeChecker, param: ast.Param, recv_ty: *ast.Type) bool {
+        const recv = unwrappedReceiverType(recv_ty);
+        if (param.is_borrow) return self.typesEqual(param.ty, recv);
+        return self.typesEqual(param.ty, recv_ty) or self.typesEqual(param.ty, recv);
+    }
+
+    fn protocolIterableElementType(self: *TypeChecker, ty: *ast.Type) ?*ast.Type {
+        const len_func = self.methodForType(ty, "iter_len") orelse return null;
+        const at_func = self.methodForType(ty, "iter_at") orelse return null;
+        if (len_func.params.len != 1 or at_func.params.len != 2) return null;
+        if (!self.receiverParamMatches(len_func.params[0], ty)) return null;
+        if (!self.receiverParamMatches(at_func.params[0], ty)) return null;
+        if (!isNumericType(len_func.ret_ty)) return null;
+        if (!isNumericType(at_func.params[1].ty)) return null;
+        return at_func.ret_ty;
+    }
+
     fn unwrapBorrowForCallArg(arg: *const ast.Node, arg_ty: *ast.Type) *ast.Type {
         if (arg.* == .borrow_expr and arg_ty.* == .borrow) return arg_ty.borrow;
         return arg_ty;
@@ -1890,6 +1926,15 @@ pub const TypeChecker = struct {
                     const sym = scope.lookup(root_name) orelse return TypeError.UndefinedVariable;
                     if (sym.is_const) return TypeError.CompileError;
                 }
+                if (assign.value.* == .identifier) {
+                    const value_name = assign.value.identifier;
+                    const target_name = rootIdentifier(assign.target);
+                    if (target_name == null or !std.mem.eql(u8, target_name.?, value_name)) {
+                        const sym = scope.lookup(value_name) orelse return TypeError.UndefinedVariable;
+                        if (sym.state == .consumed) return TypeError.UseAfterMove;
+                        if (sym.ty.* != .primitive and !isBorrowLikeType(sym.ty)) sym.state = .consumed;
+                    }
+                }
             },
             .return_stmt => |ret| {
                 if (ret.value) |val| {
@@ -1934,8 +1979,8 @@ pub const TypeChecker = struct {
                     if (!isNumericType(start_ty) or !isNumericType(end_ty)) return TypeError.TypeMismatch;
                     break :blk start_ty;
                 } else blk: {
-                    const arr = arrayType(start_ty) orelse return TypeError.TypeMismatch;
-                    break :blk arr.elem;
+                    if (arrayType(start_ty)) |arr| break :blk arr.elem;
+                    break :blk self.protocolIterableElementType(start_ty) orelse return TypeError.TypeMismatch;
                 };
 
                 var loop_scope = try Scope.init(self.allocator, scope);
@@ -2054,7 +2099,10 @@ pub const TypeChecker = struct {
                     return try self.makeOrderingType();
                 }
                 if (scope.lookup(name)) |sym| {
-                    if (sym.state == .consumed) return TypeError.UseAfterMove;
+                    if (sym.state == .consumed) {
+                        self.setError("UseAfterMove: identifier `{s}` was already consumed", .{name});
+                        return TypeError.UseAfterMove;
+                    }
                     return sym.ty;
                 }
                 if (self.funcs.get(name)) |func| {
@@ -2097,12 +2145,16 @@ pub const TypeChecker = struct {
                             ty.* = r_ty.*;
                             return ty;
                         }
-                        if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
+                        if (!self.typesEqual(l_ty, r_ty)) {
+                            self.setError("binary expression type mismatch: op={s}, left tag={s}, right tag={s}", .{ @tagName(bin.op), @tagName(l_ty.*), @tagName(r_ty.*) });
+                            return TypeError.TypeMismatch;
+                        }
                         if (l_ty.* == .infer) {
                             ty.* = l_ty.*;
                             return ty;
                         }
                         if (!isNumericType(l_ty)) {
+                            self.setError("binary expression requires numeric operands: op={s}, operand tag={s}", .{ @tagName(bin.op), @tagName(l_ty.*) });
                             return TypeError.TypeMismatch;
                         }
                         ty.* = l_ty.*;

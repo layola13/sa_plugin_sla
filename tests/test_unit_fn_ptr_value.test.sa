@@ -1,0 +1,87 @@
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_fn_ptr_inc = vtable { call = @sla__fn_ptr_inc }
+@const SLA_FNPTR_VT_fn_ptr_apply = vtable { call = @sla__fn_ptr_apply }
+@sla__fn_ptr_inc(x: i32) -> i32:
+L_ENTRY:
+    tmp_0 = 1
+    tmp_1 = add x, tmp_0
+    !tmp_0
+    return tmp_1
+
+@sla__fn_ptr_apply(f: ptr, value: i32) -> i32:
+L_ENTRY:
+    tmp_2 = load f+8 as ptr
+    tmp_3 = load tmp_2+0 as ptr
+    tmp_4 = call_indirect tmp_3(value)
+    !tmp_3
+    !tmp_2
+    !f
+    return tmp_4
+
+@test "function pointer can be stored and called"():
+L_TEST_ENTRY_0:
+    tmp_5 = alloc 16
+    store tmp_5+0, 0 as ptr
+    store tmp_5+8, &SLA_FNPTR_VT_fn_ptr_inc as ptr
+    f = tmp_5
+    tmp_6 = load f+8 as ptr
+    tmp_7 = load tmp_6+0 as ptr
+    tmp_8 = 4
+    tmp_9 = call_indirect tmp_7(tmp_8)
+    !tmp_7
+    !tmp_6
+    !tmp_8
+    got = tmp_9
+    tmp_10 = 5
+    tmp_11 = ne got, tmp_10
+    !tmp_10
+    br tmp_11 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_11
+    panic(1401)
+
+L_ELSE_2:
+    !tmp_11
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !f
+    !got
+    return
+
+@test "function pointer can be passed as argument"():
+L_TEST_ENTRY_4:
+    tmp_14 = alloc 16
+    store tmp_14+0, 0 as ptr
+    store tmp_14+8, &SLA_FNPTR_VT_fn_ptr_inc as ptr
+    tmp_15 = 9
+    tmp_16 = call @sla__fn_ptr_apply(tmp_14, tmp_15)
+    !tmp_14
+    !tmp_15
+    got = tmp_16
+    tmp_17 = 10
+    tmp_18 = ne got, tmp_17
+    !tmp_17
+    br tmp_18 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
+    !tmp_18
+    panic(1402)
+
+L_ELSE_6:
+    !tmp_18
+    jmp L_MERGE_7
+
+L_MERGE_7:
+    !got
+    return
+

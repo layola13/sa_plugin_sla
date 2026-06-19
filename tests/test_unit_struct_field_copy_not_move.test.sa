@@ -1,0 +1,58 @@
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_copy_entity_field = vtable { call = @sla__copy_entity_field }
+@sla__copy_entity_field(slot: ptr, entity: ptr) -> i32:
+L_ENTRY:
+    tmp_0 = load entity+0 as i32
+    store slot+0, tmp_0 as i32
+    !tmp_0
+    tmp_1 = load entity+4 as i32
+    tmp_2 = load slot+0 as i32
+    tmp_3 = add tmp_1, tmp_2
+    !tmp_1
+    !tmp_2
+    !entity
+    !slot
+    return tmp_3
+
+@test "struct field copy does not move owner"():
+L_TEST_ENTRY_0:
+    tmp_4 = alloc 4
+    tmp_5 = 0
+    store tmp_4+0, tmp_5 as i32
+    !tmp_5
+    tmp_6 = alloc 8
+    tmp_7 = 7
+    store tmp_6+0, tmp_7 as i32
+    !tmp_7
+    tmp_8 = 3
+    store tmp_6+4, tmp_8 as i32
+    !tmp_8
+    tmp_9 = call @sla__copy_entity_field(tmp_4, tmp_6)
+    !tmp_4
+    !tmp_6
+    got = tmp_9
+    tmp_10 = 10
+    tmp_11 = ne got, tmp_10
+    !tmp_10
+    br tmp_11 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_11
+    panic(1500)
+
+L_ELSE_2:
+    !tmp_11
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !got
+    return
+

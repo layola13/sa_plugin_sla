@@ -1,27 +1,42 @@
-@tuple_value() -> i64:
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_tuple_value = vtable { call = @sla__tuple_value }
+@const SLA_FNPTR_VT_destructure_value = vtable { call = @sla__destructure_value }
+@sla__tuple_value() -> i64:
 L_ENTRY:
-    pair = alloc 16
+    pair = alloc 8
     tmp_0 = 3
-    store pair+0, tmp_0 as i64
+    store pair+0, tmp_0 as i32
     tmp_1 = 4
-    store pair+8, tmp_1 as i64
-    tmp_2 = load pair+0 as i64
+    store pair+4, tmp_1 as i32
+    tmp_2 = load pair+0 as i32
     tmp_3 = 10
     tmp_4 = mul tmp_2, tmp_3
-    tmp_5 = load pair+8 as i64
+    !tmp_2
+    !tmp_3
+    tmp_5 = load pair+4 as i32
     tmp_6 = add tmp_4, tmp_5
+    !tmp_4
+    !tmp_5
     !pair
     return tmp_6
 
-@destructure_value() -> i64:
+@sla__destructure_value() -> i64:
 L_ENTRY:
-    tmp_7 = alloc 16
+    tmp_7 = alloc 8
     tmp_8 = 2
-    store tmp_7+0, tmp_8 as i64
+    store tmp_7+0, tmp_8 as i32
     tmp_9 = 5
-    store tmp_7+8, tmp_9 as i64
-    x = load tmp_7+0 as i64
-    y = load tmp_7+8 as i64
+    store tmp_7+4, tmp_9 as i32
+    x = load tmp_7+0 as i32
+    y = load tmp_7+4 as i32
     !tmp_7
     tmp_10 = add x, y
     sum = tmp_10
@@ -31,10 +46,11 @@ L_ENTRY:
 
 @test "tuple field access"():
 L_TEST_ENTRY_0:
-    tmp_11 = call @tuple_value()
+    tmp_11 = call @sla__tuple_value()
     got = tmp_11
     tmp_12 = 34
     tmp_13 = ne got, tmp_12
+    !tmp_12
     br tmp_13 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
@@ -51,10 +67,11 @@ L_MERGE_3:
 
 @test "tuple destructuring"():
 L_TEST_ENTRY_4:
-    tmp_16 = call @destructure_value()
+    tmp_16 = call @sla__destructure_value()
     got = tmp_16
     tmp_17 = 7
     tmp_18 = ne got, tmp_17
+    !tmp_17
     br tmp_18 -> L_THEN_5, L_ELSE_6
 
 L_THEN_5:

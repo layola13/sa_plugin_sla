@@ -1,7 +1,18 @@
-@divide(a: i64, b: i64) -> i64:
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_divide = vtable { call = @sla__divide }
+@sla__divide(a: i64, b: i64) -> i64:
 L_ENTRY:
     tmp_0 = 0
     tmp_1 = eq b, tmp_0
+    !tmp_0
     is_zero = tmp_1
     br is_zero -> L_THEN_0, L_ELSE_1
 
@@ -15,18 +26,19 @@ L_ELSE_1:
 
 L_MERGE_2:
     tmp_4 = div a, b
-    !b
-    !a
     return tmp_4
 
 @test "divide normal"():
 L_TEST_ENTRY_3:
     tmp_5 = 10
     tmp_6 = 2
-    tmp_7 = call @divide(tmp_5, tmp_6)
+    tmp_7 = call @sla__divide(tmp_5, tmp_6)
+    !tmp_5
+    !tmp_6
     result = tmp_7
     tmp_8 = 5
     tmp_9 = eq result, tmp_8
+    !tmp_8
     ok = tmp_9
     br ok -> L_THEN_4, L_ELSE_5
 
@@ -46,7 +58,9 @@ L_MERGE_6:
 L_TEST_ENTRY_7:
     tmp_12 = 10
     tmp_13 = 0
-    tmp_14 = call @divide(tmp_12, tmp_13)
+    tmp_14 = call @sla__divide(tmp_12, tmp_13)
+    !tmp_12
+    !tmp_13
     _result = tmp_14
     !_result
     return

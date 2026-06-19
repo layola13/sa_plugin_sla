@@ -1,25 +1,36 @@
-@import "sa_std/future.sa"
-@step_one() -> ptr:
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_step_one = vtable { call = @sla__step_one }
+@const SLA_FNPTR_VT_run_async = vtable { call = @sla__run_async }
+@const SLA_FNPTR_VT_await_from_sync = vtable { call = @sla__await_from_sync }
+@sla__step_one() -> ptr:
 L_ENTRY:
     tmp_0 = 1
     EXPAND FUTURE_READY_STATE_NEW tmp_1, tmp_0
     return tmp_1
 
-@run_async() -> ptr:
+@sla__run_async() -> ptr:
 L_ENTRY:
-    tmp_2 = call @step_one()
+    tmp_2 = call @sla__step_one()
     EXPAND FUTURE_READY_STATE_INTO_INNER tmp_3, tmp_2
     !tmp_2
     value = tmp_3
     tmp_4 = 1
     tmp_5 = add value, tmp_4
+    !tmp_4
     EXPAND FUTURE_READY_STATE_NEW tmp_6, tmp_5
-    !value
     return tmp_6
 
-@await_from_sync() -> i64:
+@sla__await_from_sync() -> i64:
 L_ENTRY:
-    tmp_7 = call @run_async()
+    tmp_7 = call @sla__run_async()
     EXPAND FUTURE_READY_STATE_INTO_INNER tmp_8, tmp_7
     !tmp_7
     result = tmp_8
@@ -27,10 +38,11 @@ L_ENTRY:
 
 @test "async await ready future"():
 L_TEST_ENTRY_0:
-    tmp_9 = call @await_from_sync()
+    tmp_9 = call @sla__await_from_sync()
     result = tmp_9
     tmp_10 = 2
     tmp_11 = ne result, tmp_10
+    !tmp_10
     br tmp_11 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
@@ -47,13 +59,14 @@ L_MERGE_3:
 
 @test "explicit future type parses"():
 L_TEST_ENTRY_4:
-    tmp_14 = call @step_one()
+    tmp_14 = call @sla__step_one()
     future = tmp_14
     EXPAND FUTURE_READY_STATE_INTO_INNER tmp_15, future
     !future
     result = tmp_15
     tmp_16 = 1
     tmp_17 = ne result, tmp_16
+    !tmp_16
     br tmp_17 -> L_THEN_5, L_ELSE_6
 
 L_THEN_5:

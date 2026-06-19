@@ -17,10 +17,12 @@ pub const Monomorphizer = struct {
     struct_templates: std.StringHashMap(*ast.StructDecl),
     enum_templates: std.StringHashMap(*ast.EnumDecl),
     func_templates: std.StringHashMap(*ast.FuncDecl),
+    impl_templates: std.ArrayList(*ast.ImplDecl),
 
-    // Tracks already specialized structs, enums, and functions to avoid duplicate generation
+    // Tracks already specialized structs, enums, impls, and functions to avoid duplicate generation
     specialized_structs: std.StringHashMap([]const u8),
     specialized_enums: std.StringHashMap([]const u8),
+    specialized_impls: std.StringHashMap([]const u8),
     specialized_funcs: std.StringHashMap([]const u8),
 
     // Accumulators for the generated concrete declarations
@@ -32,8 +34,10 @@ pub const Monomorphizer = struct {
             .struct_templates = std.StringHashMap(*ast.StructDecl).init(allocator),
             .enum_templates = std.StringHashMap(*ast.EnumDecl).init(allocator),
             .func_templates = std.StringHashMap(*ast.FuncDecl).init(allocator),
+            .impl_templates = std.ArrayList(*ast.ImplDecl).init(allocator),
             .specialized_structs = std.StringHashMap([]const u8).init(allocator),
             .specialized_enums = std.StringHashMap([]const u8).init(allocator),
+            .specialized_impls = std.StringHashMap([]const u8).init(allocator),
             .specialized_funcs = std.StringHashMap([]const u8).init(allocator),
             .new_decls = std.ArrayList(*ast.Node).init(allocator),
         };
@@ -43,6 +47,7 @@ pub const Monomorphizer = struct {
         self.struct_templates.deinit();
         self.enum_templates.deinit();
         self.func_templates.deinit();
+        self.impl_templates.deinit();
 
         var struct_val_iter = self.specialized_structs.valueIterator();
         while (struct_val_iter.next()) |v| {
@@ -56,6 +61,12 @@ pub const Monomorphizer = struct {
         }
         self.specialized_enums.deinit();
 
+        var impl_val_iter = self.specialized_impls.valueIterator();
+        while (impl_val_iter.next()) |v| {
+            self.allocator.free(v.*);
+        }
+        self.specialized_impls.deinit();
+
         var func_val_iter = self.specialized_funcs.valueIterator();
         while (func_val_iter.next()) |v| {
             self.allocator.free(v.*);
@@ -63,6 +74,64 @@ pub const Monomorphizer = struct {
         self.specialized_funcs.deinit();
 
         self.new_decls.deinit();
+    }
+
+    fn implHasGenericTarget(decl: *const ast.ImplDecl) bool {
+        return switch (decl.target_ty.*) {
+            .user_defined => |ud| ud.generics.len > 0,
+            else => false,
+        };
+    }
+
+    fn genericNamesFromTarget(self: *Monomorphizer, target_ty: *ast.Type) MonomorphizeError![]const []const u8 {
+        const ud = switch (target_ty.*) {
+            .user_defined => |u| u,
+            else => return MonomorphizeError.MonomorphizeError,
+        };
+        var names = std.ArrayList([]const u8).init(self.allocator);
+        for (ud.generics) |generic_ty| {
+            const generic_ud = switch (generic_ty.*) {
+                .user_defined => |u| u,
+                else => return MonomorphizeError.MonomorphizeError,
+            };
+            if (generic_ud.generics.len != 0) return MonomorphizeError.MonomorphizeError;
+            try names.append(generic_ud.name);
+        }
+        return try names.toOwnedSlice();
+    }
+
+    fn instantiateGenericImpls(self: *Monomorphizer, base_name: []const u8, mangled_name: []const u8, args: []const *ast.Type) MonomorphizeError!void {
+        for (self.impl_templates.items) |template| {
+            const target_ud = switch (template.target_ty.*) {
+                .user_defined => |ud| ud,
+                else => continue,
+            };
+            if (!std.mem.eql(u8, target_ud.name, base_name) or target_ud.generics.len != args.len) continue;
+
+            var key_buf = std.ArrayList(u8).init(self.allocator);
+            try key_buf.appendSlice(mangled_name);
+            try key_buf.appendSlice("|impl|");
+            if (template.trait_name) |trait_name| try key_buf.appendSlice(trait_name) else try key_buf.appendSlice("inherent");
+            for (template.methods) |method| {
+                if (method.* != .func_decl) return MonomorphizeError.MonomorphizeError;
+                try key_buf.append('|');
+                try key_buf.appendSlice(method.func_decl.name);
+            }
+            const key = try key_buf.toOwnedSlice();
+            if (self.specialized_impls.contains(key)) continue;
+            try self.specialized_impls.put(key, try self.allocator.dupe(u8, key));
+
+            const generic_names = try self.genericNamesFromTarget(template.target_ty);
+            const substituted_methods = try self.substituteBlock(template.methods, generic_names, args);
+            const specialized_methods = try self.specializeBlock(substituted_methods);
+
+            const target = try self.allocator.create(ast.Type);
+            target.* = .{ .user_defined = .{ .name = mangled_name, .generics = &.{} } };
+
+            const node = try self.allocator.create(ast.Node);
+            node.* = .{ .impl_decl = .{ .trait_name = template.trait_name, .target_ty = target, .methods = specialized_methods } };
+            try self.new_decls.append(node);
+        }
     }
 
     pub fn monomorphize(self: *Monomorphizer, program: *ast.Node) MonomorphizeError!*ast.Node {
@@ -94,6 +163,13 @@ pub const Monomorphizer = struct {
                 .func_decl => |*f| {
                     if (f.generics.len > 0) {
                         try self.func_templates.put(f.name, f);
+                    } else {
+                        try regular_decls.append(decl);
+                    }
+                },
+                .impl_decl => |*i| {
+                    if (implHasGenericTarget(i)) {
+                        try self.impl_templates.append(i);
                     } else {
                         try regular_decls.append(decl);
                     }
@@ -1127,6 +1203,7 @@ pub const Monomorphizer = struct {
             },
         };
         try self.new_decls.append(node);
+        try self.instantiateGenericImpls(template.name, mangled_name, args);
     }
 
     fn instantiateEnum(self: *Monomorphizer, mangled_name: []const u8, template: *ast.EnumDecl, args: []const *ast.Type) MonomorphizeError!void {
@@ -1158,6 +1235,7 @@ pub const Monomorphizer = struct {
             },
         };
         try self.new_decls.append(node);
+        try self.instantiateGenericImpls(template.name, mangled_name, args);
     }
 
     fn instantiateFunction(self: *Monomorphizer, mangled_name: []const u8, template: *ast.FuncDecl, args: []const *ast.Type) MonomorphizeError!void {
@@ -1301,7 +1379,35 @@ pub const Monomorphizer = struct {
             .enum_decl => unreachable,
             .trait_decl => unreachable,
             .impl_decl => unreachable,
-            .func_decl => unreachable,
+            .func_decl => |f| {
+                var spec_params = std.ArrayList(ast.Param).init(self.allocator);
+                for (f.params) |p| {
+                    try spec_params.append(.{
+                        .name = p.name,
+                        .ty = try self.substituteType(p.ty, params, args),
+                        .is_borrow = p.is_borrow,
+                        .is_move = p.is_move,
+                    });
+                }
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{
+                    .func_decl = .{
+                        .name = f.name,
+                        .is_pub = f.is_pub,
+                        .is_extern = f.is_extern,
+                        .abi = f.abi,
+                        .no_mangle = f.no_mangle,
+                        .is_decl_only = f.is_decl_only,
+                        .generics = &.{},
+                        .params = try spec_params.toOwnedSlice(),
+                        .ret_ty = try self.substituteType(f.ret_ty, params, args),
+                        .body = try self.substituteBlock(f.body, params, args),
+                        .is_inline = f.is_inline,
+                        .is_async = f.is_async,
+                    },
+                };
+                return res;
+            },
             .macro_decl => unreachable,
             .import_decl => unreachable,
             .test_decl => unreachable,

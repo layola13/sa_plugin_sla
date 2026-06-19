@@ -1,0 +1,67 @@
+@import "sa_std/vec.sa"
+
+struct VecPoint {
+    x: i32,
+    y: i32,
+}
+
+struct VecHolder {
+    values: Vec<i32>,
+}
+
+struct VecStructHolder {
+    values: Vec<VecPoint>,
+}
+
+@test "vec index assignment updates scalar slot"() {
+    let values: Vec<i32> = Vec::new();
+    values.push(10);
+    values.push(20);
+    values[0] = 30;
+    if values[0] != 30 { panic(9100); };
+    if values[1] != 20 { panic(9101); };
+}
+
+@test "vec index assignment updates struct slot"() {
+    let values: Vec<VecPoint> = Vec::new();
+    values.push(VecPoint { x: 1, y: 2 });
+    values.push(VecPoint { x: 3, y: 4 });
+    values[1] = VecPoint { x: 7, y: 9 };
+    let a = values[0];
+    let b = values[1];
+    if a.x != 1 { panic(9110); };
+    if a.y != 2 { panic(9111); };
+    if b.x != 7 { panic(9112); };
+    if b.y != 9 { panic(9113); };
+}
+
+@test "vec field index read and write in loop"() {
+    let values: Vec<i32> = Vec::new();
+    values.push(1);
+    values.push(2);
+    values.push(3);
+    let holder = VecHolder { values: values };
+    let i: i64 = 0;
+    let total: i32 = 0;
+    while i < 3 {
+        total = total + holder.values[i];
+        i = i + 1;
+    }
+    holder.values[1] = 7;
+    if total != 6 { panic(9120); };
+    if holder.values[1] != 7 { panic(9121); };
+}
+
+@test "vec field push releases receiver temporary"() {
+    let values: Vec<VecPoint> = Vec::new();
+    let holder = VecStructHolder { values: values };
+    let i: i32 = 0;
+    while i < 2 {
+        if i >= 0 {
+            holder.values.push(VecPoint { x: i, y: i + 1 });
+        };
+        i = i + 1;
+    }
+    if len(holder.values) != 2 { panic(9130); };
+    if holder.values[1].y != 2 { panic(9131); };
+}

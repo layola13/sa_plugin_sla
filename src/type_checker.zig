@@ -345,6 +345,36 @@ pub const TypeChecker = struct {
         return self.structs.get(curr.user_defined.name);
     }
 
+    fn isSupportedDeriveName(name: []const u8) bool {
+        return std.mem.eql(u8, name, "Component");
+    }
+
+    fn structHasDerive(decl: *const ast.StructDecl, name: []const u8) bool {
+        for (decl.derives) |derive_name| {
+            if (std.mem.eql(u8, derive_name, name)) return true;
+        }
+        return false;
+    }
+
+    fn validateStructDerives(self: *TypeChecker, decl: *const ast.StructDecl) TypeError!void {
+        for (decl.derives) |derive_name| {
+            if (!isSupportedDeriveName(derive_name)) {
+                self.setError("Unsupported derive: {s}", .{derive_name});
+                return TypeError.CompileError;
+            }
+        }
+    }
+
+    fn derivedComponentMetadataReturn(self: *TypeChecker, target_name: []const u8, func_name: []const u8, args_len: usize) TypeError!?*ast.Type {
+        const decl = self.structs.get(target_name) orelse return null;
+        if (!structHasDerive(decl, "Component")) return null;
+        if (std.mem.eql(u8, func_name, "component_type_id") or std.mem.eql(u8, func_name, "component_storage_kind")) {
+            if (args_len != 0) return TypeError.InvalidArgsCount;
+            return try self.makeI32Type();
+        }
+        return null;
+    }
+
     fn structFieldsAllNumeric(decl: *const ast.StructDecl) bool {
         if (decl.is_opaque or decl.is_union) return false;
         for (decl.fields) |field| {
@@ -1571,6 +1601,7 @@ pub const TypeChecker = struct {
         // Register structs first
         for (program.program.decls) |decl| {
             if (decl.* == .struct_decl) {
+                try self.validateStructDerives(&decl.struct_decl);
                 try self.structs.put(decl.struct_decl.name, &decl.struct_decl);
             } else if (decl.* == .enum_decl) {
                 try self.enums.put(decl.enum_decl.name, &decl.enum_decl);
@@ -2617,6 +2648,8 @@ pub const TypeChecker = struct {
                 }
 
                 if (call.associated_target) |target_name| {
+                    if (try self.derivedComponentMetadataReturn(target_name, call.func_name, call.args.len)) |ret| return ret;
+
                     const is_ptr_target = std.mem.eql(u8, target_name, "std__ptr") or std.mem.eql(u8, target_name, "ptr");
                     if (is_ptr_target and std.mem.eql(u8, call.func_name, "null")) {
                         if (call.args.len != 0) return TypeError.InvalidArgsCount;

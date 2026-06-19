@@ -318,9 +318,28 @@ pub const Parser = struct {
             const is_async = self.match(.keyword_async);
             if (self.peek() != .keyword_fn) return ParserError.ExpectedDeclaration;
             return try self.parseFuncDecl(is_pub, is_inline, is_async, is_extern, abi, true, false);
+        } else if (std.mem.eql(u8, name, "derive")) {
+            return try self.parseDeriveDeclAfterAt();
         }
 
         return ParserError.SyntaxError;
+    }
+
+    fn parseDeriveDeclAfterAt(self: *Parser) ParserError!*ast.Node {
+        try self.expect(.l_paren);
+        var derives = std.ArrayList([]const u8).init(self.allocator);
+        while (self.peek() != .r_paren and self.peek() != .eof) {
+            const derive_tok = self.tok;
+            try self.expect(.identifier);
+            try derives.append(self.lexeme(derive_tok.loc));
+            if (!self.match(.comma)) break;
+        }
+        try self.expect(.r_paren);
+
+        _ = self.match(.keyword_pub);
+        if (self.peek() != .keyword_struct) return ParserError.ExpectedDeclaration;
+        try self.expect(.keyword_struct);
+        return try self.parseAggregateDecl(false, try derives.toOwnedSlice());
     }
 
     fn parseOptionalExternAbi(self: *Parser) ParserError!?[]const u8 {
@@ -334,12 +353,12 @@ pub const Parser = struct {
 
     fn parseStructDecl(self: *Parser) ParserError!*ast.Node {
         try self.expect(.keyword_struct);
-        return try self.parseAggregateDecl(false);
+        return try self.parseAggregateDecl(false, &.{});
     }
 
     fn parseUnionDecl(self: *Parser) ParserError!*ast.Node {
         try self.expect(.keyword_union);
-        return try self.parseAggregateDecl(true);
+        return try self.parseAggregateDecl(true, &.{});
     }
 
     fn parseExternBlock(self: *Parser, abi: ?[]const u8) ParserError!*ast.Node {
@@ -359,7 +378,7 @@ pub const Parser = struct {
         return node;
     }
 
-    fn parseAggregateDecl(self: *Parser, is_union: bool) ParserError!*ast.Node {
+    fn parseAggregateDecl(self: *Parser, is_union: bool, derives: []const []const u8) ParserError!*ast.Node {
         const name_tok = self.tok;
         try self.expect(.identifier);
         const name = self.lexeme(name_tok.loc);
@@ -407,6 +426,7 @@ pub const Parser = struct {
         node.* = .{
             .struct_decl = .{
                 .name = name,
+                .derives = derives,
                 .generics = try generics.toOwnedSlice(),
                 .fields = try fields.toOwnedSlice(),
                 .is_union = is_union,

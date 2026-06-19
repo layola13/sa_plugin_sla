@@ -1,0 +1,98 @@
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_derived_component_metadata_score = vtable { call = @sla__derived_component_metadata_score }
+@sla__derived_component_metadata_score() -> i32:
+L_ENTRY:
+    tmp_0 = 927450922
+    position_id = tmp_0
+    tmp_1 = 927450922
+    position_id_again = tmp_1
+    tmp_2 = 252253522
+    velocity_id = tmp_2
+    tmp_3 = 0
+    tmp_4 = sle position_id, tmp_3
+    !tmp_3
+    br tmp_4 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_4
+    panic(9101)
+
+L_ELSE_1:
+    !tmp_4
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_7 = ne position_id, position_id_again
+    br tmp_7 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_7
+    panic(9102)
+
+L_ELSE_4:
+    !tmp_7
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_10 = eq position_id, velocity_id
+    br tmp_10 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_10
+    panic(9103)
+
+L_ELSE_7:
+    !tmp_10
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    tmp_13 = 0
+    tmp_14 = 0
+    tmp_15 = ne tmp_13, tmp_14
+    !tmp_13
+    !tmp_14
+    br tmp_15 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_15
+    panic(9104)
+
+L_ELSE_10:
+    !tmp_15
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    tmp_18 = 7
+    !velocity_id
+    !position_id_again
+    !position_id
+    return tmp_18
+
+@test "derive component exposes stable metadata"():
+L_TEST_ENTRY_12:
+    tmp_19 = call @sla__derived_component_metadata_score()
+    tmp_20 = 7
+    tmp_21 = ne tmp_19, tmp_20
+    !tmp_19
+    !tmp_20
+    br tmp_21 -> L_THEN_13, L_ELSE_14
+
+L_THEN_13:
+    !tmp_21
+    panic(9105)
+
+L_ELSE_14:
+    !tmp_21
+    jmp L_MERGE_15
+
+L_MERGE_15:
+    return
+

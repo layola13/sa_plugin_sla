@@ -406,6 +406,32 @@ pub const Codegen = struct {
         self.out.writer().print("    {s} = {d}\n", .{ target, value }) catch return CodegenError.CodegenError;
     }
 
+    fn structHasDerive(decl: *const ast.StructDecl, name: []const u8) bool {
+        for (decl.derives) |derive_name| {
+            if (std.mem.eql(u8, derive_name, name)) return true;
+        }
+        return false;
+    }
+
+    fn componentTypeIdForName(name: []const u8) i64 {
+        var hash: u32 = 2166136261;
+        for (name) |byte| {
+            hash ^= @as(u32, byte);
+            hash *%= 16777619;
+        }
+        const positive = hash & 0x7fffffff;
+        if (positive == 0) return 1;
+        return @as(i64, @intCast(positive));
+    }
+
+    fn derivedComponentMetadataValue(self: *Codegen, target_name: []const u8, func_name: []const u8) ?i64 {
+        const decl = self.tc.structs.get(target_name) orelse return null;
+        if (!structHasDerive(decl, "Component")) return null;
+        if (std.mem.eql(u8, func_name, "component_type_id")) return componentTypeIdForName(target_name);
+        if (std.mem.eql(u8, func_name, "component_storage_kind")) return 0;
+        return null;
+    }
+
     fn genLiteralValue(self: *Codegen, lit: ast.Literal) CodegenError![]const u8 {
         const reg = try self.newTmp();
         switch (lit) {
@@ -8189,6 +8215,13 @@ pub const Codegen = struct {
                     return reg;
                 }
                 if (call.associated_target) |target| {
+                    if (self.derivedComponentMetadataValue(target, call.func_name)) |value| {
+                        if (call.args.len != 0) return CodegenError.CodegenError;
+                        const reg = try self.newTmp();
+                        try self.emitIntConst(reg, value);
+                        return reg;
+                    }
+
                     const is_ptr_target = std.mem.eql(u8, target, "std__ptr") or std.mem.eql(u8, target, "ptr");
                     if (is_ptr_target and std.mem.eql(u8, call.func_name, "null")) {
                         if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;

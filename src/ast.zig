@@ -61,6 +61,7 @@ pub const Program = struct {
 
 pub const StructDecl = struct {
     name: []const u8,
+    derives: []const []const u8 = &.{},
     generics: []const []const u8,
     fields: []const Field,
     is_union: bool = false,

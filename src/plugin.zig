@@ -117,6 +117,9 @@ fn resolveImportFile(
         try std.fs.path.join(allocator, &.{ base_dir, import_path });
 
     if (try readImportFileIfExists(allocator, candidate)) |resolved| return resolved;
+    if (!std.fs.path.isAbsolute(import_path)) {
+        if (try readImportFileIfExists(allocator, import_path)) |resolved| return resolved;
+    }
     return error.FileNotFound;
 }
 

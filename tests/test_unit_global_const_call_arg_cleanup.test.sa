@@ -1,0 +1,91 @@
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_matches_marker = vtable { call = @sla__matches_marker }
+@const SLA_FNPTR_VT_global_const_call_arg_cleanup_demo = vtable { call = @sla__global_const_call_arg_cleanup_demo }
+@const SLA_FNPTR_VT_main = vtable { call = @main }
+@sla__matches_marker(value: i32, marker: i32) -> u8:
+L_ENTRY:
+    tmp_0 = eq value, marker
+    return tmp_0
+
+@sla__global_const_call_arg_cleanup_demo() -> i32:
+L_ENTRY:
+    tmp_1 = 0
+    i = tmp_1
+    tmp_2 = 0
+    hits = tmp_2
+    jmp L_WHILE_HEAD_0
+
+L_WHILE_HEAD_0:
+    tmp_3 = 10
+    tmp_4 = slt i, tmp_3
+    !tmp_3
+    br tmp_4 -> L_WHILE_BODY_1, L_WHILE_COND_FALSE_2
+
+L_WHILE_BODY_1:
+    !tmp_4
+    tmp_5 = 7
+    tmp_6 = call @sla__matches_marker(i, tmp_5)
+    !tmp_5
+    br tmp_6 -> L_THEN_4, L_ELSE_5
+
+L_THEN_4:
+    !tmp_6
+    tmp_7 = 1
+    tmp_8 = add hits, tmp_7
+    !tmp_7
+    !hits
+    hits = tmp_8
+    jmp L_MERGE_6
+
+L_ELSE_5:
+    !tmp_6
+    jmp L_MERGE_6
+
+L_MERGE_6:
+    tmp_10 = 1
+    tmp_11 = add i, tmp_10
+    !tmp_10
+    !i
+    i = tmp_11
+    jmp L_WHILE_HEAD_0
+
+L_WHILE_COND_FALSE_2:
+    !tmp_4
+    jmp L_WHILE_EXIT_3
+
+L_WHILE_EXIT_3:
+    !i
+    return hits
+
+@main() -> i32:
+L_ENTRY:
+    tmp_12 = call @sla__global_const_call_arg_cleanup_demo()
+    return tmp_12
+
+@test "global scalar const call arg cleans up across loop branch"():
+L_TEST_ENTRY_7:
+    tmp_13 = call @sla__global_const_call_arg_cleanup_demo()
+    tmp_14 = 1
+    tmp_15 = ne tmp_13, tmp_14
+    !tmp_13
+    !tmp_14
+    br tmp_15 -> L_THEN_8, L_ELSE_9
+
+L_THEN_8:
+    !tmp_15
+    panic(17300)
+
+L_ELSE_9:
+    !tmp_15
+    jmp L_MERGE_10
+
+L_MERGE_10:
+    return

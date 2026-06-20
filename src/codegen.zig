@@ -6083,6 +6083,10 @@ pub const Codegen = struct {
         return arg_ty.* == .fn_ptr;
     }
 
+    fn generatedScalarConstIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
+        return arg.* == .identifier and self.global_scalar_consts.contains(arg.identifier);
+    }
+
     fn storedIdentifierNeedsRelease(value: *const ast.Node, value_ty: *const ast.Type) bool {
         return value.* == .identifier and value_ty.* != .primitive;
     }
@@ -9697,18 +9701,23 @@ pub const Codegen = struct {
                 if (self.tc.extern_funcs.contains(call.func_name) or self.tc.funcs.contains(call.func_name)) {
                     var arg_regs = std.ArrayList([]const u8).init(self.allocator);
                     defer arg_regs.deinit();
+                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    defer arg_release_regs.deinit();
                     var dyn_fat_regs = std.ArrayList([]const u8).init(self.allocator);
                     defer dyn_fat_regs.deinit();
                     const maybe_func = self.tc.funcs.get(call.func_name);
                     for (call.args, 0..) |arg, i| {
                         if (self.tc.array_to_slice_borrow_args.contains(arg)) {
-                            arg_regs.append(try self.genArrayBorrowToSliceArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+                            const arg_reg = try self.genArrayBorrowToSliceArg(arg, hoisted_allocs);
+                            arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+                            arg_release_regs.append(if (callArgNeedsRelease(arg)) arg_reg else null) catch return CodegenError.OutOfMemory;
                             continue;
                         }
                         if (self.tc.dyn_borrow_args.get(arg)) |trait_name| {
                             const fat_reg = try self.genDynBorrowCoercionArg(arg, trait_name, hoisted_allocs);
                             const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{fat_reg}) catch return CodegenError.OutOfMemory;
                             arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
+                            arg_release_regs.append(null) catch return CodegenError.OutOfMemory;
                             dyn_fat_regs.append(fat_reg) catch return CodegenError.OutOfMemory;
                             continue;
                         }
@@ -9719,23 +9728,29 @@ pub const Codegen = struct {
                                     const recv_reg = try self.genExpr(arg, hoisted_allocs);
                                     const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
                                     arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
+                                    arg_release_regs.append(if (self.generatedScalarConstIdentifierArg(arg)) recv_reg else null) catch return CodegenError.OutOfMemory;
                                     continue;
                                 }
                                 if (func.params.len > 0 and func.params[0].is_borrow and arg_ty.* == .borrow) {
                                     const recv_reg = try self.genExpr(arg, hoisted_allocs);
                                     const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
                                     arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
+                                    arg_release_regs.append(if (self.generatedScalarConstIdentifierArg(arg)) recv_reg else null) catch return CodegenError.OutOfMemory;
                                     continue;
                                 }
                             }
                         }
                         if (maybe_func) |func| {
                             if (i < func.params.len and arg.* == .literal and arg.literal == .string_val and isFormatStringType(func.params[i].ty)) {
-                                arg_regs.append(try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+                                const arg_reg = try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs);
+                                arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+                                arg_release_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
                                 continue;
                             }
                         }
-                        arg_regs.append(try self.genCallArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+                        const arg_reg = try self.genCallArg(arg, hoisted_allocs);
+                        arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+                        arg_release_regs.append(if (callArgNeedsRelease(arg) or self.generatedFnPtrIdentifierArg(arg) or self.generatedScalarConstIdentifierArg(arg)) arg_reg else null) catch return CodegenError.OutOfMemory;
                     }
                     const reg = try self.newTmp();
                     const lowered_call = try self.loweredFuncSymbol(call.func_name);
@@ -9746,10 +9761,9 @@ pub const Codegen = struct {
                         self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
                     }
                     self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
-                    for (call.args, arg_regs.items) |arg, arg_reg| {
-                        if (self.tc.dyn_borrow_args.contains(arg)) continue;
-                        if ((callArgNeedsRelease(arg) or self.generatedFnPtrIdentifierArg(arg)) and !std.mem.eql(u8, call.func_name, "sum")) {
-                            try self.emitRelease(arg_reg);
+                    for (arg_release_regs.items) |release_reg| {
+                        if (release_reg) |arg_reg| {
+                            if (!std.mem.eql(u8, call.func_name, "sum")) try self.emitRelease(arg_reg);
                         }
                     }
                     for (dyn_fat_regs.items) |fat_reg| {

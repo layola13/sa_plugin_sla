@@ -5,6 +5,7 @@ const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
 const codegen_mod = @import("codegen.zig");
+pub const handler_bridge = @import("handler_bridge.zig");
 
 const skills = [_]plugin_api.SkillSection{
     .{

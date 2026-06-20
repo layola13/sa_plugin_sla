@@ -39,6 +39,15 @@ const RwLockGuardHandle = struct {
 const FileResultHandle = struct {};
 const MetadataResultHandle = struct {};
 
+pub const InjectedAddressBinding = struct {
+    name: []const u8,
+    address: []const u8,
+};
+
+pub const Options = struct {
+    injected_address_bindings: []const InjectedAddressBinding = &.{},
+};
+
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
@@ -76,12 +85,21 @@ pub const Codegen = struct {
     metadata_bindings: std.StringHashMap(void),
     metadata_open_results: std.StringHashMap(MetadataResultHandle),
     binding_aliases: std.StringHashMap(std.ArrayList([]const u8)),
+    injected_address_bindings: std.StringHashMap([]const u8),
     loop_continue_labels: std.ArrayList([]const u8),
     loop_break_labels: std.ArrayList([]const u8),
     current_async: bool,
     thread_helper_idx: usize,
 
     pub fn init(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker) Codegen {
+        return initWithOptions(allocator, tc, .{});
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker, options: Options) Codegen {
+        var injected_address_bindings = std.StringHashMap([]const u8).init(allocator);
+        for (options.injected_address_bindings) |binding| {
+            injected_address_bindings.put(binding.name, binding.address) catch {};
+        }
         return .{
             .allocator = allocator,
             .tc = tc,
@@ -119,6 +137,7 @@ pub const Codegen = struct {
             .metadata_bindings = std.StringHashMap(void).init(allocator),
             .metadata_open_results = std.StringHashMap(MetadataResultHandle).init(allocator),
             .binding_aliases = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
+            .injected_address_bindings = injected_address_bindings,
             .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
             .loop_break_labels = std.ArrayList([]const u8).init(allocator),
             .current_async = false,
@@ -173,6 +192,7 @@ pub const Codegen = struct {
         self.metadata_open_results.deinit();
         self.clearBindingAliases();
         self.binding_aliases.deinit();
+        self.injected_address_bindings.deinit();
         self.loop_continue_labels.deinit();
         self.loop_break_labels.deinit();
     }
@@ -190,6 +210,11 @@ pub const Codegen = struct {
             if (aliases.items.len > 0) return aliases.items[aliases.items.len - 1];
         }
         return name;
+    }
+
+    fn bindingStorageAddress(self: *Codegen, name: []const u8) ?[]const u8 {
+        if (self.injected_address_bindings.get(name)) |address| return address;
+        return null;
     }
 
     fn pushBindingAlias(self: *Codegen, name: []const u8) CodegenError![]const u8 {
@@ -6518,7 +6543,11 @@ pub const Codegen = struct {
                 } else if (assign.target.* == .identifier) {
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
                     const target_name = self.resolveBindingName(assign.target.identifier);
-                    if (self.addressable_bindings.contains(target_name)) {
+                    if (self.bindingStorageAddress(target_name)) |address| {
+                        const target_ty = self.tc.expr_types.get(assign.target) orelse return CodegenError.CodegenError;
+                        self.out.writer().print("    store {s}, {s} as {s}\n", .{ address, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(assign.value)) try self.emitRelease(val_reg);
+                    } else if (self.addressable_bindings.contains(target_name)) {
                         const target_ty = self.tc.expr_types.get(assign.target) orelse return CodegenError.CodegenError;
                         self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(assign.value)) try self.emitRelease(val_reg);
@@ -7851,6 +7880,12 @@ pub const Codegen = struct {
                     return try self.genLiteralValue(literal_node.literal);
                 }
                 if (self.global_const_bindings.contains(name)) return name;
+                if (self.bindingStorageAddress(name)) |address| {
+                    const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                    const reg = try self.newTmp();
+                    self.out.writer().print("    {s} = load {s} as {s}\n", .{ reg, address, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                    return reg;
+                }
                 if (self.tc.funcs.contains(name)) {
                     const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                     if (expr_ty.* == .fn_ptr) {

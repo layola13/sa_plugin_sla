@@ -33,6 +33,16 @@ pub const Symbol = struct {
     state: ValueState,
 };
 
+pub const InjectedScopeBinding = struct {
+    name: []const u8,
+    ty: *ast.Type,
+    is_const: bool = false,
+};
+
+pub const Options = struct {
+    injected_scope_bindings: []const InjectedScopeBinding = &.{},
+};
+
 pub const Scope = struct {
     allocator: std.mem.Allocator,
     parent: ?*Scope,
@@ -109,11 +119,16 @@ pub const TypeChecker = struct {
     current_loop_scope: ?*Scope,
     global_scope: ?*Scope,
     unsafe_depth: usize,
+    injected_scope_bindings: []const InjectedScopeBinding,
 
     last_error: []const u8,
     last_error_buf: [1024]u8,
 
     pub fn init(allocator: std.mem.Allocator) TypeChecker {
+        return initWithOptions(allocator, .{});
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, options: Options) TypeChecker {
         return .{
             .allocator = allocator,
             .structs = std.StringHashMap(*ast.StructDecl).init(allocator),
@@ -137,6 +152,7 @@ pub const TypeChecker = struct {
             .current_loop_scope = null,
             .global_scope = null,
             .unsafe_depth = 0,
+            .injected_scope_bindings = options.injected_scope_bindings,
             .last_error = "",
             .last_error_buf = undefined,
         };
@@ -1567,6 +1583,10 @@ pub const TypeChecker = struct {
         var global_scope = try Scope.init(self.allocator, null);
         try self.scope_pool.append(global_scope);
         self.global_scope = global_scope;
+
+        for (self.injected_scope_bindings) |binding| {
+            try global_scope.define(binding.name, binding.ty, binding.is_const);
+        }
 
         // Register structs first
         for (program.program.decls) |decl| {

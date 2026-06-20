@@ -601,6 +601,7 @@ pub fn runSlaCommandImpl(
 
         const sa_code = cg.generate(specialized_prog) catch |err| {
             try stderr.print("Codegen Error: failed to generate SA code: {}\n", .{err});
+            if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
             return 1;
         };
 

@@ -33,6 +33,16 @@ pub const CompileHandlerError = error{
     InvalidHandlerOutput,
 } || parser_mod.ParserError || monomorphizer_mod.MonomorphizeError || type_checker_mod.TypeError || codegen_mod.CodegenError || error{OutOfMemory};
 
+pub const CompileHandlerResult = struct {
+    body: []const u8,
+    support: []const u8,
+
+    pub fn deinit(self: CompileHandlerResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.body);
+        allocator.free(self.support);
+    }
+};
+
 fn makePrimitive(allocator: std.mem.Allocator, primitive: ast.Primitive) !*ast.Type {
     const ty = try allocator.create(ast.Type);
     ty.* = .{ .primitive = primitive };
@@ -60,27 +70,91 @@ fn lineMatchesFunctionHeader(line: []const u8, symbol_name: []const u8) bool {
     return line[1 + symbol_name.len] == '(';
 }
 
-fn extractFunctionBody(allocator: std.mem.Allocator, sa_code: []const u8, handler_name: []const u8) ![]const u8 {
+fn isSlaFunctionHeaderLine(line: []const u8) bool {
+    return std.mem.startsWith(u8, line, "@sla__") and std.mem.indexOfScalar(u8, line, '(') != null;
+}
+
+fn isInjectedStateRelease(line: []const u8, state_fields: []const HandlerStateField) bool {
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    if (!std.mem.startsWith(u8, trimmed, "!")) return false;
+    const name = std.mem.trim(u8, trimmed[1..], " \t\r");
+    for (state_fields) |field| {
+        if (std.mem.eql(u8, name, field.name)) return true;
+    }
+    return false;
+}
+
+fn filterSupportFunctions(allocator: std.mem.Allocator, raw_support: []const u8, state_fields: []const HandlerStateField) ![]const u8 {
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
+
+    var lines = std.mem.splitScalar(u8, raw_support, '\n');
+    var copying = false;
+    while (lines.next()) |line| {
+        if (isSlaFunctionHeaderLine(line)) {
+            copying = true;
+        } else if (copying and line.len != 0 and line[0] == '@') {
+            copying = false;
+        }
+
+        if (copying) {
+            if (isInjectedStateRelease(line, state_fields)) continue;
+            try out.appendSlice(line);
+            try out.append('\n');
+        }
+    }
+
+    return try out.toOwnedSlice();
+}
+
+fn extractFunctionParts(allocator: std.mem.Allocator, sa_code: []const u8, handler_name: []const u8, state_fields: []const HandlerStateField) !CompileHandlerResult {
     const symbol_name = try handlerSymbolName(allocator, handler_name);
     defer allocator.free(symbol_name);
 
     var lines = std.mem.splitScalar(u8, sa_code, '\n');
     var found = false;
-    var out = std.ArrayList(u8).init(allocator);
-    errdefer out.deinit();
+    var body = std.ArrayList(u8).init(allocator);
+    errdefer body.deinit();
+    var support = std.ArrayList(u8).init(allocator);
+    errdefer support.deinit();
 
     while (lines.next()) |line| {
         if (!found) {
-            if (lineMatchesFunctionHeader(line, symbol_name)) found = true;
+            if (lineMatchesFunctionHeader(line, symbol_name)) {
+                found = true;
+            } else {
+                try support.appendSlice(line);
+                try support.append('\n');
+            }
             continue;
         }
-        if (line.len != 0 and line[0] == '@') break;
-        try out.appendSlice(line);
-        try out.append('\n');
+        if (line.len != 0 and line[0] == '@') {
+            try support.appendSlice(line);
+            try support.append('\n');
+            while (lines.next()) |rest| {
+                try support.appendSlice(rest);
+                try support.append('\n');
+            }
+            break;
+        }
+        try body.appendSlice(line);
+        try body.append('\n');
     }
 
-    if (!found or out.items.len == 0) return CompileHandlerError.InvalidHandlerOutput;
-    return try out.toOwnedSlice();
+    if (!found or body.items.len == 0) return CompileHandlerError.InvalidHandlerOutput;
+    const raw_support = try support.toOwnedSlice();
+    defer allocator.free(raw_support);
+
+    return .{
+        .body = try body.toOwnedSlice(),
+        .support = try filterSupportFunctions(allocator, raw_support, state_fields),
+    };
+}
+
+fn extractFunctionBody(allocator: std.mem.Allocator, sa_code: []const u8, handler_name: []const u8) ![]const u8 {
+    const parts = try extractFunctionParts(allocator, sa_code, handler_name, &.{});
+    allocator.free(parts.support);
+    return parts.body;
 }
 
 fn resolveImportPath(allocator: std.mem.Allocator, base_dir: []const u8, import_path: []const u8) ![]u8 {
@@ -148,6 +222,18 @@ pub fn compileHandler(
     state_fields: []const HandlerStateField,
     options: CompileHandlerOptions,
 ) CompileHandlerError![]const u8 {
+    const result = try compileHandlerWithSupport(allocator, handler_name, handler_source, state_fields, options);
+    allocator.free(result.support);
+    return result.body;
+}
+
+pub fn compileHandlerWithSupport(
+    allocator: std.mem.Allocator,
+    handler_name: []const u8,
+    handler_source: []const u8,
+    state_fields: []const HandlerStateField,
+    options: CompileHandlerOptions,
+) CompileHandlerError!CompileHandlerResult {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -201,7 +287,7 @@ pub fn compileHandler(
     defer cg.deinit();
     const sa_code = try cg.generate(specialized_prog);
 
-    return try extractFunctionBody(allocator, sa_code, handler_name);
+    return try extractFunctionParts(allocator, sa_code, handler_name, state_fields);
 }
 
 test "compileHandler lowers injected state reads and writes" {
@@ -240,10 +326,10 @@ test "compileHandler expands relative sla imports" {
     const fields = [_]HandlerStateField{
         .{ .name = "count", .ty = .i64, .address = "state+Counter_count" },
     };
-    const body = try compileHandler(
+    const result = try compileHandlerWithSupport(
         std.testing.allocator,
         "inc",
-
+        
         \\@import "helpers.sla"
         \\fn inc() {
         \\    count = add_two(count);
@@ -253,9 +339,10 @@ test "compileHandler expands relative sla imports" {
         fields[0..],
         .{ .base_dir = base_dir },
     );
-    defer std.testing.allocator.free(body);
+    defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.containsAtLeast(u8, body, 1, "load state+Counter_count as i64"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, body, 1, "call @sla__add_two"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, body, 1, "store state+Counter_count"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.body, 1, "load state+Counter_count as i64"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.body, 1, "call @sla__add_two"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.body, 1, "store state+Counter_count"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, result.support, 1, "@sla__add_two"));
 }

@@ -1,0 +1,6 @@
+fn repeated_value() -> int {
+    return 1;
+}
+
+const repeated_value: int = 2;
+

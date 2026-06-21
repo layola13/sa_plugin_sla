@@ -1,0 +1,8 @@
+enum RepeatedEnum {
+    One(i32),
+}
+
+enum RepeatedEnum {
+    Two(i32),
+}
+

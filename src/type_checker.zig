@@ -163,6 +163,24 @@ pub const TypeChecker = struct {
         self.last_error = std.fmt.allocPrint(fba.allocator(), fmt, args) catch "Error formatting diagnostic";
     }
 
+    fn defineSymbol(self: *TypeChecker, scope: *Scope, name: []const u8, ty: *ast.Type, is_const: bool) TypeError!void {
+        scope.define(name, ty, is_const) catch |err| switch (err) {
+            TypeError.Redeclaration => {
+                self.setError("Redeclaration: symbol `{s}` is already defined", .{name});
+                return TypeError.Redeclaration;
+            },
+            TypeError.OutOfMemory => return TypeError.OutOfMemory,
+            else => return err,
+        };
+    }
+
+    fn ensureTopLevelNameUnused(self: *TypeChecker, name: []const u8, kind: []const u8) TypeError!void {
+        if (self.structs.contains(name) or self.enums.contains(name) or self.traits.contains(name) or self.funcs.contains(name) or self.macros.contains(name)) {
+            self.setError("Redeclaration: {s} `{s}` is already defined", .{ kind, name });
+            return TypeError.Redeclaration;
+        }
+    }
+
     pub fn deinit(self: *TypeChecker) void {
         self.structs.deinit();
         self.enums.deinit();
@@ -467,13 +485,13 @@ pub const TypeChecker = struct {
         const lit = &expr.closure_literal;
         if (lit.params.len != contextual_params.len) return TypeError.InvalidArgsCount;
 
-        var closure_scope = try Scope.init(self.allocator, scope);
+        const closure_scope = try Scope.init(self.allocator, scope);
         try self.scope_pool.append(closure_scope);
 
         var param_types = std.ArrayList(*ast.Type).init(self.allocator);
         for (lit.params, contextual_params) |p, ctx_ty| {
             if (p.ty.* != .infer and !self.typesEqual(p.ty, ctx_ty)) return TypeError.TypeMismatch;
-            try closure_scope.define(p.name, ctx_ty, true);
+            try self.defineSymbol(closure_scope, p.name, ctx_ty, true);
             try param_types.append(ctx_ty);
         }
 
@@ -1244,7 +1262,7 @@ pub const TypeChecker = struct {
         if (optionInnerType(value_ty) != null or resultOkType(value_ty) != null) {
             const binding_ty = try self.patternBindingType(pattern, value_ty, context);
             if (binding_ty) |ty| {
-                try scope.define(pattern.bindings[0], ty, writable);
+                try self.defineSymbol(scope, pattern.bindings[0], ty, writable);
             }
             return;
         }
@@ -1260,7 +1278,7 @@ pub const TypeChecker = struct {
         const variant = findEnumVariant(decl, pattern.variant_name) orelse return TypeError.FieldNotFound;
         if (pattern.bindings.len != variant.fields.len) return TypeError.InvalidArgsCount;
         for (pattern.bindings, variant.fields) |binding, field| {
-            try scope.define(binding, field.ty, writable);
+            try self.defineSymbol(scope, binding, field.ty, writable);
         }
     }
 
@@ -1580,21 +1598,24 @@ pub const TypeChecker = struct {
     pub fn checkProgram(self: *TypeChecker, program: *ast.Node) !void {
         if (program.* != .program) return TypeError.CompileError;
 
-        var global_scope = try Scope.init(self.allocator, null);
+        const global_scope = try Scope.init(self.allocator, null);
         try self.scope_pool.append(global_scope);
         self.global_scope = global_scope;
 
         for (self.injected_scope_bindings) |binding| {
-            try global_scope.define(binding.name, binding.ty, binding.is_const);
+            try self.defineSymbol(global_scope, binding.name, binding.ty, binding.is_const);
         }
 
         // Register structs first
         for (program.program.decls) |decl| {
             if (decl.* == .struct_decl) {
+                try self.ensureTopLevelNameUnused(decl.struct_decl.name, "struct");
                 try self.structs.put(decl.struct_decl.name, &decl.struct_decl);
             } else if (decl.* == .enum_decl) {
+                try self.ensureTopLevelNameUnused(decl.enum_decl.name, "enum");
                 try self.enums.put(decl.enum_decl.name, &decl.enum_decl);
             } else if (decl.* == .trait_decl) {
+                try self.ensureTopLevelNameUnused(decl.trait_decl.name, "trait");
                 try self.traits.put(decl.trait_decl.name, &decl.trait_decl);
             }
         }
@@ -1610,6 +1631,7 @@ pub const TypeChecker = struct {
         // Register functions first
         for (program.program.decls) |decl| {
             if (decl.* == .func_decl) {
+                try self.ensureTopLevelNameUnused(decl.func_decl.name, "function");
                 try self.funcs.put(decl.func_decl.name, &decl.func_decl);
             }
         }
@@ -1620,11 +1642,19 @@ pub const TypeChecker = struct {
                 const target_name = try self.typeName(decl.impl_decl.target_ty);
                 if (decl.impl_decl.trait_name) |trait_name| {
                     const impl_key = try std.fmt.allocPrint(self.allocator, "{s}|{s}", .{ trait_name, target_name });
+                    if (self.trait_impls.contains(impl_key)) {
+                        self.setError("Redeclaration: impl `{s}` for `{s}` is already defined", .{ trait_name, target_name });
+                        return TypeError.Redeclaration;
+                    }
                     try self.trait_impls.put(impl_key, {});
                 }
                 for (decl.impl_decl.methods) |method| {
                     if (method.* != .func_decl) return TypeError.CompileError;
                     const method_key = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ target_name, method.func_decl.name });
+                    if (self.funcs.contains(method_key)) {
+                        self.setError("Redeclaration: method `{s}` for `{s}` is already defined", .{ method.func_decl.name, target_name });
+                        return TypeError.Redeclaration;
+                    }
                     try self.funcs.put(method_key, &method.func_decl);
                 }
             }
@@ -1633,6 +1663,7 @@ pub const TypeChecker = struct {
         // Register macros
         for (program.program.decls) |decl| {
             if (decl.* == .macro_decl) {
+                try self.ensureTopLevelNameUnused(decl.macro_decl.name, "macro");
                 try self.macros.put(decl.macro_decl.name, &decl.macro_decl);
             }
         }
@@ -1649,13 +1680,14 @@ pub const TypeChecker = struct {
         for (program.program.decls) |decl| {
             if (decl.* == .const_stmt) {
                 const c = &decl.const_stmt;
+                try self.ensureTopLevelNameUnused(c.name, "const");
                 const val_ty = try self.checkExpr(c.value, global_scope);
                 const declared_ty = c.ty orelse val_ty;
                 if (!self.typesEqual(declared_ty, val_ty)) {
                     self.setError("TypeMismatch in const {s}: declared tag={s}, val tag={s}", .{ c.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
                     return TypeError.TypeMismatch;
                 }
-                try global_scope.define(c.name, declared_ty, true);
+                try self.defineSymbol(global_scope, c.name, declared_ty, true);
             }
         }
 
@@ -1682,7 +1714,7 @@ pub const TypeChecker = struct {
 
         const infer_ty = try self.makeInferType();
         for (macro_decl.params) |param| {
-            try scope.define(param, infer_ty, false);
+            try self.defineSymbol(scope, param, infer_ty, false);
         }
 
         for (macro_decl.body) |stmt| {
@@ -1690,7 +1722,7 @@ pub const TypeChecker = struct {
                 .let_stmt => |let| {
                     const val_ty = try self.checkExpr(let.value, scope);
                     const declared_ty = let.ty orelse val_ty;
-                    try scope.define(let.name, declared_ty, false);
+                    try self.defineSymbol(scope, let.name, declared_ty, false);
                 },
                 .assign_stmt => |assign| {
                     _ = try self.checkExpr(assign.target, scope);
@@ -1716,7 +1748,7 @@ pub const TypeChecker = struct {
         const ret_ty = try self.allocator.create(ast.Type);
         ret_ty.* = .{ .primitive = .void_type };
 
-        try scope.define("return_ty_sentinel", ret_ty, true);
+        try self.defineSymbol(scope, "return_ty_sentinel", ret_ty, true);
 
         try self.checkBlock(test_decl.body, scope, ret_ty, null, null);
 
@@ -1734,11 +1766,11 @@ pub const TypeChecker = struct {
         var scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
 
-        try scope.define("return_ty_sentinel", func.ret_ty, true);
+        try self.defineSymbol(scope, "return_ty_sentinel", func.ret_ty, true);
 
         for (func.params) |p| {
             const local_ty = if (p.is_borrow) try self.makeBorrowType(p.ty) else p.ty;
-            try scope.define(p.name, local_ty, false);
+            try self.defineSymbol(scope, p.name, local_ty, false);
         }
 
         try self.checkBlock(func.body, scope, func.ret_ty, null, null);
@@ -1872,7 +1904,7 @@ pub const TypeChecker = struct {
                     if (declared_ty.* == .user_defined and std.mem.eql(u8, declared_ty.user_defined.name, "Slice") and declared_ty.user_defined.generics.len == 1 and val_ty.* == .borrow) {
                         if (arrayType(val_ty.borrow)) |arr| {
                             if (self.typesEqual(declared_ty.user_defined.generics[0], arr.elem)) {
-                                try scope.define(let.name, declared_ty, false);
+                                try self.defineSymbol(scope, let.name, declared_ty, false);
                                 return;
                             }
                         }
@@ -1884,7 +1916,7 @@ pub const TypeChecker = struct {
                         return TypeError.TypeMismatch;
                     }
                 }
-                try scope.define(let.name, declared_ty, false);
+                try self.defineSymbol(scope, let.name, declared_ty, false);
             },
             .let_else_stmt => |let| {
                 const value_ty = try self.checkExpr(let.value, scope);
@@ -1906,7 +1938,7 @@ pub const TypeChecker = struct {
                     return TypeError.InvalidArgsCount;
                 }
                 for (let.names, val_ty.tuple.elems) |name, elem_ty| {
-                    try scope.define(name, elem_ty, false);
+                    try self.defineSymbol(scope, name, elem_ty, false);
                 }
                 if (rootIdentifier(let.value)) |name| {
                     const sym = scope.lookup(name) orelse return TypeError.UndefinedVariable;
@@ -1925,7 +1957,7 @@ pub const TypeChecker = struct {
                         return TypeError.TypeMismatch;
                     }
                 }
-                try scope.define(c.name, declared_ty, true);
+                try self.defineSymbol(scope, c.name, declared_ty, true);
             },
             .assign_stmt => |assign| {
                 if (assign.target.* == .deref_expr) {
@@ -2003,12 +2035,12 @@ pub const TypeChecker = struct {
                     break :blk self.protocolIterableElementType(start_ty) orelse return TypeError.TypeMismatch;
                 };
 
-                var loop_scope = try Scope.init(self.allocator, scope);
+                const loop_scope = try Scope.init(self.allocator, scope);
                 try self.scope_pool.append(loop_scope);
 
                 const i_ty = try self.allocator.create(ast.Type);
                 i_ty.* = iter_ty.*;
-                try loop_scope.define(f.var_name, i_ty, true);
+                try self.defineSymbol(loop_scope, f.var_name, i_ty, true);
 
                 const prev_loop_scope = self.current_loop_scope;
                 self.current_loop_scope = loop_scope;
@@ -2520,12 +2552,12 @@ pub const TypeChecker = struct {
                         return TypeError.TypeMismatch;
                     }
                 }
-                var closure_scope = try Scope.init(self.allocator, scope);
+                const closure_scope = try Scope.init(self.allocator, scope);
                 try self.scope_pool.append(closure_scope);
 
                 var param_types = std.ArrayList(*ast.Type).init(self.allocator);
                 for (lit.params) |p| {
-                    try closure_scope.define(p.name, p.ty, true);
+                    try self.defineSymbol(closure_scope, p.name, p.ty, true);
                     try param_types.append(p.ty);
                 }
 
@@ -4142,11 +4174,11 @@ pub const TypeChecker = struct {
                             curr = s.parent;
                         }
 
-                        var pattern_scope = try Scope.init(self.allocator, scope);
+                        const pattern_scope = try Scope.init(self.allocator, scope);
                         try self.scope_pool.append(pattern_scope);
                         const binding_ty = try self.patternBindingType(case.pattern, val_ty, "match");
                         if (binding_ty) |ty| {
-                            try pattern_scope.define(case.pattern.bindings[0], ty, true);
+                            try self.defineSymbol(pattern_scope, case.pattern.bindings[0], ty, true);
                         }
                         if (case.guard) |guard| {
                             const guard_ty = try self.checkExpr(guard, pattern_scope);
@@ -4210,10 +4242,10 @@ pub const TypeChecker = struct {
                     const variant = findEnumVariant(decl, case.pattern.variant_name) orelse return TypeError.FieldNotFound;
                     if (case.pattern.bindings.len != variant.fields.len) return TypeError.InvalidArgsCount;
 
-                    var pattern_scope = try Scope.init(self.allocator, scope);
+                    const pattern_scope = try Scope.init(self.allocator, scope);
                     try self.scope_pool.append(pattern_scope);
                     for (case.pattern.bindings, variant.fields) |binding, field| {
-                        try pattern_scope.define(binding, field.ty, true);
+                        try self.defineSymbol(pattern_scope, binding, field.ty, true);
                     }
                     if (case.guard) |guard| {
                         const guard_ty = try self.checkExpr(guard, pattern_scope);

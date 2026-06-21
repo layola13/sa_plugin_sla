@@ -13,10 +13,8 @@ L_ENTRY:
     next = alloc 4
     tmp_0 = load holder+0 as ptr
     tmp_1 = load tmp_0+0 as i32
-    !tmp_0
     tmp_2 = 1
     tmp_3 = add tmp_1, tmp_2
-    !tmp_1
     !tmp_2
     store next+0, tmp_3 as i32
     !tmp_3
@@ -38,10 +36,8 @@ L_TEST_ENTRY_0:
     out = tmp_7
     tmp_8 = load out+0 as ptr
     tmp_9 = load tmp_8+0 as i32
-    !tmp_8
     tmp_10 = 5
     tmp_11 = ne tmp_9, tmp_10
-    !tmp_9
     !tmp_10
     br tmp_11 -> L_THEN_1, L_ELSE_2
 

@@ -3374,7 +3374,8 @@ pub const TypeChecker = struct {
                         if (std.mem.eql(u8, call.func_name, "try_exists") or
                             std.mem.eql(u8, call.func_name, "is_file") or
                             std.mem.eql(u8, call.func_name, "is_dir") or
-                            std.mem.eql(u8, call.func_name, "is_symlink")) {
+                            std.mem.eql(u8, call.func_name, "is_symlink"))
+                        {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             const ty = try self.allocator.create(ast.Type);
                             ty.* = .{ .primitive = .boolean };

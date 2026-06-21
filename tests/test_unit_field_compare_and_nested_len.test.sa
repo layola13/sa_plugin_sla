@@ -105,7 +105,6 @@ L_MERGE_5:
     tmp_28 = tmp_27 as i64
     tmp_29 = 1
     tmp_30 = sub tmp_28, tmp_29
-    !tmp_28
     !tmp_29
     last = tmp_30
     tmp_31 = load location+8 as i64

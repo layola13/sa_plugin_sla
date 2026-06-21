@@ -19,12 +19,10 @@ L_ENTRY:
     tmp_2 = load pair+0 as i32
     tmp_3 = 10
     tmp_4 = mul tmp_2, tmp_3
-    !tmp_2
     !tmp_3
     tmp_5 = load pair+4 as i32
     tmp_6 = add tmp_4, tmp_5
     !tmp_4
-    !tmp_5
     !pair
     return tmp_6
 

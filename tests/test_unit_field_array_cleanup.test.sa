@@ -30,10 +30,8 @@ L_WHILE_BODY_1:
     !tmp_4
     tmp_6 = load tmp_5+0 as u8
     !tmp_5
-    !tmp_3
     tmp_7 = 0
     tmp_8 = eq tmp_6, tmp_7
-    !tmp_6
     !tmp_7
     br tmp_8 -> L_THEN_4, L_ELSE_5
 
@@ -46,7 +44,6 @@ L_THEN_4:
     tmp_12 = 1
     store tmp_11+0, tmp_12 as u8
     !tmp_11
-    !tmp_9
     !tmp_12
     tmp_13 = load slots+8 as ptr
     tmp_14 = mul i, 4
@@ -55,7 +52,6 @@ L_THEN_4:
     tmp_16 = 7
     store tmp_15+0, tmp_16 as i32
     !tmp_15
-    !tmp_13
     !tmp_16
     tmp_17 = load slots+8 as ptr
     tmp_18 = mul i, 4
@@ -67,20 +63,15 @@ L_THEN_4:
     !tmp_21
     tmp_23 = load tmp_22+0 as i32
     !tmp_22
-    !tmp_20
     tmp_24 = load slots+16 as ptr
     tmp_25 = mul i, 4
     tmp_26 = ptr_add tmp_24, tmp_25
     !tmp_25
     tmp_27 = load tmp_26+0 as i32
     !tmp_26
-    !tmp_24
     tmp_28 = add tmp_23, tmp_27
-    !tmp_23
-    !tmp_27
     store tmp_19+0, tmp_28 as i32
     !tmp_19
-    !tmp_17
     !tmp_28
     !i
     return slots
@@ -145,7 +136,6 @@ L_ENTRY:
     !tmp_43
     tmp_46 = load tmp_45+0 as i32
     !tmp_45
-    !tmp_42
     !out
     !slots
     return tmp_46

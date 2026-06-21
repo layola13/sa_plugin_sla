@@ -34,12 +34,9 @@ L_ENTRY:
     tmp_5 = load one+0 as i32
     tmp_6 = load two+0 as i32
     tmp_7 = add tmp_5, tmp_6
-    !tmp_5
-    !tmp_6
     tmp_8 = load two+4 as i32
     tmp_9 = add tmp_7, tmp_8
     !tmp_7
-    !tmp_8
     tmp_10 = call @sla__DerivedAnnotationOne_metadata_score()
     tmp_11 = add tmp_9, tmp_10
     !tmp_9

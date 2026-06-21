@@ -14,8 +14,6 @@ L_ENTRY:
     tmp_0 = load r+0 as i32
     tmp_1 = load r+4 as i32
     tmp_2 = mul tmp_0, tmp_1
-    !tmp_0
-    !tmp_1
     !r
     return tmp_2
 
@@ -24,8 +22,6 @@ L_ENTRY:
     tmp_3 = load p+0 as i32
     tmp_4 = load p+4 as i32
     tmp_5 = add tmp_3, tmp_4
-    !tmp_3
-    !tmp_4
     !p
     return tmp_5
 

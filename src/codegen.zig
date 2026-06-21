@@ -513,8 +513,13 @@ pub const Codegen = struct {
         const resolved_name = self.resolveBindingName(name);
         if (std.mem.eql(u8, resolved_name, "return_ty_sentinel")) return;
         if (self.borrow_source_temps.get(resolved_name)) |source_temp| {
-            try self.emitRelease(source_temp);
             _ = self.borrow_source_temps.remove(resolved_name);
+            if (!self.consumed_bindings.contains(resolved_name)) {
+                self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            }
+            try self.emitRelease(source_temp);
+            return;
         }
         if (self.refcell_borrow_handles.get(resolved_name)) |handle| {
             if (handle.is_mut) {
@@ -5351,7 +5356,21 @@ pub const Codegen = struct {
 
     fn genImportDecl(self: *Codegen, import: *const ast.ImportDecl) CodegenError!void {
         if (std.mem.endsWith(u8, import.path, ".sla")) return;
-        self.out.writer().print("@import \"{s}\"\n", .{import.path}) catch return CodegenError.CodegenError;
+        var path = import.path;
+        if (std.fs.path.isAbsolute(path)) {
+            if (std.mem.indexOf(u8, path, "sa_std/")) |idx| {
+                path = path[idx..];
+            } else if (std.mem.indexOf(u8, path, ".sa/std/")) |idx| {
+                const suffix = path[idx + ".sa/std/".len ..];
+                self.out.writer().print("@import \"sa_std/{s}\"\n", .{suffix}) catch return CodegenError.CodegenError;
+                return;
+            } else if (std.mem.indexOf(u8, path, "sci/sa_std/")) |idx| {
+                const suffix = path[idx + "sci/sa_std/".len ..];
+                self.out.writer().print("@import \"sa_std/{s}\"\n", .{suffix}) catch return CodegenError.CodegenError;
+                return;
+            }
+        }
+        self.out.writer().print("@import \"{s}\"\n", .{path}) catch return CodegenError.CodegenError;
     }
 
     fn genMacroDecl(self: *Codegen, m: *const ast.MacroDecl) CodegenError!void {
@@ -6457,7 +6476,15 @@ pub const Codegen = struct {
                         _ = self.metadata_open_results.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
-                    self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                    if (let.value.* == .identifier and let_ty.* == .primitive) {
+                        switch (let_ty.primitive) {
+                            .boolean => self.out.writer().print("    {s} = or {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError,
+                            .f32, .f64, .float => self.out.writer().print("    {s} = add {s}, 0.0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError,
+                            else => self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError,
+                        }
+                    } else {
+                        self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                    }
                 }
             },
             .let_else_stmt => |let| {
@@ -6642,7 +6669,16 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(assign.value)) try self.emitRelease(val_reg);
                     } else {
                         try self.emitRelease(assign.target.identifier);
-                        self.out.writer().print("    {s} = {s}\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError;
+                        const target_ty = self.tc.expr_types.get(assign.target) orelse return CodegenError.CodegenError;
+                        if (assign.value.* == .identifier and target_ty.* == .primitive) {
+                            switch (target_ty.primitive) {
+                                .boolean => self.out.writer().print("    {s} = or {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
+                                .f32, .f64, .float => self.out.writer().print("    {s} = add {s}, 0.0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
+                                else => self.out.writer().print("    {s} = add {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
+                            }
+                        } else {
+                            self.out.writer().print("    {s} = {s}\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError;
+                        }
                     }
                 } else {
                     const target_reg = try self.genExpr(assign.target, hoisted_allocs);
@@ -8067,10 +8103,12 @@ pub const Codegen = struct {
                 const inner_ty = self.tc.expr_types.get(deref.expr) orelse return CodegenError.CodegenError;
                 if (rcInnerType(inner_ty) != null) {
                     self.out.writer().print("    EXPAND RC_GET {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                    if (exprResultNeedsRelease(deref.expr)) try self.emitRelease(inner);
                     return reg;
                 }
                 if (arcInnerType(inner_ty) != null) {
                     self.out.writer().print("    EXPAND ARC_GET {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                    if (exprResultNeedsRelease(deref.expr)) try self.emitRelease(inner);
                     return reg;
                 }
                 if (boxInnerType(inner_ty)) |box_inner| {
@@ -8959,26 +8997,26 @@ pub const Codegen = struct {
                     return ret_reg;
                 }
 
-                    if (call.args.len > 0) {
-                        const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
-                        if (recv_ty) |ty| {
-                            if (senderInnerType(ty)) |_| {
-                                if (std.mem.eql(u8, call.func_name, "clone")) {
-                                    if (call.args.len != 1) return CodegenError.CodegenError;
-                                    const recv_reg = if (call.args[0].* == .identifier)
-                                        self.mpsc_sender_channels.get(call.args[0].identifier) orelse try self.genExpr(call.args[0], hoisted_allocs)
-                                    else
-                                        try self.genExpr(call.args[0], hoisted_allocs);
-                                    const reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
-                                    self.mpsc_sender_channels.put(reg, recv_reg) catch return CodegenError.OutOfMemory;
-                                    self.mpsc_sender_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
-                                    return reg;
-                                }
-                                if (std.mem.eql(u8, call.func_name, "send")) {
-                                    if (call.args.len != 2) return CodegenError.CodegenError;
-                                    const recv_reg = if (call.args[0].* == .identifier)
-                                        self.mpsc_sender_channels.get(call.args[0].identifier) orelse try self.genExpr(call.args[0], hoisted_allocs)
+                if (call.args.len > 0) {
+                    const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
+                    if (recv_ty) |ty| {
+                        if (senderInnerType(ty)) |_| {
+                            if (std.mem.eql(u8, call.func_name, "clone")) {
+                                if (call.args.len != 1) return CodegenError.CodegenError;
+                                const recv_reg = if (call.args[0].* == .identifier)
+                                    self.mpsc_sender_channels.get(call.args[0].identifier) orelse try self.genExpr(call.args[0], hoisted_allocs)
+                                else
+                                    try self.genExpr(call.args[0], hoisted_allocs);
+                                const reg = try self.newTmp();
+                                self.out.writer().print("    {s} = add {s}, 0\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.mpsc_sender_channels.put(reg, recv_reg) catch return CodegenError.OutOfMemory;
+                                self.mpsc_sender_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
+                                return reg;
+                            }
+                            if (std.mem.eql(u8, call.func_name, "send")) {
+                                if (call.args.len != 2) return CodegenError.CodegenError;
+                                const recv_reg = if (call.args[0].* == .identifier)
+                                    self.mpsc_sender_channels.get(call.args[0].identifier) orelse try self.genExpr(call.args[0], hoisted_allocs)
                                 else
                                     try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
@@ -9178,28 +9216,28 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                }
-                if (std.mem.eql(u8, call.func_name, "is_file") or std.mem.eql(u8, call.func_name, "is_dir") or std.mem.eql(u8, call.func_name, "is_symlink") or std.mem.eql(u8, call.func_name, "modified_ms") or std.mem.eql(u8, call.func_name, "created_ms")) {
-                    if (call.args.len != 1) return CodegenError.CodegenError;
-                    const meta_recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
-                    if (isMetadataType(meta_recv_ty)) {
-                        const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                        const reg = try self.newTmp();
-                        if (std.mem.eql(u8, call.func_name, "is_file")) {
-                            self.out.writer().print("    EXPAND FS_METADATA_IS_FILE {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
-                        } else if (std.mem.eql(u8, call.func_name, "is_dir")) {
-                            self.out.writer().print("    EXPAND FS_METADATA_IS_DIR {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
-                        } else if (std.mem.eql(u8, call.func_name, "is_symlink")) {
-                            self.out.writer().print("    EXPAND FS_METADATA_IS_SYMLINK {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
-                        } else if (std.mem.eql(u8, call.func_name, "modified_ms")) {
-                            self.out.writer().print("    EXPAND FS_METADATA_MODIFIED_MS {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
-                        } else {
-                            self.out.writer().print("    EXPAND FS_METADATA_CREATED_MS {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                         }
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
-                        return reg;
-                    }
-                }
+                        if (std.mem.eql(u8, call.func_name, "is_file") or std.mem.eql(u8, call.func_name, "is_dir") or std.mem.eql(u8, call.func_name, "is_symlink") or std.mem.eql(u8, call.func_name, "modified_ms") or std.mem.eql(u8, call.func_name, "created_ms")) {
+                            if (call.args.len != 1) return CodegenError.CodegenError;
+                            const meta_recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
+                            if (isMetadataType(meta_recv_ty)) {
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const reg = try self.newTmp();
+                                if (std.mem.eql(u8, call.func_name, "is_file")) {
+                                    self.out.writer().print("    EXPAND FS_METADATA_IS_FILE {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                } else if (std.mem.eql(u8, call.func_name, "is_dir")) {
+                                    self.out.writer().print("    EXPAND FS_METADATA_IS_DIR {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                } else if (std.mem.eql(u8, call.func_name, "is_symlink")) {
+                                    self.out.writer().print("    EXPAND FS_METADATA_IS_SYMLINK {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                } else if (std.mem.eql(u8, call.func_name, "modified_ms")) {
+                                    self.out.writer().print("    EXPAND FS_METADATA_MODIFIED_MS {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                } else {
+                                    self.out.writer().print("    EXPAND FS_METADATA_CREATED_MS {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                }
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+                                return reg;
+                            }
+                        }
                         if (resultOkType(ty) != null) {
                             if (std.mem.eql(u8, call.func_name, "is_ok")) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;

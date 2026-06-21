@@ -1,0 +1,202 @@
+@import "sa_std/core/box.sa"
+@import "sa_std/core/cell.sa"
+@import "sa_std/core/rc.sa"
+@import "sa_std/core/arc.sa"
+@import "sa_std/core/refcell.sa"
+@import "sa_std/alloc/vec.sa"
+
+struct BorrowPayload {
+    value: int,
+}
+
+struct BorrowBoxSlot {
+    item: Box<BorrowPayload>,
+}
+
+struct BorrowRcSlot {
+    item: Rc<BorrowPayload>,
+}
+
+struct BorrowArcSlot {
+    item: Arc<BorrowPayload>,
+}
+
+struct BorrowRcBoxSlot {
+    item: Rc<Box<BorrowPayload>>,
+}
+
+struct BorrowBoxRcSlot {
+    item: Box<Rc<BorrowPayload>>,
+}
+
+struct BorrowNestedBoxSlot {
+    slot: BorrowBoxSlot,
+}
+
+struct BorrowRefCellSlot {
+    cell: Rc<RefCell<BorrowPayload>>,
+}
+
+struct BorrowRefCellBoxSlot {
+    cell: Rc<RefCell<Box<BorrowPayload>>>,
+}
+
+struct BorrowVecBoxSlot {
+    items: Vec<Box<BorrowPayload>>,
+}
+
+fn borrow_read_box(item: &Box<BorrowPayload>) -> int {
+    let payload: &BorrowPayload = &*item;
+    return payload.value;
+}
+
+fn borrow_read_rc(item: &Rc<BorrowPayload>) -> int {
+    let payload: &BorrowPayload = &*item;
+    return payload.value;
+}
+
+fn borrow_read_arc(item: &Arc<BorrowPayload>) -> int {
+    let payload: &BorrowPayload = &*item;
+    return payload.value;
+}
+
+fn borrow_read_rc_box(item: &Rc<Box<BorrowPayload>>) -> int {
+    let boxed: &Box<BorrowPayload> = &*item;
+    let payload: &BorrowPayload = &*boxed;
+    return payload.value;
+}
+
+fn borrow_read_box_rc(item: &Box<Rc<BorrowPayload>>) -> int {
+    let rc_value: &Rc<BorrowPayload> = &*item;
+    let payload: &BorrowPayload = &*rc_value;
+    return payload.value;
+}
+
+fn borrow_refcell_read(cell: &RefCell<BorrowPayload>) -> int {
+    let borrowed: &BorrowPayload = cell.borrow();
+    return borrowed.value;
+}
+
+fn borrow_refcell_write(cell: &RefCell<BorrowPayload>, value: int) -> void {
+    let borrowed: &BorrowPayload = cell.borrow_mut();
+    borrowed.value = value;
+}
+
+fn borrow_refcell_box_read(cell: &RefCell<Box<BorrowPayload>>) -> int {
+    let borrowed_box: &Box<BorrowPayload> = cell.borrow();
+    let payload: &BorrowPayload = &*borrowed_box;
+    return payload.value;
+}
+
+fn borrow_refcell_box_write(cell: &RefCell<Box<BorrowPayload>>, value: int) -> void {
+    let borrowed_box: &Box<BorrowPayload> = cell.borrow_mut();
+    let payload: &BorrowPayload = &*borrowed_box;
+    payload.value = value;
+}
+
+@test "borrowed field call argument releases before field owner temp"() {
+    let nested = BorrowNestedBoxSlot { slot: BorrowBoxSlot { item: Box::new(BorrowPayload { value: 11 }) } };
+    if borrow_read_box(&nested.slot.item) != 11 {
+        panic(1);
+    };
+}
+
+@test "borrowed field temp releases across loop iterations"() {
+    let total: int = 0;
+    let i: int = 0;
+    while i < 4 {
+        let slot = BorrowNestedBoxSlot { slot: BorrowBoxSlot { item: Box::new(BorrowPayload { value: i + 1 }) } };
+        let borrowed_box: &Box<BorrowPayload> = &slot.slot.item;
+        let payload: &BorrowPayload = &*borrowed_box;
+        total = total + payload.value;
+        i = i + 1;
+    }
+    if total != 10 {
+        panic(2);
+    };
+}
+
+@test "borrowed field temp releases across branch merge"() {
+    let left = BorrowRcSlot { item: Rc::new(BorrowPayload { value: 7 }) };
+    let right = BorrowBoxSlot { item: Box::new(BorrowPayload { value: 13 }) };
+    let total: int = 0;
+    let choose_left = true;
+    if choose_left {
+        let borrowed_rc: &Rc<BorrowPayload> = &left.item;
+        total = total + borrow_read_rc(borrowed_rc);
+    } else {
+        let borrowed_box: &Box<BorrowPayload> = &right.item;
+        total = total + borrow_read_box(borrowed_box);
+    };
+    if total != 7 {
+        panic(3);
+    };
+}
+
+@test "borrowed rc refcell field releases before owner temp"() {
+    let holder = BorrowRefCellSlot { cell: Rc::new(RefCell::new(BorrowPayload { value: 5 })) };
+    let borrowed_cell: &RefCell<BorrowPayload> = &*holder.cell;
+    borrow_refcell_write(borrowed_cell, 21);
+    if borrow_refcell_read(borrowed_cell) != 21 {
+        panic(4);
+    };
+}
+
+@test "borrowed arc field releases before owner temp"() {
+    let holder = BorrowArcSlot { item: Arc::new(BorrowPayload { value: 31 }) };
+    let borrowed_arc: &Arc<BorrowPayload> = &holder.item;
+    if borrow_read_arc(borrowed_arc) != 31 {
+        panic(5);
+    };
+}
+
+@test "nested rc box field borrow releases all temporaries"() {
+    let holder = BorrowRcBoxSlot { item: Rc::new(Box::new(BorrowPayload { value: 41 })) };
+    let borrowed_rc_box: &Rc<Box<BorrowPayload>> = &holder.item;
+    if borrow_read_rc_box(borrowed_rc_box) != 41 {
+        panic(6);
+    };
+}
+
+@test "nested box rc field borrow releases all temporaries"() {
+    let holder = BorrowBoxRcSlot { item: Box::new(Rc::new(BorrowPayload { value: 43 })) };
+    let borrowed_box_rc: &Box<Rc<BorrowPayload>> = &holder.item;
+    if borrow_read_box_rc(borrowed_box_rc) != 43 {
+        panic(7);
+    };
+}
+
+@test "rc refcell box field borrow releases nested temporaries"() {
+    let holder = BorrowRefCellBoxSlot { cell: Rc::new(RefCell::new(Box::new(BorrowPayload { value: 53 }))) };
+    let borrowed_cell: &RefCell<Box<BorrowPayload>> = &*holder.cell;
+    borrow_refcell_box_write(borrowed_cell, 59);
+    if borrow_refcell_box_read(borrowed_cell) != 59 {
+        panic(8);
+    };
+}
+
+@test "repeated smart pointer field borrows release each owner temp"() {
+    let holder = BorrowRcSlot { item: Rc::new(BorrowPayload { value: 17 }) };
+    let total: int = 0;
+    let i: int = 0;
+    while i < 3 {
+        let borrowed_rc: &Rc<BorrowPayload> = &holder.item;
+        total = total + borrow_read_rc(borrowed_rc);
+        i = i + 1;
+    }
+    if total != 51 {
+        panic(9);
+    };
+}
+
+@test "vec field smart pointer index borrow releases owner temps"() {
+    let items: Vec<Box<BorrowPayload>> = Vec::new();
+    items.push(Box::new(BorrowPayload { value: 3 }));
+    items.push(Box::new(BorrowPayload { value: 4 }));
+    let holder = BorrowVecBoxSlot { items: items };
+    let first: &Box<BorrowPayload> = &holder.items[0];
+    let second: &Box<BorrowPayload> = &holder.items[1];
+    if borrow_read_box(first) + borrow_read_box(second) != 7 {
+        panic(10);
+    };
+}

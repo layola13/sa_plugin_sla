@@ -29,8 +29,6 @@ L_ENTRY:
     !tmp_6
     tmp_8 = tmp_7 as i32
     tmp_9 = add tmp_5, tmp_8
-    !tmp_5
-    !tmp_8
     !values
     return tmp_9
 

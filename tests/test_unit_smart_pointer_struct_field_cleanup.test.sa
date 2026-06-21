@@ -1,0 +1,123 @@
+@import "sa_std/core/box.sa"
+@import "sa_std/core/cell.sa"
+@import "sa_std/core/rc.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@import "sa_std/core/rc.sa"
+@import "sa_std/core/cell.sa"
+@import "sa_std/core/box.sa"
+@test "cell field method receiver releases temporary"():
+L_TEST_ENTRY_0:
+    counter = alloc 8
+    tmp_0 = 3
+    tmp_1 = stack_alloc Cell_SIZE
+    EXPAND CELL_SET tmp_1, tmp_0
+    !tmp_0
+    store counter+0, tmp_1 as ptr
+    tmp_2 = load counter+0 as ptr
+    EXPAND CELL_GET tmp_3, tmp_2
+    !tmp_2
+    tmp_4 = 3
+    tmp_5 = ne tmp_3, tmp_4
+    !tmp_3
+    !tmp_4
+    br tmp_5 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_5
+    panic(1)
+
+L_ELSE_2:
+    !tmp_5
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    !counter
+    return
+
+@test "rc field owner exits cleanly"():
+L_TEST_ENTRY_4:
+    container = alloc 8
+    tmp_8 = alloc 8
+    tmp_9 = 42
+    store tmp_8+0, tmp_9 as i64
+    !tmp_9
+    EXPAND RC_NEW tmp_10, tmp_8
+    !tmp_8
+    store container+0, tmp_10 as ptr
+    !tmp_10
+    tmp_11 = load container+0 as ptr
+    tmp_12 = &tmp_11
+    borrowed_rc = tmp_12
+    EXPAND RC_GET tmp_13, borrowed_rc
+    tmp_14 = &tmp_13
+    data_ref = tmp_14
+    tmp_15 = load data_ref+0 as i64
+    tmp_16 = 42
+    tmp_17 = ne tmp_15, tmp_16
+    !tmp_15
+    !tmp_16
+    br tmp_17 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
+    !tmp_17
+    panic(2)
+
+L_ELSE_6:
+    !tmp_17
+    jmp L_MERGE_7
+
+L_MERGE_7:
+    !container
+    !data_ref
+    !tmp_13
+    !borrowed_rc
+    !tmp_11
+    return
+
+@test "box field owner exits cleanly"():
+L_TEST_ENTRY_8:
+    container = alloc 8
+    tmp_20 = alloc 8
+    tmp_21 = 99
+    store tmp_20+0, tmp_21 as i64
+    !tmp_21
+    EXPAND BOX_NEW tmp_22, tmp_20
+    !tmp_20
+    store container+0, tmp_22 as ptr
+    !tmp_22
+    tmp_23 = load container+0 as ptr
+    tmp_24 = &tmp_23
+    borrowed_box = tmp_24
+    tmp_25 = load borrowed_box+0 as ptr
+    tmp_26 = &tmp_25
+    data_ref = tmp_26
+    tmp_27 = load data_ref+0 as i64
+    tmp_28 = 99
+    tmp_29 = ne tmp_27, tmp_28
+    !tmp_27
+    !tmp_28
+    br tmp_29 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_29
+    panic(3)
+
+L_ELSE_10:
+    !tmp_29
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    !container
+    !data_ref
+    !tmp_25
+    !borrowed_box
+    !tmp_23
+    return

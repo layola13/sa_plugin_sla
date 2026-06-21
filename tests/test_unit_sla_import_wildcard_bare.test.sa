@@ -14,8 +14,6 @@ L_ENTRY:
     tmp_0 = load p+0 as i32
     tmp_1 = load p+4 as i32
     tmp_2 = add tmp_0, tmp_1
-    !tmp_0
-    !tmp_1
     !p
     return tmp_2
 

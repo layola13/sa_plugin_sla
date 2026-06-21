@@ -137,7 +137,7 @@ L_ELSE_17:
 
 @sla__test_macro_hygiene(val: i64) -> i64:
 L_ENTRY:
-    temp = val
+    temp = add val, 0
     EXPAND add_one_macro temp
     !val
     return temp

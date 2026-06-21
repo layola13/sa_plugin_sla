@@ -1796,6 +1796,16 @@ pub const Parser = struct {
                 node.* = .{ .binary_expr = .{ .op = .sub, .left = zero, .right = expr } };
                 return node;
             },
+            .bang => {
+                // Logical NOT for bool: lower to (expr == false)
+                self.advance();
+                const expr = try self.parseExpr(8);
+                const false_lit = try self.allocator.create(ast.Node);
+                false_lit.* = .{ .literal = .{ .bool_val = false } };
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{ .binary_expr = .{ .op = .eq, .left = expr, .right = false_lit } };
+                return node;
+            },
             .keyword_if => {
                 return try self.parseIfExpr();
             },

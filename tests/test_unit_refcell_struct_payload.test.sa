@@ -1,0 +1,149 @@
+@import "sa_std/core/refcell.sa"
+@import "sa_std/core/rc.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@import "sa_std/core/rc.sa"
+@import "sa_std/core/refcell.sa"
+@const SLA_FNPTR_VT_refcell_payload_read = vtable { call = @sla__refcell_payload_read }
+@const SLA_FNPTR_VT_refcell_payload_write = vtable { call = @sla__refcell_payload_write }
+@sla__refcell_payload_read(cell: ptr) -> i64:
+L_ENTRY:
+    EXPAND REFCELL_U64_TRY_BORROW tmp_0, tmp_1, cell
+    br tmp_0 -> L_REFCELL_BORROW_END_1, L_REFCELL_BORROW_PANIC_0
+
+L_REFCELL_BORROW_PANIC_0:
+    !tmp_0
+    panic(107)
+
+L_REFCELL_BORROW_END_1:
+    !tmp_0
+    tmp_2 = load tmp_1+0 as ptr
+    !tmp_1
+    borrowed = tmp_2
+    tmp_3 = load borrowed+0 as i64
+    EXPAND REFCELL_U64_RELEASE_SHARED cell
+    return tmp_3
+
+@sla__refcell_payload_write(cell: ptr, value: i64):
+L_ENTRY:
+    EXPAND REFCELL_U64_TRY_BORROW_MUT tmp_4, tmp_5, cell
+    br tmp_4 -> L_REFCELL_BORROW_END_3, L_REFCELL_BORROW_PANIC_2
+
+L_REFCELL_BORROW_PANIC_2:
+    !tmp_4
+    panic(107)
+
+L_REFCELL_BORROW_END_3:
+    !tmp_4
+    tmp_6 = load tmp_5+0 as ptr
+    !tmp_5
+    borrowed = tmp_6
+    store borrowed+0, value as i64
+    EXPAND REFCELL_U64_RELEASE_MUT cell
+    !borrowed
+    return
+
+@test "refcell struct payload borrow"():
+L_TEST_ENTRY_4:
+    tmp_7 = alloc 9
+    tmp_8 = 50
+    store tmp_7+0, tmp_8 as i64
+    !tmp_8
+    tmp_9 = 0
+    store tmp_7+8, tmp_9 as u8
+    !tmp_9
+    EXPAND REFCELL_U64_NEW tmp_10, tmp_7
+    !tmp_7
+    refcell = tmp_10
+    tmp_11 = call @sla__refcell_payload_read(&refcell)
+    tmp_12 = 50
+    tmp_13 = ne tmp_11, tmp_12
+    !tmp_11
+    !tmp_12
+    br tmp_13 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
+    !tmp_13
+    panic(1)
+
+L_ELSE_6:
+    !tmp_13
+    jmp L_MERGE_7
+
+L_MERGE_7:
+    tmp_16 = 60
+    call @sla__refcell_payload_write(&refcell, tmp_16)
+    tmp_17 = call @sla__refcell_payload_read(&refcell)
+    tmp_18 = 60
+    tmp_19 = ne tmp_17, tmp_18
+    !tmp_17
+    !tmp_18
+    br tmp_19 -> L_THEN_8, L_ELSE_9
+
+L_THEN_8:
+    !tmp_19
+    panic(2)
+
+L_ELSE_9:
+    !tmp_19
+    jmp L_MERGE_10
+
+L_MERGE_10:
+    !refcell
+    return
+
+@test "rc refcell struct payload shared mutation"():
+L_TEST_ENTRY_11:
+    tmp_22 = alloc 9
+    tmp_23 = 10
+    store tmp_22+0, tmp_23 as i64
+    !tmp_23
+    tmp_24 = 1
+    store tmp_22+8, tmp_24 as u8
+    !tmp_24
+    EXPAND REFCELL_U64_NEW tmp_25, tmp_22
+    !tmp_22
+    EXPAND RC_NEW tmp_26, tmp_25
+    !tmp_25
+    rc1 = tmp_26
+    tmp_27 = add rc1, 0
+    EXPAND RC_CLONE tmp_27
+    rc2 = tmp_27
+    EXPAND RC_GET tmp_28, rc1
+    tmp_29 = &tmp_28
+    borrowed1 = tmp_29
+    tmp_30 = 25
+    call @sla__refcell_payload_write(borrowed1, tmp_30)
+    EXPAND RC_GET tmp_31, rc2
+    tmp_32 = &tmp_31
+    borrowed2 = tmp_32
+    tmp_33 = call @sla__refcell_payload_read(borrowed2)
+    tmp_34 = 25
+    tmp_35 = ne tmp_33, tmp_34
+    !tmp_33
+    !tmp_34
+    br tmp_35 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_35
+    panic(3)
+
+L_ELSE_13:
+    !tmp_35
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    !borrowed2
+    !tmp_31
+    !borrowed1
+    !tmp_28
+    !rc1
+    !rc2
+    return

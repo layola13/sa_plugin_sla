@@ -673,6 +673,30 @@ pub const Codegen = struct {
         self.consumed_bindings.put(handle_reg, {}) catch return CodegenError.OutOfMemory;
     }
 
+    fn restoreConsumedBindings(self: *Codegen, saved: *std.StringHashMap(void)) CodegenError!void {
+        self.consumed_bindings.clearRetainingCapacity();
+        var iter = saved.iterator();
+        while (iter.next()) |entry| {
+            self.consumed_bindings.put(entry.key_ptr.*, entry.value_ptr.*) catch return CodegenError.OutOfMemory;
+        }
+    }
+
+    fn restoreBorrowSourceTemps(self: *Codegen, saved: *std.StringHashMap([]const u8)) CodegenError!void {
+        self.borrow_source_temps.clearRetainingCapacity();
+        var iter = saved.iterator();
+        while (iter.next()) |entry| {
+            self.borrow_source_temps.put(entry.key_ptr.*, entry.value_ptr.*) catch return CodegenError.OutOfMemory;
+        }
+    }
+
+    fn restoreRefCellBorrowHandles(self: *Codegen, saved: *std.StringHashMap(RefCellBorrowHandle)) CodegenError!void {
+        self.refcell_borrow_handles.clearRetainingCapacity();
+        var iter = saved.iterator();
+        while (iter.next()) |entry| {
+            self.refcell_borrow_handles.put(entry.key_ptr.*, entry.value_ptr.*) catch return CodegenError.OutOfMemory;
+        }
+    }
+
     fn restoreMutexState(
         self: *Codegen,
         guards: *const std.StringHashMap(MutexGuardHandle),
@@ -10341,6 +10365,13 @@ pub const Codegen = struct {
 
                 self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ cond_reg, then_label, else_label }) catch return CodegenError.CodegenError;
 
+                var pre_branch_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+                defer pre_branch_consumed.deinit();
+                var pre_branch_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
+                defer pre_branch_borrow_sources.deinit();
+                var pre_branch_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+                defer pre_branch_refcell_handles.deinit();
+
                 var pre_then_mutex_guards = self.mutex_guard_handles.clone() catch return CodegenError.OutOfMemory;
                 defer pre_then_mutex_guards.deinit();
                 var pre_then_mutex_results = self.mutex_lock_results.clone() catch return CodegenError.OutOfMemory;
@@ -10384,6 +10415,10 @@ pub const Codegen = struct {
                     try self.restoreFileState(&pre_then_files, &pre_then_file_results);
                     try self.restoreMetadataState(&pre_then_metadata, &pre_then_metadata_results);
                 }
+
+                try self.restoreConsumedBindings(&pre_branch_consumed);
+                try self.restoreBorrowSourceTemps(&pre_branch_borrow_sources);
+                try self.restoreRefCellBorrowHandles(&pre_branch_refcell_handles);
 
                 var pre_else_mutex_guards = self.mutex_guard_handles.clone() catch return CodegenError.OutOfMemory;
                 defer pre_else_mutex_guards.deinit();

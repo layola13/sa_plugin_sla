@@ -669,3 +669,397 @@ L_MERGE_58:
     !second
     !tmp_183
     return
+
+@test "direct nested rc refcell borrow call argument releases temps"():
+L_TEST_ENTRY_59:
+    holder = alloc 8
+    tmp_192 = alloc 8
+    tmp_193 = 61
+    store tmp_192+0, tmp_193 as i64
+    !tmp_193
+    EXPAND BOX_NEW tmp_194, tmp_192
+    !tmp_192
+    EXPAND REFCELL_U64_NEW tmp_195, tmp_194
+    !tmp_194
+    EXPAND RC_NEW tmp_196, tmp_195
+    !tmp_195
+    store holder+0, tmp_196 as ptr
+    !tmp_196
+    tmp_197 = load holder+0 as ptr
+    EXPAND RC_GET tmp_198, tmp_197
+    !tmp_197
+    tmp_199 = &tmp_198
+    tmp_200 = 67
+    call @sla__borrow_refcell_box_write(tmp_199, tmp_200)
+    tmp_201 = load holder+0 as ptr
+    EXPAND RC_GET tmp_202, tmp_201
+    !tmp_201
+    tmp_203 = &tmp_202
+    tmp_204 = call @sla__borrow_refcell_box_read(tmp_203)
+    !tmp_203
+    !tmp_202
+    tmp_205 = 67
+    tmp_206 = ne tmp_204, tmp_205
+    !tmp_204
+    !tmp_205
+    br tmp_206 -> L_THEN_60, L_ELSE_61
+
+L_THEN_60:
+    !tmp_206
+    panic(11)
+
+L_ELSE_61:
+    !tmp_206
+    jmp L_MERGE_62
+
+L_MERGE_62:
+    !holder
+    return
+
+@test "arc refcell field borrow releases deref owner temp"():
+L_TEST_ENTRY_63:
+    holder = alloc 8
+    tmp_209 = alloc 8
+    tmp_210 = 71
+    store tmp_209+0, tmp_210 as i64
+    !tmp_210
+    EXPAND REFCELL_U64_NEW tmp_211, tmp_209
+    !tmp_209
+    EXPAND ARC_NEW tmp_212, tmp_211
+    !tmp_211
+    store holder+0, tmp_212 as ptr
+    !tmp_212
+    tmp_213 = load holder+0 as ptr
+    EXPAND ARC_GET tmp_214, tmp_213
+    !tmp_213
+    tmp_215 = &tmp_214
+    cell = tmp_215
+    tmp_216 = 79
+    call @sla__borrow_refcell_write(cell, tmp_216)
+    tmp_217 = call @sla__borrow_refcell_read(cell)
+    tmp_218 = 79
+    tmp_219 = ne tmp_217, tmp_218
+    !tmp_217
+    !tmp_218
+    br tmp_219 -> L_THEN_64, L_ELSE_65
+
+L_THEN_64:
+    !tmp_219
+    panic(12)
+
+L_ELSE_65:
+    !tmp_219
+    jmp L_MERGE_66
+
+L_MERGE_66:
+    !cell
+    !tmp_214
+    !holder
+    return
+
+@test "vec rc refcell box indexed borrow releases nested owner temps"():
+L_TEST_ENTRY_67:
+    EXPAND VEC_NEW tmp_222
+    items = tmp_222
+    tmp_223 = alloc 8
+    tmp_224 = 2
+    store tmp_223+0, tmp_224 as i64
+    !tmp_224
+    EXPAND BOX_NEW tmp_225, tmp_223
+    !tmp_223
+    EXPAND REFCELL_U64_NEW tmp_226, tmp_225
+    !tmp_225
+    EXPAND RC_NEW tmp_227, tmp_226
+    !tmp_226
+    EXPAND VEC_PUSH items, tmp_227, 8
+    !tmp_227
+    tmp_228 = alloc 8
+    tmp_229 = 5
+    store tmp_228+0, tmp_229 as i64
+    !tmp_229
+    EXPAND BOX_NEW tmp_230, tmp_228
+    !tmp_228
+    EXPAND REFCELL_U64_NEW tmp_231, tmp_230
+    !tmp_230
+    EXPAND RC_NEW tmp_232, tmp_231
+    !tmp_231
+    EXPAND VEC_PUSH items, tmp_232, 8
+    !tmp_232
+    holder = alloc 8
+    store holder+0, items as ptr
+    tmp_233 = load holder+0 as ptr
+    tmp_234 = 0
+    EXPAND VEC_GET tmp_235, tmp_233, tmp_234
+    !tmp_234
+    !tmp_233
+    tmp_236 = tmp_235 as ptr
+    EXPAND RC_GET tmp_237, tmp_236
+    !tmp_236
+    tmp_238 = &tmp_237
+    first_cell = tmp_238
+    tmp_239 = load holder+0 as ptr
+    tmp_240 = 1
+    EXPAND VEC_GET tmp_241, tmp_239, tmp_240
+    !tmp_240
+    !tmp_239
+    tmp_242 = tmp_241 as ptr
+    EXPAND RC_GET tmp_243, tmp_242
+    !tmp_242
+    tmp_244 = &tmp_243
+    second_cell = tmp_244
+    tmp_245 = 13
+    call @sla__borrow_refcell_box_write(first_cell, tmp_245)
+    tmp_246 = 17
+    call @sla__borrow_refcell_box_write(second_cell, tmp_246)
+    tmp_247 = call @sla__borrow_refcell_box_read(first_cell)
+    tmp_248 = call @sla__borrow_refcell_box_read(second_cell)
+    tmp_249 = add tmp_247, tmp_248
+    !tmp_247
+    !tmp_248
+    tmp_250 = 30
+    tmp_251 = ne tmp_249, tmp_250
+    !tmp_249
+    !tmp_250
+    br tmp_251 -> L_THEN_68, L_ELSE_69
+
+L_THEN_68:
+    !tmp_251
+    panic(13)
+
+L_ELSE_69:
+    !tmp_251
+    jmp L_MERGE_70
+
+L_MERGE_70:
+    !first_cell
+    !tmp_237
+    !items
+    !second_cell
+    !tmp_243
+    !holder
+    return
+
+@test "vec arc refcell indexed borrow survives loop and branch temps"():
+L_TEST_ENTRY_71:
+    EXPAND VEC_NEW tmp_254
+    items = tmp_254
+    tmp_255 = alloc 8
+    tmp_256 = 3
+    store tmp_255+0, tmp_256 as i64
+    !tmp_256
+    EXPAND REFCELL_U64_NEW tmp_257, tmp_255
+    !tmp_255
+    EXPAND ARC_NEW tmp_258, tmp_257
+    !tmp_257
+    EXPAND VEC_PUSH items, tmp_258, 8
+    !tmp_258
+    tmp_259 = alloc 8
+    tmp_260 = 7
+    store tmp_259+0, tmp_260 as i64
+    !tmp_260
+    EXPAND REFCELL_U64_NEW tmp_261, tmp_259
+    !tmp_259
+    EXPAND ARC_NEW tmp_262, tmp_261
+    !tmp_261
+    EXPAND VEC_PUSH items, tmp_262, 8
+    !tmp_262
+    holder = alloc 8
+    store holder+0, items as ptr
+    tmp_263 = 0
+    total = tmp_263
+    tmp_264 = 0
+    i = tmp_264
+    jmp L_WHILE_HEAD_72
+
+L_WHILE_HEAD_72:
+    tmp_265 = 4
+    tmp_266 = slt i, tmp_265
+    !tmp_265
+    br tmp_266 -> L_WHILE_BODY_73, L_WHILE_COND_FALSE_74
+
+L_WHILE_BODY_73:
+    !tmp_266
+    tmp_267 = 2
+    tmp_268 = slt i, tmp_267
+    !tmp_267
+    br tmp_268 -> L_THEN_76, L_ELSE_77
+
+L_THEN_76:
+    !tmp_268
+    tmp_269 = load holder+0 as ptr
+    tmp_270 = 0
+    EXPAND VEC_GET tmp_271, tmp_269, tmp_270
+    !tmp_270
+    !tmp_269
+    tmp_272 = tmp_271 as ptr
+    EXPAND ARC_GET tmp_273, tmp_272
+    !tmp_272
+    tmp_274 = &tmp_273
+    cell = tmp_274
+    tmp_275 = call @sla__borrow_refcell_read(cell)
+    tmp_276 = add total, tmp_275
+    !tmp_275
+    !total
+    total = tmp_276
+    !cell
+    !tmp_273
+    jmp L_MERGE_78
+
+L_ELSE_77:
+    !tmp_268
+    tmp_277 = load holder+0 as ptr
+    tmp_278 = 1
+    EXPAND VEC_GET tmp_279, tmp_277, tmp_278
+    !tmp_278
+    !tmp_277
+    tmp_280 = tmp_279 as ptr
+    EXPAND ARC_GET tmp_281, tmp_280
+    !tmp_280
+    tmp_282 = &tmp_281
+    cell = tmp_282
+    tmp_283 = call @sla__borrow_refcell_read(cell)
+    tmp_284 = add total, tmp_283
+    !tmp_283
+    !total
+    total = tmp_284
+    !cell
+    !tmp_281
+    jmp L_MERGE_78
+
+L_MERGE_78:
+    tmp_286 = 1
+    tmp_287 = add i, tmp_286
+    !tmp_286
+    !i
+    i = tmp_287
+    jmp L_WHILE_HEAD_72
+
+L_WHILE_COND_FALSE_74:
+    !tmp_266
+    jmp L_WHILE_EXIT_75
+
+L_WHILE_EXIT_75:
+    tmp_288 = 20
+    tmp_289 = ne total, tmp_288
+    !tmp_288
+    br tmp_289 -> L_THEN_79, L_ELSE_80
+
+L_THEN_79:
+    !tmp_289
+    panic(14)
+
+L_ELSE_80:
+    !tmp_289
+    jmp L_MERGE_81
+
+L_MERGE_81:
+    !items
+    !i
+    !total
+    !holder
+    return
+
+@test "box rc refcell box chained deref releases all owner temps"():
+L_TEST_ENTRY_82:
+    holder = alloc 8
+    tmp_292 = alloc 8
+    tmp_293 = 83
+    store tmp_292+0, tmp_293 as i64
+    !tmp_293
+    EXPAND BOX_NEW tmp_294, tmp_292
+    !tmp_292
+    EXPAND REFCELL_U64_NEW tmp_295, tmp_294
+    !tmp_294
+    EXPAND RC_NEW tmp_296, tmp_295
+    !tmp_295
+    EXPAND BOX_NEW tmp_297, tmp_296
+    !tmp_296
+    store holder+0, tmp_297 as ptr
+    !tmp_297
+    tmp_298 = load holder+0 as ptr
+    tmp_299 = load tmp_298+0 as ptr
+    tmp_300 = &tmp_299
+    rc_value = tmp_300
+    EXPAND RC_GET tmp_301, rc_value
+    tmp_302 = &tmp_301
+    cell = tmp_302
+    tmp_303 = 89
+    call @sla__borrow_refcell_box_write(cell, tmp_303)
+    tmp_304 = call @sla__borrow_refcell_box_read(cell)
+    tmp_305 = 89
+    tmp_306 = ne tmp_304, tmp_305
+    !tmp_304
+    !tmp_305
+    br tmp_306 -> L_THEN_83, L_ELSE_84
+
+L_THEN_83:
+    !tmp_306
+    panic(15)
+
+L_ELSE_84:
+    !tmp_306
+    jmp L_MERGE_85
+
+L_MERGE_85:
+    !cell
+    !tmp_301
+    !holder
+    !rc_value
+    !tmp_299
+    return
+
+@test "mixed direct borrow arguments release before repeated owner use"():
+L_TEST_ENTRY_86:
+    holder = alloc 8
+    tmp_309 = alloc 8
+    tmp_310 = 97
+    store tmp_309+0, tmp_310 as i64
+    !tmp_310
+    EXPAND BOX_NEW tmp_311, tmp_309
+    !tmp_309
+    EXPAND RC_NEW tmp_312, tmp_311
+    !tmp_311
+    store holder+0, tmp_312 as ptr
+    !tmp_312
+    tmp_313 = load holder+0 as ptr
+    tmp_314 = &tmp_313
+    tmp_315 = call @sla__borrow_read_rc_box(tmp_314)
+    !tmp_314
+    !tmp_313
+    tmp_316 = 97
+    tmp_317 = ne tmp_315, tmp_316
+    !tmp_315
+    !tmp_316
+    br tmp_317 -> L_THEN_87, L_ELSE_88
+
+L_THEN_87:
+    !tmp_317
+    panic(16)
+
+L_ELSE_88:
+    !tmp_317
+    jmp L_MERGE_89
+
+L_MERGE_89:
+    tmp_320 = load holder+0 as ptr
+    tmp_321 = &tmp_320
+    tmp_322 = call @sla__borrow_read_rc_box(tmp_321)
+    !tmp_321
+    !tmp_320
+    tmp_323 = 97
+    tmp_324 = ne tmp_322, tmp_323
+    !tmp_322
+    !tmp_323
+    br tmp_324 -> L_THEN_90, L_ELSE_91
+
+L_THEN_90:
+    !tmp_324
+    panic(17)
+
+L_ELSE_91:
+    !tmp_324
+    jmp L_MERGE_92
+
+L_MERGE_92:
+    !holder
+    return

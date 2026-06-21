@@ -15,6 +15,7 @@ L_ENTRY:
     tmp_1 = load input+0 as i32
     tmp_2 = 1
     tmp_3 = add tmp_1, tmp_2
+    !tmp_1
     !tmp_2
     store tmp_0+0, tmp_3 as i32
     !tmp_3
@@ -67,6 +68,7 @@ L_TEST_ENTRY_4:
     tmp_13 = load out+0 as i32
     tmp_14 = 4
     tmp_15 = ne tmp_13, tmp_14
+    !tmp_13
     !tmp_14
     br tmp_15 -> L_THEN_5, L_ELSE_6
 
@@ -81,3 +83,4 @@ L_ELSE_6:
 L_MERGE_7:
     !out
     return
+

@@ -80,6 +80,7 @@ L_ELSE_6:
 L_MERGE_7:
     tmp_16 = 60
     call @sla__refcell_payload_write(&refcell, tmp_16)
+    !tmp_16
     tmp_17 = call @sla__refcell_payload_read(&refcell)
     tmp_18 = 60
     tmp_19 = ne tmp_17, tmp_18
@@ -121,6 +122,7 @@ L_TEST_ENTRY_11:
     borrowed1 = tmp_29
     tmp_30 = 25
     call @sla__refcell_payload_write(borrowed1, tmp_30)
+    !tmp_30
     EXPAND RC_GET tmp_31, rc2
     tmp_32 = &tmp_31
     borrowed2 = tmp_32
@@ -147,3 +149,4 @@ L_MERGE_14:
     !rc1
     !rc2
     return
+

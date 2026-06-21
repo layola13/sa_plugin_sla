@@ -114,6 +114,7 @@ pub const TypeChecker = struct {
     dyn_call_traits: std.AutoHashMap(*const ast.Node, []const u8),
     dyn_borrow_args: std.AutoHashMap(*const ast.Node, []const u8),
     dyn_box_coercions: std.AutoHashMap(*const ast.Node, []const u8),
+    dyn_rc_coercions: std.AutoHashMap(*const ast.Node, []const u8),
     fn_ptr_calls: std.AutoHashMap(*const ast.Node, void),
     array_to_slice_borrow_args: std.AutoHashMap(*const ast.Node, void),
     current_loop_scope: ?*Scope,
@@ -147,6 +148,7 @@ pub const TypeChecker = struct {
             .dyn_call_traits = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .dyn_borrow_args = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .dyn_box_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
+            .dyn_rc_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .fn_ptr_calls = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .array_to_slice_borrow_args = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .current_loop_scope = null,
@@ -195,6 +197,7 @@ pub const TypeChecker = struct {
         self.dyn_call_traits.deinit();
         self.dyn_borrow_args.deinit();
         self.dyn_box_coercions.deinit();
+        self.dyn_rc_coercions.deinit();
         self.array_to_slice_borrow_args.deinit();
         for (self.scope_pool.items) |s| {
             s.deinit();
@@ -340,6 +343,10 @@ pub const TypeChecker = struct {
             .primitive => |p| isIntegerPrimitive(p) or isFloatPrimitive(p),
             else => false,
         };
+    }
+
+    fn isCellValueType(ty: *const ast.Type) bool {
+        return isNumericType(ty) or isPrimitiveType(ty, .boolean);
     }
 
     fn isRawPtrAliasType(ty: *const ast.Type) bool {
@@ -1332,6 +1339,9 @@ pub const TypeChecker = struct {
         if (boxInnerType(ty)) |inner| {
             return dynTraitName(inner);
         }
+        if (rcInnerType(ty)) |inner| {
+            return dynTraitName(inner);
+        }
         return null;
     }
 
@@ -1340,6 +1350,18 @@ pub const TypeChecker = struct {
         const trait_name = dynTraitName(declared_inner) orelse return null;
         const val_inner = boxInnerType(val_ty) orelse return null;
         if (!self.typeImplementsTrait(val_inner, trait_name)) return null;
+        return trait_name;
+    }
+
+    fn canCoerceRcNewToDynRc(self: *TypeChecker, declared_ty: *const ast.Type, val_ty: *const ast.Type, value_expr: *const ast.Node) ?[]const u8 {
+        const declared_inner = rcInnerType(declared_ty) orelse return null;
+        const trait_name = dynTraitName(declared_inner) orelse return null;
+        const val_inner = rcInnerType(val_ty) orelse return null;
+        if (!self.typeImplementsTrait(val_inner, trait_name)) return null;
+        if (value_expr.* != .call_expr) return null;
+        const call = value_expr.call_expr;
+        const target = call.associated_target orelse return null;
+        if (!std.mem.eql(u8, target, "Rc") or !std.mem.eql(u8, call.func_name, "new")) return null;
         return trait_name;
     }
 
@@ -1911,6 +1933,8 @@ pub const TypeChecker = struct {
                     }
                     if (self.canCoerceToDynBox(declared_ty, val_ty)) |trait_name| {
                         self.dyn_box_coercions.put(let.value, trait_name) catch return TypeError.OutOfMemory;
+                    } else if (self.canCoerceRcNewToDynRc(declared_ty, val_ty, let.value)) |trait_name| {
+                        self.dyn_rc_coercions.put(let.value, trait_name) catch return TypeError.OutOfMemory;
                     } else {
                         self.setError("TypeMismatch in let {s}: declared tag={s}, val tag={s}", .{ let.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
                         return TypeError.TypeMismatch;
@@ -1952,6 +1976,8 @@ pub const TypeChecker = struct {
                 if (!self.typesEqual(declared_ty, val_ty)) {
                     if (self.canCoerceToDynBox(declared_ty, val_ty)) |trait_name| {
                         self.dyn_box_coercions.put(c.value, trait_name) catch return TypeError.OutOfMemory;
+                    } else if (self.canCoerceRcNewToDynRc(declared_ty, val_ty, c.value)) |trait_name| {
+                        self.dyn_rc_coercions.put(c.value, trait_name) catch return TypeError.OutOfMemory;
                     } else {
                         self.setError("TypeMismatch in const {s}: declared tag={s}, val tag={s}", .{ c.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
                         return TypeError.TypeMismatch;
@@ -2113,7 +2139,12 @@ pub const TypeChecker = struct {
     fn checkExpr(self: *TypeChecker, expr: *ast.Node, scope: *Scope) TypeError!*ast.Type {
         const ty = self.checkExprImpl(expr, scope) catch |err| {
             if (self.last_error.len == 0) {
-                self.setError("checkExpr failed at node tag {s}", .{@tagName(expr.*)});
+                if (expr.* == .call_expr) {
+                    const call = expr.call_expr;
+                    self.setError("checkExpr failed at call {s}{s}{s} with {} args", .{ if (call.associated_target) |target| target else "", if (call.associated_target != null) "::" else "", call.func_name, call.args.len });
+                } else {
+                    self.setError("checkExpr failed at node tag {s}", .{@tagName(expr.*)});
+                }
             }
             return err;
         };
@@ -2796,7 +2827,7 @@ pub const TypeChecker = struct {
                     if (std.mem.eql(u8, target_name, "Cell") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const value_ty = try self.checkExpr(call.args[0], scope);
-                        if (!isNumericType(value_ty)) return TypeError.TypeMismatch;
+                        if (!isCellValueType(value_ty)) return TypeError.TypeMismatch;
                         return try self.makeCellType(value_ty);
                     }
                     if (std.mem.eql(u8, target_name, "RefCell") and std.mem.eql(u8, call.func_name, "new")) {
@@ -3143,7 +3174,10 @@ pub const TypeChecker = struct {
                         if (std.mem.eql(u8, call.func_name, "set")) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const value_ty = try self.checkExpr(call.args[1], scope);
-                            if (!self.typesEqual(inner_ty, value_ty)) return TypeError.TypeMismatch;
+                            if (!self.typesEqual(inner_ty, value_ty)) {
+                                self.setError("Cell::set type mismatch: cell tag={s}, value tag={s}", .{ @tagName(inner_ty.*), @tagName(value_ty.*) });
+                                return TypeError.TypeMismatch;
+                            }
                             const ret = try self.allocator.create(ast.Type);
                             ret.* = .{ .primitive = .void_type };
                             return ret;
@@ -3445,7 +3479,10 @@ pub const TypeChecker = struct {
                             if (method.params.len != call.args.len) return TypeError.InvalidArgsCount;
                             for (method.params[1..], call.args[1..]) |param, arg| {
                                 const arg_ty = try self.checkExpr(arg, scope);
-                                if (!self.typesEqual(param.ty, unwrapBorrowForCallArg(arg, arg_ty))) return TypeError.TypeMismatch;
+                                if (!self.typesEqual(param.ty, unwrapBorrowForCallArg(arg, arg_ty))) {
+                                    self.setError("dyn method {s} argument mismatch: param tag={s}, arg tag={s}", .{ call.func_name, @tagName(param.ty.*), @tagName(arg_ty.*) });
+                                    return TypeError.TypeMismatch;
+                                }
                             }
                             self.dyn_call_traits.put(expr, trait_name) catch return TypeError.OutOfMemory;
                             return method.ret_ty;

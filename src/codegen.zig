@@ -418,8 +418,32 @@ pub const Codegen = struct {
         self.out.writer().print("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
         self.out.writer().print("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
         self.out.writer().print("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
+        try self.emitRelease(data_reg);
         try self.emitRelease(box_reg);
         return fat_reg;
+    }
+
+    fn genDynRcCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+        if (expr.* != .call_expr) return CodegenError.CodegenError;
+        const call = expr.call_expr;
+        if (call.args.len != 1) return CodegenError.CodegenError;
+
+        const arg_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
+        const type_name = concreteTypeName(arg_ty) orelse return CodegenError.CodegenError;
+        const vt_name = try self.vtableName(trait_name, type_name);
+        defer self.allocator.free(vt_name);
+
+        const data_reg = try self.genExpr(call.args[0], hoisted_allocs);
+        const fat_reg = try self.newTmp();
+        self.out.writer().print("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+Dyn_vtable, &{s} as ptr\n", .{ fat_reg, vt_name }) catch return CodegenError.CodegenError;
+        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(data_reg);
+
+        const rc_reg = try self.newTmp();
+        self.out.writer().print("    EXPAND RC_NEW {s}, {s}\n", .{ rc_reg, fat_reg }) catch return CodegenError.CodegenError;
+        try self.emitRelease(fat_reg);
+        return rc_reg;
     }
 
     fn emitIntConst(self: *Codegen, target: []const u8, value: i64) CodegenError!void {
@@ -4868,6 +4892,7 @@ pub const Codegen = struct {
     }
 
     fn exprNeedsTraitObjectMacros(self: *Codegen, expr: *const ast.Node) bool {
+        if (self.tc.dyn_box_coercions.contains(expr) or self.tc.dyn_rc_coercions.contains(expr)) return true;
         return switch (expr.*) {
             .call_expr => |call| blk: {
                 _ = call;
@@ -6337,6 +6362,9 @@ pub const Codegen = struct {
                 } else if (self.tc.dyn_box_coercions.get(let.value)) |trait_name| {
                     const val_reg = try self.genDynBoxCoercionExpr(let.value, trait_name, hoisted_allocs);
                     self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                } else if (self.tc.dyn_rc_coercions.get(let.value)) |trait_name| {
+                    const val_reg = try self.genDynRcCoercionExpr(let.value, trait_name, hoisted_allocs);
+                    self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.stack_alloc_bindings.contains(val_reg)) {
@@ -6506,6 +6534,9 @@ pub const Codegen = struct {
                     try self.genRepeatArrayLiteralInto(c.name, c.value, &c.value.repeat_array_literal, hoisted_allocs);
                 } else if (self.tc.dyn_box_coercions.get(c.value)) |trait_name| {
                     const val_reg = try self.genDynBoxCoercionExpr(c.value, trait_name, hoisted_allocs);
+                    self.out.writer().print("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
+                } else if (self.tc.dyn_rc_coercions.get(c.value)) |trait_name| {
+                    const val_reg = try self.genDynRcCoercionExpr(c.value, trait_name, hoisted_allocs);
                     self.out.writer().print("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(c.value, hoisted_allocs);
@@ -7956,6 +7987,30 @@ pub const Codegen = struct {
                     return borrow.expr.identifier;
                 }
                 const inner = try self.genExpr(borrow.expr, hoisted_allocs);
+                if (borrow.expr.* == .deref_expr) {
+                    const deref_ty = self.tc.expr_types.get(borrow.expr) orelse return CodegenError.CodegenError;
+                    const owner_ty = self.tc.expr_types.get(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError;
+                    if (dynTraitName(deref_ty) != null) {
+                        if (boxInnerType(owner_ty)) |box_inner| {
+                            if (dynTraitName(box_inner) != null) {
+                                const data_reg = try self.newTmp();
+                                const vtable_reg = try self.newTmp();
+                                const fat_reg = try self.newTmp();
+                                self.out.writer().print("    {s} = load {s}+Dyn_data as ptr\n", .{ data_reg, inner }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = load {s}+Dyn_vtable as ptr\n", .{ vtable_reg, inner }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = alloc Dyn_SIZE\n", .{fat_reg}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+Dyn_data, {s} as ptr\n", .{ fat_reg, data_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+Dyn_vtable, {s} as ptr\n", .{ fat_reg, vtable_reg }) catch return CodegenError.CodegenError;
+                                try self.emitRelease(data_reg);
+                                try self.emitRelease(vtable_reg);
+                                return fat_reg;
+                            }
+                        }
+                        if (rcInnerType(owner_ty)) |rc_inner| {
+                            if (dynTraitName(rc_inner) != null) return inner;
+                        }
+                    }
+                }
                 const reg = try self.newTmp();
                 self.out.writer().print("    {s} = &{s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                 if (exprResultNeedsRelease(borrow.expr)) {
@@ -7978,6 +8033,9 @@ pub const Codegen = struct {
                 if (arcInnerType(inner_ty) != null) {
                     self.out.writer().print("    EXPAND ARC_GET {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                     return reg;
+                }
+                if (boxInnerType(inner_ty)) |box_inner| {
+                    if (dynTraitName(box_inner) != null) return inner;
                 }
                 const deref_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, inner, typeString(deref_ty) }) catch return CodegenError.CodegenError;
@@ -9624,12 +9682,52 @@ pub const Codegen = struct {
 
                 if (self.tc.dyn_call_traits.get(expr)) |trait_name| {
                     const slot = self.dynMethodSlot(trait_name, call.func_name) orelse return CodegenError.CodegenError;
-                    if (call.args.len != 1) return CodegenError.CodegenError;
+                    if (call.args.len < 1) return CodegenError.CodegenError;
+                    const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                    const reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND DYN_CALL {s}, {s}, {}\n", .{ reg, recv_reg, slot }) catch return CodegenError.CodegenError;
+                    var dyn_reg = recv_reg;
+                    if (rcInnerType(recv_ty)) |rc_inner| {
+                        if (dynTraitName(rc_inner) != null) {
+                            dyn_reg = try self.newTmp();
+                            self.out.writer().print("    EXPAND RC_GET {s}, {s}\n", .{ dyn_reg, recv_reg }) catch return CodegenError.CodegenError;
+                        }
+                    }
+
+                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                    defer arg_regs.deinit();
+                    for (call.args[1..]) |arg| {
+                        arg_regs.append(try self.genCallArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+                    }
+
+                    const data_reg = try self.newTmp();
+                    const vtable_reg = try self.newTmp();
+                    const fn_reg = try self.newTmp();
+                    self.out.writer().print("    {s} = load {s}+Dyn_data as ptr\n", .{ data_reg, dyn_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = load {s}+Dyn_vtable as ptr\n", .{ vtable_reg, dyn_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = load {s}+{} as ptr\n", .{ fn_reg, vtable_reg, slot }) catch return CodegenError.CodegenError;
+
+                    const ret_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                    const returns_void = isVoidType(ret_ty);
+                    const out_reg = if (returns_void) "return_ty_sentinel" else try self.newTmp();
+                    if (returns_void) {
+                        self.out.writer().print("    call_indirect {s}(&{s}", .{ fn_reg, data_reg }) catch return CodegenError.CodegenError;
+                    } else {
+                        self.out.writer().print("    {s} = call_indirect {s}(&{s}", .{ out_reg, fn_reg, data_reg }) catch return CodegenError.CodegenError;
+                    }
+                    for (arg_regs.items) |arg_reg| {
+                        self.out.writer().print(", {s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                    }
+                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+
+                    try self.emitRelease(fn_reg);
+                    try self.emitRelease(vtable_reg);
+                    try self.emitRelease(data_reg);
+                    for (call.args[1..], arg_regs.items) |arg, arg_reg| {
+                        if (callArgNeedsRelease(arg)) try self.emitRelease(arg_reg);
+                    }
+                    if (!std.mem.eql(u8, dyn_reg, recv_reg)) try self.emitRelease(dyn_reg);
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
-                    return reg;
+                    return out_reg;
                 }
 
                 if (self.tc.structs.get(call.func_name)) |decl| {

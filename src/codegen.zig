@@ -1163,12 +1163,18 @@ pub const Codegen = struct {
         }
         var arg_regs = std.ArrayList([]const u8).init(self.allocator);
         defer arg_regs.deinit();
+        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        defer arg_release_regs.deinit();
         for (call.args) |arg| {
             if (self.tc.array_to_slice_borrow_args.contains(arg)) {
-                arg_regs.append(try self.genArrayBorrowToSliceArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+                const arg_reg = try self.genArrayBorrowToSliceArg(arg, hoisted_allocs);
+                arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+                arg_release_regs.append(if (callArgNeedsRelease(arg)) arg_reg else null) catch return CodegenError.OutOfMemory;
                 continue;
             }
-            arg_regs.append(try self.genCallArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+            const arg_reg = try self.genCallArg(arg, hoisted_allocs);
+            arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+            arg_release_regs.append(if (callArgNeedsRelease(arg) or self.generatedFnPtrIdentifierArg(arg) or self.generatedScalarConstIdentifierArg(arg)) arg_reg else null) catch return CodegenError.OutOfMemory;
         }
 
         const lowered_name = try self.loweredFuncSymbol(call.func_name);
@@ -1179,6 +1185,11 @@ pub const Codegen = struct {
             self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
         }
         self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+        for (arg_release_regs.items) |release_reg| {
+            if (release_reg) |arg_reg| {
+                if (!std.mem.eql(u8, call.func_name, "sum")) try self.emitRelease(arg_reg);
+            }
+        }
     }
 
     fn emitPrintln(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
@@ -8143,6 +8154,8 @@ pub const Codegen = struct {
                 if (deref.expr.* != .identifier and
                     (self.refcell_borrow_handles.contains(inner) or self.mutex_guard_handles.contains(inner) or self.rwlock_guard_handles.contains(inner)))
                 {
+                    try self.emitRelease(inner);
+                } else if (exprResultNeedsRelease(deref.expr)) {
                     try self.emitRelease(inner);
                 }
                 return reg;

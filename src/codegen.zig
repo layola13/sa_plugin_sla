@@ -3577,7 +3577,7 @@ pub const Codegen = struct {
             .identifier => |name| std.mem.eql(u8, name, "None"),
             .call_expr => |call| blk: {
                 if (std.mem.eql(u8, call.func_name, "Some")) break :blk true;
-                if ((std.mem.eql(u8, call.func_name, "unwrap") or std.mem.eql(u8, call.func_name, "unwrap_or") or std.mem.eql(u8, call.func_name, "unwrap_or_default") or std.mem.eql(u8, call.func_name, "copied") or std.mem.eql(u8, call.func_name, "get")) and
+                if ((std.mem.eql(u8, call.func_name, "is_some") or std.mem.eql(u8, call.func_name, "is_none") or std.mem.eql(u8, call.func_name, "map") or std.mem.eql(u8, call.func_name, "and_then") or std.mem.eql(u8, call.func_name, "unwrap") or std.mem.eql(u8, call.func_name, "unwrap_or") or std.mem.eql(u8, call.func_name, "unwrap_or_else") or std.mem.eql(u8, call.func_name, "unwrap_or_default") or std.mem.eql(u8, call.func_name, "copied") or std.mem.eql(u8, call.func_name, "get")) and
                     call.args.len > 0)
                 {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
@@ -7741,6 +7741,15 @@ pub const Codegen = struct {
         return try self.genExpr(lit.body, hoisted_allocs);
     }
 
+    fn genInlineClosureNullary(
+        self: *Codegen,
+        lit: *const ast.ClosureLiteral,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError![]const u8 {
+        if (lit.params.len != 0) return CodegenError.CodegenError;
+        return try self.genExpr(lit.body, hoisted_allocs);
+    }
+
     fn genInlineClosureBinary(
         self: *Codegen,
         lit: *const ast.ClosureLiteral,
@@ -9033,6 +9042,18 @@ pub const Codegen = struct {
                             }
                         }
                         if (optionInnerType(ty) != null) {
+                            if (std.mem.eql(u8, call.func_name, "is_some") or std.mem.eql(u8, call.func_name, "is_none")) {
+                                if (call.args.len != 1) return CodegenError.CodegenError;
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const reg = try self.newTmp();
+                                if (std.mem.eql(u8, call.func_name, "is_some")) {
+                                    self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                } else {
+                                    self.out.writer().print("    EXPAND OPTION_IS_NONE {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                }
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+                                return reg;
+                            }
                             if (std.mem.eql(u8, call.func_name, "map")) {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -9063,6 +9084,40 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
                             }
+                            if (std.mem.eql(u8, call.func_name, "and_then")) {
+                                if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const is_some = try self.newTmp();
+                                self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, recv_reg }) catch return CodegenError.CodegenError;
+                                const some_label = try self.newLabel("L_OPTION_AND_THEN_SOME");
+                                const none_label = try self.newLabel("L_OPTION_AND_THEN_NONE");
+                                const end_label = try self.newLabel("L_OPTION_AND_THEN_END");
+                                const result_slot = try self.newTmp();
+                                self.out.writer().print("    {s} = stack_alloc 8\n", .{result_slot}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
+
+                                self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                const value_reg = try self.newTmp();
+                                self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                const chained_reg = try self.genInlineClosureUnary(&call.args[1].closure_literal, value_reg, hoisted_allocs);
+                                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ result_slot, chained_reg }) catch return CodegenError.CodegenError;
+                                try self.emitRelease(value_reg);
+                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+
+                                self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                const none_reg = try self.newTmp();
+                                self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{none_reg}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ result_slot, none_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+
+                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                const result_reg = try self.newTmp();
+                                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ result_reg, result_slot }) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+                                return result_reg;
+                            }
                             if (std.mem.eql(u8, call.func_name, "unwrap")) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -9079,6 +9134,40 @@ pub const Codegen = struct {
                                 self.out.writer().print("    EXPAND OPTION_UNWRAP_OR {s}, {s}, {s}\n", .{ reg, recv_reg, default_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(default_reg);
+                                return reg;
+                            }
+                            if (std.mem.eql(u8, call.func_name, "unwrap_or_else")) {
+                                if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const is_some = try self.newTmp();
+                                self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ is_some, recv_reg }) catch return CodegenError.CodegenError;
+                                const some_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_SOME");
+                                const none_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_NONE");
+                                const end_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_END");
+                                const result_slot = try self.newTmp();
+                                const inner_ty = optionInnerType(ty) orelse return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = stack_alloc 8\n", .{result_slot}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
+
+                                self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                const value_reg = try self.newTmp();
+                                self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, value_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                try self.emitRelease(value_reg);
+                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+
+                                self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
+                                const default_reg = try self.genInlineClosureNullary(&call.args[1].closure_literal, hoisted_allocs);
+                                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, default_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                try self.emitRelease(default_reg);
+                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+
+                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
+                                const reg = try self.newTmp();
+                                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, result_slot, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
                             if (std.mem.eql(u8, call.func_name, "unwrap_or_default")) {

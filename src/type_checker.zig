@@ -3038,6 +3038,12 @@ pub const TypeChecker = struct {
                 if (call.args.len > 0) {
                     const recv_ty = try self.checkExpr(call.args[0], scope);
                     if (optionInnerType(recv_ty)) |inner_ty| {
+                        if (std.mem.eql(u8, call.func_name, "is_some") or std.mem.eql(u8, call.func_name, "is_none")) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            const ty = try self.allocator.create(ast.Type);
+                            ty.* = .{ .primitive = .boolean };
+                            return ty;
+                        }
                         if (std.mem.eql(u8, call.func_name, "copied")) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             if (inner_ty.* != .borrow) return TypeError.TypeMismatch;
@@ -3054,6 +3060,18 @@ pub const TypeChecker = struct {
                             if (!self.typesEqual(closure_ty.closure.params[0], inner_ty)) return TypeError.TypeMismatch;
                             return try self.makeOptionType(closure_ty.closure.ret);
                         }
+                        if (std.mem.eql(u8, call.func_name, "and_then")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const closure_ty = if (call.args[1].* == .closure_literal)
+                                try self.checkClosureLiteralWithContext(call.args[1], scope, &.{inner_ty})
+                            else
+                                try self.checkExpr(call.args[1], scope);
+                            if (closure_ty.* != .closure) return TypeError.TypeMismatch;
+                            if (closure_ty.closure.params.len != 1) return TypeError.InvalidArgsCount;
+                            if (!self.typesEqual(closure_ty.closure.params[0], inner_ty)) return TypeError.TypeMismatch;
+                            if (optionInnerType(closure_ty.closure.ret) == null) return TypeError.TypeMismatch;
+                            return closure_ty.closure.ret;
+                        }
                         if (std.mem.eql(u8, call.func_name, "unwrap")) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return inner_ty;
@@ -3062,6 +3080,17 @@ pub const TypeChecker = struct {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const default_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(inner_ty, default_ty)) return TypeError.TypeMismatch;
+                            return inner_ty;
+                        }
+                        if (std.mem.eql(u8, call.func_name, "unwrap_or_else")) {
+                            if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                            const closure_ty = if (call.args[1].* == .closure_literal)
+                                try self.checkClosureLiteralWithContext(call.args[1], scope, &.{})
+                            else
+                                try self.checkExpr(call.args[1], scope);
+                            if (closure_ty.* != .closure) return TypeError.TypeMismatch;
+                            if (closure_ty.closure.params.len != 0) return TypeError.InvalidArgsCount;
+                            if (!self.typesEqual(inner_ty, closure_ty.closure.ret)) return TypeError.TypeMismatch;
                             return inner_ty;
                         }
                         if (std.mem.eql(u8, call.func_name, "unwrap_or_default")) {

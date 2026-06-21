@@ -142,6 +142,7 @@ const skills = [_]plugin_api.SkillSection{
         .summary = "Sla compiler and tools",
         .items = &.{
             "sla build <file> [--out <file>]",
+            "sla build-exe <file> [sa-build-exe-options...]",
             "sla check <file>",
             "sla test <file> [sa-test-options...]",
         },
@@ -514,6 +515,58 @@ fn loadImportedContracts(
     }
 }
 
+fn compileSlaFileToSa(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    stderr: std.io.AnyWriter,
+) !?[]const u8 {
+    const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
+        try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
+        return null;
+    };
+
+    const sla_base_dir = std.fs.path.dirname(file) orelse ".";
+    var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
+    const prog = p.parseProgram() catch |err| {
+        try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
+        return null;
+    };
+
+    const expanded_prog = expandSlaImports(allocator, prog, file) catch |err| {
+        try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
+        return null;
+    };
+
+    var mono = monomorphizer_mod.Monomorphizer.init(allocator);
+    defer mono.deinit();
+    const specialized_prog = mono.monomorphize(expanded_prog) catch |err| {
+        try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
+        return null;
+    };
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+
+    loadImportedContracts(&tc, allocator, specialized_prog, file) catch |err| {
+        try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
+        return null;
+    };
+
+    tc.checkProgram(specialized_prog) catch |err| {
+        try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
+        return null;
+    };
+
+    var cg = codegen_mod.Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    return cg.generate(specialized_prog) catch |err| {
+        try stderr.print("Codegen Error: failed to generate SA code: {}\n", .{err});
+        if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
+        return null;
+    };
+}
+
 pub fn runSlaCommandImpl(
     ctx: *const plugin_api.Context,
     args: []const []const u8,
@@ -612,6 +665,44 @@ pub fn runSlaCommandImpl(
 
         try stdout.print("Sla Compiler: Successfully compiled {s} to {s}.\n", .{ file, final_out });
         return 0;
+    } else if (std.mem.eql(u8, cmd, "build-exe")) {
+        if (args.len < 4) {
+            try stderr.writeAll("Error: missing file argument for 'sla build-exe'\n");
+            return 1;
+        }
+        const file = args[3];
+        const extra_args = args[4..];
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        const sa_out = if (std.mem.endsWith(u8, file, ".sla"))
+            try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file[0 .. file.len - 4]})
+        else
+            try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file});
+
+        const sa_code = (try compileSlaFileToSa(allocator, file, stderr)) orelse return 1;
+        std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
+            try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
+            return 1;
+        };
+
+        var argv = std.ArrayList([]const u8).init(allocator);
+        try argv.append("sa");
+        try argv.append("build-exe");
+        try argv.append(sa_out);
+        for (extra_args) |a| try argv.append(a);
+
+        var child = std.process.Child.init(argv.items, allocator);
+        const term = child.spawnAndWait() catch |err| {
+            try stderr.print("Error: failed to run 'sa build-exe': {}\n", .{err});
+            return 1;
+        };
+        return switch (term) {
+            .Exited => |code| code,
+            else => 1,
+        };
     } else if (std.mem.eql(u8, cmd, "check")) {
         if (args.len < 4) {
             try stderr.writeAll("Error: missing file argument for 'sla check'\n");

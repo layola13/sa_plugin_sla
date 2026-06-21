@@ -687,6 +687,7 @@ pub fn runSlaCommandImpl(
             try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
             return 1;
         };
+        defer std.fs.cwd().deleteFile(sa_out) catch {};
 
         var argv = std.ArrayList([]const u8).init(allocator);
         try argv.append("sa");

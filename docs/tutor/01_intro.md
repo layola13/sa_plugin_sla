@@ -58,7 +58,7 @@ Sla 插件提供了以下四个核心命令：
   ```
 
 ### B. 可执行文件构建 (`sa sla build-exe`)
-将 `.sla` 源文件编译为中间 `.sa` 文件，并立即调用底层 `sa build-exe` 生成本地可执行文件。
+将 `.sla` 源文件一步编译为本地可执行文件。插件会在内部生成临时 `.sa` 文件并立即调用底层 `sa build-exe`，构建结束后自动清理中间文件。
 * **基本语法**：
   ```bash
   sa sla build-exe <input_file.sla> [sa build-exe options]

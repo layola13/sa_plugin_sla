@@ -75,6 +75,7 @@ pub const Codegen = struct {
     btree_map_bindings: std.StringHashMap(void),
     hashset_bindings: std.StringHashMap(void),
     btree_set_bindings: std.StringHashMap(void),
+    borrow_source_temps: std.StringHashMap([]const u8),
     refcell_borrow_handles: std.StringHashMap(RefCellBorrowHandle),
     mutex_guard_handles: std.StringHashMap(MutexGuardHandle),
     mutex_lock_results: std.StringHashMap(MutexGuardHandle),
@@ -127,6 +128,7 @@ pub const Codegen = struct {
             .btree_map_bindings = std.StringHashMap(void).init(allocator),
             .hashset_bindings = std.StringHashMap(void).init(allocator),
             .btree_set_bindings = std.StringHashMap(void).init(allocator),
+            .borrow_source_temps = std.StringHashMap([]const u8).init(allocator),
             .refcell_borrow_handles = std.StringHashMap(RefCellBorrowHandle).init(allocator),
             .mutex_guard_handles = std.StringHashMap(MutexGuardHandle).init(allocator),
             .mutex_lock_results = std.StringHashMap(MutexGuardHandle).init(allocator),
@@ -181,6 +183,7 @@ pub const Codegen = struct {
         self.btree_map_bindings.deinit();
         self.hashset_bindings.deinit();
         self.btree_set_bindings.deinit();
+        self.borrow_source_temps.deinit();
         self.refcell_borrow_handles.deinit();
         self.mutex_guard_handles.deinit();
         self.mutex_lock_results.deinit();
@@ -485,6 +488,10 @@ pub const Codegen = struct {
     fn emitRelease(self: *Codegen, name: []const u8) CodegenError!void {
         const resolved_name = self.resolveBindingName(name);
         if (std.mem.eql(u8, resolved_name, "return_ty_sentinel")) return;
+        if (self.borrow_source_temps.get(resolved_name)) |source_temp| {
+            try self.emitRelease(source_temp);
+            _ = self.borrow_source_temps.remove(resolved_name);
+        }
         if (self.refcell_borrow_handles.get(resolved_name)) |handle| {
             if (handle.is_mut) {
                 self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_MUT {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
@@ -5435,6 +5442,7 @@ pub const Codegen = struct {
         self.btree_map_bindings.clearRetainingCapacity();
         self.hashset_bindings.clearRetainingCapacity();
         self.btree_set_bindings.clearRetainingCapacity();
+        self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
         self.mutex_guard_handles.clearRetainingCapacity();
         self.mutex_lock_results.clearRetainingCapacity();
@@ -5544,6 +5552,7 @@ pub const Codegen = struct {
         self.btree_map_bindings.clearRetainingCapacity();
         self.hashset_bindings.clearRetainingCapacity();
         self.btree_set_bindings.clearRetainingCapacity();
+        self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
         self.mutex_guard_handles.clearRetainingCapacity();
         self.mutex_lock_results.clearRetainingCapacity();
@@ -6066,14 +6075,26 @@ pub const Codegen = struct {
     fn callArgNeedsRelease(arg: *const ast.Node) bool {
         return switch (arg.*) {
             .identifier => false,
-            .borrow_expr => |borrow| borrow.expr.* != .identifier,
-            .move_expr => |move| move.expr.* != .identifier,
+            .field_expr => true,
+            .index_expr => true,
+            .borrow_expr => |borrow| exprResultNeedsRelease(borrow.expr),
+            .move_expr => |move| exprResultNeedsRelease(move.expr),
+            .deref_expr => true,
+            .cast_expr => false,
             else => true,
         };
     }
 
     fn exprResultNeedsRelease(expr: *const ast.Node) bool {
-        return expr.* != .identifier;
+        return switch (expr.*) {
+            .identifier => false,
+            .field_expr => true,
+            .index_expr => true,
+            .borrow_expr => false,
+            .deref_expr => true,
+            .cast_expr => false,
+            else => true,
+        };
     }
 
     fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
@@ -6354,6 +6375,10 @@ pub const Codegen = struct {
                         self.rwlock_lock_results.put(let.name, handle) catch return CodegenError.OutOfMemory;
                         _ = self.rwlock_lock_results.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
+                    }
+                    if (self.borrow_source_temps.get(val_reg)) |source_temp| {
+                        self.borrow_source_temps.put(let.name, source_temp) catch return CodegenError.OutOfMemory;
+                        _ = self.borrow_source_temps.remove(val_reg);
                     }
                     if (self.file_bindings.contains(val_reg)) {
                         self.file_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
@@ -7933,6 +7958,9 @@ pub const Codegen = struct {
                 const inner = try self.genExpr(borrow.expr, hoisted_allocs);
                 const reg = try self.newTmp();
                 self.out.writer().print("    {s} = &{s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
+                if (exprResultNeedsRelease(borrow.expr)) {
+                    self.borrow_source_temps.put(reg, inner) catch return CodegenError.OutOfMemory;
+                }
                 return reg;
             },
             .move_expr => |move| {
@@ -8312,6 +8340,7 @@ pub const Codegen = struct {
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.out.writer().print("    EXPAND BOX_NEW {s}, {s}\n", .{ reg, arg_reg }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
                         return reg;
                     }
                     if (std.mem.eql(u8, target, "Box") and std.mem.eql(u8, call.func_name, "into_raw")) {

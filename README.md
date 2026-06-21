@@ -5,6 +5,7 @@ Sla compiler and tools plugin for Safe ASM (SA).
 ## Overview
 This is the standalone Sla compiler plugin, providing Sla-to-SA compilation capabilities. It exposes the following skills and CLI commands to the host SA environment:
 - `sa sla build <file>`: Compile a `.sla` source file into a verified `.sa` assembly file.
+- `sa sla build-exe <file>`: Compile a `.sla` source file to a native executable by generating a temporary `.sa` file internally and delegating to `sa build-exe`.
 - `sa sla check <file>`: Lex, parse, and type-check a `.sla` source file without emitting final SA assembly.
 - `sa sla test <file>`: Compile a `.sla` test file and run it through `sa test`.
 
@@ -37,6 +38,7 @@ SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plug
 Run dev-plugin commands with `SA_PLUGIN_DEV=1`, for example:
 ```bash
 SA_PLUGIN_DEV=1 sa sla build demos/rosetta/13_array_sum/main.sla --out /tmp/13_array_sum.sa
+SA_PLUGIN_DEV=1 sa sla build-exe demos/rosetta/13_array_sum/main.sla -o /tmp/13_array_sum
 SA_PLUGIN_DEV=1 sa sla check tests/test_unit_basic.sla
 SA_PLUGIN_DEV=1 sa sla build tests/test_unit_basic.sla --out /tmp/test_unit_basic.sa
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_basic.sla
@@ -50,6 +52,7 @@ Typical commands:
 ```bash
 SA_PLUGIN_DEV=1 sa sla check demos/rosetta/01_hello_world/main.sla
 SA_PLUGIN_DEV=1 sa sla build demos/rosetta/01_hello_world/main.sla --out /tmp/01_hello_world.sa
+SA_PLUGIN_DEV=1 sa sla build-exe demos/rosetta/01_hello_world/main.sla -o /tmp/01_hello_world
 SA_PLUGIN_DEV=1 sa sla test demos/rosetta/01_hello_world/main.sla
 ```
 

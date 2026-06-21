@@ -639,6 +639,28 @@ pub const Codegen = struct {
         self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
     }
 
+    fn emitActiveRefCellBorrowReleases(self: *Codegen) CodegenError!void {
+        var handles_to_release = std.ArrayList([]const u8).init(self.allocator);
+        defer handles_to_release.deinit();
+
+        var iter = self.refcell_borrow_handles.iterator();
+        while (iter.next()) |entry| {
+            handles_to_release.append(entry.key_ptr.*) catch return CodegenError.OutOfMemory;
+        }
+
+        for (handles_to_release.items) |handle_name| {
+            if (self.refcell_borrow_handles.get(handle_name)) |handle| {
+                if (handle.is_mut) {
+                    self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_MUT {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
+                } else {
+                    self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_SHARED {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
+                }
+                _ = self.refcell_borrow_handles.remove(handle_name);
+                self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
+            }
+        }
+    }
+
     fn releaseTemporaryHandleRegister(self: *Codegen, handle_reg: []const u8) CodegenError!void {
         if (!std.mem.startsWith(u8, handle_reg, "tmp_")) return;
         if (self.consumed_bindings.contains(handle_reg)) return;
@@ -2963,6 +2985,13 @@ pub const Codegen = struct {
             .primitive => |p| p == .void_type,
             .user_defined => |ud| std.mem.eql(u8, ud.name, "AtomicI32") or std.mem.eql(u8, ud.name, "AtomicUsize") or std.mem.eql(u8, ud.name, "RawWaker") or std.mem.eql(u8, ud.name, "Waker") or std.mem.eql(u8, ud.name, "LocalWaker") or std.mem.eql(u8, ud.name, "Wake"),
             else => false,
+        };
+    }
+
+    fn refCellPayloadIsPointer(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| p == .void_type,
+            else => true,
         };
     }
 
@@ -6641,6 +6670,7 @@ pub const Codegen = struct {
                         try self.emitRelease(c_var);
                     }
                 }
+                try self.emitActiveRefCellBorrowReleases();
 
                 if (val_reg) |vr| {
                     self.out.writer().print("    return {s}\n", .{vr}) catch return CodegenError.CodegenError;
@@ -9291,19 +9321,19 @@ pub const Codegen = struct {
                                 return "return_ty_sentinel";
                             }
                         }
-                        if (refCellInnerType(ty) != null) {
+                        if (refCellInnerType(ty)) |inner_ty| {
                             if (std.mem.eql(u8, call.func_name, "borrow") or std.mem.eql(u8, call.func_name, "borrow_mut")) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ok_reg = try self.newTmp();
-                                const borrow_reg = try self.newTmp();
+                                const borrow_slot_reg = try self.newTmp();
                                 const err_label = try self.newLabel("L_REFCELL_BORROW_PANIC");
                                 const end_label = try self.newLabel("L_REFCELL_BORROW_END");
                                 const is_mut = std.mem.eql(u8, call.func_name, "borrow_mut");
                                 if (is_mut) {
-                                    self.out.writer().print("    EXPAND REFCELL_U64_TRY_BORROW_MUT {s}, {s}, {s}\n", .{ ok_reg, borrow_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    EXPAND REFCELL_U64_TRY_BORROW_MUT {s}, {s}, {s}\n", .{ ok_reg, borrow_slot_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else {
-                                    self.out.writer().print("    EXPAND REFCELL_U64_TRY_BORROW {s}, {s}, {s}\n", .{ ok_reg, borrow_reg, recv_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    EXPAND REFCELL_U64_TRY_BORROW {s}, {s}, {s}\n", .{ ok_reg, borrow_slot_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 }
                                 self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, end_label, err_label }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
@@ -9312,6 +9342,12 @@ pub const Codegen = struct {
                                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                                const borrow_reg = if (refCellPayloadIsPointer(inner_ty)) blk: {
+                                    const payload_reg = try self.newTmp();
+                                    self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ payload_reg, borrow_slot_reg }) catch return CodegenError.CodegenError;
+                                    try self.emitRelease(borrow_slot_reg);
+                                    break :blk payload_reg;
+                                } else borrow_slot_reg;
                                 self.refcell_borrow_handles.put(borrow_reg, .{ .cell_reg = recv_reg, .is_mut = is_mut }) catch return CodegenError.OutOfMemory;
                                 return borrow_reg;
                             }

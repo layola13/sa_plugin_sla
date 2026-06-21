@@ -2833,7 +2833,6 @@ pub const TypeChecker = struct {
                     if (std.mem.eql(u8, target_name, "RefCell") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const value_ty = try self.checkExpr(call.args[0], scope);
-                        if (!isNumericType(value_ty)) return TypeError.TypeMismatch;
                         return try self.makeRefCellType(value_ty);
                     }
                     if (std.mem.eql(u8, target_name, "Mutex") and std.mem.eql(u8, call.func_name, "new")) {

@@ -22,6 +22,7 @@ pub const Parser = struct {
     allocator: std.mem.Allocator,
     lex: lexer.Lexer,
     tok: lexer.Token,
+    last_expected: ?[]const u8,
     known_types: std.ArrayList([]const u8),
     known_enums: std.ArrayList([]const u8),
     known_modules: std.ArrayList([]const u8),
@@ -38,6 +39,7 @@ pub const Parser = struct {
             .allocator = allocator,
             .lex = lexer.Lexer.init(buffer),
             .tok = undefined,
+            .last_expected = null,
             .known_types = std.ArrayList([]const u8).init(allocator),
             .known_enums = std.ArrayList([]const u8).init(allocator),
             .known_modules = std.ArrayList([]const u8).init(allocator),
@@ -67,7 +69,7 @@ pub const Parser = struct {
 
     fn expect(self: *Parser, tag: lexer.Token.Tag) ParserError!void {
         if (self.tok.tag != tag) {
-            std.debug.print("Expected token {s}, found {s} at index {}\n", .{ @tagName(tag), @tagName(self.tok.tag), self.tok.loc.start });
+            self.last_expected = @tagName(tag);
             return ParserError.SyntaxError;
         }
         self.advance();
@@ -86,9 +88,152 @@ pub const Parser = struct {
                 };
             },
             else => {
-                std.debug.print("Expected generic close token, found {s} at index {}\n", .{ @tagName(self.tok.tag), self.tok.loc.start });
+                self.last_expected = "generic close token '>'";
                 return ParserError.SyntaxError;
             },
+        }
+    }
+
+    const SourcePos = struct {
+        line: usize,
+        column: usize,
+        line_start: usize,
+        line_end: usize,
+    };
+
+    fn sourcePos(self: *Parser, byte_index: usize) SourcePos {
+        var line: usize = 1;
+        var column: usize = 1;
+        var line_start: usize = 0;
+        var i: usize = 0;
+        const limit = @min(byte_index, self.lex.buffer.len);
+        while (i < limit) : (i += 1) {
+            if (self.lex.buffer[i] == '\n') {
+                line += 1;
+                column = 1;
+                line_start = i + 1;
+            } else {
+                column += 1;
+            }
+        }
+        var line_end = line_start;
+        while (line_end < self.lex.buffer.len and self.lex.buffer[line_end] != '\n' and self.lex.buffer[line_end] != '\r') : (line_end += 1) {}
+        return .{ .line = line, .column = column, .line_start = line_start, .line_end = line_end };
+    }
+
+    fn lineStartForLine(self: *Parser, target_line: usize) usize {
+        if (target_line <= 1) return 0;
+        var line: usize = 1;
+        var i: usize = 0;
+        while (i < self.lex.buffer.len) : (i += 1) {
+            if (self.lex.buffer[i] == '\n') {
+                line += 1;
+                if (line == target_line) return i + 1;
+            }
+        }
+        return self.lex.buffer.len;
+    }
+
+    fn lineEndFromStart(self: *Parser, start: usize) usize {
+        var end = start;
+        while (end < self.lex.buffer.len and self.lex.buffer[end] != '\n' and self.lex.buffer[end] != '\r') : (end += 1) {}
+        return end;
+    }
+
+    fn expectedDescription(self: *Parser, err: ParserError) []const u8 {
+        if (self.last_expected) |expected| return expected;
+        return switch (err) {
+            ParserError.ExpectedDeclaration => "function, struct, enum, trait, impl, const, macro, extern block, module, or annotation declaration",
+            ParserError.UnexpectedToken => "valid expression or statement token",
+            ParserError.UnexpectedInfixToken => "valid infix operator or expression continuation",
+            ParserError.UnexpectedTypeToken => "valid type expression",
+            ParserError.InvalidCallTarget => "callable function, method, module function, or associated function target",
+            ParserError.InlineStructNotAllowed => "non-inline struct declaration",
+            ParserError.InlineImplNotAllowed => "non-inline impl declaration",
+            ParserError.InlineMacroNotAllowed => "non-inline macro declaration",
+            ParserError.ExternBlockRequiresExtern => "extern block declaration",
+            ParserError.SyntaxError => "valid Sla syntax",
+            ParserError.InvalidCharacter => "valid character or literal",
+            ParserError.Overflow => "literal within supported range",
+            ParserError.OutOfMemory => "available parser memory",
+        };
+    }
+
+    fn tokenDisplay(self: *Parser) []const u8 {
+        if (self.tok.tag == .eof) return "end of file";
+        const text = self.lexeme(self.tok.loc);
+        if (text.len == 0) return @tagName(self.tok.tag);
+        return text;
+    }
+
+    fn findBraceNote(self: *Parser, loc_start: usize) ?SourcePos {
+        if (self.tok.tag == .r_brace) {
+            var depth: usize = 0;
+            var l = lexer.Lexer.init(self.lex.buffer[0..loc_start]);
+            while (true) {
+                const t = l.next();
+                switch (t.tag) {
+                    .eof => break,
+                    .l_brace => depth += 1,
+                    .r_brace => {
+                        if (depth == 0) return self.sourcePos(t.loc.start);
+                        depth -= 1;
+                    },
+                    else => {},
+                }
+            }
+            if (depth == 0) return self.sourcePos(loc_start);
+        } else if (self.tok.tag == .eof) {
+            var depth: usize = 0;
+            var last_open: ?usize = null;
+            var l = lexer.Lexer.init(self.lex.buffer);
+            while (true) {
+                const t = l.next();
+                switch (t.tag) {
+                    .eof => break,
+                    .l_brace => {
+                        depth += 1;
+                        last_open = t.loc.start;
+                    },
+                    .r_brace => {
+                        if (depth > 0) depth -= 1;
+                    },
+                    else => {},
+                }
+            }
+            if (depth > 0 and last_open != null) return self.sourcePos(last_open.?);
+        }
+        return null;
+    }
+
+    pub fn printDiagnostic(self: *Parser, writer: anytype, file: []const u8, err: ParserError) !void {
+        const pos = self.sourcePos(self.tok.loc.start);
+        const expected = self.expectedDescription(err);
+        const found = self.tokenDisplay();
+        try writer.print("Syntax Error: failed to parse {s}:{}:{}: {}\n", .{ file, pos.line, pos.column, err });
+        try writer.print("  |\n", .{});
+        const first_line = if (pos.line > 2) pos.line - 2 else 1;
+        var line_no = first_line;
+        while (line_no <= pos.line + 2) : (line_no += 1) {
+            const start = self.lineStartForLine(line_no);
+            if (start >= self.lex.buffer.len and line_no > pos.line) break;
+            const end = self.lineEndFromStart(start);
+            try writer.print("{d:5} | {s}\n", .{ line_no, self.lex.buffer[start..end] });
+            if (line_no == pos.line) {
+                try writer.print("      | ", .{});
+                var col: usize = 1;
+                while (col < pos.column) : (col += 1) try writer.print(" ", .{});
+                try writer.print("^ found '{s}', expected {s}\n", .{ found, expected });
+            }
+            if (end >= self.lex.buffer.len) break;
+        }
+        if (self.tok.tag == .r_brace and err == ParserError.ExpectedDeclaration) {
+            try writer.print("  |\n  | Note: unexpected closing brace at top level; this '}}' does not match any opening brace in the current declaration context.\n", .{});
+            try writer.print("  | Hint: check whether the previous function, impl, struct, or module has an extra '}}'.\n", .{});
+        } else if (self.tok.tag == .eof) {
+            if (self.findBraceNote(self.tok.loc.start)) |open_pos| {
+                try writer.print("  |\n  | Note: reached end of file while a '{{' opened near line {}, column {} may still be unmatched.\n", .{ open_pos.line, open_pos.column });
+            }
         }
     }
 
@@ -2366,4 +2511,32 @@ test "parse struct and function" {
     try std.testing.expect(s1.let_stmt.value.* == .try_expr);
     try std.testing.expect(s1.let_stmt.value.try_expr.expr.* == .call_expr);
     try std.testing.expectEqualSlices(u8, "fetch", s1.let_stmt.value.try_expr.expr.call_expr.func_name);
+}
+
+test "syntax diagnostic includes location token and context" {
+    const source =
+        \\fn ok() -> i32 {
+        \\    return 1;
+        \\}
+        \\}
+        \\fn later() -> i32 {
+        \\    return 2;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.init(allocator, source);
+    try std.testing.expectError(ParserError.ExpectedDeclaration, p.parseProgram());
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try p.printDiagnostic(out.writer(), "bad.sla", ParserError.ExpectedDeclaration);
+
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "Syntax Error: failed to parse bad.sla:4:1: error.ExpectedDeclaration") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "4 | }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "^ found '}', expected function, struct") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "unexpected closing brace at top level") != null);
 }

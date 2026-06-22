@@ -605,7 +605,7 @@ fn compileSlaToSaString(
     const sla_base_dir = std.fs.path.dirname(file) orelse ".";
     var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
     const prog = p.parseProgram() catch |err| {
-        try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
+        try p.printDiagnostic(stderr, file, err);
         return null;
     };
 
@@ -781,7 +781,7 @@ pub fn runSlaCommandImpl(
         const sla_base_dir = std.fs.path.dirname(file) orelse ".";
         var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
         const prog = p.parseProgram() catch |err| {
-            try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
+            try p.printDiagnostic(stderr, file, err);
             return 1;
         };
 

@@ -6205,6 +6205,25 @@ pub const Codegen = struct {
         }
     }
 
+    fn genScopedBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+        var scoped_var_aliases = std.ArrayList([]const u8).init(self.allocator);
+        defer scoped_var_aliases.deinit();
+
+        for (block) |stmt| {
+            if (stmt.* == .var_stmt) {
+                _ = try self.pushBindingAlias(stmt.var_stmt.name);
+                try scoped_var_aliases.append(stmt.var_stmt.name);
+            }
+            try self.genStmt(stmt, hoisted_allocs);
+        }
+
+        var i = scoped_var_aliases.items.len;
+        while (i > 0) {
+            i -= 1;
+            self.popBindingAlias(scoped_var_aliases.items[i]);
+        }
+    }
+
     fn genBlockTailValueInto(
         self: *Codegen,
         block: []const *ast.Node,
@@ -6794,9 +6813,10 @@ pub const Codegen = struct {
                 }
             },
             .var_stmt => |v| {
-                self.stack_alloc_bindings.put(v.name, {}) catch return CodegenError.OutOfMemory;
-                self.addressable_bindings.put(v.name, {}) catch return CodegenError.OutOfMemory;
-                self.out.writer().print("    {s} = stack_alloc {}\n", .{ v.name, typeSize(v.ty) }) catch return CodegenError.CodegenError;
+                const slot_name = self.resolveBindingName(v.name);
+                self.stack_alloc_bindings.put(slot_name, {}) catch return CodegenError.OutOfMemory;
+                self.addressable_bindings.put(slot_name, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    {s} = stack_alloc {}\n", .{ slot_name, typeSize(v.ty) }) catch return CodegenError.CodegenError;
             },
             .let_else_stmt => |let| {
                 const value_reg = try self.genExpr(let.value, hoisted_allocs);
@@ -7276,7 +7296,7 @@ pub const Codegen = struct {
                 self.out.writer().print("    jmp {s}\n", .{continue_label}) catch return CodegenError.CodegenError;
             },
             .release_stmt => |rel| {
-                try self.emitRelease(rel.var_name);
+                try self.emitRelease(self.resolveBindingName(rel.var_name));
             },
             .expr_stmt => |expr| {
                 if (expr.* == .call_expr and self.isVoidCall(&expr.call_expr) and !std.mem.eql(u8, expr.call_expr.func_name, "panic")) {
@@ -7291,7 +7311,7 @@ pub const Codegen = struct {
                 }
             },
             .block_stmt => |blk| {
-                try self.genBlock(blk.body, hoisted_allocs);
+                try self.genScopedBlock(blk.body, hoisted_allocs);
             },
             else => {},
         }
@@ -8341,7 +8361,15 @@ pub const Codegen = struct {
                     return capture_reg;
                 }
                 const resolved_name = self.resolveBindingName(name);
-                if (!std.mem.eql(u8, resolved_name, name)) return resolved_name;
+                if (!std.mem.eql(u8, resolved_name, name)) {
+                    if (self.addressable_bindings.contains(resolved_name)) {
+                        const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                        const reg = try self.newTmp();
+                        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                        return reg;
+                    }
+                    return resolved_name;
+                }
                 if (self.closure_param_regs.get(name)) |mapped| return mapped;
                 if (self.global_scalar_consts.get(name)) |literal_node| {
                     if (literal_node.* != .literal) return CodegenError.CodegenError;

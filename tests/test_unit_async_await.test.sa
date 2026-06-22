@@ -7,6 +7,7 @@
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/future.sa"
 @const SLA_FNPTR_VT_step_one = vtable { call = @sla__step_one }
 @const SLA_FNPTR_VT_run_async = vtable { call = @sla__run_async }
 @const SLA_FNPTR_VT_await_from_sync = vtable { call = @sla__await_from_sync }
@@ -80,3 +81,4 @@ L_ELSE_6:
 L_MERGE_7:
     !result
     return
+

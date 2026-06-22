@@ -1,5 +1,5 @@
-@import "/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/nested/local_contract.sai"
-@import "/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/nested/local_layout.sal"
+@import "import_fixtures/nested/local_contract.sai"
+@import "import_fixtures/nested/local_layout.sal"
 @import "sa_std/string.sa"
 @import "sa_std/string_format.sa"
 @import "sa_std/io/print.sai"
@@ -20,3 +20,4 @@ L_ENTRY:
 L_ENTRY:
     tmp_1 = call @sla__imported_nested_contract_value()
     return tmp_1
+

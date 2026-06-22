@@ -25,8 +25,10 @@ L_THEN_0:
     tmp_3 = alloc 8
     tmp_4 = load self+8 as i32
     store tmp_3+0, tmp_4 as i32
+    !tmp_4
     tmp_5 = load self+12 as i32
     store tmp_3+4, tmp_5 as i32
+    !tmp_5
     !first
     !index
     return tmp_3
@@ -39,8 +41,10 @@ L_MERGE_2:
     tmp_7 = alloc 8
     tmp_8 = load self+16 as i32
     store tmp_7+0, tmp_8 as i32
+    !tmp_8
     tmp_9 = load self+20 as i32
     store tmp_7+4, tmp_9 as i32
+    !tmp_9
     !first
     !index
     return tmp_7
@@ -64,6 +68,7 @@ L_LOOP_BODY_4:
     item = call @sla__QueryPV_iter_at(&query, tmp_12)
     tmp_14 = load item+0 as i32
     tmp_15 = add total, tmp_14
+    !tmp_14
     !total
     total = tmp_15
 L_LOOP_CONTINUE_5:
@@ -122,3 +127,4 @@ L_MERGE_11:
     !query
     !got
     return
+

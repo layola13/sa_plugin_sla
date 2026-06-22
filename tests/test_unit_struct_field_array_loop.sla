@@ -45,7 +45,7 @@ fn nested_join(world: World) -> i32 {
 @test "single loop struct field array"() {
     let d = Data {
         active: [true, true, false, false],
-        values: [10, 20, 0, 0],
+        values: [10i32, 20i32, 0i32, 0i32],
     };
     let got = sum_active(d);
     if got != 30 { panic(1); };
@@ -54,9 +54,9 @@ fn nested_join(world: World) -> i32 {
 @test "nested loop struct field arrays"() {
     let w = World {
         a_active: [true, false, false, false],
-        a_values: [0, 0, 0, 0],
+        a_values: [0i32, 0i32, 0i32, 0i32],
         b_active: [true, true, false, false],
-        b_values: [5, 7, 0, 0],
+        b_values: [5i32, 7i32, 0i32, 0i32],
     };
     let got = nested_join(w);
     if got != 12 { panic(2); };

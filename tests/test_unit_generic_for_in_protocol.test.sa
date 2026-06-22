@@ -13,6 +13,7 @@
 L_ENTRY:
     tmp_0 = load self+0 as ptr
     EXPAND VEC_LEN tmp_1, tmp_0
+    !tmp_0
     tmp_2 = tmp_1 as i64
     return tmp_2
 
@@ -20,6 +21,7 @@ L_ENTRY:
 L_ENTRY:
     tmp_3 = load self+0 as ptr
     EXPAND VEC_GET tmp_4, tmp_3, index
+    !tmp_3
     tmp_5 = tmp_4 as ptr
     return tmp_5
 
@@ -43,6 +45,7 @@ L_TEST_ENTRY_0:
     !tmp_11
     EXPAND VEC_PUSH tmp_9, tmp_10, 8
     !tmp_10
+    !tmp_9
     tmp_12 = load q+0 as ptr
     tmp_13 = alloc 4
     tmp_14 = 3
@@ -50,6 +53,7 @@ L_TEST_ENTRY_0:
     !tmp_14
     EXPAND VEC_PUSH tmp_12, tmp_13, 8
     !tmp_13
+    !tmp_12
     tmp_15 = 0
     total = tmp_15
     tmp_16 = call @sla__Query_Item_iter_len(&q)
@@ -66,6 +70,7 @@ L_LOOP_BODY_2:
     item = call @sla__Query_Item_iter_at(&q, tmp_17)
     tmp_19 = load item+0 as i32
     tmp_20 = add total, tmp_19
+    !tmp_19
     !total
     total = tmp_20
 L_LOOP_CONTINUE_3:
@@ -100,3 +105,4 @@ L_MERGE_8:
     !q
     !total
     return
+

@@ -31,6 +31,7 @@ L_WHILE_BODY_1:
     !tmp_5
     tmp_7 = load tmp_6+0 as u8
     !tmp_6
+    !tmp_4
     is_active = tmp_7
     tmp_8 = 1
     tmp_9 = eq is_active, tmp_8
@@ -45,6 +46,7 @@ L_THEN_4:
     !tmp_11
     tmp_13 = load tmp_12+0 as i32
     !tmp_12
+    !tmp_10
     v = tmp_13
     tmp_14 = add total, v
     !total
@@ -96,8 +98,10 @@ L_WHILE_BODY_8:
     !tmp_23
     tmp_25 = load tmp_24+0 as u8
     !tmp_24
+    !tmp_22
     tmp_26 = 1
     tmp_27 = eq tmp_25, tmp_26
+    !tmp_25
     !tmp_26
     br tmp_27 -> L_THEN_11, L_ELSE_12
 
@@ -121,8 +125,10 @@ L_WHILE_BODY_15:
     !tmp_32
     tmp_34 = load tmp_33+0 as u8
     !tmp_33
+    !tmp_31
     tmp_35 = 1
     tmp_36 = eq tmp_34, tmp_35
+    !tmp_34
     !tmp_35
     br tmp_36 -> L_THEN_18, L_ELSE_19
 
@@ -134,7 +140,9 @@ L_THEN_18:
     !tmp_38
     tmp_40 = load tmp_39+0 as i32
     !tmp_39
+    !tmp_37
     tmp_41 = add total, tmp_40
+    !tmp_40
     !total
     total = tmp_41
     jmp L_MERGE_20
@@ -200,32 +208,32 @@ L_TEST_ENTRY_21:
     !tmp_48
     tmp_53 = alloc 16
     tmp_54 = 10
-    store tmp_53+0, tmp_54 as i32
-    !tmp_54
-    tmp_55 = 20
-    store tmp_53+4, tmp_55 as i32
-    !tmp_55
-    tmp_56 = 0
-    store tmp_53+8, tmp_56 as i32
-    !tmp_56
-    tmp_57 = 0
-    store tmp_53+12, tmp_57 as i32
-    !tmp_57
+    tmp_55 = tmp_54 as i32
+    store tmp_53+0, tmp_55 as i32
+    tmp_56 = 20
+    tmp_57 = tmp_56 as i32
+    store tmp_53+4, tmp_57 as i32
+    tmp_58 = 0
+    tmp_59 = tmp_58 as i32
+    store tmp_53+8, tmp_59 as i32
+    tmp_60 = 0
+    tmp_61 = tmp_60 as i32
+    store tmp_53+12, tmp_61 as i32
     store d+8, tmp_53 as ptr
     !tmp_53
-    tmp_58 = call @sla__sum_active(d)
-    got = tmp_58
-    tmp_59 = 30
-    tmp_60 = ne got, tmp_59
-    !tmp_59
-    br tmp_60 -> L_THEN_22, L_ELSE_23
+    tmp_62 = call @sla__sum_active(d)
+    got = tmp_62
+    tmp_63 = 30
+    tmp_64 = ne got, tmp_63
+    !tmp_63
+    br tmp_64 -> L_THEN_22, L_ELSE_23
 
 L_THEN_22:
-    !tmp_60
+    !tmp_64
     panic(1)
 
 L_ELSE_23:
-    !tmp_60
+    !tmp_64
     jmp L_MERGE_24
 
 L_MERGE_24:
@@ -236,82 +244,83 @@ L_MERGE_24:
 @test "nested loop struct field arrays"():
 L_TEST_ENTRY_25:
     w = alloc 32
-    tmp_63 = alloc 4
-    tmp_64 = 1
-    store tmp_63+0, tmp_64 as u8
-    !tmp_64
-    tmp_65 = 0
-    store tmp_63+1, tmp_65 as u8
-    !tmp_65
-    tmp_66 = 0
-    store tmp_63+2, tmp_66 as u8
-    !tmp_66
-    tmp_67 = 0
-    store tmp_63+3, tmp_67 as u8
-    !tmp_67
-    store w+0, tmp_63 as ptr
-    !tmp_63
-    tmp_68 = alloc 16
+    tmp_67 = alloc 4
+    tmp_68 = 1
+    store tmp_67+0, tmp_68 as u8
+    !tmp_68
     tmp_69 = 0
-    store tmp_68+0, tmp_69 as i32
+    store tmp_67+1, tmp_69 as u8
     !tmp_69
     tmp_70 = 0
-    store tmp_68+4, tmp_70 as i32
+    store tmp_67+2, tmp_70 as u8
     !tmp_70
     tmp_71 = 0
-    store tmp_68+8, tmp_71 as i32
+    store tmp_67+3, tmp_71 as u8
     !tmp_71
-    tmp_72 = 0
-    store tmp_68+12, tmp_72 as i32
-    !tmp_72
-    store w+8, tmp_68 as ptr
-    !tmp_68
-    tmp_73 = alloc 4
-    tmp_74 = 1
-    store tmp_73+0, tmp_74 as u8
-    !tmp_74
-    tmp_75 = 1
-    store tmp_73+1, tmp_75 as u8
-    !tmp_75
-    tmp_76 = 0
-    store tmp_73+2, tmp_76 as u8
-    !tmp_76
+    store w+0, tmp_67 as ptr
+    !tmp_67
+    tmp_72 = alloc 16
+    tmp_73 = 0
+    tmp_74 = tmp_73 as i32
+    store tmp_72+0, tmp_74 as i32
+    tmp_75 = 0
+    tmp_76 = tmp_75 as i32
+    store tmp_72+4, tmp_76 as i32
     tmp_77 = 0
-    store tmp_73+3, tmp_77 as u8
-    !tmp_77
-    store w+16, tmp_73 as ptr
-    !tmp_73
-    tmp_78 = alloc 16
-    tmp_79 = 5
-    store tmp_78+0, tmp_79 as i32
-    !tmp_79
-    tmp_80 = 7
-    store tmp_78+4, tmp_80 as i32
-    !tmp_80
-    tmp_81 = 0
-    store tmp_78+8, tmp_81 as i32
-    !tmp_81
-    tmp_82 = 0
-    store tmp_78+12, tmp_82 as i32
+    tmp_78 = tmp_77 as i32
+    store tmp_72+8, tmp_78 as i32
+    tmp_79 = 0
+    tmp_80 = tmp_79 as i32
+    store tmp_72+12, tmp_80 as i32
+    store w+8, tmp_72 as ptr
+    !tmp_72
+    tmp_81 = alloc 4
+    tmp_82 = 1
+    store tmp_81+0, tmp_82 as u8
     !tmp_82
-    store w+24, tmp_78 as ptr
-    !tmp_78
-    tmp_83 = call @sla__nested_join(w)
-    got = tmp_83
-    tmp_84 = 12
-    tmp_85 = ne got, tmp_84
+    tmp_83 = 1
+    store tmp_81+1, tmp_83 as u8
+    !tmp_83
+    tmp_84 = 0
+    store tmp_81+2, tmp_84 as u8
     !tmp_84
-    br tmp_85 -> L_THEN_26, L_ELSE_27
+    tmp_85 = 0
+    store tmp_81+3, tmp_85 as u8
+    !tmp_85
+    store w+16, tmp_81 as ptr
+    !tmp_81
+    tmp_86 = alloc 16
+    tmp_87 = 5
+    tmp_88 = tmp_87 as i32
+    store tmp_86+0, tmp_88 as i32
+    tmp_89 = 7
+    tmp_90 = tmp_89 as i32
+    store tmp_86+4, tmp_90 as i32
+    tmp_91 = 0
+    tmp_92 = tmp_91 as i32
+    store tmp_86+8, tmp_92 as i32
+    tmp_93 = 0
+    tmp_94 = tmp_93 as i32
+    store tmp_86+12, tmp_94 as i32
+    store w+24, tmp_86 as ptr
+    !tmp_86
+    tmp_95 = call @sla__nested_join(w)
+    got = tmp_95
+    tmp_96 = 12
+    tmp_97 = ne got, tmp_96
+    !tmp_96
+    br tmp_97 -> L_THEN_26, L_ELSE_27
 
 L_THEN_26:
-    !tmp_85
+    !tmp_97
     panic(2)
 
 L_ELSE_27:
-    !tmp_85
+    !tmp_97
     jmp L_MERGE_28
 
 L_MERGE_28:
     !got
     !w
     return
+

@@ -12,9 +12,12 @@
 L_ENTRY:
     tmp_0 = load entity+0 as i32
     store slot+0, tmp_0 as i32
+    !tmp_0
     tmp_1 = load entity+4 as i32
     tmp_2 = load slot+0 as i32
     tmp_3 = add tmp_1, tmp_2
+    !tmp_1
+    !tmp_2
     !entity
     !slot
     return tmp_3
@@ -52,3 +55,4 @@ L_ELSE_2:
 L_MERGE_3:
     !got
     return
+

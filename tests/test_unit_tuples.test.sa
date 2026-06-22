@@ -11,30 +11,32 @@
 @const SLA_FNPTR_VT_destructure_value = vtable { call = @sla__destructure_value }
 @sla__tuple_value() -> i64:
 L_ENTRY:
-    pair = alloc 8
+    pair = alloc 16
     tmp_0 = 3
-    store pair+0, tmp_0 as i32
+    store pair+0, tmp_0 as i64
     tmp_1 = 4
-    store pair+4, tmp_1 as i32
-    tmp_2 = load pair+0 as i32
+    store pair+8, tmp_1 as i64
+    tmp_2 = load pair+0 as i64
     tmp_3 = 10
     tmp_4 = mul tmp_2, tmp_3
+    !tmp_2
     !tmp_3
-    tmp_5 = load pair+4 as i32
+    tmp_5 = load pair+8 as i64
     tmp_6 = add tmp_4, tmp_5
     !tmp_4
+    !tmp_5
     !pair
     return tmp_6
 
 @sla__destructure_value() -> i64:
 L_ENTRY:
-    tmp_7 = alloc 8
+    tmp_7 = alloc 16
     tmp_8 = 2
-    store tmp_7+0, tmp_8 as i32
+    store tmp_7+0, tmp_8 as i64
     tmp_9 = 5
-    store tmp_7+4, tmp_9 as i32
-    x = load tmp_7+0 as i32
-    y = load tmp_7+4 as i32
+    store tmp_7+8, tmp_9 as i64
+    x = load tmp_7+0 as i64
+    y = load tmp_7+8 as i64
     !tmp_7
     tmp_10 = add x, y
     sum = tmp_10
@@ -83,3 +85,4 @@ L_ELSE_6:
 L_MERGE_7:
     !got
     return
+

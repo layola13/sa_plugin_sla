@@ -117,21 +117,21 @@ L_ENTRY:
     !tmp_34
     store slots+0, tmp_32 as ptr
     !tmp_32
-    tmp_35 = alloc 8
+    tmp_35 = alloc 16
     tmp_36 = 0
-    store tmp_35+0, tmp_36 as i32
+    store tmp_35+0, tmp_36 as i64
     !tmp_36
     tmp_37 = 0
-    store tmp_35+4, tmp_37 as i32
+    store tmp_35+8, tmp_37 as i64
     !tmp_37
     store slots+8, tmp_35 as ptr
     !tmp_35
-    tmp_38 = alloc 8
+    tmp_38 = alloc 16
     tmp_39 = 5
-    store tmp_38+0, tmp_39 as i32
+    store tmp_38+0, tmp_39 as i64
     !tmp_39
     tmp_40 = 0
-    store tmp_38+4, tmp_40 as i32
+    store tmp_38+8, tmp_40 as i64
     !tmp_40
     store slots+16, tmp_38 as ptr
     !tmp_38

@@ -25,6 +25,29 @@ fn var_bool_condition(flag: bool) -> i32 {
     };
 }
 
+fn var_bool_condition_remains_copy(flag: bool) -> i32 {
+    var ok: bool;
+    ok = flag;
+    if ok {
+        if ok != true { panic(17530); };
+    } else {
+        if ok != false { panic(17531); };
+    };
+    if ok == flag {
+        return 1;
+    };
+    return 0;
+}
+
+fn var_int_condition_remains_copy(value: i32) -> i32 {
+    var x: i32;
+    x = value;
+    if x != 0 {
+        return x + 1;
+    };
+    return x;
+}
+
 fn var_f64_slot() -> f64 {
     var value: f64;
     value = 1.5;
@@ -45,6 +68,34 @@ fn var_assignment_from_initialized_slot() -> i32 {
     b = a + 8;
     a = b - 5;
     return a + b;
+}
+
+fn var_assignment_from_nested_branches(cond: bool) -> i32 {
+    var x: i32;
+    if cond {
+        x = 8;
+    } else {
+        x = 9;
+    };
+    return x;
+}
+
+fn var_nested_branch_assignment(a: bool, b: bool) -> i32 {
+    var x: i32;
+    if a {
+        if b {
+            x = 1;
+        } else {
+            x = 2;
+        };
+    } else {
+        if b {
+            x = 3;
+        } else {
+            x = 4;
+        };
+    };
+    return x;
 }
 
 fn var_tuple_expression_after_init() -> i32 {
@@ -110,6 +161,30 @@ fn var_initialized_before_for_loop() -> i32 {
     return total;
 }
 
+fn var_loop_break_after_init() -> i32 {
+    var x: i32;
+    x = 0;
+    for i in 0..5 {
+        x = x + i;
+        if i == 3 {
+            break;
+        };
+    }
+    return x;
+}
+
+fn var_loop_continue_after_init() -> i32 {
+    var total: i32;
+    total = 0;
+    for i in 0..5 {
+        if i == 2 {
+            continue;
+        };
+        total = total + i;
+    }
+    return total;
+}
+
 fn var_initialized_before_while_loop() -> i32 {
     var total: i32;
     total = 1;
@@ -128,6 +203,17 @@ fn var_release_after_init() -> i32 {
     return 0;
 }
 
+fn var_shadow_redeclare_after_outer_init() -> i32 {
+    var x: i32;
+    x = 10;
+    {
+        var x: i32;
+        x = 20;
+        if x != 20 { panic(17532); };
+    }
+    return x;
+}
+
 @test "var supports i32 expression and compound assignment"() {
     if var_i32_expression() != 30 { panic(17500); };
 }
@@ -141,6 +227,13 @@ fn var_release_after_init() -> i32 {
     if var_bool_condition(false) != 22 { panic(17503); };
 }
 
+@test "var copy scalar conditions remain readable"() {
+    if var_bool_condition_remains_copy(true) != 1 { panic(17533); };
+    if var_bool_condition_remains_copy(false) != 1 { panic(17534); };
+    if var_int_condition_remains_copy(7) != 8 { panic(17535); };
+    if var_int_condition_remains_copy(0) != 0 { panic(17536); };
+}
+
 @test "var supports f64 slots"() {
     if var_f64_slot() != 2.25 { panic(17504); };
 }
@@ -151,6 +244,15 @@ fn var_release_after_init() -> i32 {
 
 @test "var can initialize another var slot after read is legal"() {
     if var_assignment_from_initialized_slot() != 35 { panic(17506); };
+}
+
+@test "var nested branch assignment merges correctly"() {
+    if var_assignment_from_nested_branches(true) != 8 { panic(17537); };
+    if var_assignment_from_nested_branches(false) != 9 { panic(17538); };
+    if var_nested_branch_assignment(true, true) != 1 { panic(17539); };
+    if var_nested_branch_assignment(true, false) != 2 { panic(17540); };
+    if var_nested_branch_assignment(false, true) != 3 { panic(17541); };
+    if var_nested_branch_assignment(false, false) != 4 { panic(17542); };
 }
 
 @test "var can participate in tuple expressions after initialization"() {
@@ -177,8 +279,14 @@ fn var_release_after_init() -> i32 {
 @test "var initialized before loops remains writable"() {
     if var_initialized_before_for_loop() != 6 { panic(17512); };
     if var_initialized_before_while_loop() != 9 { panic(17513); };
+    if var_loop_break_after_init() != 6 { panic(17543); };
+    if var_loop_continue_after_init() != 8 { panic(17544); };
 }
 
 @test "var can be released after initialization"() {
     if var_release_after_init() != 0 { panic(17514); };
+}
+
+@test "var shadow redeclare preserves initialized outer"() {
+    if var_shadow_redeclare_after_outer_init() != 10 { panic(17545); };
 }

@@ -51,109 +51,117 @@ L_TEST_ENTRY_3:
     tmp_13 = eq result, tmp_12
     !tmp_12
     ok = tmp_13
-    br ok -> L_THEN_4, L_ELSE_5
+    tmp_14 = or ok, 0
+    br tmp_14 -> L_THEN_4, L_ELSE_5
 
 L_THEN_4:
-    !ok
+    !tmp_14
     jmp L_MERGE_6
 
 L_ELSE_5:
-    !ok
+    !tmp_14
     panic(1)
 
 L_MERGE_6:
+    !ok
     !result
     return
 
 @test "add with zero"():
 L_TEST_ENTRY_7:
-    tmp_16 = 0
-    tmp_17 = 42
-    tmp_18 = call @sla__add(tmp_16, tmp_17)
-    !tmp_16
+    tmp_17 = 0
+    tmp_18 = 42
+    tmp_19 = call @sla__add(tmp_17, tmp_18)
     !tmp_17
-    result = tmp_18
-    tmp_19 = 42
-    tmp_20 = eq result, tmp_19
-    !tmp_19
-    ok = tmp_20
-    br ok -> L_THEN_8, L_ELSE_9
+    !tmp_18
+    result = tmp_19
+    tmp_20 = 42
+    tmp_21 = eq result, tmp_20
+    !tmp_20
+    ok = tmp_21
+    tmp_22 = or ok, 0
+    br tmp_22 -> L_THEN_8, L_ELSE_9
 
 L_THEN_8:
-    !ok
+    !tmp_22
     jmp L_MERGE_10
 
 L_ELSE_9:
-    !ok
+    !tmp_22
     panic(1)
 
 L_MERGE_10:
+    !ok
     !result
     return
 
 @test "factorial of 5"():
 L_TEST_ENTRY_11:
-    tmp_23 = 5
-    tmp_24 = call @sla__factorial(tmp_23)
-    !tmp_23
-    result = tmp_24
-    tmp_25 = 120
-    tmp_26 = eq result, tmp_25
+    tmp_25 = 5
+    tmp_26 = call @sla__factorial(tmp_25)
     !tmp_25
-    ok = tmp_26
-    br ok -> L_THEN_12, L_ELSE_13
+    result = tmp_26
+    tmp_27 = 120
+    tmp_28 = eq result, tmp_27
+    !tmp_27
+    ok = tmp_28
+    tmp_29 = or ok, 0
+    br tmp_29 -> L_THEN_12, L_ELSE_13
 
 L_THEN_12:
-    !ok
+    !tmp_29
     jmp L_MERGE_14
 
 L_ELSE_13:
-    !ok
+    !tmp_29
     panic(1)
 
 L_MERGE_14:
+    !ok
     !result
     return
 
 @test "add is commutative"():
 L_TEST_ENTRY_15:
-    tmp_29 = 2
-    tmp_30 = 3
-    tmp_31 = call @sla__add(tmp_29, tmp_30)
-    !tmp_29
-    !tmp_30
-    ab = tmp_31
-    tmp_32 = 3
-    tmp_33 = 2
+    tmp_32 = 2
+    tmp_33 = 3
     tmp_34 = call @sla__add(tmp_32, tmp_33)
     !tmp_32
     !tmp_33
-    ba = tmp_34
-    tmp_35 = eq ab, ba
-    ok = tmp_35
-    br ok -> L_THEN_16, L_ELSE_17
+    ab = tmp_34
+    tmp_35 = 3
+    tmp_36 = 2
+    tmp_37 = call @sla__add(tmp_35, tmp_36)
+    !tmp_35
+    !tmp_36
+    ba = tmp_37
+    tmp_38 = eq ab, ba
+    ok = tmp_38
+    tmp_39 = or ok, 0
+    br tmp_39 -> L_THEN_16, L_ELSE_17
 
 L_THEN_16:
-    !ok
+    !tmp_39
     jmp L_MERGE_18
 
 L_ELSE_17:
-    !ok
+    !tmp_39
     panic(1)
 
 L_MERGE_18:
     !ba
+    !ok
     !ab
     return
 
 @test ignored "this test is skipped by default"():
 L_TEST_ENTRY_19:
-    tmp_38 = 1
-    tmp_39 = 1
-    tmp_40 = call @sla__add(tmp_38, tmp_39)
-    !tmp_38
-    !tmp_39
-    x = tmp_40
+    tmp_42 = 1
+    tmp_43 = 1
+    tmp_44 = call @sla__add(tmp_42, tmp_43)
+    !tmp_42
+    !tmp_43
+    x = tmp_44
     !x
     return
 

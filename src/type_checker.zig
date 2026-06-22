@@ -4286,12 +4286,6 @@ pub const TypeChecker = struct {
                     else => return TypeError.TypeMismatch,
                 }
 
-                if (ife.cond.* == .identifier) {
-                    const sym = scope.lookup(ife.cond.identifier) orelse return TypeError.UndefinedVariable;
-                    if (sym.state == .consumed) return TypeError.UseAfterMove;
-                    sym.state = .consumed;
-                }
-
                 // For branching, save active symbols and states
                 var saved_states = std.StringHashMap(ValueState).init(self.allocator);
                 defer saved_states.deinit();
@@ -4402,12 +4396,6 @@ pub const TypeChecker = struct {
             .switch_expr => |*swe| {
                 const val_ty = try self.checkExpr(swe.val, scope);
                 _ = val_ty;
-
-                if (swe.val.* == .identifier) {
-                    const sym = scope.lookup(swe.val.identifier) orelse return TypeError.UndefinedVariable;
-                    if (sym.state == .consumed) return TypeError.UseAfterMove;
-                    sym.state = .consumed;
-                }
 
                 // For simplicity, switch patterns are literal/identifiers.
                 // We return void or default case type.

@@ -1,0 +1,270 @@
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_var_scalar_value = vtable { call = @sla__var_scalar_value }
+@const SLA_FNPTR_VT_var_scalar_branch = vtable { call = @sla__var_scalar_branch }
+@const SLA_FNPTR_VT_var_scalar_copy = vtable { call = @sla__var_scalar_copy }
+@const SLA_FNPTR_VT_var_bool_slot = vtable { call = @sla__var_bool_slot }
+@const SLA_FNPTR_VT_var_initialized_before_loop = vtable { call = @sla__var_initialized_before_loop }
+@sla__var_scalar_value() -> i32:
+L_ENTRY:
+    x = stack_alloc 4
+    tmp_0 = 41
+    store x+0, tmp_0 as i32
+    !tmp_0
+    tmp_1 = load x+0 as i32
+    tmp_2 = 1
+    tmp_3 = add tmp_1, tmp_2
+    !tmp_2
+    store x+0, tmp_3 as i32
+    !tmp_3
+    tmp_4 = load x+0 as i32
+    return tmp_4
+
+@sla__var_scalar_branch(cond: u8) -> i32:
+L_ENTRY:
+    x = stack_alloc 4
+    tmp_5 = or cond, 0
+    br tmp_5 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_5
+    tmp_6 = 10
+    store x+0, tmp_6 as i32
+    !tmp_6
+    jmp L_MERGE_2
+
+L_ELSE_1:
+    !tmp_5
+    tmp_7 = 20
+    store x+0, tmp_7 as i32
+    !tmp_7
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_9 = load x+0 as i32
+    !cond
+    return tmp_9
+
+@sla__var_scalar_copy() -> i32:
+L_ENTRY:
+    a = stack_alloc 4
+    b = stack_alloc 4
+    tmp_10 = 5
+    store a+0, tmp_10 as i32
+    !tmp_10
+    tmp_11 = load a+0 as i32
+    store b+0, tmp_11 as i32
+    tmp_12 = load a+0 as i32
+    tmp_13 = load b+0 as i32
+    tmp_14 = add tmp_12, tmp_13
+    return tmp_14
+
+@sla__var_bool_slot(flag: u8) -> i32:
+L_ENTRY:
+    ok = stack_alloc 1
+    store ok+0, flag as u8
+    tmp_15 = load ok+0 as u8
+    br tmp_15 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_15
+    tmp_16 = 1
+    !flag
+    return tmp_16
+
+L_ELSE_4:
+    !tmp_15
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_18 = 2
+    !flag
+    return tmp_18
+
+@sla__var_initialized_before_loop() -> i32:
+L_ENTRY:
+    x = stack_alloc 4
+    tmp_19 = 1
+    store x+0, tmp_19 as i32
+    !tmp_19
+    tmp_20 = 0
+    i = tmp_20
+    jmp L_WHILE_HEAD_6
+
+L_WHILE_HEAD_6:
+    tmp_21 = 3
+    tmp_22 = slt i, tmp_21
+    !tmp_21
+    br tmp_22 -> L_WHILE_BODY_7, L_WHILE_COND_FALSE_8
+
+L_WHILE_BODY_7:
+    !tmp_22
+    tmp_23 = load x+0 as i32
+    tmp_24 = 2
+    tmp_25 = add tmp_23, tmp_24
+    !tmp_24
+    store x+0, tmp_25 as i32
+    !tmp_25
+    tmp_26 = 1
+    tmp_27 = add i, tmp_26
+    !tmp_26
+    !i
+    i = tmp_27
+    jmp L_WHILE_HEAD_6
+
+L_WHILE_COND_FALSE_8:
+    !tmp_22
+    jmp L_WHILE_EXIT_9
+
+L_WHILE_EXIT_9:
+    tmp_28 = load x+0 as i32
+    !i
+    return tmp_28
+
+@test "var scalar slot initializes before read"():
+L_TEST_ENTRY_10:
+    tmp_29 = call @sla__var_scalar_value()
+    tmp_30 = 42
+    tmp_31 = ne tmp_29, tmp_30
+    !tmp_29
+    !tmp_30
+    br tmp_31 -> L_THEN_11, L_ELSE_12
+
+L_THEN_11:
+    !tmp_31
+    panic(17400)
+
+L_ELSE_12:
+    !tmp_31
+    jmp L_MERGE_13
+
+L_MERGE_13:
+    return
+
+@test "var scalar slot merges initialized branches"():
+L_TEST_ENTRY_14:
+    tmp_34 = 1
+    tmp_35 = call @sla__var_scalar_branch(tmp_34)
+    !tmp_34
+    tmp_36 = 10
+    tmp_37 = ne tmp_35, tmp_36
+    !tmp_35
+    !tmp_36
+    br tmp_37 -> L_THEN_15, L_ELSE_16
+
+L_THEN_15:
+    !tmp_37
+    panic(17401)
+
+L_ELSE_16:
+    !tmp_37
+    jmp L_MERGE_17
+
+L_MERGE_17:
+    tmp_40 = 0
+    tmp_41 = call @sla__var_scalar_branch(tmp_40)
+    !tmp_40
+    tmp_42 = 20
+    tmp_43 = ne tmp_41, tmp_42
+    !tmp_41
+    !tmp_42
+    br tmp_43 -> L_THEN_18, L_ELSE_19
+
+L_THEN_18:
+    !tmp_43
+    panic(17402)
+
+L_ELSE_19:
+    !tmp_43
+    jmp L_MERGE_20
+
+L_MERGE_20:
+    return
+
+@test "var scalar slot copies after initialization"():
+L_TEST_ENTRY_21:
+    tmp_46 = call @sla__var_scalar_copy()
+    tmp_47 = 10
+    tmp_48 = ne tmp_46, tmp_47
+    !tmp_46
+    !tmp_47
+    br tmp_48 -> L_THEN_22, L_ELSE_23
+
+L_THEN_22:
+    !tmp_48
+    panic(17403)
+
+L_ELSE_23:
+    !tmp_48
+    jmp L_MERGE_24
+
+L_MERGE_24:
+    return
+
+@test "var bool slot can drive control flow after assignment"():
+L_TEST_ENTRY_25:
+    tmp_51 = 1
+    tmp_52 = call @sla__var_bool_slot(tmp_51)
+    !tmp_51
+    tmp_53 = 1
+    tmp_54 = ne tmp_52, tmp_53
+    !tmp_52
+    !tmp_53
+    br tmp_54 -> L_THEN_26, L_ELSE_27
+
+L_THEN_26:
+    !tmp_54
+    panic(17404)
+
+L_ELSE_27:
+    !tmp_54
+    jmp L_MERGE_28
+
+L_MERGE_28:
+    tmp_57 = 0
+    tmp_58 = call @sla__var_bool_slot(tmp_57)
+    !tmp_57
+    tmp_59 = 2
+    tmp_60 = ne tmp_58, tmp_59
+    !tmp_58
+    !tmp_59
+    br tmp_60 -> L_THEN_29, L_ELSE_30
+
+L_THEN_29:
+    !tmp_60
+    panic(17405)
+
+L_ELSE_30:
+    !tmp_60
+    jmp L_MERGE_31
+
+L_MERGE_31:
+    return
+
+@test "var initialized before loop remains readable"():
+L_TEST_ENTRY_32:
+    tmp_63 = call @sla__var_initialized_before_loop()
+    tmp_64 = 7
+    tmp_65 = ne tmp_63, tmp_64
+    !tmp_63
+    !tmp_64
+    br tmp_65 -> L_THEN_33, L_ELSE_34
+
+L_THEN_33:
+    !tmp_65
+    panic(17406)
+
+L_ELSE_34:
+    !tmp_65
+    jmp L_MERGE_35
+
+L_MERGE_35:
+    return
+

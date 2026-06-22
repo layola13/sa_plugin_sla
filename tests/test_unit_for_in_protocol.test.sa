@@ -61,7 +61,7 @@ L_ENTRY:
 L_LOOP_HEAD_3:
     tmp_12 = load item_slot+0 as i64
     tmp_13 = slt tmp_12, tmp_11
-    br tmp_13 -> L_LOOP_BODY_4, L_LOOP_COND_FALSE_6
+    br tmp_13 -> L_LOOP_BODY_4, L_LOOP_COND_FALSE_7
 
 L_LOOP_BODY_4:
     !tmp_13
@@ -79,18 +79,18 @@ L_LOOP_CONTINUE_5:
     !item
     jmp L_LOOP_HEAD_3
 
-L_LOOP_COND_FALSE_6:
+L_LOOP_COND_FALSE_7:
     !tmp_13
     !tmp_12
-    jmp L_LOOP_EXIT_7
+    jmp L_LOOP_EXIT_9
 
-L_LOOP_EXIT_7:
+L_LOOP_EXIT_9:
     !tmp_11
     !query
     return total
 
 @test "for in uses iterable protocol methods"():
-L_TEST_ENTRY_8:
+L_TEST_ENTRY_10:
     query = alloc 24
     tmp_17 = 2
     store query+0, tmp_17 as i64
@@ -112,17 +112,17 @@ L_TEST_ENTRY_8:
     tmp_23 = 4
     expected = tmp_23
     tmp_24 = ne got, expected
-    br tmp_24 -> L_THEN_9, L_ELSE_10
+    br tmp_24 -> L_THEN_11, L_ELSE_12
 
-L_THEN_9:
+L_THEN_11:
     !tmp_24
     panic(1201)
 
-L_ELSE_10:
+L_ELSE_12:
     !tmp_24
-    jmp L_MERGE_11
+    jmp L_MERGE_13
 
-L_MERGE_11:
+L_MERGE_13:
     !expected
     !query
     !got

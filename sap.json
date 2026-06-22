@@ -17,6 +17,7 @@
   },
   "interfaces": {},
   "skills": ["sla"],
+  "help": "usage: sa sla <command> [options]\n\nCommands:\n  build      <file> [--out <file>]        Compile a .sla source to .sa\n  build-exe  <file> [sa-build-exe args]  Compile a .sla source to a native executable\n  check      <file>                       Parse and type-check a .sla source\n  test       <file> [sa-test args]        Compile and run @test blocks through sa test\n  help                                    Show this help message\n\nOptions:\n  -h, --help                              Show this help message\n",
   "permissions": {
     "fs": [
       { "op": "read", "path": "$PROJECT/**" },

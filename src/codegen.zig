@@ -5311,6 +5311,9 @@ pub const Codegen = struct {
         if (self.programNeedsTraitObjectMacros(program)) {
             self.out.writer().print("@import \"sa_std/core/trait_object.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
+        if (programNeedsAsyncMacros(program)) {
+            self.out.writer().print("@import \"sa_std/core/future.sa\"\n", .{}) catch return CodegenError.CodegenError;
+        }
 
         if (self.programNeedsHashMapMacros(program)) {
             try self.emitHashMapMacros();
@@ -5390,8 +5393,12 @@ pub const Codegen = struct {
     }
 
     fn genImportDecl(self: *Codegen, import: *const ast.ImportDecl) CodegenError!void {
-        if (std.mem.endsWith(u8, import.path, ".sla")) return;
         var path = import.path;
+        var path_buf: [1024]u8 = undefined;
+        if (std.mem.endsWith(u8, path, ".sla")) {
+            const base = path[0 .. path.len - 4];
+            path = std.fmt.bufPrint(&path_buf, "{s}.sa", .{base}) catch path;
+        }
         if (std.fs.path.isAbsolute(path)) {
             if (std.mem.indexOf(u8, path, "sa_std/")) |idx| {
                 path = path[idx..];

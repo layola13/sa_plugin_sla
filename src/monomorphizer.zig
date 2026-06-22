@@ -134,7 +134,12 @@ pub const Monomorphizer = struct {
         }
     }
 
-    pub fn monomorphize(self: *Monomorphizer, program: *ast.Node) MonomorphizeError!*ast.Node {
+    pub fn monomorphize(
+        self: *Monomorphizer,
+        program: *ast.Node,
+        original_primary_decls: ?*const std.AutoHashMap(*const ast.Node, void),
+        specialized_primary_decls: ?*std.AutoHashMap(*const ast.Node, void),
+    ) MonomorphizeError!*ast.Node {
         if (program.* != .program) return MonomorphizeError.MonomorphizeError;
 
         var regular_decls = std.ArrayList(*ast.Node).init(self.allocator);
@@ -184,11 +189,21 @@ pub const Monomorphizer = struct {
             const decl = regular_decls.items[i];
             const updated_decl = try self.specializeNode(decl);
             regular_decls.items[i] = updated_decl;
+            if (original_primary_decls) |opd| {
+                if (opd.contains(decl)) {
+                    if (specialized_primary_decls) |spd| {
+                        try spd.put(updated_decl, {});
+                    }
+                }
+            }
         }
 
         // 3. Append all newly generated specialized declarations
         for (self.new_decls.items) |nd| {
             try regular_decls.append(nd);
+            if (specialized_primary_decls) |spd| {
+                try spd.put(nd, {});
+            }
         }
 
         const result = try self.allocator.create(ast.Node);
@@ -1778,7 +1793,7 @@ test "monomorphize generic struct" {
     var mono = Monomorphizer.init(arena.allocator());
     defer mono.deinit();
 
-    const specialized_prog = try mono.monomorphize(prog);
+    const specialized_prog = try mono.monomorphize(prog, null, null);
 
     // Verify that Option_i32 struct decl was generated
     try std.testing.expect(specialized_prog.* == .program);

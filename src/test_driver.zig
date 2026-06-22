@@ -39,7 +39,7 @@ pub fn main() !void {
 
     var mono = monomorphizer_mod.Monomorphizer.init(alloc);
     defer mono.deinit();
-    const specialized = try mono.monomorphize(prog);
+    const specialized = try mono.monomorphize(prog, null, null);
 
     var tc = type_checker_mod.TypeChecker.init(alloc);
     defer tc.deinit();

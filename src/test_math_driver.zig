@@ -20,7 +20,7 @@ pub fn main() !void {
 
     var mono = monomorphizer_mod.Monomorphizer.init(alloc);
     defer mono.deinit();
-    const specialized = mono.monomorphize(prog) catch |err| {
+    const specialized = mono.monomorphize(prog, null, null) catch |err| {
         std.debug.print("MONO ERROR: {}\n", .{err});
         std.process.exit(1);
     };

@@ -396,6 +396,7 @@ fn appendExpandedSlaImportDecls(
     import_path: []const u8,
     exclude_path: ?[]const u8,
     visited: *std.StringHashMap(void),
+    primary_decls: *std.AutoHashMap(*const ast.Node, void),
     out_decls: *std.ArrayList(*ast.Node),
 ) !void {
     const resolved_imports = try resolveImportFiles(allocator, base_dir, import_path, exclude_path);
@@ -415,17 +416,89 @@ fn appendExpandedSlaImportDecls(
                 const child_resolved_imports = try resolveImportFiles(allocator, import_dir, decl.import_decl.path, resolved.path);
                 for (child_resolved_imports) |child_resolved| {
                     if (std.mem.endsWith(u8, child_resolved.path, ".sla")) {
-                        try appendExpandedSlaImportDecls(allocator, import_dir, decl.import_decl.path, resolved.path, visited, out_decls);
+                        try appendExpandedSlaImportDecls(allocator, import_dir, decl.import_decl.path, resolved.path, visited, primary_decls, out_decls);
                     } else {
                         const import_decl = try allocator.create(ast.Node);
                         import_decl.* = .{ .import_decl = .{ .path = child_resolved.output_path } };
                         try out_decls.append(import_decl);
+                        try primary_decls.put(import_decl, {});
                     }
                 }
             } else {
                 try out_decls.append(decl);
+                try primary_decls.put(decl, {});
             }
         }
+    }
+}
+
+fn replaceSlaWithSa(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.mem.endsWith(u8, path, ".sla")) {
+        const base = path[0 .. path.len - 4];
+        return try std.fmt.allocPrint(allocator, "{s}.sa", .{base});
+    }
+    return try allocator.dupe(u8, path);
+}
+
+fn normalizedSaStdImportPath(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
+    if (isSaStdImport(path)) return try allocator.dupe(u8, path);
+    if (std.mem.indexOf(u8, path, ".sa/std/")) |idx| {
+        const suffix = path[idx + ".sa/std/".len ..];
+        return try std.fmt.allocPrint(allocator, "sa_std/{s}", .{suffix});
+    }
+    if (std.mem.indexOf(u8, path, "sci/sa_std/")) |idx| {
+        const suffix = path[idx + "sci/sa_std/".len ..];
+        return try std.fmt.allocPrint(allocator, "sa_std/{s}", .{suffix});
+    }
+    if (std.mem.indexOf(u8, path, "sa_std/")) |idx| {
+        return try allocator.dupe(u8, path[idx..]);
+    }
+    return null;
+}
+
+fn absoluteDirForOutput(allocator: std.mem.Allocator, output_file: []const u8) ![]const u8 {
+    const output_dir = std.fs.path.dirname(output_file) orelse ".";
+    if (std.fs.path.isAbsolute(output_dir)) return try allocator.dupe(u8, output_dir);
+    return std.fs.cwd().realpathAlloc(allocator, output_dir) catch |err| switch (err) {
+        error.FileNotFound => blk: {
+            const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+            break :blk try std.fs.path.join(allocator, &.{ cwd, output_dir });
+        },
+        else => return err,
+    };
+}
+
+fn rewriteImportPathForOutput(
+    allocator: std.mem.Allocator,
+    source_file: []const u8,
+    output_file: []const u8,
+    raw_import_path: []const u8,
+) ![]const u8 {
+    if (try normalizedSaStdImportPath(allocator, raw_import_path)) |std_path| return std_path;
+
+    const source_dir = std.fs.path.dirname(source_file) orelse ".";
+    const resolved = try resolveImportFile(allocator, source_dir, raw_import_path);
+    if (try normalizedSaStdImportPath(allocator, resolved.path)) |std_path| return std_path;
+
+    const target_path = try replaceSlaWithSa(allocator, resolved.path);
+    if (!std.fs.path.isAbsolute(target_path)) return target_path;
+
+    const output_dir = try absoluteDirForOutput(allocator, output_file);
+    return try std.fs.path.relative(allocator, output_dir, target_path);
+}
+
+fn rewriteProgramImportsForOutput(
+    allocator: std.mem.Allocator,
+    program: *ast.Node,
+    source_file: []const u8,
+    output_file: ?[]const u8,
+) !void {
+    const out = output_file orelse return;
+    if (program.* != .program) return error.InvalidProgram;
+
+    for (program.program.decls) |decl| {
+        if (decl.* != .import_decl) continue;
+        decl.import_decl.path = try rewriteImportPathForOutput(allocator, source_file, out, decl.import_decl.path);
     }
 }
 
@@ -433,6 +506,7 @@ fn expandSlaImports(
     allocator: std.mem.Allocator,
     program: *ast.Node,
     source_file: []const u8,
+    primary_decls: *std.AutoHashMap(*const ast.Node, void),
 ) !*ast.Node {
     if (program.* != .program) return error.InvalidProgram;
 
@@ -448,15 +522,17 @@ fn expandSlaImports(
             const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
             for (resolved_imports) |resolved| {
                 if (std.mem.endsWith(u8, resolved.path, ".sla")) {
-                    try appendExpandedSlaImportDecls(allocator, source_dir, decl.import_decl.path, source_abs, &visited, &decls);
+                    try appendExpandedSlaImportDecls(allocator, source_dir, decl.import_decl.path, source_abs, &visited, primary_decls, &decls);
                 } else {
                     const import_decl = try allocator.create(ast.Node);
                     import_decl.* = .{ .import_decl = .{ .path = resolved.output_path } };
                     try decls.append(import_decl);
+                    try primary_decls.put(import_decl, {});
                 }
             }
         } else {
             try decls.append(decl);
+            try primary_decls.put(decl, {});
         }
     }
 
@@ -515,9 +591,10 @@ fn loadImportedContracts(
     }
 }
 
-fn compileSlaFileToSa(
+fn compileSlaToSaString(
     allocator: std.mem.Allocator,
     file: []const u8,
+    output_file: ?[]const u8,
     stderr: std.io.AnyWriter,
 ) !?[]const u8 {
     const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
@@ -532,14 +609,16 @@ fn compileSlaFileToSa(
         return null;
     };
 
-    const expanded_prog = expandSlaImports(allocator, prog, file) catch |err| {
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
         return null;
     };
 
     var mono = monomorphizer_mod.Monomorphizer.init(allocator);
     defer mono.deinit();
-    const specialized_prog = mono.monomorphize(expanded_prog) catch |err| {
+    var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
         try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
         return null;
     };
@@ -557,6 +636,20 @@ fn compileSlaFileToSa(
         return null;
     };
 
+    // Filter specialized_prog to only include primary declarations
+    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    for (specialized_prog.program.decls) |decl| {
+        if (specialized_primary_decls.contains(decl)) {
+            try filtered_decls.append(decl);
+        }
+    }
+    specialized_prog.program.decls = try filtered_decls.toOwnedSlice();
+
+    rewriteProgramImportsForOutput(allocator, specialized_prog, file, output_file) catch |err| {
+        try stderr.print("Import Error: failed to rewrite @import paths for output: {}\n", .{err});
+        return null;
+    };
+
     var cg = codegen_mod.Codegen.init(allocator, &tc);
     defer cg.deinit();
 
@@ -565,6 +658,15 @@ fn compileSlaFileToSa(
         if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
         return null;
     };
+}
+
+fn compileSlaFileToSa(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    output_file: ?[]const u8,
+    stderr: std.io.AnyWriter,
+) !?[]const u8 {
+    return compileSlaToSaString(allocator, file, output_file, stderr);
 }
 
 pub fn runSlaCommandImpl(
@@ -612,51 +714,7 @@ pub fn runSlaCommandImpl(
             }
         };
 
-        const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
-            try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
-            return 1;
-        };
-
-        const sla_base_dir = std.fs.path.dirname(file) orelse ".";
-        var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
-        const prog = p.parseProgram() catch |err| {
-            try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
-            return 1;
-        };
-
-        const expanded_prog = expandSlaImports(allocator, prog, file) catch |err| {
-            try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
-            return 1;
-        };
-
-        var mono = monomorphizer_mod.Monomorphizer.init(allocator);
-        defer mono.deinit();
-        const specialized_prog = mono.monomorphize(expanded_prog) catch |err| {
-            try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
-            return 1;
-        };
-
-        var tc = type_checker_mod.TypeChecker.init(allocator);
-        defer tc.deinit();
-
-        loadImportedContracts(&tc, allocator, specialized_prog, file) catch |err| {
-            try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
-            return 1;
-        };
-
-        tc.checkProgram(specialized_prog) catch |err| {
-            try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
-            return 1;
-        };
-
-        var cg = codegen_mod.Codegen.init(allocator, &tc);
-        defer cg.deinit();
-
-        const sa_code = cg.generate(specialized_prog) catch |err| {
-            try stderr.print("Codegen Error: failed to generate SA code: {}\n", .{err});
-            if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
-            return 1;
-        };
+        const sa_code = (try compileSlaToSaString(allocator, file, final_out, stderr)) orelse return 1;
 
         std.fs.cwd().writeFile(.{ .sub_path = final_out, .data = sa_code }) catch |err| {
             try stderr.print("File Error: failed to write output {s}: {}\n", .{ final_out, err });
@@ -682,7 +740,7 @@ pub fn runSlaCommandImpl(
         else
             try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file});
 
-        const sa_code = (try compileSlaFileToSa(allocator, file, stderr)) orelse return 1;
+        const sa_code = (try compileSlaFileToSa(allocator, file, sa_out, stderr)) orelse return 1;
         std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
             try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
             return 1;
@@ -727,14 +785,16 @@ pub fn runSlaCommandImpl(
             return 1;
         };
 
-        const expanded_prog = expandSlaImports(allocator, prog, file) catch |err| {
+        var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+        const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
             try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
             return 1;
         };
 
         var mono = monomorphizer_mod.Monomorphizer.init(allocator);
         defer mono.deinit();
-        const specialized_prog = mono.monomorphize(expanded_prog) catch |err| {
+        var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+        const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
             try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
             return 1;
         };
@@ -772,47 +832,7 @@ pub fn runSlaCommandImpl(
         else
             try std.fmt.allocPrint(allocator, "{s}.test.sa", .{file});
 
-        const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
-            try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
-            return 1;
-        };
-
-        const sla_base_dir = std.fs.path.dirname(file) orelse ".";
-        var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
-        const prog = p.parseProgram() catch |err| {
-            try stderr.print("Syntax Error: failed to parse {s}: {}\n", .{ file, err });
-            return 1;
-        };
-
-        const expanded_prog = expandSlaImports(allocator, prog, file) catch |err| {
-            try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
-            return 1;
-        };
-
-        var mono = monomorphizer_mod.Monomorphizer.init(allocator);
-        defer mono.deinit();
-        const specialized_prog = mono.monomorphize(expanded_prog) catch |err| {
-            try stderr.print("Monomorphization Error: {}\n", .{err});
-            return 1;
-        };
-
-        var tc = type_checker_mod.TypeChecker.init(allocator);
-        defer tc.deinit();
-        loadImportedContracts(&tc, allocator, specialized_prog, file) catch |err| {
-            try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
-            return 1;
-        };
-        tc.checkProgram(specialized_prog) catch |err| {
-            try stderr.print("Type Check Error: {s} ({})\n", .{ tc.last_error, err });
-            return 1;
-        };
-
-        var cg = codegen_mod.Codegen.init(allocator, &tc);
-        defer cg.deinit();
-        const sa_code = cg.generate(specialized_prog) catch |err| {
-            try stderr.print("Codegen Error: {}\n", .{err});
-            return 1;
-        };
+        const sa_code = (try compileSlaToSaString(allocator, file, sa_out, stderr)) orelse return 1;
 
         std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
             try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
@@ -970,4 +990,25 @@ test "sla check reports redeclared symbol names" {
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_trait.sla", "trait `RepeatedTrait`");
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_macro.sla", "macro `repeated_macro`");
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_method.sla", "method `score` for `RepeatedMethod`");
+}
+
+test "sla build rewrites sla imports relative to final output path" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaString(
+        arena.allocator(),
+        "tests/import_fixtures/output_relative/main.sla",
+        "tests/output_relative_root.sa",
+        stderr_buf.writer().any(),
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "@import \"import_fixtures/output_relative/local_dep.sa\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "@import \"helper.sa\"") == null);
 }

@@ -256,7 +256,7 @@ pub fn compileHandlerWithSupport(
 
     var mono = monomorphizer_mod.Monomorphizer.init(a);
     defer mono.deinit();
-    const specialized_prog = try mono.monomorphize(prog);
+    const specialized_prog = try mono.monomorphize(prog, null, null);
 
     const scope_bindings = try a.alloc(type_checker_mod.InjectedScopeBinding, state_fields.len + options.ambient_bindings.len);
     const address_bindings = try a.alloc(codegen_mod.InjectedAddressBinding, state_fields.len);

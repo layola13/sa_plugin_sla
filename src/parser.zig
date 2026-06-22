@@ -1082,6 +1082,8 @@ pub const Parser = struct {
             return try self.parseLetStmt();
         } else if (self.peek() == .keyword_const) {
             return try self.parseConstStmt();
+        } else if (self.peek() == .keyword_var) {
+            return try self.parseVarStmt();
         } else if (self.peek() == .keyword_return) {
             return try self.parseReturnStmt();
         } else if (self.peek() == .keyword_for) {
@@ -1238,6 +1240,26 @@ pub const Parser = struct {
                 .name = name,
                 .ty = ty,
                 .value = val,
+            },
+        };
+        return node;
+    }
+
+    fn parseVarStmt(self: *Parser) ParserError!*ast.Node {
+        try self.expect(.keyword_var);
+        const name_tok = self.tok;
+        try self.expect(.identifier);
+        const name = self.lexeme(name_tok.loc);
+
+        try self.expect(.colon);
+        const ty = try self.parseType();
+        try self.expect(.semicolon);
+
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{
+            .var_stmt = .{
+                .name = name,
+                .ty = ty,
             },
         };
         return node;

@@ -6793,6 +6793,11 @@ pub const Codegen = struct {
                     }
                 }
             },
+            .var_stmt => |v| {
+                self.stack_alloc_bindings.put(v.name, {}) catch return CodegenError.OutOfMemory;
+                self.addressable_bindings.put(v.name, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    {s} = stack_alloc {}\n", .{ v.name, typeSize(v.ty) }) catch return CodegenError.CodegenError;
+            },
             .let_else_stmt => |let| {
                 const value_reg = try self.genExpr(let.value, hoisted_allocs);
                 const branch_flag = try self.newTmp();

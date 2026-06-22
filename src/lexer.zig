@@ -46,6 +46,7 @@ pub const Token = struct {
         keyword_in,
         keyword_let,
         keyword_const,
+        keyword_var,
         keyword_inline,
         keyword_macro,
         keyword_mut,
@@ -312,6 +313,7 @@ pub const Lexer = struct {
         if (std.mem.eql(u8, str, "in")) return .keyword_in;
         if (std.mem.eql(u8, str, "let")) return .keyword_let;
         if (std.mem.eql(u8, str, "const")) return .keyword_const;
+        if (std.mem.eql(u8, str, "var")) return .keyword_var;
         if (std.mem.eql(u8, str, "inline")) return .keyword_inline;
         if (std.mem.eql(u8, str, "macro")) return .keyword_macro;
         if (std.mem.eql(u8, str, "mut")) return .keyword_mut;

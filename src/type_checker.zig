@@ -7,6 +7,7 @@ pub const TypeError = error{
     Redeclaration,
     TypeMismatch,
     UseAfterMove,
+    UseBeforeInit,
     InvalidBorrow,
     DereferenceNonPointer,
     FieldNotFound,
@@ -17,6 +18,7 @@ pub const TypeError = error{
 };
 
 pub const ValueState = enum {
+    uninitialized,
     active,
     consumed,
 };
@@ -64,12 +66,16 @@ pub const Scope = struct {
     }
 
     pub fn define(self: *Scope, name: []const u8, ty: *ast.Type, is_const: bool) !void {
+        try self.defineWithState(name, ty, is_const, .active);
+    }
+
+    pub fn defineWithState(self: *Scope, name: []const u8, ty: *ast.Type, is_const: bool, state: ValueState) !void {
         if (self.symbols.contains(name)) return TypeError.Redeclaration;
         try self.symbols.put(name, .{
             .name = name,
             .ty = ty,
             .is_const = is_const,
-            .state = .active,
+            .state = state,
         });
     }
 
@@ -166,7 +172,11 @@ pub const TypeChecker = struct {
     }
 
     fn defineSymbol(self: *TypeChecker, scope: *Scope, name: []const u8, ty: *ast.Type, is_const: bool) TypeError!void {
-        scope.define(name, ty, is_const) catch |err| switch (err) {
+        try self.defineSymbolWithState(scope, name, ty, is_const, .active);
+    }
+
+    fn defineSymbolWithState(self: *TypeChecker, scope: *Scope, name: []const u8, ty: *ast.Type, is_const: bool, state: ValueState) TypeError!void {
+        scope.defineWithState(name, ty, is_const, state) catch |err| switch (err) {
             TypeError.Redeclaration => {
                 self.setError("Redeclaration: symbol `{s}` is already defined", .{name});
                 return TypeError.Redeclaration;
@@ -2002,6 +2012,33 @@ pub const TypeChecker = struct {
         };
     }
 
+    fn saveScopeStates(self: *TypeChecker, scope: *Scope) TypeError!std.StringHashMap(ValueState) {
+        var states = std.StringHashMap(ValueState).init(self.allocator);
+        var curr: ?*Scope = scope;
+        while (curr) |s| {
+            var iter = s.symbols.iterator();
+            while (iter.next()) |entry| {
+                try states.put(entry.key_ptr.*, entry.value_ptr.state);
+            }
+            curr = s.parent;
+        }
+        return states;
+    }
+
+    fn restoreUninitializedFromSaved(self: *TypeChecker, scope: *Scope, saved: *const std.StringHashMap(ValueState)) void {
+        _ = self;
+        var curr: ?*Scope = scope;
+        while (curr) |s| {
+            var iter = s.symbols.iterator();
+            while (iter.next()) |entry| {
+                if (saved.get(entry.key_ptr.*)) |state| {
+                    if (state == .uninitialized) entry.value_ptr.state = .uninitialized;
+                }
+            }
+            curr = s.parent;
+        }
+    }
+
     fn checkStmt(
         self: *TypeChecker,
         stmt: *ast.Node,
@@ -2091,6 +2128,13 @@ pub const TypeChecker = struct {
                 }
                 try self.defineSymbol(scope, c.name, declared_ty, true);
             },
+            .var_stmt => |v| {
+                if (v.ty.* != .primitive) {
+                    self.setError("var Phase 1 supports scalar primitive slots only: `{s}`", .{v.name});
+                    return TypeError.TypeMismatch;
+                }
+                try self.defineSymbolWithState(scope, v.name, v.ty, false, .uninitialized);
+            },
             .assign_stmt => |assign| {
                 if (assign.target.* == .deref_expr) {
                     const deref_target_ty = try self.checkExpr(assign.target.deref_expr.expr, scope);
@@ -2099,7 +2143,11 @@ pub const TypeChecker = struct {
                         return TypeError.TypeMismatch;
                     }
                 }
-                const target_ty = try self.checkExpr(assign.target, scope);
+                const target_ty = if (assign.target.* == .identifier) blk: {
+                    const sym = scope.lookup(assign.target.identifier) orelse return TypeError.UndefinedVariable;
+                    self.expr_types.put(assign.target, sym.ty) catch return TypeError.OutOfMemory;
+                    break :blk sym.ty;
+                } else try self.checkExpr(assign.target, scope);
                 const val_ty = try self.checkExpr(assign.value, scope);
                 if (!self.typesEqual(target_ty, val_ty)) {
                     self.setError("TypeMismatch in assign: target tag={s}, val tag={s}", .{ @tagName(target_ty.*), @tagName(val_ty.*) });
@@ -2109,6 +2157,10 @@ pub const TypeChecker = struct {
                 if (rootIdentifier(assign.target)) |root_name| {
                     const sym = scope.lookup(root_name) orelse return TypeError.UndefinedVariable;
                     if (sym.is_const) return TypeError.CompileError;
+                    if (sym.state == .uninitialized and assign.target.* != .identifier) {
+                        self.setError("UseBeforeInit: var `{s}` must be assigned as a whole before field/index assignment", .{root_name});
+                        return TypeError.UseBeforeInit;
+                    }
                 }
                 if (assign.value.* == .identifier) {
                     const value_name = assign.value.identifier;
@@ -2116,8 +2168,16 @@ pub const TypeChecker = struct {
                     if (target_name == null or !std.mem.eql(u8, target_name.?, value_name)) {
                         const sym = scope.lookup(value_name) orelse return TypeError.UndefinedVariable;
                         if (sym.state == .consumed) return TypeError.UseAfterMove;
+                        if (sym.state == .uninitialized) {
+                            self.setError("UseBeforeInit: var `{s}` is read before assignment", .{value_name});
+                            return TypeError.UseBeforeInit;
+                        }
                         if (!self.typeIsCopy(sym.ty) and !isBorrowLikeType(sym.ty)) sym.state = .consumed;
                     }
+                }
+                if (assign.target.* == .identifier) {
+                    const sym = scope.lookup(assign.target.identifier) orelse return TypeError.UndefinedVariable;
+                    if (sym.state == .uninitialized) sym.state = .active;
                 }
             },
             .return_stmt => |ret| {
@@ -2174,10 +2234,14 @@ pub const TypeChecker = struct {
                 i_ty.* = iter_ty.*;
                 try self.defineSymbol(loop_scope, f.var_name, i_ty, true);
 
+                var saved_states = try self.saveScopeStates(scope);
+                defer saved_states.deinit();
+
                 const prev_loop_scope = self.current_loop_scope;
                 self.current_loop_scope = loop_scope;
                 defer self.current_loop_scope = prev_loop_scope;
                 try self.checkBlock(f.body, loop_scope, ret_ty, stmt, loop_scope);
+                self.restoreUninitializedFromSaved(scope, &saved_states);
             },
             .while_stmt => |*w| {
                 const cond_ty = try self.checkExpr(w.cond, scope);
@@ -2195,10 +2259,14 @@ pub const TypeChecker = struct {
                         else => return TypeError.TypeMismatch,
                     }
                 }
+                var saved_states = try self.saveScopeStates(scope);
+                defer saved_states.deinit();
+
                 const prev_loop_scope = self.current_loop_scope;
                 self.current_loop_scope = loop_scope;
                 defer self.current_loop_scope = prev_loop_scope;
                 try self.checkBlock(w.body, loop_scope, ret_ty, stmt, loop_scope);
+                self.restoreUninitializedFromSaved(scope, &saved_states);
             },
             .break_stmt, .continue_stmt => {
                 const loop_scope = current_loop_scope orelse {
@@ -2228,6 +2296,10 @@ pub const TypeChecker = struct {
             .release_stmt => |rel| {
                 const sym = scope.lookup(rel.var_name) orelse return TypeError.UndefinedVariable;
                 if (sym.state == .consumed) return TypeError.UseAfterMove;
+                if (sym.state == .uninitialized) {
+                    self.setError("UseBeforeInit: var `{s}` cannot be released before assignment", .{rel.var_name});
+                    return TypeError.UseBeforeInit;
+                }
                 sym.state = .consumed;
             },
             .expr_stmt => |expr| {
@@ -2291,6 +2363,10 @@ pub const TypeChecker = struct {
                     if (sym.state == .consumed) {
                         self.setError("UseAfterMove: identifier `{s}` was already consumed", .{name});
                         return TypeError.UseAfterMove;
+                    }
+                    if (sym.state == .uninitialized) {
+                        self.setError("UseBeforeInit: var `{s}` is read before assignment", .{name});
+                        return TypeError.UseBeforeInit;
                     }
                     return sym.ty;
                 }
@@ -4155,6 +4231,10 @@ pub const TypeChecker = struct {
                             const then_state = then_states.get(name) orelse .active;
 
                             if (then_state != else_state) {
+                                if (then_state == .uninitialized or else_state == .uninitialized) {
+                                    entry.value_ptr.state = .uninitialized;
+                                    continue;
+                                }
                                 entry.value_ptr.state = .consumed;
                                 if (then_state == .active) {
                                     if (ife.then_block.len > 0) {
@@ -4269,6 +4349,10 @@ pub const TypeChecker = struct {
                         const then_state = then_states.get(name) orelse .active;
 
                         if (then_state != else_state) {
+                            if (then_state == .uninitialized or else_state == .uninitialized) {
+                                entry.value_ptr.state = .uninitialized;
+                                continue;
+                            }
                             // Phi conflict! We must demote the active one to consumed
                             entry.value_ptr.state = .consumed;
 

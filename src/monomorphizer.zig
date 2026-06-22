@@ -372,6 +372,11 @@ pub const Monomorphizer = struct {
                 };
                 return res;
             },
+            .var_stmt => |v| {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .var_stmt = .{ .name = v.name, .ty = try self.specializeType(v.ty) } };
+                return res;
+            },
             .assign_stmt => |assign| {
                 const new_target = try self.specializeNode(assign.target);
                 const new_val = try self.specializeNode(assign.value);
@@ -1465,6 +1470,11 @@ pub const Monomorphizer = struct {
                         .value = spec_val,
                     },
                 };
+                return res;
+            },
+            .var_stmt => |v| {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .var_stmt = .{ .name = v.name, .ty = try self.substituteType(v.ty, params, args) } };
                 return res;
             },
             .assign_stmt => |assign| {

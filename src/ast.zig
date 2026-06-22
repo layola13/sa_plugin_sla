@@ -18,6 +18,7 @@ pub const Node = union(enum) {
     let_else_stmt: LetElseStmt,
     let_destructure_stmt: LetDestructureStmt,
     const_stmt: ConstStmt,
+    var_stmt: VarStmt,
     assign_stmt: AssignStmt,
     block_stmt: BlockStmt,
     expr_stmt: *Node,
@@ -162,6 +163,11 @@ pub const ConstStmt = struct {
     name: []const u8,
     ty: ?*Type,
     value: *Node,
+};
+
+pub const VarStmt = struct {
+    name: []const u8,
+    ty: *Type,
 };
 
 pub const AssignStmt = struct {

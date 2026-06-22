@@ -386,6 +386,106 @@ pub const TypeChecker = struct {
         return self.structs.get(curr.user_defined.name);
     }
 
+    fn deriveNameMatches(actual: []const u8, wanted: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(actual, wanted);
+    }
+
+    fn structHasDerive(decl: *const ast.StructDecl, name: []const u8) bool {
+        for (decl.derives) |derive| {
+            if (deriveNameMatches(derive, name)) return true;
+            if (deriveNameMatches(name, "eq") and deriveNameMatches(derive, "PartialEq")) return true;
+            if (deriveNameMatches(name, "ord") and deriveNameMatches(derive, "PartialOrd")) return true;
+        }
+        return false;
+    }
+
+    fn typeIsCopy(self: *TypeChecker, ty: *ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| p != .void_type,
+            .user_defined => blk: {
+                const decl = self.structDeclForType(ty) orelse break :blk false;
+                if (!structHasDerive(decl, "copy") or decl.is_opaque or decl.is_union) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeIsCopy(field.ty)) break :blk false;
+                }
+                break :blk true;
+            },
+            .tuple => |tuple| blk: {
+                for (tuple.elems) |elem| {
+                    if (!self.typeIsCopy(elem)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
+    fn typeIsEq(self: *TypeChecker, ty: *ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| p != .void_type,
+            .user_defined => blk: {
+                const decl = self.structDeclForType(ty) orelse break :blk false;
+                if (!structHasDerive(decl, "eq") or decl.is_opaque or decl.is_union) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeIsEq(field.ty)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
+    fn typeIsOrd(self: *TypeChecker, ty: *ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| switch (p) {
+                .void_type, .f32, .f64, .float => false,
+                else => true,
+            },
+            .user_defined => blk: {
+                const decl = self.structDeclForType(ty) orelse break :blk false;
+                if (!structHasDerive(decl, "ord") or decl.is_opaque or decl.is_union) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeIsOrd(field.ty)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
+    fn typeIsHash(self: *TypeChecker, ty: *ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| switch (p) {
+                .void_type, .f32, .f64, .float => false,
+                else => true,
+            },
+            .user_defined => blk: {
+                const decl = self.structDeclForType(ty) orelse break :blk false;
+                if (!structHasDerive(decl, "hash") or decl.is_opaque or decl.is_union) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeIsHash(field.ty)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
+    fn typeIsDebug(self: *TypeChecker, ty: *ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| p != .void_type,
+            .user_defined => blk: {
+                const decl = self.structDeclForType(ty) orelse break :blk false;
+                if (!structHasDerive(decl, "debug") or decl.is_opaque or decl.is_union) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeIsDebug(field.ty)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
     fn structFieldsAllNumeric(decl: *const ast.StructDecl) bool {
         if (decl.is_opaque or decl.is_union) return false;
         for (decl.fields) |field| {
@@ -599,6 +699,12 @@ pub const TypeChecker = struct {
     fn makeU8Type(self: *TypeChecker) TypeError!*ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .primitive = .u8 };
+        return ty;
+    }
+
+    fn makeU64Type(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .primitive = .u64 };
         return ty;
     }
 
@@ -2010,7 +2116,7 @@ pub const TypeChecker = struct {
                     if (target_name == null or !std.mem.eql(u8, target_name.?, value_name)) {
                         const sym = scope.lookup(value_name) orelse return TypeError.UndefinedVariable;
                         if (sym.state == .consumed) return TypeError.UseAfterMove;
-                        if (sym.ty.* != .primitive and !isBorrowLikeType(sym.ty)) sym.state = .consumed;
+                        if (!self.typeIsCopy(sym.ty) and !isBorrowLikeType(sym.ty)) sym.state = .consumed;
                     }
                 }
             },
@@ -2263,12 +2369,16 @@ pub const TypeChecker = struct {
                     },
                     .eq, .ne, .lt, .le, .gt, .ge => {
                         if (self.structDeclForType(l_ty)) |left_struct| {
-                            if (bin.op == .eq or bin.op == .ne) {
-                                if (self.structDeclForType(r_ty)) |right_struct| {
-                                    if (!self.typesEqual(l_ty, r_ty) or left_struct != right_struct or !structFieldsAllComparable(left_struct)) return TypeError.TypeMismatch;
-                                    ty.* = .{ .primitive = .boolean };
-                                    return ty;
-                                }
+                            if (self.structDeclForType(r_ty)) |right_struct| {
+                                if (!self.typesEqual(l_ty, r_ty) or left_struct != right_struct) return TypeError.TypeMismatch;
+                                const supported = switch (bin.op) {
+                                    .eq, .ne => self.typeIsEq(l_ty),
+                                    .lt, .le, .gt, .ge => self.typeIsOrd(l_ty),
+                                    else => false,
+                                };
+                                if (!supported) return TypeError.TypeMismatch;
+                                ty.* = .{ .primitive = .boolean };
+                                return ty;
                             }
                         }
                         if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
@@ -2964,6 +3074,18 @@ pub const TypeChecker = struct {
                     for (call.args[1..]) |arg| {
                         _ = try self.checkExpr(arg, scope);
                     }
+                    return try self.makeStringType();
+                }
+                if (std.mem.eql(u8, call.func_name, "hash")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const arg_ty = try self.checkExpr(call.args[0], scope);
+                    if (!self.typeIsHash(arg_ty)) return TypeError.TypeMismatch;
+                    return try self.makeU64Type();
+                }
+                if (std.mem.eql(u8, call.func_name, "debug")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    const arg_ty = try self.checkExpr(call.args[0], scope);
+                    if (!self.typeIsDebug(arg_ty)) return TypeError.TypeMismatch;
                     return try self.makeStringType();
                 }
                 if (std.mem.eql(u8, call.func_name, "println")) {
@@ -3715,8 +3837,6 @@ pub const TypeChecker = struct {
                         return func.ret_ty;
                     }
                 }
-
-
 
                 if (std.mem.eql(u8, call.func_name, "iter") or std.mem.eql(u8, call.func_name, "into_iter")) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;

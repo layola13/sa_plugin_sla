@@ -145,6 +145,12 @@ fn appendPlaceholder(out: *std.ArrayList(u8), text: []const u8, index: *usize, c
         index.* += 2;
         return true;
     }
+    if (startsWithAt(text, i, "$ORD")) {
+        const idx = ctx.current_index orelse return SourceExpandError.InvalidExpandTuple;
+        try out.appendSlice(ordinalName(idx) orelse return SourceExpandError.InvalidExpandTuple);
+        index.* += "$ORD".len;
+        return true;
+    }
     if (startsWithAt(text, i, "$T")) {
         const type_index = ctx.current_index orelse return SourceExpandError.InvalidExpandTuple;
         out.writer().print("{s}{}", .{ ctx.type_prefix, type_index }) catch return SourceExpandError.OutOfMemory;
@@ -263,6 +269,28 @@ fn isIdentContinue(c: u8) bool {
     return isIdentStart(c) or std.ascii.isDigit(c);
 }
 
+fn ordinalName(index: usize) ?[]const u8 {
+    return switch (index) {
+        0 => "first",
+        1 => "second",
+        2 => "third",
+        3 => "fourth",
+        4 => "fifth",
+        5 => "sixth",
+        6 => "seventh",
+        7 => "eighth",
+        8 => "ninth",
+        9 => "tenth",
+        10 => "eleventh",
+        11 => "twelfth",
+        12 => "thirteenth",
+        13 => "fourteenth",
+        14 => "fifteenth",
+        15 => "sixteenth",
+        else => null,
+    };
+}
+
 test "expand tuple arity template" {
     const source =
         \\@expand_tuple(2, 3, T) {
@@ -285,4 +313,37 @@ test "expand tuple arity template" {
     try std.testing.expect(std.mem.indexOf(u8, expanded, "struct Generated2<T0, T1>") != null);
     try std.testing.expect(std.mem.indexOf(u8, expanded, "value_2: T2") != null);
     try std.testing.expect(std.mem.indexOf(u8, expanded, "fn make3<T0, T1, T2>") != null);
+}
+
+test "expand tuple ordinal placeholder" {
+    const source =
+        \\@expand_tuple(2, 3, T) {
+        \\struct Ordinal$N<$TYPES> {
+        \\@each(T) {
+        \\    $ORD: $T,
+        \\}
+        \\}
+        \\}
+    ;
+    const expanded = try expand(std.testing.allocator, source);
+    defer std.testing.allocator.free(expanded);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "first: T0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "second: T1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "third: T2") != null);
+}
+
+test "expand tuple processes multiple top level directives" {
+    const source =
+        \\@expand_tuple(2, 2, T) {
+        \\struct First$N<$TYPES> {}
+        \\}
+        \\@expand_tuple(3, 3, T) {
+        \\struct Second$N<$TYPES> {}
+        \\}
+    ;
+    const expanded = try expand(std.testing.allocator, source);
+    defer std.testing.allocator.free(expanded);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "struct First2<T0, T1>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "struct Second3<T0, T1, T2>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "@expand_tuple") == null);
 }

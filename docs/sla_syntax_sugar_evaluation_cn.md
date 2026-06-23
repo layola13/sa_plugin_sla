@@ -156,7 +156,7 @@
 
 ### 已补充：受限 tuple/arity 展开
 
-Sla 编译器现在支持源码级 `@expand_tuple(min, max, T) { ... }`，用于固定范围的 tuple/arity 模板生成。模板内可用 `$N`、`$TYPES` / `$TYPE_PARAMS`、`@each(T) { ... }`、`@join(T, ", ") { ... }`。这不是 Rust `macro_rules!` 或 proc-macro，只解决同形 arity 声明重复问题，避免在库里继续手写 `AnyOf5`、`AnyOf6` 这类机械扩张。
+Sla 编译器现在支持源码级 `@expand_tuple(min, max, T) { ... }`，用于固定范围的 tuple/arity 模板生成。模板内可用 `$N`、`$TYPES` / `$TYPE_PARAMS`、`$I`、`$T`、`$ORD`、`@each(T) { ... }`、`@join(T, ", ") { ... }`。`$ORD` 将当前索引映射为 `first`、`second`、`third` 等字段/参数名，用于兼容已有低阶 tuple API。这不是 Rust `macro_rules!` 或 proc-macro，只解决同形 arity 声明重复问题，避免在库里继续手写 `AnyOf5`、`AnyOf6` 这类机械扩张。
 
 ---
 

@@ -8,6 +8,8 @@
 > - `sci/docs/faq.md` SA 哲学边界
 > - [`sa_plugins/sa_plugin_3dengines/docs/sla_migration_stepbystep_cn.md`](../../sa_plugin_3dengines/docs/sla_migration_stepbystep_cn.md) Bevy 重构具体步骤
 
+> **2026-06-23 架构更正**：本文早期草案中关于把 `Component` / `Resource` / `Event` / `Bundle` 等 ECS derive 硬编码进 Sla 编译器的建议已作废。`sa_plugin_sla` 必须保持语言通用；ECS/Bevy 语义归 `sla_ecs` 库、项目级宏、生成器或未来通用 derive/macro 扩展点所有。编译器可以增加 `@expand_tuple`、通用属性解析、通用值语义 derive 等语言能力，但不能包含引擎关键字或游戏逻辑。
+
 ---
 
 ## 1. 两套宏系统的实际结构
@@ -417,11 +419,11 @@ fn use_it() {
 
 **Sla 当前的 `macro` 是"卫生化的函数式 identifier 宏"**，本质上等价于 Rust `macro_rules!` 的最简单单 arm 子集（约 20-30% 覆盖率）。此外，编译器提供一个受限的源码级 arity 展开入口 `@expand_tuple(min, max, T) { ... }`，用于生成固定范围的 tuple/arity 声明。**Rust 的 derive 宏与 proc-macro 在 Sla 里永远没有用户可写的等价物**——这是 SA 哲学的硬约束。
 
-`@expand_tuple` 支持的模板能力很窄：`$N` 表示当前 arity，`$TYPES` / `$TYPE_PARAMS` 表示 `T0, T1, ...`，`@each(T) { ... }` 按 arity 重复模板块，`@join(T, ", ") { ... }` 按分隔符拼接模板块。它适合 Bevy/Sla ECS 这种 `AnyOf2..AnyOfN`、tuple impl、组合结构体和同形函数批量生成，不支持 token-tree 匹配、多 arm 模式、递归宏或任意编译期代码执行。
+`@expand_tuple` 支持的模板能力很窄：`$N` 表示当前 arity，`$TYPES` / `$TYPE_PARAMS` 表示 `T0, T1, ...`，`$I` / `$T` 表示当前 `@each` 或 `@join` 项的索引和类型名，`$ORD` 表示 `first`、`second`、`third` 等序数字段名，`@each(T) { ... }` 按 arity 重复模板块，`@join(T, ", ") { ... }` 按分隔符拼接模板块。它适合 Bevy/Sla ECS 这种 `AnyOf2..AnyOfN`、tuple impl、组合结构体和同形函数批量生成，不支持 token-tree 匹配、多 arm 模式、递归宏或任意编译期代码执行。
 
-**对 Bevy 移植的现实路径**：靠 **Sla 编译器内建 6-8 个 `@derive(...)` 关键字**（不是宏，是编译器特殊语法）撑起 ECS / Bundle / Resource / Event 的简洁性，配合一个半自动 Rust→Sla 宏转换工具，能让 Bevy-style 编程体验在 Sla 上做到 80% 等价。
+**对 Bevy 移植的现实路径**：靠 **通用 Sla 宏/展开/derive 基础设施 + `sla_ecs` 项目级生成规则**撑起 ECS / Bundle / Resource / Event 的简洁性。编译器只能提供语言中立能力，例如 `@expand_tuple`、通用属性保留、值语义 `@derive(copy, eq, ord, hash, debug)`、未来 hygienic macro 或通用 source generator；`Component`、`Resource`、`Event`、`Relationship` 等名字和语义必须留在 `sla_ecs`。
 
-**工程量**：Sla 编译器扩展 ~3 周 + 转换工具 ~3 周 = **6 周内可解锁 Bevy 移植的关键路径**。
+**工程量**：优先扩充通用宏/展开能力，再迁移 `sla_ecs` 中的手写 arity family。凡是需要手写 `AnyOf5`、`AnyOf6`、`Any5`、`Any6` 这类机械展开的地方，应先补编译器宏能力，再由库侧模板生成。
 
 ---
 
@@ -440,18 +442,18 @@ fn use_it() {
 | `sci/docs/faq.md` | 类型系统类 | 为什么没有 trait / 编译期反射 |
 | `bevy_local/crates/bevy_ecs/macros/` | — | Bevy 的 derive 实现参考 |
 
-## 附录 B：v0.1 推荐的 `@derive(...)` 白名单
+## 附录 B：v0.1 推荐的语言通用 `@derive(...)` 白名单
 
 | derive | 生成内容 | 复杂度 | 周数 |
 |--------|---------|--------|------|
-| `@derive(Copy)` | 标记类型可按位复制（编译器记录元数据，不生成代码） | 极低 | 2 天 |
-| `@derive(Default)` | 生成 `fn default() -> Self { Self { ...zero... } }` | 低 | 2 天 |
-| `@derive(Component)` | 生成 `impl Component for T` + 注册 component_id | 中 | 5 天 |
-| `@derive(Bundle)` | 生成 `impl Bundle for T` + 展开成多 Component 批量 spawn | 中 | 4 天 |
-| `@derive(Resource)` | 生成 `impl Resource for T` + 单例注册 | 低 | 3 天 |
-| `@derive(Event)` | 生成 `impl Event for T` + 事件队列绑定 | 低 | 3 天 |
+| `@derive(copy)` | 标记 plain value 类型可复制 | 已实现 | — |
+| `@derive(eq)` | 生成字段相等比较 | 已实现 | — |
+| `@derive(ord)` | 生成字段字典序比较 | 已实现 | — |
+| `@derive(hash)` | 生成字段哈希组合 | 已实现 | — |
+| `@derive(debug)` | 生成基础 debug 字符串 | 已实现 | — |
+| `@derive(default)` | 语言通用默认值生成，不能假设 ECS 语义 | 待评估 | — |
 
-**总计**：约 19 工作日 ≈ **4 周一人**。
+ECS derive 名称如 `Component`、`Bundle`、`Resource`、`Event`、`Message`、`Relationship` 只能作为项目级注解或未来通用宏输入，由 `sla_ecs` 解释和展开，不能进入 `sa_plugin_sla` 的 Zig 白名单。
 
 ## 附录 C：Sla 不引入 `!` 后缀的影响
 

@@ -415,7 +415,9 @@ fn use_it() {
 
 ## 10. 一句话最终结论
 
-**Sla 当前的 `macro` 是"卫生化的函数式 identifier 宏"**，本质上等价于 Rust `macro_rules!` 的最简单单 arm 子集（约 20-30% 覆盖率）。**Rust 的 derive 宏与 proc-macro 在 Sla 里永远没有用户可写的等价物**——这是 SA 哲学的硬约束。
+**Sla 当前的 `macro` 是"卫生化的函数式 identifier 宏"**，本质上等价于 Rust `macro_rules!` 的最简单单 arm 子集（约 20-30% 覆盖率）。此外，编译器提供一个受限的源码级 arity 展开入口 `@expand_tuple(min, max, T) { ... }`，用于生成固定范围的 tuple/arity 声明。**Rust 的 derive 宏与 proc-macro 在 Sla 里永远没有用户可写的等价物**——这是 SA 哲学的硬约束。
+
+`@expand_tuple` 支持的模板能力很窄：`$N` 表示当前 arity，`$TYPES` / `$TYPE_PARAMS` 表示 `T0, T1, ...`，`@each(T) { ... }` 按 arity 重复模板块，`@join(T, ", ") { ... }` 按分隔符拼接模板块。它适合 Bevy/Sla ECS 这种 `AnyOf2..AnyOfN`、tuple impl、组合结构体和同形函数批量生成，不支持 token-tree 匹配、多 arm 模式、递归宏或任意编译期代码执行。
 
 **对 Bevy 移植的现实路径**：靠 **Sla 编译器内建 6-8 个 `@derive(...)` 关键字**（不是宏，是编译器特殊语法）撑起 ECS / Bundle / Resource / Event 的简洁性，配合一个半自动 Rust→Sla 宏转换工具，能让 Bevy-style 编程体验在 Sla 上做到 80% 等价。
 
@@ -431,8 +433,10 @@ fn use_it() {
 | `sa_plugin_sla/src/ast.zig` | 116 | `MacroDecl` 结构 |
 | `sa_plugin_sla/src/codegen.zig` | 90-92 | α-conversion 命名规则 |
 | `sa_plugin_sla/src/codegen.zig` | 2313-2330 | `genMacroDecl` 降级到 SA `[MACRO]` |
+| `sa_plugin_sla/src/source_expand.zig` | — | `@expand_tuple` 受限 arity 源码展开 |
 | `sa_plugin_sla/docs/sla_language_specification_cn.md` | §10-11 | 卫生宏设计 |
 | `sa_plugin_sla/tests/test_edge_cases.sla` | — | macro 测试样例 |
+| `sa_plugin_sla/tests/test_unit_expand_tuple_macro.sla` | — | `@expand_tuple` 泛型/arity 端到端测试 |
 | `sci/docs/faq.md` | 类型系统类 | 为什么没有 trait / 编译期反射 |
 | `bevy_local/crates/bevy_ecs/macros/` | — | Bevy 的 derive 实现参考 |
 

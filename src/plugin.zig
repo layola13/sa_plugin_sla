@@ -5,6 +5,7 @@ const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
 const codegen_mod = @import("codegen.zig");
+const source_expand = @import("source_expand.zig");
 pub const handler_bridge = @import("handler_bridge.zig");
 
 pub const SlaHandlerStateFieldAbi = extern struct {
@@ -363,7 +364,8 @@ fn isLeadingOutputMacroParam(raw: []const u8) bool {
 }
 
 fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, source: []const u8) !void {
-    var lines = std.mem.splitScalar(u8, source, '\n');
+    const expanded_source = try source_expand.expand(allocator, source);
+    var lines = std.mem.splitScalar(u8, expanded_source, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (!std.mem.startsWith(u8, line, "[MACRO]")) continue;
@@ -406,7 +408,8 @@ fn appendExpandedSlaImportDecls(
         try visited.put(resolved.path, {});
 
         const imported_base_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-        var parser = parser_mod.Parser.initWithDir(allocator, resolved.source, imported_base_dir);
+        const expanded_source = try source_expand.expand(allocator, resolved.source);
+        var parser = parser_mod.Parser.initWithDir(allocator, expanded_source, imported_base_dir);
         const imported_prog = try parser.parseProgram();
         if (imported_prog.* != .program) return error.InvalidProgram;
 
@@ -555,7 +558,8 @@ fn loadImportContractsRecursive(
         try visited.put(resolved.path, {});
 
         const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-        var lines = std.mem.splitScalar(u8, resolved.source, '\n');
+        const expanded_source = try source_expand.expand(allocator, resolved.source);
+        var lines = std.mem.splitScalar(u8, expanded_source, '\n');
         while (lines.next()) |line| {
             if (importPathFromLine(line)) |child_import| {
                 try loadImportContractsRecursive(tc, allocator, import_dir, child_import, resolved.path, visited);
@@ -563,11 +567,11 @@ fn loadImportContractsRecursive(
         }
 
         if (std.mem.endsWith(u8, resolved.path, ".sai")) {
-            try tc.loadContracts(resolved.source, "");
+            try tc.loadContracts(expanded_source, "");
         } else if (std.mem.endsWith(u8, resolved.path, ".sal")) {
-            try tc.loadContracts("", resolved.source);
+            try tc.loadContracts("", expanded_source);
         }
-        try loadImportedMacros(tc, allocator, resolved.source);
+        try loadImportedMacros(tc, allocator, expanded_source);
     }
 }
 
@@ -602,8 +606,13 @@ fn compileSlaToSaString(
         return null;
     };
 
+    const expanded_content = source_expand.expand(allocator, content) catch |err| {
+        try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
+        return null;
+    };
+
     const sla_base_dir = std.fs.path.dirname(file) orelse ".";
-    var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
+    var p = parser_mod.Parser.initWithDir(allocator, expanded_content, sla_base_dir);
     const prog = p.parseProgram() catch |err| {
         try p.printDiagnostic(stderr, file, err);
         return null;
@@ -778,8 +787,13 @@ pub fn runSlaCommandImpl(
             return 1;
         };
 
+        const expanded_content = source_expand.expand(allocator, content) catch |err| {
+            try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
+            return 1;
+        };
+
         const sla_base_dir = std.fs.path.dirname(file) orelse ".";
-        var p = parser_mod.Parser.initWithDir(allocator, content, sla_base_dir);
+        var p = parser_mod.Parser.initWithDir(allocator, expanded_content, sla_base_dir);
         const prog = p.parseProgram() catch |err| {
             try p.printDiagnostic(stderr, file, err);
             return 1;

@@ -4,6 +4,7 @@ const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
 const codegen_mod = @import("codegen.zig");
+const source_expand = @import("source_expand.zig");
 
 pub const HandlerStateType = enum {
     i1,
@@ -181,8 +182,9 @@ fn appendExpandedSlaImportDecls(
     try visited.put(resolved_path, {});
 
     const source = std.fs.cwd().readFileAlloc(allocator, resolved_path, 16 * 1024 * 1024) catch return CompileHandlerError.InvalidHandlerOutput;
+    const expanded_source = source_expand.expand(allocator, source) catch return CompileHandlerError.InvalidHandlerOutput;
     const import_dir = std.fs.path.dirname(resolved_path) orelse base_dir;
-    var p = parser_mod.Parser.initWithDir(allocator, source, import_dir);
+    var p = parser_mod.Parser.initWithDir(allocator, expanded_source, import_dir);
     const imported_prog = p.parseProgram() catch return CompileHandlerError.InvalidHandlerOutput;
     if (imported_prog.* != .program) return error.InvalidHandlerOutput;
 
@@ -250,7 +252,8 @@ pub fn compileHandlerWithSupport(
         \\
     , .{handler_source});
 
-    var p = parser_mod.Parser.initWithDir(a, source, options.base_dir);
+    const expanded_source = source_expand.expand(a, source) catch return CompileHandlerError.InvalidHandlerOutput;
+    var p = parser_mod.Parser.initWithDir(a, expanded_source, options.base_dir);
     const parsed_prog = try p.parseProgram();
     const prog = try expandSlaImports(a, parsed_prog, options.base_dir);
 

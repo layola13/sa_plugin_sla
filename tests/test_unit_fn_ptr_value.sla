@@ -6,6 +6,10 @@ fn fn_ptr_apply(f: fn(i32) -> i32, value: i32) -> i32 {
     return f(value);
 }
 
+fn fn_ptr_generic_identity<T>(value: T) -> T {
+    return value;
+}
+
 @test "function pointer can be stored and called"() {
     let f: fn(i32) -> i32 = fn_ptr_inc;
     let got = f(4);
@@ -15,4 +19,15 @@ fn fn_ptr_apply(f: fn(i32) -> i32, value: i32) -> i32 {
 @test "function pointer can be passed as argument"() {
     let got = fn_ptr_apply(fn_ptr_inc, 9);
     if got != 10 { panic(1402); };
+}
+
+@test "generic function can be specialized as function pointer value"() {
+    let f: fn(i32) -> i32 = fn_ptr_generic_identity<i32>;
+    let got = f(12);
+    if got != 12 { panic(1403); };
+}
+
+@test "generic function specialization can be passed as argument"() {
+    let got = fn_ptr_apply(fn_ptr_generic_identity<i32>, 14);
+    if got != 14 { panic(1404); };
 }

@@ -32,6 +32,7 @@ pub const Node = union(enum) {
     // Expressions
     literal: Literal,
     identifier: []const u8,
+    generic_func_ref: GenericFuncRef,
     if_expr: IfExpr,
     switch_expr: SwitchExpr,
     match_expr: MatchExpr,
@@ -305,6 +306,11 @@ pub const CallExpr = struct {
     associated_target: ?[]const u8 = null,
     generics: []const *Type,
     args: []const *Node,
+};
+
+pub const GenericFuncRef = struct {
+    func_name: []const u8,
+    generics: []const *Type,
 };
 
 pub const BorrowExpr = struct {

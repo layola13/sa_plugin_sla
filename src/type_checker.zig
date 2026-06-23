@@ -2379,6 +2379,7 @@ pub const TypeChecker = struct {
                 }
                 return TypeError.UndefinedVariable;
             },
+            .generic_func_ref => return TypeError.CompileError,
             .binary_expr => |bin| {
                 const l_ty = try self.checkExpr(bin.left, scope);
                 const r_ty = try self.checkExpr(bin.right, scope);

@@ -1590,6 +1590,42 @@ pub const Parser = struct {
         return false;
     }
 
+    fn genericFunctionRefBoundary(tag: lexer.Token.Tag) bool {
+        return switch (tag) {
+            .comma, .semicolon, .r_paren, .r_brace, .r_bracket, .eof => true,
+            else => false,
+        };
+    }
+
+    fn looksLikeGenericFunctionRefTail(self: *Parser) bool {
+        var lex_copy = self.lex;
+        var tok_copy = self.tok;
+        var depth: usize = 1;
+
+        while (tok_copy.tag != .eof) {
+            switch (tok_copy.tag) {
+                .less_than => depth += 1,
+                .greater_than => {
+                    depth -= 1;
+                    if (depth == 0) {
+                        tok_copy = lex_copy.next();
+                        return genericFunctionRefBoundary(tok_copy.tag);
+                    }
+                },
+                .greater_greater => {
+                    if (depth <= 2) {
+                        tok_copy = lex_copy.next();
+                        return genericFunctionRefBoundary(tok_copy.tag);
+                    }
+                    depth -= 2;
+                },
+                else => {},
+            }
+            tok_copy = lex_copy.next();
+        }
+        return false;
+    }
+
     fn looksLikeGenericMethodCallTail(self: *Parser) bool {
         if (self.peek() != .less_than) return false;
         var lex_copy = self.lex;
@@ -1647,6 +1683,20 @@ pub const Parser = struct {
                 .args = try args.toOwnedSlice(),
             },
         };
+        return node;
+    }
+
+    fn parseGenericFunctionRefTail(self: *Parser, func_name: []const u8) ParserError!*ast.Node {
+        var generics = std.ArrayList(*ast.Type).init(self.allocator);
+        while (true) {
+            const ty = try self.parseType();
+            try generics.append(ty);
+            if (!self.match(.comma)) break;
+        }
+        try self.expectGenericClose();
+
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{ .generic_func_ref = .{ .func_name = func_name, .generics = try generics.toOwnedSlice() } };
         return node;
     }
 
@@ -2068,6 +2118,9 @@ pub const Parser = struct {
                 }
                 if (tag == .less_than and left.* == .identifier and self.looksLikeGenericFunctionCallTail()) {
                     return try self.parseGenericCallTail(left.identifier);
+                }
+                if (tag == .less_than and left.* == .identifier and self.looksLikeGenericFunctionRefTail()) {
+                    return try self.parseGenericFunctionRefTail(left.identifier);
                 }
 
                 const op = switch (tag) {

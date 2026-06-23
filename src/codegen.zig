@@ -8523,6 +8523,7 @@ pub const Codegen = struct {
                 }
                 return name;
             },
+            .generic_func_ref => return CodegenError.CodegenError,
             .binary_expr => |bin| {
                 const left_ty = self.tc.expr_types.get(bin.left) orelse return CodegenError.CodegenError;
                 const right_ty = self.tc.expr_types.get(bin.right) orelse return CodegenError.CodegenError;

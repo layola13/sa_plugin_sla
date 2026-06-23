@@ -460,6 +460,21 @@ pub const Monomorphizer = struct {
                 res.* = .{ .identifier = name };
                 return res;
             },
+            .generic_func_ref => |ref| {
+                var spec_generics = std.ArrayList(*ast.Type).init(self.allocator);
+                for (ref.generics) |g| {
+                    try spec_generics.append(try self.specializeType(g));
+                }
+                const generics = try spec_generics.toOwnedSlice();
+                const mangled_name = try self.getMangledFuncName(ref.func_name, generics);
+                if (!self.specialized_funcs.contains(mangled_name)) {
+                    const template = self.func_templates.get(ref.func_name) orelse return MonomorphizeError.TemplateNotFound;
+                    try self.instantiateFunction(mangled_name, template, generics);
+                }
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .identifier = mangled_name };
+                return res;
+            },
             .if_expr => |ife| {
                 const new_cond = try self.specializeNode(ife.cond);
                 var new_chain: ?[]const ast.IfLetCond = null;
@@ -1558,6 +1573,15 @@ pub const Monomorphizer = struct {
             .identifier => |name| {
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .identifier = name };
+                return res;
+            },
+            .generic_func_ref => |ref| {
+                var spec_generics = std.ArrayList(*ast.Type).init(self.allocator);
+                for (ref.generics) |g| {
+                    try spec_generics.append(try self.substituteType(g, params, args));
+                }
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .generic_func_ref = .{ .func_name = ref.func_name, .generics = try spec_generics.toOwnedSlice() } };
                 return res;
             },
             .if_expr => |ife| {

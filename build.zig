@@ -35,6 +35,7 @@ pub fn build(b: *std.Build) void {
         .name = "sla-local-cli",
         .root_module = local_cli_module,
     });
+    b.installArtifact(local_cli);
     const run_local_cli = b.addRunArtifact(local_cli);
     if (b.args) |args| run_local_cli.addArgs(args);
     const local_cli_step = b.step("local-cli", "Run the local Sla CLI driver");

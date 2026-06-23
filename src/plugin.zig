@@ -6,6 +6,7 @@ const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
 const codegen_mod = @import("codegen.zig");
 const source_expand = @import("source_expand.zig");
+const sla_workspace = @import("workspace.zig");
 pub const handler_bridge = @import("handler_bridge.zig");
 
 pub const SlaHandlerStateFieldAbi = extern struct {
@@ -142,10 +143,10 @@ const skills = [_]plugin_api.SkillSection{
         .name = "sla",
         .summary = "Sla compiler and tools",
         .items = &.{
-            "sla build <file> [--out <file>]",
-            "sla build-exe <file> [sa-build-exe-options...]",
-            "sla check <file>",
-            "sla test <file> [sa-test-options...]",
+            "sla build [file] [-p <package>] [--out <file>]",
+            "sla build-exe [file] [-p <package>] [sa-build-exe-options...]",
+            "sla check [file] [-p <package>]",
+            "sla test [file] [-p <package>] [sa-test-options...]",
         },
     },
 };
@@ -678,6 +679,121 @@ fn compileSlaFileToSa(
     return compileSlaToSaString(allocator, file, output_file, stderr);
 }
 
+const SlaCliOptions = struct {
+    package_name: ?[]const u8 = null,
+    source_file: ?[]const u8 = null,
+    passthrough_start: usize,
+    help_requested: bool = false,
+};
+
+fn isHelpArg(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help");
+}
+
+fn commandUsage(command: []const u8) []const u8 {
+    if (std.mem.eql(u8, command, "build")) return "usage: sa sla build [file] [-p <package>] [--out <file>]\n";
+    if (std.mem.eql(u8, command, "build-exe")) return "usage: sa sla build-exe [file] [-p <package>] [sa-build-exe-options...]\n";
+    if (std.mem.eql(u8, command, "check")) return "usage: sa sla check [file] [-p <package>]\n";
+    if (std.mem.eql(u8, command, "test")) return "usage: sa sla test [file] [-p <package>] [sa-test-options...]\n";
+    return "usage: sa sla <command> [options]\n";
+}
+
+fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
+    try writer.writeAll(commandUsage(command));
+    if (std.mem.eql(u8, command, "build") or
+        std.mem.eql(u8, command, "build-exe") or
+        std.mem.eql(u8, command, "check") or
+        std.mem.eql(u8, command, "test"))
+    {
+        try writer.writeAll("\n");
+        try writer.writeAll("  -p, --package <name>    Select a workspace member package\n");
+        try writer.writeAll("  -h, --help              Show this help message\n");
+    }
+}
+
+fn parseSlaCliOptions(args: []const []const u8, command: []const u8) !SlaCliOptions {
+    var options = SlaCliOptions{ .passthrough_start = args.len };
+    var idx: usize = 3;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (isHelpArg(arg)) {
+            options.help_requested = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--package=")) {
+            options.package_name = arg["--package=".len..];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-p=")) {
+            options.package_name = arg["-p=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--package") or std.mem.eql(u8, arg, "-p")) {
+            idx += 1;
+            if (idx >= args.len) return error.InvalidFormat;
+            options.package_name = args[idx];
+            continue;
+        }
+        if (options.source_file == null and !std.mem.startsWith(u8, arg, "-")) {
+            options.source_file = arg;
+            options.passthrough_start = idx + 1;
+            break;
+        }
+        options.passthrough_start = idx;
+        break;
+    }
+
+    _ = command;
+    return options;
+}
+
+fn resolveWorkspaceSourcePath(
+    allocator: std.mem.Allocator,
+    stderr: std.io.AnyWriter,
+    package_name: ?[]const u8,
+) !?[]u8 {
+    var resolution = sla_workspace.resolveFromCurrentDir(allocator, .{ .request = package_name }) catch |err| switch (err) {
+        error.FileNotFound => {
+            try stderr.writeAll("Error: missing file argument and no workspace source could be resolved from the current directory\n");
+            return null;
+        },
+        error.UnknownPackage => {
+            try stderr.print("Error: unknown workspace package: {s}\n", .{package_name orelse ""});
+            return null;
+        },
+        error.MissingDefaultMember => {
+            try stderr.writeAll("Error: workspace has no resolvable default member; pass -p/--package or run inside a member directory\n");
+            return null;
+        },
+        error.InvalidFormat => {
+            try stderr.writeAll("Error: failed to parse workspace sa.mod\n");
+            return null;
+        },
+        else => return err,
+    };
+    defer resolution.deinit(allocator);
+
+    return sla_workspace.selectedSourcePath(allocator, &resolution) catch |err| switch (err) {
+        error.FileNotFound => {
+            try stderr.writeAll("Error: workspace member has no src/main.sla or main.sla entry source\n");
+            return null;
+        },
+        else => return err,
+    };
+}
+
+fn resolveSlaInputFile(
+    allocator: std.mem.Allocator,
+    stderr: std.io.AnyWriter,
+    options: SlaCliOptions,
+) !?[]u8 {
+    if (options.source_file) |file| {
+        const duped = try allocator.dupe(u8, file);
+        return duped;
+    }
+    return resolveWorkspaceSourcePath(allocator, stderr, options.package_name);
+}
+
 pub fn runSlaCommandImpl(
     ctx: *const plugin_api.Context,
     args: []const []const u8,
@@ -688,23 +804,37 @@ pub fn runSlaCommandImpl(
     if (args.len < 2) return null;
     if (!std.mem.eql(u8, args[1], "sla")) return null;
     if (args.len < 3) {
-        try stderr.writeAll("Usage: sa sla <command> [args]\n");
+        try stderr.writeAll("usage: sa sla <command> [options]\n");
         return 1;
     }
     const cmd = args[2];
+    if (std.mem.eql(u8, cmd, "help")) {
+        try stderr.writeAll("usage: sa sla <command> [options]\n\n");
+        try stderr.writeAll("Commands:\n");
+        try stderr.writeAll("  build      [file] [-p <package>] [--out <file>]\n");
+        try stderr.writeAll("  build-exe  [file] [-p <package>] [sa-build-exe args]\n");
+        try stderr.writeAll("  check      [file] [-p <package>]\n");
+        try stderr.writeAll("  test       [file] [-p <package>] [sa-test args]\n");
+        return 0;
+    }
     if (std.mem.eql(u8, cmd, "build")) {
-        if (args.len < 4) {
-            try stderr.writeAll("Error: missing file argument for 'sla build'\n");
+        const options = parseSlaCliOptions(args, cmd) catch {
+            try writeCommandHelp(stderr, cmd);
             return 1;
+        };
+        if (options.help_requested) {
+            try writeCommandHelp(stderr, cmd);
+            return 0;
         }
-        const file = args[3];
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 
+        const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
+
         var out_file: ?[]const u8 = null;
-        var idx: usize = 4;
+        var idx: usize = options.passthrough_start;
         while (idx < args.len) : (idx += 1) {
             if (std.mem.eql(u8, args[idx], "--out") or std.mem.eql(u8, args[idx], "-o")) {
                 if (idx + 1 < args.len) {
@@ -733,16 +863,21 @@ pub fn runSlaCommandImpl(
         try stdout.print("Sla Compiler: Successfully compiled {s} to {s}.\n", .{ file, final_out });
         return 0;
     } else if (std.mem.eql(u8, cmd, "build-exe")) {
-        if (args.len < 4) {
-            try stderr.writeAll("Error: missing file argument for 'sla build-exe'\n");
+        const options = parseSlaCliOptions(args, cmd) catch {
+            try writeCommandHelp(stderr, cmd);
             return 1;
+        };
+        if (options.help_requested) {
+            try writeCommandHelp(stderr, cmd);
+            return 0;
         }
-        const file = args[3];
-        const extra_args = args[4..];
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
+
+        const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
+        const extra_args = args[options.passthrough_start..];
 
         const sa_out = if (std.mem.endsWith(u8, file, ".sla"))
             try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file[0 .. file.len - 4]})
@@ -772,15 +907,20 @@ pub fn runSlaCommandImpl(
             else => 1,
         };
     } else if (std.mem.eql(u8, cmd, "check")) {
-        if (args.len < 4) {
-            try stderr.writeAll("Error: missing file argument for 'sla check'\n");
+        const options = parseSlaCliOptions(args, cmd) catch {
+            try writeCommandHelp(stderr, cmd);
             return 1;
+        };
+        if (options.help_requested) {
+            try writeCommandHelp(stderr, cmd);
+            return 0;
         }
-        const file = args[3];
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
+
+        const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
 
         const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
             try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
@@ -829,16 +969,21 @@ pub fn runSlaCommandImpl(
         try stdout.print("Sla Compiler: Successfully parsed and verified syntax and types of {s}.\n", .{file});
         return 0;
     } else if (std.mem.eql(u8, cmd, "test")) {
-        if (args.len < 4) {
-            try stderr.writeAll("Error: missing file argument for 'sla test'\n");
+        const options = parseSlaCliOptions(args, cmd) catch {
+            try writeCommandHelp(stderr, cmd);
             return 1;
+        };
+        if (options.help_requested) {
+            try writeCommandHelp(stderr, cmd);
+            return 0;
         }
-        const file = args[3];
-        const extra_args = args[4..];
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
+
+        const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
+        const extra_args = args[options.passthrough_start..];
 
         // Compile .sla -> temporary .sa file next to the source
         const sa_out = if (std.mem.endsWith(u8, file, ".sla"))
@@ -1025,4 +1170,117 @@ test "sla build rewrites sla imports relative to final output path" {
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "@import \"import_fixtures/output_relative/local_dep.sa\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "@import \"helper.sa\"") == null);
+}
+
+fn writeWorkspaceFixture(dir: std.fs.Dir, default_member: []const u8, tool_source: []const u8) !void {
+    try dir.makePath("members/app/src");
+    try dir.makePath("members/tool/src");
+
+    const root_manifest = if (std.mem.eql(u8, default_member, "tool"))
+        \\workspace {
+        \\  members ["members/app", "members/tool"]
+        \\  default_member "tool"
+        \\}
+    else
+        \\workspace {
+        \\  members ["members/app", "members/tool"]
+        \\  default_member "app"
+        \\}
+    ;
+    try dir.writeFile(.{ .sub_path = "sa.mod", .data = root_manifest });
+    try dir.writeFile(.{ .sub_path = "members/app/sa.mod", .data = "package \"app\"\n" });
+    try dir.writeFile(.{ .sub_path = "members/tool/sa.mod", .data = "package \"tool\"\n" });
+    try dir.writeFile(.{ .sub_path = "members/app/src/main.sla", .data = 
+        \\fn main() -> i32 {
+        \\    return 7;
+        \\};
+    });
+    try dir.writeFile(.{ .sub_path = "members/tool/src/main.sla", .data = tool_source });
+}
+
+test "sla build resolves workspace default member when file omitted" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try writeWorkspaceFixture(tmp.dir, "app",
+        \\fn main() -> i32 {
+        \\    return 9;
+        \\};
+    );
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "build" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try tmp.dir.access("members/app/src/main.sa", .{});
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("members/tool/src/main.sa", .{}));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "members/app/src/main.sla"));
+}
+
+test "sla check prefers current member over workspace default" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try writeWorkspaceFixture(tmp.dir, "tool",
+        \\fn broken( {
+    );
+
+    var member_dir = try tmp.dir.openDir("members/app/src", .{});
+    defer member_dir.close();
+    try member_dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "members/app/src/main.sla"));
+}
+
+test "sla build selects workspace package with -p when file omitted" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try writeWorkspaceFixture(tmp.dir, "app",
+        \\fn main() -> i32 {
+        \\    return 9;
+        \\};
+    );
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "build", "-p", "tool" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try tmp.dir.access("members/tool/src/main.sa", .{});
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "members/tool/src/main.sla"));
 }

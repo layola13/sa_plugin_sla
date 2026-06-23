@@ -1,6 +1,7 @@
 const std = @import("std");
 const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
+const source_expand = @import("source_expand.zig");
 
 pub const ParserError = error{
     SyntaxError,
@@ -1006,10 +1007,11 @@ pub const Parser = struct {
 
     fn prescanResolvedSlaImportTypes(self: *Parser, resolved_path: []const u8) !void {
         const source = std.fs.cwd().readFileAlloc(self.allocator, resolved_path, 16 * 1024 * 1024) catch return;
+        const expanded_source = source_expand.expand(self.allocator, source) catch return;
 
         const import_dir = std.fs.path.dirname(resolved_path) orelse ".";
 
-        var sub = initWithDir(self.allocator, source, import_dir);
+        var sub = initWithDir(self.allocator, expanded_source, import_dir);
         sub.import_scan_depth = self.import_scan_depth + 1;
         const prog = sub.parseProgram() catch return;
         if (prog.* != .program) return;

@@ -144,6 +144,7 @@ const skills = [_]plugin_api.SkillSection{
         .summary = "Sla compiler and tools",
         .items = &.{
             "sla build [file] [-p <package>] [--out <file>]",
+            "sla build-workspace [-p <package>] [sa-build-exe-options...]",
             "sla build-exe [file] [-p <package>] [sa-build-exe-options...]",
             "sla check [file] [-p <package>]",
             "sla test [file] [-p <package>] [sa-test-options...]",
@@ -692,6 +693,7 @@ fn isHelpArg(arg: []const u8) bool {
 
 fn commandUsage(command: []const u8) []const u8 {
     if (std.mem.eql(u8, command, "build")) return "usage: sa sla build [file] [-p <package>] [--out <file>]\n";
+    if (std.mem.eql(u8, command, "build-workspace")) return "usage: sa sla build-workspace [-p <package>] [sa-build-exe-options...]\n";
     if (std.mem.eql(u8, command, "build-exe")) return "usage: sa sla build-exe [file] [-p <package>] [sa-build-exe-options...]\n";
     if (std.mem.eql(u8, command, "check")) return "usage: sa sla check [file] [-p <package>]\n";
     if (std.mem.eql(u8, command, "test")) return "usage: sa sla test [file] [-p <package>] [sa-test-options...]\n";
@@ -701,6 +703,7 @@ fn commandUsage(command: []const u8) []const u8 {
 fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
     try writer.writeAll(commandUsage(command));
     if (std.mem.eql(u8, command, "build") or
+        std.mem.eql(u8, command, "build-workspace") or
         std.mem.eql(u8, command, "build-exe") or
         std.mem.eql(u8, command, "check") or
         std.mem.eql(u8, command, "test"))
@@ -812,6 +815,7 @@ pub fn runSlaCommandImpl(
         try stderr.writeAll("usage: sa sla <command> [options]\n\n");
         try stderr.writeAll("Commands:\n");
         try stderr.writeAll("  build      [file] [-p <package>] [--out <file>]\n");
+        try stderr.writeAll("  build-workspace [-p <package>] [sa-build-exe args]\n");
         try stderr.writeAll("  build-exe  [file] [-p <package>] [sa-build-exe args]\n");
         try stderr.writeAll("  check      [file] [-p <package>]\n");
         try stderr.writeAll("  test       [file] [-p <package>] [sa-test args]\n");
@@ -877,6 +881,55 @@ pub fn runSlaCommandImpl(
         const allocator = arena.allocator();
 
         const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
+        const extra_args = args[options.passthrough_start..];
+
+        const sa_out = if (std.mem.endsWith(u8, file, ".sla"))
+            try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file[0 .. file.len - 4]})
+        else
+            try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file});
+
+        const sa_code = (try compileSlaFileToSa(allocator, file, sa_out, stderr)) orelse return 1;
+        std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
+            try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
+            return 1;
+        };
+        defer std.fs.cwd().deleteFile(sa_out) catch {};
+
+        var argv = std.ArrayList([]const u8).init(allocator);
+        try argv.append("sa");
+        try argv.append("build-exe");
+        try argv.append(sa_out);
+        for (extra_args) |a| try argv.append(a);
+
+        var child = std.process.Child.init(argv.items, allocator);
+        const term = child.spawnAndWait() catch |err| {
+            try stderr.print("Error: failed to run 'sa build-exe': {}\n", .{err});
+            return 1;
+        };
+        return switch (term) {
+            .Exited => |code| code,
+            else => 1,
+        };
+    } else if (std.mem.eql(u8, cmd, "build-workspace")) {
+        const options = parseSlaCliOptions(args, cmd) catch {
+            try writeCommandHelp(stderr, cmd);
+            return 1;
+        };
+        if (options.help_requested) {
+            try writeCommandHelp(stderr, cmd);
+            return 0;
+        }
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        if (options.source_file != null) {
+            try stderr.writeAll("Error: sla build-workspace does not accept a source file argument; run it from a workspace root or member directory\n");
+            return 1;
+        }
+
+        const file = (try resolveWorkspaceSourcePath(allocator, stderr, options.package_name)) orelse return 1;
         const extra_args = args[options.passthrough_start..];
 
         const sa_out = if (std.mem.endsWith(u8, file, ".sla"))

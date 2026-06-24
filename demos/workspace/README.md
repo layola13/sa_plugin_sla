@@ -14,7 +14,8 @@ Then run from this directory:
 ```bash
 PATH=/home/vscode/projects/sci/zig-out/bin:$PATH /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla check
 PATH=/home/vscode/projects/sci/zig-out/bin:$PATH /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla build -p tool
-PATH=/home/vscode/projects/sci/zig-out/bin:$PATH /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla build-exe -o app_demo
+PATH=/home/vscode/projects/sci/zig-out/bin:$PATH /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla build-workspace -o app_demo
+PATH=/home/vscode/projects/sci/zig-out/bin:$PATH /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla build-workspace -p tool -o tool_demo
 ```
 
 The workspace root defaults to the `app` member. `-p tool` selects the `tool` member without passing a source path.

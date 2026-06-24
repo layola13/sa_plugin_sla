@@ -265,6 +265,10 @@ pub const Codegen = struct {
         return std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ ty_name, method_name }) catch return CodegenError.OutOfMemory;
     }
 
+    fn mangleTraitMethodName(self: *Codegen, ty_name: []const u8, trait_name: []const u8, method_name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "{s}__{s}_{s}", .{ ty_name, trait_name, method_name }) catch return CodegenError.OutOfMemory;
+    }
+
     fn loweredFuncSymbol(self: *Codegen, name: []const u8) CodegenError![]const u8 {
         if (std.mem.eql(u8, name, "main")) {
             return std.fmt.allocPrint(self.allocator, "{s}", .{name}) catch return CodegenError.OutOfMemory;
@@ -372,7 +376,7 @@ pub const Codegen = struct {
         for (trait_decl.methods) |method| {
             if (!first.*) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
             first.* = false;
-            const mangled = try self.mangleMethodName(type_name, method.name);
+            const mangled = try self.mangleTraitMethodName(type_name, trait_name, method.name);
             defer self.allocator.free(mangled);
             const lowered = try self.loweredFuncSymbol(mangled);
             defer self.allocator.free(lowered);
@@ -5688,7 +5692,10 @@ pub const Codegen = struct {
                 };
                 for (decl.impl_decl.methods) |method| {
                     if (method.* != .func_decl) return CodegenError.CodegenError;
-                    const mangled = try self.mangleMethodName(impl_name, method.func_decl.name);
+                    const mangled = if (decl.impl_decl.trait_name) |trait_name|
+                        try self.mangleTraitMethodName(impl_name, trait_name, method.func_decl.name)
+                    else
+                        try self.mangleMethodName(impl_name, method.func_decl.name);
                     defer self.allocator.free(mangled);
                     try self.genFuncDeclNamed(mangled, &method.func_decl);
                 }
@@ -6484,6 +6491,60 @@ pub const Codegen = struct {
             .reg = arg_reg,
             .release_after_call = callArgNeedsRelease(arg) or self.generatedFnPtrIdentifierArg(arg) or self.generatedScalarConstIdentifierArg(arg),
         };
+    }
+
+    fn genResolvedFunctionCall(
+        self: *Codegen,
+        symbol: []const u8,
+        call: *const ast.CallExpr,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+        auto_borrow_receiver: bool,
+    ) CodegenError![]const u8 {
+        const func = self.tc.funcs.get(symbol) orelse return CodegenError.CodegenError;
+        if (func.params.len != call.args.len) return CodegenError.CodegenError;
+
+        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        defer arg_regs.deinit();
+        var release_flags = std.ArrayList(bool).init(self.allocator);
+        defer release_flags.deinit();
+
+        for (call.args, 0..) |arg, i| {
+            if (self.tc.array_to_slice_borrow_args.contains(arg)) {
+                arg_regs.append(try self.genArrayBorrowToSliceArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+                release_flags.append(callArgNeedsRelease(arg)) catch return CodegenError.OutOfMemory;
+                continue;
+            }
+
+            if (func.params[i].is_borrow and arg.* != .borrow_expr) {
+                const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+                if (auto_borrow_receiver and i == 0 or arg_ty.* == .borrow) {
+                    const recv_reg = try self.genExpr(arg, hoisted_allocs);
+                    const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
+                    arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
+                    release_flags.append(false) catch return CodegenError.OutOfMemory;
+                    continue;
+                }
+            }
+
+            const lowered_arg = try self.genCallArgForParam(arg, func.params[i], hoisted_allocs);
+            arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
+            release_flags.append(lowered_arg.release_after_call) catch return CodegenError.OutOfMemory;
+        }
+
+        const reg = try self.newTmp();
+        const lowered_symbol = try self.loweredFuncSymbol(symbol);
+        defer self.allocator.free(lowered_symbol);
+        self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_symbol }) catch return CodegenError.CodegenError;
+        for (arg_regs.items, 0..) |arg_reg, i| {
+            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+        }
+        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+
+        for (arg_regs.items, release_flags.items) |arg_reg, release_after_call| {
+            if (release_after_call) try self.emitRelease(arg_reg);
+        }
+        return reg;
     }
 
     fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, macro: type_checker.ImportedMacro, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
@@ -8825,6 +8886,9 @@ pub const Codegen = struct {
                 return try self.genSliceExpr(&slc, hoisted_allocs);
             },
             .call_expr => |call| {
+                if (self.tc.resolved_call_symbols.get(expr)) |symbol| {
+                    return try self.genResolvedFunctionCall(symbol, &call, hoisted_allocs, call.associated_target == null);
+                }
                 if (std.mem.eql(u8, call.func_name, "format")) {
                     return try self.genFormatCall(&call, hoisted_allocs);
                 }

@@ -46,7 +46,9 @@ impl StaticFactoryShape for StaticFactoryPair {
     fn build(left: i32, right: i32) -> Self {
         return Self { left: left, right: right };
     }
+}
 
+impl StaticFactoryPair {
     fn sum(self) -> i32 {
         return self.left + self.right;
     }

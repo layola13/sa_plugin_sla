@@ -2543,7 +2543,10 @@ pub const TypeChecker = struct {
                 }
                 switch (curr_ty.*) {
                     .user_defined => |ud| {
-                        const decl = self.structs.get(ud.name) orelse return TypeError.NotAStruct;
+                        const decl = self.structs.get(ud.name) orelse {
+                            self.setError("field access target `{s}` is not a known struct", .{ud.name});
+                            return TypeError.NotAStruct;
+                        };
                         if (decl.is_opaque) {
                             self.setError("opaque type field access is not allowed: {s}", .{ud.name});
                             return TypeError.FieldNotFound;
@@ -2557,14 +2560,24 @@ pub const TypeChecker = struct {
                                 return f.ty;
                             }
                         }
+                        self.setError("FieldNotFound: `{s}` has no field `{s}`", .{ ud.name, field.field_name });
                         return TypeError.FieldNotFound;
                     },
                     .tuple => |tuple| {
-                        const index = std.fmt.parseInt(usize, field.field_name, 10) catch return TypeError.FieldNotFound;
-                        if (index >= tuple.elems.len) return TypeError.FieldNotFound;
+                        const index = std.fmt.parseInt(usize, field.field_name, 10) catch {
+                            self.setError("FieldNotFound: tuple field `{s}` is not a numeric index", .{field.field_name});
+                            return TypeError.FieldNotFound;
+                        };
+                        if (index >= tuple.elems.len) {
+                            self.setError("FieldNotFound: tuple index `{s}` out of range {}", .{ field.field_name, tuple.elems.len });
+                            return TypeError.FieldNotFound;
+                        }
                         return tuple.elems[index];
                     },
-                    else => return TypeError.NotAStruct,
+                    else => {
+                        self.setError("field access `{s}` requires struct/tuple target, got tag={s}", .{ field.field_name, @tagName(curr_ty.*) });
+                        return TypeError.NotAStruct;
+                    },
                 }
             },
             .struct_literal => |lit| {

@@ -4727,9 +4727,74 @@ pub const TypeChecker = struct {
     }
 
     fn checkImpl(self: *TypeChecker, impl_decl: *ast.ImplDecl) !void {
+        if (impl_decl.trait_name) |trait_name| {
+            try self.checkTraitImpl(trait_name, impl_decl);
+        }
         for (impl_decl.methods) |method| {
             if (method.* != .func_decl) return TypeError.CompileError;
             try self.checkFunc(&method.func_decl);
+        }
+    }
+
+    fn typeEqualsWithSelf(self: *TypeChecker, actual: *ast.Type, expected: *ast.Type, self_ty: *ast.Type) bool {
+        if (expected.* == .user_defined and std.mem.eql(u8, expected.user_defined.name, "Self")) {
+            return self.typesEqual(actual, self_ty);
+        }
+        if (std.meta.activeTag(actual.*) != std.meta.activeTag(expected.*)) return self.typesEqual(actual, expected);
+        switch (expected.*) {
+            .borrow => |inner| return actual.* == .borrow and self.typeEqualsWithSelf(actual.borrow, inner, self_ty),
+            .pointer => |inner| return actual.* == .pointer and self.typeEqualsWithSelf(actual.pointer, inner, self_ty),
+            .array => |arr| return actual.* == .array and actual.array.len == arr.len and self.typeEqualsWithSelf(actual.array.elem, arr.elem, self_ty),
+            .tuple => |tuple| {
+                if (actual.* != .tuple or actual.tuple.elems.len != tuple.elems.len) return false;
+                for (actual.tuple.elems, tuple.elems) |a, e| {
+                    if (!self.typeEqualsWithSelf(a, e, self_ty)) return false;
+                }
+                return true;
+            },
+            .future => |inner| return actual.* == .future and self.typeEqualsWithSelf(actual.future, inner, self_ty),
+            .fn_ptr => |fn_ptr| {
+                if (actual.* != .fn_ptr) return false;
+                if (fn_ptr.params.len != actual.fn_ptr.params.len) return false;
+                for (actual.fn_ptr.params, fn_ptr.params) |a, e| {
+                    if (!self.typeEqualsWithSelf(a, e, self_ty)) return false;
+                }
+                return self.typeEqualsWithSelf(actual.fn_ptr.ret, fn_ptr.ret, self_ty);
+            },
+            .user_defined => |ud| {
+                if (actual.* != .user_defined or !std.mem.eql(u8, actual.user_defined.name, ud.name) or actual.user_defined.generics.len != ud.generics.len) return false;
+                for (actual.user_defined.generics, ud.generics) |a, e| {
+                    if (!self.typeEqualsWithSelf(a, e, self_ty)) return false;
+                }
+                return true;
+            },
+            else => return self.typesEqual(actual, expected),
+        }
+    }
+
+    fn implMethodFor(impl_decl: *ast.ImplDecl, name: []const u8) ?*ast.FuncDecl {
+        for (impl_decl.methods) |method| {
+            if (method.* == .func_decl and std.mem.eql(u8, method.func_decl.name, name)) return &method.func_decl;
+        }
+        return null;
+    }
+
+    fn checkTraitImpl(self: *TypeChecker, trait_name: []const u8, impl_decl: *ast.ImplDecl) TypeError!void {
+        const trait_decl = self.traits.get(trait_name) orelse return TypeError.UndefinedVariable;
+        for (trait_decl.supertraits) |supertrait| {
+            try self.checkTraitImpl(supertrait, impl_decl);
+        }
+        for (trait_decl.methods) |trait_method| {
+            const impl_method = implMethodFor(impl_decl, trait_method.name) orelse {
+                self.setError("Trait impl missing method `{s}` for trait `{s}`", .{ trait_method.name, trait_name });
+                return TypeError.UndefinedVariable;
+            };
+            if (impl_method.params.len != trait_method.params.len) return TypeError.InvalidArgsCount;
+            for (impl_method.params, trait_method.params) |actual, expected| {
+                if (actual.is_borrow != expected.is_borrow or actual.is_move != expected.is_move) return TypeError.TypeMismatch;
+                if (!self.typeEqualsWithSelf(actual.ty, expected.ty, impl_decl.target_ty)) return TypeError.TypeMismatch;
+            }
+            if (!self.typeEqualsWithSelf(impl_method.ret_ty, trait_method.ret_ty, impl_decl.target_ty)) return TypeError.TypeMismatch;
         }
     }
 };

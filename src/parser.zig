@@ -657,6 +657,9 @@ pub const Parser = struct {
         try self.expect(.l_brace);
 
         var methods = std.ArrayList(ast.TraitMethod).init(self.allocator);
+        const prev_impl_target = self.current_impl_target;
+        self.current_impl_target = try self.makeUserDefinedType("Self", &.{});
+        defer self.current_impl_target = prev_impl_target;
         while (self.peek() != .r_brace and self.peek() != .eof) {
             try self.expect(.keyword_fn);
             const method_name_tok = self.tok;
@@ -694,7 +697,8 @@ pub const Parser = struct {
                     try self.expect(.colon);
                     const first_ty = try self.parseType();
                     try params.append(.{ .name = first_name, .ty = first_ty, .is_borrow = first_is_borrow, .is_move = first_is_move });
-                    while (self.peek() != .r_paren and self.peek() != .eof) {
+                    while (self.match(.comma)) {
+                        if (self.peek() == .r_paren or self.peek() == .eof) break;
                         const p_is_borrow = self.match(.ampersand);
                         const p_is_move = if (!p_is_borrow) self.match(.caret) else false;
                         const p_tok = self.tok;
@@ -703,7 +707,6 @@ pub const Parser = struct {
                         try self.expect(.colon);
                         const p_ty = try self.parseType();
                         try params.append(.{ .name = p_name, .ty = p_ty, .is_borrow = p_is_borrow, .is_move = p_is_move });
-                        if (!self.match(.comma)) break;
                     }
                 }
             }
@@ -812,7 +815,8 @@ pub const Parser = struct {
                 try self.expect(.colon);
                 const first_ty = try self.parseType();
                 try params.append(.{ .name = first_name, .ty = first_ty, .is_borrow = first_is_borrow, .is_move = first_is_move });
-                while (self.peek() != .r_paren and self.peek() != .eof) {
+                while (self.match(.comma)) {
+                    if (self.peek() == .r_paren or self.peek() == .eof) break;
                     const p_is_borrow = self.match(.ampersand);
                     const p_is_move = if (!p_is_borrow) self.match(.caret) else false;
                     const p_tok = self.tok;
@@ -821,7 +825,6 @@ pub const Parser = struct {
                     try self.expect(.colon);
                     const p_ty = try self.parseType();
                     try params.append(.{ .name = p_name, .ty = p_ty, .is_borrow = p_is_borrow, .is_move = p_is_move });
-                    if (!self.match(.comma)) break;
                 }
             }
         }

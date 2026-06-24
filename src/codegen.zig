@@ -6603,7 +6603,7 @@ pub const Codegen = struct {
     }
 
     fn storedIdentifierNeedsRelease(self: *Codegen, value: *const ast.Node, value_ty: *const ast.Type) bool {
-        return value.* == .identifier and value_ty.* != .primitive and !self.typeIsCopyStruct(value_ty);
+        return value.* == .identifier and value_ty.* != .primitive and value_ty.* != .fn_ptr and !self.typeIsCopyStruct(value_ty);
     }
 
     fn isNonOwningPointerCarrierCastArg(arg: *const ast.Node) bool {
@@ -8507,9 +8507,7 @@ pub const Codegen = struct {
                         const reg = try self.newTmp();
                         const vt_name = try self.fnPtrVTableName(name);
                         defer self.allocator.free(vt_name);
-                        self.out.writer().print("    {s} = alloc 16\n", .{reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+0, 0 as ptr\n", .{reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+8, &{s} as ptr\n", .{ reg, vt_name }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = &{s}\n", .{ reg, vt_name }) catch return CodegenError.CodegenError;
                         return reg;
                     }
                 }
@@ -9461,10 +9459,8 @@ pub const Codegen = struct {
 
                 if (self.tc.fn_ptr_calls.contains(expr)) {
                     const fn_reg = call.func_name;
-                    const vt_reg = try self.newTmp();
                     const call_reg = try self.newTmp();
-                    self.out.writer().print("    {s} = load {s}+8 as ptr\n", .{ vt_reg, fn_reg }) catch return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ call_reg, vt_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ call_reg, fn_reg }) catch return CodegenError.CodegenError;
 
                     var arg_regs = std.ArrayList([]const u8).init(self.allocator);
                     defer arg_regs.deinit();
@@ -9480,7 +9476,6 @@ pub const Codegen = struct {
                     }
                     self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
                     try self.emitRelease(call_reg);
-                    try self.emitRelease(vt_reg);
                     for (call.args, arg_regs.items) |arg, arg_reg| {
                         if (callArgNeedsRelease(arg)) try self.emitRelease(arg_reg);
                     }

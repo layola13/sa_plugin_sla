@@ -10,6 +10,27 @@ fn fn_ptr_generic_identity<T>(value: T) -> T {
     return value;
 }
 
+fn fn_ptr_false(x: i32) -> bool {
+    return false;
+}
+
+fn fn_ptr_true(x: i32) -> bool {
+    return true;
+}
+
+struct FnPtrHolder {
+    f: fn(i32) -> bool,
+}
+
+fn fn_ptr_holder_new(f: fn(i32) -> bool) -> FnPtrHolder {
+    return FnPtrHolder { f: f };
+}
+
+fn fn_ptr_vec_push(values: Vec<fn(i32) -> bool>, f: fn(i32) -> bool) -> Vec<fn(i32) -> bool> {
+    values.push(f);
+    return values;
+}
+
 @test "function pointer can be stored and called"() {
     let f: fn(i32) -> i32 = fn_ptr_inc;
     let got = f(4);
@@ -30,4 +51,20 @@ fn fn_ptr_generic_identity<T>(value: T) -> T {
 @test "generic function specialization can be passed as argument"() {
     let got = fn_ptr_apply(fn_ptr_generic_identity<i32>, 14);
     if got != 14 { panic(1404); };
+}
+
+@test "function pointer survives struct return"() {
+    let holder = fn_ptr_holder_new(fn_ptr_true);
+    let f = holder.f;
+    if f(1) != true { panic(1405); };
+}
+
+@test "function pointer survives vec push through function"() {
+    let values: Vec<fn(i32) -> bool> = Vec::new();
+    let values1 = fn_ptr_vec_push(values, fn_ptr_false);
+    let values2 = fn_ptr_vec_push(values1, fn_ptr_true);
+    let f0 = values2[0];
+    let f1 = values2[1];
+    if f0(2) { panic(1406); };
+    if f1(2) != true { panic(1407); };
 }

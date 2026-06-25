@@ -1,0 +1,535 @@
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_ternary_pick_i32 = vtable { call = @sla__ternary_pick_i32 }
+@const SLA_FNPTR_VT_ternary_return_i32 = vtable { call = @sla__ternary_return_i32 }
+@const SLA_FNPTR_VT_ternary_assigns_var = vtable { call = @sla__ternary_assigns_var }
+@const SLA_FNPTR_VT_ternary_nested_assigns_var = vtable { call = @sla__ternary_nested_assigns_var }
+@const SLA_FNPTR_VT_ternary_pick_bool = vtable { call = @sla__ternary_pick_bool }
+@const SLA_FNPTR_VT_ternary_pick_f64 = vtable { call = @sla__ternary_pick_f64 }
+@const SLA_FNPTR_VT_ternary_statement_branch = vtable { call = @sla__ternary_statement_branch }
+@sla__ternary_pick_i32(cond: u8) -> i32:
+L_ENTRY:
+    tmp_0 = or cond, 0
+    tmp_1 = alloc 8
+    br tmp_0 -> L_THEN_0, L_ELSE_1
+
+L_THEN_0:
+    !tmp_0
+    tmp_2 = 1
+    store tmp_1+0, tmp_2 as i64
+    !tmp_2
+    jmp L_MERGE_2
+
+L_ELSE_1:
+    !tmp_0
+    tmp_3 = 2
+    store tmp_1+0, tmp_3 as i64
+    !tmp_3
+    jmp L_MERGE_2
+
+L_MERGE_2:
+    tmp_4 = load tmp_1+0 as i64
+    !tmp_1
+    value = tmp_4
+    !cond
+    return value
+
+@sla__ternary_return_i32(cond: u8) -> i32:
+L_ENTRY:
+    tmp_5 = or cond, 0
+    tmp_6 = alloc 8
+    br tmp_5 -> L_THEN_3, L_ELSE_4
+
+L_THEN_3:
+    !tmp_5
+    tmp_7 = 3
+    store tmp_6+0, tmp_7 as i64
+    !tmp_7
+    jmp L_MERGE_5
+
+L_ELSE_4:
+    !tmp_5
+    tmp_8 = 4
+    store tmp_6+0, tmp_8 as i64
+    !tmp_8
+    jmp L_MERGE_5
+
+L_MERGE_5:
+    tmp_9 = load tmp_6+0 as i64
+    !tmp_6
+    return tmp_9
+
+@sla__ternary_assigns_var(cond: u8) -> i32:
+L_ENTRY:
+    x = stack_alloc 4
+    tmp_10 = or cond, 0
+    tmp_11 = alloc 8
+    br tmp_10 -> L_THEN_6, L_ELSE_7
+
+L_THEN_6:
+    !tmp_10
+    tmp_12 = 8
+    store tmp_11+0, tmp_12 as i64
+    !tmp_12
+    jmp L_MERGE_8
+
+L_ELSE_7:
+    !tmp_10
+    tmp_13 = 9
+    store tmp_11+0, tmp_13 as i64
+    !tmp_13
+    jmp L_MERGE_8
+
+L_MERGE_8:
+    tmp_14 = load tmp_11+0 as i64
+    !tmp_11
+    store x+0, tmp_14 as i32
+    !tmp_14
+    tmp_15 = load x+0 as i32
+    !cond
+    return tmp_15
+
+@sla__ternary_nested_assigns_var(a: u8, b: u8) -> i32:
+L_ENTRY:
+    x = stack_alloc 4
+    tmp_16 = or a, 0
+    br tmp_16 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_16
+    tmp_17 = or b, 0
+    tmp_18 = alloc 8
+    br tmp_17 -> L_THEN_12, L_ELSE_13
+
+L_THEN_12:
+    !tmp_17
+    tmp_19 = 11
+    store tmp_18+0, tmp_19 as i64
+    !tmp_19
+    jmp L_MERGE_14
+
+L_ELSE_13:
+    !tmp_17
+    tmp_20 = 12
+    store tmp_18+0, tmp_20 as i64
+    !tmp_20
+    jmp L_MERGE_14
+
+L_MERGE_14:
+    tmp_21 = load tmp_18+0 as i64
+    !tmp_18
+    store x+0, tmp_21 as i32
+    !tmp_21
+    jmp L_MERGE_11
+
+L_ELSE_10:
+    !tmp_16
+    tmp_22 = or b, 0
+    tmp_23 = alloc 8
+    br tmp_22 -> L_THEN_15, L_ELSE_16
+
+L_THEN_15:
+    !tmp_22
+    tmp_24 = 13
+    store tmp_23+0, tmp_24 as i64
+    !tmp_24
+    jmp L_MERGE_17
+
+L_ELSE_16:
+    !tmp_22
+    tmp_25 = 14
+    store tmp_23+0, tmp_25 as i64
+    !tmp_25
+    jmp L_MERGE_17
+
+L_MERGE_17:
+    tmp_26 = load tmp_23+0 as i64
+    !tmp_23
+    store x+0, tmp_26 as i32
+    !tmp_26
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    tmp_28 = load x+0 as i32
+    !b
+    !a
+    return tmp_28
+
+@sla__ternary_pick_bool(cond: u8) -> u8:
+L_ENTRY:
+    tmp_29 = or cond, 0
+    tmp_30 = alloc 1
+    br tmp_29 -> L_THEN_18, L_ELSE_19
+
+L_THEN_18:
+    !tmp_29
+    tmp_31 = 1
+    store tmp_30+0, tmp_31 as u8
+    !tmp_31
+    jmp L_MERGE_20
+
+L_ELSE_19:
+    !tmp_29
+    tmp_32 = 0
+    store tmp_30+0, tmp_32 as u8
+    !tmp_32
+    jmp L_MERGE_20
+
+L_MERGE_20:
+    tmp_33 = load tmp_30+0 as u8
+    !tmp_30
+    return tmp_33
+
+@sla__ternary_pick_f64(cond: u8) -> f64:
+L_ENTRY:
+    tmp_34 = or cond, 0
+    tmp_35 = alloc 8
+    br tmp_34 -> L_THEN_21, L_ELSE_22
+
+L_THEN_21:
+    !tmp_34
+    tmp_36 = 1.5
+    store tmp_35+0, tmp_36 as f64
+    !tmp_36
+    jmp L_MERGE_23
+
+L_ELSE_22:
+    !tmp_34
+    tmp_37 = 2.5
+    store tmp_35+0, tmp_37 as f64
+    !tmp_37
+    jmp L_MERGE_23
+
+L_MERGE_23:
+    tmp_38 = load tmp_35+0 as f64
+    !tmp_35
+    return tmp_38
+
+@sla__ternary_statement_branch(cond: u8) -> i32:
+L_ENTRY:
+    tmp_39 = 0
+    x = tmp_39
+    tmp_40 = or cond, 0
+    br tmp_40 -> L_THEN_24, L_ELSE_25
+
+L_THEN_24:
+    !tmp_40
+    tmp_41 = 21
+    !x
+    x = tmp_41
+    jmp L_MERGE_26
+
+L_ELSE_25:
+    !tmp_40
+    tmp_42 = 22
+    !x
+    x = tmp_42
+    jmp L_MERGE_26
+
+L_MERGE_26:
+    !cond
+    return x
+
+@test "ternary can be used as expression and statement"():
+L_TEST_ENTRY_27:
+    tmp_44 = 1
+    tmp_45 = call @sla__ternary_pick_i32(tmp_44)
+    !tmp_44
+    tmp_46 = 1
+    tmp_47 = ne tmp_45, tmp_46
+    !tmp_45
+    !tmp_46
+    br tmp_47 -> L_THEN_28, L_ELSE_29
+
+L_THEN_28:
+    !tmp_47
+    panic(27600)
+
+L_ELSE_29:
+    !tmp_47
+    jmp L_MERGE_30
+
+L_MERGE_30:
+    tmp_50 = 0
+    tmp_51 = call @sla__ternary_pick_i32(tmp_50)
+    !tmp_50
+    tmp_52 = 2
+    tmp_53 = ne tmp_51, tmp_52
+    !tmp_51
+    !tmp_52
+    br tmp_53 -> L_THEN_31, L_ELSE_32
+
+L_THEN_31:
+    !tmp_53
+    panic(27601)
+
+L_ELSE_32:
+    !tmp_53
+    jmp L_MERGE_33
+
+L_MERGE_33:
+    tmp_56 = 1
+    tmp_57 = call @sla__ternary_return_i32(tmp_56)
+    !tmp_56
+    tmp_58 = 3
+    tmp_59 = ne tmp_57, tmp_58
+    !tmp_57
+    !tmp_58
+    br tmp_59 -> L_THEN_34, L_ELSE_35
+
+L_THEN_34:
+    !tmp_59
+    panic(27602)
+
+L_ELSE_35:
+    !tmp_59
+    jmp L_MERGE_36
+
+L_MERGE_36:
+    tmp_62 = 0
+    tmp_63 = call @sla__ternary_return_i32(tmp_62)
+    !tmp_62
+    tmp_64 = 4
+    tmp_65 = ne tmp_63, tmp_64
+    !tmp_63
+    !tmp_64
+    br tmp_65 -> L_THEN_37, L_ELSE_38
+
+L_THEN_37:
+    !tmp_65
+    panic(27603)
+
+L_ELSE_38:
+    !tmp_65
+    jmp L_MERGE_39
+
+L_MERGE_39:
+    tmp_68 = 1
+    tmp_69 = call @sla__ternary_assigns_var(tmp_68)
+    !tmp_68
+    tmp_70 = 8
+    tmp_71 = ne tmp_69, tmp_70
+    !tmp_69
+    !tmp_70
+    br tmp_71 -> L_THEN_40, L_ELSE_41
+
+L_THEN_40:
+    !tmp_71
+    panic(27604)
+
+L_ELSE_41:
+    !tmp_71
+    jmp L_MERGE_42
+
+L_MERGE_42:
+    tmp_74 = 0
+    tmp_75 = call @sla__ternary_assigns_var(tmp_74)
+    !tmp_74
+    tmp_76 = 9
+    tmp_77 = ne tmp_75, tmp_76
+    !tmp_75
+    !tmp_76
+    br tmp_77 -> L_THEN_43, L_ELSE_44
+
+L_THEN_43:
+    !tmp_77
+    panic(27605)
+
+L_ELSE_44:
+    !tmp_77
+    jmp L_MERGE_45
+
+L_MERGE_45:
+    tmp_80 = 1
+    tmp_81 = 1
+    tmp_82 = call @sla__ternary_nested_assigns_var(tmp_80, tmp_81)
+    !tmp_80
+    !tmp_81
+    tmp_83 = 11
+    tmp_84 = ne tmp_82, tmp_83
+    !tmp_82
+    !tmp_83
+    br tmp_84 -> L_THEN_46, L_ELSE_47
+
+L_THEN_46:
+    !tmp_84
+    panic(27606)
+
+L_ELSE_47:
+    !tmp_84
+    jmp L_MERGE_48
+
+L_MERGE_48:
+    tmp_87 = 1
+    tmp_88 = 0
+    tmp_89 = call @sla__ternary_nested_assigns_var(tmp_87, tmp_88)
+    !tmp_87
+    !tmp_88
+    tmp_90 = 12
+    tmp_91 = ne tmp_89, tmp_90
+    !tmp_89
+    !tmp_90
+    br tmp_91 -> L_THEN_49, L_ELSE_50
+
+L_THEN_49:
+    !tmp_91
+    panic(27607)
+
+L_ELSE_50:
+    !tmp_91
+    jmp L_MERGE_51
+
+L_MERGE_51:
+    tmp_94 = 0
+    tmp_95 = 1
+    tmp_96 = call @sla__ternary_nested_assigns_var(tmp_94, tmp_95)
+    !tmp_94
+    !tmp_95
+    tmp_97 = 13
+    tmp_98 = ne tmp_96, tmp_97
+    !tmp_96
+    !tmp_97
+    br tmp_98 -> L_THEN_52, L_ELSE_53
+
+L_THEN_52:
+    !tmp_98
+    panic(27608)
+
+L_ELSE_53:
+    !tmp_98
+    jmp L_MERGE_54
+
+L_MERGE_54:
+    tmp_101 = 0
+    tmp_102 = 0
+    tmp_103 = call @sla__ternary_nested_assigns_var(tmp_101, tmp_102)
+    !tmp_101
+    !tmp_102
+    tmp_104 = 14
+    tmp_105 = ne tmp_103, tmp_104
+    !tmp_103
+    !tmp_104
+    br tmp_105 -> L_THEN_55, L_ELSE_56
+
+L_THEN_55:
+    !tmp_105
+    panic(27609)
+
+L_ELSE_56:
+    !tmp_105
+    jmp L_MERGE_57
+
+L_MERGE_57:
+    tmp_108 = 1
+    tmp_109 = call @sla__ternary_pick_bool(tmp_108)
+    !tmp_108
+    tmp_110 = 1
+    tmp_111 = ne tmp_109, tmp_110
+    !tmp_109
+    !tmp_110
+    br tmp_111 -> L_THEN_58, L_ELSE_59
+
+L_THEN_58:
+    !tmp_111
+    panic(27610)
+
+L_ELSE_59:
+    !tmp_111
+    jmp L_MERGE_60
+
+L_MERGE_60:
+    tmp_114 = 0
+    tmp_115 = call @sla__ternary_pick_bool(tmp_114)
+    !tmp_114
+    br tmp_115 -> L_THEN_61, L_ELSE_62
+
+L_THEN_61:
+    !tmp_115
+    panic(27611)
+
+L_ELSE_62:
+    !tmp_115
+    jmp L_MERGE_63
+
+L_MERGE_63:
+    tmp_118 = 1
+    tmp_119 = call @sla__ternary_pick_f64(tmp_118)
+    !tmp_118
+    tmp_120 = 1.5
+    tmp_121 = fcmp_ne tmp_119, tmp_120
+    !tmp_119
+    !tmp_120
+    br tmp_121 -> L_THEN_64, L_ELSE_65
+
+L_THEN_64:
+    !tmp_121
+    panic(27612)
+
+L_ELSE_65:
+    !tmp_121
+    jmp L_MERGE_66
+
+L_MERGE_66:
+    tmp_124 = 0
+    tmp_125 = call @sla__ternary_pick_f64(tmp_124)
+    !tmp_124
+    tmp_126 = 2.5
+    tmp_127 = fcmp_ne tmp_125, tmp_126
+    !tmp_125
+    !tmp_126
+    br tmp_127 -> L_THEN_67, L_ELSE_68
+
+L_THEN_67:
+    !tmp_127
+    panic(27613)
+
+L_ELSE_68:
+    !tmp_127
+    jmp L_MERGE_69
+
+L_MERGE_69:
+    tmp_130 = 1
+    tmp_131 = call @sla__ternary_statement_branch(tmp_130)
+    !tmp_130
+    tmp_132 = 21
+    tmp_133 = ne tmp_131, tmp_132
+    !tmp_131
+    !tmp_132
+    br tmp_133 -> L_THEN_70, L_ELSE_71
+
+L_THEN_70:
+    !tmp_133
+    panic(27614)
+
+L_ELSE_71:
+    !tmp_133
+    jmp L_MERGE_72
+
+L_MERGE_72:
+    tmp_136 = 0
+    tmp_137 = call @sla__ternary_statement_branch(tmp_136)
+    !tmp_136
+    tmp_138 = 22
+    tmp_139 = ne tmp_137, tmp_138
+    !tmp_137
+    !tmp_138
+    br tmp_139 -> L_THEN_73, L_ELSE_74
+
+L_THEN_73:
+    !tmp_139
+    panic(27615)
+
+L_ELSE_74:
+    !tmp_139
+    jmp L_MERGE_75
+
+L_MERGE_75:
+    return
+

@@ -275,6 +275,48 @@ pub const Parser = struct {
         return std.mem.indexOfScalar(u8, path, '*') != null;
     }
 
+    fn isSlaStdImport(path: []const u8) bool {
+        return std.mem.eql(u8, path, "sla_std") or std.mem.startsWith(u8, path, "sla_std/");
+    }
+
+    fn readSlaStdPathIfExists(self: *Parser, root: []const u8, rel_path: []const u8) !?[]const u8 {
+        if (rel_path.len == 0) return null;
+        const candidate = try std.fs.path.join(self.allocator, &.{ root, rel_path });
+        _ = std.fs.cwd().access(candidate, .{}) catch |err| {
+            if (err == error.FileNotFound or err == error.NotDir or err == error.IsDir) return null;
+            return err;
+        };
+        return candidate;
+    }
+
+    fn resolveSlaStdImportPath(self: *Parser, import_path: []const u8) !?[]const u8 {
+        if (!isSlaStdImport(import_path)) return null;
+        if (std.mem.eql(u8, import_path, "sla_std")) return null;
+        const rel_path = import_path["sla_std/".len..];
+
+        if (std.process.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |env_root| {
+            if (try self.readSlaStdPathIfExists(env_root, rel_path)) |resolved| return resolved;
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+            const home_std_root = try std.fs.path.join(self.allocator, &.{ home, "projects", "sa_plugins", "sa_plugin_sla", "sla_std" });
+            if (try self.readSlaStdPathIfExists(home_std_root, rel_path)) |resolved| return resolved;
+        } else |_| {}
+
+        const candidate_roots = [_][]const u8{
+            "sla_std",
+            "sa_plugin_sla/sla_std",
+            "../sa_plugin_sla/sla_std",
+            "../sa_plugins/sa_plugin_sla/sla_std",
+            "../../sa_plugins/sa_plugin_sla/sla_std",
+            "/home/vscode/projects/sa_plugins/sa_plugin_sla/sla_std",
+        };
+        for (candidate_roots) |root| {
+            if (try self.readSlaStdPathIfExists(root, rel_path)) |resolved| return resolved;
+        }
+        return null;
+    }
+
     fn globNameMatches(pattern: []const u8, name: []const u8) bool {
         const star = std.mem.indexOfScalar(u8, pattern, '*') orelse return std.mem.eql(u8, pattern, name);
         if (std.mem.indexOfScalarPos(u8, pattern, star + 1, '*') != null) return false;
@@ -1164,7 +1206,9 @@ pub const Parser = struct {
             return;
         }
 
-        const resolved_path = if (std.fs.path.isAbsolute(import_path))
+        const resolved_path = if (try self.resolveSlaStdImportPath(import_path)) |std_path|
+            std_path
+        else if (std.fs.path.isAbsolute(import_path))
             try self.allocator.dupe(u8, import_path)
         else
             try std.fs.path.join(self.allocator, &.{ self.base_dir, import_path });

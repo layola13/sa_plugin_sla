@@ -185,6 +185,10 @@ fn isSaStdImport(path: []const u8) bool {
     return std.mem.eql(u8, path, "sa_std") or std.mem.startsWith(u8, path, "sa_std/");
 }
 
+fn isSlaStdImport(path: []const u8) bool {
+    return std.mem.eql(u8, path, "sla_std") or std.mem.startsWith(u8, path, "sla_std/");
+}
+
 fn readImportFileIfExistsWithOutputPath(allocator: std.mem.Allocator, path: []const u8, output_path: []const u8) !?ResolvedImport {
     const source = std.fs.cwd().readFileAlloc(allocator, path, max_import_bytes) catch |err| {
         if (err == error.FileNotFound or err == error.NotDir or err == error.IsDir) return null;
@@ -236,6 +240,37 @@ fn resolveSaStdImport(allocator: std.mem.Allocator, import_path: []const u8) !?R
     return null;
 }
 
+fn resolveSlaStdImport(allocator: std.mem.Allocator, import_path: []const u8) !?ResolvedImport {
+    if (!isSlaStdImport(import_path)) return null;
+    if (std.mem.eql(u8, import_path, "sla_std")) return null;
+
+    const rel_path = import_path["sla_std/".len..];
+
+    if (std.process.getEnvVarOwned(allocator, "SLA_STD_DIR")) |env_root| {
+        if (try readImportFromRoot(allocator, env_root, rel_path, import_path)) |resolved| return resolved;
+    } else |_| {}
+
+    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+        const home_std_root = try std.fs.path.join(allocator, &.{ home, "projects", "sa_plugins", "sa_plugin_sla", "sla_std" });
+        if (try readImportFromRoot(allocator, home_std_root, rel_path, import_path)) |resolved| return resolved;
+    } else |_| {}
+
+    const candidate_roots = [_][]const u8{
+        "sla_std",
+        "sa_plugin_sla/sla_std",
+        "../sa_plugin_sla/sla_std",
+        "../sa_plugins/sa_plugin_sla/sla_std",
+        "../../sa_plugins/sa_plugin_sla/sla_std",
+        "/home/vscode/projects/sa_plugins/sa_plugin_sla/sla_std",
+    };
+
+    for (candidate_roots) |root| {
+        if (try readImportFromRoot(allocator, root, rel_path, import_path)) |resolved| return resolved;
+    }
+
+    return null;
+}
+
 fn resolveImportFile(
     allocator: std.mem.Allocator,
     base_dir: []const u8,
@@ -243,6 +278,7 @@ fn resolveImportFile(
 ) !ResolvedImport {
     const import_path = raw_import_path;
 
+    if (try resolveSlaStdImport(allocator, import_path)) |resolved| return resolved;
     if (try resolveSaStdImport(allocator, import_path)) |resolved| return resolved;
 
     const candidate = if (std.fs.path.isAbsolute(import_path))
@@ -273,7 +309,7 @@ fn appendResolvedImportFiles(
         return;
     }
 
-    if (isSaStdImport(raw_import_path)) return error.FileNotFound;
+    if (isSaStdImport(raw_import_path) or isSlaStdImport(raw_import_path)) return error.FileNotFound;
 
     const pattern_path = if (std.fs.path.isAbsolute(raw_import_path))
         try allocator.dupe(u8, raw_import_path)
@@ -461,6 +497,18 @@ fn normalizedSaStdImportPath(allocator: std.mem.Allocator, path: []const u8) !?[
     return null;
 }
 
+fn normalizedSlaStdImportPath(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
+    if (isSlaStdImport(path)) return try allocator.dupe(u8, path);
+    if (std.mem.indexOf(u8, path, "sa_plugin_sla/sla_std/")) |idx| {
+        const suffix = path[idx + "sa_plugin_sla/sla_std/".len ..];
+        return try std.fmt.allocPrint(allocator, "sla_std/{s}", .{suffix});
+    }
+    if (std.mem.indexOf(u8, path, "sla_std/")) |idx| {
+        return try allocator.dupe(u8, path[idx..]);
+    }
+    return null;
+}
+
 fn absoluteDirForOutput(allocator: std.mem.Allocator, output_file: []const u8) ![]const u8 {
     const output_dir = std.fs.path.dirname(output_file) orelse ".";
     if (std.fs.path.isAbsolute(output_dir)) return try allocator.dupe(u8, output_dir);
@@ -479,10 +527,12 @@ fn rewriteImportPathForOutput(
     output_file: []const u8,
     raw_import_path: []const u8,
 ) ![]const u8 {
+    if (try normalizedSlaStdImportPath(allocator, raw_import_path)) |std_path| return std_path;
     if (try normalizedSaStdImportPath(allocator, raw_import_path)) |std_path| return std_path;
 
     const source_dir = std.fs.path.dirname(source_file) orelse ".";
     const resolved = try resolveImportFile(allocator, source_dir, raw_import_path);
+    if (try normalizedSlaStdImportPath(allocator, resolved.path)) |std_path| return std_path;
     if (try normalizedSaStdImportPath(allocator, resolved.path)) |std_path| return std_path;
 
     const target_path = try replaceSlaWithSa(allocator, resolved.path);

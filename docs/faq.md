@@ -204,8 +204,8 @@ frontend-only lowering model.
 
 **28c. Does SLA support `<=>` three-way comparison?**
 
-Yes. `<=>` returns the SLA std `Ordering` facade from `sa_std/cmp.sla`, not a
-new compiler-owned enum. Import `sa_std/cmp.sla` when user code wants methods
+Yes. `<=>` returns the SLA std `Ordering` facade from `sla_std/cmp.sla`, not a
+new compiler-owned enum. Import `sla_std/cmp.sla` when user code wants methods
 such as `Ordering::less()`, `ordering.is_lt()`, or `ordering_value(ordering)`.
 The compiler only parses/type-checks the operator and lowers it to the existing
 `sa_std/cmp.sa` ordering values `-1`, `0`, and `1`.

@@ -1,4 +1,4 @@
-@import "sa_std/cmp.sla"
+@import "sla_std/cmp.sla"
 
 @derive(ord)
 struct SortKey {

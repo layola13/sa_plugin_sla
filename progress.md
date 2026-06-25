@@ -4,6 +4,23 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] `type` aliases with flattened `&` composition have been added for plain data layouts.
+  - Added frontend support for `type BulletData = Transform & Velocity & { damage: i32 };` style aliases that flatten into a single plain struct shape.
+  - Registered alias declarations into the type checker and reused the existing struct-field layout path so downstream field access and codegen stay zero-cost.
+  - Added a unit test `tests/test_unit_type_alias_flattening.sla` and a rosetta demo `demos/rosetta/313_type_alias_flattening/`.
+  - Updated `README.md` and `docs/faq.md` to document the alias-flattening surface.
+
+- [done] The `310`-`311` frontend sugar slice has been added with discard bindings, struct updates, slice rest patterns, and `using` static extensions.
+  - Added demo directories `310_blank_identifier_discard` and `311_using_static_extension` with Sla companions and lowered SA fixtures.
+  - Extended the frontend so `_` acts as a discard sink with cleanup lowering, `Struct { ..base }` reuses existing fields during initialization, `[a, b, ..rest]` lowers as slice rest destructuring, and `using` enables explicit module-scoped static extensions without runtime dispatch.
+  - Updated the top-level README and FAQ to document the new surface, and added the new rows to the rosetta mapping table.
+  - Verified with: `zig build local-cli -- sla test tests/test_unit_struct_update.sla`, `zig build local-cli -- sla test tests/test_unit_blank_identifier.sla`, and `zig build local-cli -- sla test tests/test_unit_using_static_extension.sla`.
+
+- [done] The restricted `@overload` operator block has been added for `+ - * /`.
+  - Added `@overload Type { fn +(self: Type, other: Type) -> Type { ... } }` support as a frontend-only lowering path that resolves to static function calls, with no runtime dispatch.
+  - Added a unit test `tests/test_unit_overload_add.sla` and a rosetta demo `demos/rosetta/312_operator_overload_block/` with Rust companion/reference notes.
+  - Updated `README.md` and `docs/faq.md` to explain the restricted operator-overload scope and the static-lowering behavior.
+
 - [done] The `305`-`309` pattern/macro slice has been added with real Rust/SA references and honest Sla companions.
   - Added local demo directories for range patterns, or-patterns, `n @ range` bindings, rest-pattern destructuring, and try-block semantics: `305_range_pattern_macro` through `309_try_block_macro`.
   - Copied the upstream Rust `main.rs` references and upstream SA-ASM `main.sa` fixtures into each new demo so the catalog entry points now point at the real topic sources instead of placeholders.

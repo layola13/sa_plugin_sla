@@ -2155,21 +2155,21 @@ pub const Codegen = struct {
         return null;
     }
 
-    fn unwrapPointerLikeType(ty: *const ast.Type) *const ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                else => return curr,
-            }
-        }
+    fn aggregateFieldLayout(self: *Codegen, ty: *const ast.Type, name: []const u8) ?FieldLayout {
+        return self.fieldLayoutForType(ty, name);
     }
 
     fn structDeclForType(self: *Codegen, ty: *const ast.Type) ?*ast.StructDecl {
-        const curr = unwrapPointerLikeType(ty);
+        const curr = ty;
         if (curr.* != .user_defined) return null;
-        return self.tc.structs.get(curr.user_defined.name);
+        if (self.tc.structs.get(curr.user_defined.name)) |decl| return decl;
+        if (self.tc.alias_struct_cache.get(curr.user_defined.name)) |decl| return decl;
+        return null;
+    }
+
+    fn fieldLayoutForType(self: *Codegen, ty: *const ast.Type, name: []const u8) ?FieldLayout {
+        const decl = self.structDeclForType(ty) orelse return null;
+        return fieldLayout(decl, name);
     }
 
     fn deriveNameMatches(actual: []const u8, wanted: []const u8) bool {
@@ -5570,6 +5570,8 @@ pub const Codegen = struct {
         for (program.program.decls) |decl| {
             if (decl.* == .import_decl) {
                 try self.genImportDecl(&decl.import_decl);
+            } else if (decl.* == .using_decl) {
+                continue;
             }
         }
 
@@ -5696,6 +5698,17 @@ pub const Codegen = struct {
                         try self.mangleTraitMethodName(impl_name, trait_name, method.func_decl.name)
                     else
                         try self.mangleMethodName(impl_name, method.func_decl.name);
+                    defer self.allocator.free(mangled);
+                    try self.genFuncDeclNamed(mangled, &method.func_decl);
+                }
+            } else if (decl.* == .overload_decl) {
+                const overload_name = switch (decl.overload_decl.target_ty.*) {
+                    .user_defined => |ud| ud.name,
+                    else => return CodegenError.CodegenError,
+                };
+                for (decl.overload_decl.methods) |method| {
+                    if (method.* != .func_decl) return CodegenError.CodegenError;
+                    const mangled = try self.mangleMethodName(overload_name, method.func_decl.name);
                     defer self.allocator.free(mangled);
                     try self.genFuncDeclNamed(mangled, &method.func_decl);
                 }
@@ -6804,6 +6817,11 @@ pub const Codegen = struct {
                 }
 
                 const let_ty = if (let.ty) |explicit| explicit else self.tc.expr_types.get(let.value) orelse return CodegenError.CodegenError;
+                if (std.mem.eql(u8, let.name, "_")) {
+                    const discard_reg = try self.genExpr(let.value, hoisted_allocs);
+                    if (callArgNeedsRelease(let.value)) try self.emitRelease(discard_reg);
+                    return;
+                }
                 if (isFormatStringType(let_ty)) {
                     self.string_buf_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                 }
@@ -7048,12 +7066,67 @@ pub const Codegen = struct {
                 }
                 const value_reg = try self.genExpr(let.value, hoisted_allocs);
                 const value_ty = self.tc.expr_types.get(let.value) orelse return CodegenError.CodegenError;
-                if (value_ty.* != .tuple) return CodegenError.CodegenError;
-                for (let.names, 0..) |name, i| {
-                    const layout = tupleFieldLayout(value_ty.tuple, i) orelse return CodegenError.CodegenError;
-                    self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ name, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                if (let.is_slice) {
+                    const elem_ty = if (arrayType(value_ty)) |arr| arr.elem else if (sliceElementType(value_ty)) |elem| elem else return CodegenError.CodegenError;
+                    const base_ptr = try self.newTmp();
+                    const len_reg = try self.newTmp();
+                    if (value_ty.* == .array) {
+                        self.out.writer().print("    {s} = &{s}\n", .{ base_ptr, value_reg }) catch return CodegenError.CodegenError;
+                        try self.emitIntConst(len_reg, @as(i64, @intCast(value_ty.array.len)));
+                    } else {
+                        self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_ptr, value_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = load {s}+Slice_len as u64\n", .{ len_reg, value_reg }) catch return CodegenError.CodegenError;
+                    }
+                    const elem_size = typeSize(elem_ty);
+                    var offset: usize = 0;
+                    for (let.names) |name| {
+                        const reg = try self.newTmp();
+                        self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, base_ptr, offset, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+                        if (!std.mem.eql(u8, name, "_")) {
+                            self.out.writer().print("    {s} = {s}\n", .{ name, reg }) catch return CodegenError.CodegenError;
+                        }
+                        offset += elem_size;
+                    }
+                    if (let.rest_name) |rest_name| {
+                        if (std.mem.eql(u8, rest_name, "_")) {
+                            try self.emitRelease(base_ptr);
+                            try self.emitRelease(len_reg);
+                            if (let.rest_alias) |rest_alias| {
+                                if (!std.mem.eql(u8, rest_alias, "_")) {
+                                    self.out.writer().print("    {s} = {s}\n", .{ rest_alias, base_ptr }) catch return CodegenError.CodegenError;
+                                }
+                            }
+                            return;
+                        }
+                        const rest_ptr = try self.newTmp();
+                        self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ rest_ptr, base_ptr, offset }) catch return CodegenError.CodegenError;
+                        const rest_len = try self.newTmp();
+                        self.out.writer().print("    {s} = sub {s}, {}\n", .{ rest_len, len_reg, let.names.len }) catch return CodegenError.CodegenError;
+                        self.stack_alloc_bindings.put(rest_name, {}) catch return CodegenError.OutOfMemory;
+                        self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{rest_name}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ rest_name, rest_ptr, rest_len }) catch return CodegenError.CodegenError;
+                        if (let.rest_alias) |rest_alias| {
+                            if (!std.mem.eql(u8, rest_alias, "_")) {
+                                self.out.writer().print("    {s} = {s}\n", .{ rest_alias, rest_name }) catch return CodegenError.CodegenError;
+                            }
+                        }
+                        try self.emitRelease(rest_ptr);
+                        try self.emitRelease(rest_len);
+                    }
+                    try self.emitRelease(base_ptr);
+                    try self.emitRelease(len_reg);
+                } else {
+                    if (value_ty.* != .tuple) return CodegenError.CodegenError;
+                    for (let.names, 0..) |name, i| {
+                        const layout = tupleFieldLayout(value_ty.tuple, i) orelse return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ name, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                    }
                 }
-                try self.emitRelease(value_reg);
+                if (!let.is_slice) {
+                    try self.emitRelease(value_reg);
+                } else if (callArgNeedsRelease(let.value)) {
+                    try self.emitRelease(value_reg);
+                }
             },
             .const_stmt => |c| {
                 const const_ty = if (c.ty) |explicit| explicit else self.tc.expr_types.get(c.value) orelse return CodegenError.CodegenError;
@@ -7513,13 +7586,34 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!void {
         if (lit.ty.* != .user_defined) return CodegenError.CodegenError;
-        const struct_decl = self.tc.structs.get(lit.ty.user_defined.name) orelse return CodegenError.CodegenError;
+        const struct_decl = self.structDeclForType(lit.ty) orelse return CodegenError.CodegenError;
 
         self.out.writer().print("    {s} = alloc {}\n", .{ target, structSize(struct_decl) }) catch return CodegenError.CodegenError;
 
+        if (lit.update_expr) |update_expr| {
+            const update_reg = try self.genExpr(update_expr, hoisted_allocs);
+            for (struct_decl.fields) |decl_field| {
+                var overridden = false;
+                for (lit.fields) |literal_field| {
+                    if (std.mem.eql(u8, literal_field.name, decl_field.name)) {
+                        overridden = true;
+                        break;
+                    }
+                }
+                if (overridden) continue;
+
+                const layout = self.aggregateFieldLayout(lit.ty, decl_field.name) orelse return CodegenError.CodegenError;
+                const loaded_reg = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ loaded_reg, update_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, loaded_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                if (callArgNeedsRelease(update_expr)) try self.emitRelease(loaded_reg);
+            }
+            if (callArgNeedsRelease(update_expr)) try self.emitRelease(update_reg);
+        }
+
         if (struct_decl.is_union) {
             for (lit.fields) |literal_field| {
-                const layout = fieldLayout(struct_decl, literal_field.name) orelse return CodegenError.CodegenError;
+                const layout = self.aggregateFieldLayout(lit.ty, literal_field.name) orelse return CodegenError.CodegenError;
                 var field_ty: ?*ast.Type = null;
                 for (struct_decl.fields) |decl_field| {
                     if (std.mem.eql(u8, decl_field.name, literal_field.name)) {
@@ -7562,8 +7656,9 @@ pub const Codegen = struct {
                     break;
                 }
             }
+            if (literal_value == null and lit.update_expr != null) continue;
             const value = literal_value orelse return CodegenError.CodegenError;
-            const layout = fieldLayout(struct_decl, decl_field.name) orelse return CodegenError.CodegenError;
+            const layout = self.aggregateFieldLayout(lit.ty, decl_field.name) orelse return CodegenError.CodegenError;
             if (manuallyDropInnerType(decl_field.ty) != null and value.* == .call_expr) {
                 const call = &value.call_expr;
                 if (call.associated_target != null and std.mem.eql(u8, call.associated_target.?, "ManuallyDrop") and std.mem.eql(u8, call.func_name, "new")) {
@@ -7915,6 +8010,28 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!struct { ptr: []const u8, elem_ty: *ast.Type, base_tmp: ?[]const u8, base_reg: []const u8, release_base_reg: bool } {
         const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
+
+        if (sliceElementType(target_ty)) |elem_ty| {
+            const slice_reg = try self.genExpr(idx.target, hoisted_allocs);
+            const base_reg = try self.newTmp();
+            self.out.writer().print("    {s} = load {s}+Slice_ptr as ptr\n", .{ base_reg, slice_reg }) catch return CodegenError.CodegenError;
+            const index_reg = try self.genExpr(idx.index, hoisted_allocs);
+            const offset_reg = try self.newTmp();
+            self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
+            const ptr_reg = try self.newTmp();
+            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, base_reg, offset_reg }) catch return CodegenError.CodegenError;
+            try self.emitRelease(offset_reg);
+            try self.emitRelease(base_reg);
+            if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+            return .{
+                .ptr = ptr_reg,
+                .elem_ty = elem_ty,
+                .base_tmp = null,
+                .base_reg = slice_reg,
+                .release_base_reg = exprResultNeedsRelease(idx.target),
+            };
+        }
+
         const arr = arrayType(target_ty) orelse return CodegenError.CodegenError;
 
         const base_source_reg = try self.genExpr(idx.target, hoisted_allocs);
@@ -8584,6 +8701,15 @@ pub const Codegen = struct {
             },
             .generic_func_ref => return CodegenError.CodegenError,
             .binary_expr => |bin| {
+                if (self.tc.resolved_call_symbols.get(expr)) |symbol| {
+                    const call = ast.CallExpr{
+                        .func_name = symbol,
+                        .associated_target = null,
+                        .generics = &.{},
+                        .args = &.{ bin.left, bin.right },
+                    };
+                    return try self.genResolvedFunctionCall(symbol, &call, hoisted_allocs, false);
+                }
                 const left_ty = self.tc.expr_types.get(bin.left) orelse return CodegenError.CodegenError;
                 const right_ty = self.tc.expr_types.get(bin.right) orelse return CodegenError.CodegenError;
                 if (try self.genStructEqualityExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
@@ -8706,7 +8832,7 @@ pub const Codegen = struct {
                 }
 
                 if (curr_ty.* != .user_defined) return CodegenError.CodegenError;
-                const struct_decl = self.tc.structs.get(curr_ty.user_defined.name) orelse return CodegenError.CodegenError;
+                const struct_decl = self.structDeclForType(curr_ty) orelse return CodegenError.CodegenError;
                 // Old inline layout logic is intentionally kept here as comment per user preference.
                 // It has been centralized into `fieldLayout(...)` so struct and union field access
                 // share one layout rule instead of drifting apart in multiple call sites.
@@ -8747,7 +8873,7 @@ pub const Codegen = struct {
                 //     offset += size;
                 // }
                 // if (!found) return CodegenError.CodegenError;
-                const layout = fieldLayout(struct_decl, field.field_name) orelse return CodegenError.CodegenError;
+                const layout = self.fieldLayoutForType(curr_ty, field.field_name) orelse return CodegenError.CodegenError;
                 for (struct_decl.fields) |decl_field| {
                     if (std.mem.eql(u8, decl_field.name, field.field_name) and manuallyDropInnerType(decl_field.ty) != null) {
                         self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ reg, inner, layout.offset }) catch return CodegenError.CodegenError;

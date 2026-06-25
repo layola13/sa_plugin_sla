@@ -8,9 +8,12 @@ pub const Node = union(enum) {
     enum_decl: EnumDecl,
     trait_decl: TraitDecl,
     impl_decl: ImplDecl,
+    type_alias_decl: TypeAliasDecl,
+    overload_decl: OverloadDecl,
     func_decl: FuncDecl,
     macro_decl: MacroDecl,
     import_decl: ImportDecl,
+    using_decl: UsingDecl,
     test_decl: TestDecl,
 
     // Statements
@@ -87,6 +90,21 @@ pub const ImplDecl = struct {
     methods: []const *Node,
 };
 
+pub const TypeAliasDecl = struct {
+    name: []const u8,
+    components: []const TypeAliasComponent,
+};
+
+pub const TypeAliasComponent = union(enum) {
+    ty: *Type,
+    inline_struct: []const Field,
+};
+
+pub const OverloadDecl = struct {
+    target_ty: *Type,
+    methods: []const *Node,
+};
+
 pub const TraitMethod = struct {
     name: []const u8,
     params: []const Param,
@@ -117,6 +135,7 @@ pub const FuncDecl = struct {
     body: []const *Node,
     is_inline: bool,
     is_async: bool = false,
+    operator: ?BinaryOp = null,
 };
 
 pub const Param = struct {
@@ -133,6 +152,10 @@ pub const MacroDecl = struct {
 };
 
 pub const ImportDecl = struct {
+    path: []const u8,
+};
+
+pub const UsingDecl = struct {
     path: []const u8,
 };
 
@@ -158,6 +181,9 @@ pub const LetElseStmt = struct {
 pub const LetDestructureStmt = struct {
     names: []const []const u8,
     value: *Node,
+    rest_name: ?[]const u8 = null,
+    rest_alias: ?[]const u8 = null,
+    is_slice: bool = false,
 };
 
 pub const ConstStmt = struct {
@@ -343,6 +369,7 @@ pub const StructLiteralField = struct {
 pub const StructLiteral = struct {
     ty: *Type,
     fields: []const StructLiteralField,
+    update_expr: ?*Node = null,
 };
 
 pub const EnumLiteralField = struct {
@@ -433,6 +460,7 @@ pub const ArrayType = struct {
 pub const TupleType = struct {
     elems: []const *Type,
 };
+
 
 pub const ClosureType = struct {
     params: []const *Type,

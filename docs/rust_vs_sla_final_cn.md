@@ -55,7 +55,7 @@
 | 泛型 + 单态化 | 完整 | **已落地** |
 | 生命周期 `'a` | 强制 | 解析丢弃 |
 | 闭包 | `\|x\| x + 1` | **已落地** `\|x: int\| x + 1` |
-| **操作符重载** | `impl Add` 等完整 | **❌ 完全不支持**（type checker 拒绝非数值），4 占位 demo 已就位（rosetta 301-304），路线：编译器内建 `@derive(Add/Sub/Mul/Neg/PartialEq)` 系列。详见 [`operator_overload_decision_cn.md`](./operator_overload_decision_cn.md) |
+| **操作符重载** | `impl Add` 等完整 | **✅ 限定支持 `@overload`**（`+ - * /` 的显式静态分发；裸 `overload` 无效），`@derive(Add/Sub/Mul/Neg/PartialEq)` 仍是未来扩展路线。详见 [`operator_overload_decision_cn.md`](./operator_overload_decision_cn.md) |
 | **async/await** | 完整运行时 | **✅ 已实测可跑**（ready future + 同步上下文 await） |
 | **future 类型** | `Future` trait | **✅ `future<T>` 已实现** |
 | `?` 错误传播 | 完整 | **已落地** |
@@ -435,7 +435,7 @@
 | 生态评分 | 10/95 | 45-85/95 | 漏算 bc2sa 多前端架构 |
 | 工具链评分 | 30 | 50 | 漏算 @test / DWARF / DCE / incremental |
 | 总分 | Sla 940 | Sla 1085-1135 | 系统性低估 |
-| **操作符重载** | 未列入打分 | **新增**："语法表达力" 维度从 70 → 65（当前完全不支持）；推荐路径 `@derive(Add/...)` 后回升到 80。详见 [`operator_overload_decision_cn.md`](./operator_overload_decision_cn.md) | 漏检关键能力差距 |
+| **操作符重载** | 未列入打分 | **新增**："语法表达力" 维度现在应按 `@overload` 的限定支持重新评估；若未来补齐 `@derive(Add/...)` 路线，再按完整数学库体验回升。详见 [`operator_overload_decision_cn.md`](./operator_overload_decision_cn.md) | 旧版“完全不支持”结论已过期 |
 
 **根本教训**：评估一个语言时**必须把它所在平台的相关组件一起考虑**。sla 单看是孤立语言，加上 SA + bc2sa 是完整生态战略。
 

@@ -24,9 +24,11 @@ pub const Token = struct {
         keyword_union,
         keyword_enum,
         keyword_trait,
+        keyword_overload,
         keyword_dyn,
         keyword_impl,
         keyword_mod,
+        keyword_using,
         keyword_pub,
         keyword_extern,
         keyword_async,
@@ -50,6 +52,7 @@ pub const Token = struct {
         keyword_inline,
         keyword_macro,
         keyword_mut,
+        keyword_type,
 
         // Symbols
         plus,           // +
@@ -291,9 +294,11 @@ pub const Lexer = struct {
         if (std.mem.eql(u8, str, "union")) return .keyword_union;
         if (std.mem.eql(u8, str, "enum")) return .keyword_enum;
         if (std.mem.eql(u8, str, "trait")) return .keyword_trait;
+        if (std.mem.eql(u8, str, "overload")) return .keyword_overload;
         if (std.mem.eql(u8, str, "dyn")) return .keyword_dyn;
         if (std.mem.eql(u8, str, "impl")) return .keyword_impl;
         if (std.mem.eql(u8, str, "mod")) return .keyword_mod;
+        if (std.mem.eql(u8, str, "using")) return .keyword_using;
         if (std.mem.eql(u8, str, "pub")) return .keyword_pub;
         if (std.mem.eql(u8, str, "extern")) return .keyword_extern;
         if (std.mem.eql(u8, str, "async")) return .keyword_async;
@@ -317,6 +322,7 @@ pub const Lexer = struct {
         if (std.mem.eql(u8, str, "inline")) return .keyword_inline;
         if (std.mem.eql(u8, str, "macro")) return .keyword_macro;
         if (std.mem.eql(u8, str, "mut")) return .keyword_mut;
+        if (std.mem.eql(u8, str, "type")) return .keyword_type;
         return .identifier;
     }
 };

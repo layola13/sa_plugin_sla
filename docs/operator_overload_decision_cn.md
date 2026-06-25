@@ -1,8 +1,8 @@
 # Sla 操作符重载设计决策
 
 > **文档版本**：v0.1-草案 / 2026-06-15
-> **状态**：能力评估 + 三选项推荐 + 4 个占位 demo 已就位
-> **决议建议**：**通过编译器内建 `@derive(Add/Sub/Mul/Neg/PartialEq/Eq/Hash/PartialOrd/Ord)` 系列实现操作符重载**，与现有 `@derive(Component)/Bundle/Resource/Event` 路线一致
+> **状态**：能力评估 + 设计决议 + `@overload` 已落地（旧版占位分析已过期）
+> **决议建议**：`@derive(Add/Sub/Mul/Neg/PartialEq/Eq/Hash/PartialOrd/Ord)` 负责自动派生，`@overload` 负责显式手写重载；两者可以共存，但 `@overload` 具有更高优先级
 > **关联文档**：
 > - [`macro_vs_rust_cn.md`](./macro_vs_rust_cn.md) `@derive` 编译器内建注解路线
 > - [`mutability_decision_cn.md`](./mutability_decision_cn.md) Phase 1/2 时序
@@ -16,7 +16,7 @@
 
 ## 1. 现状实测
 
-### 1.1 当前完全不支持
+### 1.1 当前实现状态
 
 `src/type_checker.zig:1115-1138` 实测：
 
@@ -43,7 +43,11 @@
 },
 ```
 
-**所以 `vec1 + vec2`、`-vec`、`a == b`（自定义 struct）当前全部是编译错误**。
+**当前实现已支持 `@overload` 形式的 `+ - * /` 静态分发。**
+
+这意味着 `vec1 + vec2`、`-vec`、`a * scalar` 这一类表达式，若被放在 `@overload` 块声明的目标类型上下文里，会在前端重写为静态函数调用并继续通过；裸写的 `overload` 仍然是编译错误。
+
+`a == b` 这类比较是否走重载，仍由当前白名单和类型系统约束决定，不在这个 `@overload` 机制内自动开放。
 
 ### 1.2 现状对 rosetta 200+ demos 的影响
 
@@ -51,7 +55,7 @@
 - `impl Add` / `trait Add` / `std::ops` 等关键字在 rosetta demos / tests / sa_std 中**返回 0 匹配**
 - 301 个 rosetta demo **无任何操作符重载示例**
 
-**用户当前只能写命名函数**：
+**用户当前仍可写命名函数；在需要更接近数学表达式时，也可以使用 `@overload`：**
 ```sla
 let c = vec3_add(&a, &b);          // 替代 a + b
 let n = vec3_neg(&v);              // 替代 -v
@@ -309,10 +313,8 @@ error[SLA-OP-001]: cannot apply `+` to type `Vec3`.
 
 ## 7. 一句话总结
 
-**Sla 当前完全不支持操作符重载**（type checker 严格拒绝非数值类型用 `+/-/*/=`，301 个 rosetta demo 无任何示例）。
+**Sla 已经支持显式的 `@overload` 操作符重载块**，限定为 `+ - * /` 的静态分发；裸 `overload` 不是合法入口。
 
-**推荐 Option B**：编译器内建 `@derive(Add/Sub/Mul/Neg/PartialEq/Eq/Hash/PartialOrd/Ord)` 10 个白名单，**3 周一人完成全套**。与现有 `@derive(Component/Bundle/Resource/Event)` 路线完全一致。
+**下一步如果要扩展**，优先顺序仍然是 `@derive(Add/Sub/Mul/Neg/PartialEq/Eq/Hash/PartialOrd/Ord)` 这条白名单路线，和现有 `@derive(Component/Bundle/Resource/Event)` 体系保持一致。
 
-**前置触发**：sa3d_math 包启动（Bevy-fast 路线 Milestone 1）前必须完成 Stage 1 的 4 个 derive（Add / Sub / Neg / PartialEq，约 1 周）。
-
-**4 个占位 demo 已就位**（301-304），等 sla 编译器支持后直接替换 `main.sla` 即可。
+**当前 301-304 占位 demo 已不再是唯一参考**：312 号 demo 展示了 `@overload` 的真实前端路径，后续新增算术重载需求应以它为基准。

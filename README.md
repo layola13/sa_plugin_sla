@@ -11,6 +11,8 @@ This is the standalone Sla compiler plugin, providing Sla-to-SA compilation capa
 
 Sla source uses compiler-managed lifetime cleanup by default. User-facing `.sla` code should not need explicit `!x;` releases; generated `.sa` may still contain `!` instructions because that is SA's ownership primitive. Sla intentionally does not add a `drop` keyword or `drop()` function.
 
+Recent frontend additions include discard bindings (`_`), struct update / slice rest patterns (`Struct { ..base }`, `[a, b, ..rest]`), explicit `using` static extensions for module-backed method-style calls, `type` aliases with flattened `&` composition for plain data layouts, and a restricted `@overload` block for `+ - * /` on explicit target types. These features are handled entirely in the frontend and lower to existing SA shapes without adding runtime dispatch.
+
 ## Standard Library Imports
 Sla imports SA's top-level `sa_std` package directly:
 
@@ -121,10 +123,15 @@ SA_PLUGIN_DEV=1 sa sla test demos/rosetta/01_hello_world/main.sla
 | `as` 强制转换 | 加 | 与 `.sa` 的 `as` 一致 |
 | `+= -= *= /= %= &= \|= ^= <<= >>=` | 加复合赋值 | desugar 成 `x = x op y` |
 | `&& \|\| ! << >> \| ~`（位运算 `\|`/`~`） | 加 | 注意 `!` 仍是逻辑非，`^` 中缀=XOR |
+| `_` | 加，作为解构/绑定丢弃槽 | 进入前端时直接消耗值，不入作用域 |
+| `..` 结构体更新、`[a, b, ..rest]` 切片解构 | 加 | 纯 AST/lowering，无运行时隐藏开销 |
 | `loop / break / continue / 'label:` | 加（FAQ 已说 SA 不内建，但 Sla 前端要支持，降到 `jmp/br`） | 与 `for/while` 同一套展平器 |
 | `if let` / `while let` / `let else` | 加，desugar 到 `match` | |
 | `match` 多枝 `\|`、守卫 `if`、`@` 绑定、`..=` 范围、`..` 通配 | 扩展现有 match | |
 | `impl Trait for T` + `trait` | 加，**只做单态化静态分发**（FAQ §"为什么没有 Trait"已论证只支持静态分发 + vtable 宏） | 不做 trait coherence、不做 GAT |
+| `using module` 静态扩展 | 加，显式启用模块级 method-style 调用 | 只在 `using` 作用域内生效，歧义直接报错 |
+| `type Alias = A & B & { ... }` | 加，展开为扁平字段布局 | 纯前端别名，不引入运行时包装 |
+| `@overload` 操作符块 | 加，限定 `+ - * /` 的静态分发 | 只在 `@overload` 作用域内生效，优先于普通算术回退 |
 | `Self / self / &self` | 已可用；UFCS 已有，自然到位 | 当前 `&self` 同时覆盖 Rust `&self` 与 `&mut self`（读写均允许，SA Referee 兜底）；`&mut self` 在 Phase 2 引入 |
 | `enum Variant { A, B(T), C{x:int} }` | 加，sum-type；match 解构按 `[tag\|payload]` lowering（设计文档已 sketch） | |
 | 字符字面量 `'a'` | 加，与 lifetime `'a` 用 lexer lookahead 区分 | |

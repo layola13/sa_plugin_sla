@@ -1188,6 +1188,21 @@ fn expectSlaCheckRedeclarationDiagnostic(file: []const u8, expected: []const u8)
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
 }
 
+fn expectSlaCheckSyntaxDiagnostic(file: []const u8, expected: []const u8) !void {
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", file };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 1), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "Syntax Error"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
+}
+
 test "sla check reports redeclared symbol names" {
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration.sla", "symbol `value`");
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_const.sla", "symbol `value`");
@@ -1202,6 +1217,7 @@ test "sla check reports redeclared symbol names" {
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_trait.sla", "trait `RepeatedTrait`");
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_macro.sla", "macro `repeated_macro`");
     try expectSlaCheckRedeclarationDiagnostic("tests/test_error_redeclaration_method.sla", "method `score` for `RepeatedMethod`");
+    try expectSlaCheckSyntaxDiagnostic("tests/test_error_bare_overload.sla", "found 'overload'");
 }
 
 test "sla build rewrites sla imports relative to final output path" {

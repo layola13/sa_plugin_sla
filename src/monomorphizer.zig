@@ -162,6 +162,9 @@ pub const Monomorphizer = struct {
                         try regular_decls.append(decl);
                     }
                 },
+                .type_alias_decl => {
+                    try regular_decls.append(decl);
+                },
                 .trait_decl => {
                     try regular_decls.append(decl);
                 },
@@ -230,7 +233,25 @@ pub const Monomorphizer = struct {
                         .is_union = s.is_union,
                         .is_opaque = s.is_opaque,
                     },
-                };
+                    };
+                    return res;
+            },
+            .type_alias_decl => |a| {
+                var new_components = std.ArrayList(ast.TypeAliasComponent).init(self.allocator);
+                for (a.components) |component| {
+                    switch (component) {
+                        .ty => |ty| try new_components.append(.{ .ty = try self.specializeType(ty) }),
+                        .inline_struct => |fields| {
+                            var new_fields = std.ArrayList(ast.Field).init(self.allocator);
+                            for (fields) |f| {
+                                try new_fields.append(.{ .name = f.name, .ty = try self.specializeType(f.ty) });
+                            }
+                            try new_components.append(.{ .inline_struct = try new_fields.toOwnedSlice() });
+                        },
+                    }
+                }
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .type_alias_decl = .{ .name = a.name, .components = try new_components.toOwnedSlice() } };
                 return res;
             },
             .enum_decl => |e| {
@@ -260,6 +281,13 @@ pub const Monomorphizer = struct {
                 }
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .trait_decl = .{ .name = t.name, .supertraits = t.supertraits, .methods = try new_methods.toOwnedSlice() } };
+                return res;
+            },
+            .overload_decl => |o| {
+                const new_target = try self.specializeType(o.target_ty);
+                const new_methods = try self.specializeBlock(o.methods);
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .overload_decl = .{ .target_ty = new_target, .methods = new_methods } };
                 return res;
             },
             .impl_decl => |i| {
@@ -293,6 +321,7 @@ pub const Monomorphizer = struct {
                         .body = new_body,
                         .is_inline = f.is_inline,
                         .is_async = f.is_async,
+                        .operator = f.operator,
                     },
                 };
                 return res;
@@ -312,6 +341,11 @@ pub const Monomorphizer = struct {
             .import_decl => |import| {
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{ .import_decl = .{ .path = import.path } };
+                return res;
+            },
+            .using_decl => |u| {
+                const res = try self.allocator.create(ast.Node);
+                res.* = .{ .using_decl = .{ .path = u.path } };
                 return res;
             },
             .test_decl => |t| {
@@ -353,7 +387,7 @@ pub const Monomorphizer = struct {
             .let_destructure_stmt => |let| {
                 const new_val = try self.specializeNode(let.value);
                 const res = try self.allocator.create(ast.Node);
-                res.* = .{ .let_destructure_stmt = .{ .names = let.names, .value = new_val } };
+                res.* = .{ .let_destructure_stmt = .{ .names = let.names, .value = new_val, .rest_name = let.rest_name, .is_slice = let.is_slice } };
                 return res;
             },
             .const_stmt => |c| {
@@ -607,6 +641,7 @@ pub const Monomorphizer = struct {
                     .struct_literal = .{
                         .ty = new_ty,
                         .fields = try new_fields.toOwnedSlice(),
+                        .update_expr = if (lit.update_expr) |update_expr| try self.specializeNode(update_expr) else null,
                     },
                 };
                 return res;
@@ -1314,6 +1349,7 @@ pub const Monomorphizer = struct {
                 .body = fully_spec_body,
                 .is_inline = template.is_inline,
                 .is_async = template.is_async,
+                .operator = template.operator,
             },
         };
         try self.new_decls.append(node);
@@ -1415,6 +1451,8 @@ pub const Monomorphizer = struct {
             .struct_decl => unreachable,
             .enum_decl => unreachable,
             .trait_decl => unreachable,
+            .type_alias_decl => unreachable,
+            .overload_decl => unreachable,
             .impl_decl => unreachable,
             .func_decl => |f| {
                 var spec_params = std.ArrayList(ast.Param).init(self.allocator);
@@ -1441,12 +1479,14 @@ pub const Monomorphizer = struct {
                         .body = try self.substituteBlock(f.body, params, args),
                         .is_inline = f.is_inline,
                         .is_async = f.is_async,
+                        .operator = f.operator,
                     },
                 };
                 return res;
             },
             .macro_decl => unreachable,
             .import_decl => unreachable,
+            .using_decl => unreachable,
             .test_decl => unreachable,
             .let_stmt => |let| {
                 const spec_ty = if (let.ty) |ty| try self.substituteType(ty, params, args) else null;
@@ -1471,7 +1511,7 @@ pub const Monomorphizer = struct {
             .let_destructure_stmt => |let| {
                 const spec_val = try self.substituteNode(let.value, params, args);
                 const res = try self.allocator.create(ast.Node);
-                res.* = .{ .let_destructure_stmt = .{ .names = let.names, .value = spec_val } };
+                res.* = .{ .let_destructure_stmt = .{ .names = let.names, .value = spec_val, .rest_name = let.rest_name, .is_slice = let.is_slice } };
                 return res;
             },
             .const_stmt => |c| {
@@ -1716,6 +1756,7 @@ pub const Monomorphizer = struct {
                     .struct_literal = .{
                         .ty = spec_ty,
                         .fields = try spec_fields.toOwnedSlice(),
+                        .update_expr = if (lit.update_expr) |update_expr| try self.substituteNode(update_expr, params, args) else null,
                     },
                 };
                 return res;

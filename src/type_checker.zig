@@ -13,6 +13,7 @@ pub const TypeError = error{
     FieldNotFound,
     NotAStruct,
     InvalidArgsCount,
+    AmbiguousCall,
     CompileError,
     OutOfMemory,
 };
@@ -43,12 +44,14 @@ pub const InjectedScopeBinding = struct {
 
 pub const Options = struct {
     injected_scope_bindings: []const InjectedScopeBinding = &.{},
+    using_modules: []const []const u8 = &.{},
 };
 
 pub const Scope = struct {
     allocator: std.mem.Allocator,
     parent: ?*Scope,
     symbols: std.StringHashMap(Symbol),
+    using_modules: std.ArrayList([]const u8),
 
     pub fn init(allocator: std.mem.Allocator, parent: ?*Scope) !*Scope {
         const self = try allocator.create(Scope);
@@ -56,11 +59,13 @@ pub const Scope = struct {
             .allocator = allocator,
             .parent = parent,
             .symbols = std.StringHashMap(Symbol).init(allocator),
+            .using_modules = std.ArrayList([]const u8).init(allocator),
         };
         return self;
     }
 
     pub fn deinit(self: *Scope) void {
+        self.using_modules.deinit();
         self.symbols.deinit();
         self.allocator.destroy(self);
     }
@@ -98,6 +103,8 @@ pub const Scope = struct {
 pub const TypeChecker = struct {
     allocator: std.mem.Allocator,
     structs: std.StringHashMap(*ast.StructDecl),
+    type_aliases: std.StringHashMap(*ast.TypeAliasDecl),
+    alias_struct_cache: std.StringHashMap(*ast.StructDecl),
     enums: std.StringHashMap(*ast.EnumDecl),
     traits: std.StringHashMap(*ast.TraitDecl),
     trait_impls: std.StringHashMap(void),
@@ -115,6 +122,8 @@ pub const TypeChecker = struct {
     // Tracks user-defined macros
     macros: std.StringHashMap(*ast.MacroDecl),
     imported_macros: std.StringHashMap(ImportedMacro),
+    overloads: std.StringHashMap(std.ArrayList([]const u8)),
+    using_modules_input: []const []const u8,
     // Maps expressions to their validated types for use in Codegen layout offsets
     expr_types: std.AutoHashMap(*const ast.Node, *ast.Type),
     dyn_call_traits: std.AutoHashMap(*const ast.Node, []const u8),
@@ -128,7 +137,6 @@ pub const TypeChecker = struct {
     global_scope: ?*Scope,
     unsafe_depth: usize,
     injected_scope_bindings: []const InjectedScopeBinding,
-
     last_error: []const u8,
     last_error_buf: [1024]u8,
 
@@ -140,6 +148,8 @@ pub const TypeChecker = struct {
         return .{
             .allocator = allocator,
             .structs = std.StringHashMap(*ast.StructDecl).init(allocator),
+            .type_aliases = std.StringHashMap(*ast.TypeAliasDecl).init(allocator),
+            .alias_struct_cache = std.StringHashMap(*ast.StructDecl).init(allocator),
             .enums = std.StringHashMap(*ast.EnumDecl).init(allocator),
             .traits = std.StringHashMap(*ast.TraitDecl).init(allocator),
             .trait_impls = std.StringHashMap(void).init(allocator),
@@ -151,6 +161,8 @@ pub const TypeChecker = struct {
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .macros = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .imported_macros = std.StringHashMap(ImportedMacro).init(allocator),
+            .overloads = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
+            .using_modules_input = options.using_modules,
             .expr_types = std.AutoHashMap(*const ast.Node, *ast.Type).init(allocator),
             .dyn_call_traits = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .dyn_borrow_args = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
@@ -195,8 +207,118 @@ pub const TypeChecker = struct {
         }
     }
 
+    fn normalizeUsingPath(self: *TypeChecker, using_path: []const u8) TypeError![]const u8 {
+        var buf = std.ArrayList(u8).init(self.allocator);
+        var i: usize = 0;
+        while (i < using_path.len) {
+            if (i + 1 < using_path.len and using_path[i] == ':' and using_path[i + 1] == ':') {
+                try buf.appendSlice("__");
+                i += 2;
+            } else {
+                try buf.append(using_path[i]);
+                i += 1;
+            }
+        }
+        return try buf.toOwnedSlice();
+    }
+
+    fn usingSymbolPrefix(self: *TypeChecker, using_path: []const u8, method_name: []const u8) TypeError![]const u8 {
+        const normalized = try self.normalizeUsingPath(using_path);
+        defer self.allocator.free(normalized);
+        return try std.fmt.allocPrint(self.allocator, "{s}__{s}", .{ normalized, method_name });
+    }
+
+    fn overloadKey(self: *TypeChecker, type_name: []const u8, op_name: []const u8) TypeError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "{s}|{s}", .{ type_name, op_name }) catch return TypeError.OutOfMemory;
+    }
+
+    fn operatorToOverloadName(op: ast.BinaryOp) ?[]const u8 {
+        return switch (op) {
+            .add => "op_add",
+            .sub => "op_sub",
+            .mul => "op_mul",
+            .div => "op_div",
+            else => null,
+        };
+    }
+
+    fn overloadSymbol(self: *TypeChecker, op: ast.BinaryOp, left_ty: *ast.Type, right_ty: *ast.Type) TypeError!?[]const u8 {
+        const op_name = operatorToOverloadName(op) orelse return null;
+        const left_name = concreteTypeName(left_ty) orelse return null;
+        const key = try self.overloadKey(left_name, op_name);
+        defer self.allocator.free(key);
+        const list = self.overloads.get(key) orelse return null;
+
+        var found: ?[]const u8 = null;
+        for (list.items) |symbol| {
+            const func = self.funcs.get(symbol) orelse continue;
+            if (func.params.len != 2) continue;
+            if (!self.typesEqual(func.params[0].ty, left_ty)) continue;
+            if (!self.typesEqual(func.params[1].ty, right_ty)) continue;
+            if (found) |prev| {
+                if (!std.mem.eql(u8, prev, symbol)) {
+                    self.setError("Ambiguous overload for operator `{s}` on `{s}`", .{ op_name, left_name });
+                    return TypeError.AmbiguousCall;
+                }
+            } else {
+                found = symbol;
+            }
+        }
+        return found;
+    }
+
+    fn currentUsingModules(self: *TypeChecker, scope: *Scope) std.ArrayList([]const u8) {
+        var mods = std.ArrayList([]const u8).init(self.allocator);
+        var curr: ?*Scope = scope;
+        while (curr) |s| {
+            for (s.using_modules.items) |m| {
+                mods.append(m) catch {};
+            }
+            curr = s.parent;
+        }
+        return mods;
+    }
+
+    fn resolveUsingMethodSymbolForType(
+        self: *TypeChecker,
+        scope: *Scope,
+        recv_ty: *ast.Type,
+        method_name: []const u8,
+        arg_count: usize,
+    ) TypeError!?[]const u8 {
+        const recv = unwrappedReceiverType(recv_ty);
+
+        var found_symbol: ?[]const u8 = null;
+        var mods = self.currentUsingModules(scope);
+        defer mods.deinit();
+        for (mods.items) |using_path| {
+            const symbol = try self.usingSymbolPrefix(using_path, method_name);
+            defer self.allocator.free(symbol);
+            if (!self.funcs.contains(symbol)) continue;
+            const func = self.funcs.get(symbol) orelse continue;
+            if (func.params.len != arg_count) continue;
+            if (!self.receiverParamMatches(func.params[0], recv_ty)) continue;
+                if (found_symbol) |prev| {
+                    if (!std.mem.eql(u8, prev, symbol)) {
+                        const recv_name = if (recv.* == .user_defined) recv.user_defined.name else @tagName(recv.*);
+                        self.setError("Ambiguous static extension call `{s}` for type `{s}`", .{ method_name, recv_name });
+                        return TypeError.AmbiguousCall;
+                    }
+                } else {
+                found_symbol = try self.allocator.dupe(u8, symbol);
+            }
+        }
+        return found_symbol;
+    }
+
+    fn isDiscardName(name: []const u8) bool {
+        return std.mem.eql(u8, name, "_");
+    }
+
     pub fn deinit(self: *TypeChecker) void {
         self.structs.deinit();
+        self.type_aliases.deinit();
+        self.alias_struct_cache.deinit();
         self.enums.deinit();
         self.traits.deinit();
         self.trait_impls.deinit();
@@ -205,6 +327,11 @@ pub const TypeChecker = struct {
         self.funcs.deinit();
         self.macros.deinit();
         self.imported_macros.deinit();
+        var overload_it = self.overloads.valueIterator();
+        while (overload_it.next()) |list| {
+            list.deinit();
+        }
+        self.overloads.deinit();
         self.expr_types.deinit();
         self.dyn_call_traits.deinit();
         self.dyn_borrow_args.deinit();
@@ -461,8 +588,45 @@ pub const TypeChecker = struct {
 
     fn structDeclForType(self: *TypeChecker, ty: *ast.Type) ?*ast.StructDecl {
         const curr = unwrapPointerLikeType(ty);
-        if (curr.* != .user_defined) return null;
-        return self.structs.get(curr.user_defined.name);
+        switch (curr.*) {
+            .user_defined => |ud| {
+                if (self.structs.get(ud.name)) |decl| return decl;
+                if (self.type_aliases.get(ud.name)) |alias| return self.syntheticStructDecl(alias);
+                return null;
+            },
+            else => return null,
+        }
+    }
+
+    fn syntheticStructDecl(self: *TypeChecker, alias: *ast.TypeAliasDecl) ?*ast.StructDecl {
+        if (self.alias_struct_cache.get(alias.name)) |cached| return cached;
+
+        const synthetic = self.allocator.create(ast.StructDecl) catch return null;
+        synthetic.* = .{ .name = alias.name, .generics = &.{}, .fields = &.{}, .derives = &.{}, .is_union = false, .is_opaque = false };
+        self.alias_struct_cache.put(alias.name, synthetic) catch return null;
+
+        var fields = std.ArrayList(ast.Field).init(self.allocator);
+        defer fields.deinit();
+        for (alias.components) |component| {
+            switch (component) {
+                .ty => |ty| {
+                    if (self.structDeclForType(ty)) |src_decl| {
+                        for (src_decl.fields) |field| {
+                            fields.append(.{ .name = field.name, .ty = field.ty }) catch return null;
+                        }
+                    } else {
+                        fields.append(.{ .name = alias.name, .ty = ty }) catch return null;
+                    }
+                },
+                .inline_struct => |inline_fields| {
+                    for (inline_fields) |field| {
+                        fields.append(field) catch return null;
+                    }
+                },
+            }
+        }
+        synthetic.fields = fields.toOwnedSlice() catch return null;
+        return synthetic;
     }
 
     fn deriveNameMatches(actual: []const u8, wanted: []const u8) bool {
@@ -1892,11 +2056,21 @@ pub const TypeChecker = struct {
             try self.defineSymbol(global_scope, binding.name, binding.ty, binding.is_const);
         }
 
+        for (program.program.decls) |decl| {
+            if (decl.* == .using_decl) {
+                const normalized = try self.normalizeUsingPath(decl.using_decl.path);
+                try global_scope.using_modules.append(normalized);
+            }
+        }
+
         // Register structs first
         for (program.program.decls) |decl| {
             if (decl.* == .struct_decl) {
                 try self.ensureTopLevelNameUnused(decl.struct_decl.name, "struct");
                 try self.structs.put(decl.struct_decl.name, &decl.struct_decl);
+            } else if (decl.* == .type_alias_decl) {
+                try self.ensureTopLevelNameUnused(decl.type_alias_decl.name, "type alias");
+                try self.type_aliases.put(decl.type_alias_decl.name, &decl.type_alias_decl);
             } else if (decl.* == .enum_decl) {
                 try self.ensureTopLevelNameUnused(decl.enum_decl.name, "enum");
                 try self.enums.put(decl.enum_decl.name, &decl.enum_decl);
@@ -1919,6 +2093,33 @@ pub const TypeChecker = struct {
             if (decl.* == .func_decl) {
                 try self.ensureTopLevelNameUnused(decl.func_decl.name, "function");
                 try self.funcs.put(decl.func_decl.name, &decl.func_decl);
+            } else if (decl.* == .overload_decl) {
+                const type_name = try self.typeName(decl.overload_decl.target_ty);
+                for (decl.overload_decl.methods) |method| {
+                    if (method.* != .func_decl) {
+                        self.setError("overload `{s}` contains a non-function member", .{type_name});
+                        return TypeError.CompileError;
+                    }
+                    const op_name = switch (method.func_decl.operator orelse {
+                        self.setError("overload `{s}` methods must use an operator function", .{type_name});
+                        return TypeError.CompileError;
+                    }) {
+                        .add => "op_add",
+                        .sub => "op_sub",
+                        .mul => "op_mul",
+                        .div => "op_div",
+                        else => {
+                            self.setError("unsupported overload operator `{s}` in overload `{s}`", .{ method.func_decl.name, type_name });
+                            return TypeError.CompileError;
+                        },
+                    };
+                    const key = try std.fmt.allocPrint(self.allocator, "{s}|{s}", .{ type_name, op_name });
+                    var list = self.overloads.get(key) orelse std.ArrayList([]const u8).init(self.allocator);
+                    const symbol = try std.fmt.allocPrint(self.allocator, "{s}__{s}", .{ type_name, op_name });
+                    try list.append(symbol);
+                    try self.overloads.put(key, list);
+                    try self.funcs.put(symbol, &method.func_decl);
+                }
             }
         }
 
@@ -1945,6 +2146,16 @@ pub const TypeChecker = struct {
                         return TypeError.Redeclaration;
                     }
                     try self.funcs.put(method_key, &method.func_decl);
+                }
+            }
+        }
+
+        // Type check overload bodies as regular functions so their internals are validated.
+        for (program.program.decls) |decl| {
+            if (decl.* == .overload_decl) {
+                for (decl.overload_decl.methods) |method| {
+                    if (method.* != .func_decl) return TypeError.CompileError;
+                    try self.checkFunc(&method.func_decl);
                 }
             }
         }
@@ -1995,6 +2206,16 @@ pub const TypeChecker = struct {
                 try self.checkTest(&decl.test_decl);
             }
         }
+    }
+
+    fn operatorName(op: ast.BinaryOp) ?[]const u8 {
+        return switch (op) {
+            .add => "+",
+            .sub => "-",
+            .mul => "*",
+            .div => "/",
+            else => null,
+        };
     }
 
     fn checkMacro(self: *TypeChecker, macro_decl: *ast.MacroDecl) !void {
@@ -2213,6 +2434,10 @@ pub const TypeChecker = struct {
         current_loop_scope: ?*Scope,
     ) TypeError!void {
         switch (stmt.*) {
+            .using_decl => |u| {
+                const normalized = try self.normalizeUsingPath(u.path);
+                try scope.using_modules.append(normalized);
+            },
             .let_stmt => |let| {
                 const val_ty = try self.checkExpr(let.value, scope);
                 const declared_ty = let.ty orelse val_ty;
@@ -2234,7 +2459,9 @@ pub const TypeChecker = struct {
                         return TypeError.TypeMismatch;
                     }
                 }
-                try self.defineSymbol(scope, let.name, declared_ty, false);
+                if (!isDiscardName(let.name)) {
+                    try self.defineSymbol(scope, let.name, declared_ty, false);
+                }
             },
             .let_else_stmt => |let| {
                 const value_ty = try self.checkExpr(let.value, scope);
@@ -2247,16 +2474,48 @@ pub const TypeChecker = struct {
             },
             .let_destructure_stmt => |let| {
                 const val_ty = try self.checkExpr(let.value, scope);
-                if (val_ty.* != .tuple) {
-                    self.setError("let destructuring requires tuple value, actual tag={s}", .{@tagName(val_ty.*)});
-                    return TypeError.TypeMismatch;
-                }
-                if (let.names.len != val_ty.tuple.elems.len) {
-                    self.setError("let destructuring arity mismatch: pattern={}, tuple={}", .{ let.names.len, val_ty.tuple.elems.len });
-                    return TypeError.InvalidArgsCount;
-                }
-                for (let.names, val_ty.tuple.elems) |name, elem_ty| {
-                    try self.defineSymbol(scope, name, elem_ty, false);
+                if (let.is_slice) {
+                    const elem_ty = if (arrayType(val_ty)) |arr| arr.elem else if (sliceElementType(val_ty)) |elem| elem else {
+                        self.setError("slice destructuring requires array or slice value, actual tag={s}", .{@tagName(val_ty.*)});
+                        return TypeError.TypeMismatch;
+                    };
+                    if (let.rest_name == null) {
+                        self.setError("slice destructuring requires a rest binding", .{});
+                        return TypeError.InvalidArgsCount;
+                    }
+                    if (let.names.len > 0 and val_ty.* == .array and val_ty.array.len < let.names.len) {
+                        self.setError("slice destructuring arity mismatch: pattern={}, array={}", .{ let.names.len, val_ty.array.len });
+                        return TypeError.InvalidArgsCount;
+                    }
+                    for (let.names) |name| {
+                        if (!isDiscardName(name)) {
+                            try self.defineSymbol(scope, name, elem_ty, false);
+                        }
+                    }
+                    if (let.rest_name) |rest_name| {
+                        if (!isDiscardName(rest_name)) {
+                            try self.defineSymbol(scope, rest_name, try self.makeSliceType(elem_ty), false);
+                        }
+                    }
+                    if (let.rest_alias) |rest_alias| {
+                        if (!isDiscardName(rest_alias)) {
+                            try self.defineSymbol(scope, rest_alias, try self.makeSliceType(elem_ty), false);
+                        }
+                    }
+                } else {
+                    if (val_ty.* != .tuple) {
+                        self.setError("let destructuring requires tuple value, actual tag={s}", .{@tagName(val_ty.*)});
+                        return TypeError.TypeMismatch;
+                    }
+                    if (let.names.len != val_ty.tuple.elems.len) {
+                        self.setError("let destructuring arity mismatch: pattern={}, tuple={}", .{ let.names.len, val_ty.tuple.elems.len });
+                        return TypeError.InvalidArgsCount;
+                    }
+                    for (let.names, val_ty.tuple.elems) |name, elem_ty| {
+                        if (!isDiscardName(name)) {
+                            try self.defineSymbol(scope, name, elem_ty, false);
+                        }
+                    }
                 }
                 if (rootIdentifier(let.value)) |name| {
                     const sym = scope.lookup(name) orelse return TypeError.UndefinedVariable;
@@ -2537,6 +2796,13 @@ pub const TypeChecker = struct {
                 const ty = try self.allocator.create(ast.Type);
                 switch (bin.op) {
                     .add, .sub, .mul, .div, .mod => {
+                        if (try self.overloadSymbol(bin.op, l_ty, r_ty)) |symbol| {
+                            const call_symbol = try self.allocator.dupe(u8, symbol);
+                            try self.resolved_call_symbols.put(@as(*const ast.Node, @ptrCast(&bin)), call_symbol);
+                            const ret = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;
+                            ty.* = ret.ret_ty.*;
+                            return ty;
+                        }
                         if (self.structDeclForType(l_ty)) |left_struct| {
                             if (self.structDeclForType(r_ty)) |right_struct| {
                                 if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
@@ -2694,7 +2960,7 @@ pub const TypeChecker = struct {
                 }
                 switch (curr_ty.*) {
                     .user_defined => |ud| {
-                        const decl = self.structs.get(ud.name) orelse {
+                        const decl = self.structDeclForType(curr_ty) orelse {
                             self.setError("field access target `{s}` is not a known struct", .{ud.name});
                             return TypeError.NotAStruct;
                         };
@@ -2734,10 +3000,18 @@ pub const TypeChecker = struct {
             .struct_literal => |lit| {
                 if (lit.ty.* != .user_defined) return TypeError.NotAStruct;
                 const ud = lit.ty.user_defined;
-                const decl = self.structs.get(ud.name) orelse return TypeError.NotAStruct;
+                const decl = self.structDeclForType(lit.ty) orelse return TypeError.NotAStruct;
                 if (decl.is_opaque) {
                     self.setError("cannot construct opaque type {s}", .{ud.name});
                     return TypeError.NotAStruct;
+                }
+
+                if (lit.update_expr) |update_expr| {
+                    const update_ty = try self.checkExpr(update_expr, scope);
+                    if (update_ty.* != .user_defined or !std.mem.eql(u8, update_ty.user_defined.name, ud.name)) {
+                        self.setError("struct update expression type mismatch", .{});
+                        return TypeError.TypeMismatch;
+                    }
                 }
 
                 var seen = std.StringHashMap(void).init(self.allocator);
@@ -2774,7 +3048,7 @@ pub const TypeChecker = struct {
                         self.setError("Union literal must initialize exactly one field: {s}", .{ud.name});
                         return TypeError.CompileError;
                     }
-                } else if (seen.count() != decl.fields.len) {
+                } else if (lit.update_expr == null and seen.count() != decl.fields.len) {
                     self.setError("Missing field in struct literal: {s}", .{ud.name});
                     return TypeError.FieldNotFound;
                 }
@@ -2867,6 +3141,7 @@ pub const TypeChecker = struct {
 
                 if (vecElementType(target_ty)) |elem_ty| return elem_ty;
                 if (vecDequeElementType(target_ty)) |elem_ty| return elem_ty;
+                if (sliceElementType(target_ty)) |elem_ty| return elem_ty;
 
                 const arr = arrayType(target_ty) orelse return TypeError.TypeMismatch;
                 return arr.elem;
@@ -2949,6 +3224,8 @@ pub const TypeChecker = struct {
                 return ty;
             },
             .call_expr => |call| {
+                const recv_node_ty = if (call.args.len > 0) try self.checkExpr(call.args[0], scope) else null;
+
                 if (std.mem.eql(u8, call.func_name, "Some")) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const inner_ty = try self.checkExpr(call.args[0], scope);
@@ -3048,6 +3325,16 @@ pub const TypeChecker = struct {
                         .borrow => |inner| inner,
                         else => TypeError.TypeMismatch,
                     };
+                }
+
+                if (recv_node_ty) |rt| {
+                    if (try self.resolveUsingMethodSymbolForType(scope, rt, call.func_name, call.args.len)) |symbol| {
+                        const func = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;
+                        try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, false);
+                        self.resolved_call_symbols.put(expr, symbol) catch return TypeError.OutOfMemory;
+                        if (func.is_async) return try self.makeFutureType(func.ret_ty);
+                        return func.ret_ty;
+                    }
                 }
 
                 if (call.associated_target) |target_name| {

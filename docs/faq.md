@@ -110,6 +110,36 @@ No stable language-level multiple assignment is documented. Use temporaries.
 Tuple destructuring exists. Struct-pattern destructuring is not a mature
 general feature yet.
 
+**18a. Does SLA support the blank identifier `_` in bindings and destructuring?**
+
+Yes. `_` is treated as a discard sink: it does not introduce a symbol, and if
+the discarded value carries ownership, the compiler lowers it as an immediate
+cleanup/disposal path.
+
+**18b. Does SLA support `using` static extensions?**
+
+Yes. `using module_path;` enables method-style calls for public functions from
+that module within the current scope. The compiler resolves direct fields and
+local functions first, then consults the active `using` set. Ambiguous matches
+are reported as hard errors rather than guessed at runtime.
+
+**18c. Does SLA support `type` aliases with `&`-style struct flattening?**
+
+Yes, as a frontend-only aliasing surface for flat data layouts. A declaration
+like `type BulletData = Transform & Velocity & { damage: i32 };` is expanded in
+the frontend into a flattened field layout so the resulting value behaves like a
+single plain struct. The alias exists for compile-time readability; it does not
+introduce runtime wrapper layers.
+
+**18d. Does SLA support a restricted `@overload` block for operators?**
+
+Yes. `@overload Type { fn +(self: Type, other: Type) -> Type { ... } }`
+is supported for `+`, `-`, `*`, and `/` on explicit target types. The frontend
+lowers the operator to a static function call during type checking, so there is
+no runtime dispatch penalty. If no overload matches, the compiler falls back to
+the existing built-in numeric operator rules. Bare `overload` is not a valid
+declaration form.
+
 **19. Is there `const`, `final`, or `readonly`?**
 
 `const` exists for top-level and local immutable bindings. `final` and
@@ -160,6 +190,17 @@ low-level and should not become normal application null handling.
 **28. Are tuples supported?**
 
 Yes. Tuple types and tuple destructuring are supported.
+
+**28a. Are slice rest patterns and struct update syntax supported?**
+
+Yes. `[a, b, ..rest]` slice destructuring and `Struct { field: expr, ..base }`
+struct updates are supported and lower directly in the frontend.
+
+**28b. Is `using` compatible with the data-oriented style?**
+
+Yes. It is an explicit opt-in layer for ergonomic method-style calls over
+plain module functions, so it keeps the call graph static and preserves the
+frontend-only lowering model.
 
 **29. Are arrays and `Vec` separate?**
 
@@ -216,8 +257,10 @@ annotations unless their semantics are used.
 
 **39. Is operator overloading supported?**
 
-No stable general operator overloading. For structs, write named helper methods
-or wait for derive/macro support.
+Yes, in the restricted frontend form `@overload Type { fn +(self: Type, other: Type) -> Type { ... } }`.
+It is limited to `+ - * /` and lowers to static function calls during type
+checking, so there is no runtime dispatch penalty. Bare `overload` is not a
+valid declaration form.
 
 **40. What is the current recommended `Entity` style without derive/copy?**
 

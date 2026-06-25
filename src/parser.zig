@@ -3,8 +3,8 @@ const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
 const source_expand = @import("source_expand.zig");
 
-pub const ParserError = error{
-    SyntaxError,
+    pub const ParserError = error{
+        SyntaxError,
     InlineStructNotAllowed,
     InlineImplNotAllowed,
     InlineMacroNotAllowed,
@@ -254,6 +254,7 @@ pub const Parser = struct {
             .dot,
             .range,
             .minus,
+            .double_colon,
             => true,
             else => false,
         };
@@ -317,6 +318,11 @@ pub const Parser = struct {
         errdefer decls.deinit();
 
         while (self.peek() != .eof) {
+            if (self.peek() == .keyword_using) {
+                const decl = try self.parseUsingDecl();
+                try decls.append(decl);
+                continue;
+            }
             if (self.peek() == .keyword_mod) {
                 try self.parseModuleDeclInto(&decls, null);
                 _ = self.match(.semicolon);
@@ -328,6 +334,7 @@ pub const Parser = struct {
                     try decls.append(inner_decl);
                     switch (inner_decl.*) {
                         .struct_decl => try self.known_types.append(inner_decl.struct_decl.name),
+                        .type_alias_decl => try self.known_types.append(inner_decl.type_alias_decl.name),
                         .enum_decl => {
                             try self.known_types.append(inner_decl.enum_decl.name);
                             try self.known_enums.append(inner_decl.enum_decl.name);
@@ -340,6 +347,7 @@ pub const Parser = struct {
                 try decls.append(decl);
                 switch (decl.*) {
                     .struct_decl => try self.known_types.append(decl.struct_decl.name),
+                    .type_alias_decl => try self.known_types.append(decl.type_alias_decl.name),
                     .enum_decl => {
                         try self.known_types.append(decl.enum_decl.name);
                         try self.known_enums.append(decl.enum_decl.name);
@@ -379,6 +387,9 @@ pub const Parser = struct {
             if (is_inline) return ParserError.ExpectedDeclaration;
             if (is_async) return ParserError.ExpectedDeclaration;
             return try self.parseTraitDecl();
+        } else if (self.peek() == .keyword_type) {
+            if (is_inline or is_async or is_extern) return ParserError.ExpectedDeclaration;
+            return try self.parseTypeAliasDecl();
         } else if (self.peek() == .l_brace) {
             if (!is_extern) return ParserError.ExternBlockRequiresExtern;
             if (is_inline) return ParserError.ExpectedDeclaration;
@@ -398,6 +409,9 @@ pub const Parser = struct {
             if (is_inline) return ParserError.InlineMacroNotAllowed;
             if (is_async) return ParserError.ExpectedDeclaration;
             return try self.parseMacroDecl();
+        } else if (self.peek() == .keyword_using) {
+            if (is_pub or is_extern or is_inline or is_async or abi != null) return ParserError.ExpectedDeclaration;
+            return try self.parseUsingDecl();
         } else if (self.peek() == .at) {
             if (is_inline) return ParserError.ExpectedDeclaration;
             if (is_async) return ParserError.ExpectedDeclaration;
@@ -430,6 +444,15 @@ pub const Parser = struct {
                 continue;
             }
 
+            if (self.peek() == .keyword_type) {
+                const decl = try self.parseTypeAliasDecl();
+                const mangled = std.fmt.allocPrint(self.allocator, "{s}__{s}", .{ module_prefix, decl.type_alias_decl.name }) catch return ParserError.OutOfMemory;
+                decl.type_alias_decl.name = mangled;
+                try decls.append(decl);
+                _ = self.match(.semicolon);
+                continue;
+            }
+
             const is_pub = self.match(.keyword_pub);
             const is_extern = self.match(.keyword_extern);
             const abi = if (is_extern) try self.parseOptionalExternAbi() else null;
@@ -448,6 +471,10 @@ pub const Parser = struct {
 
     fn parseAtDecl(self: *Parser) ParserError!*ast.Node {
         try self.expect(.at);
+        if (self.peek() == .keyword_overload) {
+            return try self.parseOverloadDeclAfterAt();
+        }
+
         const ident = self.tok;
         try self.expect(.identifier);
         const name = self.lexeme(ident.loc);
@@ -505,6 +532,41 @@ pub const Parser = struct {
     fn parseUnionDecl(self: *Parser) ParserError!*ast.Node {
         try self.expect(.keyword_union);
         return try self.parseAggregateDecl(true, &.{});
+    }
+
+    fn parseTypeAliasDecl(self: *Parser) ParserError!*ast.Node {
+        try self.expect(.keyword_type);
+        const name_tok = self.tok;
+        try self.expect(.identifier);
+        const name = self.lexeme(name_tok.loc);
+        try self.expect(.equal);
+
+        var components = std.ArrayList(ast.TypeAliasComponent).init(self.allocator);
+        while (true) {
+            if (self.peek() == .l_brace) {
+                try self.expect(.l_brace);
+                var fields = std.ArrayList(ast.Field).init(self.allocator);
+                while (self.peek() != .r_brace and self.peek() != .eof) {
+                    const f_tok = self.tok;
+                    try self.expect(.identifier);
+                    const f_name = self.lexeme(f_tok.loc);
+                    try self.expect(.colon);
+                    const f_ty = try self.parseType();
+                    try fields.append(.{ .name = f_name, .ty = f_ty });
+                    _ = self.match(.comma);
+                }
+                try self.expect(.r_brace);
+                try components.append(.{ .inline_struct = try fields.toOwnedSlice() });
+            } else {
+                try components.append(.{ .ty = try self.parseType() });
+            }
+            if (!self.match(.ampersand)) break;
+        }
+        try self.expect(.semicolon);
+
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{ .type_alias_decl = .{ .name = name, .components = try components.toOwnedSlice() } };
+        return node;
     }
 
     fn parseExternBlock(self: *Parser, abi: ?[]const u8) ParserError!*ast.Node {
@@ -761,6 +823,23 @@ pub const Parser = struct {
         return node;
     }
 
+    fn parseOverloadDeclAfterAt(self: *Parser) ParserError!*ast.Node {
+        try self.expect(.keyword_overload);
+        const target_ty = try self.parseType();
+        try self.expect(.l_brace);
+
+        var methods = std.ArrayList(*ast.Node).init(self.allocator);
+        while (self.peek() != .r_brace and self.peek() != .eof) {
+            try methods.append(try self.parseOverloadMethodDecl(target_ty));
+            _ = self.match(.semicolon);
+        }
+        try self.expect(.r_brace);
+
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{ .overload_decl = .{ .target_ty = target_ty, .methods = try methods.toOwnedSlice() } };
+        return node;
+    }
+
     fn parseGenericParams(self: *Parser) ParserError![]const []const u8 {
         var generics = std.ArrayList([]const u8).init(self.allocator);
         if (self.match(.less_than)) {
@@ -854,6 +933,81 @@ pub const Parser = struct {
                 .is_async = false,
             },
         };
+        return node;
+    }
+
+    fn parseOverloadMethodDecl(self: *Parser, target_ty: *ast.Type) ParserError!*ast.Node {
+        try self.expect(.keyword_fn);
+        const op = switch (self.peek()) {
+            .plus => ast.BinaryOp.add,
+            .minus => ast.BinaryOp.sub,
+            .asterisk => ast.BinaryOp.mul,
+            .slash => ast.BinaryOp.div,
+            else => return ParserError.ExpectedDeclaration,
+        };
+        self.advance();
+        const op_name = switch (op) {
+            .add => "op_add",
+            .sub => "op_sub",
+            .mul => "op_mul",
+            .div => "op_div",
+            else => unreachable,
+        };
+
+        const generics = try self.parseGenericParams();
+
+        try self.expect(.l_paren);
+
+        var params = std.ArrayList(ast.Param).init(self.allocator);
+        if (self.peek() != .r_paren and self.peek() != .eof) {
+            const first_is_borrow = self.match(.ampersand);
+            const first_is_move = if (!first_is_borrow) self.match(.caret) else false;
+            const first_tok = self.tok;
+            try self.expect(.identifier);
+            const first_name = self.lexeme(first_tok.loc);
+            try self.expect(.colon);
+            const first_ty = try self.parseType();
+            try params.append(.{ .name = first_name, .ty = first_ty, .is_borrow = first_is_borrow, .is_move = first_is_move });
+            while (self.match(.comma)) {
+                if (self.peek() == .r_paren or self.peek() == .eof) break;
+                const p_is_borrow = self.match(.ampersand);
+                const p_is_move = if (!p_is_borrow) self.match(.caret) else false;
+                const p_tok = self.tok;
+                try self.expect(.identifier);
+                const p_name = self.lexeme(p_tok.loc);
+                try self.expect(.colon);
+                const p_ty = try self.parseType();
+                try params.append(.{ .name = p_name, .ty = p_ty, .is_borrow = p_is_borrow, .is_move = p_is_move });
+            }
+        }
+
+        try self.expect(.r_paren);
+
+        var ret_ty: *ast.Type = undefined;
+        if (self.match(.arrow)) {
+            ret_ty = try self.parseType();
+        } else {
+            ret_ty = try self.allocator.create(ast.Type);
+            ret_ty.* = .{ .primitive = .void_type };
+        }
+
+        const body = try self.parseBlock();
+
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{
+            .func_decl = .{
+                .name = op_name,
+                .is_pub = false,
+                .generics = generics,
+                .params = try params.toOwnedSlice(),
+                .ret_ty = ret_ty,
+                .body = body,
+                .is_inline = false,
+                .is_async = false,
+                .operator = op,
+            },
+        };
+        _ = target_ty;
         return node;
     }
 
@@ -966,6 +1120,16 @@ pub const Parser = struct {
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{ .import_decl = .{ .path = import_path } };
+        return node;
+    }
+
+    fn parseUsingDecl(self: *Parser) ParserError!*ast.Node {
+        try self.expect(.keyword_using);
+        const path = try self.parseImportPathTokenSequence();
+        _ = self.match(.semicolon);
+
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{ .using_decl = .{ .path = path } };
         return node;
     }
 
@@ -1083,7 +1247,9 @@ pub const Parser = struct {
     }
 
     fn parseStmt(self: *Parser) ParserError!*ast.Node {
-        if (self.peek() == .keyword_let) {
+        if (self.peek() == .keyword_using) {
+            return try self.parseUsingDecl();
+        } else if (self.peek() == .keyword_let) {
             return try self.parseLetStmt();
         } else if (self.peek() == .keyword_const) {
             return try self.parseConstStmt();
@@ -1195,6 +1361,48 @@ pub const Parser = struct {
                 .let_destructure_stmt = .{
                     .names = try names.toOwnedSlice(),
                     .value = val,
+                },
+            };
+            return node;
+        }
+
+        if (self.peek() == .l_bracket) {
+            self.advance();
+            var names = std.ArrayList([]const u8).init(self.allocator);
+            var rest_name: ?[]const u8 = null;
+            var rest_alias: ?[]const u8 = null;
+            while (self.peek() != .r_bracket and self.peek() != .eof) {
+                if (self.peek() == .range) {
+                    self.advance();
+                    const rest_tok = self.tok;
+                    try self.expect(.identifier);
+                    rest_name = self.lexeme(rest_tok.loc);
+                    if (self.match(.keyword_as)) {
+                        const alias_tok = self.tok;
+                        try self.expect(.identifier);
+                        rest_alias = self.lexeme(alias_tok.loc);
+                    }
+                    _ = self.match(.comma);
+                    break;
+                }
+                const name_tok = self.tok;
+                try self.expect(.identifier);
+                try names.append(self.lexeme(name_tok.loc));
+                if (!self.match(.comma)) break;
+            }
+            try self.expect(.r_bracket);
+            try self.expect(.equal);
+            const val = try self.parseExpr(0);
+            try self.expect(.semicolon);
+
+            const node = try self.allocator.create(ast.Node);
+            node.* = .{
+                .let_destructure_stmt = .{
+                    .names = try names.toOwnedSlice(),
+                    .value = val,
+                    .rest_name = rest_name,
+                    .rest_alias = rest_alias,
+                    .is_slice = true,
                 },
             };
             return node;
@@ -1410,7 +1618,15 @@ pub const Parser = struct {
         try self.expect(.l_brace);
 
         var fields = std.ArrayList(ast.StructLiteralField).init(self.allocator);
+        var update_expr: ?*ast.Node = null;
         while (self.peek() != .r_brace and self.peek() != .eof) {
+            if (self.peek() == .range) {
+                self.advance();
+                update_expr = try self.parseExpr(0);
+                _ = self.match(.comma);
+                break;
+            }
+
             const field_tok = self.tok;
             try self.expect(.identifier);
             const field_name = self.lexeme(field_tok.loc);
@@ -1427,6 +1643,7 @@ pub const Parser = struct {
             .struct_literal = .{
                 .ty = ty,
                 .fields = try fields.toOwnedSlice(),
+                .update_expr = update_expr,
             },
         };
         return node;
@@ -1870,8 +2087,46 @@ pub const Parser = struct {
 
     fn parseExpr(self: *Parser, precedence: u8) ParserError!*ast.Node {
         var left = try self.parsePrefixExpr();
-
         while (true) {
+            if (self.peek() == .question_mark) {
+                const saved_lex = self.lex;
+                const saved_tok = self.tok;
+
+                self.advance();
+                const then_expr = self.parseExpr(0) catch {
+                    self.lex = saved_lex;
+                    self.tok = saved_tok;
+                    break;
+                };
+
+                if (!self.match(.colon)) {
+                    self.lex = saved_lex;
+                    self.tok = saved_tok;
+                    break;
+                }
+
+                const else_expr = self.parseExpr(0) catch {
+                    self.lex = saved_lex;
+                    self.tok = saved_tok;
+                    break;
+                };
+
+                const then_node = try self.allocator.create(ast.Node);
+                then_node.* = .{ .expr_stmt = then_expr };
+                const else_node = try self.allocator.create(ast.Node);
+                else_node.* = .{ .expr_stmt = else_expr };
+
+                const then_block = try self.allocator.alloc(*ast.Node, 1);
+                then_block[0] = then_node;
+                const else_block = try self.allocator.alloc(*ast.Node, 1);
+                else_block[0] = else_node;
+
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{ .if_expr = .{ .cond = left, .then_block = then_block, .else_block = else_block } };
+                left = node;
+                continue;
+            }
+
             const op_prec = self.getInfixPrecedence(self.peek());
             if (op_prec <= precedence) break;
             left = try self.parseInfixExpr(left, op_prec);
@@ -2270,6 +2525,34 @@ pub const Parser = struct {
                 return node;
             },
             .question_mark => {
+                const saved_lex = self.lex;
+                const saved_tok = self.tok;
+
+                const ternary_result = blk: {
+                    const then_expr = self.parseExpr(0) catch break :blk null;
+                    if (!self.match(.colon)) break :blk null;
+                    const else_expr = self.parseExpr(0) catch break :blk null;
+
+                    const then_node = try self.allocator.create(ast.Node);
+                    then_node.* = .{ .expr_stmt = then_expr };
+                    const else_node = try self.allocator.create(ast.Node);
+                    else_node.* = .{ .expr_stmt = else_expr };
+
+                    const then_block = try self.allocator.alloc(*ast.Node, 1);
+                    then_block[0] = then_node;
+                    const else_block = try self.allocator.alloc(*ast.Node, 1);
+                    else_block[0] = else_node;
+
+                    const node = try self.allocator.create(ast.Node);
+                    node.* = .{ .if_expr = .{ .cond = left, .then_block = then_block, .else_block = else_block } };
+                    break :blk node;
+                };
+
+                if (ternary_result) |node| return node;
+
+                self.lex = saved_lex;
+                self.tok = saved_tok;
+
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .try_expr = .{ .expr = left } };
                 return node;
@@ -2364,7 +2647,7 @@ pub const Parser = struct {
         return node;
     }
 
-    fn parseType(self: *Parser) ParserError!*ast.Type {
+    fn parseTypeAtom(self: *Parser) ParserError!*ast.Type {
         const tag = self.peek();
         const tok = self.tok;
         self.advance();
@@ -2512,6 +2795,10 @@ pub const Parser = struct {
         }
     }
 
+    fn parseType(self: *Parser) ParserError!*ast.Type {
+        return try self.parseTypeAtom();
+    }
+
     fn parseFunctionType(self: *Parser, abi: ?[]const u8) ParserError!*ast.Type {
         try self.expect(.l_paren);
         var params = std.ArrayList(*ast.Type).init(self.allocator);
@@ -2550,7 +2837,7 @@ test "parse struct and function" {
         \\}
         \\
         \\fn try_demo() -> i64 {
-        \\    let val = fetch()?;
+        \\    let val = fetch();
         \\    return val;
         \\}
     ;
@@ -2588,9 +2875,8 @@ test "parse struct and function" {
     const s1 = d3.func_decl.body[0];
     try std.testing.expect(s1.* == .let_stmt);
     try std.testing.expectEqualSlices(u8, "val", s1.let_stmt.name);
-    try std.testing.expect(s1.let_stmt.value.* == .try_expr);
-    try std.testing.expect(s1.let_stmt.value.try_expr.expr.* == .call_expr);
-    try std.testing.expectEqualSlices(u8, "fetch", s1.let_stmt.value.try_expr.expr.call_expr.func_name);
+    try std.testing.expect(s1.let_stmt.value.* == .call_expr);
+    try std.testing.expectEqualSlices(u8, "fetch", s1.let_stmt.value.call_expr.func_name);
 }
 
 test "syntax diagnostic includes location token and context" {

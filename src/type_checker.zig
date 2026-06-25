@@ -238,6 +238,7 @@ pub const TypeChecker = struct {
             .sub => "op_sub",
             .mul => "op_mul",
             .div => "op_div",
+            .spaceship => "op_cmp",
             else => null,
         };
     }
@@ -298,13 +299,13 @@ pub const TypeChecker = struct {
             const func = self.funcs.get(symbol) orelse continue;
             if (func.params.len != arg_count) continue;
             if (!self.receiverParamMatches(func.params[0], recv_ty)) continue;
-                if (found_symbol) |prev| {
-                    if (!std.mem.eql(u8, prev, symbol)) {
-                        const recv_name = if (recv.* == .user_defined) recv.user_defined.name else @tagName(recv.*);
-                        self.setError("Ambiguous static extension call `{s}` for type `{s}`", .{ method_name, recv_name });
-                        return TypeError.AmbiguousCall;
-                    }
-                } else {
+            if (found_symbol) |prev| {
+                if (!std.mem.eql(u8, prev, symbol)) {
+                    const recv_name = if (recv.* == .user_defined) recv.user_defined.name else @tagName(recv.*);
+                    self.setError("Ambiguous static extension call `{s}` for type `{s}`", .{ method_name, recv_name });
+                    return TypeError.AmbiguousCall;
+                }
+            } else {
                 found_symbol = try self.allocator.dupe(u8, symbol);
             }
         }
@@ -2860,6 +2861,25 @@ pub const TypeChecker = struct {
                         if (!isAnyIntegerType(l_ty)) return TypeError.TypeMismatch;
                         if (r_ty.* != .infer and !isAnyIntegerType(r_ty)) return TypeError.TypeMismatch;
                         ty.* = l_ty.*;
+                    },
+                    .spaceship => {
+                        if (try self.overloadSymbol(bin.op, l_ty, r_ty)) |symbol| {
+                            const call_symbol = try self.allocator.dupe(u8, symbol);
+                            try self.resolved_call_symbols.put(@as(*const ast.Node, @ptrCast(&bin)), call_symbol);
+                            const ret = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;
+                            ty.* = ret.ret_ty.*;
+                            return ty;
+                        }
+                        if (self.structDeclForType(l_ty)) |left_struct| {
+                            if (self.structDeclForType(r_ty)) |right_struct| {
+                                if (!self.typesEqual(l_ty, r_ty) or left_struct != right_struct) return TypeError.TypeMismatch;
+                                if (!self.typeIsOrd(l_ty)) return TypeError.TypeMismatch;
+                                return try self.makeOrderingType();
+                            }
+                        }
+                        if (!self.typesEqual(l_ty, r_ty)) return TypeError.TypeMismatch;
+                        if (!isNumericType(l_ty)) return TypeError.TypeMismatch;
+                        return try self.makeOrderingType();
                     },
                     .eq, .ne, .lt, .le, .gt, .ge => {
                         if (self.structDeclForType(l_ty)) |left_struct| {

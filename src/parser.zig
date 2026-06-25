@@ -3,8 +3,8 @@ const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
 const source_expand = @import("source_expand.zig");
 
-    pub const ParserError = error{
-        SyntaxError,
+pub const ParserError = error{
+    SyntaxError,
     InlineStructNotAllowed,
     InlineImplNotAllowed,
     InlineMacroNotAllowed,
@@ -2370,7 +2370,7 @@ pub const Parser = struct {
         self.advance();
 
         switch (tag) {
-            .plus, .minus, .asterisk, .slash, .percent, .ampersand, .pipe, .caret, .less_less, .greater_greater, .less_than, .greater_than, .less_equal, .greater_equal, .equal_equal, .bang_equal => {
+            .plus, .minus, .asterisk, .slash, .percent, .ampersand, .pipe, .caret, .less_less, .greater_greater, .less_than, .greater_than, .less_equal, .greater_equal, .spaceship, .equal_equal, .bang_equal => {
                 if (tag == .less_than and left.* == .identifier and self.looksLikeGenericStructLiteralTail()) {
                     return try self.parseGenericStructLiteralTail(left.identifier);
                 }
@@ -2396,6 +2396,7 @@ pub const Parser = struct {
                     .less_equal => ast.BinaryOp.le,
                     .greater_than => ast.BinaryOp.gt,
                     .greater_equal => ast.BinaryOp.ge,
+                    .spaceship => ast.BinaryOp.spaceship,
                     .equal_equal => ast.BinaryOp.eq,
                     .bang_equal => ast.BinaryOp.ne,
                     else => unreachable,
@@ -2567,7 +2568,7 @@ pub const Parser = struct {
             .pipe => 1,
             .caret => 2,
             .ampersand => 3,
-            .equal_equal, .bang_equal => 4,
+            .equal_equal, .bang_equal, .spaceship => 4,
             .less_than, .greater_than, .less_equal, .greater_equal => 5,
             .less_less, .greater_greater => 6,
             .plus, .minus => 7,

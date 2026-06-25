@@ -202,6 +202,14 @@ Yes. It is an explicit opt-in layer for ergonomic method-style calls over
 plain module functions, so it keeps the call graph static and preserves the
 frontend-only lowering model.
 
+**28c. Does SLA support `<=>` three-way comparison?**
+
+Yes. `<=>` returns the SLA std `Ordering` facade from `sa_std/cmp.sla`, not a
+new compiler-owned enum. Import `sa_std/cmp.sla` when user code wants methods
+such as `Ordering::less()`, `ordering.is_lt()`, or `ordering_value(ordering)`.
+The compiler only parses/type-checks the operator and lowers it to the existing
+`sa_std/cmp.sa` ordering values `-1`, `0`, and `1`.
+
 **29. Are arrays and `Vec` separate?**
 
 Yes. Fixed arrays are value-like fixed-size aggregates. `Vec<T>` is a dynamic

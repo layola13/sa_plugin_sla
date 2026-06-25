@@ -55,44 +55,45 @@ pub const Token = struct {
         keyword_type,
 
         // Symbols
-        plus,           // +
-        plus_equal,     // +=
-        pipe_equal,     // |=
-        ampersand_equal,// &=
-        minus,          // -
-        asterisk,       // *
-        slash,          // /
-        percent,        // %
-        equal,          // =
-        equal_equal,    // ==
-        bang_equal,     // !=
-        less_equal,     // <=
-        greater_equal,  // >=
-        ampersand,      // &
-        amp_amp,        // &&
-        caret,          // ^
-        bang,           // !
-        pipe,           // |
-        less_less,      // <<
-        greater_greater,// >>
-        dot,            // .
-        comma,          // ,
-        semicolon,      // ;
-        colon,          // :
-        double_colon,   // ::
-        l_paren,        // (
-        r_paren,        // )
-        l_brace,        // {
-        r_brace,        // }
-        l_bracket,      // [
-        r_bracket,      // ]
-        less_than,      // <
-        greater_than,   // >
-        arrow,          // ->
-        fat_arrow,      // =>
-        range,          // ..
-        question_mark,  // ?
-        at,             // @
+        plus, // +
+        plus_equal, // +=
+        pipe_equal, // |=
+        ampersand_equal, // &=
+        minus, // -
+        asterisk, // *
+        slash, // /
+        percent, // %
+        equal, // =
+        equal_equal, // ==
+        bang_equal, // !=
+        less_equal, // <=
+        greater_equal, // >=
+        ampersand, // &
+        amp_amp, // &&
+        caret, // ^
+        bang, // !
+        pipe, // |
+        less_less, // <<
+        greater_greater, // >>
+        spaceship, // <=>
+        dot, // .
+        comma, // ,
+        semicolon, // ;
+        colon, // :
+        double_colon, // ::
+        l_paren, // (
+        r_paren, // )
+        l_brace, // {
+        r_brace, // }
+        l_bracket, // [
+        r_bracket, // ]
+        less_than, // <
+        greater_than, // >
+        arrow, // ->
+        fat_arrow, // =>
+        range, // ..
+        question_mark, // ?
+        at, // @
     };
 };
 
@@ -213,6 +214,10 @@ pub const Lexer = struct {
                     self.index += 1;
                     return Token{ .tag = .less_less, .loc = .{ .start = start, .end = self.index } };
                 }
+                if (self.index + 1 < self.buffer.len and self.buffer[self.index] == '=' and self.buffer[self.index + 1] == '>') {
+                    self.index += 2;
+                    return Token{ .tag = .spaceship, .loc = .{ .start = start, .end = self.index } };
+                }
                 if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
                     self.index += 1;
                     return Token{ .tag = .less_equal, .loc = .{ .start = start, .end = self.index } };
@@ -330,7 +335,7 @@ pub const Lexer = struct {
 test "basic lexing" {
     const source = "struct Option<T> { has_value: bool, value: T }";
     var l = Lexer.init(source);
-    
+
     try std.testing.expectEqual(Token.Tag.keyword_struct, l.next().tag);
     try std.testing.expectEqual(Token.Tag.identifier, l.next().tag);
     try std.testing.expectEqual(Token.Tag.less_than, l.next().tag);

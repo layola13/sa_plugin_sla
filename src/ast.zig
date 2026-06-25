@@ -317,6 +317,7 @@ pub const BinaryOp = enum {
     le,
     gt,
     ge,
+    spaceship,
     logical_and,
     logical_or,
 };
@@ -460,7 +461,6 @@ pub const ArrayType = struct {
 pub const TupleType = struct {
     elems: []const *Type,
 };
-
 
 pub const ClosureType = struct {
     params: []const *Type,

@@ -196,6 +196,22 @@ let v = vec_new();
 let final_v = push(^(push(^v, 10)), 20);
 ```
 
+#### Three-Way Comparison
+Sla supports `<=>` as a frontend operator for three-way comparison. The
+operator returns the standard-library `Ordering` facade from `sa_std/cmp.sla`;
+the compiler does not own a special comparison enum. Lowering writes the same
+physical ordering values used by `sa_std/cmp.sa`: less is `-1`, equal is `0`,
+and greater is `1`.
+
+```sla
+@import "sa_std/cmp.sla"
+
+let ordering = 10 <=> 20;
+if ordering.is_lt() {
+    return Ordering::less();
+};
+```
+
 ---
 
 ### 5. Error Propagation & Postfix `?` Operator

@@ -2257,6 +2257,16 @@ pub const Codegen = struct {
         };
     }
 
+    fn isUnsignedIntegerType(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| switch (p) {
+                .u8, .u16, .u32, .u64, .usize => true,
+                else => false,
+            },
+            else => false,
+        };
+    }
+
     fn binaryOpName(op: ast.BinaryOp, is_float: bool) []const u8 {
         return if (is_float) switch (op) {
             .add => "fadd",
@@ -2269,6 +2279,7 @@ pub const Codegen = struct {
             .le => "fcmp_le",
             .gt => "fcmp_gt",
             .ge => "fcmp_ge",
+            .spaceship => unreachable,
             .logical_and => "and",
             .logical_or => "or",
             .mod => "rem",
@@ -2290,6 +2301,7 @@ pub const Codegen = struct {
             .le => "sle",
             .gt => "sgt",
             .ge => "sge",
+            .spaceship => unreachable,
             .logical_and => "and",
             .logical_or => "or",
         };
@@ -2530,6 +2542,114 @@ pub const Codegen = struct {
             const empty_value: i32 = if (bin.op == .le or bin.op == .ge) 1 else 0;
             self.out.writer().print("    {s} = {}\n", .{ result, empty_value }) catch return CodegenError.CodegenError;
         }
+        if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
+        if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
+        return result;
+    }
+
+    fn emitOrderingStore(self: *Codegen, target: []const u8, value_literal: []const u8) CodegenError!void {
+        self.out.writer().print("    store {s}+0, {s} as i64\n", .{ target, value_literal }) catch return CodegenError.CodegenError;
+    }
+
+    fn genOrderingStructFromRaw(self: *Codegen, raw_value: []const u8) CodegenError![]const u8 {
+        const result = try self.newTmp();
+        self.out.writer().print("    {s} = alloc 8\n", .{result}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+0, {s} as i64\n", .{ result, raw_value }) catch return CodegenError.CodegenError;
+        return result;
+    }
+
+    fn genNumericSpaceshipRaw(
+        self: *Codegen,
+        left_reg: []const u8,
+        right_reg: []const u8,
+        ty: *const ast.Type,
+    ) CodegenError![]const u8 {
+        const raw = try self.newTmp();
+        if (isFloatType(ty)) {
+            const less = try self.newTmp();
+            const greater = try self.newTmp();
+            const less_label = try self.newLabel("L_SPACESHIP_FLOAT_LESS");
+            const greater_check_label = try self.newLabel("L_SPACESHIP_FLOAT_CHECK_GREATER");
+            const greater_label = try self.newLabel("L_SPACESHIP_FLOAT_GREATER");
+            const equal_label = try self.newLabel("L_SPACESHIP_FLOAT_EQUAL");
+            const done_label = try self.newLabel("L_SPACESHIP_FLOAT_DONE");
+            self.out.writer().print("    {s} = fcmp_lt {s}, {s}\n", .{ less, left_reg, right_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ less, less_label, greater_check_label }) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{less_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = add 0, CMP_ORDERING_LESS\n", .{raw}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{greater_check_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = fcmp_gt {s}, {s}\n", .{ greater, left_reg, right_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ greater, greater_label, equal_label }) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{greater_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = add 0, CMP_ORDERING_GREATER\n", .{raw}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{equal_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = add 0, CMP_ORDERING_EQUAL\n", .{raw}) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
+            return raw;
+        }
+
+        const macro_name: []const u8 = if (isUnsignedIntegerType(ty)) "CMP_COMPARE_U64" else "CMP_COMPARE_I64";
+        self.out.writer().print("    EXPAND {s} {s}, {s}, {s}\n", .{ macro_name, raw, left_reg, right_reg }) catch return CodegenError.CodegenError;
+        return raw;
+    }
+
+    fn genSpaceshipExpr(
+        self: *Codegen,
+        bin: *const ast.BinaryExpr,
+        left_ty: *const ast.Type,
+        right_ty: *const ast.Type,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!?[]const u8 {
+        if (bin.op != .spaceship) return null;
+        const left_reg = try self.genExpr(bin.left, hoisted_allocs);
+        const right_reg = try self.genExpr(bin.right, hoisted_allocs);
+
+        if (isNumericType(left_ty) and isNumericType(right_ty)) {
+            const raw = try self.genNumericSpaceshipRaw(left_reg, right_reg, left_ty);
+            const result = try self.genOrderingStructFromRaw(raw);
+            if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
+            if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
+            return result;
+        }
+
+        const left_struct = self.structDeclForType(left_ty) orelse return CodegenError.CodegenError;
+        const right_struct = self.structDeclForType(right_ty) orelse return CodegenError.CodegenError;
+        if (left_struct != right_struct or left_struct.is_opaque or left_struct.is_union) return CodegenError.CodegenError;
+
+        const result = try self.newTmp();
+        const done_label = try self.newLabel("L_SPACESHIP_STRUCT_DONE");
+        self.out.writer().print("    {s} = alloc 8\n", .{result}) catch return CodegenError.CodegenError;
+        try self.emitOrderingStore(result, "CMP_ORDERING_EQUAL");
+        for (left_struct.fields) |field| {
+            const layout = fieldLayout(left_struct, field.name) orelse return CodegenError.CodegenError;
+            const lhs = try self.newTmp();
+            const rhs = try self.newTmp();
+            const less = try self.newTmp();
+            const greater = try self.newTmp();
+            const less_label = try self.newLabel("L_SPACESHIP_STRUCT_LESS");
+            const greater_check_label = try self.newLabel("L_SPACESHIP_STRUCT_CHECK_GREATER");
+            const greater_label = try self.newLabel("L_SPACESHIP_STRUCT_GREATER");
+            const next_label = try self.newLabel("L_SPACESHIP_STRUCT_NEXT");
+            const less_op: []const u8 = if (isUnsignedIntegerType(field.ty)) "ult" else "slt";
+            const greater_op: []const u8 = if (isUnsignedIntegerType(field.ty)) "ugt" else "sgt";
+            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ lhs, left_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ rhs, right_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ less, less_op, lhs, rhs }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ less, less_label, greater_check_label }) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{less_label}) catch return CodegenError.CodegenError;
+            try self.emitOrderingStore(result, "CMP_ORDERING_LESS");
+            self.out.writer().print("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{greater_check_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ greater, greater_op, lhs, rhs }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ greater, greater_label, next_label }) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{greater_label}) catch return CodegenError.CodegenError;
+            try self.emitOrderingStore(result, "CMP_ORDERING_GREATER");
+            self.out.writer().print("    jmp {s}\n\n", .{done_label}) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}:\n", .{next_label}) catch return CodegenError.CodegenError;
+        }
+        self.out.writer().print("{s}:\n", .{done_label}) catch return CodegenError.CodegenError;
         if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
         if (callArgNeedsRelease(bin.right)) try self.emitRelease(right_reg);
         return result;
@@ -4029,6 +4149,105 @@ pub const Codegen = struct {
                     if (method.* == .func_decl and self.blockNeedsOptionMacros(method.func_decl.body)) return true;
                 },
                 .test_decl => |t| if (self.blockNeedsOptionMacros(t.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn exprNeedsCmpMacros(self: *Codegen, expr: *const ast.Node) bool {
+        return switch (expr.*) {
+            .binary_expr => |bin| bin.op == .spaceship or self.exprNeedsCmpMacros(bin.left) or self.exprNeedsCmpMacros(bin.right),
+            .call_expr => |call| blk: {
+                for (call.args) |arg| if (self.exprNeedsCmpMacros(arg)) break :blk true;
+                break :blk false;
+            },
+            .borrow_expr => |borrow| self.exprNeedsCmpMacros(borrow.expr),
+            .move_expr => |move| self.exprNeedsCmpMacros(move.expr),
+            .deref_expr => |deref| self.exprNeedsCmpMacros(deref.expr),
+            .cast_expr => |cast| self.exprNeedsCmpMacros(cast.expr),
+            .field_expr => |field| self.exprNeedsCmpMacros(field.expr),
+            .struct_literal => |lit| blk: {
+                if (lit.update_expr) |update_expr| if (self.exprNeedsCmpMacros(update_expr)) break :blk true;
+                for (lit.fields) |field| if (self.exprNeedsCmpMacros(field.value)) break :blk true;
+                break :blk false;
+            },
+            .enum_literal => |lit| blk: {
+                for (lit.fields) |field| if (self.exprNeedsCmpMacros(field.value)) break :blk true;
+                break :blk false;
+            },
+            .tuple_literal => |lit| blk: {
+                for (lit.elements) |elem| if (self.exprNeedsCmpMacros(elem)) break :blk true;
+                break :blk false;
+            },
+            .array_literal => |lit| blk: {
+                for (lit.elements) |elem| if (self.exprNeedsCmpMacros(elem)) break :blk true;
+                break :blk false;
+            },
+            .repeat_array_literal => |lit| self.exprNeedsCmpMacros(lit.value),
+            .index_expr => |idx| self.exprNeedsCmpMacros(idx.target) or self.exprNeedsCmpMacros(idx.index),
+            .slice_expr => |slc| self.exprNeedsCmpMacros(slc.target) or self.exprNeedsCmpMacros(slc.start) or self.exprNeedsCmpMacros(slc.end),
+            .closure_literal => |lit| self.exprNeedsCmpMacros(lit.body),
+            .await_expr => |aw| self.exprNeedsCmpMacros(aw.expr),
+            .try_expr => |trye| self.exprNeedsCmpMacros(trye.expr),
+            .if_expr => |ife| blk: {
+                if (self.exprNeedsCmpMacros(ife.cond)) break :blk true;
+                if (self.blockNeedsCmpMacros(ife.then_block)) break :blk true;
+                if (ife.else_block) |eb| if (self.blockNeedsCmpMacros(eb)) break :blk true;
+                break :blk false;
+            },
+            .switch_expr => |swe| blk: {
+                if (self.exprNeedsCmpMacros(swe.val)) break :blk true;
+                for (swe.cases) |case| {
+                    if (self.exprNeedsCmpMacros(case.pattern) or self.blockNeedsCmpMacros(case.body)) break :blk true;
+                }
+                break :blk false;
+            },
+            .match_expr => |mat| blk: {
+                if (self.exprNeedsCmpMacros(mat.val)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| if (self.exprNeedsCmpMacros(guard)) break :blk true;
+                    if (self.blockNeedsCmpMacros(case.body)) break :blk true;
+                }
+                break :blk false;
+            },
+            .unsafe_expr => |ue| self.blockNeedsCmpMacros(ue.body),
+            else => false,
+        };
+    }
+
+    fn blockNeedsCmpMacros(self: *Codegen, body: []const *ast.Node) bool {
+        for (body) |stmt| {
+            switch (stmt.*) {
+                .let_stmt => |let| if (self.exprNeedsCmpMacros(let.value)) return true,
+                .const_stmt => |c| if (self.exprNeedsCmpMacros(c.value)) return true,
+                .assign_stmt => |assign| if (self.exprNeedsCmpMacros(assign.target) or self.exprNeedsCmpMacros(assign.value)) return true,
+                .expr_stmt => |expr| if (self.exprNeedsCmpMacros(expr)) return true,
+                .return_stmt => |ret| if (ret.value) |value| if (self.exprNeedsCmpMacros(value)) return true,
+                .for_stmt => |for_stmt| {
+                    if (self.exprNeedsCmpMacros(for_stmt.start)) return true;
+                    if (for_stmt.end) |end| if (self.exprNeedsCmpMacros(end)) return true;
+                    if (self.blockNeedsCmpMacros(for_stmt.body)) return true;
+                },
+                .while_stmt => |while_stmt| {
+                    if (self.exprNeedsCmpMacros(while_stmt.cond)) return true;
+                    if (self.blockNeedsCmpMacros(while_stmt.body)) return true;
+                },
+                .block_stmt => |block| if (self.blockNeedsCmpMacros(block.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn programNeedsCmpMacros(self: *Codegen, program: *const ast.Node) bool {
+        for (program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => |f| if (self.blockNeedsCmpMacros(f.body)) return true,
+                .impl_decl => |i| for (i.methods) |method| {
+                    if (method.* == .func_decl and self.blockNeedsCmpMacros(method.func_decl.body)) return true;
+                },
+                .test_decl => |t| if (self.blockNeedsCmpMacros(t.body)) return true,
                 else => {},
             }
         }
@@ -5582,6 +5801,9 @@ pub const Codegen = struct {
         self.out.writer().print("@import \"sa_std/core/panic.sa\"\n", .{}) catch return CodegenError.CodegenError;
 
         try self.emitArrayFillMacros();
+        if (self.programNeedsCmpMacros(program)) {
+            self.out.writer().print("@import \"sa_std/cmp.sa\"\n", .{}) catch return CodegenError.CodegenError;
+        }
         if (self.programNeedsOptionMacros(program)) {
             self.out.writer().print("@import \"sa_std/core/option.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
@@ -8712,6 +8934,7 @@ pub const Codegen = struct {
                 }
                 const left_ty = self.tc.expr_types.get(bin.left) orelse return CodegenError.CodegenError;
                 const right_ty = self.tc.expr_types.get(bin.right) orelse return CodegenError.CodegenError;
+                if (try self.genSpaceshipExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructEqualityExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructOrdExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructArithmeticExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;

@@ -9,6 +9,7 @@ Update this file every time a compiler feature or demo milestone is completed an
   - Added `sa sla skills [--json]`; JSON mode reports the plugin capability section, while text mode writes `.codex/skills/sla/SKILL.md` and `.claude/skills/sla/SKILL.md` like `sa skills`.
   - Updated `sa sla help`, per-command help, plugin skill descriptors, README, tutor docs, FAQ, and task tracking for the new CLI surface.
   - Verified with focused commands: `zig build --summary all`; `timeout 120s zig test -lc ... --test-filter "sla skills emits json capability list"`; `timeout 120s zig test -lc ... --test-filter "sla skills text writes agent skill files"`; `timeout 120s zig test -lc ... --test-filter "sla init scaffolds project without overwriting"`; `timeout 120s ./zig-out/bin/sla-local-cli sla skills --json`; and `timeout 120s ./zig-out/bin/sla-local-cli sla init /tmp/sla_init_smoke`.
+  - Host-dispatched JSON mode was verified after reinstalling SA and the dev plugin: `SA_PLUGIN_DEV=1 sa sla skills --json` returns JSON, and `SA_PLUGIN_DEV=1 sa sla help` shows `init` / `skills` from the installed manifest.
   - A full `timeout 120s zig build test --summary all -- --test-filter ...` command was accidentally invoked while checking test-filter forwarding; the build script did not forward the filter, so all 27 plugin tests ran and passed. Do not use this as the default SAB validation path.
 
 - [done] Direct SLA-to-SAB output has been added as a separate compiler mainline from `.sa` text output.
@@ -17,8 +18,10 @@ Update this file every time a compiler feature or demo milestone is completed an
   - `compileSlaFileToSab` now runs `source_expand -> parser -> import expansion -> monomorphizer -> type checker -> sab_codegen.generate`; it does not call `compileSlaToSaString`, does not write a temporary `.sa`, and does not use the SA text flattener.
   - `sa sla sab build` now defaults to a stable managed SAB under `.sla-cache/sab/` for incremental reuse and only writes a user-visible SAB when `--out/-o` is passed.
   - `sa sla sab workspace` resolves the selected workspace member, writes the managed SAB under `.sla-cache/sab/`, passes that stable path to `sa build-exe`, and supports optional `--sab-out` / `--emit-sab` inspection artifacts.
+  - Documented the required SA compiler dependency and install order: build/install `https://github.com/layola13/sci/` first, then install this plugin in dev mode. SA host `.sab` input support is what lets `build-exe` and workspace flows hand `.sla-cache/sab/...` directly to `sa build-exe`.
   - Added `tests/test_sab_direct.sla` and focused plugin tests covering direct SAB output, managed cache output, SAB magic, decoded instruction sections, and absence of generated `.sa` source output.
   - Verified with narrow commands only: `zig build --summary all`; `timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla`; `timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla --out /tmp/sla_direct_out.sab`; `PATH=/home/vscode/projects/sci/zig-out/bin:$PATH timeout 120s /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla sab workspace --sab-out /tmp/sla_workspace_app.sab -o /tmp/sla_workspace_app`; and two `timeout 120s zig test ... --test-filter` runs for the SAB-specific tests.
+  - Re-verified through installed host commands after reinstall: `SA_PLUGIN_DEV=1 sa sla sab build tests/test_sab_direct.sla` writes managed `.sla-cache/sab/...`; `SA_PLUGIN_DEV=1 sa sla init /tmp/sa_host_sla_init` creates a project with `.sla-cache/` ignored.
   - Full test suites were intentionally not run to avoid CPU and memory pressure.
 
 - [done] `type` aliases with flattened `&` composition have been added for plain data layouts.

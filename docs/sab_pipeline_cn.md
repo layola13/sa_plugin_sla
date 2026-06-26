@@ -22,7 +22,42 @@ SLA source
 
 该路径不调用 `compileSlaToSaString`、不写临时 `.sa` 文件，也不通过 SA text flattener 重新解析。
 
+## 前置依赖与安装顺序
+
+SAB 主线依赖 SA compiler 侧已经支持 `.sab` 输入。开发环境应先从 `sci` 仓库构建/安装 SA，再安装 SLA 插件：
+
+```bash
+cd /home/vscode/projects/sci
+./tools/install.sh --no-shell
+
+cd /home/vscode/projects/sa_plugins/sa_plugin_sla
+SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla
+```
+
+`sa build` / `sa build-exe` / `sa run` / `sa test` 在 SA 侧会识别 `.sab` 输入并跳过 `.sa` text flattener，直接把 SAB 解码后的结构化指令交给 verifier/backend。SLA 插件的 `build-exe` 和 `sab workspace` 都依赖这一点把 `.sla-cache/sab/...` 托管文件作为稳定输入交给 SA compiler。
+
+安装后用以下命令确认加载的是 dev 插件和当前能力面：
+
+```bash
+SA_PLUGIN_DEV=1 sa plugin list
+SA_PLUGIN_DEV=1 sa sla help
+SA_PLUGIN_DEV=1 sa sla skills --json
+```
+
+`sa sla skills --json` 必须输出 JSON；如果输出文本，说明宿主没有把 JSON mode 转发给插件，或加载了旧插件/旧 SA 二进制。
+
 ## CLI 行为
+
+### `sa sla init` / `sa sla skills`
+
+```bash
+sa sla init [path]
+sa sla skills [--json]
+```
+
+- `init` 创建最小 SLA binary project：`sa.mod`、`src/main.sla`、`.gitignore`。
+- `.gitignore` 默认包含 `.sla-cache/`，避免把托管 SAB 和后续增量缓存产物提交进仓库。
+- `skills --json` 输出插件能力 JSON；文本模式会在当前目录生成 `.codex/skills/sla/SKILL.md` 和 `.claude/skills/sla/SKILL.md`。
 
 ### `sa sla sab build`
 
@@ -52,6 +87,8 @@ workspace 模式从当前目录解析 `sa.mod`，选择默认 member 或 `-p/--p
 - `--sab-out <file.sab>` 会额外写一份指定 SAB 文件。
 - `--emit-sab` 会额外写 sibling `.sab`，用于人工检查。
 - 传给 `sa build-exe` 的输入是稳定 `.sla-cache/sab/...` 路径，便于 SA 增量缓存命中。
+
+`sa sla build-exe <file.sla>` 也走同一直接 SAB 托管路径：先生成 `.sla-cache/sab/...`，再调用 `sa build-exe <managed.sab> ...`。它不再生成临时 `.sa` 文本作为中间主链路。
 
 ### `sa sla sab disasm`
 
@@ -108,8 +145,12 @@ section*:
 - 默认托管 SAB：`timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla`，输出 `.sla-cache/sab/test_sab_direct-...sab`。
 - 显式落盘：`timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla --out /tmp/sla_direct_out.sab`，`/tmp/sla_direct_out.sab` magic 为 `53 41 42 00`。
 - workspace：`PATH=/home/vscode/projects/sci/zig-out/bin:$PATH timeout 120s .../sla-local-cli sla sab workspace --sab-out /tmp/sla_workspace_app.sab -o /tmp/sla_workspace_app`，生成 workspace `.sla-cache/sab/...sab`、`/tmp/sla_workspace_app.sab` 和可执行文件。
+- 宿主 SA 安装验证：`/home/vscode/projects/sci/tools/install.sh --no-shell`，随后 `SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla`。
+- 宿主插件能力验证：`SA_PLUGIN_DEV=1 sa sla help` 显示 `init` / `skills` / `sab workspace --sab-out`；`SA_PLUGIN_DEV=1 sa sla skills --json` 输出 JSON；`SA_PLUGIN_DEV=1 sa sla init /tmp/sa_host_sla_init` 生成 `sa.mod` 和 `src/main.sla`。
+- 宿主 SAB 验证：`SA_PLUGIN_DEV=1 sa sla sab build tests/test_sab_direct.sla` 输出 `.sla-cache/sab/test_sab_direct-...sab`。
 - filtered Zig tests：
   - `timeout 120s zig test ... --test-filter "sla sab build defaults to managed sla cache"`
   - `timeout 120s zig test ... --test-filter "sla sab build emits direct SAB without SA source output"`
+  - `timeout 120s zig test ... --test-filter "sla skills honors host json mode"`
 
 没有跑 `sci` 或插件全量测试；全量测试会造成不必要的 CPU/内存压力。

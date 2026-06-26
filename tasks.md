@@ -57,6 +57,19 @@ This document tracks the tasks and implementation progress of the Sla compiler p
 - [x] **Code Output Writer**
   - [x] Output compiled `.sa` files; Sla-owned struct layouts stay as compile-time metadata.
   - [x] Connect Lexer -> Parser -> Type Checker -> Monomorphizer -> Codegen -> Output in `src/plugin.zig`.
+- [x] **Direct SAB Output Mainline**
+  - [x] Add `src/sab_codegen.zig` as a direct SLA AST/type-checker to SAB backend, separate from `.sa` text codegen.
+  - [x] Keep `sla -> .sa` and `sla -> .sab` as two independent mainlines; SAB generation does not call `compileSlaToSaString` or the SA text flattener.
+  - [x] Add `sa sla sab build` / `sa slab build` support with default managed output under `.sla-cache/sab/`.
+  - [x] Support optional visible SAB artifacts through `--out/-o` for `sab build`.
+  - [x] Add `sa sla sab workspace` / `sa slab workspace` support with workspace package resolution, managed `.sla-cache/sab/` input for `sa build-exe`, and optional `--sab-out` / `--emit-sab` artifacts.
+  - [x] Preserve `sa sla sab disasm` as a debug-only reader for SAB files.
+  - [x] Add focused tests for direct SAB output, managed cache behavior, SAB magic, decoded instructions, and no generated `.sa` side output.
+- [x] **SLA CLI Project Helpers**
+  - [x] Add `sa sla init [path]` to scaffold a minimal SLA binary project without overwriting existing files.
+  - [x] Add `sa sla skills [--json]` to list plugin capabilities and generate Codex/Claude agent skill files in text mode.
+  - [x] Include `sla init` and `sla skills` in plugin skill descriptors and `sa sla help` / per-command help output.
+  - [x] Add focused command tests for skills JSON, agent skill generation, and init overwrite protection.
 - [x] **SA std imports**
   - [x] Parse top-level `@import "..."` declarations without adding new keywords.
   - [x] Preserve direct `sa_std/...` imports in generated SA.

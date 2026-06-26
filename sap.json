@@ -17,7 +17,7 @@
   },
   "interfaces": {},
   "skills": ["sla"],
-  "help": "usage: sa sla <command> [options]\n\nCommands:\n  build      [file] [-p <package>] [--out <file>]\n  build-workspace [-p <package>] [sa-build-exe args]\n  build-exe  [file] [-p <package>] [sa-build-exe args]\n  check      [file] [-p <package>]\n  test       [file] [-p <package>] [sa-test args]\n  help\n\nOptions:\n  -p, --package <name>                    Select a workspace member package\n  -h, --help                              Show this help message\n",
+  "help": "usage: sa sla <command> [options]\n\nCommands:\n  build      [file] [-p <package>] [--out <file>]\n  build-workspace [-p <package>] [sa-build-exe args]\n  build-exe  [file] [-p <package>] [sa-build-exe args]\n  sab build  [file] [-p <package>] [--out <file.sab>]\n  sab workspace [-p <package>] [sa-build-exe args]\n  sab disasm <file.sab> [--out <file.sa>]\n  check      [file] [-p <package>]\n  test       [file] [-p <package>] [sa-test args]\n  help\n\nAliases:\n  sa slab build|workspace|disasm ...\n\nOptions:\n  -p, --package <name>                    Select a workspace member package\n  -h, --help                              Show this help message\n",
   "permissions": {
     "fs": [
       { "op": "read", "path": "$PROJECT/**" },

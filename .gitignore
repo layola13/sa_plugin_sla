@@ -37,4 +37,4 @@ benchmark_test/members*.sai
 benchmark_test/members*.sadb-schema
 benchmark_test/db_concurrent_bench
 tmp_*
-
+.sla-cache

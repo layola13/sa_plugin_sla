@@ -4,8 +4,14 @@ Sla compiler and tools plugin for Safe ASM (SA).
 
 ## Overview
 This is the standalone Sla compiler plugin, providing Sla-to-SA compilation capabilities. It exposes the following skills and CLI commands to the host SA environment:
+- `sa sla init [path]`: Create a minimal SLA binary project with `sa.mod`, `src/main.sla`, and `.gitignore` entries for `.sla-cache/`.
+- `sa sla skills [--json]`: List SLA plugin capabilities. Text mode also writes `.codex/skills/sla/SKILL.md` and `.claude/skills/sla/SKILL.md` into the current directory.
 - `sa sla build <file>`: Compile a `.sla` source file into a verified `.sa` assembly file.
-- `sa sla build-exe <file>`: Compile a `.sla` source file to a native executable by generating a temporary `.sa` file internally and delegating to `sa build-exe`.
+- `sa sla build-exe <file>`: Compile a `.sla` source file to a native executable through the direct SAB path, using a managed `.sla-cache/sab/...` input for the delegated `sa build-exe` step.
+- `sa sla sab build <file>`: Compile `.sla` directly to SAB bytes. By default the managed artifact is written under `.sla-cache/sab/`; pass `--out <file.sab>` to also write a visible SAB file.
+- `sa sla sab workspace`: Resolve the current `sa.mod` workspace member, compile it through managed SAB, and delegate to `sa build-exe`. Use `-p <package>` to select a member and `--sab-out <file.sab>` to also write an inspection artifact.
+- `sa sla sab disasm <file.sab>`: Disassemble a SAB file for debugging; this is not part of the compile path.
+- `sa slab ...`: Short alias for `sa sla sab ...`.
 - `sa sla check <file>`: Lex, parse, and type-check a `.sla` source file without emitting final SA assembly.
 - `sa sla test <file>`: Compile a `.sla` test file and run it through `sa test`.
 
@@ -39,12 +45,19 @@ SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plug
 
 Run dev-plugin commands with `SA_PLUGIN_DEV=1`, for example:
 ```bash
+SA_PLUGIN_DEV=1 sa sla init /tmp/sla_app
+SA_PLUGIN_DEV=1 sa sla skills --json
 SA_PLUGIN_DEV=1 sa sla build demos/rosetta/13_array_sum/main.sla --out /tmp/13_array_sum.sa
 SA_PLUGIN_DEV=1 sa sla build-exe demos/rosetta/13_array_sum/main.sla -o /tmp/13_array_sum
+SA_PLUGIN_DEV=1 sa sla sab build tests/test_sab_direct.sla
+SA_PLUGIN_DEV=1 sa sla sab build tests/test_sab_direct.sla --out /tmp/test_sab_direct.sab
+SA_PLUGIN_DEV=1 sa sla sab workspace --sab-out /tmp/workspace.sab -o /tmp/workspace_app
 SA_PLUGIN_DEV=1 sa sla check tests/test_unit_basic.sla
 SA_PLUGIN_DEV=1 sa sla build tests/test_unit_basic.sla --out /tmp/test_unit_basic.sa
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_basic.sla
 ```
+
+The `.sa` and `.sab` paths are separate compiler mainlines. SAB generation does not lower SLA to `.sa` text first; it goes from the parsed/type-checked SLA program into SAB binary IR. Managed SAB artifacts live in `.sla-cache/sab/` so repeated build-exe/workspace runs can reuse a stable input path for incremental compilation. User-visible SAB files are only written when requested with `--out`, `--sab-out`, or `--emit-sab`.
 
 ## Rosetta Demos
 The `demos/rosetta` tree mirrors the Rust references under `/home/vscode/projects/sci/demos/rosetta` with Sla companions and per-demo Rust/Sla comparison notes. The demos are intended to be checked manually for semantic equivalence, not only for matching final output.

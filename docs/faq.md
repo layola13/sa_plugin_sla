@@ -594,3 +594,47 @@ generics.
 Keep the compiler language-general: improve derive/codegen macros, static trait
 dispatch, container stdlib, and hygienic source generation. Do not hard-code ECS
 or engine concepts into the compiler.
+
+## L. Compilation, SAB, CLI, And Workspace Builds
+
+**101. Does SLA compile to `.sa` first and then convert to SAB?**
+
+No. `sa sla build` remains the `.sa` text mainline. `sa sla sab build`,
+`sa sla sab workspace`, `sa slab build`, and `sa slab workspace` use the direct
+SAB mainline: SLA source expansion, parsing, import expansion, monomorphization,
+type checking, then `sab_codegen.generate`. The SAB path must not be implemented
+as `sla -> sa -> sab`.
+
+**102. Where does `sa sla sab build` write output by default?**
+
+By default it writes a compiler-managed SAB artifact under `.sla-cache/sab/`.
+It does not place SAB output in `.zig-cache/`, and it does not write a sibling
+`.sab` next to the source unless requested.
+
+**103. How do I write a visible `.sab` file?**
+
+Use `sa sla sab build <file.sla> --out <file.sab>` or `-o <file.sab>`. Workspace
+builds use `--sab-out <file.sab>` for an extra inspection artifact, and
+`--emit-sab` for a sibling `.sab`. The managed `.sla-cache/sab/...` artifact is
+still written so later incremental builds can reuse a stable input path.
+
+**104. How does SAB workspace build work?**
+
+`sa sla sab workspace` resolves the current `sa.mod` workspace, selects the
+default member or `-p/--package`, writes managed SAB under `.sla-cache/sab/`,
+then delegates to `sa build-exe <managed.sab> ...`. Extra `sa build-exe` options
+after the SLA options are passed through.
+
+**105. What are `sa sla init` and `sa sla skills` for?**
+
+`sa sla init [path]` scaffolds a minimal SLA binary project with `sa.mod`,
+`src/main.sla`, and `.gitignore` entries including `.sla-cache/`. `sa sla skills
+[--json]` lists the plugin capability surface; text mode also writes Codex and
+Claude agent skill files into the current directory, matching the `sa skills`
+style.
+
+**106. Should SAB changes be verified with full test suites?**
+
+No, not by default. Prefer focused commands and filtered unit tests with
+`timeout 120s` for test or CLI execution. Build commands such as `zig build
+--summary all` do not need the timeout wrapper.

@@ -9,6 +9,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const sci_build_options = b.addOptions();
+    sci_build_options.addOption([]const u8, "repo_root", b.pathFromRoot("../../sci"));
+    sci_build_options.addOption([]const u8, "sa_std_archive_path", b.pathFromRoot("../../sci/artifacts/sa_std/libsa_std.a"));
+    sci_build_options.addOption([]const u8, "version", "dev");
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/plugin.zig"),
         .target = target,
@@ -16,6 +20,14 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     root_module.addImport("plugin_api", plugin_api);
+    root_module.addOptions("build_options", sci_build_options);
+    const sci_bridge = b.createModule(.{
+        .root_source_file = b.path("../../sci/src/plugin_bridge.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    sci_bridge.addOptions("build_options", sci_build_options);
+    root_module.addImport("sci_bridge", sci_bridge);
 
     const lib = b.addLibrary(.{
         .name = "sla",
@@ -31,6 +43,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     local_cli_module.addImport("plugin_api", plugin_api);
+    local_cli_module.addImport("sci_bridge", sci_bridge);
+    local_cli_module.addOptions("build_options", sci_build_options);
     const local_cli = b.addExecutable(.{
         .name = "sla-local-cli",
         .root_module = local_cli_module,
@@ -48,6 +62,7 @@ pub fn build(b: *std.Build) void {
     const main_tests = b.addTest(.{
         .root_module = root_module,
     });
+    main_tests.root_module.addImport("sci_bridge", sci_bridge);
     const run_main_tests = b.addRunArtifact(main_tests);
     const test_step = b.step("test", "Run library unit tests");
     test_step.dependOn(&run_main_tests.step);

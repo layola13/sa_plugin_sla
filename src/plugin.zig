@@ -5,8 +5,10 @@ const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
 const codegen_mod = @import("codegen.zig");
+const sab_codegen_mod = @import("sab_codegen.zig");
 const source_expand = @import("source_expand.zig");
 const sla_workspace = @import("workspace.zig");
+const sci_bridge = @import("sci_bridge");
 pub const handler_bridge = @import("handler_bridge.zig");
 
 pub const SlaHandlerStateFieldAbi = extern struct {
@@ -143,9 +145,14 @@ const skills = [_]plugin_api.SkillSection{
         .name = "sla",
         .summary = "Sla compiler and tools",
         .items = &.{
+            "sla init [path]",
+            "sla skills [--json]",
             "sla build [file] [-p <package>] [--out <file>]",
             "sla build-workspace [-p <package>] [sa-build-exe-options...]",
             "sla build-exe [file] [-p <package>] [sa-build-exe-options...]",
+            "sla sab build [file] [-p <package>] [--out <file.sab>]",
+            "sla sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]",
+            "slab build|workspace|disasm ...",
             "sla check [file] [-p <package>]",
             "sla test [file] [-p <package>] [sa-test-options...]",
         },
@@ -735,16 +742,260 @@ const SlaCliOptions = struct {
     source_file: ?[]const u8 = null,
     passthrough_start: usize,
     help_requested: bool = false,
+    emit_sab_file: bool = false,
 };
 
 fn isHelpArg(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help");
 }
 
+fn ensureParentDir(path: []const u8) !void {
+    if (std.fs.path.dirname(path)) |dir| {
+        if (dir.len != 0) try std.fs.cwd().makePath(dir);
+    }
+}
+
+fn ensureNewFile(path: []const u8, bytes: []const u8) !void {
+    try ensureParentDir(path);
+    var file = try std.fs.cwd().createFile(path, .{ .exclusive = true });
+    defer file.close();
+    try file.writeAll(bytes);
+}
+
+fn writeJsonString(writer: anytype, text: []const u8) !void {
+    try writer.writeByte('"');
+    for (text) |c| {
+        switch (c) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => {
+                if (c < 0x20) {
+                    try writer.print("\\u{X:0>4}", .{c});
+                } else {
+                    try writer.writeByte(c);
+                }
+            },
+        }
+    }
+    try writer.writeByte('"');
+}
+
+fn writeJsonStringArray(writer: anytype, items: []const []const u8) !void {
+    try writer.writeByte('[');
+    for (items, 0..) |item, idx| {
+        if (idx != 0) try writer.writeByte(',');
+        try writeJsonString(writer, item);
+    }
+    try writer.writeByte(']');
+}
+
+fn writeSlaSkillsJson(writer: anytype) !void {
+    try writer.writeAll("{\"status\":\"ok\",\"skills\":[");
+    for (skills, 0..) |section, idx| {
+        if (idx != 0) try writer.writeByte(',');
+        try writer.writeByte('{');
+        try writer.writeAll("\"name\":");
+        try writeJsonString(writer, section.name);
+        try writer.writeAll(",\"summary\":");
+        try writeJsonString(writer, section.summary);
+        try writer.writeAll(",\"items\":");
+        try writeJsonStringArray(writer, section.items);
+        try writer.writeByte('}');
+    }
+    try writer.writeAll("]}\n");
+}
+
+fn writeSlaSkillSectionText(writer: anytype, section: plugin_api.SkillSection) !void {
+    try writer.print("{s}\n", .{section.name});
+    try writer.print("summary: {s}\n", .{section.summary});
+    for (section.items) |item| {
+        try writer.print("- {s}\n", .{item});
+    }
+}
+
+fn writeMarkdownCodeList(writer: anytype, items: []const []const u8) !void {
+    for (items) |item| try writer.print("- `{s}`\n", .{item});
+}
+
+fn writeSlaAgentSkillMarkdown(writer: anytype, agent_name: []const u8) !void {
+    const description = if (std.mem.eql(u8, agent_name, "claude"))
+        "Use the installed SLA plugin from Claude to build, check, test, scaffold, and inspect direct SAB workflows."
+    else
+        "Use the installed SLA plugin from Codex to build, check, test, scaffold, and inspect direct SAB workflows.";
+
+    try writer.writeAll("---\n");
+    try writer.writeAll("name: \"sla\"\n");
+    try writer.writeAll("description: ");
+    try writeJsonString(writer, description);
+    try writer.writeByte('\n');
+    try writer.writeAll("when_to_use: \"Use when working on .sla sources, SLA workspace builds, direct SLA-to-SAB output, or SLA plugin CLI commands.\"\n");
+    try writer.writeAll("---\n\n");
+
+    try writer.writeAll("# SLA Toolchain\n\n");
+    try writer.writeAll("## Core Workflow\n");
+    try writer.writeAll("- Use `sa sla init [path]` to scaffold a minimal SLA binary project.\n");
+    try writer.writeAll("- Use `sa sla build <file>` only when a visible `.sa` text artifact is needed.\n");
+    try writer.writeAll("- Use `sa sla build-exe <file>` or `sa sla sab workspace` for executable builds through the direct SAB path.\n");
+    try writer.writeAll("- Use `sa sla sab build <file>` to emit managed SAB under `.sla-cache/sab/`; add `--out <file.sab>` only for an inspection copy.\n");
+    try writer.writeAll("- Keep SLA-to-SA and SLA-to-SAB as separate mainlines; SAB output must not be implemented as `sla -> sa -> sab`.\n");
+    try writer.writeAll("- Prefer focused checks with `timeout 120s`; do not run full test suites unless explicitly requested. Build commands do not need the timeout wrapper.\n\n");
+
+    try writer.writeAll("## CLI Skill Sections\n");
+    for (skills) |section| {
+        try writer.print("### {s}\n", .{section.name});
+        try writer.print("{s}\n", .{section.summary});
+        try writeMarkdownCodeList(writer, section.items);
+        try writer.writeByte('\n');
+    }
+}
+
+const SlaAgentSkillPaths = struct {
+    codex: []const u8,
+    claude: []const u8,
+};
+
+fn writeSlaAgentSkills() !SlaAgentSkillPaths {
+    const codex_path = ".codex/skills/sla/SKILL.md";
+    const claude_path = ".claude/skills/sla/SKILL.md";
+    try ensureParentDir(codex_path);
+    try ensureParentDir(claude_path);
+    {
+        var file = try std.fs.cwd().createFile(codex_path, .{ .truncate = true });
+        defer file.close();
+        try writeSlaAgentSkillMarkdown(file.writer(), "codex");
+    }
+    {
+        var file = try std.fs.cwd().createFile(claude_path, .{ .truncate = true });
+        defer file.close();
+        try writeSlaAgentSkillMarkdown(file.writer(), "claude");
+    }
+    return .{ .codex = codex_path, .claude = claude_path };
+}
+
+fn runSlaSkillsCommand(args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter) !u8 {
+    var json_mode = false;
+    var idx = option_start;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (isHelpArg(arg)) {
+            try writeCommandHelp(stderr, "skills");
+            return 0;
+        }
+        if (std.mem.eql(u8, arg, "--json")) {
+            json_mode = true;
+            continue;
+        }
+        try stderr.print("Unknown sla skills option: {s}\n", .{arg});
+        try writeCommandHelp(stderr, "skills");
+        return 1;
+    }
+
+    if (json_mode) {
+        try writeSlaSkillsJson(stdout);
+    } else {
+        const paths = try writeSlaAgentSkills();
+        try stdout.writeAll("sla compiler plugin\n");
+        try stdout.print("generated agent skills:\n- {s}\n- {s}\n", .{ paths.codex, paths.claude });
+        for (skills) |section| try writeSlaSkillSectionText(stdout, section);
+    }
+    return 0;
+}
+
+fn projectPackageName(project_path: []const u8) []const u8 {
+    if (std.mem.eql(u8, project_path, ".")) return "app";
+    const base = std.fs.path.basename(project_path);
+    if (base.len == 0 or std.mem.eql(u8, base, ".")) return "app";
+    return base;
+}
+
+fn runSlaInitCommand(allocator: std.mem.Allocator, args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter) !u8 {
+    var project_path: ?[]const u8 = null;
+    var idx = option_start;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (isHelpArg(arg)) {
+            try writeCommandHelp(stderr, "init");
+            return 0;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) {
+            try stderr.print("Unknown sla init option: {s}\n", .{arg});
+            try writeCommandHelp(stderr, "init");
+            return 1;
+        }
+        if (project_path != null) {
+            try stderr.print("Unexpected sla init argument: {s}\n", .{arg});
+            try writeCommandHelp(stderr, "init");
+            return 1;
+        }
+        project_path = arg;
+    }
+
+    const root = project_path orelse ".";
+    const package_name = projectPackageName(root);
+    try std.fs.cwd().makePath(root);
+
+    const src_dir = try std.fs.path.join(allocator, &.{ root, "src" });
+    defer allocator.free(src_dir);
+    try std.fs.cwd().makePath(src_dir);
+
+    const manifest_path = try std.fs.path.join(allocator, &.{ root, "sa.mod" });
+    defer allocator.free(manifest_path);
+    const main_path = try std.fs.path.join(allocator, &.{ root, "src", "main.sla" });
+    defer allocator.free(main_path);
+    const gitignore_path = try std.fs.path.join(allocator, &.{ root, ".gitignore" });
+    defer allocator.free(gitignore_path);
+
+    const manifest = try std.fmt.allocPrint(allocator,
+        \\# generated by sla init
+        \\package "{s}"
+        \\
+    , .{package_name});
+    defer allocator.free(manifest);
+
+    ensureNewFile(manifest_path, manifest) catch |err| {
+        try stderr.print("File Error: failed to create {s}: {}\n", .{ manifest_path, err });
+        return 1;
+    };
+    ensureNewFile(main_path,
+        \\fn main() -> i32 {
+        \\    return 0;
+        \\};
+        \\
+    ) catch |err| {
+        try stderr.print("File Error: failed to create {s}: {}\n", .{ main_path, err });
+        return 1;
+    };
+    ensureNewFile(gitignore_path,
+        \\.sla-cache/
+        \\.zig-cache/
+        \\.sa_cache/
+        \\zig-out/
+        \\*.out
+        \\*.sa.bc
+        \\
+    ) catch |err| {
+        try stderr.print("File Error: failed to create {s}: {}\n", .{ gitignore_path, err });
+        return 1;
+    };
+
+    try stdout.print("Initialized SLA binary project: {s}\n", .{root});
+    try stdout.print("Entry: {s}\n", .{main_path});
+    return 0;
+}
+
 fn commandUsage(command: []const u8) []const u8 {
+    if (std.mem.eql(u8, command, "init")) return "usage: sa sla init [path]\n";
+    if (std.mem.eql(u8, command, "skills")) return "usage: sa sla skills [--json]\n";
     if (std.mem.eql(u8, command, "build")) return "usage: sa sla build [file] [-p <package>] [--out <file>]\n";
     if (std.mem.eql(u8, command, "build-workspace")) return "usage: sa sla build-workspace [-p <package>] [sa-build-exe-options...]\n";
     if (std.mem.eql(u8, command, "build-exe")) return "usage: sa sla build-exe [file] [-p <package>] [sa-build-exe-options...]\n";
+    if (std.mem.eql(u8, command, "sab")) return "usage: sa sla sab <build|workspace|disasm> [options]\n       sa slab <build|workspace|disasm> [options]\n";
+    if (std.mem.eql(u8, command, "sab build")) return "usage: sa sla sab build [file] [-p <package>] [--out <file.sab>]\n       sa slab build [file] [-p <package>] [--out <file.sab>]\n";
+    if (std.mem.eql(u8, command, "sab workspace")) return "usage: sa sla sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]\n       sa slab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]\n";
+    if (std.mem.eql(u8, command, "sab disasm")) return "usage: sa sla sab disasm <file.sab> [--out <file.sa>]\n       sa slab disasm <file.sab> [--out <file.sa>]\n";
     if (std.mem.eql(u8, command, "check")) return "usage: sa sla check [file] [-p <package>]\n";
     if (std.mem.eql(u8, command, "test")) return "usage: sa sla test [file] [-p <package>] [sa-test-options...]\n";
     return "usage: sa sla <command> [options]\n";
@@ -752,25 +1003,57 @@ fn commandUsage(command: []const u8) []const u8 {
 
 fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
     try writer.writeAll(commandUsage(command));
+    if (std.mem.eql(u8, command, "init")) {
+        try writer.writeAll("\n");
+        try writer.writeAll("Create a new SLA binary project with sa.mod, src/main.sla, and .gitignore.\n\n");
+        try writer.writeAll("  -h, --help              Show this help message\n");
+    }
+    if (std.mem.eql(u8, command, "skills")) {
+        try writer.writeAll("\n");
+        try writer.writeAll("List SLA plugin capabilities. Text mode also writes agent skills into the current directory.\n\n");
+        try writer.writeAll("  --json                  Emit machine-readable capability JSON\n");
+        try writer.writeAll("  -h, --help              Show this help message\n");
+    }
     if (std.mem.eql(u8, command, "build") or
         std.mem.eql(u8, command, "build-workspace") or
         std.mem.eql(u8, command, "build-exe") or
+        std.mem.eql(u8, command, "sab build") or
+        std.mem.eql(u8, command, "sab workspace") or
         std.mem.eql(u8, command, "check") or
         std.mem.eql(u8, command, "test"))
     {
         try writer.writeAll("\n");
         try writer.writeAll("  -p, --package <name>    Select a workspace member package\n");
+        if (std.mem.eql(u8, command, "build-exe") or std.mem.eql(u8, command, "build-workspace") or std.mem.eql(u8, command, "test")) {
+            try writer.writeAll("  --emit-sab              Also write a sibling .sab artifact for inspection\n");
+        }
+        if (std.mem.eql(u8, command, "sab build")) {
+            try writer.writeAll("  -o, --out <file.sab>    Also write SAB output file; default uses .sla-cache/sab/\n");
+        }
+        if (std.mem.eql(u8, command, "sab workspace")) {
+            try writer.writeAll("  --sab-out <file.sab>    Also write SAB output file; default uses .sla-cache/sab/\n");
+            try writer.writeAll("  --emit-sab              Also write a sibling .sab artifact for inspection\n");
+        }
+        try writer.writeAll("  -h, --help              Show this help message\n");
+    }
+    if (std.mem.eql(u8, command, "sab disasm")) {
+        try writer.writeAll("\n");
+        try writer.writeAll("  -o, --out <file.sa>     Write text SA debug output instead of stdout\n");
         try writer.writeAll("  -h, --help              Show this help message\n");
     }
 }
 
-fn parseSlaCliOptions(args: []const []const u8, command: []const u8) !SlaCliOptions {
+fn parseSlaCliOptionsFrom(args: []const []const u8, command: []const u8, start_idx: usize) !SlaCliOptions {
     var options = SlaCliOptions{ .passthrough_start = args.len };
-    var idx: usize = 3;
+    var idx: usize = start_idx;
     while (idx < args.len) : (idx += 1) {
         const arg = args[idx];
         if (isHelpArg(arg)) {
             options.help_requested = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--emit-sab") or std.mem.eql(u8, arg, "--emit-sab-file")) {
+            options.emit_sab_file = true;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--package=")) {
@@ -798,6 +1081,10 @@ fn parseSlaCliOptions(args: []const []const u8, command: []const u8) !SlaCliOpti
 
     _ = command;
     return options;
+}
+
+fn parseSlaCliOptions(args: []const []const u8, command: []const u8) !SlaCliOptions {
+    return parseSlaCliOptionsFrom(args, command, 3);
 }
 
 fn resolveWorkspaceSourcePath(
@@ -847,6 +1134,316 @@ fn resolveSlaInputFile(
     return resolveWorkspaceSourcePath(allocator, stderr, options.package_name);
 }
 
+fn defaultOutputPath(allocator: std.mem.Allocator, file: []const u8, from_ext: []const u8, to_ext: []const u8) ![]u8 {
+    if (std.mem.endsWith(u8, file, from_ext)) {
+        return try std.fmt.allocPrint(allocator, "{s}{s}", .{ file[0 .. file.len - from_ext.len], to_ext });
+    }
+    return try std.fmt.allocPrint(allocator, "{s}{s}", .{ file, to_ext });
+}
+
+fn managedSabPath(allocator: std.mem.Allocator, file: []const u8) ![]u8 {
+    const base = std.fs.path.basename(file);
+    const stem = if (std.mem.endsWith(u8, base, ".sla")) base[0 .. base.len - 4] else base;
+    const hash = std.hash.Wyhash.hash(0, file);
+    return try std.fmt.allocPrint(allocator, ".sla-cache/sab/{s}-{x}.sab", .{ stem, hash });
+}
+
+fn writeSabFile(path: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWriter) !bool {
+    if (std.fs.path.dirname(path)) |dir| {
+        std.fs.cwd().makePath(dir) catch |err| {
+            try stderr.print("File Error: failed to create SAB output directory {s}: {}\n", .{ dir, err });
+            return false;
+        };
+    }
+    std.fs.cwd().writeFile(.{ .sub_path = path, .data = sab_bytes }) catch |err| {
+        try stderr.print("File Error: failed to write SAB output {s}: {}\n", .{ path, err });
+        return false;
+    };
+    return true;
+}
+
+fn writeManagedSab(allocator: std.mem.Allocator, file: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWriter) !?[]u8 {
+    const path = try managedSabPath(allocator, file);
+    if (!try writeSabFile(path, sab_bytes, stderr)) return null;
+    return path;
+}
+
+fn parseOutFileArg(args: []const []const u8, start_idx: usize) ?[]const u8 {
+    var idx = start_idx;
+    while (idx < args.len) : (idx += 1) {
+        if (std.mem.eql(u8, args[idx], "--out") or std.mem.eql(u8, args[idx], "-o")) {
+            if (idx + 1 < args.len) return args[idx + 1];
+            return null;
+        }
+    }
+    return null;
+}
+
+fn parseSabOutFileArg(args: []const []const u8, start_idx: usize) ?[]const u8 {
+    var idx = start_idx;
+    while (idx < args.len) : (idx += 1) {
+        if (std.mem.eql(u8, args[idx], "--sab-out")) {
+            if (idx + 1 < args.len) return args[idx + 1];
+            return null;
+        }
+    }
+    return null;
+}
+
+fn hasEmitSabArg(args: []const []const u8, start_idx: usize) bool {
+    for (args[start_idx..]) |arg| {
+        if (std.mem.eql(u8, arg, "--emit-sab") or std.mem.eql(u8, arg, "--emit-sab-file")) return true;
+    }
+    return false;
+}
+
+fn appendSabWorkspacePassthrough(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
+    var idx: usize = 0;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (std.mem.eql(u8, arg, "--emit-sab") or std.mem.eql(u8, arg, "--emit-sab-file")) continue;
+        if (std.mem.eql(u8, arg, "--sab-out")) {
+            idx += 1;
+            continue;
+        }
+        try argv.append(arg);
+    }
+}
+
+fn compileSlaFileToSab(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    output_file: []const u8,
+    stderr: std.io.AnyWriter,
+) !?[]u8 {
+    _ = output_file;
+    const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
+        try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
+        return null;
+    };
+
+    const expanded_content = source_expand.expand(allocator, content) catch |err| {
+        try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
+        return null;
+    };
+
+    const sla_base_dir = std.fs.path.dirname(file) orelse ".";
+    var p = parser_mod.Parser.initWithDir(allocator, expanded_content, sla_base_dir);
+    const prog = p.parseProgram() catch |err| {
+        try p.printDiagnostic(stderr, file, err);
+        return null;
+    };
+
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
+        try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
+        return null;
+    };
+
+    var mono = monomorphizer_mod.Monomorphizer.init(allocator);
+    defer mono.deinit();
+    var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
+        try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
+        return null;
+    };
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+
+    loadImportedContracts(&tc, allocator, specialized_prog, file) catch |err| {
+        try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
+        return null;
+    };
+
+    tc.checkProgram(specialized_prog) catch |err| {
+        try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
+        return null;
+    };
+
+    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    for (specialized_prog.program.decls) |decl| {
+        if (specialized_primary_decls.contains(decl)) {
+            try filtered_decls.append(decl);
+        }
+    }
+    specialized_prog.program.decls = try filtered_decls.toOwnedSlice();
+
+    return sab_codegen_mod.generate(allocator, &tc, specialized_prog) catch |err| {
+        try stderr.print("SAB Error: direct SLA to SAB backend cannot compile {s}: {}\n", .{ file, err });
+        return null;
+    };
+}
+
+fn compileSlaFileToSabOrSa(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    output_file: []const u8,
+    stderr: std.io.AnyWriter,
+) !?[]u8 {
+    return compileSlaFileToSab(allocator, file, output_file, stderr);
+}
+
+fn maybeWriteSiblingSab(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    stderr: std.io.AnyWriter,
+) !void {
+    const sab_out = try defaultOutputPath(allocator, file, ".sla", ".sab");
+    const sab_bytes = (try compileSlaFileToSabOrSa(allocator, file, sab_out, stderr)) orelse return error.InvalidFormat;
+    try std.fs.cwd().writeFile(.{ .sub_path = sab_out, .data = sab_bytes });
+}
+
+fn runSabBuildCommand(
+    args: []const []const u8,
+    option_start: usize,
+    stdout: std.io.AnyWriter,
+    stderr: std.io.AnyWriter,
+) !u8 {
+    const options = parseSlaCliOptionsFrom(args, "sab build", option_start) catch {
+        try writeCommandHelp(stderr, "sab build");
+        return 1;
+    };
+    if (options.help_requested) {
+        try writeCommandHelp(stderr, "sab build");
+        return 0;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
+    const managed_out = try managedSabPath(allocator, file);
+    const sab_bytes = (try compileSlaFileToSab(allocator, file, managed_out, stderr)) orelse return 1;
+    const managed_path = (try writeManagedSab(allocator, file, sab_bytes, stderr)) orelse return 1;
+
+    if (parseOutFileArg(args, option_start)) |final_out| {
+        if (!try writeSabFile(final_out, sab_bytes, stderr)) return 1;
+        try stdout.print("Sla Compiler: Successfully compiled {s} to SAB {s} (managed cache {s}).\n", .{ file, final_out, managed_path });
+    } else {
+        try stdout.print("Sla Compiler: Successfully compiled {s} to managed SAB {s}.\n", .{ file, managed_path });
+    }
+    return 0;
+}
+
+fn runSabWorkspaceCommand(
+    args: []const []const u8,
+    option_start: usize,
+    stdout: std.io.AnyWriter,
+    stderr: std.io.AnyWriter,
+) !u8 {
+    _ = stdout;
+    const options = parseSlaCliOptionsFrom(args, "sab workspace", option_start) catch {
+        try writeCommandHelp(stderr, "sab workspace");
+        return 1;
+    };
+    if (options.help_requested) {
+        try writeCommandHelp(stderr, "sab workspace");
+        return 0;
+    }
+    if (options.source_file != null) {
+        try stderr.writeAll("Error: sla sab workspace does not accept a source file argument; run it from a workspace root or member directory\n");
+        return 1;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const file = (try resolveWorkspaceSourcePath(allocator, stderr, options.package_name)) orelse return 1;
+    const extra_args = args[options.passthrough_start..];
+    const managed_out = try managedSabPath(allocator, file);
+    const sab_bytes = (try compileSlaFileToSab(allocator, file, managed_out, stderr)) orelse return 1;
+    const managed_path = (try writeManagedSab(allocator, file, sab_bytes, stderr)) orelse return 1;
+
+    if (parseSabOutFileArg(args, option_start)) |sab_out| {
+        if (!try writeSabFile(sab_out, sab_bytes, stderr)) return 1;
+    }
+    if (options.emit_sab_file or hasEmitSabArg(args, option_start)) {
+        maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
+            try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
+            return 1;
+        };
+    }
+
+    var argv = std.ArrayList([]const u8).init(allocator);
+    try argv.append("sa");
+    try argv.append("build-exe");
+    try argv.append(managed_path);
+    try appendSabWorkspacePassthrough(&argv, extra_args);
+
+    var child = std.process.Child.init(argv.items, allocator);
+    const term = child.spawnAndWait() catch |err| {
+        try stderr.print("Error: failed to run 'sa build-exe' for SAB workspace output: {}\n", .{err});
+        return 1;
+    };
+    return switch (term) {
+        .Exited => |code| code,
+        else => 1,
+    };
+}
+
+fn runSabDisasmCommand(
+    args: []const []const u8,
+    option_start: usize,
+    stdout: std.io.AnyWriter,
+    stderr: std.io.AnyWriter,
+) !u8 {
+    if (option_start >= args.len or isHelpArg(args[option_start])) {
+        try writeCommandHelp(stderr, "sab disasm");
+        return if (option_start < args.len) 0 else 1;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const file = args[option_start];
+    const out_file = parseOutFileArg(args, option_start + 1);
+
+    const sab_bytes = std.fs.cwd().readFileAlloc(allocator, file, 16 * 1024 * 1024) catch |err| {
+        try stderr.print("SAB Error: failed to read {s}: {}\n", .{ file, err });
+        return 1;
+    };
+
+    const text = sci_bridge.disasmSabAlloc(allocator, sab_bytes) catch |err| {
+        try stderr.print("SAB Error: failed to disassemble {s}: {}\n", .{ file, err });
+        return 1;
+    };
+
+    if (out_file) |path| {
+        std.fs.cwd().writeFile(.{ .sub_path = path, .data = text }) catch |err| {
+            try stderr.print("File Error: failed to write {s}: {}\n", .{ path, err });
+            return 1;
+        };
+        try stdout.print("Disassembled {s} to {s}\n", .{ file, path });
+    } else {
+        try stdout.writeAll(text);
+    }
+    return 0;
+}
+
+fn runSabCommand(
+    args: []const []const u8,
+    subcommand_index: usize,
+    stdout: std.io.AnyWriter,
+    stderr: std.io.AnyWriter,
+) !u8 {
+    if (subcommand_index >= args.len or isHelpArg(args[subcommand_index])) {
+        try writeCommandHelp(stderr, "sab");
+        return if (subcommand_index < args.len) 0 else 1;
+    }
+    const subcmd = args[subcommand_index];
+    const option_start = subcommand_index + 1;
+    if (std.mem.eql(u8, subcmd, "build")) return try runSabBuildCommand(args, option_start, stdout, stderr);
+    if (std.mem.eql(u8, subcmd, "workspace")) return try runSabWorkspaceCommand(args, option_start, stdout, stderr);
+    if (std.mem.eql(u8, subcmd, "disasm")) return try runSabDisasmCommand(args, option_start, stdout, stderr);
+    try stderr.print("Unknown sla sab command: {s}\n", .{subcmd});
+    try writeCommandHelp(stderr, "sab");
+    return 1;
+}
+
 pub fn runSlaCommandImpl(
     ctx: *const plugin_api.Context,
     args: []const []const u8,
@@ -855,6 +1452,9 @@ pub fn runSlaCommandImpl(
 ) !?u8 {
     _ = ctx;
     if (args.len < 2) return null;
+    if (std.mem.eql(u8, args[1], "slab")) {
+        return try runSabCommand(args, 2, stdout, stderr);
+    }
     if (!std.mem.eql(u8, args[1], "sla")) return null;
     if (args.len < 3) {
         try stderr.writeAll("usage: sa sla <command> [options]\n");
@@ -864,12 +1464,29 @@ pub fn runSlaCommandImpl(
     if (std.mem.eql(u8, cmd, "help")) {
         try stderr.writeAll("usage: sa sla <command> [options]\n\n");
         try stderr.writeAll("Commands:\n");
+        try stderr.writeAll("  init       [path]\n");
+        try stderr.writeAll("  skills     [--json]\n");
         try stderr.writeAll("  build      [file] [-p <package>] [--out <file>]\n");
         try stderr.writeAll("  build-workspace [-p <package>] [sa-build-exe args]\n");
         try stderr.writeAll("  build-exe  [file] [-p <package>] [sa-build-exe args]\n");
+        try stderr.writeAll("  sab build  [file] [-p <package>] [--out <file.sab>]\n");
+        try stderr.writeAll("  sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe args]\n");
+        try stderr.writeAll("  sab disasm <file.sab> [--out <file.sa>]\n");
+        try stderr.writeAll("  slab build|workspace|disasm ...    Short alias\n");
         try stderr.writeAll("  check      [file] [-p <package>]\n");
         try stderr.writeAll("  test       [file] [-p <package>] [sa-test args]\n");
         return 0;
+    }
+    if (std.mem.eql(u8, cmd, "init")) {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        return try runSlaInitCommand(arena.allocator(), args, 3, stdout, stderr);
+    }
+    if (std.mem.eql(u8, cmd, "skills")) {
+        return try runSlaSkillsCommand(args, 3, stdout, stderr);
+    }
+    if (std.mem.eql(u8, cmd, "sab")) {
+        return try runSabCommand(args, 3, stdout, stderr);
     }
     if (std.mem.eql(u8, cmd, "build")) {
         const options = parseSlaCliOptions(args, cmd) catch {
@@ -933,22 +1550,20 @@ pub fn runSlaCommandImpl(
         const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
         const extra_args = args[options.passthrough_start..];
 
-        const sa_out = if (std.mem.endsWith(u8, file, ".sla"))
-            try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file[0 .. file.len - 4]})
-        else
-            try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file});
-
-        const sa_code = (try compileSlaFileToSa(allocator, file, sa_out, stderr)) orelse return 1;
-        std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
-            try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
-            return 1;
-        };
-        defer std.fs.cwd().deleteFile(sa_out) catch {};
+        const sab_out = try managedSabPath(allocator, file);
+        const sab_bytes = (try compileSlaFileToSabOrSa(allocator, file, sab_out, stderr)) orelse return 1;
+        if (!try writeSabFile(sab_out, sab_bytes, stderr)) return 1;
+        if (options.emit_sab_file) {
+            maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
+                try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
+                return 1;
+            };
+        }
 
         var argv = std.ArrayList([]const u8).init(allocator);
         try argv.append("sa");
         try argv.append("build-exe");
-        try argv.append(sa_out);
+        try argv.append(sab_out);
         for (extra_args) |a| try argv.append(a);
 
         var child = std.process.Child.init(argv.items, allocator);
@@ -982,22 +1597,20 @@ pub fn runSlaCommandImpl(
         const file = (try resolveWorkspaceSourcePath(allocator, stderr, options.package_name)) orelse return 1;
         const extra_args = args[options.passthrough_start..];
 
-        const sa_out = if (std.mem.endsWith(u8, file, ".sla"))
-            try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file[0 .. file.len - 4]})
-        else
-            try std.fmt.allocPrint(allocator, "{s}.build.sa", .{file});
-
-        const sa_code = (try compileSlaFileToSa(allocator, file, sa_out, stderr)) orelse return 1;
-        std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
-            try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
-            return 1;
-        };
-        defer std.fs.cwd().deleteFile(sa_out) catch {};
+        const sab_out = try managedSabPath(allocator, file);
+        const sab_bytes = (try compileSlaFileToSabOrSa(allocator, file, sab_out, stderr)) orelse return 1;
+        if (!try writeSabFile(sab_out, sab_bytes, stderr)) return 1;
+        if (options.emit_sab_file) {
+            maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
+                try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
+                return 1;
+            };
+        }
 
         var argv = std.ArrayList([]const u8).init(allocator);
         try argv.append("sa");
         try argv.append("build-exe");
-        try argv.append(sa_out);
+        try argv.append(sab_out);
         for (extra_args) |a| try argv.append(a);
 
         var child = std.process.Child.init(argv.items, allocator);
@@ -1088,7 +1701,6 @@ pub fn runSlaCommandImpl(
         const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
         const extra_args = args[options.passthrough_start..];
 
-        // Compile .sla -> temporary .sa file next to the source
         const sa_out = if (std.mem.endsWith(u8, file, ".sla"))
             try std.fmt.allocPrint(allocator, "{s}.test.sa", .{file[0 .. file.len - 4]})
         else
@@ -1100,8 +1712,14 @@ pub fn runSlaCommandImpl(
             try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
             return 1;
         };
+        defer std.fs.cwd().deleteFile(sa_out) catch {};
+        if (options.emit_sab_file) {
+            maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
+                try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
+                return 1;
+            };
+        }
 
-        // Build argv: ["sa", "test", sa_out, ...extra_args]
         var argv = std.ArrayList([]const u8).init(allocator);
         try argv.append("sa");
         try argv.append("test");
@@ -1222,6 +1840,84 @@ test "sla_compile_handler C ABI lowers state handler" {
     try std.testing.expect(std.mem.containsAtLeast(u8, body, 1, "call @render()"));
 }
 
+test "sla skills emits json capability list" {
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "skills", "--json" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"status\":\"ok\""));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla init [path]"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla sab build"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla skills text writes agent skill files" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "skills" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try tmp.dir.access(".codex/skills/sla/SKILL.md", .{});
+    try tmp.dir.access(".claude/skills/sla/SKILL.md", .{});
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "generated agent skills"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla skills [--json]"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla init scaffolds project without overwriting" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "init", "demo_app" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try tmp.dir.access("demo_app/sa.mod", .{});
+    try tmp.dir.access("demo_app/src/main.sla", .{});
+    try tmp.dir.access("demo_app/.gitignore", .{});
+
+    const manifest = try tmp.dir.readFileAlloc(std.testing.allocator, "demo_app/sa.mod", 1024);
+    defer std.testing.allocator.free(manifest);
+    try std.testing.expect(std.mem.containsAtLeast(u8, manifest, 1, "package \"demo_app\""));
+
+    const gitignore = try tmp.dir.readFileAlloc(std.testing.allocator, "demo_app/.gitignore", 1024);
+    defer std.testing.allocator.free(gitignore);
+    try std.testing.expect(std.mem.containsAtLeast(u8, gitignore, 1, ".sla-cache/"));
+
+    const second_code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    try std.testing.expectEqual(@as(?u8, 1), second_code);
+}
+
 fn expectSlaCheckRedeclarationDiagnostic(file: []const u8, expected: []const u8) !void {
     var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
@@ -1289,6 +1985,111 @@ test "sla build rewrites sla imports relative to final output path" {
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "@import \"import_fixtures/output_relative/local_dep.sa\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "@import \"helper.sa\"") == null);
+}
+
+test "sla sab build emits direct SAB without SA source output" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "direct.sla", .data =
+        \\fn add(a: i32, b: i32) -> i32 {
+        \\    let c = a + b;
+        \\    return c;
+        \\};
+        \\
+        \\fn main() -> i32 {
+        \\    let x = add(2, 3);
+        \\    return x;
+        \\};
+    });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "sab", "build", "direct.sla", "--out", "direct.sab" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try tmp.dir.access("direct.sab", .{});
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("direct.sa", .{}));
+
+    const sab_bytes = try tmp.dir.readFileAlloc(std.testing.allocator, "direct.sab", 1024 * 1024);
+    defer std.testing.allocator.free(sab_bytes);
+    try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
+    try std.testing.expect(std.mem.indexOf(u8, sab_bytes, "tmp_0 = add") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sab_bytes, "return tmp_") == null);
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    try std.testing.expect(module.function_sigs.len >= 2);
+    var saw_func_decl = false;
+    var saw_add_op = false;
+    var saw_call = false;
+    var saw_return = false;
+    for (module.instructions) |item| {
+        switch (item.kind) {
+            .func_decl => saw_func_decl = true,
+            .op => {
+                if (item.op_kind == .add) saw_add_op = true;
+            },
+            .call => saw_call = true,
+            .return_ => saw_return = true,
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_func_decl);
+    try std.testing.expect(saw_add_op);
+    try std.testing.expect(saw_call);
+    try std.testing.expect(saw_return);
+}
+
+test "sla sab build defaults to managed sla cache" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{ .sub_path = "direct.sla", .data =
+        \\fn main() -> i32 {
+        \\    return 5;
+        \\};
+    });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "sab", "build", "direct.sla" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("direct.sab", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("direct.sa", .{}));
+
+    const cached_path = try managedSabPath(std.testing.allocator, "direct.sla");
+    defer std.testing.allocator.free(cached_path);
+    try tmp.dir.access(cached_path, .{});
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, ".sla-cache/sab/"));
+
+    const sab_bytes = try tmp.dir.readFileAlloc(std.testing.allocator, cached_path, 1024 * 1024);
+    defer std.testing.allocator.free(sab_bytes);
+    try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
 }
 
 fn writeWorkspaceFixture(dir: std.fs.Dir, default_member: []const u8, tool_source: []const u8) !void {

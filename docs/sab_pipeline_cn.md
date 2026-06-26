@@ -90,6 +90,18 @@ workspace 模式从当前目录解析 `sa.mod`，选择默认 member 或 `-p/--p
 
 `sa sla build-exe <file.sla>` 也走同一直接 SAB 托管路径：先生成 `.sla-cache/sab/...`，再调用 `sa build-exe <managed.sab> ...`。它不再生成临时 `.sa` 文本作为中间主链路。
 
+### `sa sla test`
+
+```bash
+sa sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]
+```
+
+默认 `auto` 后端先走直接 SAB：SLA 前端直接生成 `.sla-cache/sab/...`，然后调用 `sa test <managed.sab> ...`。如果直接 SAB 后端遇到尚未覆盖的 SLA 特性并返回 `UnsupportedSabDirectFeature`，`auto` 会回退到旧 `.test.sa` 测试路径，避免现有项目在 SAB 覆盖补齐前无法测试。
+
+- `--test-backend sab`：强制直接 SAB，不回退；适合验证 SAB 覆盖。
+- `--test-backend sa`：强制旧 `.test.sa` 文本测试路径。
+- `--emit-sab`：额外写 sibling `.sab` 供人工检查；托管 SAB 仍在 `.sla-cache/sab/`。
+
 ### `sa sla sab disasm`
 
 ```bash
@@ -148,6 +160,8 @@ section*:
 - 宿主 SA 安装验证：`/home/vscode/projects/sci/tools/install.sh --no-shell`，随后 `SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla`。
 - 宿主插件能力验证：`SA_PLUGIN_DEV=1 sa sla help` 显示 `init` / `skills` / `sab workspace --sab-out`；`SA_PLUGIN_DEV=1 sa sla skills --json` 输出 JSON；`SA_PLUGIN_DEV=1 sa sla init /tmp/sa_host_sla_init` 生成 `sa.mod` 和 `src/main.sla`。
 - 宿主 SAB 验证：`SA_PLUGIN_DEV=1 sa sla sab build tests/test_sab_direct.sla` 输出 `.sla-cache/sab/test_sab_direct-...sab`。
+- 默认测试后端验证：`timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_sab_direct.sla --filter "direct sab add"` 通过并写入 `.sla-cache/sab/test_sab_direct-...sab`；`timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_sab_direct.sla --test-backend sa --filter "direct sab add"` 通过旧 `.test.sa` 后端。
+- ECS 超时回归验证：`timeout 120s ./zig-out/bin/sla-local-cli sla test /home/vscode/projects/sla_ecs/lib/system_param_table_erased.sla --filter "table erased allow disabled single optional and populated gates"` 通过，耗时约 6.66s、MaxRSS 约 143MB。改善主要来自 generic lookahead 的 parser O(n²) 修复和 `--filter` 前置剪枝；该 ECS 文件在 SAB 直接后端未覆盖特性时由默认 `auto` 回退旧 SA 测试后端。
 - filtered Zig tests：
   - `timeout 120s zig test ... --test-filter "sla sab build defaults to managed sla cache"`
   - `timeout 120s zig test ... --test-filter "sla sab build emits direct SAB without SA source output"`

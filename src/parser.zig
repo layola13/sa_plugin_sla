@@ -1629,12 +1629,48 @@ pub const Parser = struct {
         return ty;
     }
 
+    fn genericLookaheadBoundary(tag: lexer.Token.Tag) bool {
+        return switch (tag) {
+            .semicolon,
+            .l_brace,
+            .r_brace,
+            .r_paren,
+            .r_bracket,
+            .equal,
+            .plus,
+            .plus_equal,
+            .minus,
+            .asterisk,
+            .slash,
+            .percent,
+            .ampersand,
+            .amp_amp,
+            .ampersand_equal,
+            .pipe,
+            .pipe_equal,
+            .caret,
+            .less_less,
+            .less_equal,
+            .greater_equal,
+            .spaceship,
+            .equal_equal,
+            .bang_equal,
+            .arrow,
+            .fat_arrow,
+            .range,
+            .question_mark,
+            => true,
+            else => false,
+        };
+    }
+
     fn looksLikeGenericStructLiteralTail(self: *Parser) bool {
         var lex_copy = self.lex;
         var tok_copy = self.tok;
         var depth: usize = 1;
 
         while (tok_copy.tag != .eof) {
+            if (depth == 1 and genericLookaheadBoundary(tok_copy.tag)) return false;
             switch (tok_copy.tag) {
                 .less_than => depth += 1,
                 .greater_than => {
@@ -1831,6 +1867,7 @@ pub const Parser = struct {
         var depth: usize = 1;
 
         while (tok_copy.tag != .eof) {
+            if (depth == 1 and genericLookaheadBoundary(tok_copy.tag)) return false;
             switch (tok_copy.tag) {
                 .less_than => depth += 1,
                 .greater_than => {
@@ -1867,6 +1904,7 @@ pub const Parser = struct {
         var depth: usize = 1;
 
         while (tok_copy.tag != .eof) {
+            if (depth == 1 and genericLookaheadBoundary(tok_copy.tag)) return false;
             switch (tok_copy.tag) {
                 .less_than => depth += 1,
                 .greater_than => {
@@ -1897,6 +1935,7 @@ pub const Parser = struct {
         var depth: usize = 1;
 
         while (tok_copy.tag != .eof) {
+            if (depth == 1 and genericLookaheadBoundary(tok_copy.tag)) return false;
             switch (tok_copy.tag) {
                 .less_than => depth += 1,
                 .greater_than => {

@@ -24,6 +24,15 @@ Update this file every time a compiler feature or demo milestone is completed an
   - Re-verified through installed host commands after reinstall: `SA_PLUGIN_DEV=1 sa sla sab build tests/test_sab_direct.sla` writes managed `.sla-cache/sab/...`; `SA_PLUGIN_DEV=1 sa sla init /tmp/sa_host_sla_init` creates a project with `.sla-cache/` ignored.
   - Full test suites were intentionally not run to avoid CPU and memory pressure.
 
+- [done] `sa sla test` now prefers the direct SAB backend and the previous ECS timeout path has been reduced to a focused passing run.
+  - Added `--test-backend auto|sab|sa` for `sa sla test`; default `auto` compiles directly to managed `.sla-cache/sab/...` and invokes `sa test <managed.sab>`, while `--test-backend sa` forces the legacy `.test.sa` backend and `--test-backend sab` requires direct SAB without fallback.
+  - Kept SAB and SA as two independent compiler mainlines: the test SAB path calls `compileSlaFileToSabWithOptions` directly and never lowers through `.sa` text. Auto mode only falls back to `.test.sa` when direct SAB returns `UnsupportedSabDirectFeature`.
+  - Added `--filter` pruning before monomorphization/type checking for both SAB and SA test paths so focused tests do not type-check unrelated broken `@test` declarations.
+  - Fixed a parser O(n²) generic-lookahead path where ordinary `<` comparisons could scan to EOF repeatedly; the ECS heavy file parse dropped from about 41s to under 1s in profiling, and the focused test no longer times out.
+  - Updated host/local help, `sap.json`, README, FAQ, and SAB pipeline docs to show `--test-backend auto|sab|sa` and the `.sla-cache/sab/` managed test artifact behavior.
+  - Verified narrowly with: `zig build --summary all`; `timeout 120s zig build test -Dtest-filter="sla test sab backend prunes unmatched tests before type checking" --summary all`; `timeout 120s zig build test -Dtest-filter="sla test filter prunes unmatched tests before type checking" --summary all`; `timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_sab_direct.sla --filter "direct sab add"`; `timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_sab_direct.sla --test-backend sa --filter "direct sab add"`; and `timeout 120s ./zig-out/bin/sla-local-cli sla test /home/vscode/projects/sla_ecs/lib/system_param_table_erased.sla --filter "table erased allow disabled single optional and populated gates"` (passed in 6.66s, MaxRSS 142720KB).
+  - Reinstalled the dev plugin and verified installed-host behavior with `SA_PLUGIN_DEV=1 sa sla help` and `timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_sab_direct.sla --filter "direct sab add"`.
+
 - [done] `type` aliases with flattened `&` composition have been added for plain data layouts.
   - Added frontend support for `type BulletData = Transform & Velocity & { damage: i32 };` style aliases that flatten into a single plain struct shape.
   - Registered alias declarations into the type checker and reused the existing struct-field layout path so downstream field access and codegen stay zero-cost.

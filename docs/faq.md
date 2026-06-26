@@ -638,3 +638,12 @@ style.
 No, not by default. Prefer focused commands and filtered unit tests with
 `timeout 120s` for test or CLI execution. Build commands such as `zig build
 --summary all` do not need the timeout wrapper.
+
+**107. What backend does `sa sla test` use by default?**
+
+`sa sla test` defaults to `--test-backend auto`, which tries direct SLA-to-SAB
+first and passes the managed `.sla-cache/sab/...` artifact to `sa test`. If the
+direct SAB backend returns `UnsupportedSabDirectFeature`, auto mode falls back
+to the legacy `.test.sa` test path so existing test suites can keep running
+while SAB coverage expands. Use `--test-backend sab` to require SAB with no
+fallback, or `--test-backend sa` to force the old `.sa` text test backend.

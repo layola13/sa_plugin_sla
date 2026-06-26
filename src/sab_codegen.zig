@@ -243,7 +243,11 @@ pub const Codegen = struct {
     }
 
     fn genFuncSig(self: *Codegen, name: []const u8, kind: sig.FunctionKind, params: []const ast.Param, ret_ty: *ast.Type, ignored: bool, should_panic: bool) !sig.FunctionSig {
-        const lowered = try self.loweredFuncSymbol(name);
+        const id: u32 = @intCast(self.function_sigs.items.len + self.test_sigs.items.len);
+        const lowered = if (kind == .test_func)
+            try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{name})
+        else
+            try self.loweredFuncSymbol(name);
         _ = try self.intern(lowered);
         const specs = try self.allocator.alloc(sig.ParamSpec, params.len);
         const param_ids = try self.allocator.alloc(u32, params.len);
@@ -258,7 +262,7 @@ pub const Codegen = struct {
             try self.pushLocal(param.name, param_id, true);
         }
         return .{
-            .id = @intCast(self.function_sigs.items.len + self.test_sigs.items.len),
+            .id = id,
             .name = lowered,
             .params = specs,
             .kind = kind,
@@ -268,6 +272,7 @@ pub const Codegen = struct {
             .is_ffi_wrapper = false,
             .param_ids = param_ids,
             .reg_ids = &.{},
+            .llvm_name = if (kind == .test_func) try std.fmt.allocPrint(self.allocator, "_saasm_test_{d}", .{id}) else null,
             .ignored = ignored,
             .should_panic = should_panic,
         };
@@ -353,7 +358,7 @@ pub const Codegen = struct {
                 const dst = try self.intern(let.name);
                 const src = try self.genExpr(let.value);
                 try self.emitAssignReg(dst, src);
-                    try self.pushLocal(let.name, dst, false);
+                try self.pushLocal(let.name, dst, false);
             },
             .expr_stmt => |expr| {
                 if (expr.* == .if_expr) {

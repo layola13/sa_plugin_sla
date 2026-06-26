@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const test_filter = b.option([]const u8, "test-filter", "Only compile and run Zig tests whose name contains this filter.");
 
     const plugin_api = b.createModule(.{
         .root_source_file = b.path("src/plugin_api.zig"),
@@ -61,6 +62,7 @@ pub fn build(b: *std.Build) void {
     // Test step
     const main_tests = b.addTest(.{
         .root_module = root_module,
+        .filter = test_filter,
     });
     main_tests.root_module.addImport("sci_bridge", sci_bridge);
     const run_main_tests = b.addRunArtifact(main_tests);

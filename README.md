@@ -13,7 +13,7 @@ This is the standalone Sla compiler plugin, providing Sla-to-SA compilation capa
 - `sa sla sab disasm <file.sab>`: Disassemble a SAB file for debugging; this is not part of the compile path.
 - `sa slab ...`: Short alias for `sa sla sab ...`.
 - `sa sla check <file>`: Lex, parse, and type-check a `.sla` source file without emitting final SA assembly.
-- `sa sla test <file>`: Compile a `.sla` test file and run it through `sa test`.
+- `sa sla test <file>`: Compile a `.sla` test file and run it through `sa test`. The default `auto` backend tries direct SAB first using `.sla-cache/sab/...`; use `--test-backend sa` for the legacy `.test.sa` path or `--test-backend sab` to require SAB with no fallback.
 
 Sla source uses compiler-managed lifetime cleanup by default. User-facing `.sla` code should not need explicit `!x;` releases; generated `.sa` may still contain `!` instructions because that is SA's ownership primitive. Sla intentionally does not add a `drop` keyword or `drop()` function.
 
@@ -69,9 +69,10 @@ SA_PLUGIN_DEV=1 sa sla sab workspace --sab-out /tmp/workspace.sab -o /tmp/worksp
 SA_PLUGIN_DEV=1 sa sla check tests/test_unit_basic.sla
 SA_PLUGIN_DEV=1 sa sla build tests/test_unit_basic.sla --out /tmp/test_unit_basic.sa
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_basic.sla
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_basic.sla --test-backend sa
 ```
 
-The `.sa` and `.sab` paths are separate compiler mainlines. SAB generation does not lower SLA to `.sa` text first; it goes from the parsed/type-checked SLA program into SAB binary IR. Managed SAB artifacts live in `.sla-cache/sab/` so repeated build-exe/workspace runs can reuse a stable input path for incremental compilation. User-visible SAB files are only written when requested with `--out`, `--sab-out`, or `--emit-sab`.
+The `.sa` and `.sab` paths are separate compiler mainlines. SAB generation does not lower SLA to `.sa` text first; it goes from the parsed/type-checked SLA program into SAB binary IR. Managed SAB artifacts live in `.sla-cache/sab/` so repeated build-exe/workspace/test runs can reuse a stable input path for incremental compilation. User-visible SAB files are only written when requested with `--out`, `--sab-out`, or `--emit-sab`.
 
 ## Rosetta Demos
 The `demos/rosetta` tree mirrors the Rust references under `/home/vscode/projects/sci/demos/rosetta` with Sla companions and per-demo Rust/Sla comparison notes. The demos are intended to be checked manually for semantic equivalence, not only for matching final output.

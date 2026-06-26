@@ -154,7 +154,7 @@ const skills = [_]plugin_api.SkillSection{
             "sla sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]",
             "slab build|workspace|disasm ...",
             "sla check [file] [-p <package>]",
-            "sla test [file] [-p <package>] [sa-test-options...]",
+            "sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]",
         },
     },
 };
@@ -654,11 +654,73 @@ fn loadImportedContracts(
     }
 }
 
+const SlaCompileOptions = struct {
+    test_filter: ?[]const u8 = null,
+    return_unsupported_sab_error: bool = false,
+};
+
+fn slaProfileEnabled(allocator: std.mem.Allocator) bool {
+    const value = std.process.getEnvVarOwned(allocator, "SLA_PROFILE") catch return false;
+    defer allocator.free(value);
+    return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
+}
+
+fn slaProfileStage(stderr: std.io.AnyWriter, enabled: bool, label: []const u8, start_ns: i128) void {
+    if (!enabled) return;
+    const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - start_ns, std.time.ns_per_ms);
+    stderr.print("[sla-profile] {s}: {d}ms\n", .{ label, elapsed_ms }) catch {};
+}
+
+fn testMatchesFilter(test_decl: *const ast.TestDecl, filter: ?[]const u8) bool {
+    const pattern = filter orelse return true;
+    if (pattern.len == 0) return true;
+    return std.mem.indexOf(u8, test_decl.name, pattern) != null;
+}
+
+fn pruneTestsByFilter(allocator: std.mem.Allocator, program: *ast.Node, filter: ?[]const u8) !void {
+    if (filter == null or filter.?.len == 0) return;
+    if (program.* != .program) return error.InvalidProgram;
+
+    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    for (program.program.decls) |decl| {
+        if (decl.* == .test_decl and !testMatchesFilter(&decl.test_decl, filter)) continue;
+        try filtered_decls.append(decl);
+    }
+    program.program.decls = try filtered_decls.toOwnedSlice();
+}
+
+fn saTestFilterFromArgs(args: []const []const u8) ?[]const u8 {
+    var idx: usize = 0;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (std.mem.eql(u8, arg, "--filter")) {
+            if (idx + 1 < args.len and args[idx + 1].len != 0) return args[idx + 1];
+            return null;
+        }
+        if (std.mem.startsWith(u8, arg, "--filter=")) {
+            const pattern = arg["--filter=".len..];
+            if (pattern.len != 0) return pattern;
+            return null;
+        }
+    }
+    return null;
+}
+
 fn compileSlaToSaString(
     allocator: std.mem.Allocator,
     file: []const u8,
     output_file: ?[]const u8,
     stderr: std.io.AnyWriter,
+) !?[]const u8 {
+    return compileSlaToSaStringWithOptions(allocator, file, output_file, stderr, .{});
+}
+
+fn compileSlaToSaStringWithOptions(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    output_file: ?[]const u8,
+    stderr: std.io.AnyWriter,
+    options: SlaCompileOptions,
 ) !?[]const u8 {
     const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
         try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
@@ -680,6 +742,11 @@ fn compileSlaToSaString(
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
+        return null;
+    };
+
+    pruneTestsByFilter(allocator, expanded_prog, options.test_filter) catch |err| {
+        try stderr.print("Test Filter Error: failed to prune @test declarations: {}\n", .{err});
         return null;
     };
 
@@ -737,16 +804,63 @@ fn compileSlaFileToSa(
     return compileSlaToSaString(allocator, file, output_file, stderr);
 }
 
+const TestBackend = enum {
+    auto,
+    sab,
+    sa,
+};
+
 const SlaCliOptions = struct {
     package_name: ?[]const u8 = null,
     source_file: ?[]const u8 = null,
     passthrough_start: usize,
     help_requested: bool = false,
     emit_sab_file: bool = false,
+    test_backend: TestBackend = .auto,
 };
 
 fn isHelpArg(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help");
+}
+
+fn parseTestBackendValue(value: []const u8) !TestBackend {
+    if (std.mem.eql(u8, value, "auto")) return .auto;
+    if (std.mem.eql(u8, value, "sab")) return .sab;
+    if (std.mem.eql(u8, value, "sa")) return .sa;
+    return error.InvalidFormat;
+}
+
+fn parseTestBackendFromArgs(args: []const []const u8, default_backend: TestBackend) !TestBackend {
+    var backend = default_backend;
+    var idx: usize = 0;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (std.mem.eql(u8, arg, "--test-backend")) {
+            idx += 1;
+            if (idx >= args.len) return error.InvalidFormat;
+            backend = try parseTestBackendValue(args[idx]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--test-backend=")) {
+            backend = try parseTestBackendValue(arg["--test-backend=".len..]);
+            continue;
+        }
+    }
+    return backend;
+}
+
+fn appendSaTestPassthrough(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
+    var idx: usize = 0;
+    while (idx < args.len) : (idx += 1) {
+        const arg = args[idx];
+        if (std.mem.eql(u8, arg, "--test-backend")) {
+            idx += 1;
+            if (idx >= args.len) return error.InvalidFormat;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--test-backend=")) continue;
+        try argv.append(arg);
+    }
 }
 
 fn ensureParentDir(path: []const u8) !void {
@@ -839,6 +953,7 @@ fn writeSlaAgentSkillMarkdown(writer: anytype, agent_name: []const u8) !void {
     try writer.writeAll("- Use `sa sla init [path]` to scaffold a minimal SLA binary project.\n");
     try writer.writeAll("- Use `sa sla build <file>` only when a visible `.sa` text artifact is needed.\n");
     try writer.writeAll("- Use `sa sla build-exe <file>` or `sa sla sab workspace` for executable builds through the direct SAB path.\n");
+    try writer.writeAll("- Use `sa sla test <file>` for tests through the direct SAB path by default; add `--test-backend sa` only when debugging legacy `.test.sa` output.\n");
     try writer.writeAll("- Use `sa sla sab build <file>` to emit managed SAB under `.sla-cache/sab/`; add `--out <file.sab>` only for an inspection copy.\n");
     try writer.writeAll("- Keep SLA-to-SA and SLA-to-SAB as separate mainlines; SAB output must not be implemented as `sla -> sa -> sab`.\n");
     try writer.writeAll("- Prefer focused checks with `timeout 120s`; do not run full test suites unless explicitly requested. Build commands do not need the timeout wrapper.\n\n");
@@ -997,7 +1112,7 @@ fn commandUsage(command: []const u8) []const u8 {
     if (std.mem.eql(u8, command, "sab workspace")) return "usage: sa sla sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]\n       sa slab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]\n";
     if (std.mem.eql(u8, command, "sab disasm")) return "usage: sa sla sab disasm <file.sab> [--out <file.sa>]\n       sa slab disasm <file.sab> [--out <file.sa>]\n";
     if (std.mem.eql(u8, command, "check")) return "usage: sa sla check [file] [-p <package>]\n";
-    if (std.mem.eql(u8, command, "test")) return "usage: sa sla test [file] [-p <package>] [sa-test-options...]\n";
+    if (std.mem.eql(u8, command, "test")) return "usage: sa sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]\n";
     return "usage: sa sla <command> [options]\n";
 }
 
@@ -1026,6 +1141,10 @@ fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
         try writer.writeAll("  -p, --package <name>    Select a workspace member package\n");
         if (std.mem.eql(u8, command, "build-exe") or std.mem.eql(u8, command, "build-workspace") or std.mem.eql(u8, command, "test")) {
             try writer.writeAll("  --emit-sab              Also write a sibling .sab artifact for inspection\n");
+        }
+        if (std.mem.eql(u8, command, "test")) {
+            try writer.writeAll("  --test-backend auto|sab|sa\n");
+            try writer.writeAll("                          Select test compiler backend; default auto tries SAB first\n");
         }
         if (std.mem.eql(u8, command, "sab build")) {
             try writer.writeAll("  -o, --out <file.sab>    Also write SAB output file; default uses .sla-cache/sab/\n");
@@ -1056,6 +1175,16 @@ fn parseSlaCliOptionsFrom(args: []const []const u8, command: []const u8, start_i
             options.emit_sab_file = true;
             continue;
         }
+        if (std.mem.eql(u8, command, "test") and std.mem.startsWith(u8, arg, "--test-backend=")) {
+            options.test_backend = try parseTestBackendValue(arg["--test-backend=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, command, "test") and std.mem.eql(u8, arg, "--test-backend")) {
+            idx += 1;
+            if (idx >= args.len) return error.InvalidFormat;
+            options.test_backend = try parseTestBackendValue(args[idx]);
+            continue;
+        }
         if (std.mem.startsWith(u8, arg, "--package=")) {
             options.package_name = arg["--package=".len..];
             continue;
@@ -1079,7 +1208,6 @@ fn parseSlaCliOptionsFrom(args: []const []const u8, command: []const u8, start_i
         break;
     }
 
-    _ = command;
     return options;
 }
 
@@ -1216,30 +1344,57 @@ fn compileSlaFileToSab(
     output_file: []const u8,
     stderr: std.io.AnyWriter,
 ) !?[]u8 {
+    return compileSlaFileToSabWithOptions(allocator, file, output_file, stderr, .{});
+}
+
+fn compileSlaFileToSabWithOptions(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    output_file: []const u8,
+    stderr: std.io.AnyWriter,
+    options: SlaCompileOptions,
+) !?[]u8 {
     _ = output_file;
+    const profile = slaProfileEnabled(allocator);
+    var stage_start = std.time.nanoTimestamp();
     const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
         try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
         return null;
     };
+    slaProfileStage(stderr, profile, "read source", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     const expanded_content = source_expand.expand(allocator, content) catch |err| {
         try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
         return null;
     };
+    slaProfileStage(stderr, profile, "source expand", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     const sla_base_dir = std.fs.path.dirname(file) orelse ".";
     var p = parser_mod.Parser.initWithDir(allocator, expanded_content, sla_base_dir);
     const prog = p.parseProgram() catch |err| {
         try p.printDiagnostic(stderr, file, err);
         return null;
     };
+    slaProfileStage(stderr, profile, "parse", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
         return null;
     };
+    slaProfileStage(stderr, profile, "import expand", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
+    pruneTestsByFilter(allocator, expanded_prog, options.test_filter) catch |err| {
+        try stderr.print("Test Filter Error: failed to prune @test declarations: {}\n", .{err});
+        return null;
+    };
+    slaProfileStage(stderr, profile, "test filter prune", stage_start);
+
+    stage_start = std.time.nanoTimestamp();
     var mono = monomorphizer_mod.Monomorphizer.init(allocator);
     defer mono.deinit();
     var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
@@ -1247,7 +1402,9 @@ fn compileSlaFileToSab(
         try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
         return null;
     };
+    slaProfileStage(stderr, profile, "monomorphize", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     var tc = type_checker_mod.TypeChecker.init(allocator);
     defer tc.deinit();
 
@@ -1255,12 +1412,16 @@ fn compileSlaFileToSab(
         try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
         return null;
     };
+    slaProfileStage(stderr, profile, "load contracts", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     tc.checkProgram(specialized_prog) catch |err| {
         try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
         return null;
     };
+    slaProfileStage(stderr, profile, "type check", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
     for (specialized_prog.program.decls) |decl| {
         if (specialized_primary_decls.contains(decl)) {
@@ -1268,11 +1429,16 @@ fn compileSlaFileToSab(
         }
     }
     specialized_prog.program.decls = try filtered_decls.toOwnedSlice();
+    slaProfileStage(stderr, profile, "primary decl filter", stage_start);
 
-    return sab_codegen_mod.generate(allocator, &tc, specialized_prog) catch |err| {
+    stage_start = std.time.nanoTimestamp();
+    const sab_bytes = sab_codegen_mod.generate(allocator, &tc, specialized_prog) catch |err| {
+        if (options.return_unsupported_sab_error and err == sab_codegen_mod.Error.UnsupportedSabDirectFeature) return err;
         try stderr.print("SAB Error: direct SLA to SAB backend cannot compile {s}: {}\n", .{ file, err });
         return null;
     };
+    slaProfileStage(stderr, profile, "sab codegen", stage_start);
+    return sab_bytes;
 }
 
 fn compileSlaFileToSabOrSa(
@@ -1292,6 +1458,63 @@ fn maybeWriteSiblingSab(
     const sab_out = try defaultOutputPath(allocator, file, ".sla", ".sab");
     const sab_bytes = (try compileSlaFileToSabOrSa(allocator, file, sab_out, stderr)) orelse return error.InvalidFormat;
     try std.fs.cwd().writeFile(.{ .sub_path = sab_out, .data = sab_bytes });
+}
+
+const CompiledTestInput = struct {
+    path: []const u8,
+    delete_after: bool = false,
+};
+
+fn compileSlaSabTestInput(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    stderr: std.io.AnyWriter,
+    extra_args: []const []const u8,
+    emit_sab_file: bool,
+    return_unsupported_sab_error: bool,
+) !?CompiledTestInput {
+    const sab_out = try managedSabPath(allocator, file);
+    const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, .{
+        .test_filter = saTestFilterFromArgs(extra_args),
+        .return_unsupported_sab_error = return_unsupported_sab_error,
+    })) orelse return null;
+    if (!try writeSabFile(sab_out, sab_bytes, stderr)) return null;
+    if (emit_sab_file) {
+        maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
+            try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
+            return null;
+        };
+    }
+    return .{ .path = sab_out };
+}
+
+fn compileSlaSaTestInput(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    stderr: std.io.AnyWriter,
+    extra_args: []const []const u8,
+    emit_sab_file: bool,
+) !?CompiledTestInput {
+    const sa_out = if (std.mem.endsWith(u8, file, ".sla"))
+        try std.fmt.allocPrint(allocator, "{s}.test.sa", .{file[0 .. file.len - 4]})
+    else
+        try std.fmt.allocPrint(allocator, "{s}.test.sa", .{file});
+
+    const sa_code = (try compileSlaToSaStringWithOptions(allocator, file, sa_out, stderr, .{
+        .test_filter = saTestFilterFromArgs(extra_args),
+    })) orelse return null;
+
+    std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
+        try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
+        return null;
+    };
+    if (emit_sab_file) {
+        maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
+            try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
+            return null;
+        };
+    }
+    return .{ .path = sa_out, .delete_after = true };
 }
 
 fn runSabBuildCommand(
@@ -1473,7 +1696,7 @@ pub fn runSlaCommandImpl(
         try stderr.writeAll("  sab disasm <file.sab> [--out <file.sa>]\n");
         try stderr.writeAll("  slab build|workspace|disasm ...    Short alias\n");
         try stderr.writeAll("  check      [file] [-p <package>]\n");
-        try stderr.writeAll("  test       [file] [-p <package>] [sa-test args]\n");
+        try stderr.writeAll("  test       [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test args]\n");
         return 0;
     }
     if (std.mem.eql(u8, cmd, "init")) {
@@ -1699,31 +1922,31 @@ pub fn runSlaCommandImpl(
 
         const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
         const extra_args = args[options.passthrough_start..];
-
-        const sa_out = if (std.mem.endsWith(u8, file, ".sla"))
-            try std.fmt.allocPrint(allocator, "{s}.test.sa", .{file[0 .. file.len - 4]})
-        else
-            try std.fmt.allocPrint(allocator, "{s}.test.sa", .{file});
-
-        const sa_code = (try compileSlaToSaString(allocator, file, sa_out, stderr)) orelse return 1;
-
-        std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
-            try stderr.print("File Error: failed to write {s}: {}\n", .{ sa_out, err });
+        const backend = parseTestBackendFromArgs(extra_args, options.test_backend) catch {
+            try writeCommandHelp(stderr, cmd);
             return 1;
         };
-        defer std.fs.cwd().deleteFile(sa_out) catch {};
-        if (options.emit_sab_file) {
-            maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
-                try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
-                return 1;
-            };
+
+        const test_input = switch (backend) {
+            .auto => (compileSlaSabTestInput(allocator, file, stderr, extra_args, options.emit_sab_file, true) catch |err| switch (err) {
+                error.UnsupportedSabDirectFeature => try compileSlaSaTestInput(allocator, file, stderr, extra_args, options.emit_sab_file),
+                else => return err,
+            }) orelse return 1,
+            .sab => (try compileSlaSabTestInput(allocator, file, stderr, extra_args, options.emit_sab_file, false)) orelse return 1,
+            .sa => (try compileSlaSaTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
+        };
+        defer {
+            if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
         }
 
         var argv = std.ArrayList([]const u8).init(allocator);
         try argv.append("sa");
         try argv.append("test");
-        try argv.append(sa_out);
-        for (extra_args) |a| try argv.append(a);
+        try argv.append(test_input.path);
+        appendSaTestPassthrough(&argv, extra_args) catch {
+            try writeCommandHelp(stderr, cmd);
+            return 1;
+        };
 
         var child = std.process.Child.init(argv.items, allocator);
         const term = child.spawnAndWait() catch |err| {
@@ -2002,13 +2225,111 @@ test "sla build rewrites sla imports relative to final output path" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "@import \"helper.sa\"") == null);
 }
 
+test "sla test filter prunes unmatched tests before type checking" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const filtered_source =
+        \\fn value() -> i32 {
+        \\    return 1;
+        \\};
+        \\
+        \\@test "keep this test"() {
+        \\    let x = value();
+        \\    if x != 1 { panic(24001); };
+        \\};
+        \\
+        \\@test "drop broken test"() {
+        \\    missing_symbol();
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "filtered.sla", .data = filtered_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "filtered.sla",
+        "filtered.test.sa",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "keep this" },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "keep this test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "drop broken test") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test sab backend prunes unmatched tests before type checking" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const filtered_sab_source =
+        \\fn value() -> i32 {
+        \\    return 2;
+        \\};
+        \\
+        \\@test "sab keep"() {
+        \\    let x = value();
+        \\    if x != 2 { panic(24002); };
+        \\};
+        \\
+        \\@test "sab drop broken"() {
+        \\    missing_symbol();
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "filtered_sab.sla", .data = filtered_sab_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "filtered_sab.sla",
+        ".sla-cache/sab/filtered_sab.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "sab keep" },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var test_count: usize = 0;
+    for (module.function_sigs) |fsig| {
+        if (fsig.kind == .test_func) test_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), test_count);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab build emits direct SAB without SA source output" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "direct.sla", .data =
+    const direct_source =
         \\fn add(a: i32, b: i32) -> i32 {
         \\    let c = a + b;
         \\    return c;
@@ -2018,7 +2339,8 @@ test "sla sab build emits direct SAB without SA source output" {
         \\    let x = add(2, 3);
         \\    return x;
         \\};
-    });
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "direct.sla", .data = direct_source });
 
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
@@ -2074,11 +2396,12 @@ test "sla sab build defaults to managed sla cache" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(.{ .sub_path = "direct.sla", .data =
+    const direct_source =
         \\fn main() -> i32 {
         \\    return 5;
         \\};
-    });
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "direct.sla", .data = direct_source });
 
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};

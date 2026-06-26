@@ -2210,7 +2210,28 @@ pub const Parser = struct {
                 continue;
             }
 
-            const op_prec = self.getInfixPrecedence(self.peek());
+            var op_prec = self.getInfixPrecedence(self.peek());
+            // A `<` following an identifier may begin a generic call `f<T>(...)`,
+            // generic struct literal `S<T> { ... }`, or generic function reference
+            // `f<T>`. These tails bind tighter than any binary operator, so detect
+            // them before the precedence-based break. Without this, an expression
+            // like `a + f<T>(x)` parses `<` as a comparison (precedence 5, below
+            // `+`), leaving `f` as a dangling bare identifier.
+            //
+            // The looksLike* helpers expect the `<` to have already been consumed
+            // (they scan from self.tok with depth=1), so probe on a saved cursor
+            // that has advanced past the `<`, then restore.
+            if (self.peek() == .less_than and left.* == .identifier) {
+                const saved_lex = self.lex;
+                const saved_tok = self.tok;
+                self.advance();
+                const is_generic_tail = self.looksLikeGenericStructLiteralTail() or
+                    self.looksLikeGenericFunctionCallTail() or
+                    self.looksLikeGenericFunctionRefTail();
+                self.lex = saved_lex;
+                self.tok = saved_tok;
+                if (is_generic_tail) op_prec = 10;
+            }
             if (op_prec <= precedence) break;
             left = try self.parseInfixExpr(left, op_prec);
         }

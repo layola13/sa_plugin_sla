@@ -875,8 +875,8 @@ fn writeSlaAgentSkills() !SlaAgentSkillPaths {
     return .{ .codex = codex_path, .claude = claude_path };
 }
 
-fn runSlaSkillsCommand(args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter) !u8 {
-    var json_mode = false;
+fn runSlaSkillsCommand(args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter, default_json_mode: bool) !u8 {
+    var json_mode = default_json_mode;
     var idx = option_start;
     while (idx < args.len) : (idx += 1) {
         const arg = args[idx];
@@ -1450,7 +1450,6 @@ pub fn runSlaCommandImpl(
     stdout: std.io.AnyWriter,
     stderr: std.io.AnyWriter,
 ) !?u8 {
-    _ = ctx;
     if (args.len < 2) return null;
     if (std.mem.eql(u8, args[1], "slab")) {
         return try runSabCommand(args, 2, stdout, stderr);
@@ -1483,7 +1482,7 @@ pub fn runSlaCommandImpl(
         return try runSlaInitCommand(arena.allocator(), args, 3, stdout, stderr);
     }
     if (std.mem.eql(u8, cmd, "skills")) {
-        return try runSlaSkillsCommand(args, 3, stdout, stderr);
+        return try runSlaSkillsCommand(args, 3, stdout, stderr, ctx.json_mode);
     }
     if (std.mem.eql(u8, cmd, "sab")) {
         return try runSabCommand(args, 3, stdout, stderr);
@@ -1854,6 +1853,22 @@ test "sla skills emits json capability list" {
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"status\":\"ok\""));
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla init [path]"));
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla sab build"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla skills honors host json mode" {
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator, .json_mode = true };
+    const args = [_][]const u8{ "sa", "sla", "skills" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.startsWith(u8, stdout_buf.items, "{\"status\":\"ok\""));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla skills [--json]"));
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

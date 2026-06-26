@@ -29,7 +29,21 @@ Sla imports SA's top-level `sa_std` package directly:
 The Sla compiler loads imported `.sai` and `.sal` contracts before type checking, so extern functions from imported std contracts are available to Sla code. By default it resolves `sa_std/...` from `SA_STD_DIR` when set, then from `$HOME/projects/sci/sa_std`.
 
 ## Build
-To build the Sla compiler plugin:
+This plugin depends on the SA compiler/runtime from `sci`. Build and install SA first:
+
+```bash
+git clone https://github.com/layola13/sci.git
+cd sci
+./tools/install.sh --no-shell
+```
+
+For a local checkout layout like `/home/vscode/projects/sci` beside this plugin, rebuild SA after SAB-related changes before reinstalling the plugin:
+
+```bash
+/home/vscode/projects/sci/tools/install.sh --no-shell
+```
+
+Then build the Sla compiler plugin:
 ```bash
 zig build
 ```

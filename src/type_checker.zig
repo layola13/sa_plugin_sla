@@ -2788,6 +2788,7 @@ pub const TypeChecker = struct {
                     }
                     return try self.makeFnPtrType(func.abi, try params.toOwnedSlice(), func.ret_ty);
                 }
+                self.setError("UndefinedVariable: identifier `{s}` is not defined in this scope", .{name});
                 return TypeError.UndefinedVariable;
             },
             .generic_func_ref => return TypeError.CompileError,

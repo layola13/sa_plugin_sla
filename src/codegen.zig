@@ -6685,7 +6685,18 @@ pub const Codegen = struct {
         if (ty.* != .primitive) return CodegenError.CodegenError;
         switch (ty.primitive) {
             .boolean => self.out.writer().print("    {s} = or {s}, 0\n", .{ target, source }) catch return CodegenError.CodegenError,
-            .f32, .f64, .float => self.out.writer().print("    {s} = add {s}, 0.0\n", .{ target, source }) catch return CodegenError.CodegenError,
+            .f32, .f64, .float => {
+                // Floats need the `fadd` opcode, not integer `add`. Emitting
+                // `add src, 0.0` makes the backend fold it as an integer identity
+                // copy and coalesce the destination onto the source register, so a
+                // later mutation of the destination clobbers the source. Materialize
+                // a float-zero constant in a register and use `fadd`, mirroring the
+                // `value + 0.0` lowering that produces an independent copy.
+                const zero = try self.newTmp();
+                try self.emitFloatConst(zero, 0.0);
+                self.out.writer().print("    {s} = fadd {s}, {s}\n", .{ target, source, zero }) catch return CodegenError.CodegenError;
+                try self.emitRelease(zero);
+            },
             else => self.out.writer().print("    {s} = add {s}, 0\n", .{ target, source }) catch return CodegenError.CodegenError,
         }
     }
@@ -7202,11 +7213,7 @@ pub const Codegen = struct {
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
                     if (let.value.* == .identifier and let_ty.* == .primitive) {
-                        switch (let_ty.primitive) {
-                            .boolean => self.out.writer().print("    {s} = or {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError,
-                            .f32, .f64, .float => self.out.writer().print("    {s} = add {s}, 0.0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError,
-                            else => self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError,
-                        }
+                        try self.emitPrimitiveCopy(let.name, val_reg, let_ty);
                     } else {
                         self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
@@ -9021,8 +9028,38 @@ pub const Codegen = struct {
                 if (isPointerCarrierCastType(src_ty) and isPointerCarrierCastType(cast.ty)) {
                     return inner;
                 }
+                // The SA `as` instruction consumes (moves) its source operand. When the
+                // source is a bare owned Copy primitive local, consuming it would leave
+                // that binding unusable for later reads (spurious UseAfterMove). Arithmetic
+                // ops read Copy operands non-destructively, so casting `(x + 0)` works but
+                // `x` alone does not. Materialize a non-consuming copy first so the original
+                // binding survives, mirroring genBranchConditionReg.
+                var src_reg = inner;
+                if (cast.expr.* == .identifier and src_ty.* == .primitive) {
+                    const resolved_name = self.resolveBindingName(cast.expr.identifier);
+                    if (std.mem.eql(u8, inner, resolved_name) or
+                        std.mem.eql(u8, inner, cast.expr.identifier) or
+                        self.global_const_bindings.contains(cast.expr.identifier))
+                    {
+                        const copied = try self.newTmp();
+                        try self.emitPrimitiveCopy(copied, inner, src_ty);
+                        src_reg = copied;
+                    }
+                } else if (cast.expr.* == .cast_expr and src_ty.* == .primitive) {
+                    // Chained cast `(x as A) as B`: the inner cast temp is fed
+                    // directly into the outer `as`. When B is the same width as the
+                    // original source register (e.g. `(f32 as i32) as f32`), the
+                    // backend coalesces the round-trip cast back onto the original
+                    // register, discarding the intermediate truncation. Materialize a
+                    // non-consuming copy of the intermediate result so the outer cast
+                    // operates on an independent register, mirroring the bare-identifier
+                    // case above.
+                    const copied = try self.newTmp();
+                    try self.emitPrimitiveCopy(copied, inner, src_ty);
+                    src_reg = copied;
+                }
                 const reg = try self.newTmp();
-                self.out.writer().print("    {s} = {s} as {s}\n", .{ reg, inner, typeString(cast.ty) }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = {s} as {s}\n", .{ reg, src_reg, typeString(cast.ty) }) catch return CodegenError.CodegenError;
                 return reg;
             },
             .field_expr => |field| {

@@ -1,3 +1,5 @@
+@import "sa_std/thread.sa"
+@import "sa_std/core/result.sa"
 @import "sa_std/string.sa"
 @import "sa_std/string_format.sa"
 @import "sa_std/io/print.sai"
@@ -7,46 +9,71 @@
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/core/result.sa"
 @import "sa_std/vec.sa"
+@const SLA_THREAD_VT_0 = vtable { call = @sla_thread_worker_0 }
+
+@ffi_wrapper sla_thread_spawn_0(*slot: ptr) -> i32:
+L_ENTRY:
+    worker_vt = &SLA_THREAD_VT_0
+    worker_fn = load worker_vt+0 as ptr
+    worker_raw = *worker_fn
+    worker_safe = assume_safe worker_raw
+    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
+    !slot
+    return handle
+
+@sla_thread_worker_0(&slot: ptr) -> i32:
+L_ENTRY:
+    tmp_0 = load slot+16 as ptr
+    tmp_1 = load slot+24 as ptr
+    tmp_2 = load tmp_1+0 as ptr
+    tmp_3 = call_indirect tmp_2(tmp_0)
+    !tmp_2
+    store slot+8, tmp_3 as i32
+    !slot
+    return tmp_3
+
 @const SLA_FNPTR_VT_fn_ptr_inc = vtable { call = @sla__fn_ptr_inc }
 @const SLA_FNPTR_VT_fn_ptr_apply = vtable { call = @sla__fn_ptr_apply }
 @const SLA_FNPTR_VT_fn_ptr_false = vtable { call = @sla__fn_ptr_false }
 @const SLA_FNPTR_VT_fn_ptr_true = vtable { call = @sla__fn_ptr_true }
 @const SLA_FNPTR_VT_fn_ptr_holder_new = vtable { call = @sla__fn_ptr_holder_new }
 @const SLA_FNPTR_VT_fn_ptr_vec_push = vtable { call = @sla__fn_ptr_vec_push }
+@const SLA_FNPTR_VT_fn_ptr_thread_apply = vtable { call = @sla__fn_ptr_thread_apply }
 @const SLA_FNPTR_VT_fn_ptr_generic_identity_i32 = vtable { call = @sla__fn_ptr_generic_identity_i32 }
 @sla__fn_ptr_inc(x: i32) -> i32:
 L_ENTRY:
-    tmp_0 = 1
-    tmp_1 = add x, tmp_0
-    !tmp_0
-    return tmp_1
+    tmp_4 = 1
+    tmp_5 = add x, tmp_4
+    !tmp_4
+    return tmp_5
 
 @sla__fn_ptr_apply(f: ptr, value: i32) -> i32:
 L_ENTRY:
-    tmp_2 = load f+0 as ptr
-    tmp_3 = call_indirect tmp_2(value)
-    !tmp_2
+    tmp_6 = load f+0 as ptr
+    tmp_7 = call_indirect tmp_6(value)
+    !tmp_6
     !f
-    return tmp_3
+    return tmp_7
 
 @sla__fn_ptr_false(x: i32) -> u8:
 L_ENTRY:
-    tmp_4 = 0
+    tmp_8 = 0
     !x
-    return tmp_4
+    return tmp_8
 
 @sla__fn_ptr_true(x: i32) -> u8:
 L_ENTRY:
-    tmp_5 = 1
+    tmp_9 = 1
     !x
-    return tmp_5
+    return tmp_9
 
 @sla__fn_ptr_holder_new(f: ptr) -> ptr:
 L_ENTRY:
-    tmp_6 = alloc 8
-    store tmp_6+0, f as ptr
-    return tmp_6
+    tmp_10 = alloc 8
+    store tmp_10+0, f as ptr
+    return tmp_10
 
 @sla__fn_ptr_vec_push(values: ptr, f: ptr) -> ptr:
 L_ENTRY:
@@ -54,210 +81,276 @@ L_ENTRY:
     !f
     return values
 
+@sla__fn_ptr_thread_apply(f: ptr, value: i32) -> i32:
+L_ENTRY:
+    tmp_11 = alloc 32
+    store tmp_11+0, 0 as i32
+    store tmp_11+8, 0 as i32
+    store tmp_11+16, value as ptr
+    store tmp_11+24, f as ptr
+    tmp_12 = call @sla_thread_spawn_0(*tmp_11)
+    store tmp_11+0, tmp_12 as i32
+    !tmp_12
+    handle = tmp_11
+    tmp_13 = load handle+0 as i32
+    EXPAND THREAD_JOIN_STATUS tmp_14, tmp_13, *handle
+    EXPAND THREAD_DROP tmp_13
+    tmp_15 = eq tmp_14, 0
+    br tmp_15 -> L_THREAD_JOIN_OK_0, L_THREAD_JOIN_ERR_1
+
+L_THREAD_JOIN_OK_0:
+    !tmp_15
+    tmp_17 = load handle+8 as i32
+    EXPAND RESULT_NEW_OK tmp_16, tmp_17
+    !tmp_17
+    jmp L_THREAD_JOIN_END_2
+
+L_THREAD_JOIN_ERR_1:
+    !tmp_15
+    tmp_18 = add tmp_14, 0
+    EXPAND RESULT_NEW_ERR tmp_16, tmp_18
+    !tmp_18
+    jmp L_THREAD_JOIN_END_2
+
+L_THREAD_JOIN_END_2:
+    !tmp_14
+    !tmp_13
+    !handle
+    EXPAND RESULT_UNWRAP tmp_19, tmp_16
+    !tmp_16
+    !value
+    !f
+    return tmp_19
+
 @sla__fn_ptr_generic_identity_i32(value: i32) -> i32:
 L_ENTRY:
     return value
 
 @test "function pointer can be stored and called"():
-L_TEST_ENTRY_0:
-    tmp_7 = &SLA_FNPTR_VT_fn_ptr_inc
-    f = tmp_7
-    tmp_8 = load f+0 as ptr
-    tmp_9 = 4
-    tmp_10 = call_indirect tmp_8(tmp_9)
-    !tmp_8
-    !tmp_9
-    got = tmp_10
-    tmp_11 = 5
-    tmp_12 = ne got, tmp_11
-    !tmp_11
-    br tmp_12 -> L_THEN_1, L_ELSE_2
+L_TEST_ENTRY_3:
+    tmp_20 = &SLA_FNPTR_VT_fn_ptr_inc
+    f = tmp_20
+    tmp_21 = load f+0 as ptr
+    tmp_22 = 4
+    tmp_23 = call_indirect tmp_21(tmp_22)
+    !tmp_21
+    !tmp_22
+    got = tmp_23
+    tmp_24 = 5
+    tmp_25 = ne got, tmp_24
+    !tmp_24
+    br tmp_25 -> L_THEN_4, L_ELSE_5
 
-L_THEN_1:
-    !tmp_12
+L_THEN_4:
+    !tmp_25
     panic(1401)
 
-L_ELSE_2:
-    !tmp_12
-    jmp L_MERGE_3
+L_ELSE_5:
+    !tmp_25
+    jmp L_MERGE_6
 
-L_MERGE_3:
+L_MERGE_6:
     !f
     !got
     return
 
 @test "function pointer can be passed as argument"():
-L_TEST_ENTRY_4:
-    tmp_15 = &SLA_FNPTR_VT_fn_ptr_inc
-    tmp_16 = 9
-    tmp_17 = call @sla__fn_ptr_apply(tmp_15, tmp_16)
-    !tmp_15
-    !tmp_16
-    got = tmp_17
-    tmp_18 = 10
-    tmp_19 = ne got, tmp_18
-    !tmp_18
-    br tmp_19 -> L_THEN_5, L_ELSE_6
+L_TEST_ENTRY_7:
+    tmp_28 = &SLA_FNPTR_VT_fn_ptr_inc
+    tmp_29 = 9
+    tmp_30 = call @sla__fn_ptr_apply(tmp_28, tmp_29)
+    !tmp_28
+    !tmp_29
+    got = tmp_30
+    tmp_31 = 10
+    tmp_32 = ne got, tmp_31
+    !tmp_31
+    br tmp_32 -> L_THEN_8, L_ELSE_9
 
-L_THEN_5:
-    !tmp_19
+L_THEN_8:
+    !tmp_32
     panic(1402)
 
-L_ELSE_6:
-    !tmp_19
-    jmp L_MERGE_7
+L_ELSE_9:
+    !tmp_32
+    jmp L_MERGE_10
 
-L_MERGE_7:
+L_MERGE_10:
     !got
     return
 
 @test "generic function can be specialized as function pointer value"():
-L_TEST_ENTRY_8:
-    tmp_22 = &SLA_FNPTR_VT_fn_ptr_generic_identity_i32
-    f = tmp_22
-    tmp_23 = load f+0 as ptr
-    tmp_24 = 12
-    tmp_25 = call_indirect tmp_23(tmp_24)
-    !tmp_23
-    !tmp_24
-    got = tmp_25
-    tmp_26 = 12
-    tmp_27 = ne got, tmp_26
-    !tmp_26
-    br tmp_27 -> L_THEN_9, L_ELSE_10
+L_TEST_ENTRY_11:
+    tmp_35 = &SLA_FNPTR_VT_fn_ptr_generic_identity_i32
+    f = tmp_35
+    tmp_36 = load f+0 as ptr
+    tmp_37 = 12
+    tmp_38 = call_indirect tmp_36(tmp_37)
+    !tmp_36
+    !tmp_37
+    got = tmp_38
+    tmp_39 = 12
+    tmp_40 = ne got, tmp_39
+    !tmp_39
+    br tmp_40 -> L_THEN_12, L_ELSE_13
 
-L_THEN_9:
-    !tmp_27
+L_THEN_12:
+    !tmp_40
     panic(1403)
 
-L_ELSE_10:
-    !tmp_27
-    jmp L_MERGE_11
+L_ELSE_13:
+    !tmp_40
+    jmp L_MERGE_14
 
-L_MERGE_11:
+L_MERGE_14:
     !f
     !got
     return
 
 @test "generic function specialization can be passed as argument"():
-L_TEST_ENTRY_12:
-    tmp_30 = &SLA_FNPTR_VT_fn_ptr_generic_identity_i32
-    tmp_31 = 14
-    tmp_32 = call @sla__fn_ptr_apply(tmp_30, tmp_31)
-    !tmp_30
-    !tmp_31
-    got = tmp_32
-    tmp_33 = 14
-    tmp_34 = ne got, tmp_33
-    !tmp_33
-    br tmp_34 -> L_THEN_13, L_ELSE_14
+L_TEST_ENTRY_15:
+    tmp_43 = &SLA_FNPTR_VT_fn_ptr_generic_identity_i32
+    tmp_44 = 14
+    tmp_45 = call @sla__fn_ptr_apply(tmp_43, tmp_44)
+    !tmp_43
+    !tmp_44
+    got = tmp_45
+    tmp_46 = 14
+    tmp_47 = ne got, tmp_46
+    !tmp_46
+    br tmp_47 -> L_THEN_16, L_ELSE_17
 
-L_THEN_13:
-    !tmp_34
+L_THEN_16:
+    !tmp_47
     panic(1404)
 
-L_ELSE_14:
-    !tmp_34
-    jmp L_MERGE_15
+L_ELSE_17:
+    !tmp_47
+    jmp L_MERGE_18
 
-L_MERGE_15:
+L_MERGE_18:
     !got
     return
 
 @test "function pointer survives struct return"():
-L_TEST_ENTRY_16:
-    tmp_37 = &SLA_FNPTR_VT_fn_ptr_true
-    tmp_38 = call @sla__fn_ptr_holder_new(tmp_37)
-    !tmp_37
-    holder = tmp_38
-    tmp_39 = load holder+0 as ptr
-    f = tmp_39
-    tmp_40 = load f+0 as ptr
-    tmp_41 = 1
-    tmp_42 = call_indirect tmp_40(tmp_41)
-    !tmp_40
-    !tmp_41
-    tmp_43 = 1
-    tmp_44 = ne tmp_42, tmp_43
-    !tmp_42
-    !tmp_43
-    br tmp_44 -> L_THEN_17, L_ELSE_18
+L_TEST_ENTRY_19:
+    tmp_50 = &SLA_FNPTR_VT_fn_ptr_true
+    tmp_51 = call @sla__fn_ptr_holder_new(tmp_50)
+    !tmp_50
+    holder = tmp_51
+    tmp_52 = load holder+0 as ptr
+    f = tmp_52
+    tmp_53 = load f+0 as ptr
+    tmp_54 = 1
+    tmp_55 = call_indirect tmp_53(tmp_54)
+    !tmp_53
+    !tmp_54
+    tmp_56 = 1
+    tmp_57 = ne tmp_55, tmp_56
+    !tmp_55
+    !tmp_56
+    br tmp_57 -> L_THEN_20, L_ELSE_21
 
-L_THEN_17:
-    !tmp_44
+L_THEN_20:
+    !tmp_57
     panic(1405)
 
-L_ELSE_18:
-    !tmp_44
-    jmp L_MERGE_19
+L_ELSE_21:
+    !tmp_57
+    jmp L_MERGE_22
 
-L_MERGE_19:
+L_MERGE_22:
     !f
     !holder
     return
 
 @test "function pointer survives vec push through function"():
-L_TEST_ENTRY_20:
-    EXPAND VEC_NEW tmp_47
-    values = tmp_47
-    tmp_48 = &SLA_FNPTR_VT_fn_ptr_false
-    tmp_49 = call @sla__fn_ptr_vec_push(values, tmp_48)
-    !tmp_48
-    values1 = tmp_49
-    tmp_50 = &SLA_FNPTR_VT_fn_ptr_true
-    tmp_51 = call @sla__fn_ptr_vec_push(values1, tmp_50)
-    !tmp_50
-    values2 = tmp_51
-    tmp_52 = 0
-    EXPAND VEC_GET tmp_53, values2, tmp_52
-    !tmp_52
-    tmp_54 = tmp_53 as ptr
-    f0 = tmp_54
-    tmp_55 = 1
-    EXPAND VEC_GET tmp_56, values2, tmp_55
-    !tmp_55
-    tmp_57 = tmp_56 as ptr
-    f1 = tmp_57
-    tmp_58 = load f0+0 as ptr
-    tmp_59 = 2
-    tmp_60 = call_indirect tmp_58(tmp_59)
-    !tmp_58
-    !tmp_59
-    br tmp_60 -> L_THEN_21, L_ELSE_22
-
-L_THEN_21:
-    !tmp_60
-    panic(1406)
-
-L_ELSE_22:
-    !tmp_60
-    jmp L_MERGE_23
-
-L_MERGE_23:
-    tmp_63 = load f1+0 as ptr
-    tmp_64 = 2
-    tmp_65 = call_indirect tmp_63(tmp_64)
+L_TEST_ENTRY_23:
+    EXPAND VEC_NEW tmp_60
+    values = tmp_60
+    tmp_61 = &SLA_FNPTR_VT_fn_ptr_false
+    tmp_62 = call @sla__fn_ptr_vec_push(values, tmp_61)
+    !tmp_61
+    values1 = tmp_62
+    tmp_63 = &SLA_FNPTR_VT_fn_ptr_true
+    tmp_64 = call @sla__fn_ptr_vec_push(values1, tmp_63)
     !tmp_63
-    !tmp_64
-    tmp_66 = 1
-    tmp_67 = ne tmp_65, tmp_66
+    values2 = tmp_64
+    tmp_65 = 0
+    EXPAND VEC_GET tmp_66, values2, tmp_65
     !tmp_65
-    !tmp_66
-    br tmp_67 -> L_THEN_24, L_ELSE_25
+    tmp_67 = tmp_66 as ptr
+    f0 = tmp_67
+    tmp_68 = 1
+    EXPAND VEC_GET tmp_69, values2, tmp_68
+    !tmp_68
+    tmp_70 = tmp_69 as ptr
+    f1 = tmp_70
+    tmp_71 = load f0+0 as ptr
+    tmp_72 = 2
+    tmp_73 = call_indirect tmp_71(tmp_72)
+    !tmp_71
+    !tmp_72
+    br tmp_73 -> L_THEN_24, L_ELSE_25
 
 L_THEN_24:
-    !tmp_67
-    panic(1407)
+    !tmp_73
+    panic(1406)
 
 L_ELSE_25:
-    !tmp_67
+    !tmp_73
     jmp L_MERGE_26
 
 L_MERGE_26:
+    tmp_76 = load f1+0 as ptr
+    tmp_77 = 2
+    tmp_78 = call_indirect tmp_76(tmp_77)
+    !tmp_76
+    !tmp_77
+    tmp_79 = 1
+    tmp_80 = ne tmp_78, tmp_79
+    !tmp_78
+    !tmp_79
+    br tmp_80 -> L_THEN_27, L_ELSE_28
+
+L_THEN_27:
+    !tmp_80
+    panic(1407)
+
+L_ELSE_28:
+    !tmp_80
+    jmp L_MERGE_29
+
+L_MERGE_29:
     !f1
     !values2
     !values
     !f0
     !values1
+    return
+
+@test "thread closure captures function pointer callee"():
+L_TEST_ENTRY_30:
+    tmp_83 = &SLA_FNPTR_VT_fn_ptr_inc
+    tmp_84 = 20
+    tmp_85 = call @sla__fn_ptr_thread_apply(tmp_83, tmp_84)
+    !tmp_83
+    !tmp_84
+    got = tmp_85
+    tmp_86 = 21
+    tmp_87 = ne got, tmp_86
+    !tmp_86
+    br tmp_87 -> L_THEN_31, L_ELSE_32
+
+L_THEN_31:
+    !tmp_87
+    panic(1408)
+
+L_ELSE_32:
+    !tmp_87
+    jmp L_MERGE_33
+
+L_MERGE_33:
+    !got
     return
 

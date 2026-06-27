@@ -1,3 +1,6 @@
+@import "sa_std/thread.sa"
+@import "sa_std/core/result.sa"
+
 fn fn_ptr_inc(x: i32) -> i32 {
     return x + 1;
 }
@@ -29,6 +32,11 @@ fn fn_ptr_holder_new(f: fn(i32) -> bool) -> FnPtrHolder {
 fn fn_ptr_vec_push(values: Vec<fn(i32) -> bool>, f: fn(i32) -> bool) -> Vec<fn(i32) -> bool> {
     values.push(f);
     return values;
+}
+
+fn fn_ptr_thread_apply(f: fn(i32) -> i32, value: i32) -> i32 {
+    let handle = thread::spawn(^|| f(value));
+    return handle.join().unwrap();
 }
 
 @test "function pointer can be stored and called"() {
@@ -67,4 +75,9 @@ fn fn_ptr_vec_push(values: Vec<fn(i32) -> bool>, f: fn(i32) -> bool) -> Vec<fn(i
     let f1 = values2[1];
     if f0(2) { panic(1406); };
     if f1(2) != true { panic(1407); };
+}
+
+@test "thread closure captures function pointer callee"() {
+    let got = fn_ptr_thread_apply(fn_ptr_inc, 20);
+    if got != 21 { panic(1408); };
 }

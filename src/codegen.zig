@@ -923,6 +923,7 @@ pub const Codegen = struct {
         if (locals.contains(name)) return;
         if (self.global_const_bindings.contains(name)) return;
         if (self.tc.funcs.contains(name)) return;
+        if (self.tc.macros.contains(name)) return;
         if (std.mem.eql(u8, name, "return_ty_sentinel")) return;
         captures.put(name, {}) catch return CodegenError.OutOfMemory;
     }
@@ -1000,6 +1001,9 @@ pub const Codegen = struct {
             .cast_expr => |cast| try self.collectThreadClosureCapturesInExpr(cast.expr, captures, locals),
             .field_expr => |field| try self.collectThreadClosureCapturesInExpr(field.expr, captures, locals),
             .call_expr => |call| {
+                if (call.associated_target == null) {
+                    try self.captureNameFromIdentifier(call.func_name, captures, locals);
+                }
                 for (call.args) |arg| try self.collectThreadClosureCapturesInExpr(arg, captures, locals);
             },
             .struct_literal => |lit| for (lit.fields) |field| try self.collectThreadClosureCapturesInExpr(field.value, captures, locals),
@@ -9908,7 +9912,10 @@ pub const Codegen = struct {
                 }
 
                 if (self.tc.fn_ptr_calls.contains(expr)) {
-                    const fn_reg = call.func_name;
+                    const fn_reg = if (self.thread_capture_regs.get(call.func_name)) |capture_reg|
+                        capture_reg
+                    else
+                        self.resolveBindingName(call.func_name);
                     const call_reg = try self.newTmp();
                     self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ call_reg, fn_reg }) catch return CodegenError.CodegenError;
 

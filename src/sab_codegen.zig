@@ -141,6 +141,11 @@ pub const Codegen = struct {
         };
     }
 
+    fn exprHasFnPtrType(self: *Codegen, expr: *const ast.Node) bool {
+        const ty = self.tc.expr_types.get(expr) orelse return false;
+        return ty.* == .fn_ptr;
+    }
+
     fn opKind(op: ast.BinaryOp) !inst.OpKind {
         return switch (op) {
             .add => .add,
@@ -383,9 +388,15 @@ pub const Codegen = struct {
     fn genExpr(self: *Codegen, expr: *ast.Node) anyerror!u32 {
         return switch (expr.*) {
             .literal => |lit| try self.genLiteral(lit),
-            .identifier => |name| self.localReg(name) orelse try self.intern(name),
+            .identifier => |name| blk: {
+                if (self.exprHasFnPtrType(expr)) return Error.UnsupportedSabDirectFeature;
+                break :blk self.localReg(name) orelse try self.intern(name);
+            },
             .binary_expr => |bin| try self.genBinary(bin),
-            .call_expr => |call| try self.genCall(call),
+            .call_expr => |call| blk: {
+                if (self.tc.fn_ptr_calls.contains(expr)) return Error.UnsupportedSabDirectFeature;
+                break :blk try self.genCall(call);
+            },
             .if_expr => |ife| try self.genIf(ife),
             else => Error.UnsupportedSabDirectFeature,
         };

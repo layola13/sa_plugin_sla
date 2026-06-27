@@ -688,6 +688,203 @@ fn pruneTestsByFilter(allocator: std.mem.Allocator, program: *ast.Node, filter: 
     program.program.decls = try filtered_decls.toOwnedSlice();
 }
 
+fn markReachableFunc(
+    tc: *const type_checker_mod.TypeChecker,
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    name: []const u8,
+) anyerror!void {
+    if (!tc.funcs.contains(name)) return;
+    if (reachable.contains(name)) return;
+    try reachable.put(name, {});
+    try worklist.append(name);
+}
+
+fn associatedReachableFuncKey(
+    tc: *const type_checker_mod.TypeChecker,
+    target_name: []const u8,
+    func_name: []const u8,
+) ?[]const u8 {
+    var it = tc.funcs.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (key.len != target_name.len + 1 + func_name.len) continue;
+        if (!std.mem.startsWith(u8, key, target_name)) continue;
+        if (key[target_name.len] != '_') continue;
+        if (!std.mem.eql(u8, key[target_name.len + 1 ..], func_name)) continue;
+        return key;
+    }
+    return null;
+}
+
+fn markReachableCallTarget(
+    tc: *const type_checker_mod.TypeChecker,
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    expr: *const ast.Node,
+    call: ast.CallExpr,
+) anyerror!void {
+    if (tc.resolved_call_symbols.get(expr)) |symbol| {
+        try markReachableFunc(tc, reachable, worklist, symbol);
+        return;
+    }
+    if (call.associated_target) |target_name| {
+        if (associatedReachableFuncKey(tc, target_name, call.func_name)) |symbol| {
+            try markReachableFunc(tc, reachable, worklist, symbol);
+        }
+        return;
+    }
+    try markReachableFunc(tc, reachable, worklist, call.func_name);
+}
+
+fn collectReachableExpr(
+    tc: *const type_checker_mod.TypeChecker,
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    expr: *const ast.Node,
+) anyerror!void {
+    switch (expr.*) {
+        .identifier => |name| try markReachableFunc(tc, reachable, worklist, name),
+        .generic_func_ref => |ref| try markReachableFunc(tc, reachable, worklist, ref.func_name),
+        .call_expr => |call| {
+            try markReachableCallTarget(tc, reachable, worklist, expr, call);
+            for (call.args) |arg| try collectReachableExpr(tc, reachable, worklist, arg);
+        },
+        .if_expr => |ife| {
+            try collectReachableExpr(tc, reachable, worklist, ife.cond);
+            if (ife.let_chain) |chain| {
+                for (chain) |cond| try collectReachableExpr(tc, reachable, worklist, cond.value);
+            }
+            try collectReachableBlock(tc, reachable, worklist, ife.then_block);
+            if (ife.else_block) |else_block| try collectReachableBlock(tc, reachable, worklist, else_block);
+        },
+        .switch_expr => |swe| {
+            try collectReachableExpr(tc, reachable, worklist, swe.val);
+            for (swe.cases) |case| {
+                try collectReachableExpr(tc, reachable, worklist, case.pattern);
+                try collectReachableBlock(tc, reachable, worklist, case.body);
+            }
+        },
+        .match_expr => |mat| {
+            try collectReachableExpr(tc, reachable, worklist, mat.val);
+            for (mat.cases) |case| {
+                if (case.guard) |guard| try collectReachableExpr(tc, reachable, worklist, guard);
+                try collectReachableBlock(tc, reachable, worklist, case.body);
+            }
+        },
+        .unsafe_expr => |unsafe_expr| try collectReachableBlock(tc, reachable, worklist, unsafe_expr.body),
+        .await_expr => |await_expr| try collectReachableExpr(tc, reachable, worklist, await_expr.expr),
+        .try_expr => |try_expr| try collectReachableExpr(tc, reachable, worklist, try_expr.expr),
+        .binary_expr => |bin| {
+            if (tc.resolved_call_symbols.get(expr)) |symbol| try markReachableFunc(tc, reachable, worklist, symbol);
+            try collectReachableExpr(tc, reachable, worklist, bin.left);
+            try collectReachableExpr(tc, reachable, worklist, bin.right);
+        },
+        .closure_literal => |closure| try collectReachableExpr(tc, reachable, worklist, closure.body),
+        .borrow_expr => |borrow| try collectReachableExpr(tc, reachable, worklist, borrow.expr),
+        .move_expr => |move| try collectReachableExpr(tc, reachable, worklist, move.expr),
+        .deref_expr => |deref| try collectReachableExpr(tc, reachable, worklist, deref.expr),
+        .cast_expr => |cast| try collectReachableExpr(tc, reachable, worklist, cast.expr),
+        .field_expr => |field| try collectReachableExpr(tc, reachable, worklist, field.expr),
+        .struct_literal => |lit| for (lit.fields) |field| try collectReachableExpr(tc, reachable, worklist, field.value),
+        .enum_literal => |lit| for (lit.fields) |field| try collectReachableExpr(tc, reachable, worklist, field.value),
+        .tuple_literal => |lit| for (lit.elements) |elem| try collectReachableExpr(tc, reachable, worklist, elem),
+        .array_literal => |lit| for (lit.elements) |elem| try collectReachableExpr(tc, reachable, worklist, elem),
+        .repeat_array_literal => |lit| try collectReachableExpr(tc, reachable, worklist, lit.value),
+        .index_expr => |idx| {
+            try collectReachableExpr(tc, reachable, worklist, idx.target);
+            try collectReachableExpr(tc, reachable, worklist, idx.index);
+        },
+        .slice_expr => |slice| {
+            try collectReachableExpr(tc, reachable, worklist, slice.target);
+            try collectReachableExpr(tc, reachable, worklist, slice.start);
+            try collectReachableExpr(tc, reachable, worklist, slice.end);
+        },
+        else => {},
+    }
+}
+
+fn collectReachableBlock(
+    tc: *const type_checker_mod.TypeChecker,
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    block: []const *ast.Node,
+) anyerror!void {
+    for (block) |stmt| {
+        switch (stmt.*) {
+            .let_stmt => |let| try collectReachableExpr(tc, reachable, worklist, let.value),
+            .let_else_stmt => |let| {
+                try collectReachableExpr(tc, reachable, worklist, let.value);
+                try collectReachableBlock(tc, reachable, worklist, let.else_block);
+            },
+            .let_destructure_stmt => |let| try collectReachableExpr(tc, reachable, worklist, let.value),
+            .const_stmt => |c| try collectReachableExpr(tc, reachable, worklist, c.value),
+            .assign_stmt => |assign| {
+                try collectReachableExpr(tc, reachable, worklist, assign.target);
+                try collectReachableExpr(tc, reachable, worklist, assign.value);
+            },
+            .block_stmt => |blk| try collectReachableBlock(tc, reachable, worklist, blk.body),
+            .expr_stmt => |expr| try collectReachableExpr(tc, reachable, worklist, expr),
+            .return_stmt => |ret| if (ret.value) |value| try collectReachableExpr(tc, reachable, worklist, value),
+            .for_stmt => |for_stmt| {
+                try collectReachableExpr(tc, reachable, worklist, for_stmt.start);
+                if (for_stmt.end) |end_expr| try collectReachableExpr(tc, reachable, worklist, end_expr);
+                try collectReachableBlock(tc, reachable, worklist, for_stmt.body);
+            },
+            .while_stmt => |while_stmt| {
+                try collectReachableExpr(tc, reachable, worklist, while_stmt.cond);
+                try collectReachableBlock(tc, reachable, worklist, while_stmt.body);
+            },
+            else => {},
+        }
+    }
+}
+
+fn pruneUnreachableFilteredTestDecls(
+    allocator: std.mem.Allocator,
+    program: *ast.Node,
+    tc: *const type_checker_mod.TypeChecker,
+    test_filter: ?[]const u8,
+) !void {
+    if (test_filter == null or test_filter.?.len == 0) return;
+    if (program.* != .program) return error.InvalidProgram;
+
+    var reachable = std.StringHashMap(void).init(allocator);
+    var worklist = std.ArrayList([]const u8).init(allocator);
+
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .test_decl => |test_decl| try collectReachableBlock(tc, &reachable, &worklist, test_decl.body),
+            .const_stmt => |const_stmt| try collectReachableExpr(tc, &reachable, &worklist, const_stmt.value),
+            .impl_decl => |impl_decl| for (impl_decl.methods) |method| {
+                if (method.* == .func_decl) try collectReachableBlock(tc, &reachable, &worklist, method.func_decl.body);
+            },
+            .overload_decl => |overload_decl| for (overload_decl.methods) |method| {
+                if (method.* == .func_decl) try collectReachableBlock(tc, &reachable, &worklist, method.func_decl.body);
+            },
+            else => {},
+        }
+    }
+
+    var index: usize = 0;
+    while (index < worklist.items.len) : (index += 1) {
+        const name = worklist.items[index];
+        const func = tc.funcs.get(name) orelse continue;
+        try collectReachableBlock(tc, &reachable, &worklist, func.body);
+    }
+
+    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .func_decl => |func_decl| {
+                if (func_decl.is_decl_only or reachable.contains(func_decl.name)) try filtered_decls.append(decl);
+            },
+            else => try filtered_decls.append(decl),
+        }
+    }
+    program.program.decls = try filtered_decls.toOwnedSlice();
+}
+
 fn saTestFilterFromArgs(args: []const []const u8) ?[]const u8 {
     var idx: usize = 0;
     while (idx < args.len) : (idx += 1) {
@@ -860,6 +1057,20 @@ fn appendSaTestPassthrough(argv: *std.ArrayList([]const u8), args: []const []con
         if (std.mem.startsWith(u8, arg, "--test-backend=")) continue;
         try argv.append(arg);
     }
+    try appendDefaultJobsAuto(argv, args);
+}
+
+fn hasJobsArg(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--jobs") or std.mem.startsWith(u8, arg, "--jobs=")) return true;
+    }
+    return false;
+}
+
+fn appendDefaultJobsAuto(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
+    if (hasJobsArg(args)) return;
+    try argv.append("--jobs");
+    try argv.append("auto");
 }
 
 fn ensureParentDir(path: []const u8) !void {
@@ -1143,7 +1354,7 @@ fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
         }
         if (std.mem.eql(u8, command, "test")) {
             try writer.writeAll("  --test-backend auto|sab|sa\n");
-            try writer.writeAll("                          Select test compiler backend; default auto tries SAB first\n");
+            try writer.writeAll("                          Select test compiler backend; default auto uses SAB\n");
         }
         if (std.mem.eql(u8, command, "sab build")) {
             try writer.writeAll("  -o, --out <file.sab>    Also write SAB output file; default uses .sla-cache/sab/\n");
@@ -1275,13 +1486,50 @@ fn managedSabPath(allocator: std.mem.Allocator, file: []const u8) ![]u8 {
     return try std.fmt.allocPrint(allocator, ".sla-cache/sab/{s}-{x}.sab", .{ stem, hash });
 }
 
-fn writeSabFile(path: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWriter) !bool {
+fn managedSabPathWithVariantParts(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    variant_name: []const u8,
+    variant_value: ?[]const u8,
+) ![]u8 {
+    const base = std.fs.path.basename(file);
+    const stem = if (std.mem.endsWith(u8, base, ".sla")) base[0 .. base.len - 4] else base;
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(file);
+    hasher.update("\x00");
+    hasher.update(variant_name);
+    if (variant_value) |value| {
+        hasher.update("\x00");
+        hasher.update(value);
+    }
+    const hash = hasher.final();
+    return try std.fmt.allocPrint(allocator, ".sla-cache/sab/{s}-{x}.sab", .{ stem, hash });
+}
+
+fn managedSabPathWithVariant(allocator: std.mem.Allocator, file: []const u8, variant: []const u8) ![]u8 {
+    return try managedSabPathWithVariantParts(allocator, file, variant, null);
+}
+
+fn managedSabTestPath(allocator: std.mem.Allocator, file: []const u8, extra_args: []const []const u8) ![]u8 {
+    if (saTestFilterFromArgs(extra_args)) |filter| {
+        return try managedSabPathWithVariantParts(allocator, file, "test-filter", filter);
+    }
+    return try managedSabPathWithVariant(allocator, file, "test-all");
+}
+
+fn writeSabFile(allocator: std.mem.Allocator, path: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWriter) !bool {
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.cwd().makePath(dir) catch |err| {
             try stderr.print("File Error: failed to create SAB output directory {s}: {}\n", .{ dir, err });
             return false;
         };
     }
+
+    if (std.fs.cwd().readFileAlloc(allocator, path, sab_bytes.len + 1)) |existing| {
+        defer allocator.free(existing);
+        if (std.mem.eql(u8, existing, sab_bytes)) return true;
+    } else |_| {}
+
     std.fs.cwd().writeFile(.{ .sub_path = path, .data = sab_bytes }) catch |err| {
         try stderr.print("File Error: failed to write SAB output {s}: {}\n", .{ path, err });
         return false;
@@ -1291,7 +1539,7 @@ fn writeSabFile(path: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWrite
 
 fn writeManagedSab(allocator: std.mem.Allocator, file: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWriter) !?[]u8 {
     const path = try managedSabPath(allocator, file);
-    if (!try writeSabFile(path, sab_bytes, stderr)) return null;
+    if (!try writeSabFile(allocator, path, sab_bytes, stderr)) return null;
     return path;
 }
 
@@ -1335,6 +1583,7 @@ fn appendSabWorkspacePassthrough(argv: *std.ArrayList([]const u8), args: []const
         }
         try argv.append(arg);
     }
+    try appendDefaultJobsAuto(argv, args);
 }
 
 fn compileSlaFileToSab(
@@ -1562,6 +1811,13 @@ fn compileSlaFileToSabWithOptions(
     slaProfileStage(stderr, profile, "primary decl filter", stage_start);
 
     stage_start = std.time.nanoTimestamp();
+    pruneUnreachableFilteredTestDecls(allocator, specialized_prog, &tc, options.test_filter) catch |err| {
+        try stderr.print("Test Filter Error: failed to prune unreachable declarations: {}\n", .{err});
+        return null;
+    };
+    slaProfileStage(stderr, profile, "reachable decl filter", stage_start);
+
+    stage_start = std.time.nanoTimestamp();
     const sab_bytes = sab_codegen_mod.generate(allocator, &tc, specialized_prog) catch |err| {
         slaProfileStage(stderr, profile, "sab direct codegen", stage_start);
         switch (err) {
@@ -1604,11 +1860,11 @@ fn compileSlaSabTestInput(
     extra_args: []const []const u8,
     emit_sab_file: bool,
 ) !?CompiledTestInput {
-    const sab_out = try managedSabPath(allocator, file);
+    const sab_out = try managedSabTestPath(allocator, file, extra_args);
     const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, .{
         .test_filter = saTestFilterFromArgs(extra_args),
     })) orelse return null;
-    if (!try writeSabFile(sab_out, sab_bytes, stderr)) return null;
+    if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return null;
     if (emit_sab_file) {
         maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
             try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
@@ -1672,7 +1928,7 @@ fn runSabBuildCommand(
     const managed_path = (try writeManagedSab(allocator, file, sab_bytes, stderr)) orelse return 1;
 
     if (parseOutFileArg(args, option_start)) |final_out| {
-        if (!try writeSabFile(final_out, sab_bytes, stderr)) return 1;
+        if (!try writeSabFile(allocator, final_out, sab_bytes, stderr)) return 1;
         try stdout.print("Sla Compiler: Successfully compiled {s} to SAB {s} (managed cache {s}).\n", .{ file, final_out, managed_path });
     } else {
         try stdout.print("Sla Compiler: Successfully compiled {s} to managed SAB {s}.\n", .{ file, managed_path });
@@ -1711,7 +1967,7 @@ fn runSabWorkspaceCommand(
     const managed_path = (try writeManagedSab(allocator, file, sab_bytes, stderr)) orelse return 1;
 
     if (parseSabOutFileArg(args, option_start)) |sab_out| {
-        if (!try writeSabFile(sab_out, sab_bytes, stderr)) return 1;
+        if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
     }
     if (options.emit_sab_file or hasEmitSabArg(args, option_start)) {
         maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
@@ -1904,7 +2160,7 @@ pub fn runSlaCommandImpl(
 
         const sab_out = try managedSabPath(allocator, file);
         const sab_bytes = (try compileSlaFileToSabOrSa(allocator, file, sab_out, stderr)) orelse return 1;
-        if (!try writeSabFile(sab_out, sab_bytes, stderr)) return 1;
+        if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
         if (options.emit_sab_file) {
             maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
                 try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
@@ -1917,6 +2173,7 @@ pub fn runSlaCommandImpl(
         try argv.append("build-exe");
         try argv.append(sab_out);
         for (extra_args) |a| try argv.append(a);
+        try appendDefaultJobsAuto(&argv, extra_args);
 
         var child = std.process.Child.init(argv.items, allocator);
         const term = child.spawnAndWait() catch |err| {
@@ -1951,7 +2208,7 @@ pub fn runSlaCommandImpl(
 
         const sab_out = try managedSabPath(allocator, file);
         const sab_bytes = (try compileSlaFileToSabOrSa(allocator, file, sab_out, stderr)) orelse return 1;
-        if (!try writeSabFile(sab_out, sab_bytes, stderr)) return 1;
+        if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
         if (options.emit_sab_file) {
             maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
                 try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
@@ -1964,6 +2221,7 @@ pub fn runSlaCommandImpl(
         try argv.append("build-exe");
         try argv.append(sab_out);
         for (extra_args) |a| try argv.append(a);
+        try appendDefaultJobsAuto(&argv, extra_args);
 
         var child = std.process.Child.init(argv.items, allocator);
         const term = child.spawnAndWait() catch |err| {
@@ -2247,6 +2505,31 @@ test "sla skills text writes agent skill files" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla delegated SA commands default to jobs auto unless supplied" {
+    var test_argv = std.ArrayList([]const u8).init(std.testing.allocator);
+    defer test_argv.deinit();
+    try appendSaTestPassthrough(&test_argv, &.{ "--filter", "one" });
+    try std.testing.expectEqualStrings("--jobs", test_argv.items[test_argv.items.len - 2]);
+    try std.testing.expectEqualStrings("auto", test_argv.items[test_argv.items.len - 1]);
+
+    var explicit_argv = std.ArrayList([]const u8).init(std.testing.allocator);
+    defer explicit_argv.deinit();
+    try appendSaTestPassthrough(&explicit_argv, &.{ "--filter", "one", "--jobs", "2" });
+    var auto_count: usize = 0;
+    for (explicit_argv.items) |item| {
+        if (std.mem.eql(u8, item, "auto")) auto_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), auto_count);
+
+    var workspace_argv = std.ArrayList([]const u8).init(std.testing.allocator);
+    defer workspace_argv.deinit();
+    try appendSabWorkspacePassthrough(&workspace_argv, &.{ "--sab-out", "/tmp/out.sab", "-o", "/tmp/app" });
+    try std.testing.expectEqualStrings("-o", workspace_argv.items[0]);
+    try std.testing.expectEqualStrings("/tmp/app", workspace_argv.items[1]);
+    try std.testing.expectEqualStrings("--jobs", workspace_argv.items[2]);
+    try std.testing.expectEqualStrings("auto", workspace_argv.items[3]);
+}
+
 test "sla init scaffolds project without overwriting" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -2514,6 +2797,39 @@ test "sla sab backend supports full SA-compatible struct lowering" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend supports SA-compatible indirect call lowering" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_fn_ptr_value.sla",
+        ".sla-cache/sab/fn_ptr_value.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "function pointer can be stored and called" },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var test_count: usize = 0;
+    var saw_call_indirect = false;
+    for (module.function_sigs) |fsig| {
+        if (fsig.kind == .test_func) test_count += 1;
+    }
+    for (module.instructions) |item| {
+        if (item.kind == .call_indirect) saw_call_indirect = true;
+    }
+    try std.testing.expectEqual(@as(usize, 1), test_count);
+    try std.testing.expect(saw_call_indirect);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab build emits direct SAB without SA source output" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -2619,6 +2935,25 @@ test "sla sab build defaults to managed sla cache" {
     const sab_bytes = try tmp.dir.readFileAlloc(std.testing.allocator, cached_path, 1024 * 1024);
     defer std.testing.allocator.free(sab_bytes);
     try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
+}
+
+test "sla sab test managed path is scoped by test filter" {
+    const build_path = try managedSabPath(std.testing.allocator, "direct.sla");
+    defer std.testing.allocator.free(build_path);
+    const all_tests_path = try managedSabTestPath(std.testing.allocator, "direct.sla", &.{});
+    defer std.testing.allocator.free(all_tests_path);
+    const keep_path = try managedSabTestPath(std.testing.allocator, "direct.sla", &.{ "--filter", "keep" });
+    defer std.testing.allocator.free(keep_path);
+    const keep_path_again = try managedSabTestPath(std.testing.allocator, "direct.sla", &.{"--filter=keep"});
+    defer std.testing.allocator.free(keep_path_again);
+    const drop_path = try managedSabTestPath(std.testing.allocator, "direct.sla", &.{ "--filter", "drop" });
+    defer std.testing.allocator.free(drop_path);
+
+    try std.testing.expect(!std.mem.eql(u8, build_path, all_tests_path));
+    try std.testing.expect(!std.mem.eql(u8, all_tests_path, keep_path));
+    try std.testing.expect(!std.mem.eql(u8, keep_path, drop_path));
+    try std.testing.expectEqualStrings(keep_path, keep_path_again);
+    try std.testing.expect(std.mem.startsWith(u8, keep_path, ".sla-cache/sab/"));
 }
 
 fn writeWorkspaceFixture(dir: std.fs.Dir, default_member: []const u8, tool_source: []const u8) !void {

@@ -96,9 +96,9 @@ workspace 模式从当前目录解析 `sa.mod`，选择默认 member 或 `-p/--p
 sa sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]
 ```
 
-默认 `auto` 后端先走直接 SAB：SLA 前端直接生成 `.sla-cache/sab/...`，然后调用 `sa test <managed.sab> ...`。如果直接 SAB 后端遇到尚未覆盖的 SLA 特性并返回 `UnsupportedSabDirectFeature`，`auto` 会回退到旧 `.test.sa` 测试路径，避免现有项目在 SAB 覆盖补齐前无法测试。
+默认 `auto` 后端走 SAB 主线：SLA 前端生成 `.sla-cache/sab/...`，然后调用 `sa test <managed.sab> ...`。直接 AST-to-SAB 只是快速路径；如果它遇到尚未手写覆盖的 SLA 特性，例如函数指针间接调用，会改走内存 SA-compatible lowering，再通过 SCI flattener/SAB encoder 生成 SAB。输出仍然是 `.sab`，不会因为 direct fast path 不支持而回退到 `.test.sa`。SCI 的通用 SAB encoder 覆盖 SA `InstKind` / `OpKind` / operand tag 并保留 raw_text、函数寄存器、native register、package identity、upstream location 等后端元数据。
 
-- `--test-backend sab`：强制直接 SAB，不回退；适合验证 SAB 覆盖。
+- `--test-backend sab`：强制 SAB 主线；适合验证不会走旧 `.test.sa` 后端。
 - `--test-backend sa`：强制旧 `.test.sa` 文本测试路径。
 - `--emit-sab`：额外写 sibling `.sab` 供人工检查；托管 SAB 仍在 `.sla-cache/sab/`。
 
@@ -111,11 +111,11 @@ sa slab disasm <file.sab> [--out <file.sa>]
 
 反汇编只用于调试查看，不参与编译主链路。
 
-## SAB v1 布局
+## SAB v3 布局
 
 ```text
 magic:          4 bytes = "SAB\0"
-version_major:  u8 = 1
+version_major:  u8 = 3
 version_minor:  u8 = 0
 section_count:  uleb128
 
@@ -147,24 +147,29 @@ section*:
 - `panic(code)`。
 - 函数内 `reg_ids` 元数据和 void/test return 前的局部释放，满足 SA verifier 的作用域和泄漏检查。
 
-未覆盖的 SLA 特性会显式返回 `UnsupportedSabDirectFeature`，而不是偷偷回退到 `.sa` 文本链路。
+未覆盖的 SLA 特性会显式返回 `UnsupportedSabDirectFeature` 给上层 SAB 主线，上层随后走内存 SA-compatible SAB encoder。这个 fallback 不是 `sla -> sa -> sab` 用户主线，也不会生成 `.test.sa`；它只是把现有 SA-compatible lowering 作为内存 IR 交给 SCI 的 SAB encoder，保证 SAB 覆盖所有 SA 指令族和 operand 形态。函数指针值/`call_indirect` 当前也走这条完整 SAB encoder 路径。
 
 ## 验证记录
 
 最近一次窄验证均避免全量测试：
 
-- 构建：`zig build --summary all`，通过。
+- SCI 构建：`zig build`，通过；SAB focused Zig tests `sab roundtrip covers every SA instruction and op kind`、`sab roundtrip covers every SA operand kind` 通过。
+- 插件构建：`zig build`，通过。
 - 默认托管 SAB：`timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla`，输出 `.sla-cache/sab/test_sab_direct-...sab`。
 - 显式落盘：`timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla --out /tmp/sla_direct_out.sab`，`/tmp/sla_direct_out.sab` magic 为 `53 41 42 00`。
 - workspace：`PATH=/home/vscode/projects/sci/zig-out/bin:$PATH timeout 120s .../sla-local-cli sla sab workspace --sab-out /tmp/sla_workspace_app.sab -o /tmp/sla_workspace_app`，生成 workspace `.sla-cache/sab/...sab`、`/tmp/sla_workspace_app.sab` 和可执行文件。
 - 宿主 SA 安装验证：`/home/vscode/projects/sci/tools/install.sh --no-shell`，随后 `SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla`。
 - 宿主插件能力验证：`SA_PLUGIN_DEV=1 sa sla help` 显示 `init` / `skills` / `sab workspace --sab-out`；`SA_PLUGIN_DEV=1 sa sla skills --json` 输出 JSON；`SA_PLUGIN_DEV=1 sa sla init /tmp/sa_host_sla_init` 生成 `sa.mod` 和 `src/main.sla`。
 - 宿主 SAB 验证：`SA_PLUGIN_DEV=1 sa sla sab build tests/test_sab_direct.sla` 输出 `.sla-cache/sab/test_sab_direct-...sab`。
-- 默认测试后端验证：`timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_sab_direct.sla --filter "direct sab add"` 通过并写入 `.sla-cache/sab/test_sab_direct-...sab`；`timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_sab_direct.sla --test-backend sa --filter "direct sab add"` 通过旧 `.test.sa` 后端。
-- ECS 超时回归验证：`timeout 120s ./zig-out/bin/sla-local-cli sla test /home/vscode/projects/sla_ecs/lib/system_param_table_erased.sla --filter "table erased allow disabled single optional and populated gates"` 通过，耗时约 6.66s、MaxRSS 约 143MB。改善主要来自 generic lookahead 的 parser O(n²) 修复和 `--filter` 前置剪枝；该 ECS 文件在 SAB 直接后端未覆盖特性时由默认 `auto` 回退旧 SA 测试后端。
+- 默认测试后端验证：`timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_sab_direct.sla --filter "direct sab add"` 通过；`timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_unit_fn_ptr_value.sla --filter "function pointer can be stored and called"` 通过并保留 SAB `call_indirect`。
+- 已安装插件验证：`timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_sab_direct.sla --filter "direct sab add"` 通过；`timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_unit_fn_ptr_value.sla --filter "function pointer can be stored and called"` 通过。`sa plugin install --dev` 在本轮 5 分钟上限内无输出超时，因 manifest/lock 未变化，已用构建产物 `zig-out/lib/libsla.so` 更新 installed `current` 和 `0.1.0` 动态库，hash 已确认一致。
+- ECS 性能验证：`timeout 120s env SA_PLUGIN_DEV=1 sa sla test /home/vscode/projects/sla_ecs/lib/parallel_table_erased.sla --filter "table erased readonly parallel runner executes no conflict systems on threads"` 通过，安装后约 19.30s、MaxRSS 约 153MB。本地 profile 显示 parse 0.62s、import expand 1.58s、SA-compatible flatten 4.04s、SAB encode 5.22s，单独 `sa test <managed.sab>` 约 13.50s；当前仍未达到 2-3s 目标，剩余瓶颈在 SAB fallback flatten/encode 和 SA 侧 test compile/link/incremental 行为。
 - filtered Zig tests：
   - `timeout 120s zig test ... --test-filter "sla sab build defaults to managed sla cache"`
   - `timeout 120s zig test ... --test-filter "sla sab build emits direct SAB without SA source output"`
-  - `timeout 120s zig test ... --test-filter "sla skills honors host json mode"`
+  - `timeout 120s zig build test -Dtest-filter="sla sab backend supports SA-compatible indirect call lowering"`
+  - `timeout 120s zig build test -Dtest-filter="sla delegated SA commands default to jobs auto unless supplied"`
+  - `timeout 120s zig build test -Dtest-filter="sla sab test managed path is scoped by test filter"`
+  - `timeout 120s zig build test -Dtest-filter="sla test sab backend prunes unmatched tests before type checking"`
 
 没有跑 `sci` 或插件全量测试；全量测试会造成不必要的 CPU/内存压力。

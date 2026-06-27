@@ -119,7 +119,7 @@ SAB 是 SA 的二进制 IR。SLA 的 SAB 主线直接输出 SAB，不经过 `.sa
 
 ### D. 单元测试运行器 (`sa sla test`)
 用于编译和执行定义了 `@test` 块的测试代码。
-Sla 编译器会首先将该 `.sla` 文件编译为临时文件 `<input_file>.test.sa`，接着在底层调用 `sa test <input_file>.test.sa` 执行所有未忽略的测试块，并展示最终的通过状态。
+Sla 编译器默认会把该 `.sla` 文件编译为托管 SAB `.sla-cache/sab/...`，接着在底层调用 `sa test <managed.sab>` 执行所有未忽略的测试块，并展示最终的通过状态。只有显式传 `--test-backend sa` 时才会使用旧的 `<input_file>.test.sa` 文本测试后端。
 * **基本语法**：
   ```bash
   sa sla test <input_file.sla> [extra_args]

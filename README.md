@@ -13,7 +13,7 @@ This is the standalone Sla compiler plugin, providing Sla-to-SA compilation capa
 - `sa sla sab disasm <file.sab>`: Disassemble a SAB file for debugging; this is not part of the compile path.
 - `sa slab ...`: Short alias for `sa sla sab ...`.
 - `sa sla check <file>`: Lex, parse, and type-check a `.sla` source file without emitting final SA assembly.
-- `sa sla test <file>`: Compile a `.sla` test file and run it through `sa test`. The default `auto` backend tries direct SAB first using `.sla-cache/sab/...`; use `--test-backend sa` for the legacy `.test.sa` path or `--test-backend sab` to require SAB with no fallback.
+- `sa sla test <file>`: Compile a `.sla` test file to managed SAB under `.sla-cache/sab/` and run it through `sa test`. The default `auto` backend uses the SAB mainline; use `--test-backend sa` only when explicitly debugging the legacy `.test.sa` path, or `--test-backend sab` to spell out strict SAB mode.
 
 Sla source uses compiler-managed lifetime cleanup by default. User-facing `.sla` code should not need explicit `!x;` releases; generated `.sa` may still contain `!` instructions because that is SA's ownership primitive. Sla intentionally does not add a `drop` keyword or `drop()` function.
 
@@ -37,7 +37,7 @@ cd sci
 ./tools/install.sh --no-shell
 ```
 
-For a local checkout layout like `/home/vscode/projects/sci` beside this plugin, rebuild SA after SAB-related changes before reinstalling the plugin:
+For a local checkout layout like `/home/vscode/projects/sci` beside this plugin, rebuild SA after SAB-related changes before reinstalling the plugin. Current SAB test/build support depends on SCI's SAB decoder preserving SA backend metadata such as raw instruction text, function register ids, native register names, package identity, and upstream locations:
 
 ```bash
 /home/vscode/projects/sci/tools/install.sh --no-shell
@@ -72,7 +72,7 @@ SA_PLUGIN_DEV=1 sa sla test tests/test_unit_basic.sla
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_basic.sla --test-backend sa
 ```
 
-The `.sa` and `.sab` paths are separate compiler mainlines. SAB generation does not lower SLA to `.sa` text first; it goes from the parsed/type-checked SLA program into SAB binary IR. Managed SAB artifacts live in `.sla-cache/sab/` so repeated build-exe/workspace/test runs can reuse a stable input path for incremental compilation. User-visible SAB files are only written when requested with `--out`, `--sab-out`, or `--emit-sab`.
+The `.sa` and `.sab` paths are separate user-facing compiler mainlines. SAB generation writes SAB bytes directly to the managed artifact path and does not create `.test.sa` or invoke the legacy text test backend unless `--test-backend sa` is explicitly requested. The SAB path first tries the direct AST-to-SAB encoder; for SA features not yet covered by that direct encoder, it uses the in-memory SA-compatible lowering plus SCI's flattener to encode SAB, so the output remains `.sab` and all downstream SA backend metadata is preserved. Managed SAB artifacts live in `.sla-cache/sab/` so repeated build-exe/workspace/test runs can reuse a stable input path for incremental compilation. User-visible SAB files are only written when requested with `--out`, `--sab-out`, or `--emit-sab`.
 
 ## Rosetta Demos
 The `demos/rosetta` tree mirrors the Rust references under `/home/vscode/projects/sci/demos/rosetta` with Sla companions and per-demo Rust/Sla comparison notes. The demos are intended to be checked manually for semantic equivalence, not only for matching final output.

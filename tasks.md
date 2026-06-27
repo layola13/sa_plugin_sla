@@ -66,8 +66,10 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] Support optional visible SAB artifacts through `--out/-o` for `sab build`.
   - [x] Add `sa sla sab workspace` / `sa slab workspace` support with workspace package resolution, managed `.sla-cache/sab/` input for `sa build-exe`, and optional `--sab-out` / `--emit-sab` artifacts.
   - [x] Preserve `sa sla sab disasm` as a debug-only reader for SAB files.
-  - [x] Make `sa sla test` default to `--test-backend auto`, trying direct managed SAB under `.sla-cache/sab/` before falling back to the legacy `.test.sa` path only for `UnsupportedSabDirectFeature`.
-  - [x] Add `--test-backend sab` for strict no-fallback SAB test verification and `--test-backend sa` for explicit legacy `.sa` text tests.
+  - [x] Make `sa sla test` default to `--test-backend auto`, writing managed SAB under `.sla-cache/sab/` and invoking `sa test` on SAB by default; the legacy `.test.sa` path is now only used by explicit `--test-backend sa`.
+  - [x] Add `--test-backend sab` for explicit SAB artifact verification with no legacy `.sa` backend fallback, and `--test-backend sa` for explicit legacy `.sa` text tests.
+  - [x] Add an in-memory SA-compatible SAB encoder fallback inside the SAB mainline so SA features not yet covered by direct AST-to-SAB codegen still produce `.sab` output without writing `.sa` text.
+  - [x] Confirm SCI SAB v3 metadata support preserves raw instruction text, atomic operand text, native register names, package identity, upstream locations, and verified function register ids needed by SA backends.
   - [x] Add focused tests for direct SAB output, managed cache behavior, SAB magic, decoded instructions, and no generated `.sa` side output.
 - [x] **SLA CLI Project Helpers**
   - [x] Add `sa sla init [path]` to scaffold a minimal SLA binary project without overwriting existing files.
@@ -122,8 +124,8 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] `panic(code)` lowered to SA `panic(code)` syntax.
   - [x] Loop allocation hoisting works inside test bodies.
 - [x] **CLI: `sa sla test <file.sla> [options]`**
-  - [x] Defaults to `--test-backend auto`, compiling `.sla` directly to managed SAB under `.sla-cache/sab/` and spawning `sa test <file.sab>`.
-  - [x] Supports `--test-backend sab` for strict direct SAB and `--test-backend sa` for the legacy `.sla` -> `.test.sa` temp file path.
+  - [x] Defaults to `--test-backend auto`, compiling `.sla` to managed SAB under `.sla-cache/sab/` and spawning `sa test <file.sab>`.
+  - [x] Supports `--test-backend sab` for explicit SAB output and `--test-backend sa` for the legacy `.sla` -> `.test.sa` temp file path.
   - [x] Strips plugin-only `--test-backend` before forwarding remaining args to `sa test`.
   - [x] Applies `--filter` pruning before monomorphization/type checking on both SAB and SA test paths to keep focused tests small.
   - [x] Skill entry added: `sla test <file> [--test-backend auto|sab|sa] [sa-test-options...]`.

@@ -656,7 +656,6 @@ fn loadImportedContracts(
 
 const SlaCompileOptions = struct {
     test_filter: ?[]const u8 = null,
-    return_unsupported_sab_error: bool = false,
 };
 
 fn slaProfileEnabled(allocator: std.mem.Allocator) bool {
@@ -1347,6 +1346,138 @@ fn compileSlaFileToSab(
     return compileSlaFileToSabWithOptions(allocator, file, output_file, stderr, .{});
 }
 
+fn virtualSaPathForSabOutput(allocator: std.mem.Allocator, output_file: []const u8) ![]const u8 {
+    const stem = if (std.mem.endsWith(u8, output_file, ".sab")) output_file[0 .. output_file.len - 4] else output_file;
+    const sa_path = try std.fmt.allocPrint(allocator, "{s}.sa", .{stem});
+    if (std.fs.path.isAbsolute(sa_path)) return sa_path;
+    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    return try std.fs.path.join(allocator, &.{ cwd, sa_path });
+}
+
+fn saStdRootLooksValid(allocator: std.mem.Allocator, root: []const u8) !bool {
+    const required_files = [_][]const u8{
+        "core/sa_core.sa",
+        "core/option.sa",
+        "core/result.sa",
+        "io/print.sai",
+    };
+    for (required_files) |rel| {
+        const path = try std.fs.path.join(allocator, &.{ root, rel });
+        if (std.fs.cwd().openFile(path, .{})) |file| {
+            file.close();
+        } else |err| switch (err) {
+            error.FileNotFound, error.NotDir => return false,
+            else => return err,
+        }
+    }
+    return true;
+}
+
+fn sabSaStdRoot(allocator: std.mem.Allocator) ![]const u8 {
+    if (std.process.getEnvVarOwned(allocator, "SA_STD_DIR")) |env_root| {
+        if (try saStdRootLooksValid(allocator, env_root)) return env_root;
+    } else |_| {}
+
+    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+        const home_repo_std_root = try std.fs.path.join(allocator, &.{ home, "projects", "sci", "sa_std" });
+        if (try saStdRootLooksValid(allocator, home_repo_std_root)) return home_repo_std_root;
+
+        const installed_std_root = try std.fs.path.join(allocator, &.{ home, ".sa", "std" });
+        if (try saStdRootLooksValid(allocator, installed_std_root)) return installed_std_root;
+    } else |_| {}
+
+    const candidate_roots = [_][]const u8{
+        "sa_std",
+        "sci/sa_std",
+        "../sci/sa_std",
+        "../../sci/sa_std",
+        "/home/vscode/projects/sci/sa_std",
+        "/home/vscode/.sa/std",
+    };
+    for (candidate_roots) |root| {
+        if (try saStdRootLooksValid(allocator, root)) return try allocator.dupe(u8, root);
+    }
+
+    return error.FileNotFound;
+}
+
+fn sabProjectRoot(allocator: std.mem.Allocator, source_file: []const u8) ![]const u8 {
+    const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch return std.fs.cwd().realpathAlloc(allocator, ".");
+    const source_dir = std.fs.path.dirname(source_abs) orelse ".";
+    var resolution = sla_workspace.resolveFromRootPath(allocator, source_dir, .{}) catch return std.fs.cwd().realpathAlloc(allocator, ".");
+    defer resolution.deinit(allocator);
+    return try allocator.dupe(u8, resolution.workspace_root);
+}
+
+fn encodeSaTextAsSab(
+    allocator: std.mem.Allocator,
+    source_file: []const u8,
+    source_path: []const u8,
+    sa_code: []const u8,
+    stderr: std.io.AnyWriter,
+    profile: bool,
+) !?[]u8 {
+    if (std.fs.path.dirname(source_path)) |dir| {
+        std.fs.cwd().makePath(dir) catch |err| {
+            try stderr.print("File Error: failed to create SAB work directory {s}: {}\n", .{ dir, err });
+            return null;
+        };
+    }
+
+    const project_root = sabProjectRoot(allocator, source_file) catch |err| {
+        try stderr.print("SAB Error: failed to resolve project root for {s}: {}\n", .{ source_file, err });
+        return null;
+    };
+    const std_root = sabSaStdRoot(allocator) catch |err| {
+        try stderr.print("SAB Error: failed to resolve SA std root: {}\n", .{err});
+        return null;
+    };
+    const resolve_ctx = sci_bridge.flattener.ResolveContext{ .options = .{ .project_root = project_root, .std_root = std_root } };
+
+    var stage_start = std.time.nanoTimestamp();
+    var flat = sci_bridge.flattener.flattenFileWithPackages(allocator, source_path, sa_code, resolve_ctx) catch |err| {
+        try stderr.print("SAB Error: failed to flatten SA-compatible lowering {s}: {}\n", .{ source_path, err });
+        return null;
+    };
+    defer flat.deinit(allocator);
+    slaProfileStage(stderr, profile, "sa flatten", stage_start);
+
+    stage_start = std.time.nanoTimestamp();
+    const sab_bytes = sci_bridge.encodeSabFromFlat(allocator, &flat) catch |err| {
+        try stderr.print("SAB Error: failed to encode SAB for {s}: {}\n", .{ source_path, err });
+        return null;
+    };
+    slaProfileStage(stderr, profile, "sab encode", stage_start);
+    return sab_bytes;
+}
+
+fn compileTypedSlaProgramToCompatibleSab(
+    allocator: std.mem.Allocator,
+    tc: *type_checker_mod.TypeChecker,
+    program: *ast.Node,
+    source_file: []const u8,
+    output_file: []const u8,
+    stderr: std.io.AnyWriter,
+    profile: bool,
+) !?[]u8 {
+    const stage_start = std.time.nanoTimestamp();
+    rewriteProgramImportsForOutput(allocator, program, source_file, output_file) catch |err| {
+        try stderr.print("Import Error: failed to rewrite @import paths for SAB output: {}\n", .{err});
+        return null;
+    };
+
+    var cg = codegen_mod.Codegen.init(allocator, tc);
+    defer cg.deinit();
+    const sa_code = cg.generate(program) catch |err| {
+        try stderr.print("SAB Error: failed to lower SLA through SA-compatible SAB path: {}\n", .{err});
+        return null;
+    };
+    slaProfileStage(stderr, profile, "sa-compatible codegen", stage_start);
+
+    const virtual_sa_path = try virtualSaPathForSabOutput(allocator, output_file);
+    return try encodeSaTextAsSab(allocator, source_file, virtual_sa_path, sa_code, stderr, profile);
+}
+
 fn compileSlaFileToSabWithOptions(
     allocator: std.mem.Allocator,
     file: []const u8,
@@ -1354,7 +1485,6 @@ fn compileSlaFileToSabWithOptions(
     stderr: std.io.AnyWriter,
     options: SlaCompileOptions,
 ) !?[]u8 {
-    _ = output_file;
     const profile = slaProfileEnabled(allocator);
     var stage_start = std.time.nanoTimestamp();
     const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
@@ -1433,11 +1563,13 @@ fn compileSlaFileToSabWithOptions(
 
     stage_start = std.time.nanoTimestamp();
     const sab_bytes = sab_codegen_mod.generate(allocator, &tc, specialized_prog) catch |err| {
-        if (options.return_unsupported_sab_error and err == sab_codegen_mod.Error.UnsupportedSabDirectFeature) return err;
-        try stderr.print("SAB Error: direct SLA to SAB backend cannot compile {s}: {}\n", .{ file, err });
-        return null;
+        slaProfileStage(stderr, profile, "sab direct codegen", stage_start);
+        switch (err) {
+            error.OutOfMemory => return err,
+            else => return try compileTypedSlaProgramToCompatibleSab(allocator, &tc, specialized_prog, file, output_file, stderr, profile),
+        }
     };
-    slaProfileStage(stderr, profile, "sab codegen", stage_start);
+    slaProfileStage(stderr, profile, "sab direct codegen", stage_start);
     return sab_bytes;
 }
 
@@ -1471,12 +1603,10 @@ fn compileSlaSabTestInput(
     stderr: std.io.AnyWriter,
     extra_args: []const []const u8,
     emit_sab_file: bool,
-    return_unsupported_sab_error: bool,
 ) !?CompiledTestInput {
     const sab_out = try managedSabPath(allocator, file);
     const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, .{
         .test_filter = saTestFilterFromArgs(extra_args),
-        .return_unsupported_sab_error = return_unsupported_sab_error,
     })) orelse return null;
     if (!try writeSabFile(sab_out, sab_bytes, stderr)) return null;
     if (emit_sab_file) {
@@ -1928,11 +2058,7 @@ pub fn runSlaCommandImpl(
         };
 
         const test_input = switch (backend) {
-            .auto => (compileSlaSabTestInput(allocator, file, stderr, extra_args, options.emit_sab_file, true) catch |err| switch (err) {
-                error.UnsupportedSabDirectFeature => try compileSlaSaTestInput(allocator, file, stderr, extra_args, options.emit_sab_file),
-                else => return err,
-            }) orelse return 1,
-            .sab => (try compileSlaSabTestInput(allocator, file, stderr, extra_args, options.emit_sab_file, false)) orelse return 1,
+            .auto, .sab => (try compileSlaSabTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
             .sa => (try compileSlaSaTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
         };
         defer {
@@ -2315,6 +2441,71 @@ test "sla test sab backend prunes unmatched tests before type checking" {
     var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
     defer module.deinit(std.testing.allocator);
 
+    var test_count: usize = 0;
+    for (module.function_sigs) |fsig| {
+        if (fsig.kind == .test_func) test_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), test_count);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend supports full SA-compatible struct lowering" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const struct_source =
+        \\struct SabPair {
+        \\    x: i32,
+        \\    y: i32,
+        \\}
+        \\
+        \\fn make_pair(x: i32, y: i32) -> SabPair {
+        \\    return SabPair { x: x, y: y };
+        \\};
+        \\
+        \\fn sum_pair(pair: SabPair) -> i32 {
+        \\    return pair.x + pair.y;
+        \\};
+        \\
+        \\@test "sab struct fallback"() {
+        \\    let pair = make_pair(2, 3);
+        \\    let got = sum_pair(pair);
+        \\    if got != 5 { panic(25005); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "struct_sab.sla", .data = struct_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const compiled = (try compileSlaSabTestInput(
+        arena.allocator(),
+        "struct_sab.sla",
+        stderr_buf.writer().any(),
+        &.{ "--filter", "sab struct fallback" },
+        false,
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.containsAtLeast(u8, compiled.path, 1, ".sla-cache/sab/"));
+    try tmp.dir.access(compiled.path, .{});
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access("struct_sab.test.sa", .{}));
+
+    const sab_bytes = try tmp.dir.readFileAlloc(std.testing.allocator, compiled.path, 1024 * 1024);
+    defer std.testing.allocator.free(sab_bytes);
+    try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
     var test_count: usize = 0;
     for (module.function_sigs) |fsig| {
         if (fsig.kind == .test_func) test_count += 1;

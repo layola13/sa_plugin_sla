@@ -599,11 +599,14 @@ or engine concepts into the compiler.
 
 **101. Does SLA compile to `.sa` first and then convert to SAB?**
 
-No. `sa sla build` remains the `.sa` text mainline. `sa sla sab build`,
-`sa sla sab workspace`, `sa slab build`, and `sa slab workspace` use the direct
-SAB mainline: SLA source expansion, parsing, import expansion, monomorphization,
-type checking, then `sab_codegen.generate`. The SAB path must not be implemented
-as `sla -> sa -> sab`.
+No as a user-facing pipeline. `sa sla build` remains the `.sa` text mainline,
+while `sa sla sab build`, `sa sla sab workspace`, `sa slab build`,
+`sa slab workspace`, and the default `sa sla test` path produce SAB artifacts.
+The SAB path first attempts the direct AST/type-checker-to-SAB encoder. When a
+SA feature is not yet covered by that direct encoder, the plugin uses the
+in-memory SA-compatible lowering plus SCI's flattener to encode SAB, preserving
+SA backend metadata without writing a `.sa` file or invoking the legacy text
+test backend.
 
 **102. Where does `sa sla sab build` write output by default?**
 
@@ -641,9 +644,10 @@ No, not by default. Prefer focused commands and filtered unit tests with
 
 **107. What backend does `sa sla test` use by default?**
 
-`sa sla test` defaults to `--test-backend auto`, which tries direct SLA-to-SAB
-first and passes the managed `.sla-cache/sab/...` artifact to `sa test`. If the
-direct SAB backend returns `UnsupportedSabDirectFeature`, auto mode falls back
-to the legacy `.test.sa` test path so existing test suites can keep running
-while SAB coverage expands. Use `--test-backend sab` to require SAB with no
-fallback, or `--test-backend sa` to force the old `.sa` text test backend.
+`sa sla test` defaults to `--test-backend auto`, which writes a managed
+`.sla-cache/sab/...` artifact and passes that SAB file to `sa test`. Auto mode
+uses the SAB mainline, including the in-memory SA-compatible SAB encoder for
+features that the direct AST-to-SAB fast path does not yet cover. It does not
+fall back to `.test.sa`; use `--test-backend sa` to force the old `.sa` text
+test backend. Use `--test-backend sab` when the command should document strict
+SAB intent explicitly.

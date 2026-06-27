@@ -4,6 +4,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] SAB default test path has been revalidated against SA-compatible backend features and ECS focused tests.
+  - SCI SAB was bumped to v3 metadata so decoded SAB preserves raw instruction text, atomic expected/new operand text, native register names, package identity, package source hash, upstream locations, and verified function register ids. This fixes LLVM backend cases that need original SA semantics such as borrows from globals and cmpxchg operand text.
+  - Instruction metadata decoded from SAB now uses ownership compatible with both `sab.Module.deinit` and `flattener.FlattenResult.deinit`, fixing the double-free diagnostics seen after default SAB rosetta tests.
+  - `sa sla test` default `auto` now stays on the SAB mainline: direct AST-to-SAB is attempted first, and unsupported direct shapes use the in-memory SA-compatible SAB encoder. The legacy `.test.sa` path is only selected by explicit `--test-backend sa`.
+  - Rebuilt and installed SA (`zig build --prefix /home/vscode/.sa --summary all`), rebuilt the plugin (`zig build --summary all`), and installed the dev plugin with `SA_PLUGIN_DEV=1 sa plugin install --dev .`.
+  - Verified narrowly with `timeout 120s` commands only: `zig test src/sab.zig --test-filter "sab v3 preserves instruction metadata required by SA backends"`, `zig test src/sab.zig --test-filter "sab borrow roundtrip preserves raw source text"`, `zig test src/sab.zig --test-filter "sab function signatures roundtrip without function header text"`, `zig test src/plugin_bridge.zig --test-filter "encodeSabFromFlat writes verified register metadata"`, `SA_PLUGIN_DEV=1 sa sla test tests/test_sab_direct.sla --test-backend sab --filter "direct sab add"`, and default-backend `SA_PLUGIN_DEV=1 sa sla test demos/rosetta/05_struct/main.sla --filter "rosetta 005 05_struct"`.
+  - ECS focused verification passed through default SAB for `lib/commands_table_erased.sla` filters `table erased commands spawn batch bundles apply deferred`, `table erased commands insert batch bundles apply deferred`, and `table erased commands insert batch if new keeps existing components`. Cold runs were about 26-28s due to SA backend cache fill; repeated runs were about 2.2-2.7s with `.sla-cache/sab/` and SA incremental cache warm.
+  - Full test suites were intentionally not run to avoid CPU and memory pressure.
+
 - [done] SLA CLI helper commands have been added for project setup and capability discovery.
   - Added `sa sla init [path]`, which creates `sa.mod`, `src/main.sla`, and `.gitignore` with `.sla-cache/` ignored, using exclusive file creation so existing projects are not overwritten.
   - Added `sa sla skills [--json]`; JSON mode reports the plugin capability section, while text mode writes `.codex/skills/sla/SKILL.md` and `.claude/skills/sla/SKILL.md` like `sa skills`.
@@ -24,9 +33,9 @@ Update this file every time a compiler feature or demo milestone is completed an
   - Re-verified through installed host commands after reinstall: `SA_PLUGIN_DEV=1 sa sla sab build tests/test_sab_direct.sla` writes managed `.sla-cache/sab/...`; `SA_PLUGIN_DEV=1 sa sla init /tmp/sa_host_sla_init` creates a project with `.sla-cache/` ignored.
   - Full test suites were intentionally not run to avoid CPU and memory pressure.
 
-- [done] `sa sla test` now prefers the direct SAB backend and the previous ECS timeout path has been reduced to a focused passing run.
-  - Added `--test-backend auto|sab|sa` for `sa sla test`; default `auto` compiles directly to managed `.sla-cache/sab/...` and invokes `sa test <managed.sab>`, while `--test-backend sa` forces the legacy `.test.sa` backend and `--test-backend sab` requires direct SAB without fallback.
-  - Kept SAB and SA as two independent compiler mainlines: the test SAB path calls `compileSlaFileToSabWithOptions` directly and never lowers through `.sa` text. Auto mode only falls back to `.test.sa` when direct SAB returns `UnsupportedSabDirectFeature`.
+- [done] `sa sla test` now prefers the SAB backend and the previous ECS timeout path has been reduced to a focused passing run.
+  - Added `--test-backend auto|sab|sa` for `sa sla test`; default `auto` compiles to managed `.sla-cache/sab/...` and invokes `sa test <managed.sab>`, while `--test-backend sa` forces the legacy `.test.sa` backend and `--test-backend sab` explicitly requires a SAB artifact with no legacy `.sa` backend fallback.
+  - Kept SAB and SA as two independent user-facing compiler mainlines: the test SAB path calls `compileSlaFileToSabWithOptions` directly and never writes `.test.sa`. Direct AST-to-SAB is attempted first; unsupported direct shapes are encoded to SAB through the in-memory SA-compatible fallback.
   - Added `--filter` pruning before monomorphization/type checking for both SAB and SA test paths so focused tests do not type-check unrelated broken `@test` declarations.
   - Fixed a parser O(n²) generic-lookahead path where ordinary `<` comparisons could scan to EOF repeatedly; the ECS heavy file parse dropped from about 41s to under 1s in profiling, and the focused test no longer times out.
   - Updated host/local help, `sap.json`, README, FAQ, and SAB pipeline docs to show `--test-backend auto|sab|sa` and the `.sla-cache/sab/` managed test artifact behavior.

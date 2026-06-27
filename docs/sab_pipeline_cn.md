@@ -96,7 +96,7 @@ workspace 模式从当前目录解析 `sa.mod`，选择默认 member 或 `-p/--p
 sa sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]
 ```
 
-默认 `auto` 后端走 SAB 主线：SLA 前端生成 `.sla-cache/sab/...`，然后调用 `sa test <managed.sab> ...`。直接 AST-to-SAB 只是快速路径；如果它遇到尚未手写覆盖的 SLA 特性，例如函数指针间接调用，会改走内存 SA-compatible lowering，再通过 SCI flattener/SAB encoder 生成 SAB。输出仍然是 `.sab`，不会因为 direct fast path 不支持而回退到 `.test.sa`。SCI 的通用 SAB encoder 覆盖 SA `InstKind` / `OpKind` / operand tag 并保留 raw_text、函数寄存器、native register、package identity、upstream location 等后端元数据。
+默认 `auto` 后端走 SAB 主线：SLA 前端生成 `.sla-cache/sab/...`，然后调用 `sa test <managed.sab> ...`。直接 AST-to-SAB 只是快速路径；如果它遇到尚未手写覆盖的 SLA 特性，例如函数指针间接调用，会改走内存 SA-compatible lowering，再通过 SCI flattener/SAB encoder 生成 SAB。输出仍然是 `.sab`，不会因为 direct fast path 不支持而回退到 `.test.sa`。SCI 的通用 SAB v4 encoder 覆盖 SA `InstKind` / `OpKind` / operand tag，并保留函数寄存器、native register、package identity、upstream location 等后端元数据；v4 不再保存每条 instruction 的完整 `.sa` raw_text。
 
 - `--test-backend sab`：强制 SAB 主线；适合验证不会走旧 `.test.sa` 后端。
 - `--test-backend sa`：强制旧 `.test.sa` 文本测试路径。
@@ -111,11 +111,11 @@ sa slab disasm <file.sab> [--out <file.sa>]
 
 反汇编只用于调试查看，不参与编译主链路。
 
-## SAB v3 布局
+## SAB v4 布局
 
 ```text
 magic:          4 bytes = "SAB\0"
-version_major:  u8 = 3
+version_major:  u8 = 4
 version_minor:  u8 = 0
 section_count:  uleb128
 
@@ -132,7 +132,7 @@ section*:
 - `3 const_decls`：常量声明和结构化 literal。
 - `4 instructions`：指令 kind、source line、op kind、atomic metadata、operands。
 
-不允许出现完整 `.sa` source section。兼容字段里只保留 SA compiler 目前仍需要解析的短操作数字符串，例如 call operand，不保存整行 SA 源码。
+不允许出现完整 `.sa` source section。v4 instruction payload 不写 raw instruction text；只保留必要的结构化 operand 和短操作数字符串，例如 call body operand、atomic expected/new operand、const literal text。`sab disasm` 是调试反汇编，不参与编译主链路。
 
 ## 当前支持子集
 
@@ -153,7 +153,11 @@ section*:
 
 最近一次窄验证均避免全量测试：
 
-- SCI 构建：`zig build`，通过；SAB focused Zig tests `sab roundtrip covers every SA instruction and op kind`、`sab roundtrip covers every SA operand kind` 通过。
+- SCI 构建：`zig build -Doptimize=Debug`，通过；SAB focused Zig tests `zig test src/sab.zig --test-filter sab` 通过，覆盖 every SA `InstKind` / `OpKind` / operand tag 且 decoded instruction `raw_text` 为空。
+- SCI 结构化后端回归：`zig test src/emit_llvm_llvmc.zig --test-filter "assignOperand resolves localized const vtable slots"` 通过，覆盖 v4 SAB 无 raw_text 时函数指针/vtable const 地址 lowering。
+- SCI call/interp 回归：`zig test src/interp.zig --test-filter call` 通过，覆盖 structured `parseInstructionCall`。
+- SAB 端到端：`SA_PLUGIN_DEV=1 sa sla sab build tests/test_unit_fn_ptr_value.sla --out /tmp/test_unit_fn_ptr_value_v4.sab` 后，`/home/vscode/projects/sci/zig-out/bin/sa test /tmp/test_unit_fn_ptr_value_v4.sab --compile-only` 通过；`test_unit_spaceship_cmp.sla` 与 `test_unit_using_static_extension.sla` 同样通过。
+- 性能点测：同一 `test_unit_fn_ptr_value`，`sa test <v4.sab> --compile-only` 约 3.31s-4.39s，raw `.sa` 路径约 11.31s；SA 后端吃 SAB 已明显加速。`sa sla sab build` 前端生成 SAB 仍比 `sa sla build` 慢，本轮测得约 3.66s vs 0.12s，剩余瓶颈在 SLA->SAB 生成阶段的 SA-compatible flatten/verify/encode 与缓存写入。
 - 插件构建：`zig build`，通过。
 - 默认托管 SAB：`timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla`，输出 `.sla-cache/sab/test_sab_direct-...sab`。
 - 显式落盘：`timeout 120s ./zig-out/bin/sla-local-cli sla sab build tests/test_sab_direct.sla --out /tmp/sla_direct_out.sab`，`/tmp/sla_direct_out.sab` magic 为 `53 41 42 00`。

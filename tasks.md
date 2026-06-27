@@ -69,7 +69,9 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] Make `sa sla test` default to `--test-backend auto`, writing managed SAB under `.sla-cache/sab/` and invoking `sa test` on SAB by default; the legacy `.test.sa` path is now only used by explicit `--test-backend sa`.
   - [x] Add `--test-backend sab` for explicit SAB artifact verification with no legacy `.sa` backend fallback, and `--test-backend sa` for explicit legacy `.sa` text tests.
   - [x] Add an in-memory SA-compatible SAB encoder fallback inside the SAB mainline so SA features not yet covered by direct AST-to-SAB codegen still produce `.sab` output without writing `.sa` text.
-  - [x] Confirm SCI SAB v3 metadata support preserves raw instruction text, atomic operand text, native register names, package identity, upstream locations, and verified function register ids needed by SA backends.
+  - [x] Confirm SCI SAB v4 metadata support preserves structured operands, atomic operand text, native register names, package identity, upstream locations, and verified function register ids needed by SA backends without storing per-instruction raw `.sa` text.
+  - [x] Add SCI regression coverage for v4 no-raw-text SAB decode, all `InstKind` / `OpKind` / operand tags, structured call parsing, and LLVM lowering of localized const vtable slots.
+  - [ ] Optimize SLA-to-SAB generation time; current SA backend compile from `.sab` is faster than raw `.sa`, but `sa sla sab build` still spends extra time in SA-compatible flatten/verify/encode and cache writes.
   - [x] Add focused tests for direct SAB output, managed cache behavior, SAB magic, decoded instructions, and no generated `.sa` side output.
 - [x] **SLA CLI Project Helpers**
   - [x] Add `sa sla init [path]` to scaffold a minimal SLA binary project without overwriting existing files.

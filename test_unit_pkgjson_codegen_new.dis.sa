@@ -1,0 +1,1978 @@
+@extern sa_str_is_ascii(ptr: ptr, len: u64) -> i32
+@extern sa_str_eq_ignore_ascii_case(left: ptr, left_len: u64, right: ptr, right_len: u64) -> i32
+@extern sa_str_trim_ascii_start_index(ptr: ptr, len: u64) -> u64
+@extern sa_str_trim_ascii_end_len(ptr: ptr, len: u64) -> u64
+@extern sa_str_utf8_char_count(ptr: ptr, len: u64) -> u64
+@extern sa_str_utf8_validate(ptr: ptr, len: u64) -> i32
+@extern sa_str_utf8_char_at(ptr: ptr, len: u64, char_index: u64, out_codepoint: ptr) -> i32
+@extern sa_str_utf8_char_range_at(ptr: ptr, len: u64, char_index: u64, out_start: ptr, out_len: ptr) -> i32
+@extern sa_string_concat(left: ptr, left_len: u64, right: ptr, right_len: u64) -> u64
+@export sa_mem_copy(&dst: ptr, &src: ptr, count: u64):
+@export sa_mem_set(&dst: ptr, val: u8, count: u64):
+@export sa_vec_new() -> ^ptr:
+@export sa_vec_with_capacity(cap: u64, elem_size: u64) -> ^ptr:
+@export sa_vec_len(&vec: ptr) -> u64:
+@export sa_vec_capacity(&vec: ptr) -> u64:
+@export sa_vec_is_empty(&vec: ptr) -> i32:
+@export sa_vec_clear(&vec: ptr):
+@export sa_vec_truncate(&vec: ptr, new_len: u64):
+@export sa_vec_reserve(^vec: ptr, additional: u64, elem_size: u64) -> ^ptr:
+@export sa_vec_push(^vec: ptr, value: u64, elem_size: u64) -> ^ptr:
+@export sa_vec_try_pop(&vec: ptr, &out_value_slot: ptr) -> i32:
+@export sa_vec_extend_from_slice(^vec: ptr, &slice: ptr, elem_size: u64) -> ^ptr:
+@export sa_vec_append(^dst_vec: ptr, &src_vec: ptr, elem_size: u64) -> ^ptr:
+@export sa_vec_try_swap_remove(&vec: ptr, index: u64, &out_value_slot: ptr) -> i32:
+@export sa_vec_try_remove(&vec: ptr, index: u64, &out_value_slot: ptr, elem_size: u64) -> i32:
+@export sa_vec_try_split_off(^vec: ptr, index: u64, elem_size: u64, &out_vec_slot: ptr) -> ^ptr:
+@export sa_vec_shrink_to(^vec: ptr, min_cap: u64, elem_size: u64) -> ^ptr:
+@export sa_vec_shrink_to_fit(^vec: ptr, elem_size: u64) -> ^ptr:
+@export sa_vec_resize(^vec: ptr, new_len: u64, fill_value: u64, elem_size: u64) -> ^ptr:
+@export sa_vec_free(^vec: ptr):
+@extern sa_fmt_i64(value: i64, base: u32) -> u64
+@extern sa_fmt_u64(value: u64, base: u32) -> u64
+@extern sa_fmt_f64(value: f64, precision: u32) -> u64
+@extern sa_fmt_bool(value: i1) -> u64
+@extern sa_fmt_bytes(&buf: ptr, len: u64) -> u64
+@extern sa_fmt_i64_into(value: i64, base: u32, out: ptr, out_cap: u64, &out_len: ptr) -> i32
+@extern sa_fmt_u64_into(value: u64, base: u32, out: ptr, out_cap: u64, &out_len: ptr) -> i32
+@extern sa_fmt_f64_into(value: f64, precision: u32, out: ptr, out_cap: u64, &out_len: ptr) -> i32
+@extern sa_fmt_bool_into(value: i1, out: ptr, out_cap: u64, &out_len: ptr) -> i32
+@extern sa_fmt_bytes_into(&buf: ptr, len: u64, out: ptr, out_cap: u64, &out_len: ptr) -> i32
+@extern sa_fmt_buffer_data(buffer: u64) -> &ptr
+@extern sa_fmt_buffer_len(buffer: u64) -> u64
+@extern sa_fmt_buffer_write_to(buffer: u64, writer: u64) -> i32
+@extern sa_fmt_buffer_free(^buffer: u64) -> i32
+@extern sa_fs_file_open(&path: ptr, path_len: u64, flags: u32) -> i32
+@extern sa_fs_file_create(&path: ptr, path_len: u64) -> i32
+@extern sa_fs_file_close(file: u64) -> i32
+@extern sa_fs_file_read(file: u64, &buf: ptr, cap: u64) -> i32
+@extern sa_fs_file_read_exact(file: u64, &buf: ptr, len: u64) -> i32
+@extern sa_fs_file_write(file: u64, &buf: ptr, len: u64) -> i32
+@extern sa_fs_file_write_all(file: u64, &buf: ptr, len: u64) -> i32
+@extern sa_fs_file_flush(file: u64) -> i32
+@extern sa_fs_file_sync_data(file: u64) -> i32
+@extern sa_fs_file_sync(file: u64) -> i32
+@extern sa_fs_file_truncate(file: u64, new_size: u64) -> i32
+@extern sa_fs_file_seek(file: u64, whence: u32, offset: i64) -> i32
+@extern sa_std_fs_open_read(&path: ptr, path_len: u64, &out_handle: ptr) -> i32
+@extern sa_std_fs_open_write(&path: ptr, path_len: u64, truncate: u32, &out_handle: ptr) -> i32
+@extern sa_std_fs_file_read(file: u64, &buf: ptr, cap: u64, &out_read: ptr) -> i32
+@extern sa_std_fs_file_write(file: u64, &buf: ptr, len: u64, &out_written: ptr) -> i32
+@extern sa_std_fs_file_seek(file: u64, whence: u32, offset: i64, &out_pos: ptr) -> i32
+@extern sa_std_fs_remove(&path: ptr, path_len: u64) -> i32
+@extern sa_std_fs_exists(&path: ptr, path_len: u64) -> i32
+@extern sa_std_fs_try_exists(&path: ptr, path_len: u64, &out_exists: ptr) -> i32
+@extern sa_std_fs_len(&path: ptr, path_len: u64, &out_len: ptr) -> i32
+@extern sa_std_fs_read_file(&path: ptr, path_len: u64, max_bytes: u64, &out_handle: ptr) -> i32
+@extern sa_std_fs_read_to_string(&path: ptr, path_len: u64, max_bytes: u64, &out_handle: ptr) -> i32
+@extern sa_std_fs_read_file_base64(&path: ptr, path_len: u64, max_bytes: u64, &out_handle: ptr) -> i32
+@extern sa_std_fs_read_dir_json(&path: ptr, path_len: u64, max_entries: u64, &out_handle: ptr) -> i32
+@extern sa_std_fs_metadata(&path: ptr, path_len: u64, &out_handle: ptr) -> i32
+@extern sa_std_fs_metadata_json(&path: ptr, path_len: u64, &out_handle: ptr) -> i32
+@extern sa_std_fs_metadata_free(metadata: u64) -> i32
+@extern sa_std_fs_canonicalize(&path: ptr, path_len: u64, &out_handle: ptr) -> i32
+@extern sa_std_close(handle: u64) -> i32
+@extern sa_fs_read_file(&path: ptr, path_len: u64, max_bytes: u64) -> u64!
+@extern sa_fs_read_to_string(&path: ptr, path_len: u64, max_bytes: u64) -> u64!
+@extern sa_fs_write_file(&path: ptr, path_len: u64, &buf: ptr, len: u64) -> i32
+@extern sa_fs_read_buffer_data(buffer: u64) -> &ptr
+@extern sa_fs_read_buffer_len(buffer: u64) -> u64
+@extern sa_fs_read_buffer_free(^buffer: u64) -> i32
+@extern sa_fs_read_file_base64(&path: ptr, path_len: u64, max_bytes: u64) -> u64!
+@extern sa_fs_write_file_base64(&path: ptr, path_len: u64, &data_base64: ptr, data_base64_len: u64) -> i32
+@extern sa_fs_read_dir_json(&path: ptr, path_len: u64, max_entries: u64) -> u64!
+@extern sa_fs_dir_buffer_data(buffer: u64) -> &ptr
+@extern sa_fs_dir_buffer_len(buffer: u64) -> u64
+@extern sa_fs_dir_buffer_free(^buffer: u64) -> i32
+@extern sa_fs_metadata(&path: ptr, path_len: u64) -> u64!
+@extern sa_fs_metadata_json(&path: ptr, path_len: u64) -> u64!
+@extern sa_fs_metadata_is_file(metadata: u64) -> u8
+@extern sa_fs_metadata_is_directory(metadata: u64) -> u8
+@extern sa_fs_metadata_is_symlink(metadata: u64) -> u8
+@extern sa_fs_metadata_modified_ms(metadata: u64) -> i64
+@extern sa_fs_metadata_created_ms(metadata: u64) -> i64
+@extern sa_fs_metadata_free(metadata: u64) -> i32!
+@extern sa_fs_remove_file(&path: ptr, path_len: u64) -> i32
+@extern sa_fs_rename(&from_path: ptr, from_len: u64, &to_path: ptr, to_len: u64) -> i32
+@extern sa_fs_make_dir(&path: ptr, path_len: u64) -> i32
+@extern sa_fs_create_dir(&path: ptr, path_len: u64) -> i32
+@extern sa_fs_remove_dir(&path: ptr, path_len: u64) -> i32
+@extern sa_fs_remove_dir_all(&path: ptr, path_len: u64) -> i32
+@extern sa_fs_remove_path(&path: ptr, path_len: u64) -> i32
+@extern sa_fs_copy_file(&from_path: ptr, from_len: u64, &to_path: ptr, to_len: u64) -> i32
+@extern sa_fs_set_permissions(&path: ptr, path_len: u64, mode: u32) -> i32
+@extern sa_fs_set_times_ms(&path: ptr, path_len: u64, accessed_ms: i64, modified_ms: i64) -> i32
+@extern sa_fs_hard_link(&from_path: ptr, from_len: u64, &to_path: ptr, to_len: u64) -> i32
+@extern sa_fs_symlink(&target_path: ptr, target_len: u64, &link_path: ptr, link_len: u64) -> i32
+@extern sa_std_fs_read_link(&path: ptr, path_len: u64, &out_handle: ptr) -> i32
+@extern sa_json_parse(&json_bytes: ptr, len: u64) -> ^ptr
+@extern sa_json_kind(node: ptr) -> u32
+@extern sa_json_object_get(node: ptr, &key: ptr, key_len: u64, &out_handle: ptr) -> i32
+@extern sa_json_array_get(node: ptr, index: u64, &out_handle: ptr) -> i32
+@extern sa_json_object_key_at(node: ptr, index: u64, &out_ptr: ptr, &out_len: ptr) -> i32
+@extern sa_json_object_get_string(node: ptr, &key: ptr, key_len: u64, &out_ptr: ptr, &out_len: ptr) -> i32
+@extern sa_json_object_get_bool(node: ptr, &key: ptr, key_len: u64, &out_value: ptr) -> i32
+@extern sa_json_object_get_i64(node: ptr, &key: ptr, key_len: u64, &out_value: ptr) -> i32
+@extern sa_json_object_get_f64(node: ptr, &key: ptr, key_len: u64, &out_value: ptr) -> i32
+@extern sa_json_as_f64(node: ptr, &out_value: ptr) -> i32
+@extern sa_json_as_i64(node: ptr, &out_value: ptr) -> i32
+@extern sa_json_as_bool(node: ptr, &out_value: ptr) -> i32
+@extern sa_json_string_ptr(node: ptr) -> &ptr
+@extern sa_json_string_len(node: ptr) -> u64
+@extern sa_json_value_count(node: ptr, &out_count: ptr) -> i32
+@extern sa_json_free(^node: ptr) -> i32!
+@extern sa_json_stringify(node: ptr, &out_handle: ptr) -> i32
+@extern sa_json_buffer_data(&buffer: ptr) -> &ptr
+@extern sa_json_buffer_len(&buffer: ptr) -> u64
+@extern sa_json_buffer_free(^buffer: ptr) -> i32!
+@extern sa_json_scanner_new(&out_handle: ptr) -> i32!
+@extern sa_json_scanner_feed(scanner: ptr, &input: ptr, len: u64) -> i32!
+@extern sa_json_scanner_end_input(scanner: ptr) -> i32!
+@extern sa_json_scanner_next(scanner: ptr, &out_token: ptr) -> i32!
+@extern sa_json_scanner_free(^scanner: ptr) -> i32!
+@extern sa_json_stream_new(&json_bytes: ptr, len: u64) -> ^ptr
+@extern sa_json_stream_next(stream: ptr) -> u32
+@extern sa_json_stream_get_slice_ptr(stream: ptr) -> &ptr
+@extern sa_json_stream_get_slice_len(stream: ptr) -> u64
+@extern sa_json_stream_free(^stream: ptr) -> i32!
+@extern sa_json_writer_new(whitespace: u32, emit_null_optional_fields: u8, emit_strings_as_arrays: u8, escape_unicode: u8, emit_nonportable_numbers_as_strings: u8, &out_handle: ptr) -> i32!
+@extern sa_json_writer_begin_object(writer: ptr) -> i32!
+@extern sa_json_writer_end_object(writer: ptr) -> i32!
+@extern sa_json_writer_begin_array(writer: ptr) -> i32!
+@extern sa_json_writer_end_array(writer: ptr) -> i32!
+@extern sa_json_writer_object_field(writer: ptr, &key: ptr, key_len: u64) -> i32!
+@extern sa_json_writer_field_string(writer: ptr, &key: ptr, key_len: u64, &data: ptr, len: u64) -> i32!
+@extern sa_json_writer_field_bool(writer: ptr, &key: ptr, key_len: u64, value: u8) -> i32!
+@extern sa_json_writer_field_i64(writer: ptr, &key: ptr, key_len: u64, value: i64) -> i32!
+@extern sa_json_writer_field_f64(writer: ptr, &key: ptr, key_len: u64, value: f64) -> i32!
+@extern sa_json_writer_field_null(writer: ptr, &key: ptr, key_len: u64) -> i32!
+@extern sa_json_writer_field_node(writer: ptr, &key: ptr, key_len: u64, node: ptr) -> i32!
+@extern sa_json_writer_write_bool(writer: ptr, value: u8) -> i32!
+@extern sa_json_writer_write_i64(writer: ptr, value: i64) -> i32!
+@extern sa_json_writer_write_f64(writer: ptr, value: f64) -> i32!
+@extern sa_json_writer_write_string(writer: ptr, &data: ptr, len: u64) -> i32!
+@extern sa_json_writer_write_null(writer: ptr) -> i32!
+@extern sa_json_writer_write_node(writer: ptr, node: ptr) -> i32!
+@extern sa_json_writer_finish(writer: ptr, &out_handle: ptr) -> i32!
+@extern sa_json_writer_free(^writer: ptr) -> i32!
+@extern sa_print_bytes(&msg: ptr, len: u64)
+@sla__package_json_pick_condition(cond: ptr) -> ptr:
+@sla__package_json_exports_entry_from_text(data: ptr, data_len: i64) -> ptr:
+@sla__package_json_exports_entry_from_path(path_ptr: ptr, path_len: i64) -> ptr:
+@sla__package_json_resolver_entry_len(path_ptr: ptr, path_len: i64) -> i64:
+@test "package json exports resolver codegen"():
+
+@const TODO_PANIC = utf8:"called todo!() in SA"
+@const UNIMPLEMENTED_PANIC = utf8:"called unimplemented!() in SA"
+@const UNREACHABLE_PANIC = utf8:"entered unreachable!() in SA"
+@const SLA_FNPTR_VT_package_json_pick_condition = vtable { call = @sla__package_json_pick_condition }
+@const SLA_FNPTR_VT_package_json_exports_entry_from_text = vtable { call = @sla__package_json_exports_entry_from_text }
+@const SLA_FNPTR_VT_package_json_exports_entry_from_path = vtable { call = @sla__package_json_exports_entry_from_path }
+@const SLA_FNPTR_VT_package_json_resolver_entry_len = vtable { call = @sla__package_json_resolver_entry_len }
+@const SLA_STR_0 = utf8:"types"
+@const SLA_STR_1 = utf8:"types"
+@const SLA_STR_2 = utf8:"default"
+@const SLA_STR_3 = utf8:"default"
+@const SLA_STR_4 = utf8:""
+@const SLA_STR_5 = utf8:""
+@const SLA_STR_6 = utf8:""
+@const SLA_STR_7 = utf8:"exports"
+@const SLA_STR_8 = utf8:"exports"
+@const SLA_STR_9 = utf8:""
+@const SLA_STR_10 = utf8:"."
+@const SLA_STR_11 = utf8:"."
+@const SLA_STR_12 = utf8:""
+@const SLA_STR_13 = utf8:""
+@const SLA_STR_14 = utf8:"/tmp/does-not-exist-package.json"
+
+
+extern_decl $sa_str_is_ascii,fn:2
+
+extern_decl $sa_str_eq_ignore_ascii_case,fn:7
+
+extern_decl $sa_str_trim_ascii_start_index,fn:8
+
+extern_decl $sa_str_trim_ascii_end_len,fn:9
+
+extern_decl $sa_str_utf8_char_count,fn:10
+
+extern_decl $sa_str_utf8_validate,fn:11
+
+extern_decl $sa_str_utf8_char_at,fn:14
+
+extern_decl $sa_str_utf8_char_range_at,fn:17
+
+extern_decl $sa_string_concat,fn:18
+
+export_decl $sa_mem_copy,fn:22
+label $L_ENTRY,L23
+    op.ne r24,r21,0
+    br r24,L25,L25,L26
+label $L_CHECK_DST,L25
+    op.eq r27,r19,0
+    br r27,L28,L28,L29
+label $L_NULL_DST,L28
+    panic "(1701)"
+label $L_CHECK_SRC,L29
+    op.eq r30,r20,0
+    br r30,L31,L31,L32
+label $L_NULL_SRC,L31
+    panic "(1702)"
+label $L_COPY_INIT_FROM_CHECK,L32
+    release r30
+    release r27
+    jmp $L_COPY_INIT,L26
+label $L_COPY_INIT,L26
+    stack_alloc r33,8u
+    stack_alloc r34,8u
+    stack_alloc r35,8u
+    stack_alloc r36,8u
+    store r33,0u,"0",ty:5
+    load r37,r33,0u,ty:5
+    store r34,0u,"1",ty:5
+    load r38,r34,0u,ty:5
+    store r35,0u,"0",ty:9
+    store r36,0u,"count",ty:9
+    jmp $L_LOOP,L39
+label $L_LOOP,L39
+    load r40,r35,0u,ty:9
+    load r41,r36,0u,ty:9
+    op.eq r42,r41,r37
+    br r42,L43,L43,L44
+label $L_BODY,L44
+    ptr_add r45,r20,r40
+    ptr_add r46,r19,r40
+    load r47,r45,0u,ty:6
+    store r46,0u,"byte",ty:6
+    op.add r48,r40,r38
+    op.sub r49,r41,r38
+    release r45
+    release r46
+    release r47
+    release r40
+    release r41
+    release r42
+    store r35,0u,"next_offset",ty:9
+    store r36,0u,"next_remaining",ty:9
+    release r48
+    release r49
+    jmp $L_LOOP,L39
+label $L_END,L43
+    release r42
+    release r40
+    release r41
+    release r38
+    release r37
+    release r24
+    release r21
+    release r20
+    release r19
+    return_
+
+export_decl $sa_mem_set,fn:51
+label $L_ENTRY,L23
+    op.ne r24,r21,0
+    br r24,L25,L25,L52
+label $L_CHECK_DST,L25
+    op.eq r27,r19,0
+    br r27,L28,L28,L53
+label $L_NULL_DST,L28
+    panic "(1703)"
+label $L_SET_INIT_FROM_CHECK,L53
+    release r27
+    jmp $L_SET_INIT,L52
+label $L_SET_INIT,L52
+    stack_alloc r33,8u
+    stack_alloc r34,8u
+    stack_alloc r35,8u
+    stack_alloc r36,8u
+    store r33,0u,"0",ty:5
+    load r37,r33,0u,ty:5
+    store r34,0u,"1",ty:5
+    load r38,r34,0u,ty:5
+    store r35,0u,"0",ty:9
+    store r36,0u,"count",ty:9
+    jmp $L_LOOP,L39
+label $L_LOOP,L39
+    load r40,r35,0u,ty:9
+    load r41,r36,0u,ty:9
+    op.eq r42,r41,r37
+    br r42,L43,L43,L44
+label $L_BODY,L44
+    ptr_add r46,r19,r40
+    store r46,0u,"val",ty:6
+    op.add r48,r40,r38
+    op.sub r49,r41,r38
+    release r46
+    release r40
+    release r41
+    release r42
+    store r35,0u,"next_offset",ty:9
+    store r36,0u,"next_remaining",ty:9
+    release r48
+    release r49
+    jmp $L_LOOP,L39
+label $L_END,L43
+    release r42
+    release r40
+    release r41
+    release r38
+    release r37
+    release r24
+    release r21
+    release r50
+    release r19
+    return_
+
+export_decl $sa_vec_new,fn:54
+    alloc r55,24u
+    store r55,0u,"0",ty:12
+    store r55,8u,"0",ty:9
+    store r55,16u,"0",ty:9
+    return_ r55
+
+export_decl $sa_vec_with_capacity,fn:58
+label $L_ENTRY,L23
+    alloc r55,24u
+    op.eq r59,r57,0
+    br r59,L60,L60,L61
+label $L_NUM_U64_MUL_COMPUTE_bytes_ok,L61
+    op.mul r62,r56,r57
+    op.udiv r63,r62,r57
+    op.eq r64,r63,r56
+    br r64,L65,L65,L66
+label $L_NUM_U64_MUL_OK_bytes_ok,L65
+    op.add r67,r62,0
+    op.add r68,0,1
+    release r64
+    release r63
+    release r62
+    release r59
+    jmp $L_NUM_U64_MUL_END_bytes_ok,L69
+label $L_NUM_U64_MUL_OVERFLOW_bytes_ok,L66
+    op.add r67,0,0
+    op.add r68,0,0
+    release r64
+    release r63
+    release r62
+    release r59
+    jmp $L_NUM_U64_MUL_END_bytes_ok,L69
+label $L_NUM_U64_MUL_ZERO_bytes_ok,L60
+    op.add r67,0,0
+    op.add r68,0,1
+    release r59
+label $L_NUM_U64_MUL_END_bytes_ok,L69
+    br r68,L70,L70,L71
+label $L_SIZE_OVERFLOW,L71
+    panic "(1201)"
+label $L_SIZE_OK,L70
+    op.ne r72,r67,0
+    br r72,L73,L73,L74
+label $L_ALLOC,L73
+    alloc r75,r67
+    call "@sa_mem_set(&buf, 0, bytes)"
+    store r55,0u,"buf",ty:12
+    store r55,8u,"cap",ty:9
+    store r55,16u,"0",ty:9
+    move_ r75
+    release r67
+    release r68
+    release r72
+    release r56
+    return_ r55
+label $L_EMPTY,L74
+    store r55,0u,"0",ty:12
+    store r55,8u,"cap",ty:9
+    store r55,16u,"0",ty:9
+    release r67
+    release r68
+    release r72
+    release r56
+    return_ r55
+
+export_decl $sa_vec_len,fn:76
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    release r55
+    return_ r1
+
+export_decl $sa_vec_capacity,fn:77
+label $L_ENTRY,L23
+    load r56,r55,8u,ty:9
+    release r55
+    return_ r56
+
+export_decl $sa_vec_is_empty,fn:78
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    op.eq r79,r1,0
+    assign r80,r79
+    release r1
+    release r55
+    return_ r80
+
+export_decl $sa_vec_clear,fn:81
+label $L_ENTRY,L23
+    store r55,16u,"0",ty:9
+    release r55
+    return_
+
+export_decl $sa_vec_truncate,fn:83
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    op.ult r84,r82,r1
+    br r84,L85,L85,L86
+label $L_TRUNCATE,L85
+    store r55,16u,"new_len",ty:9
+    release r84
+    release r1
+    release r82
+    release r55
+    return_
+label $L_DONE,L86
+    release r84
+    release r1
+    release r82
+    release r55
+    return_
+
+export_decl $sa_vec_reserve,fn:88
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    load r56,r55,8u,ty:9
+    op.add r89,r1,r87
+    op.ult r90,r89,r1
+    br r90,L91,L91,L92
+label $L_NUM_U64_ADD_OK_needed_ok,L92
+    op.add r93,r89,0
+    op.add r94,0,1
+    release r90
+    release r89
+    jmp $L_NUM_U64_ADD_END_needed_ok,L95
+label $L_NUM_U64_ADD_OVERFLOW_needed_ok,L91
+    op.add r93,0,0
+    op.add r94,0,0
+    release r90
+    release r89
+label $L_NUM_U64_ADD_END_needed_ok,L95
+    br r94,L96,L96,L97
+label $L_RESERVE_OVERFLOW,L97
+    panic "(1202)"
+label $L_RESERVE_NEED_OK,L96
+    op.uge r98,r56,r93
+    br r98,L99,L99,L100
+label $L_RESERVE_GROW,L100
+    take r101,r55,0u
+    op.eq r102,r57,0
+    br r102,L103,L103,L104
+label $L_NUM_U64_MUL_COMPUTE_new_bytes_ok,L104
+    op.mul r105,r93,r57
+    op.udiv r106,r105,r57
+    op.eq r107,r106,r93
+    br r107,L108,L108,L109
+label $L_NUM_U64_MUL_OK_new_bytes_ok,L108
+    op.add r110,r105,0
+    op.add r111,0,1
+    release r107
+    release r106
+    release r105
+    release r102
+    jmp $L_NUM_U64_MUL_END_new_bytes_ok,L112
+label $L_NUM_U64_MUL_OVERFLOW_new_bytes_ok,L109
+    op.add r110,0,0
+    op.add r111,0,0
+    release r107
+    release r106
+    release r105
+    release r102
+    jmp $L_NUM_U64_MUL_END_new_bytes_ok,L112
+label $L_NUM_U64_MUL_ZERO_new_bytes_ok,L103
+    op.add r110,0,0
+    op.add r111,0,1
+    release r102
+label $L_NUM_U64_MUL_END_new_bytes_ok,L112
+    br r111,L113,L113,L114
+label $L_RESERVE_ALLOC_OVERFLOW,L114
+    panic "(1203)"
+label $L_RESERVE_ALLOC,L113
+    alloc r115,r110
+    call "@sa_mem_set(&new_buf, 0, new_bytes)"
+    op.eq r116,r57,0
+    br r116,L117,L117,L118
+label $L_NUM_U64_MUL_COMPUTE_copy_bytes_ok,L118
+    op.mul r119,r1,r57
+    op.udiv r120,r119,r57
+    op.eq r121,r120,r1
+    br r121,L122,L122,L123
+label $L_NUM_U64_MUL_OK_copy_bytes_ok,L122
+    op.add r124,r119,0
+    op.add r125,0,1
+    release r121
+    release r120
+    release r119
+    release r116
+    jmp $L_NUM_U64_MUL_END_copy_bytes_ok,L126
+label $L_NUM_U64_MUL_OVERFLOW_copy_bytes_ok,L123
+    op.add r124,0,0
+    op.add r125,0,0
+    release r121
+    release r120
+    release r119
+    release r116
+    jmp $L_NUM_U64_MUL_END_copy_bytes_ok,L126
+label $L_NUM_U64_MUL_ZERO_copy_bytes_ok,L117
+    op.add r124,0,0
+    op.add r125,0,1
+    release r116
+label $L_NUM_U64_MUL_END_copy_bytes_ok,L126
+    br r125,L127,L127,L128
+label $L_RESERVE_COPY_OVERFLOW,L128
+    panic "(1204)"
+label $L_RESERVE_COPY,L127
+    call "@sa_mem_copy(&new_buf, &old_buf, copy_bytes)"
+    store r55,0u,"new_buf",ty:12
+    store r55,8u,"needed",ty:9
+    release r125
+    release r124
+    release r111
+    release r110
+    release r101
+    move_ r115
+    release r98
+    release r93
+    release r94
+    release r56
+    release r1
+    release r57
+    release r87
+    return_ r55
+label $L_RESERVE_DONE,L99
+    release r98
+    release r93
+    release r94
+    release r56
+    release r1
+    release r57
+    release r87
+    return_ r55
+
+export_decl $sa_vec_push,fn:130
+label $L_ENTRY,L23
+    take r75,r55,0u
+    load r1,r55,16u,ty:9
+    load r56,r55,8u,ty:9
+    op.eq r131,r1,r56
+    br r131,L132,L132,L133
+label $L_GROW,L132
+    op.eq r134,r56,0
+    br r134,L135,L135,L136
+label $L_GROW_FROM_ZERO,L135
+    op.add r137,0,1
+    op.add r138,0,1
+    jmp $L_GROW_ALLOC,L139
+label $L_GROW_DOUBLE,L136
+    op.add r140,r56,r56
+    op.ult r141,r140,r56
+    br r141,L142,L142,L143
+label $L_NUM_U64_ADD_OK_next_cap_ok,L143
+    op.add r137,r140,0
+    op.add r138,0,1
+    release r141
+    release r140
+    jmp $L_NUM_U64_ADD_END_next_cap_ok,L144
+label $L_NUM_U64_ADD_OVERFLOW_next_cap_ok,L142
+    op.add r137,0,0
+    op.add r138,0,0
+    release r141
+    release r140
+label $L_NUM_U64_ADD_END_next_cap_ok,L144
+    br r138,L139,L139,L145
+label $L_GROW_CAP_OVERFLOW,L145
+    panic "(1205)"
+label $L_GROW_ALLOC,L139
+    op.eq r146,r57,0
+    br r146,L147,L147,L148
+label $L_NUM_U64_MUL_COMPUTE_next_cap_bytes_ok,L148
+    op.mul r149,r137,r57
+    op.udiv r150,r149,r57
+    op.eq r151,r150,r137
+    br r151,L152,L152,L153
+label $L_NUM_U64_MUL_OK_next_cap_bytes_ok,L152
+    op.add r154,r149,0
+    op.add r155,0,1
+    release r151
+    release r150
+    release r149
+    release r146
+    jmp $L_NUM_U64_MUL_END_next_cap_bytes_ok,L156
+label $L_NUM_U64_MUL_OVERFLOW_next_cap_bytes_ok,L153
+    op.add r154,0,0
+    op.add r155,0,0
+    release r151
+    release r150
+    release r149
+    release r146
+    jmp $L_NUM_U64_MUL_END_next_cap_bytes_ok,L156
+label $L_NUM_U64_MUL_ZERO_next_cap_bytes_ok,L147
+    op.add r154,0,0
+    op.add r155,0,1
+    release r146
+label $L_NUM_U64_MUL_END_next_cap_bytes_ok,L156
+    br r155,L157,L157,L158
+label $L_GROW_BYTES_OVERFLOW,L158
+    panic "(1206)"
+label $L_GROW_COPY_SIZE,L157
+    alloc r159,r154
+    op.eq r116,r57,0
+    br r116,L117,L117,L118
+label $L_NUM_U64_MUL_COMPUTE_copy_bytes_ok,L118
+    op.mul r119,r1,r57
+    op.udiv r120,r119,r57
+    op.eq r121,r120,r1
+    br r121,L122,L122,L123
+label $L_NUM_U64_MUL_OK_copy_bytes_ok,L122
+    op.add r124,r119,0
+    op.add r125,0,1
+    release r121
+    release r120
+    release r119
+    release r116
+    jmp $L_NUM_U64_MUL_END_copy_bytes_ok,L126
+label $L_NUM_U64_MUL_OVERFLOW_copy_bytes_ok,L123
+    op.add r124,0,0
+    op.add r125,0,0
+    release r121
+    release r120
+    release r119
+    release r116
+    jmp $L_NUM_U64_MUL_END_copy_bytes_ok,L126
+label $L_NUM_U64_MUL_ZERO_copy_bytes_ok,L117
+    op.add r124,0,0
+    op.add r125,0,1
+    release r116
+label $L_NUM_U64_MUL_END_copy_bytes_ok,L126
+    br r125,L160,L160,L161
+label $L_GROW_COPY_OVERFLOW,L161
+    panic "(1207)"
+label $L_GROW_COPY,L160
+    call "@sa_mem_copy(&next_ptr, &buf, copy_bytes)"
+    store r55,0u,"next_ptr",ty:12
+    store r55,8u,"next_cap",ty:9
+    jmp $L_WRITE_GROW,L162
+label $L_REUSE,L133
+    store r55,0u,"buf",ty:12
+    jmp $L_WRITE_REUSE,L163
+label $L_WRITE_GROW,L162
+    op.mul r164,r1,r57
+    ptr_add r165,r159,r164
+    store r165,0u,"value",ty:9
+    op.add r166,r1,1
+    store r55,16u,"next_len",ty:9
+    release r165
+    release r164
+    release r166
+    release r125
+    release r124
+    release r155
+    release r154
+    release r138
+    release r137
+    release r134
+    release r75
+    release r129
+    release r57
+    release r56
+    release r1
+    release r131
+    return_ r55
+label $L_WRITE_REUSE,L163
+    op.mul r164,r1,r57
+    ptr_add r165,r75,r164
+    store r165,0u,"value",ty:9
+    op.add r166,r1,1
+    store r55,16u,"next_len",ty:9
+    release r165
+    release r164
+    release r166
+    release r75
+    release r129
+    release r57
+    release r56
+    release r1
+    release r131
+    return_ r55
+
+export_decl $sa_vec_try_pop,fn:168
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    op.eq r79,r1,0
+    br r79,L74,L74,L169
+label $L_READY,L169
+    load r75,r55,0u,ty:12
+    op.sub r170,r1,1
+    op.mul r171,r170,8
+    ptr_add r172,r75,r171
+    load r129,r172,0u,ty:9
+    op.sub r166,r1,1
+    store r167,0u,"value",ty:9
+    store r55,16u,"next_len",ty:9
+    release r172
+    release r171
+    release r170
+    release r129
+    release r166
+    release r75
+    release r1
+    release r79
+    release r167
+    release r55
+    return_ "1"
+label $L_EMPTY,L74
+    store r167,0u,"0",ty:12
+    release r1
+    release r79
+    release r167
+    release r55
+    return_ "0"
+
+export_decl $sa_vec_extend_from_slice,fn:174
+label $L_ENTRY,L23
+    load r175,r173,8u,ty:9
+    op.eq r176,r175,0
+    br r176,L86,L86,L132
+label $L_GROW,L132
+    load r1,r55,16u,ty:9
+    load r56,r55,8u,ty:9
+    op.add r89,r1,r175
+    op.ult r90,r89,r1
+    br r90,L91,L91,L92
+label $L_NUM_U64_ADD_OK_needed_ok,L92
+    op.add r93,r89,0
+    op.add r94,0,1
+    release r90
+    release r89
+    jmp $L_NUM_U64_ADD_END_needed_ok,L95
+label $L_NUM_U64_ADD_OVERFLOW_needed_ok,L91
+    op.add r93,0,0
+    op.add r94,0,0
+    release r90
+    release r89
+label $L_NUM_U64_ADD_END_needed_ok,L95
+    br r94,L177,L177,L178
+label $L_EXTEND_NEEDED_OVERFLOW,L178
+    panic "(1208)"
+label $L_EXTEND_NEEDED_OK,L177
+    op.uge r98,r56,r93
+    br r98,L179,L179,L180
+label $L_REALLOC,L180
+    take r101,r55,0u
+    op.eq r102,r57,0
+    br r102,L103,L103,L104
+label $L_NUM_U64_MUL_COMPUTE_new_bytes_ok,L104
+    op.mul r105,r93,r57
+    op.udiv r106,r105,r57
+    op.eq r107,r106,r93
+    br r107,L108,L108,L109
+label $L_NUM_U64_MUL_OK_new_bytes_ok,L108
+    op.add r110,r105,0
+    op.add r111,0,1
+    release r107
+    release r106
+    release r105
+    release r102
+    jmp $L_NUM_U64_MUL_END_new_bytes_ok,L112
+label $L_NUM_U64_MUL_OVERFLOW_new_bytes_ok,L109
+    op.add r110,0,0
+    op.add r111,0,0
+    release r107
+    release r106
+    release r105
+    release r102
+    jmp $L_NUM_U64_MUL_END_new_bytes_ok,L112
+label $L_NUM_U64_MUL_ZERO_new_bytes_ok,L103
+    op.add r110,0,0
+    op.add r111,0,1
+    release r102
+label $L_NUM_U64_MUL_END_new_bytes_ok,L112
+    br r111,L181,L181,L182
+label $L_EXTEND_ALLOC_OVERFLOW,L182
+    panic "(1209)"
+label $L_EXTEND_ALLOC,L181
+    alloc r115,r110
+    call "@sa_mem_set(&new_buf, 0, new_bytes)"
+    op.eq r183,r57,0
+    br r183,L184,L184,L185
+label $L_NUM_U64_MUL_COMPUTE_copy_old_bytes_ok,L185
+    op.mul r186,r1,r57
+    op.udiv r187,r186,r57
+    op.eq r188,r187,r1
+    br r188,L189,L189,L190
+label $L_NUM_U64_MUL_OK_copy_old_bytes_ok,L189
+    op.add r191,r186,0
+    op.add r192,0,1
+    release r188
+    release r187
+    release r186
+    release r183
+    jmp $L_NUM_U64_MUL_END_copy_old_bytes_ok,L193
+label $L_NUM_U64_MUL_OVERFLOW_copy_old_bytes_ok,L190
+    op.add r191,0,0
+    op.add r192,0,0
+    release r188
+    release r187
+    release r186
+    release r183
+    jmp $L_NUM_U64_MUL_END_copy_old_bytes_ok,L193
+label $L_NUM_U64_MUL_ZERO_copy_old_bytes_ok,L184
+    op.add r191,0,0
+    op.add r192,0,1
+    release r183
+label $L_NUM_U64_MUL_END_copy_old_bytes_ok,L193
+    br r192,L194,L194,L195
+label $L_EXTEND_COPY_OLD_OVERFLOW,L195
+    panic "(1210)"
+label $L_EXTEND_COPY_OLD,L194
+    call "@sa_mem_copy(&new_buf, &old_buf, copy_old_bytes)"
+    store r55,0u,"new_buf",ty:12
+    store r55,8u,"needed",ty:9
+    move_ r115
+    release r192
+    release r191
+    release r111
+    release r110
+    release r101
+label $L_COPY,L179
+    load r196,r55,0u,ty:12
+    load r197,r173,0u,ty:12
+    op.eq r198,r57,0
+    br r198,L199,L199,L200
+label $L_NUM_U64_MUL_COMPUTE_dst_off_ok,L200
+    op.mul r201,r1,r57
+    op.udiv r202,r201,r57
+    op.eq r203,r202,r1
+    br r203,L204,L204,L205
+label $L_NUM_U64_MUL_OK_dst_off_ok,L204
+    op.add r206,r201,0
+    op.add r207,0,1
+    release r203
+    release r202
+    release r201
+    release r198
+    jmp $L_NUM_U64_MUL_END_dst_off_ok,L208
+label $L_NUM_U64_MUL_OVERFLOW_dst_off_ok,L205
+    op.add r206,0,0
+    op.add r207,0,0
+    release r203
+    release r202
+    release r201
+    release r198
+    jmp $L_NUM_U64_MUL_END_dst_off_ok,L208
+label $L_NUM_U64_MUL_ZERO_dst_off_ok,L199
+    op.add r206,0,0
+    op.add r207,0,1
+    release r198
+label $L_NUM_U64_MUL_END_dst_off_ok,L208
+    br r207,L209,L209,L210
+label $L_EXTEND_DST_OVERFLOW,L210
+    panic "(1211)"
+label $L_EXTEND_COPY_ADD_SIZE,L209
+    ptr_add r211,r196,r206
+    op.eq r212,r57,0
+    br r212,L213,L213,L214
+label $L_NUM_U64_MUL_COMPUTE_copy_add_bytes_ok,L214
+    op.mul r215,r175,r57
+    op.udiv r216,r215,r57
+    op.eq r217,r216,r175
+    br r217,L218,L218,L219
+label $L_NUM_U64_MUL_OK_copy_add_bytes_ok,L218
+    op.add r220,r215,0
+    op.add r221,0,1
+    release r217
+    release r216
+    release r215
+    release r212
+    jmp $L_NUM_U64_MUL_END_copy_add_bytes_ok,L222
+label $L_NUM_U64_MUL_OVERFLOW_copy_add_bytes_ok,L219
+    op.add r220,0,0
+    op.add r221,0,0
+    release r217
+    release r216
+    release r215
+    release r212
+    jmp $L_NUM_U64_MUL_END_copy_add_bytes_ok,L222
+label $L_NUM_U64_MUL_ZERO_copy_add_bytes_ok,L213
+    op.add r220,0,0
+    op.add r221,0,1
+    release r212
+label $L_NUM_U64_MUL_END_copy_add_bytes_ok,L222
+    br r221,L223,L223,L224
+label $L_EXTEND_COPY_ADD_OVERFLOW,L224
+    panic "(1212)"
+label $L_EXTEND_COPY_ADD,L223
+    call "@sa_mem_copy(&dst_ptr, &src_buf, copy_add_bytes)"
+    store r55,16u,"needed",ty:9
+    release r221
+    release r220
+    release r211
+    release r207
+    release r206
+    release r197
+    release r196
+    release r98
+    release r93
+    release r94
+    release r56
+    release r1
+    release r175
+    release r176
+    release r57
+    release r173
+    return_ r55
+label $L_DONE,L86
+    release r175
+    release r176
+    release r57
+    release r173
+    return_ r55
+
+export_decl $sa_vec_append,fn:227
+label $L_ENTRY,L23
+    alloc r228,16u
+    load r229,r226,0u,ty:12
+    load r230,r226,16u,ty:9
+    store r228,0u,"src_ptr",ty:12
+    store r228,8u,"src_len",ty:9
+    call r225,"@sa_vec_extend_from_slice(^dst_vec, &src_slice, elem_size)"
+    store r226,16u,"0",ty:9
+    release r228
+    release r229
+    release r230
+    release r57
+    release r226
+    return_ r225
+
+export_decl $sa_vec_try_swap_remove,fn:232
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    op.ult r233,r231,r1
+    br r233,L169,L169,L234
+label $L_READY,L169
+    load r75,r55,0u,ty:12
+    op.sub r170,r1,1
+    op.mul r235,r231,8
+    ptr_add r236,r75,r235
+    load r237,r236,0u,ty:9
+    op.mul r171,r170,8
+    ptr_add r172,r75,r171
+    load r238,r172,0u,ty:9
+    store r236,0u,"last_value",ty:9
+    op.sub r166,r1,1
+    store r167,0u,"removed",ty:9
+    store r55,16u,"next_len",ty:9
+    release r166
+    release r238
+    release r172
+    release r171
+    release r237
+    release r236
+    release r235
+    release r170
+    release r75
+    release r233
+    release r1
+    release r231
+    release r167
+    release r55
+    return_ "1"
+label $L_MISS,L234
+    store r167,0u,"0",ty:12
+    release r233
+    release r1
+    release r231
+    release r167
+    release r55
+    return_ "0"
+
+export_decl $sa_vec_try_remove,fn:239
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    op.ult r233,r231,r1
+    br r233,L169,L169,L234
+label $L_READY,L169
+    load r75,r55,0u,ty:12
+    op.mul r235,r231,r57
+    ptr_add r236,r75,r235
+    load r237,r236,0u,ty:9
+    op.sub r240,r1,r231
+    op.sub r241,r240,1
+    op.mul r242,r241,r57
+    op.eq r243,r242,0
+    br r243,L244,L244,L245
+label $L_SHIFT_INIT,L245
+    ptr_add r229,r236,r57
+    stack_alloc r246,8u
+    store r246,0u,"0",ty:9
+    jmp $L_SHIFT_HEAD,L247
+label $L_SHIFT_HEAD,L247
+    load r248,r246,0u,ty:9
+    op.eq r42,r248,r242
+    br r42,L244,L244,L249
+label $L_SHIFT_BODY,L249
+    ptr_add r250,r229,r248
+    ptr_add r251,r236,r248
+    load r47,r250,0u,ty:6
+    store r251,0u,"byte",ty:6
+    op.add r252,r248,1
+    store r246,0u,"next_move_off",ty:9
+    release r252
+    release r47
+    release r251
+    release r250
+    release r42
+    release r248
+    jmp $L_SHIFT_HEAD,L247
+label $L_STORE_RESULT,L244
+    op.sub r166,r1,1
+    store r167,0u,"removed",ty:9
+    store r55,16u,"next_len",ty:9
+    release r166
+    release r243
+    release r242
+    release r241
+    release r240
+    release r237
+    release r236
+    release r235
+    release r75
+    release r233
+    release r1
+    release r57
+    release r231
+    release r167
+    release r55
+    return_ "1"
+label $L_MISS,L234
+    store r167,0u,"0",ty:12
+    release r233
+    release r1
+    release r57
+    release r231
+    release r167
+    release r55
+    return_ "0"
+
+export_decl $sa_vec_try_split_off,fn:254
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    op.ule r233,r231,r1
+    br r233,L169,L169,L234
+label $L_READY,L169
+    op.sub r255,r1,r231
+    call r256,"@sa_vec_with_capacity(tail_len, elem_size)"
+    op.eq r257,r255,0
+    br r257,L258,L258,L259
+label $L_COPY_TAIL,L259
+    load r197,r55,0u,ty:12
+    op.mul r260,r231,r57
+    ptr_add r229,r197,r260
+    load r196,r256,0u,ty:12
+    op.mul r124,r255,r57
+    call "@sa_mem_copy(&dst_buf, &src_ptr, copy_bytes)"
+    release r124
+    release r196
+    release r229
+    release r260
+    release r197
+label $L_STORE_VEC,L258
+    store r256,16u,"tail_len",ty:9
+    store r55,16u,"index",ty:9
+    store r253,0u,"out_vec",ty:12
+    release r257
+    release r255
+    release r256
+    release r233
+    release r1
+    release r57
+    release r231
+    release r253
+    return_ r55
+label $L_MISS,L234
+    store r253,0u,"0",ty:12
+    release r233
+    release r1
+    release r57
+    release r231
+    release r253
+    return_ r55
+
+export_decl $sa_vec_shrink_to,fn:262
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    load r56,r55,8u,ty:9
+    op.uge r263,r1,r261
+    br r263,L264,L264,L265
+label $L_TARGET_LEN,L264
+    op.add r266,r1,0
+    jmp $L_CHECK,L267
+label $L_TARGET_MIN,L265
+    op.add r266,r261,0
+label $L_CHECK,L267
+    op.ult r268,r266,r56
+    br r268,L269,L269,L86
+label $L_SHRINK,L269
+    op.eq r270,r266,0
+    br r270,L271,L271,L73
+label $L_ZERO,L271
+    store r55,0u,"0",ty:12
+    store r55,8u,"0",ty:9
+    release r270
+    release r268
+    release r266
+    release r263
+    release r56
+    release r1
+    release r57
+    release r261
+    return_ r55
+label $L_ALLOC,L73
+    take r101,r55,0u
+    op.eq r272,r57,0
+    br r272,L273,L273,L274
+label $L_NUM_U64_MUL_COMPUTE_shrink_new_bytes_ok,L274
+    op.mul r275,r266,r57
+    op.udiv r276,r275,r57
+    op.eq r277,r276,r266
+    br r277,L278,L278,L279
+label $L_NUM_U64_MUL_OK_shrink_new_bytes_ok,L278
+    op.add r110,r275,0
+    op.add r280,0,1
+    release r277
+    release r276
+    release r275
+    release r272
+    jmp $L_NUM_U64_MUL_END_shrink_new_bytes_ok,L281
+label $L_NUM_U64_MUL_OVERFLOW_shrink_new_bytes_ok,L279
+    op.add r110,0,0
+    op.add r280,0,0
+    release r277
+    release r276
+    release r275
+    release r272
+    jmp $L_NUM_U64_MUL_END_shrink_new_bytes_ok,L281
+label $L_NUM_U64_MUL_ZERO_shrink_new_bytes_ok,L273
+    op.add r110,0,0
+    op.add r280,0,1
+    release r272
+label $L_NUM_U64_MUL_END_shrink_new_bytes_ok,L281
+    br r280,L282,L282,L283
+label $L_SHRINK_ALLOC_OVERFLOW,L283
+    panic "(1213)"
+label $L_SHRINK_ALLOC,L282
+    alloc r115,r110
+    call "@sa_mem_set(&new_buf, 0, new_bytes)"
+    op.eq r284,r57,0
+    br r284,L285,L285,L286
+label $L_NUM_U64_MUL_COMPUTE_shrink_copy_bytes_ok,L286
+    op.mul r287,r1,r57
+    op.udiv r288,r287,r57
+    op.eq r289,r288,r1
+    br r289,L290,L290,L291
+label $L_NUM_U64_MUL_OK_shrink_copy_bytes_ok,L290
+    op.add r124,r287,0
+    op.add r292,0,1
+    release r289
+    release r288
+    release r287
+    release r284
+    jmp $L_NUM_U64_MUL_END_shrink_copy_bytes_ok,L293
+label $L_NUM_U64_MUL_OVERFLOW_shrink_copy_bytes_ok,L291
+    op.add r124,0,0
+    op.add r292,0,0
+    release r289
+    release r288
+    release r287
+    release r284
+    jmp $L_NUM_U64_MUL_END_shrink_copy_bytes_ok,L293
+label $L_NUM_U64_MUL_ZERO_shrink_copy_bytes_ok,L285
+    op.add r124,0,0
+    op.add r292,0,1
+    release r284
+label $L_NUM_U64_MUL_END_shrink_copy_bytes_ok,L293
+    br r292,L294,L294,L295
+label $L_SHRINK_COPY_OVERFLOW,L295
+    panic "(1214)"
+label $L_SHRINK_COPY,L294
+    call "@sa_mem_copy(&new_buf, &old_buf, copy_bytes)"
+    store r55,0u,"new_buf",ty:12
+    store r55,8u,"target_cap",ty:9
+    release r292
+    release r124
+    release r280
+    release r110
+    release r101
+    move_ r115
+    release r270
+    release r268
+    release r266
+    release r263
+    release r56
+    release r1
+    release r57
+    release r261
+    return_ r55
+label $L_DONE,L86
+    release r268
+    release r266
+    release r263
+    release r56
+    release r1
+    release r57
+    release r261
+    return_ r55
+
+export_decl $sa_vec_shrink_to_fit,fn:296
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    call r55,"@sa_vec_shrink_to(^vec, len, elem_size)"
+    release r1
+    return_ r55
+
+export_decl $sa_vec_resize,fn:298
+label $L_ENTRY,L23
+    load r1,r55,16u,ty:9
+    op.ule r84,r82,r1
+    br r84,L269,L269,L132
+label $L_SHRINK,L269
+    store r55,16u,"new_len",ty:9
+    release r84
+    release r1
+    release r297
+    release r57
+    release r82
+    return_ r55
+label $L_GROW,L132
+    op.sub r87,r82,r1
+    call r55,"@sa_vec_reserve(^vec, additional, elem_size)"
+    stack_alloc r36,8u
+    store r36,0u,"additional",ty:9
+    jmp $L_GROW_HEAD,L299
+label $L_GROW_HEAD,L299
+    load r41,r36,0u,ty:9
+    op.eq r42,r41,0
+    br r42,L300,L300,L301
+label $L_GROW_BODY,L301
+    call r55,"@sa_vec_push(^vec, fill_value, elem_size)"
+    op.sub r49,r41,1
+    store r36,0u,"next_remaining",ty:9
+    release r49
+    release r42
+    release r41
+    jmp $L_GROW_HEAD,L299
+label $L_GROW_DONE,L300
+    release r42
+    release r41
+    release r84
+    release r87
+    release r1
+    release r297
+    release r57
+    release r82
+    return_ r55
+
+export_decl $sa_vec_free,fn:302
+    take r303,r55,0u
+    release r303
+    release r55
+    return_
+
+extern_decl $sa_fmt_i64,fn:305
+
+extern_decl $sa_fmt_u64,fn:306
+
+extern_decl $sa_fmt_f64,fn:308
+
+extern_decl $sa_fmt_bool,fn:309
+
+extern_decl $sa_fmt_bytes,fn:310
+
+extern_decl $sa_fmt_i64_into,fn:313
+
+extern_decl $sa_fmt_u64_into,fn:314
+
+extern_decl $sa_fmt_f64_into,fn:315
+
+extern_decl $sa_fmt_bool_into,fn:316
+
+extern_decl $sa_fmt_bytes_into,fn:317
+
+extern_decl $sa_fmt_buffer_data,fn:319
+
+extern_decl $sa_fmt_buffer_len,fn:320
+
+extern_decl $sa_fmt_buffer_write_to,fn:322
+
+extern_decl $sa_fmt_buffer_free,fn:323
+
+extern_decl $sa_fs_file_open,fn:327
+
+extern_decl $sa_fs_file_create,fn:328
+
+extern_decl $sa_fs_file_close,fn:330
+
+extern_decl $sa_fs_file_read,fn:331
+
+extern_decl $sa_fs_file_read_exact,fn:332
+
+extern_decl $sa_fs_file_write,fn:333
+
+extern_decl $sa_fs_file_write_all,fn:334
+
+extern_decl $sa_fs_file_flush,fn:335
+
+extern_decl $sa_fs_file_sync_data,fn:336
+
+extern_decl $sa_fs_file_sync,fn:337
+
+extern_decl $sa_fs_file_truncate,fn:339
+
+extern_decl $sa_fs_file_seek,fn:341
+
+extern_decl $sa_std_fs_open_read,fn:343
+
+extern_decl $sa_std_fs_open_write,fn:345
+
+extern_decl $sa_std_fs_file_read,fn:347
+
+extern_decl $sa_std_fs_file_write,fn:349
+
+extern_decl $sa_std_fs_file_seek,fn:351
+
+extern_decl $sa_std_fs_remove,fn:352
+
+extern_decl $sa_std_fs_exists,fn:353
+
+extern_decl $sa_std_fs_try_exists,fn:355
+
+extern_decl $sa_std_fs_len,fn:356
+
+extern_decl $sa_std_fs_read_file,fn:358
+
+extern_decl $sa_std_fs_read_to_string,fn:359
+
+extern_decl $sa_std_fs_read_file_base64,fn:360
+
+extern_decl $sa_std_fs_read_dir_json,fn:362
+
+extern_decl $sa_std_fs_metadata,fn:363
+
+extern_decl $sa_std_fs_metadata_json,fn:364
+
+extern_decl $sa_std_fs_metadata_free,fn:366
+
+extern_decl $sa_std_fs_canonicalize,fn:367
+
+extern_decl $sa_std_close,fn:369
+
+extern_decl $sa_fs_read_file,fn:370
+
+extern_decl $sa_fs_read_to_string,fn:371
+
+extern_decl $sa_fs_write_file,fn:372
+
+extern_decl $sa_fs_read_buffer_data,fn:373
+
+extern_decl $sa_fs_read_buffer_len,fn:374
+
+extern_decl $sa_fs_read_buffer_free,fn:375
+
+extern_decl $sa_fs_read_file_base64,fn:376
+
+extern_decl $sa_fs_write_file_base64,fn:379
+
+extern_decl $sa_fs_read_dir_json,fn:380
+
+extern_decl $sa_fs_dir_buffer_data,fn:381
+
+extern_decl $sa_fs_dir_buffer_len,fn:382
+
+extern_decl $sa_fs_dir_buffer_free,fn:383
+
+extern_decl $sa_fs_metadata,fn:384
+
+extern_decl $sa_fs_metadata_json,fn:385
+
+extern_decl $sa_fs_metadata_is_file,fn:386
+
+extern_decl $sa_fs_metadata_is_directory,fn:387
+
+extern_decl $sa_fs_metadata_is_symlink,fn:388
+
+extern_decl $sa_fs_metadata_modified_ms,fn:389
+
+extern_decl $sa_fs_metadata_created_ms,fn:390
+
+extern_decl $sa_fs_metadata_free,fn:391
+
+extern_decl $sa_fs_remove_file,fn:392
+
+extern_decl $sa_fs_rename,fn:397
+
+extern_decl $sa_fs_make_dir,fn:398
+
+extern_decl $sa_fs_create_dir,fn:399
+
+extern_decl $sa_fs_remove_dir,fn:400
+
+extern_decl $sa_fs_remove_dir_all,fn:401
+
+extern_decl $sa_fs_remove_path,fn:402
+
+extern_decl $sa_fs_copy_file,fn:403
+
+extern_decl $sa_fs_set_permissions,fn:405
+
+extern_decl $sa_fs_set_times_ms,fn:408
+
+extern_decl $sa_fs_hard_link,fn:409
+
+extern_decl $sa_fs_symlink,fn:414
+
+extern_decl $sa_std_fs_read_link,fn:415
+
+extern_decl $sa_json_parse,fn:417
+
+extern_decl $sa_json_kind,fn:419
+
+extern_decl $sa_json_object_get,fn:422
+
+extern_decl $sa_json_array_get,fn:423
+
+extern_decl $sa_json_object_key_at,fn:425
+
+extern_decl $sa_json_object_get_string,fn:426
+
+extern_decl $sa_json_object_get_bool,fn:428
+
+extern_decl $sa_json_object_get_i64,fn:429
+
+extern_decl $sa_json_object_get_f64,fn:430
+
+extern_decl $sa_json_as_f64,fn:431
+
+extern_decl $sa_json_as_i64,fn:432
+
+extern_decl $sa_json_as_bool,fn:433
+
+extern_decl $sa_json_string_ptr,fn:434
+
+extern_decl $sa_json_string_len,fn:435
+
+extern_decl $sa_json_value_count,fn:437
+
+extern_decl $sa_json_free,fn:438
+
+extern_decl $sa_json_stringify,fn:439
+
+extern_decl $sa_json_buffer_data,fn:440
+
+extern_decl $sa_json_buffer_len,fn:441
+
+extern_decl $sa_json_buffer_free,fn:442
+
+extern_decl $sa_json_scanner_new,fn:443
+
+extern_decl $sa_json_scanner_feed,fn:446
+
+extern_decl $sa_json_scanner_end_input,fn:447
+
+extern_decl $sa_json_scanner_next,fn:449
+
+extern_decl $sa_json_scanner_free,fn:450
+
+extern_decl $sa_json_stream_new,fn:451
+
+extern_decl $sa_json_stream_next,fn:453
+
+extern_decl $sa_json_stream_get_slice_ptr,fn:454
+
+extern_decl $sa_json_stream_get_slice_len,fn:455
+
+extern_decl $sa_json_stream_free,fn:456
+
+extern_decl $sa_json_writer_new,fn:462
+
+extern_decl $sa_json_writer_begin_object,fn:463
+
+extern_decl $sa_json_writer_end_object,fn:464
+
+extern_decl $sa_json_writer_begin_array,fn:465
+
+extern_decl $sa_json_writer_end_array,fn:466
+
+extern_decl $sa_json_writer_object_field,fn:467
+
+extern_decl $sa_json_writer_field_string,fn:469
+
+extern_decl $sa_json_writer_field_bool,fn:470
+
+extern_decl $sa_json_writer_field_i64,fn:471
+
+extern_decl $sa_json_writer_field_f64,fn:472
+
+extern_decl $sa_json_writer_field_null,fn:473
+
+extern_decl $sa_json_writer_field_node,fn:474
+
+extern_decl $sa_json_writer_write_bool,fn:475
+
+extern_decl $sa_json_writer_write_i64,fn:476
+
+extern_decl $sa_json_writer_write_f64,fn:477
+
+extern_decl $sa_json_writer_write_string,fn:478
+
+extern_decl $sa_json_writer_write_null,fn:479
+
+extern_decl $sa_json_writer_write_node,fn:480
+
+extern_decl $sa_json_writer_finish,fn:481
+
+extern_decl $sa_json_writer_free,fn:482
+
+extern_decl $sa_print_bytes,fn:484
+
+func_decl $sla__package_json_pick_condition,fn:493
+label $L_ENTRY,L23
+    assign r495,5
+    stack_alloc r496,16u
+    store r496,0u,"&SLA_STR_0",ty:12
+    store r496,8u,"tmp_3",ty:9
+    release r495
+    load r497,r496,0u,ty:12
+    assign r499,5
+    stack_alloc r500,16u
+    store r500,0u,"&SLA_STR_1",ty:12
+    store r500,8u,"tmp_6",ty:9
+    release r499
+    load r501,r500,8u,ty:9
+    stack_alloc r502,8u
+    call r503,"@sa_json_object_get(cond, &tmp_1, tmp_4, &__sla_jog_slot_tmp_0)"
+    load r504,r502,0u,ty:12
+    release r503
+    release r497
+    release r501
+    assign r505,r504
+    call r506,"@sa_json_kind(t)"
+    assign r507,5
+    op.eq r508,r506,r507
+    release r506
+    br r508,L509,L509,L510
+label $L_THEN_0,L509
+    release r508
+    alloc r511,24u
+    assign r512,1
+    store r511,0u,"tmp_11",ty:6
+    release r512
+    call r513,"@sa_json_string_ptr(t)"
+    store r511,8u,"tmp_12",ty:12
+    release r513
+    call r514,"@sa_json_string_len(t)"
+    store r511,16u,"tmp_13",ty:5
+    release r514
+    return_ r511
+label $L_ELSE_1,L510
+    release r508
+    jmp $L_MERGE_2,L515
+label $L_MERGE_2,L515
+    assign r517,7
+    stack_alloc r518,16u
+    store r518,0u,"&SLA_STR_2",ty:12
+    store r518,8u,"tmp_18",ty:9
+    release r517
+    load r519,r518,0u,ty:12
+    assign r521,7
+    stack_alloc r522,16u
+    store r522,0u,"&SLA_STR_3",ty:12
+    store r522,8u,"tmp_21",ty:9
+    release r521
+    load r523,r522,8u,ty:9
+    stack_alloc r524,8u
+    call r525,"@sa_json_object_get(cond, &tmp_16, tmp_19, &__sla_jog_slot_tmp_15)"
+    load r526,r524,0u,ty:12
+    release r525
+    release r519
+    release r523
+    assign r527,r526
+    call r528,"@sa_json_kind(d)"
+    assign r529,5
+    op.eq r530,r528,r529
+    release r528
+    br r530,L531,L531,L532
+label $L_THEN_3,L531
+    release r530
+    alloc r533,24u
+    assign r534,1
+    store r533,0u,"tmp_26",ty:6
+    release r534
+    call r535,"@sa_json_string_ptr(d)"
+    store r533,8u,"tmp_27",ty:12
+    release r535
+    call r536,"@sa_json_string_len(d)"
+    store r533,16u,"tmp_28",ty:5
+    release r536
+    release r505
+    return_ r533
+label $L_ELSE_4,L532
+    release r530
+    jmp $L_MERGE_5,L537
+label $L_MERGE_5,L537
+    alloc r538,24u
+    assign r539,0
+    store r538,0u,"tmp_31",ty:6
+    release r539
+    assign r541,0
+    stack_alloc r542,16u
+    store r542,0u,"&SLA_STR_4",ty:12
+    store r542,8u,"tmp_33",ty:9
+    release r541
+    store r538,8u,"tmp_32",ty:12
+    assign r543,0
+    store r538,16u,"tmp_34",ty:5
+    release r543
+    release r505
+    release r527
+    return_ r538
+
+func_decl $sla__package_json_exports_entry_from_text,fn:545
+label $L_ENTRY,L23
+    assign r546,0
+    op.eq r547,r544,r546
+    release r546
+    br r547,L548,L548,L549
+label $L_THEN_6,L548
+    release r547
+    alloc r550,24u
+    assign r551,0
+    store r550,0u,"tmp_38",ty:6
+    release r551
+    assign r553,0
+    stack_alloc r554,16u
+    store r554,0u,"&SLA_STR_5",ty:12
+    store r554,8u,"tmp_40",ty:9
+    release r553
+    store r550,8u,"tmp_39",ty:12
+    assign r555,0
+    store r550,16u,"tmp_41",ty:5
+    release r555
+    release r544
+    return_ r550
+label $L_ELSE_7,L549
+    release r547
+    jmp $L_MERGE_8,L556
+label $L_MERGE_8,L556
+    call r557,"@sa_json_parse(&data, data_len)"
+    assign r558,r557
+    call r559,"@sa_json_kind(root)"
+    assign r560,7
+    op.ne r561,r559,r560
+    release r559
+    br r561,L562,L562,L563
+label $L_THEN_9,L562
+    release r561
+    alloc r564,24u
+    assign r565,0
+    store r564,0u,"tmp_48",ty:6
+    release r565
+    assign r567,0
+    stack_alloc r568,16u
+    store r568,0u,"&SLA_STR_6",ty:12
+    store r568,8u,"tmp_50",ty:9
+    release r567
+    store r564,8u,"tmp_49",ty:12
+    assign r569,0
+    store r564,16u,"tmp_51",ty:5
+    release r569
+    release r558
+    release r544
+    return_ r564
+label $L_ELSE_10,L563
+    release r561
+    jmp $L_MERGE_11,L570
+label $L_MERGE_11,L570
+    assign r572,7
+    stack_alloc r573,16u
+    store r573,0u,"&SLA_STR_7",ty:12
+    store r573,8u,"tmp_56",ty:9
+    release r572
+    load r574,r573,0u,ty:12
+    assign r576,7
+    stack_alloc r577,16u
+    store r577,0u,"&SLA_STR_8",ty:12
+    store r577,8u,"tmp_59",ty:9
+    release r576
+    load r578,r577,8u,ty:9
+    stack_alloc r579,8u
+    call r580,"@sa_json_object_get(root, &tmp_54, tmp_57, &__sla_jog_slot_tmp_53)"
+    load r581,r579,0u,ty:12
+    release r580
+    release r574
+    release r578
+    assign r582,r581
+    call r583,"@sa_json_kind(exp)"
+    assign r584,r583
+    assign r585,5
+    op.eq r586,r584,r585
+    br r586,L587,L587,L588
+label $L_THEN_12,L587
+    release r586
+    alloc r589,24u
+    assign r590,1
+    store r589,0u,"tmp_64",ty:6
+    release r590
+    call r591,"@sa_json_string_ptr(exp)"
+    store r589,8u,"tmp_65",ty:12
+    release r591
+    call r592,"@sa_json_string_len(exp)"
+    store r589,16u,"tmp_66",ty:5
+    release r592
+    release r558
+    release r584
+    release r544
+    return_ r589
+label $L_ELSE_13,L588
+    release r586
+    jmp $L_MERGE_14,L593
+label $L_MERGE_14,L593
+    assign r594,7
+    op.ne r595,r584,r594
+    br r595,L596,L596,L597
+label $L_THEN_15,L596
+    release r595
+    alloc r598,24u
+    assign r599,0
+    store r598,0u,"tmp_71",ty:6
+    release r599
+    assign r601,0
+    stack_alloc r602,16u
+    store r602,0u,"&SLA_STR_9",ty:12
+    store r602,8u,"tmp_73",ty:9
+    release r601
+    store r598,8u,"tmp_72",ty:12
+    assign r603,0
+    store r598,16u,"tmp_74",ty:5
+    release r603
+    release r558
+    release r582
+    release r584
+    release r544
+    return_ r598
+label $L_ELSE_16,L597
+    release r595
+    jmp $L_MERGE_17,L604
+label $L_MERGE_17,L604
+    assign r606,1
+    stack_alloc r607,16u
+    store r607,0u,"&SLA_STR_10",ty:12
+    store r607,8u,"tmp_79",ty:9
+    release r606
+    load r608,r607,0u,ty:12
+    assign r610,1
+    stack_alloc r611,16u
+    store r611,0u,"&SLA_STR_11",ty:12
+    store r611,8u,"tmp_82",ty:9
+    release r610
+    load r612,r611,8u,ty:9
+    stack_alloc r613,8u
+    call r614,"@sa_json_object_get(exp, &tmp_77, tmp_80, &__sla_jog_slot_tmp_76)"
+    load r615,r613,0u,ty:12
+    release r614
+    release r608
+    release r612
+    assign r616,r615
+    call r617,"@sa_json_kind(dot)"
+    assign r618,r617
+    assign r619,5
+    op.eq r620,r618,r619
+    br r620,L621,L621,L622
+label $L_THEN_18,L621
+    release r620
+    alloc r623,24u
+    assign r624,1
+    store r623,0u,"tmp_87",ty:6
+    release r624
+    call r625,"@sa_json_string_ptr(dot)"
+    store r623,8u,"tmp_88",ty:12
+    release r625
+    call r626,"@sa_json_string_len(dot)"
+    store r623,16u,"tmp_89",ty:5
+    release r626
+    release r558
+    release r582
+    release r618
+    release r584
+    release r544
+    return_ r623
+label $L_ELSE_19,L622
+    release r620
+    jmp $L_MERGE_20,L627
+label $L_MERGE_20,L627
+    assign r628,7
+    op.eq r629,r618,r628
+    br r629,L630,L630,L631
+label $L_THEN_21,L630
+    release r629
+    call r632,"@sla__package_json_pick_condition(dot)"
+    release r558
+    release r582
+    release r618
+    release r584
+    release r544
+    return_ r632
+label $L_ELSE_22,L631
+    release r629
+    jmp $L_MERGE_23,L633
+label $L_MERGE_23,L633
+    call r634,"@sla__package_json_pick_condition(exp)"
+    release r616
+    release r558
+    release r618
+    release r584
+    release r544
+    return_ r634
+
+func_decl $sla__package_json_exports_entry_from_path,fn:636
+label $L_ENTRY,L23
+    call r637,"@sa_std_fs_exists(&path_ptr, path_len)"
+    op.eq r638,r637,0
+    release r637
+    assign r639,r638
+    assign r640,1
+    op.ne r641,r639,r640
+    release r640
+    br r641,L642,L642,L643
+label $L_THEN_24,L642
+    release r641
+    alloc r644,24u
+    assign r645,0
+    store r644,0u,"tmp_100",ty:6
+    release r645
+    assign r647,0
+    stack_alloc r648,16u
+    store r648,0u,"&SLA_STR_12",ty:12
+    store r648,8u,"tmp_102",ty:9
+    release r647
+    store r644,8u,"tmp_101",ty:12
+    assign r649,0
+    store r644,16u,"tmp_103",ty:5
+    release r649
+    release r639
+    release r325
+    return_ r644
+label $L_ELSE_25,L643
+    release r641
+    jmp $L_MERGE_26,L650
+label $L_MERGE_26,L650
+    assign r651,1048576
+    assign r652,0
+    stack_alloc r653,8u
+    call r652,"@sa_std_fs_read_to_string(&path_ptr, path_len, tmp_106, &__fs_read_to_string_handle___sla_fs_read_status_tmp_105)"
+    load r654,r653,0u,ty:9
+    release r652
+    release r651
+    assign r75,r654
+    call r655,"@sa_fs_read_buffer_data(buf)"
+    assign r468,r655
+    call r656,"@sa_fs_read_buffer_len(buf)"
+    assign r544,r656
+    assign r657,0
+    op.eq r658,r544,r657
+    release r657
+    br r658,L659,L659,L660
+label $L_THEN_27,L659
+    release r658
+    alloc r661,24u
+    assign r662,0
+    store r661,0u,"tmp_112",ty:6
+    release r662
+    assign r664,0
+    stack_alloc r665,16u
+    store r665,0u,"&SLA_STR_13",ty:12
+    store r665,8u,"tmp_114",ty:9
+    release r664
+    store r661,8u,"tmp_113",ty:12
+    assign r666,0
+    store r661,16u,"tmp_115",ty:5
+    release r666
+    release r639
+    release r468
+    release r544
+    release r75
+    release r325
+    return_ r661
+label $L_ELSE_28,L660
+    release r658
+    jmp $L_MERGE_29,L667
+label $L_MERGE_29,L667
+    call r668,"@sla__package_json_exports_entry_from_text(data, data_len)"
+    release r639
+    release r75
+    release r325
+    return_ r668
+
+func_decl $sla__package_json_resolver_entry_len,fn:669
+label $L_ENTRY,L23
+    call r670,"@sla__package_json_exports_entry_from_path(path_ptr, path_len)"
+    assign r671,r670
+    load r672,r671,0u,ty:6
+    assign r673,1
+    op.ne r674,r672,r673
+    release r672
+    release r673
+    br r674,L675,L675,L676
+label $L_THEN_30,L675
+    release r674
+    assign r677,0
+    assign r678,1
+    op.sub r679,r677,r678
+    release r677
+    release r678
+    release r671
+    release r325
+    return_ r679
+label $L_ELSE_31,L676
+    release r674
+    jmp $L_MERGE_32,L680
+label $L_MERGE_32,L680
+    load r681,r671,16u,ty:5
+    release r671
+    release r325
+    return_ r681
+
+test_decl $"package json exports resolver codegen",fn:682
+label $L_TEST_ENTRY_33,L683
+    assign r685,32
+    stack_alloc r686,16u
+    store r686,0u,"&SLA_STR_14",ty:12
+    store r686,8u,"tmp_128",ty:9
+    release r685
+    assign r687,32
+    call r688,"@sla__package_json_resolver_entry_len(tmp_127, tmp_129)"
+    release r687
+    assign r689,r688
+    assign r690,0
+    assign r691,1
+    op.sub r692,r690,r691
+    release r690
+    release r691
+    op.ne r693,r689,r692
+    release r692
+    br r693,L694,L694,L695
+label $L_THEN_34,L694
+    release r693
+    panic "(39001)"
+label $L_ELSE_35,L695
+    release r693
+    jmp $L_MERGE_36,L696
+label $L_MERGE_36,L696
+    release r689
+    return_

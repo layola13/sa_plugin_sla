@@ -142,12 +142,24 @@ section*:
 - `i*` / `u*` / `int` / `bool` / `void` / pointer/borrow 的基础类型映射。
 - 参数、`let`、`return`、表达式语句。
 - 整数和布尔 literal、identifier、二元算术/比较/位运算。
-- 最多两个参数的直接函数调用。
+- 直接函数调用，使用 type checker 已解析符号，支持多参数普通调用。
+- plain struct literal、field access、struct return 的通用布局 lowering。
+- 语言级函数指针值与调用：命名函数/泛型特化作为 `fn(...) -> T` 值时生成结构化 vtable const，函数指针参数和局部变量调用直接生成 `load` + `call_indirect`。
 - `if/else` 到 `br` / label / `jmp` / merge 的基础控制流。
 - `panic(code)`。
 - 函数内 `reg_ids` 元数据和 void/test return 前的局部释放，满足 SA verifier 的作用域和泄漏检查。
 
-未覆盖的 SLA 特性会显式返回 `UnsupportedSabDirectFeature` 给上层 SAB 主线，上层随后走内存 SA-compatible SAB encoder。这个 fallback 不是 `sla -> sa -> sab` 用户主线，也不会生成 `.test.sa`；它只是把现有 SA-compatible lowering 作为内存 IR 交给 SCI 的 SAB encoder，保证 SAB 覆盖所有 SA 指令族和 operand 形态。函数指针值/`call_indirect` 当前也走这条完整 SAB encoder 路径。
+当前目标是清零 fallback。未覆盖的 SLA 特性目前仍会显式返回 `UnsupportedSabDirectFeature`，旧路径随后走内存 SA-compatible SAB encoder；这只是过渡兼容，不是最终架构，也不能作为完成标准。后续必须通过通用 direct lowering 或通用 SAB macro/stdlib 表示移除这些缺口，不能在编译器里按 `Vec`、`thread`、ECS 或业务库名写死普通代码语义。
+
+当前优先方向是把 std surface 的方法/关联函数/索引糖映射成可导入的通用元数据或宏片段，而不是把文本 codegen 中历史遗留的库分支复制到 `sab_codegen.zig`。编译器可以认识语言结构、类型信息、导入宏签名和 SAB 指令格式；普通库的名字、容器算法、线程 API、ECS 规则应留在 std / 插件 / 项目层。
+
+排查 direct SAB 缺口时使用：
+
+```bash
+SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test <file.sla> --test-backend sab --filter "..."
+```
+
+该开关会让 direct lowering 失败直接报错，而不是进入兼容 fallback。
 
 ## 验证记录
 
@@ -156,6 +168,8 @@ section*:
 - SCI 构建：`zig build -Doptimize=Debug`，通过；SAB focused Zig tests `zig test src/sab.zig --test-filter sab` 通过，覆盖 every SA `InstKind` / `OpKind` / operand tag 且 decoded instruction `raw_text` 为空。
 - SCI 结构化后端回归：`zig test src/emit_llvm_llvmc.zig --test-filter "assignOperand resolves localized const vtable slots"` 通过，覆盖 v4 SAB 无 raw_text 时函数指针/vtable const 地址 lowering。
 - SCI call/interp 回归：`zig test src/interp.zig --test-filter call` 通过，覆盖 structured `parseInstructionCall`。
+- Direct 回归：`zig build test -Dtest-filter="sla sab backend lowers plain structs directly" --summary all`、`zig build test -Dtest-filter="sla sab backend lowers function pointers directly" --summary all`、`zig build test -Dtest-filter="sla sab backend lowers multi-argument calls directly" --summary all` 均通过，且这些测试使用 `allow_fallback = false`。
+- Direct 函数指针 CLI 回归：`./zig-out/bin/sla-local-cli sla test tests/test_unit_fn_ptr_value.sla --filter "function pointer can be passed as argument" --test-backend sab --jobs 1 --trace-panic`、`--filter "generic function specialization can be passed as argument"`、`--filter "function pointer survives struct return"` 通过，profile 只出现 `sab direct codegen`。
 - SAB 端到端：`SA_PLUGIN_DEV=1 sa sla sab build tests/test_unit_fn_ptr_value.sla --out /tmp/test_unit_fn_ptr_value_v4.sab` 后，`/home/vscode/projects/sci/zig-out/bin/sa test /tmp/test_unit_fn_ptr_value_v4.sab --compile-only` 通过；`test_unit_spaceship_cmp.sla` 与 `test_unit_using_static_extension.sla` 同样通过。
 - 性能点测：同一 `test_unit_fn_ptr_value`，`sa test <v4.sab> --compile-only` 约 3.31s-4.39s，raw `.sa` 路径约 11.31s；SA 后端吃 SAB 已明显加速。`sa sla sab build` 前端生成 SAB 仍比 `sa sla build` 慢，本轮测得约 3.66s vs 0.12s，剩余瓶颈在 SLA->SAB 生成阶段的 SA-compatible flatten/verify/encode 与缓存写入。
 - 插件构建：`zig build`，通过。

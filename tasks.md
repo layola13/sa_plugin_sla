@@ -71,8 +71,14 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] Add an in-memory SA-compatible SAB encoder fallback inside the SAB mainline so SA features not yet covered by direct AST-to-SAB codegen still produce `.sab` output without writing `.sa` text.
   - [x] Confirm SCI SAB v4 metadata support preserves structured operands, atomic operand text, native register names, package identity, upstream locations, and verified function register ids needed by SA backends without storing per-instruction raw `.sa` text.
   - [x] Add SCI regression coverage for v4 no-raw-text SAB decode, all `InstKind` / `OpKind` / operand tags, structured call parsing, and LLVM lowering of localized const vtable slots.
+  - [x] Add direct SAB lowering for language-level function pointer values, including vtable const declarations, borrowed function values, parameter passing, generic function specializations, and `call_indirect`.
   - [ ] Optimize SLA-to-SAB generation time; current SA backend compile from `.sab` is faster than raw `.sa`, but `sa sla sab build` still spends extra time in SA-compatible flatten/verify/encode and cache writes.
   - [x] Add focused tests for direct SAB output, managed cache behavior, SAB magic, decoded instructions, and no generated `.sa` side output.
+  - [x] Add direct-only regression tests (`allow_fallback = false`) so new direct SAB features cannot silently pass through the SA-compatible fallback path.
+  - [x] Add direct SAB lowering for plain struct literals, field access, struct returns, resolved call symbols, and multi-argument function calls.
+  - [x] Add a dev/debug no-fallback gate (`SLA_SAB_NO_FALLBACK=1`) so direct SAB gaps fail loudly instead of hiding behind the compatibility encoder.
+  - [ ] Move std surface lowering into generic import metadata / macro-fragment lowering so direct SAB can consume std macros without hardcoding library names such as `Vec`, `thread`, or ECS concepts in the compiler.
+  - [ ] Remove the remaining in-memory SA-compatible fallback from the normal SAB path by replacing std/macro/closure gaps with generic direct SAB lowering or a generic SAB macro representation, not library-name special cases.
 - [x] **SLA CLI Project Helpers**
   - [x] Add `sa sla init [path]` to scaffold a minimal SLA binary project without overwriting existing files.
   - [x] Add `sa sla skills [--json]` to list plugin capabilities and generate Codex/Claude agent skill files in text mode.

@@ -6,6 +6,7 @@ const sci_bridge = @import("sci_bridge");
 const sab = sci_bridge.sab;
 const inst = sab.instruction;
 const sig = sab.signature;
+const const_decl = sab.const_decl;
 
 pub const Error = error{
     UnsupportedSabDirectFeature,
@@ -19,11 +20,18 @@ const Local = struct {
     is_param: bool,
 };
 
+const FieldLayout = struct {
+    offset: usize,
+    ty: sig.PrimType,
+};
+
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
     symbols: std.ArrayList([]const u8),
     symbol_ids: std.StringHashMap(u32),
+    const_decls: std.ArrayList(const_decl.ConstDecl),
+    fn_ptr_vtables: std.StringHashMap(void),
     instructions: std.ArrayList(inst.Instruction),
     function_sigs: std.ArrayList(sig.FunctionSig),
     test_sigs: std.ArrayList(sig.FunctionSig),
@@ -40,6 +48,8 @@ pub const Codegen = struct {
             .tc = tc,
             .symbols = std.ArrayList([]const u8).init(allocator),
             .symbol_ids = std.StringHashMap(u32).init(allocator),
+            .const_decls = std.ArrayList(const_decl.ConstDecl).init(allocator),
+            .fn_ptr_vtables = std.StringHashMap(void).init(allocator),
             .instructions = std.ArrayList(inst.Instruction).init(allocator),
             .function_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
             .test_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
@@ -53,6 +63,8 @@ pub const Codegen = struct {
     pub fn deinit(self: *Codegen) void {
         self.symbols.deinit();
         self.symbol_ids.deinit();
+        self.const_decls.deinit();
+        self.fn_ptr_vtables.deinit();
         self.instructions.deinit();
         self.function_sigs.deinit();
         self.test_sigs.deinit();
@@ -77,7 +89,7 @@ pub const Codegen = struct {
         return try sab.encodeProgramWithConsts(
             self.allocator,
             self.symbols.items,
-            &.{},
+            self.const_decls.items,
             self.function_sigs.items,
             self.instructions.items,
         );
@@ -98,6 +110,37 @@ pub const Codegen = struct {
         }
         if (self.tc.extern_funcs.contains(name) or std.mem.startsWith(u8, name, "sa_")) return name;
         return try std.fmt.allocPrint(self.allocator, "sla__{s}", .{name});
+    }
+
+    fn fnPtrVTableName(self: *Codegen, func_name: []const u8) ![]u8 {
+        return try std.fmt.allocPrint(self.allocator, "SLA_FNPTR_VT_{s}", .{func_name});
+    }
+
+    fn ensureFunctionPointerVTable(self: *Codegen, func_name: []const u8) ![]const u8 {
+        const vt_name = try self.fnPtrVTableName(func_name);
+        if (self.fn_ptr_vtables.contains(vt_name)) return vt_name;
+
+        const lowered = try self.loweredFuncSymbol(func_name);
+        const literal_text = try std.fmt.allocPrint(self.allocator, "vtable {{ call = @{s} }}", .{lowered});
+        const raw_text = try std.fmt.allocPrint(self.allocator, "@const {s} = {s}", .{ vt_name, literal_text });
+        const slots = try self.allocator.alloc(const_decl.VTableSlot, 1);
+        slots[0] = .{
+            .name = try self.allocator.dupe(u8, "call"),
+            .func_name = try self.allocator.dupe(u8, lowered),
+        };
+        try self.const_decls.append(.{
+            .source_line = 0,
+            .expanded_line = 0,
+            .upstream_loc = null,
+            .raw_text = raw_text,
+            .name = vt_name,
+            .literal_text = literal_text,
+            .value = .{ .vtable = .{ .slots = slots } },
+        });
+        try self.fn_ptr_vtables.put(vt_name, {});
+        _ = try self.intern(vt_name);
+        _ = try self.intern(lowered);
+        return vt_name;
     }
 
     fn makeInst(self: *Codegen, kind: inst.InstKind) inst.Instruction {
@@ -136,9 +179,97 @@ pub const Codegen = struct {
                 .boolean => .i1,
                 .void_type => .void,
             },
-            .pointer, .borrow => .ptr,
+            .pointer, .borrow, .fn_ptr, .user_defined, .tuple, .array => .ptr,
             else => Error.UnsupportedSabDirectFeature,
         };
+    }
+
+    fn typeSize(ty: *const ast.Type) usize {
+        return switch (ty.*) {
+            .primitive => |p| switch (p) {
+                .boolean, .u8, .i8 => 1,
+                .u16, .i16 => 2,
+                .u32, .i32, .f32 => 4,
+                .u64, .i64, .usize, .isize, .f64 => 8,
+                .integer, .float => 8,
+                .void_type => 8,
+            },
+            .tuple => |tuple| tupleSize(tuple),
+            else => 8,
+        };
+    }
+
+    fn alignOffset(offset: usize, size: usize) usize {
+        if (size == 8) return (offset + 7) & ~@as(usize, 7);
+        return offset;
+    }
+
+    fn tupleSize(tuple: ast.TupleType) usize {
+        var offset: usize = 0;
+        for (tuple.elems) |elem_ty| {
+            const size = typeSize(elem_ty);
+            offset = alignOffset(offset, size);
+            offset += size;
+        }
+        return @max(offset, 1);
+    }
+
+    fn structSize(s: *const ast.StructDecl) usize {
+        if (s.is_opaque) return 1;
+        if (s.is_union) {
+            var max_size: usize = 0;
+            for (s.fields) |f| max_size = @max(max_size, typeSize(f.ty));
+            return @max(max_size, 1);
+        }
+        var offset: usize = 0;
+        for (s.fields) |f| {
+            const size = typeSize(f.ty);
+            offset = alignOffset(offset, size);
+            offset += size;
+        }
+        return @max(offset, 1);
+    }
+
+    fn structDeclForType(self: *Codegen, ty: *const ast.Type) ?*ast.StructDecl {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                else => break,
+            }
+        }
+        if (curr.* != .user_defined) return null;
+        if (self.tc.structs.get(curr.user_defined.name)) |decl| return decl;
+        if (self.tc.alias_struct_cache.get(curr.user_defined.name)) |decl| return decl;
+        return null;
+    }
+
+    fn fieldLayout(self: *Codegen, ty: *const ast.Type, name: []const u8) !FieldLayout {
+        const decl = self.structDeclForType(ty) orelse return Error.UnsupportedSabDirectFeature;
+        if (decl.is_opaque) return Error.UnsupportedSabDirectFeature;
+        if (decl.is_union) {
+            for (decl.fields) |field| {
+                if (std.mem.eql(u8, field.name, name)) return .{ .offset = 0, .ty = try primType(field.ty) };
+            }
+            return Error.UnsupportedSabDirectFeature;
+        }
+        var offset: usize = 0;
+        for (decl.fields) |field| {
+            const size = typeSize(field.ty);
+            offset = alignOffset(offset, size);
+            if (std.mem.eql(u8, field.name, name)) return .{ .offset = offset, .ty = try primType(field.ty) };
+            offset += size;
+        }
+        return Error.UnsupportedSabDirectFeature;
+    }
+
+    fn fieldType(self: *Codegen, ty: *const ast.Type, name: []const u8) ?*ast.Type {
+        const decl = self.structDeclForType(ty) orelse return null;
+        for (decl.fields) |field| {
+            if (std.mem.eql(u8, field.name, name)) return field.ty;
+        }
+        return null;
     }
 
     fn exprHasFnPtrType(self: *Codegen, expr: *const ast.Node) bool {
@@ -216,6 +347,19 @@ pub const Codegen = struct {
         return null;
     }
 
+    fn isLocalReg(self: *Codegen, reg: u32) bool {
+        for (self.locals.items) |local| {
+            if (local.reg == reg) return true;
+        }
+        return false;
+    }
+
+    fn releaseNonLocalTemps(self: *Codegen, regs: []const u32) !void {
+        for (regs) |reg| {
+            if (!self.isLocalReg(reg)) try self.emitRelease(reg);
+        }
+    }
+
     fn emitLabel(self: *Codegen, name: []const u8) !void {
         const id = try self.intern(name);
         var item = self.makeInst(.label);
@@ -244,6 +388,45 @@ pub const Codegen = struct {
         var item = self.makeInst(.assign);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .reg = src };
+        try self.appendInst(item);
+    }
+
+    fn emitAlloc(self: *Codegen, dst: u32, size: usize) !void {
+        try self.recordReg(dst);
+        var item = self.makeInst(.alloc);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = .{ .imm_u64 = @intCast(size) };
+        try self.appendInst(item);
+    }
+
+    fn emitLoad(self: *Codegen, dst: u32, base: u32, offset: usize, ty: sig.PrimType) !void {
+        try self.recordReg(dst);
+        var item = self.makeInst(.load);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = .{ .reg = base };
+        item.operands[2] = .{ .imm_u64 = @intCast(offset) };
+        item.operands[3] = .{ .ty = @intFromEnum(ty) };
+        try self.appendInst(item);
+    }
+
+    fn emitStore(self: *Codegen, base: u32, offset: usize, value: u32, ty: sig.PrimType) !void {
+        var item = self.makeInst(.store);
+        item.operands[0] = .{ .reg = base };
+        item.operands[1] = .{ .imm_u64 = @intCast(offset) };
+        item.operands[2] = .{ .reg = value };
+        item.operands[3] = .{ .ty = @intFromEnum(ty) };
+        try self.appendInst(item);
+    }
+
+    fn emitBorrowSymbol(self: *Codegen, dst: u32, symbol_name: []const u8) !void {
+        const symbol_id = try self.intern(symbol_name);
+        try self.recordReg(dst);
+        try self.recordReg(symbol_id);
+        var item = self.makeInst(.borrow);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = .{ .reg = symbol_id };
+        item.operands[2] = .{ .text = "read" };
+        item.operands[3] = .{ .cap_prefix = .borrow };
         try self.appendInst(item);
     }
 
@@ -389,14 +572,22 @@ pub const Codegen = struct {
         return switch (expr.*) {
             .literal => |lit| try self.genLiteral(lit),
             .identifier => |name| blk: {
-                if (self.exprHasFnPtrType(expr)) return Error.UnsupportedSabDirectFeature;
+                if (self.exprHasFnPtrType(expr) and self.tc.funcs.contains(name)) {
+                    const dst = try self.intern(try self.newTmp());
+                    const vt_name = try self.ensureFunctionPointerVTable(name);
+                    try self.emitBorrowSymbol(dst, vt_name);
+                    break :blk dst;
+                }
+                if (self.exprHasFnPtrType(expr)) break :blk self.localReg(name) orelse try self.intern(name);
                 break :blk self.localReg(name) orelse try self.intern(name);
             },
             .binary_expr => |bin| try self.genBinary(bin),
             .call_expr => |call| blk: {
-                if (self.tc.fn_ptr_calls.contains(expr)) return Error.UnsupportedSabDirectFeature;
-                break :blk try self.genCall(call);
+                if (self.tc.fn_ptr_calls.contains(expr)) break :blk try self.genFnPtrCall(call);
+                break :blk try self.genCall(expr, call);
             },
+            .field_expr => |field| try self.genField(field),
+            .struct_literal => |lit| try self.genStructLiteral(lit),
             .if_expr => |ife| try self.genIf(ife),
             else => Error.UnsupportedSabDirectFeature,
         };
@@ -424,10 +615,11 @@ pub const Codegen = struct {
         item.operands[1] = .{ .reg = lhs };
         item.operands[2] = .{ .reg = rhs };
         try self.appendInst(item);
+        try self.releaseNonLocalTemps(&.{ lhs, rhs });
         return dst;
     }
 
-    fn genCall(self: *Codegen, call: ast.CallExpr) anyerror!u32 {
+    fn genCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!u32 {
         if (std.mem.eql(u8, call.func_name, "panic")) {
             var item = self.makeInst(.panic);
             if (call.args.len == 1 and call.args[0].* == .literal and call.args[0].literal == .int_val) {
@@ -441,14 +633,23 @@ pub const Codegen = struct {
             try self.appendInst(item);
             return try self.intern(try self.newTmp());
         }
-        if (call.args.len > 2) return Error.UnsupportedSabDirectFeature;
+        const call_symbol = if (self.tc.resolved_call_symbols.get(expr)) |symbol|
+            symbol
+        else if (call.associated_target == null)
+            call.func_name
+        else
+            return Error.UnsupportedSabDirectFeature;
+
         const dst = try self.intern(try self.newTmp());
         try self.recordReg(dst);
-        const lowered = try self.loweredFuncSymbol(call.func_name);
+        const lowered = try self.loweredFuncSymbol(call_symbol);
         var text = std.ArrayList(u8).init(self.allocator);
+        var arg_regs = std.ArrayList(u32).init(self.allocator);
+        defer arg_regs.deinit();
         try text.writer().print("@{s}(", .{lowered});
         for (call.args, 0..) |arg, i| {
             const arg_reg = try self.genExpr(@constCast(arg));
+            try arg_regs.append(arg_reg);
             if (i > 0) try text.appendSlice(", ");
             try text.writer().print("{s}", .{self.symbols.items[arg_reg]});
         }
@@ -457,6 +658,80 @@ pub const Codegen = struct {
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .text = try text.toOwnedSlice() };
         try self.appendInst(item);
+        try self.releaseNonLocalTemps(arg_regs.items);
+        return dst;
+    }
+
+    fn genFnPtrCall(self: *Codegen, call: ast.CallExpr) anyerror!u32 {
+        const fn_reg = self.localReg(call.func_name) orelse try self.intern(call.func_name);
+        const call_reg = try self.intern(try self.newTmp());
+        try self.recordReg(call_reg);
+
+        var load = self.makeInst(.load);
+        load.operands[0] = .{ .reg = call_reg };
+        load.operands[1] = .{ .reg = fn_reg };
+        load.operands[2] = .{ .imm_u64 = 0 };
+        load.operands[3] = .{ .ty = @intFromEnum(sig.PrimType.ptr) };
+        try self.appendInst(load);
+
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        var body = std.ArrayList(u8).init(self.allocator);
+        var arg_regs = std.ArrayList(u32).init(self.allocator);
+        defer arg_regs.deinit();
+        try body.writer().print("{s}(", .{self.symbols.items[call_reg]});
+        for (call.args, 0..) |arg, i| {
+            const arg_reg = try self.genExpr(@constCast(arg));
+            try arg_regs.append(arg_reg);
+            if (i > 0) try body.appendSlice(", ");
+            try body.writer().print("{s}", .{self.symbols.items[arg_reg]});
+        }
+        try body.append(')');
+
+        var item = self.makeInst(.call_indirect);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = .{ .text = try body.toOwnedSlice() };
+        try self.appendInst(item);
+        try self.releaseNonLocalTemps(arg_regs.items);
+        try self.emitRelease(call_reg);
+        return dst;
+    }
+
+    fn genStructLiteral(self: *Codegen, lit: ast.StructLiteral) anyerror!u32 {
+        if (lit.update_expr != null) return Error.UnsupportedSabDirectFeature;
+        const decl = self.structDeclForType(lit.ty) orelse return Error.UnsupportedSabDirectFeature;
+        if (decl.is_opaque or decl.is_union) return Error.UnsupportedSabDirectFeature;
+
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, structSize(decl));
+
+        for (decl.fields) |decl_field| {
+            var literal_value: ?*ast.Node = null;
+            for (lit.fields) |literal_field| {
+                if (std.mem.eql(u8, literal_field.name, decl_field.name)) {
+                    literal_value = literal_field.value;
+                    break;
+                }
+            }
+            const value = literal_value orelse return Error.UnsupportedSabDirectFeature;
+            const layout = try self.fieldLayout(lit.ty, decl_field.name);
+            const value_reg = try self.genExpr(value);
+            try self.emitStore(dst, layout.offset, value_reg, layout.ty);
+            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        }
+
+        return dst;
+    }
+
+    fn genField(self: *Codegen, field: ast.FieldExpr) anyerror!u32 {
+        const expr_ty = self.tc.expr_types.get(field.expr) orelse return Error.MissingType;
+        const layout = try self.fieldLayout(expr_ty, field.field_name);
+        _ = self.fieldType(expr_ty, field.field_name) orelse return Error.UnsupportedSabDirectFeature;
+
+        const base = try self.genExpr(field.expr);
+        const dst = try self.intern(try self.newTmp());
+        try self.emitLoad(dst, base, layout.offset, layout.ty);
+        if (!self.isLocalReg(base)) try self.emitRelease(base);
         return dst;
     }
 

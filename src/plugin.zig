@@ -656,12 +656,20 @@ fn loadImportedContracts(
 
 const SlaCompileOptions = struct {
     test_filter: ?[]const u8 = null,
+    allow_fallback: bool = true,
 };
 
 fn slaProfileEnabled(allocator: std.mem.Allocator) bool {
     const value = std.process.getEnvVarOwned(allocator, "SLA_PROFILE") catch return false;
     defer allocator.free(value);
     return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
+}
+
+fn slaSabFallbackAllowed(allocator: std.mem.Allocator, options: SlaCompileOptions) bool {
+    if (!options.allow_fallback) return false;
+    const value = std.process.getEnvVarOwned(allocator, "SLA_SAB_NO_FALLBACK") catch return true;
+    defer allocator.free(value);
+    return value.len == 0 or std.mem.eql(u8, value, "0") or std.mem.eql(u8, value, "false");
 }
 
 fn slaProfileStage(stderr: std.io.AnyWriter, enabled: bool, label: []const u8, start_ns: i128) void {
@@ -1822,7 +1830,13 @@ fn compileSlaFileToSabWithOptions(
         slaProfileStage(stderr, profile, "sab direct codegen", stage_start);
         switch (err) {
             error.OutOfMemory => return err,
-            else => return try compileTypedSlaProgramToCompatibleSab(allocator, &tc, specialized_prog, file, output_file, stderr, profile),
+            else => {
+                if (!slaSabFallbackAllowed(allocator, options)) {
+                    try stderr.print("SAB Direct Error: direct SLA-to-SAB lowering failed without fallback: {}\n", .{err});
+                    return null;
+                }
+                return try compileTypedSlaProgramToCompatibleSab(allocator, &tc, specialized_prog, file, output_file, stderr, profile);
+            },
         }
     };
     slaProfileStage(stderr, profile, "sab direct codegen", stage_start);
@@ -2732,7 +2746,7 @@ test "sla test sab backend prunes unmatched tests before type checking" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
-test "sla sab backend supports full SA-compatible struct lowering" {
+test "sla sab backend lowers plain structs directly" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -2768,36 +2782,42 @@ test "sla sab backend supports full SA-compatible struct lowering" {
     var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
-    const compiled = (try compileSlaSabTestInput(
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "struct_sab.sla",
+        ".sla-cache/sab/struct_sab.sab",
         stderr_buf.writer().any(),
-        &.{ "--filter", "sab struct fallback" },
-        false,
+        .{ .test_filter = "sab struct fallback", .allow_fallback = false },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
 
-    try std.testing.expect(std.mem.containsAtLeast(u8, compiled.path, 1, ".sla-cache/sab/"));
-    try tmp.dir.access(compiled.path, .{});
     try std.testing.expectError(error.FileNotFound, tmp.dir.access("struct_sab.test.sa", .{}));
-
-    const sab_bytes = try tmp.dir.readFileAlloc(std.testing.allocator, compiled.path, 1024 * 1024);
-    defer std.testing.allocator.free(sab_bytes);
     try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
 
     var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
     defer module.deinit(std.testing.allocator);
     var test_count: usize = 0;
+    var saw_alloc = false;
+    var saw_store = false;
+    var saw_load = false;
     for (module.function_sigs) |fsig| {
         if (fsig.kind == .test_func) test_count += 1;
     }
+    for (module.instructions) |item| {
+        if (item.kind == .alloc) saw_alloc = true;
+        if (item.kind == .store) saw_store = true;
+        if (item.kind == .load) saw_load = true;
+    }
     try std.testing.expectEqual(@as(usize, 1), test_count);
+    try std.testing.expect(saw_alloc);
+    try std.testing.expect(saw_store);
+    try std.testing.expect(saw_load);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
-test "sla sab backend supports SA-compatible indirect call lowering" {
+test "sla sab backend lowers function pointers directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
@@ -2808,7 +2828,7 @@ test "sla sab backend supports SA-compatible indirect call lowering" {
         "tests/test_unit_fn_ptr_value.sla",
         ".sla-cache/sab/fn_ptr_value.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "function pointer can be stored and called" },
+        .{ .test_filter = "function pointer can be passed as argument", .allow_fallback = false },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -2818,15 +2838,75 @@ test "sla sab backend supports SA-compatible indirect call lowering" {
     defer module.deinit(std.testing.allocator);
 
     var test_count: usize = 0;
+    var saw_fnptr_vtable = false;
+    var saw_borrow = false;
     var saw_call_indirect = false;
     for (module.function_sigs) |fsig| {
         if (fsig.kind == .test_func) test_count += 1;
     }
+    for (module.const_decls) |decl| {
+        if (std.mem.eql(u8, decl.name, "SLA_FNPTR_VT_fn_ptr_inc") and decl.value == .vtable) {
+            saw_fnptr_vtable = true;
+        }
+    }
     for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .borrow) saw_borrow = true;
         if (item.kind == .call_indirect) saw_call_indirect = true;
     }
     try std.testing.expectEqual(@as(usize, 1), test_count);
+    try std.testing.expect(saw_fnptr_vtable);
+    try std.testing.expect(saw_borrow);
     try std.testing.expect(saw_call_indirect);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers multi-argument calls directly" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn add3(a: i32, b: i32, c: i32) -> i32 {
+        \\    return a + b + c;
+        \\};
+        \\
+        \\@test "direct sab add3"() {
+        \\    let got = add3(2, 3, 4);
+        \\    if got != 9 { panic(27009); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "add3.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "add3.sla",
+        ".sla-cache/sab/add3.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct sab add3", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_three_arg_call = false;
+    for (module.instructions) |item| {
+        if (item.kind == .call and item.operands[1] == .text and std.mem.indexOf(u8, item.operands[1].text, ", tmp_") != null) {
+            if (std.mem.count(u8, item.operands[1].text, ",") == 2) saw_three_arg_call = true;
+        }
+    }
+    try std.testing.expect(saw_three_arg_call);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

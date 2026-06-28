@@ -2950,6 +2950,172 @@ test "sla sab backend lowers imported std surface metadata directly" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend lowers std surface function metadata directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_vec_len_direct.sla",
+        ".sla-cache/sab/vec_len_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct vec len metadata", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_vec_len = false;
+    var saw_len_call = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.eql(u8, fsig.name, "sa_vec_len")) saw_vec_len = true;
+    }
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .call and item.operands[1] == .text and std.mem.indexOf(u8, item.operands[1].text, "@sa_vec_len") != null) {
+            saw_len_call = true;
+        }
+    }
+    try std.testing.expect(saw_vec_len);
+    try std.testing.expect(saw_len_call);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers fallible std surface metadata directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_vec_remove_direct.sla",
+        ".sla-cache/sab/vec_remove_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct vec remove metadata", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_vec_try_remove = false;
+    var saw_remove_call = false;
+    var saw_fallible_branch = false;
+    var saw_panic_86 = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.eql(u8, fsig.name, "sa_vec_try_remove")) saw_vec_try_remove = true;
+    }
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .call and item.operands[1] == .text and std.mem.indexOf(u8, item.operands[1].text, "@sa_vec_try_remove") != null) {
+            saw_remove_call = true;
+        }
+        if (item.kind == .br) saw_fallible_branch = true;
+        if (item.kind == .panic and item.operands[0] == .text and std.mem.eql(u8, item.operands[0].text, "86")) {
+            saw_panic_86 = true;
+        }
+    }
+    try std.testing.expect(saw_vec_try_remove);
+    try std.testing.expect(saw_remove_call);
+    try std.testing.expect(saw_fallible_branch);
+    try std.testing.expect(saw_panic_86);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers option std surface metadata directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_option_direct.sla",
+        ".sla-cache/sab/option_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct option constructors and query methods", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_alloc = false;
+    var saw_store = false;
+    var saw_load = false;
+    var saw_unwrap_panic_const = false;
+    var saw_panic_msg = false;
+    for (module.const_decls) |decl| {
+        if (std.mem.eql(u8, decl.name, "OPTION_UNWRAP_PANIC")) saw_unwrap_panic_const = true;
+    }
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .alloc) saw_alloc = true;
+        if (item.kind == .store) saw_store = true;
+        if (item.kind == .load) saw_load = true;
+        if (item.kind == .panic_msg) saw_panic_msg = true;
+    }
+    try std.testing.expect(saw_alloc);
+    try std.testing.expect(saw_store);
+    try std.testing.expect(saw_load);
+    try std.testing.expect(saw_unwrap_panic_const);
+    try std.testing.expect(saw_panic_msg);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers result std surface metadata directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_result_direct.sla",
+        ".sla-cache/sab/result_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct result constructors and query methods", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_alloc = false;
+    var saw_store = false;
+    var saw_load = false;
+    var saw_unwrap_panic_const = false;
+    var saw_panic_msg = false;
+    for (module.const_decls) |decl| {
+        if (std.mem.eql(u8, decl.name, "RESULT_UNWRAP_PANIC")) saw_unwrap_panic_const = true;
+    }
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .alloc) saw_alloc = true;
+        if (item.kind == .store) saw_store = true;
+        if (item.kind == .load) saw_load = true;
+        if (item.kind == .panic_msg) saw_panic_msg = true;
+    }
+    try std.testing.expect(saw_alloc);
+    try std.testing.expect(saw_store);
+    try std.testing.expect(saw_load);
+    try std.testing.expect(saw_unwrap_panic_const);
+    try std.testing.expect(saw_panic_msg);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab backend lowers closure calls directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -3008,6 +3174,462 @@ test "sla sab backend lowers var scalar slots directly" {
     }
     try std.testing.expect(saw_stack_alloc);
     try std.testing.expect(saw_loop_jump);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers tuple literals and destructuring directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_tuples.sla",
+        ".sla-cache/sab/tuples_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "tuple destructuring", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_alloc = false;
+    var saw_load = false;
+    var saw_store = false;
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .alloc) saw_alloc = true;
+        if (item.kind == .load) saw_load = true;
+        if (item.kind == .store) saw_store = true;
+    }
+    try std.testing.expect(saw_alloc);
+    try std.testing.expect(saw_load);
+    try std.testing.expect(saw_store);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers scalar if expressions directly" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn pick(cond: bool) -> i32 {
+        \\    return if cond { 3 } else { 4 };
+        \\};
+        \\
+        \\@test "if value"() {
+        \\    if pick(true) != 3 { panic(30101); };
+        \\    if pick(false) != 4 { panic(30102); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "if_value.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "if_value.sla",
+        ".sla-cache/sab/if_value.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "if value", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    for (module.instructions) |item| try std.testing.expectEqualStrings("", item.raw_text);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers typed if bindings and var assignments directly" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn typed_pick(cond: bool) -> i32 {
+        \\    let value: i32 = if cond { 1 } else { 2 };
+        \\    return value;
+        \\};
+        \\
+        \\fn var_pick(cond: bool) -> i32 {
+        \\    var x: i32;
+        \\    x = if cond { 8 } else { 9 };
+        \\    return x;
+        \\};
+        \\
+        \\fn bool_pick(cond: bool) -> bool {
+        \\    return if cond { true } else { false };
+        \\};
+        \\
+        \\fn float_pick(cond: bool) -> f64 {
+        \\    return if cond { 1.5 } else { 2.5 };
+        \\};
+        \\
+        \\@test "if binding variants"() {
+        \\    if typed_pick(true) != 1 { panic(30301); };
+        \\    if typed_pick(false) != 2 { panic(30302); };
+        \\    if var_pick(true) != 8 { panic(30303); };
+        \\    if var_pick(false) != 9 { panic(30304); };
+        \\    if bool_pick(true) != true { panic(30305); };
+        \\    if bool_pick(false) { panic(30306); };
+        \\    if float_pick(true) != 1.5 { panic(30307); };
+        \\    if float_pick(false) != 2.5 { panic(30308); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "if_binding_variants.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "if_binding_variants.sla",
+        ".sla-cache/sab/if_binding_variants.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "if binding variants", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    for (module.instructions) |item| try std.testing.expectEqualStrings("", item.raw_text);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers nested if assignments directly" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn nested(a: bool, b: bool) -> i32 {
+        \\    var x: i32;
+        \\    if a {
+        \\        x = if b { 11 } else { 12 };
+        \\    } else {
+        \\        x = if b { 13 } else { 14 };
+        \\    };
+        \\    return x;
+        \\};
+        \\
+        \\fn reassign_let(cond: bool) -> i32 {
+        \\    let x: i32 = 0;
+        \\    if cond {
+        \\        x = 21;
+        \\    } else {
+        \\        x = 22;
+        \\    };
+        \\    return x;
+        \\};
+        \\
+        \\@test "nested if assignments"() {
+        \\    if nested(true, true) != 11 { panic(30401); };
+        \\    if nested(true, false) != 12 { panic(30402); };
+        \\    if nested(false, true) != 13 { panic(30403); };
+        \\    if nested(false, false) != 14 { panic(30404); };
+        \\    if reassign_let(true) != 21 { panic(30405); };
+        \\    if reassign_let(false) != 22 { panic(30406); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "nested_if_assignments.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "nested_if_assignments.sla",
+        ".sla-cache/sab/nested_if_assignments.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "nested if assignments", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    for (module.instructions) |item| try std.testing.expectEqualStrings("", item.raw_text);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers float arithmetic directly" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\@test "float add"() {
+        \\    let sum = 1.5 + 2.25;
+        \\    if sum != 3.75 { panic(30201); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "float_add.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "float_add.sla",
+        ".sla-cache/sab/float_add.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "float add", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    var saw_fadd = false;
+    var saw_fcmp = false;
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .op and item.op_kind == .fadd) saw_fadd = true;
+        if (item.kind == .op and item.op_kind == .fcmp_ne) saw_fcmp = true;
+    }
+    try std.testing.expect(saw_fadd);
+    try std.testing.expect(saw_fcmp);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers boolean logic directly" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn both(a: bool, b: bool) -> bool {
+        \\    return a && b;
+        \\};
+        \\
+        \\fn either(a: bool, b: bool) -> bool {
+        \\    return a || b;
+        \\};
+        \\
+        \\@test "boolean logic"() {
+        \\    if both(true, true) != true { panic(30501); };
+        \\    if both(true, false) { panic(30502); };
+        \\    if either(false, true) != true { panic(30503); };
+        \\    if either(false, false) { panic(30504); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "boolean_logic.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "boolean_logic.sla",
+        ".sla-cache/sab/boolean_logic.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "boolean logic", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    var saw_and = false;
+    var saw_or = false;
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .op and item.op_kind == .@"and") saw_and = true;
+        if (item.kind == .op and item.op_kind == .@"or") saw_or = true;
+    }
+    try std.testing.expect(saw_and);
+    try std.testing.expect(saw_or);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers numeric casts directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_numeric_casts.sla",
+        ".sla-cache/sab/numeric_casts_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "numeric casts direct", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    var saw_trunc = false;
+    var saw_zext = false;
+    var saw_sext = false;
+    var saw_sitofp = false;
+    var saw_fptosi = false;
+    var saw_fptrunc = false;
+    var saw_fpext = false;
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .op and item.operands[2] == .ty) {
+            if (item.op_kind == .trunc) saw_trunc = true;
+            if (item.op_kind == .zext) saw_zext = true;
+            if (item.op_kind == .sext) saw_sext = true;
+            if (item.op_kind == .sitofp) saw_sitofp = true;
+            if (item.op_kind == .fptosi) saw_fptosi = true;
+            if (item.op_kind == .fptrunc) saw_fptrunc = true;
+            if (item.op_kind == .fpext) saw_fpext = true;
+        }
+    }
+    try std.testing.expect(saw_trunc);
+    try std.testing.expect(saw_zext);
+    try std.testing.expect(saw_sext);
+    try std.testing.expect(saw_sitofp);
+    try std.testing.expect(saw_fptosi);
+    try std.testing.expect(saw_fptrunc);
+    try std.testing.expect(saw_fpext);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers borrow and deref directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_borrow_direct.sla",
+        ".sla-cache/sab/borrow_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct borrow deref", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    var saw_borrow = false;
+    var saw_load = false;
+    var saw_stack_alloc = false;
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .borrow) saw_borrow = true;
+        if (item.kind == .load) saw_load = true;
+        if (item.kind == .stack_alloc) saw_stack_alloc = true;
+    }
+    try std.testing.expect(saw_borrow);
+    try std.testing.expect(saw_load);
+    try std.testing.expect(saw_stack_alloc);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers array literals dynamic indexes and range for directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_array_direct.sla",
+        ".sla-cache/sab/array_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct array literal repeat dynamic index range for", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    var saw_alloc = false;
+    var saw_store = false;
+    var saw_load = false;
+    var saw_ptr_add = false;
+    var saw_stack_alloc = false;
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .alloc) saw_alloc = true;
+        if (item.kind == .store) saw_store = true;
+        if (item.kind == .load) saw_load = true;
+        if (item.kind == .ptr_add) saw_ptr_add = true;
+        if (item.kind == .stack_alloc) saw_stack_alloc = true;
+    }
+    try std.testing.expect(saw_alloc);
+    try std.testing.expect(saw_store);
+    try std.testing.expect(saw_load);
+    try std.testing.expect(saw_ptr_add);
+    try std.testing.expect(saw_stack_alloc);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers move arguments directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_move_direct.sla",
+        ".sla-cache/sab/move_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct move struct argument", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    var saw_move_call = false;
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .call and item.operands[1] == .text and std.mem.indexOf(u8, item.operands[1].text, "^item") != null) {
+            saw_move_call = true;
+        }
+    }
+    try std.testing.expect(saw_move_call);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

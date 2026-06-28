@@ -1647,6 +1647,7 @@ pub const Parser = struct {
             .amp_amp,
             .ampersand_equal,
             .pipe,
+            .pipe_pipe,
             .pipe_equal,
             .caret,
             .less_less,
@@ -2004,6 +2005,12 @@ pub const Parser = struct {
     }
 
     fn parseClosureLiteral(self: *Parser) ParserError!*ast.Node {
+        if (self.match(.pipe_pipe)) {
+            const body = try self.parseExpr(0);
+            const node = try self.allocator.create(ast.Node);
+            node.* = .{ .closure_literal = .{ .params = &.{}, .body = body } };
+            return node;
+        }
         try self.expect(.pipe);
         var params = std.ArrayList(ast.Param).init(self.allocator);
         while (self.peek() != .pipe and self.peek() != .eof) {
@@ -2109,7 +2116,7 @@ pub const Parser = struct {
             try self.expect(.keyword_let);
             const pattern = try self.parseLetPattern();
             try self.expect(.equal);
-            const value = try self.parseExpr(0);
+            const value = try self.parseExpr(self.getInfixPrecedence(.amp_amp));
             try chain.append(.{ .pattern = pattern, .value = value });
             if (!self.match(.amp_amp)) break;
             if (self.peek() != .keyword_let) return ParserError.UnexpectedToken;
@@ -2410,7 +2417,7 @@ pub const Parser = struct {
                 node.* = .{ .await_expr = .{ .expr = expr } };
                 return node;
             },
-            .pipe => {
+            .pipe, .pipe_pipe => {
                 return try self.parseClosureLiteral();
             },
             .l_paren => {
@@ -2474,7 +2481,7 @@ pub const Parser = struct {
         self.advance();
 
         switch (tag) {
-            .plus, .minus, .asterisk, .slash, .percent, .ampersand, .pipe, .caret, .less_less, .greater_greater, .less_than, .greater_than, .less_equal, .greater_equal, .spaceship, .equal_equal, .bang_equal => {
+            .plus, .minus, .asterisk, .slash, .percent, .ampersand, .amp_amp, .pipe, .pipe_pipe, .caret, .less_less, .greater_greater, .less_than, .greater_than, .less_equal, .greater_equal, .spaceship, .equal_equal, .bang_equal => {
                 if (tag == .less_than and left.* == .identifier and self.looksLikeGenericStructLiteralTail()) {
                     return try self.parseGenericStructLiteralTail(left.identifier);
                 }
@@ -2492,7 +2499,9 @@ pub const Parser = struct {
                     .slash => ast.BinaryOp.div,
                     .percent => ast.BinaryOp.mod,
                     .ampersand => ast.BinaryOp.bit_and,
+                    .amp_amp => ast.BinaryOp.logical_and,
                     .pipe => ast.BinaryOp.bit_or,
+                    .pipe_pipe => ast.BinaryOp.logical_or,
                     .caret => ast.BinaryOp.bit_xor,
                     .less_less => ast.BinaryOp.shl,
                     .greater_greater => ast.BinaryOp.shr,
@@ -2669,6 +2678,8 @@ pub const Parser = struct {
     fn getInfixPrecedence(self: *Parser, tag: lexer.Token.Tag) u8 {
         _ = self;
         return switch (tag) {
+            .pipe_pipe => 1,
+            .amp_amp => 2,
             .pipe => 1,
             .caret => 2,
             .ampersand => 3,

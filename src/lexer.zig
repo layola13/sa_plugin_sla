@@ -73,6 +73,7 @@ pub const Token = struct {
         caret, // ^
         bang, // !
         pipe, // |
+        pipe_pipe, // ||
         less_less, // <<
         greater_greater, // >>
         spaceship, // <=>
@@ -174,6 +175,10 @@ pub const Lexer = struct {
             },
             '^' => return Token{ .tag = .caret, .loc = .{ .start = start, .end = self.index } },
             '|' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '|') {
+                    self.index += 1;
+                    return Token{ .tag = .pipe_pipe, .loc = .{ .start = start, .end = self.index } };
+                }
                 if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
                     self.index += 1;
                     return Token{ .tag = .pipe_equal, .loc = .{ .start = start, .end = self.index } };

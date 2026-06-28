@@ -3245,7 +3245,7 @@ pub const TypeChecker = struct {
                 return ty;
             },
             .call_expr => |call| {
-                const recv_node_ty = if (call.args.len > 0) try self.checkExpr(call.args[0], scope) else null;
+                const recv_node_ty = if (call.args.len > 0 and call.args[0].* != .move_expr) try self.checkExpr(call.args[0], scope) else null;
 
                 if (std.mem.eql(u8, call.func_name, "Some")) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;

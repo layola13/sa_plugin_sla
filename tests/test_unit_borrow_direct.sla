@@ -1,0 +1,16 @@
+fn read_twice(&value: i32) -> i32 {
+    let left = *value;
+    let right = *value;
+    left + right
+};
+
+fn read_nested(value: i32) -> i32 {
+    let borrowed = &value;
+    *borrowed
+};
+
+@test "direct borrow deref"() {
+    let value: i32 = 6;
+    if read_twice(&value) != 12 { panic(30701); };
+    if read_nested(8) != 8 { panic(30702); };
+};

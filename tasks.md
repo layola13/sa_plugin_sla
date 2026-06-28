@@ -73,6 +73,9 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] Add SCI regression coverage for v4 no-raw-text SAB decode, all `InstKind` / `OpKind` / operand tags, structured call parsing, and LLVM lowering of localized const vtable slots.
   - [x] Add direct SAB lowering for language-level function pointer values, including vtable const declarations, borrowed function values, parameter passing, generic function specializations, and `call_indirect`.
   - [ ] Optimize SLA-to-SAB generation time; current SA backend compile from `.sab` is faster than raw `.sa`, but `sa sla sab build` still spends extra time in SA-compatible flatten/verify/encode and cache writes.
+  - [x] Cache the resolved `sa_std` root inside each direct SAB codegen instance so repeated std macro fragments do not repeat filesystem root probing.
+  - [x] Cache decoded std import modules inside each direct SAB codegen instance so dependency preloading for multiple rules from the same `sa_std` import path does not repeat full SCI flatten/encode/decode work.
+  - [x] Cache reusable identifier-only std macro templates inside each direct SAB codegen instance so repeated Option/Result-style macro fragments reuse decoded structured SAB bodies with placeholder substitution.
   - [x] Add focused tests for direct SAB output, managed cache behavior, SAB magic, decoded instructions, and no generated `.sa` side output.
   - [x] Add direct-only regression tests (`allow_fallback = false`) so new direct SAB features cannot silently pass through the SA-compatible fallback path.
   - [x] Add direct SAB lowering for plain struct literals, field access, struct returns, resolved call symbols, and multi-argument function calls.
@@ -80,8 +83,21 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] Add direct SAB lowering for ordinary closure bindings and closure calls, including captured outer locals and one/two-parameter inline closure bodies.
   - [x] Add direct SAB lowering for Phase 1 scalar `var` slots, identifier assignment, stack-slot load/store, and basic `while` loops.
   - [x] Fix direct SAB branch-condition cleanup so temporary conditions are released on each branch while local/parameter conditions remain active.
+  - [x] Add direct SAB lowering for tuple literals, tuple field access, and tuple destructuring, including direct-only regression coverage.
+  - [x] Add direct SAB lowering for fixed array literals, repeat literals, and literal index reads/writes for focused scalar arrays, including direct-only regression coverage.
+  - [x] Add direct SAB lowering for dynamic fixed-array index reads/writes and basic numeric range `for` loops, including direct-only regression coverage and no-fallback coverage for `tests/test_unit_arrays.sla`.
+  - [x] Add direct SAB lowering for scalar value-producing `if` expressions, typed `if` bindings, nested branch assignments, and f32/f64 arithmetic/comparison op selection.
+  - [x] Add parser and direct SAB lowering for boolean `&&` / `||` expressions, including dev-plugin no-fallback verification.
+  - [x] Add direct SAB lowering for primitive numeric `as` casts, including structured conversion op operands and dev-plugin no-fallback verification.
+  - [x] Add direct SAB lowering for scalar borrow/deref and non-void tail-expression returns, including direct-only regression coverage.
+  - [x] Add direct SAB lowering for move-prefixed call arguments, including type-checker single-consumption handling and dev-plugin no-fallback verification.
   - [x] Move the first std surface lowering path into generic import metadata / macro-fragment lowering so direct SAB can consume std macros without hardcoding ordinary library logic in Zig.
-  - [ ] Extend the std surface metadata format beyond the current associated/method/index macro bridge, still without adding compiler branches for `Vec`, `thread`, ECS, or other library names.
+  - [x] Extend the std surface metadata format beyond the current associated/method/index macro bridge, still without adding compiler branches for `Vec`, `thread`, ECS, or other library names.
+  - [x] Add generic fallible std surface macro metadata with explicit ok/output slots and panic-on-false lowering, covering `Vec.remove` without a `Vec.remove` compiler branch.
+  - [x] Add generic std surface constructor metadata and result-valued method metadata, covering focused `Option` `Some`/`None` construction plus `is_some`/`is_none` without `Option` compiler branches.
+  - [x] Preserve const-bearing std macro fragments in direct SAB lowering, including structured `panic_msg` operands and focused `Option.unwrap()` coverage without `Option` compiler branches.
+  - [x] Add focused direct SAB metadata coverage for `Option.unwrap_or`, including no-fallback Some/None branch regression coverage without `Option` compiler branches.
+  - [x] Add focused direct SAB metadata coverage for `Result` `Ok`/`Err` construction plus `is_ok`/`is_err`/`unwrap`/`unwrap_or`, including no-fallback regression coverage without `Result` compiler branches.
   - [ ] Add generic exported closure/function-object entry lowering before enabling no-fallback thread-spawn style cases; do not copy the legacy text backend's `thread`-specific lowering into `sab_codegen.zig`.
   - [ ] Remove the remaining in-memory SA-compatible fallback from the normal SAB path by replacing std/macro/closure gaps with generic direct SAB lowering or a generic SAB macro representation, not library-name special cases.
 - [x] **SLA CLI Project Helpers**

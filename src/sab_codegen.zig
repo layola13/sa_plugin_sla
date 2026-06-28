@@ -21,6 +21,11 @@ const Local = struct {
     is_param: bool,
 };
 
+const SavedClosureParam = struct {
+    name: []const u8,
+    old: ?u32,
+};
+
 const FieldLayout = struct {
     offset: usize,
     ty: sig.PrimType,
@@ -57,6 +62,8 @@ pub const Codegen = struct {
     symbol_ids: std.StringHashMap(u32),
     const_decls: std.ArrayList(const_decl.ConstDecl),
     fn_ptr_vtables: std.StringHashMap(void),
+    closure_bindings: std.StringHashMap(*const ast.ClosureLiteral),
+    closure_param_regs: std.StringHashMap(u32),
     std_surface_rules: std.ArrayList(StdSurfaceRule),
     included_imports: std.StringHashMap(void),
     instructions: std.ArrayList(inst.Instruction),
@@ -78,6 +85,8 @@ pub const Codegen = struct {
             .symbol_ids = std.StringHashMap(u32).init(allocator),
             .const_decls = std.ArrayList(const_decl.ConstDecl).init(allocator),
             .fn_ptr_vtables = std.StringHashMap(void).init(allocator),
+            .closure_bindings = std.StringHashMap(*const ast.ClosureLiteral).init(allocator),
+            .closure_param_regs = std.StringHashMap(u32).init(allocator),
             .std_surface_rules = std.ArrayList(StdSurfaceRule).init(allocator),
             .included_imports = std.StringHashMap(void).init(allocator),
             .instructions = std.ArrayList(inst.Instruction).init(allocator),
@@ -95,6 +104,8 @@ pub const Codegen = struct {
         self.symbol_ids.deinit();
         self.const_decls.deinit();
         self.fn_ptr_vtables.deinit();
+        self.closure_bindings.deinit();
+        self.closure_param_regs.deinit();
         for (self.std_surface_rules.items) |rule| {
             self.allocator.free(rule.type_name);
             if (rule.member_name) |name| self.allocator.free(name);
@@ -680,6 +691,8 @@ pub const Codegen = struct {
         self.current_reg_ids.clearRetainingCapacity();
         self.current_reg_seen.clearRetainingCapacity();
         self.released_regs.clearRetainingCapacity();
+        self.closure_bindings.clearRetainingCapacity();
+        self.closure_param_regs.clearRetainingCapacity();
     }
 
     fn recordReg(self: *Codegen, reg: u32) !void {
@@ -707,6 +720,14 @@ pub const Codegen = struct {
 
     fn popLocalsTo(self: *Codegen, len: usize) void {
         self.locals.shrinkRetainingCapacity(len);
+    }
+
+    fn closureLiteralFromExpr(expr: *const ast.Node) ?*const ast.ClosureLiteral {
+        return switch (expr.*) {
+            .closure_literal => |*lit| lit,
+            .move_expr => |mv| closureLiteralFromExpr(mv.expr),
+            else => null,
+        };
     }
 
     fn localReg(self: *Codegen, name: []const u8) ?u32 {
@@ -1166,6 +1187,12 @@ pub const Codegen = struct {
         switch (stmt.*) {
             .let_stmt => |let| {
                 const dst = try self.intern(let.name);
+                if (closureLiteralFromExpr(let.value)) |closure| {
+                    try self.closure_bindings.put(let.name, closure);
+                    try self.emitAssignImm(dst, 0);
+                    try self.pushLocal(let.name, dst, false);
+                    return;
+                }
                 const src = try self.genExpr(let.value);
                 try self.emitAssignReg(dst, src);
                 try self.pushLocal(let.name, dst, false);
@@ -1194,6 +1221,7 @@ pub const Codegen = struct {
         return switch (expr.*) {
             .literal => |lit| try self.genLiteral(lit),
             .identifier => |name| blk: {
+                if (self.closure_param_regs.get(name)) |mapped| break :blk mapped;
                 if (self.exprHasFnPtrType(expr) and self.tc.funcs.contains(name)) {
                     const dst = try self.intern(try self.newTmp());
                     const vt_name = try self.ensureFunctionPointerVTable(name);
@@ -1256,6 +1284,9 @@ pub const Codegen = struct {
             try self.appendInst(item);
             return try self.intern(try self.newTmp());
         }
+        if (call.associated_target == null) {
+            if (self.closure_bindings.get(call.func_name)) |closure| return try self.genClosureCall(closure, call);
+        }
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const call_symbol = if (self.tc.resolved_call_symbols.get(expr)) |symbol|
             symbol
@@ -1284,6 +1315,42 @@ pub const Codegen = struct {
         try self.appendInst(item);
         try self.releaseNonLocalTemps(arg_regs.items);
         return dst;
+    }
+
+    fn restoreClosureParams(self: *Codegen, saved: []const SavedClosureParam) void {
+        var i = saved.len;
+        while (i > 0) {
+            i -= 1;
+            const item = saved[i];
+            if (item.old) |old| {
+                self.closure_param_regs.put(item.name, old) catch {};
+            } else {
+                _ = self.closure_param_regs.remove(item.name);
+            }
+        }
+    }
+
+    fn genClosureCall(self: *Codegen, closure: *const ast.ClosureLiteral, call: ast.CallExpr) anyerror!u32 {
+        if (closure.params.len != call.args.len) return Error.UnsupportedSabDirectFeature;
+
+        var arg_regs = std.ArrayList(u32).init(self.allocator);
+        defer arg_regs.deinit();
+        for (call.args) |arg| try arg_regs.append(try self.genExpr(@constCast(arg)));
+
+        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        defer saved.deinit();
+        for (closure.params, arg_regs.items) |param, arg_reg| {
+            try saved.append(.{ .name = param.name, .old = self.closure_param_regs.get(param.name) });
+            try self.closure_param_regs.put(param.name, arg_reg);
+        }
+        defer self.restoreClosureParams(saved.items);
+
+        const result = try self.genExpr(@constCast(closure.body));
+        for (arg_regs.items) |arg_reg| {
+            if (arg_reg == result or self.isLocalReg(arg_reg)) continue;
+            try self.emitRelease(arg_reg);
+        }
+        return result;
     }
 
     fn genStdSurfaceCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {

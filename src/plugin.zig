@@ -2950,6 +2950,35 @@ test "sla sab backend lowers imported std surface metadata directly" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend lowers closure calls directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_closures.sla",
+        ".sla-cache/sab/closures_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "closure supports multiple params", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_closure_func = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.eql(u8, fsig.name, "sla__closure_two_args")) saw_closure_func = true;
+    }
+    for (module.instructions) |item| try std.testing.expectEqualStrings("", item.raw_text);
+    try std.testing.expect(saw_closure_func);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab build emits direct SAB without SA source output" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

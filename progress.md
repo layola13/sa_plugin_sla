@@ -4,6 +4,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Direct SAB now lowers Phase 1 scalar `var` slots, assignment, and basic `while` loops without fallback.
+  - Added direct `stack_alloc` lowering for scalar `var` declarations, stack-slot `store` on whole-variable assignment, and stack-slot `load` on identifier reads.
+  - Added direct identifier assignment for normal locals and stack slots, plus basic `while` loop lowering with explicit head/body/exit labels.
+  - Fixed direct SAB branch-condition cleanup. Temporary condition registers are now released on each control-flow path, while local/parameter condition registers are not consumed just because they drive an `if` or `while`. This fixed the `PhiStateConflict` seen in `var_scalar_branch(cond)`.
+  - Revalidated basic, closure, and std metadata no-fallback paths after the control-flow cleanup change.
+  - Installed verification used `SA_PLUGIN_DEV=1`; the rebuilt `zig-out/lib/libsla.so` was synchronized into installed `current` and `0.1.0` plugin directories, with all three hashes matching `354b50369217ba0d81cfbb9c1c5ff6f14ec27aaa1270de59757a0f34207bf589`.
+  - Verified with: `zig build`; `zig build test -Dtest-filter="sla sab backend lowers var scalar slots directly" --summary all`; `SLA_SAB_NO_FALLBACK=1 SLA_PROFILE=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_var_phase1.sla --test-backend sab --jobs 1 --trace-panic`; `SLA_SAB_NO_FALLBACK=1 SLA_PROFILE=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_basic.sla --test-backend sab --jobs 1 --trace-panic`; `SLA_SAB_NO_FALLBACK=1 SLA_PROFILE=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_closures.sla --test-backend sab --jobs 1 --trace-panic`; `SLA_SAB_NO_FALLBACK=1 SLA_PROFILE=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_fn_ptr_value.sla --filter "function pointer survives vec push through function" --test-backend sab --jobs 1 --trace-panic`; and installed host `SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_var_phase1.sla --test-backend sab --jobs 1 --trace-panic`.
+
 - [done] Direct SAB now lowers ordinary closure bindings and closure calls without fallback.
   - Added direct SAB state for local closure bindings and closure parameter register mappings. `let f = |x| ...; f(arg)` now generates the closure body inline with parameter registers bound to evaluated arguments, while captured outer locals continue to resolve through the normal local symbol table.
   - Covered the current native closure smoke shapes: captured outer value, one-parameter closure, and two-parameter closure. This is a language feature implementation, not a std/thread/library branch.

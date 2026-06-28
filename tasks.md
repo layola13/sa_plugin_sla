@@ -78,6 +78,8 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] Add direct SAB lowering for plain struct literals, field access, struct returns, resolved call symbols, and multi-argument function calls.
   - [x] Add a dev/debug no-fallback gate (`SLA_SAB_NO_FALLBACK=1`) so direct SAB gaps fail loudly instead of hiding behind the compatibility encoder.
   - [x] Add direct SAB lowering for ordinary closure bindings and closure calls, including captured outer locals and one/two-parameter inline closure bodies.
+  - [x] Add direct SAB lowering for Phase 1 scalar `var` slots, identifier assignment, stack-slot load/store, and basic `while` loops.
+  - [x] Fix direct SAB branch-condition cleanup so temporary conditions are released on each branch while local/parameter conditions remain active.
   - [x] Move the first std surface lowering path into generic import metadata / macro-fragment lowering so direct SAB can consume std macros without hardcoding ordinary library logic in Zig.
   - [ ] Extend the std surface metadata format beyond the current associated/method/index macro bridge, still without adding compiler branches for `Vec`, `thread`, ECS, or other library names.
   - [ ] Add generic exported closure/function-object entry lowering before enabling no-fallback thread-spawn style cases; do not copy the legacy text backend's `thread`-specific lowering into `sab_codegen.zig`.

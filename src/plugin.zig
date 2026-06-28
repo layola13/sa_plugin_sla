@@ -2979,6 +2979,38 @@ test "sla sab backend lowers closure calls directly" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend lowers var scalar slots directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_var_phase1.sla",
+        ".sla-cache/sab/var_phase1_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "var initialized before loop remains readable", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_stack_alloc = false;
+    var saw_loop_jump = false;
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .stack_alloc) saw_stack_alloc = true;
+        if (item.kind == .jmp) saw_loop_jump = true;
+    }
+    try std.testing.expect(saw_stack_alloc);
+    try std.testing.expect(saw_loop_jump);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab build emits direct SAB without SA source output" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

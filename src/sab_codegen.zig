@@ -19,6 +19,7 @@ const Local = struct {
     name: []const u8,
     reg: u32,
     is_param: bool,
+    stack_ty: ?*const ast.Type = null,
 };
 
 const SavedClosureParam = struct {
@@ -687,6 +688,11 @@ pub const Codegen = struct {
         try self.locals.append(.{ .name = name, .reg = reg, .is_param = is_param });
     }
 
+    fn pushStackLocal(self: *Codegen, name: []const u8, reg: u32, ty: *const ast.Type) !void {
+        try self.recordReg(reg);
+        try self.locals.append(.{ .name = name, .reg = reg, .is_param = false, .stack_ty = ty });
+    }
+
     fn beginFunction(self: *Codegen) void {
         self.current_reg_ids.clearRetainingCapacity();
         self.current_reg_seen.clearRetainingCapacity();
@@ -712,6 +718,7 @@ pub const Codegen = struct {
             i -= 1;
             const local = self.locals.items[i];
             if (local.is_param) continue;
+            if (local.stack_ty != null) continue;
             if (except != null and local.reg == except.?) continue;
             if (self.released_regs.contains(local.reg)) continue;
             try self.emitRelease(local.reg);
@@ -736,6 +743,16 @@ pub const Codegen = struct {
             i -= 1;
             const local = self.locals.items[i];
             if (std.mem.eql(u8, local.name, name)) return local.reg;
+        }
+        return null;
+    }
+
+    fn stackLocal(self: *Codegen, name: []const u8) ?Local {
+        var i = self.locals.items.len;
+        while (i > 0) {
+            i -= 1;
+            const local = self.locals.items[i];
+            if (std.mem.eql(u8, local.name, name) and local.stack_ty != null) return local;
         }
         return null;
     }
@@ -769,6 +786,12 @@ pub const Codegen = struct {
         try self.released_regs.put(reg, {});
     }
 
+    fn emitBranchRelease(self: *Codegen, reg: u32) !void {
+        var item = self.makeInst(.release);
+        item.operands[0] = .{ .reg = reg };
+        try self.appendInst(item);
+    }
+
     fn emitAssignImm(self: *Codegen, dst: u32, value: i64) !void {
         var item = self.makeInst(.assign);
         item.operands[0] = .{ .reg = dst };
@@ -787,6 +810,14 @@ pub const Codegen = struct {
     fn emitAlloc(self: *Codegen, dst: u32, size: usize) !void {
         try self.recordReg(dst);
         var item = self.makeInst(.alloc);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = .{ .imm_u64 = @intCast(size) };
+        try self.appendInst(item);
+    }
+
+    fn emitStackAlloc(self: *Codegen, dst: u32, size: usize) !void {
+        try self.recordReg(dst);
+        var item = self.makeInst(.stack_alloc);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .imm_u64 = @intCast(size) };
         try self.appendInst(item);
@@ -1185,6 +1216,11 @@ pub const Codegen = struct {
 
     fn genStmt(self: *Codegen, stmt: *ast.Node) anyerror!void {
         switch (stmt.*) {
+            .var_stmt => |v| {
+                const dst = try self.intern(v.name);
+                try self.emitStackAlloc(dst, typeSize(v.ty));
+                try self.pushStackLocal(v.name, dst, v.ty);
+            },
             .let_stmt => |let| {
                 const dst = try self.intern(let.name);
                 if (closureLiteralFromExpr(let.value)) |closure| {
@@ -1197,6 +1233,7 @@ pub const Codegen = struct {
                 try self.emitAssignReg(dst, src);
                 try self.pushLocal(let.name, dst, false);
             },
+            .assign_stmt => |assign| try self.genAssign(assign),
             .expr_stmt => |expr| {
                 if (expr.* == .if_expr) {
                     _ = try self.genExpr(expr);
@@ -1213,8 +1250,25 @@ pub const Codegen = struct {
                 try self.emitReturn(value);
             },
             .block_stmt => |blk| try self.genBlock(blk.body),
+            .while_stmt => |w| try self.genWhile(w),
             else => return Error.UnsupportedSabDirectFeature,
         }
+    }
+
+    fn genAssign(self: *Codegen, assign: ast.AssignStmt) anyerror!void {
+        if (assign.target.* != .identifier) return Error.UnsupportedSabDirectFeature;
+        const name = assign.target.identifier;
+        const value = try self.genExpr(assign.value);
+        if (self.stackLocal(name)) |slot| {
+            const ty = slot.stack_ty orelse return Error.UnsupportedSabDirectFeature;
+            try self.emitStore(slot.reg, 0, value, try primType(ty));
+            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            return;
+        }
+
+        const dst = self.localReg(name) orelse try self.intern(name);
+        if (dst != value and !self.released_regs.contains(dst)) try self.emitRelease(dst);
+        try self.emitAssignReg(dst, value);
     }
 
     fn genExpr(self: *Codegen, expr: *ast.Node) anyerror!u32 {
@@ -1222,6 +1276,12 @@ pub const Codegen = struct {
             .literal => |lit| try self.genLiteral(lit),
             .identifier => |name| blk: {
                 if (self.closure_param_regs.get(name)) |mapped| break :blk mapped;
+                if (self.stackLocal(name)) |slot| {
+                    const ty = slot.stack_ty orelse return Error.UnsupportedSabDirectFeature;
+                    const dst = try self.intern(try self.newTmp());
+                    try self.emitLoad(dst, slot.reg, 0, try primType(ty));
+                    break :blk dst;
+                }
                 if (self.exprHasFnPtrType(expr) and self.tc.funcs.contains(name)) {
                     const dst = try self.intern(try self.newTmp());
                     const vt_name = try self.ensureFunctionPointerVTable(name);
@@ -1351,6 +1411,31 @@ pub const Codegen = struct {
             try self.emitRelease(arg_reg);
         }
         return result;
+    }
+
+    fn genWhile(self: *Codegen, w: ast.WhileStmt) anyerror!void {
+        if (w.let_pattern != null) return Error.UnsupportedSabDirectFeature;
+        const head_label = try self.newLabel("L_WHILE_HEAD");
+        const body_label = try self.newLabel("L_WHILE_BODY");
+        const exit_label = try self.newLabel("L_WHILE_EXIT");
+
+        try self.emitJmp(head_label);
+        try self.emitLabel(head_label);
+        const cond = try self.genExpr(w.cond);
+        var br = self.makeInst(.br);
+        br.operands[0] = .{ .reg = cond };
+        br.operands[1] = .{ .label = try self.intern(body_label) };
+        br.operands[2] = .{ .label = try self.intern(body_label) };
+        br.operands[3] = .{ .label = try self.intern(exit_label) };
+        try self.appendInst(br);
+
+        try self.emitLabel(body_label);
+        if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
+        try self.genBlock(w.body);
+        if (!self.lastIsTerminator()) try self.emitJmp(head_label);
+
+        try self.emitLabel(exit_label);
+        if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
     }
 
     fn genStdSurfaceCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
@@ -1495,12 +1580,12 @@ pub const Codegen = struct {
         br.operands[3] = .{ .label = try self.intern(else_label) };
         try self.appendInst(br);
         try self.emitLabel(then_label);
-        try self.emitRelease(cond);
+        if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         try self.genBlock(ife.then_block);
         const then_terminated = self.lastIsTerminator();
         if (!then_terminated) try self.emitJmp(merge_label);
         try self.emitLabel(else_label);
-        try self.emitRelease(cond);
+        if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         if (ife.else_block) |else_block| try self.genBlock(else_block);
         const else_terminated = self.lastIsTerminator();
         if (!else_terminated) try self.emitJmp(merge_label);

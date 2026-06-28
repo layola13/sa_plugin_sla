@@ -2910,6 +2910,46 @@ test "sla sab backend lowers multi-argument calls directly" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend lowers imported std surface metadata directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_fn_ptr_value.sla",
+        ".sla-cache/sab/fn_ptr_vec_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "function pointer survives vec push through function", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_vec_push = false;
+    var saw_vec_new = false;
+    var saw_unrelated_vec_free = false;
+    var saw_call_indirect = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.eql(u8, fsig.name, "sa_vec_push")) saw_vec_push = true;
+        if (std.mem.eql(u8, fsig.name, "sa_vec_new")) saw_vec_new = true;
+        if (std.mem.eql(u8, fsig.name, "sa_vec_free")) saw_unrelated_vec_free = true;
+    }
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .call_indirect) saw_call_indirect = true;
+    }
+    try std.testing.expect(saw_vec_push);
+    try std.testing.expect(saw_vec_new);
+    try std.testing.expect(!saw_unrelated_vec_free);
+    try std.testing.expect(saw_call_indirect);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab build emits direct SAB without SA source output" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

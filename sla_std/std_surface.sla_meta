@@ -1,0 +1,9 @@
+# Sla std surface lowering metadata.
+#
+# This file is data, not compiler logic. The direct SAB backend reads these
+# rules generically so library surface sugar can lower through imported SA
+# macros without hardcoding ordinary library semantics in Zig.
+
+associated Vec new sa_std/vec.sa VEC_NEW out deps=sa_vec_new
+method Vec push sa_std/vec.sa VEC_PUSH receiver,value,elem_size deps=sa_vec_push,sa_mem_copy
+index Vec sa_std/vec.sa VEC_GET out,receiver,index

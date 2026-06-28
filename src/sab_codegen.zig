@@ -4,6 +4,7 @@ const type_checker = @import("type_checker.zig");
 const sci_bridge = @import("sci_bridge");
 
 const sab = sci_bridge.sab;
+const flattener = sci_bridge.flattener;
 const inst = sab.instruction;
 const sig = sab.signature;
 const const_decl = sab.const_decl;
@@ -25,6 +26,30 @@ const FieldLayout = struct {
     ty: sig.PrimType,
 };
 
+const StdSurfaceRuleKind = enum {
+    associated,
+    method,
+    index,
+};
+
+const StdSurfaceArgKind = enum {
+    out,
+    receiver,
+    value,
+    index,
+    elem_size,
+};
+
+const StdSurfaceRule = struct {
+    kind: StdSurfaceRuleKind,
+    type_name: []const u8,
+    member_name: ?[]const u8,
+    import_path: []const u8,
+    macro_name: []const u8,
+    args: []const StdSurfaceArgKind,
+    deps: []const []const u8,
+};
+
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
@@ -32,6 +57,8 @@ pub const Codegen = struct {
     symbol_ids: std.StringHashMap(u32),
     const_decls: std.ArrayList(const_decl.ConstDecl),
     fn_ptr_vtables: std.StringHashMap(void),
+    std_surface_rules: std.ArrayList(StdSurfaceRule),
+    included_imports: std.StringHashMap(void),
     instructions: std.ArrayList(inst.Instruction),
     function_sigs: std.ArrayList(sig.FunctionSig),
     test_sigs: std.ArrayList(sig.FunctionSig),
@@ -41,6 +68,7 @@ pub const Codegen = struct {
     released_regs: std.AutoHashMap(u32, void),
     tmp_idx: usize = 0,
     label_idx: usize = 0,
+    macro_fragment_idx: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker) Codegen {
         return .{
@@ -50,6 +78,8 @@ pub const Codegen = struct {
             .symbol_ids = std.StringHashMap(u32).init(allocator),
             .const_decls = std.ArrayList(const_decl.ConstDecl).init(allocator),
             .fn_ptr_vtables = std.StringHashMap(void).init(allocator),
+            .std_surface_rules = std.ArrayList(StdSurfaceRule).init(allocator),
+            .included_imports = std.StringHashMap(void).init(allocator),
             .instructions = std.ArrayList(inst.Instruction).init(allocator),
             .function_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
             .test_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
@@ -65,6 +95,17 @@ pub const Codegen = struct {
         self.symbol_ids.deinit();
         self.const_decls.deinit();
         self.fn_ptr_vtables.deinit();
+        for (self.std_surface_rules.items) |rule| {
+            self.allocator.free(rule.type_name);
+            if (rule.member_name) |name| self.allocator.free(name);
+            self.allocator.free(rule.import_path);
+            self.allocator.free(rule.macro_name);
+            if (rule.args.len != 0) self.allocator.free(rule.args);
+            for (rule.deps) |dep| self.allocator.free(dep);
+            if (rule.deps.len != 0) self.allocator.free(rule.deps);
+        }
+        self.std_surface_rules.deinit();
+        self.included_imports.deinit();
         self.instructions.deinit();
         self.function_sigs.deinit();
         self.test_sigs.deinit();
@@ -76,6 +117,8 @@ pub const Codegen = struct {
 
     pub fn generate(self: *Codegen, program: *ast.Node) ![]u8 {
         if (program.* != .program) return Error.UnsupportedSabDirectFeature;
+        try self.loadStdSurfaceRules();
+        try self.preloadStdSurfaceDeps(program);
         for (program.program.decls) |decl| {
             switch (decl.*) {
                 .func_decl => |*f| {
@@ -101,6 +144,11 @@ pub const Codegen = struct {
         try self.symbols.append(name);
         try self.symbol_ids.put(name, id);
         return id;
+    }
+
+    fn internStable(self: *Codegen, name: []const u8) !u32 {
+        if (self.symbol_ids.get(name)) |id| return id;
+        return try self.intern(try self.allocator.dupe(u8, name));
     }
 
     fn loweredFuncSymbol(self: *Codegen, name: []const u8) ![]const u8 {
@@ -161,6 +209,201 @@ pub const Codegen = struct {
         const name = try std.fmt.allocPrint(self.allocator, "{s}_{}", .{ prefix, self.label_idx });
         self.label_idx += 1;
         return name;
+    }
+
+    fn readStdSurfaceFile(self: *Codegen) !?[]const u8 {
+        if (std.process.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |root| {
+            defer self.allocator.free(root);
+            const path = try std.fs.path.join(self.allocator, &.{ root, "std_surface.sla_meta" });
+            defer self.allocator.free(path);
+            if (std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+                error.FileNotFound, error.NotDir => {},
+                else => return err,
+            }
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+            defer self.allocator.free(home);
+            const path = try std.fs.path.join(self.allocator, &.{ home, "projects", "sa_plugins", "sa_plugin_sla", "sla_std", "std_surface.sla_meta" });
+            defer self.allocator.free(path);
+            if (std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+                error.FileNotFound, error.NotDir => {},
+                else => return err,
+            }
+        } else |_| {}
+
+        const candidates = [_][]const u8{
+            "sla_std/std_surface.sla_meta",
+            "sa_plugins/sa_plugin_sla/sla_std/std_surface.sla_meta",
+            "../sa_plugins/sa_plugin_sla/sla_std/std_surface.sla_meta",
+            "/home/vscode/projects/sa_plugins/sa_plugin_sla/sla_std/std_surface.sla_meta",
+        };
+        for (candidates) |path| {
+            if (std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+                error.FileNotFound, error.NotDir => {},
+                else => return err,
+            }
+        }
+        return null;
+    }
+
+    fn saStdRootLooksValid(self: *Codegen, root: []const u8) !bool {
+        const required_files = [_][]const u8{
+            "core/sa_core.sa",
+            "core/option.sa",
+            "core/result.sa",
+            "io/print.sai",
+        };
+        for (required_files) |rel| {
+            const path = try std.fs.path.join(self.allocator, &.{ root, rel });
+            defer self.allocator.free(path);
+            if (std.fs.cwd().openFile(path, .{})) |file| {
+                file.close();
+            } else |err| switch (err) {
+                error.FileNotFound, error.NotDir => return false,
+                else => return err,
+            }
+        }
+        return true;
+    }
+
+    fn dupeIfValidSaStdRoot(self: *Codegen, root: []const u8) !?[]const u8 {
+        if (try self.saStdRootLooksValid(root)) return try self.allocator.dupe(u8, root);
+        return null;
+    }
+
+    fn resolveSaStdRoot(self: *Codegen) ![]const u8 {
+        if (std.process.getEnvVarOwned(self.allocator, "SA_STD_DIR")) |env_root| {
+            defer self.allocator.free(env_root);
+            if (try self.dupeIfValidSaStdRoot(env_root)) |root| return root;
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+            defer self.allocator.free(home);
+            const home_repo_std_root = try std.fs.path.join(self.allocator, &.{ home, "projects", "sci", "sa_std" });
+            defer self.allocator.free(home_repo_std_root);
+            if (try self.dupeIfValidSaStdRoot(home_repo_std_root)) |root| return root;
+
+            const installed_std_root = try std.fs.path.join(self.allocator, &.{ home, ".sa", "std" });
+            defer self.allocator.free(installed_std_root);
+            if (try self.dupeIfValidSaStdRoot(installed_std_root)) |root| return root;
+        } else |_| {}
+
+        const candidate_roots = [_][]const u8{
+            "sa_std",
+            "sci/sa_std",
+            "../sci/sa_std",
+            "../../sci/sa_std",
+            "/home/vscode/projects/sci/sa_std",
+            "/home/vscode/.sa/std",
+        };
+        for (candidate_roots) |root| {
+            if (try self.dupeIfValidSaStdRoot(root)) |valid| return valid;
+        }
+        return error.FileNotFound;
+    }
+
+    fn flattenStdSnippet(self: *Codegen, source: []const u8) !flattener.FlattenResult {
+        const std_root = try self.resolveSaStdRoot();
+        defer self.allocator.free(std_root);
+        const resolve_ctx = flattener.ResolveContext{ .options = .{ .std_root = std_root } };
+        return flattener.flattenWithPackages(self.allocator, source, resolve_ctx);
+    }
+
+    fn parseStdSurfaceArg(text: []const u8) !StdSurfaceArgKind {
+        if (std.mem.eql(u8, text, "out")) return .out;
+        if (std.mem.eql(u8, text, "receiver")) return .receiver;
+        if (std.mem.eql(u8, text, "value")) return .value;
+        if (std.mem.eql(u8, text, "index")) return .index;
+        if (std.mem.eql(u8, text, "elem_size")) return .elem_size;
+        return Error.UnsupportedSabDirectFeature;
+    }
+
+    fn parseStdSurfaceArgs(self: *Codegen, text: []const u8) ![]const StdSurfaceArgKind {
+        var args = std.ArrayList(StdSurfaceArgKind).init(self.allocator);
+        var it = std.mem.splitScalar(u8, text, ',');
+        while (it.next()) |raw| {
+            const item = std.mem.trim(u8, raw, " \t\r");
+            if (item.len == 0) continue;
+            try args.append(try parseStdSurfaceArg(item));
+        }
+        return try args.toOwnedSlice();
+    }
+
+    fn parseStdSurfaceDeps(self: *Codegen, text: ?[]const u8) ![]const []const u8 {
+        const raw = text orelse return &.{};
+        if (!std.mem.startsWith(u8, raw, "deps=")) return Error.UnsupportedSabDirectFeature;
+        var deps = std.ArrayList([]const u8).init(self.allocator);
+        var it = std.mem.splitScalar(u8, raw["deps=".len..], ',');
+        while (it.next()) |item_raw| {
+            const item = std.mem.trim(u8, item_raw, " \t\r");
+            if (item.len == 0) continue;
+            try deps.append(try self.allocator.dupe(u8, item));
+        }
+        return try deps.toOwnedSlice();
+    }
+
+    fn loadStdSurfaceRules(self: *Codegen) !void {
+        if (self.std_surface_rules.items.len != 0) return;
+        const source = (try self.readStdSurfaceFile()) orelse return;
+        defer self.allocator.free(source);
+        var lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            var parts = std.mem.tokenizeAny(u8, line, " \t");
+            const raw_kind = parts.next() orelse continue;
+            if (std.mem.eql(u8, raw_kind, "associated")) {
+                const type_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const member_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const import_path = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const macro_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const arg_text = parts.next() orelse "";
+                const deps = try self.parseStdSurfaceDeps(parts.next());
+                try self.std_surface_rules.append(.{
+                    .kind = .associated,
+                    .type_name = try self.allocator.dupe(u8, type_name),
+                    .member_name = try self.allocator.dupe(u8, member_name),
+                    .import_path = try self.allocator.dupe(u8, import_path),
+                    .macro_name = try self.allocator.dupe(u8, macro_name),
+                    .args = try self.parseStdSurfaceArgs(arg_text),
+                    .deps = deps,
+                });
+            } else if (std.mem.eql(u8, raw_kind, "method")) {
+                const type_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const member_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const import_path = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const macro_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const arg_text = parts.next() orelse "";
+                const deps = try self.parseStdSurfaceDeps(parts.next());
+                try self.std_surface_rules.append(.{
+                    .kind = .method,
+                    .type_name = try self.allocator.dupe(u8, type_name),
+                    .member_name = try self.allocator.dupe(u8, member_name),
+                    .import_path = try self.allocator.dupe(u8, import_path),
+                    .macro_name = try self.allocator.dupe(u8, macro_name),
+                    .args = try self.parseStdSurfaceArgs(arg_text),
+                    .deps = deps,
+                });
+            } else if (std.mem.eql(u8, raw_kind, "index")) {
+                const type_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const import_path = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const macro_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const arg_text = parts.next() orelse "";
+                const deps = try self.parseStdSurfaceDeps(parts.next());
+                try self.std_surface_rules.append(.{
+                    .kind = .index,
+                    .type_name = try self.allocator.dupe(u8, type_name),
+                    .member_name = null,
+                    .import_path = try self.allocator.dupe(u8, import_path),
+                    .macro_name = try self.allocator.dupe(u8, macro_name),
+                    .args = try self.parseStdSurfaceArgs(arg_text),
+                    .deps = deps,
+                });
+            } else {
+                return Error.UnsupportedSabDirectFeature;
+            }
+        }
     }
 
     fn primType(ty: *const ast.Type) !sig.PrimType {
@@ -270,6 +513,135 @@ pub const Codegen = struct {
             if (std.mem.eql(u8, field.name, name)) return field.ty;
         }
         return null;
+    }
+
+    fn typeBaseName(ty: *const ast.Type) ?[]const u8 {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                else => break,
+            }
+        }
+        if (curr.* != .user_defined) return null;
+        return curr.user_defined.name;
+    }
+
+    fn firstGenericArg(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                else => break,
+            }
+        }
+        if (curr.* != .user_defined or curr.user_defined.generics.len == 0) return null;
+        return curr.user_defined.generics[0];
+    }
+
+    fn elementSlotSize(self: *Codegen, ty: *const ast.Type) usize {
+        _ = self;
+        if (firstGenericArg(ty)) |elem_ty| return typeSize(elem_ty);
+        return 8;
+    }
+
+    fn findStdSurfaceRule(self: *Codegen, kind: StdSurfaceRuleKind, type_name: []const u8, member_name: ?[]const u8) ?StdSurfaceRule {
+        for (self.std_surface_rules.items) |rule| {
+            if (rule.kind != kind) continue;
+            if (!std.mem.eql(u8, rule.type_name, type_name)) continue;
+            if (member_name) |member| {
+                if (rule.member_name == null or !std.mem.eql(u8, rule.member_name.?, member)) continue;
+            } else if (rule.member_name != null) continue;
+            return rule;
+        }
+        return null;
+    }
+
+    const StdSurfaceValues = struct {
+        out: ?u32 = null,
+        receiver: ?u32 = null,
+        value: ?u32 = null,
+        index: ?u32 = null,
+        elem_size: usize = 8,
+    };
+
+    fn stdSurfaceArgText(self: *Codegen, kind: StdSurfaceArgKind, values: StdSurfaceValues) ![]const u8 {
+        return switch (kind) {
+            .out => self.symbols.items[values.out orelse return Error.UnsupportedSabDirectFeature],
+            .receiver => self.symbols.items[values.receiver orelse return Error.UnsupportedSabDirectFeature],
+            .value => self.symbols.items[values.value orelse return Error.UnsupportedSabDirectFeature],
+            .index => self.symbols.items[values.index orelse return Error.UnsupportedSabDirectFeature],
+            .elem_size => try std.fmt.allocPrint(self.allocator, "{}", .{values.elem_size}),
+        };
+    }
+
+    fn emitStdSurfaceRule(self: *Codegen, rule: StdSurfaceRule, values: StdSurfaceValues) !void {
+        var args = std.ArrayList([]const u8).init(self.allocator);
+        defer args.deinit();
+        for (rule.args) |arg_kind| try args.append(try self.stdSurfaceArgText(arg_kind, values));
+        try self.emitStdMacroFragment(rule.import_path, rule.macro_name, args.items);
+    }
+
+    fn ensureRuleDeps(self: *Codegen, rule: StdSurfaceRule) !void {
+        try self.ensureStdDeps(rule.import_path, rule.deps);
+    }
+
+    fn preloadStdSurfaceDeps(self: *Codegen, program: *const ast.Node) !void {
+        if (program.* != .program) return;
+        for (program.program.decls) |decl| try self.preloadNodeStdSurfaceDeps(decl);
+    }
+
+    fn preloadBlockStdSurfaceDeps(self: *Codegen, body: []const *ast.Node) !void {
+        for (body) |stmt| try self.preloadNodeStdSurfaceDeps(stmt);
+    }
+
+    fn preloadNodeStdSurfaceDeps(self: *Codegen, node: *const ast.Node) anyerror!void {
+        switch (node.*) {
+            .func_decl => |f| try self.preloadBlockStdSurfaceDeps(f.body),
+            .test_decl => |t| try self.preloadBlockStdSurfaceDeps(t.body),
+            .let_stmt => |let| try self.preloadNodeStdSurfaceDeps(let.value),
+            .expr_stmt => |expr| try self.preloadNodeStdSurfaceDeps(expr),
+            .return_stmt => |ret| if (ret.value) |value| try self.preloadNodeStdSurfaceDeps(value),
+            .block_stmt => |blk| try self.preloadBlockStdSurfaceDeps(blk.body),
+            .if_expr => |ife| {
+                try self.preloadNodeStdSurfaceDeps(ife.cond);
+                try self.preloadBlockStdSurfaceDeps(ife.then_block);
+                if (ife.else_block) |else_block| try self.preloadBlockStdSurfaceDeps(else_block);
+            },
+            .binary_expr => |bin| {
+                try self.preloadNodeStdSurfaceDeps(bin.left);
+                try self.preloadNodeStdSurfaceDeps(bin.right);
+            },
+            .field_expr => |field| try self.preloadNodeStdSurfaceDeps(field.expr),
+            .struct_literal => |lit| {
+                for (lit.fields) |field| try self.preloadNodeStdSurfaceDeps(field.value);
+                if (lit.update_expr) |update| try self.preloadNodeStdSurfaceDeps(update);
+            },
+            .call_expr => |call| {
+                if (call.associated_target) |target_name| {
+                    if (self.findStdSurfaceRule(.associated, target_name, call.func_name)) |rule| try self.ensureRuleDeps(rule);
+                } else if (call.args.len > 0) {
+                    if (self.tc.expr_types.get(call.args[0])) |receiver_ty| {
+                        if (typeBaseName(receiver_ty)) |receiver_type_name| {
+                            if (self.findStdSurfaceRule(.method, receiver_type_name, call.func_name)) |rule| try self.ensureRuleDeps(rule);
+                        }
+                    }
+                }
+                for (call.args) |arg| try self.preloadNodeStdSurfaceDeps(arg);
+            },
+            .index_expr => |idx| {
+                if (self.tc.expr_types.get(idx.target)) |target_ty| {
+                    if (typeBaseName(target_ty)) |target_type_name| {
+                        if (self.findStdSurfaceRule(.index, target_type_name, null)) |rule| try self.ensureRuleDeps(rule);
+                    }
+                }
+                try self.preloadNodeStdSurfaceDeps(idx.target);
+                try self.preloadNodeStdSurfaceDeps(idx.index);
+            },
+            else => {},
+        }
     }
 
     fn exprHasFnPtrType(self: *Codegen, expr: *const ast.Node) bool {
@@ -416,6 +788,256 @@ pub const Codegen = struct {
         item.operands[2] = .{ .reg = value };
         item.operands[3] = .{ .ty = @intFromEnum(ty) };
         try self.appendInst(item);
+    }
+
+    fn remapModuleSymbol(self: *Codegen, symbols: []const []const u8, old_id: u32) !u32 {
+        const idx: usize = @intCast(old_id);
+        if (idx >= symbols.len) return Error.UnsupportedSabDirectFeature;
+        return try self.internStable(symbols[idx]);
+    }
+
+    fn cloneOptionalText(self: *Codegen, text: ?[]const u8) !?[]const u8 {
+        if (text) |value| return try self.allocator.dupe(u8, value);
+        return null;
+    }
+
+    fn cloneUpstreamLoc(self: *Codegen, loc: anytype) !@TypeOf(loc) {
+        if (loc) |value| return .{ .file = try self.allocator.dupe(u8, value.file), .line = value.line, .col = value.col };
+        return null;
+    }
+
+    fn cloneTextList(self: *Codegen, items: []const []const u8) ![]const []const u8 {
+        if (items.len == 0) return &.{};
+        const out = try self.allocator.alloc([]const u8, items.len);
+        for (items, 0..) |item, idx| out[idx] = try self.allocator.dupe(u8, item);
+        return out;
+    }
+
+    fn remapModuleOperand(self: *Codegen, symbols: []const []const u8, operand: inst.Operand) !inst.Operand {
+        return switch (operand) {
+            .reg => |old_id| .{ .reg = try self.remapModuleSymbol(symbols, old_id) },
+            .symbol => |old_id| .{ .symbol = try self.remapModuleSymbol(symbols, old_id) },
+            .label => |old_id| .{ .label = try self.remapModuleSymbol(symbols, old_id) },
+            .func => |old_id| .{ .func = try self.remapModuleSymbol(symbols, old_id) },
+            .text => |text| .{ .text = try self.allocator.dupe(u8, text) },
+            .native_text => |text| .{ .native_text = try self.allocator.dupe(u8, text) },
+            else => operand,
+        };
+    }
+
+    fn remapModuleIds(self: *Codegen, symbols: []const []const u8, ids: []const u32) ![]const u32 {
+        if (ids.len == 0) return &.{};
+        const out = try self.allocator.alloc(u32, ids.len);
+        for (ids, 0..) |old_id, idx| out[idx] = try self.remapModuleSymbol(symbols, old_id);
+        return out;
+    }
+
+    fn cloneModuleParamSpecs(self: *Codegen, params: []const sig.ParamSpec) ![]const sig.ParamSpec {
+        if (params.len == 0) return &.{};
+        const out = try self.allocator.alloc(sig.ParamSpec, params.len);
+        for (params, 0..) |param, idx| {
+            out[idx] = .{
+                .name = try self.allocator.dupe(u8, param.name),
+                .ty = param.ty,
+                .cap = param.cap,
+            };
+        }
+        return out;
+    }
+
+    fn cloneConstValue(self: *Codegen, value: const_decl.ConstValue) !const_decl.ConstValue {
+        return switch (value) {
+            .hex => |literal| .{ .hex = .{
+                .kind = literal.kind,
+                .bytes = try self.allocator.dupe(u8, literal.bytes),
+                .repeat_count = literal.repeat_count,
+                .repeat_byte = literal.repeat_byte,
+            } },
+            .utf8 => |literal| .{ .utf8 = .{
+                .kind = literal.kind,
+                .bytes = try self.allocator.dupe(u8, literal.bytes),
+                .repeat_count = literal.repeat_count,
+                .repeat_byte = literal.repeat_byte,
+            } },
+            .repeat => |literal| .{ .repeat = .{
+                .kind = literal.kind,
+                .bytes = try self.allocator.dupe(u8, literal.bytes),
+                .repeat_count = literal.repeat_count,
+                .repeat_byte = literal.repeat_byte,
+            } },
+            .struct_ => |literal| blk: {
+                const fields = try self.allocator.alloc(const_decl.StructField, literal.fields.len);
+                for (literal.fields, 0..) |field, idx| {
+                    fields[idx] = .{
+                        .name = try self.allocator.dupe(u8, field.name),
+                        .size = field.size,
+                        .value = try self.cloneConstValue(field.value),
+                    };
+                }
+                break :blk .{ .struct_ = .{ .fields = fields } };
+            },
+            .vtable => |literal| blk: {
+                const slots = try self.allocator.alloc(const_decl.VTableSlot, literal.slots.len);
+                for (literal.slots, 0..) |slot, idx| {
+                    slots[idx] = .{
+                        .name = try self.allocator.dupe(u8, slot.name),
+                        .func_name = try self.allocator.dupe(u8, slot.func_name),
+                    };
+                }
+                break :blk .{ .vtable = .{ .slots = slots } };
+            },
+        };
+    }
+
+    fn cloneModuleConstDecl(self: *Codegen, source: const_decl.ConstDecl) !const_decl.ConstDecl {
+        return .{
+            .source_line = source.source_line,
+            .expanded_line = source.expanded_line,
+            .upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc),
+            .raw_text = try self.allocator.dupe(u8, source.raw_text),
+            .name = try self.allocator.dupe(u8, source.name),
+            .literal_text = try self.allocator.dupe(u8, source.literal_text),
+            .value = try self.cloneConstValue(source.value),
+        };
+    }
+
+    fn cloneModuleFunctionSig(self: *Codegen, symbols: []const []const u8, source: sig.FunctionSig, entry_inst_idx: usize) !sig.FunctionSig {
+        return .{
+            .id = @intCast(self.function_sigs.items.len),
+            .name = try self.allocator.dupe(u8, source.name),
+            .params = try self.cloneModuleParamSpecs(source.params),
+            .kind = source.kind,
+            .return_cap = source.return_cap,
+            .return_ty = source.return_ty,
+            .return_fallible = source.return_fallible,
+            .entry_inst_idx = @intCast(entry_inst_idx),
+            .is_ffi_wrapper = source.is_ffi_wrapper,
+            .upstream_file = try self.cloneOptionalText(source.upstream_file),
+            .upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc),
+            .param_ids = try self.remapModuleIds(symbols, source.param_ids),
+            .reg_ids = try self.remapModuleIds(symbols, source.reg_ids),
+            .llvm_name = try self.cloneOptionalText(source.llvm_name),
+            .ignored = source.ignored,
+            .should_panic = source.should_panic,
+        };
+    }
+
+    fn cloneModuleInstruction(self: *Codegen, symbols: []const []const u8, source: inst.Instruction) !inst.Instruction {
+        var out = source;
+        out.package_identity = try self.cloneOptionalText(source.package_identity);
+        out.upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc);
+        out.raw_text = "";
+        out.atomic_expected_text = try self.cloneOptionalText(source.atomic_expected_text);
+        out.atomic_new_text = try self.cloneOptionalText(source.atomic_new_text);
+        out.native_reg_names = try self.cloneTextList(source.native_reg_names);
+        for (&out.operands) |*operand| operand.* = try self.remapModuleOperand(symbols, operand.*);
+        return out;
+    }
+
+    fn recordInstructionRegs(self: *Codegen, item: inst.Instruction) !void {
+        for (item.operands) |operand| {
+            if (operand == .reg) try self.recordReg(operand.reg);
+        }
+    }
+
+    fn moduleHasDep(deps: []const []const u8, name: []const u8) bool {
+        for (deps) |dep| {
+            if (std.mem.eql(u8, dep, name)) return true;
+        }
+        return false;
+    }
+
+    fn appendDecodedModuleFiltered(self: *Codegen, module: sab.Module, deps: []const []const u8) !void {
+        for (module.symbols) |name| _ = try self.internStable(name);
+        for (module.const_decls) |decl| {
+            _ = try self.internStable(decl.name);
+            try self.const_decls.append(try self.cloneModuleConstDecl(decl));
+        }
+
+        for (module.function_sigs, 0..) |fsig, idx| {
+            if (deps.len != 0 and !moduleHasDep(deps, fsig.name)) continue;
+            const entry_idx = self.instructions.items.len;
+            const cloned = try self.cloneModuleFunctionSig(module.symbols, fsig, entry_idx);
+            try self.function_sigs.append(cloned);
+            if (cloned.kind == .test_func) try self.test_sigs.append(cloned);
+
+            const start: usize = fsig.entry_inst_idx;
+            const end: usize = if (idx + 1 < module.function_sigs.len) module.function_sigs[idx + 1].entry_inst_idx else module.instructions.len;
+            for (module.instructions[start..end]) |item| {
+                try self.instructions.append(try self.cloneModuleInstruction(module.symbols, item));
+            }
+        }
+    }
+
+    fn appendDecodedFunctionBody(self: *Codegen, module: sab.Module, func_name: []const u8) !void {
+        var start: ?usize = null;
+        var end: usize = module.instructions.len;
+        for (module.function_sigs, 0..) |fsig, idx| {
+            if (std.mem.eql(u8, fsig.name, func_name)) {
+                start = fsig.entry_inst_idx;
+                if (idx + 1 < module.function_sigs.len) end = module.function_sigs[idx + 1].entry_inst_idx;
+                break;
+            }
+        }
+        const body_start = start orelse return Error.UnsupportedSabDirectFeature;
+        var i = body_start;
+        while (i < end) : (i += 1) {
+            const source = module.instructions[i];
+            if (i == body_start and (source.kind == .func_decl or source.kind == .test_decl)) continue;
+            if (i == body_start + 1 and source.kind == .label) continue;
+            if (i + 1 == end and source.kind == .return_) continue;
+            const cloned = try self.cloneModuleInstruction(module.symbols, source);
+            try self.recordInstructionRegs(cloned);
+            try self.instructions.append(cloned);
+        }
+    }
+
+    fn ensureStdDeps(self: *Codegen, import_path: []const u8, deps: []const []const u8) !void {
+        if (deps.len == 0) return;
+        var missing = std.ArrayList([]const u8).init(self.allocator);
+        defer missing.deinit();
+        for (deps) |dep| {
+            if (!self.included_imports.contains(dep)) try missing.append(dep);
+        }
+        if (missing.items.len == 0) return;
+
+        const source = try std.fmt.allocPrint(self.allocator, "@import \"{s}\"\n", .{import_path});
+        defer self.allocator.free(source);
+        var flat = try self.flattenStdSnippet(source);
+        defer flat.deinit(self.allocator);
+        const bytes = sci_bridge.encodeSabFromFlat(self.allocator, &flat) catch |err| {
+            std.debug.print("SAB std import fragment failed for {s}: {}\n", .{ import_path, err });
+            return err;
+        };
+        defer self.allocator.free(bytes);
+        var module = try sab.decodeModule(self.allocator, bytes);
+        defer module.deinit(self.allocator);
+        try self.appendDecodedModuleFiltered(module, missing.items);
+        for (missing.items) |dep| try self.included_imports.put(try self.allocator.dupe(u8, dep), {});
+    }
+
+    fn emitStdMacroFragment(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8) !void {
+        const func_name = try std.fmt.allocPrint(self.allocator, "__sla_macro_fragment_{}", .{self.macro_fragment_idx});
+        self.macro_fragment_idx += 1;
+
+        var source = std.ArrayList(u8).init(self.allocator);
+        try source.writer().print("@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
+        for (args, 0..) |arg, i| {
+            if (i == 0) {
+                try source.writer().print(" {s}", .{arg});
+            } else {
+                try source.writer().print(", {s}", .{arg});
+            }
+        }
+        try source.appendSlice("\n    return\n");
+
+        var flat = try self.flattenStdSnippet(source.items);
+        defer flat.deinit(self.allocator);
+        const bytes = try sci_bridge.encodeSabFromFlatUnchecked(self.allocator, &flat);
+        defer self.allocator.free(bytes);
+        var module = try sab.decodeModule(self.allocator, bytes);
+        defer module.deinit(self.allocator);
+        try self.appendDecodedFunctionBody(module, func_name);
     }
 
     fn emitBorrowSymbol(self: *Codegen, dst: u32, symbol_name: []const u8) !void {
@@ -588,6 +1210,7 @@ pub const Codegen = struct {
             },
             .field_expr => |field| try self.genField(field),
             .struct_literal => |lit| try self.genStructLiteral(lit),
+            .index_expr => |idx| try self.genIndex(idx),
             .if_expr => |ife| try self.genIf(ife),
             else => Error.UnsupportedSabDirectFeature,
         };
@@ -633,6 +1256,7 @@ pub const Codegen = struct {
             try self.appendInst(item);
             return try self.intern(try self.newTmp());
         }
+        if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const call_symbol = if (self.tc.resolved_call_symbols.get(expr)) |symbol|
             symbol
         else if (call.associated_target == null)
@@ -659,6 +1283,62 @@ pub const Codegen = struct {
         item.operands[1] = .{ .text = try text.toOwnedSlice() };
         try self.appendInst(item);
         try self.releaseNonLocalTemps(arg_regs.items);
+        return dst;
+    }
+
+    fn genStdSurfaceCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        if (call.associated_target) |target_name| {
+            if (self.findStdSurfaceRule(.associated, target_name, call.func_name)) |rule| {
+                const dst = try self.intern(try self.newTmp());
+                try self.recordReg(dst);
+                const expr_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+                try self.emitStdSurfaceRule(rule, .{
+                    .out = dst,
+                    .elem_size = self.elementSlotSize(expr_ty),
+                });
+                return dst;
+            }
+            return null;
+        }
+
+        if (call.args.len == 0) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const receiver_type_name = typeBaseName(receiver_ty) orelse return null;
+        const rule = self.findStdSurfaceRule(.method, receiver_type_name, call.func_name) orelse return null;
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const value_reg = if (call.args.len > 1) try self.genExpr(@constCast(call.args[1])) else null;
+        try self.emitStdSurfaceRule(rule, .{
+            .receiver = receiver_reg,
+            .value = value_reg,
+            .elem_size = self.elementSlotSize(receiver_ty),
+        });
+        var release_regs = std.ArrayList(u32).init(self.allocator);
+        defer release_regs.deinit();
+        try release_regs.append(receiver_reg);
+        if (value_reg) |reg| try release_regs.append(reg);
+        try self.releaseNonLocalTemps(release_regs.items);
+
+        const sentinel = try self.intern(try self.newTmp());
+        try self.recordReg(sentinel);
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
+    }
+
+    fn genIndex(self: *Codegen, idx: ast.IndexExpr) anyerror!u32 {
+        const target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType;
+        const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const rule = self.findStdSurfaceRule(.index, target_type_name, null) orelse return Error.UnsupportedSabDirectFeature;
+        const target_reg = try self.genExpr(idx.target);
+        const index_reg = try self.genExpr(idx.index);
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdSurfaceRule(rule, .{
+            .out = dst,
+            .receiver = target_reg,
+            .index = index_reg,
+            .elem_size = self.elementSlotSize(target_ty),
+        });
+        try self.releaseNonLocalTemps(&.{ target_reg, index_reg });
         return dst;
     }
 

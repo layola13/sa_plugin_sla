@@ -1,0 +1,113 @@
+macro add_one_macro(var_ref) {
+    let temp = 1;
+    var_ref = var_ref + temp;
+}
+
+macro add_two_macro(var_ref) {
+    {
+        let temp = 1;
+        var_ref = var_ref + temp;
+    }
+    {
+        let temp = 1;
+        var_ref = var_ref + temp;
+    }
+}
+
+struct DirectMacroPoint { left: i64, right: i64 }
+
+fn direct_macro_add(value: i64, delta: i64) -> i64 {
+    value + delta
+}
+
+macro scoped_shadow_macro(var_ref) {
+    let temp = 1;
+    {
+        let temp = 100;
+        var_ref = var_ref + temp;
+    }
+    var_ref = var_ref + temp;
+}
+
+macro branch_call_cast_macro(var_ref, cond, delta) {
+    {
+        if cond {
+            let widened = delta as i64;
+            var_ref = direct_macro_add(var_ref, widened);
+        } else {
+            var_ref = var_ref - (delta as i64);
+        }
+    }
+}
+
+macro aggregate_macro(out, seed) {
+    {
+        let point = DirectMacroPoint { left: seed, right: seed + 1 };
+        let tuple = (point.left, point.right);
+        let values: [i64; 3] = [tuple.0, tuple.1, seed + 2];
+        out = 0;
+        for i in 0..3 {
+            out = out + values[i];
+        }
+    }
+}
+
+macro nested_add_macro(var_ref, delta) {
+    var_ref = var_ref + delta;
+}
+
+macro wrapper_macro(var_ref, delta) {
+    {
+        let local_delta = delta + 1;
+        nested_add_macro(var_ref, local_delta);
+    }
+}
+
+fn macro_hygiene_direct(value: i64) -> i64 {
+    let temp = value;
+    add_one_macro(temp);
+    temp
+}
+
+fn macro_block_direct(value: i64) -> i64 {
+    let item = value;
+    add_two_macro(item);
+    item
+}
+
+@test "direct user macro hygiene"() {
+    if macro_hygiene_direct(5) != 6 { panic(31801); };
+    if macro_block_direct(5) != 7 { panic(31802); };
+}
+
+fn macro_shadow_direct(value: i64) -> i64 {
+    let item = value;
+    scoped_shadow_macro(item);
+    item
+}
+
+fn macro_branch_direct(value: i64, cond: bool, delta: i32) -> i64 {
+    let item = value;
+    branch_call_cast_macro(item, cond, delta);
+    item
+}
+
+fn macro_aggregate_direct(seed: i64) -> i64 {
+    let total = 99;
+    aggregate_macro(total, seed);
+    total
+}
+
+fn macro_nested_call_direct(value: i64) -> i64 {
+    let item = value;
+    wrapper_macro(item, 2);
+    item
+}
+
+@test "direct user macro nested expansion"() {
+    if macro_shadow_direct(5) != 106 { panic(31803); };
+    if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
+    if macro_branch_direct(10, false, 4) != 6 { panic(31805); };
+    if macro_aggregate_direct(3) != 12 { panic(31806); };
+    if macro_nested_call_direct(7) != 10 { panic(31807); };
+}

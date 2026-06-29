@@ -8,7 +8,7 @@ associated Vec new sa_std/vec.sa VEC_NEW out deps=sa_vec_new
 function len Vec sa_std/vec.sa VEC_LEN out,receiver deps=sa_vec_len
 method Vec push sa_std/vec.sa VEC_PUSH receiver,value,elem_size deps=sa_vec_push,sa_mem_copy
 fallible_method Vec remove sa_std/vec.sa VEC_REMOVE ok,out,receiver,index,elem_size deps=sa_vec_try_remove panic=86
-index Vec sa_std/vec.sa VEC_GET out,receiver,index
+index Vec sa_std/vec.sa VEC_GET_TYPED_{elem_ty} out,receiver,index,elem_size
 constructor Some Option sa_std/core/option.sa OPTION_NEW_SOME out,value
 constructor None Option sa_std/core/option.sa OPTION_NEW_NONE out
 method Option is_some sa_std/core/option.sa OPTION_IS_SOME out,receiver

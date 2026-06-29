@@ -9,8 +9,27 @@ fn read_nested(value: i32) -> i32 {
     *borrowed
 };
 
+struct DirectBorrowPoint { pad: i32, value: i32 }
+
+fn read_field_borrow(item: DirectBorrowPoint) -> i32 {
+    let borrowed = &item.value;
+    *borrowed
+};
+
+fn read_borrowed_deref(&value: i32) -> i32 {
+    let borrowed = &*value;
+    *borrowed
+};
+
 @test "direct borrow deref"() {
     let value: i32 = 6;
     if read_twice(&value) != 12 { panic(30701); };
     if read_nested(8) != 8 { panic(30702); };
+};
+
+@test "direct borrow precedence"() {
+    let item = DirectBorrowPoint { pad: 3, value: 9 };
+    if read_field_borrow(item) != 9 { panic(30703); };
+    let value: i32 = 10;
+    if read_borrowed_deref(&value) != 10 { panic(30704); };
 };

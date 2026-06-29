@@ -2861,6 +2861,54 @@ test "sla sab backend lowers function pointers directly" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend lowers escaped thread closure function pointer callee directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_fn_ptr_value.sla",
+        ".sla-cache/sab/fn_ptr_thread_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "thread closure captures function pointer callee", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_thread_vtable = false;
+    var saw_spawn_wrapper = false;
+    var saw_worker = false;
+    var saw_raw_cast = false;
+    var saw_assume_safe = false;
+    var saw_call_indirect = false;
+    for (module.const_decls) |decl| {
+        if (std.mem.startsWith(u8, decl.name, "SLA_THREAD_VT_") and decl.value == .vtable) saw_thread_vtable = true;
+    }
+    for (module.function_sigs) |fsig| {
+        if (std.mem.startsWith(u8, fsig.name, "sla_thread_spawn_") and fsig.is_ffi_wrapper) saw_spawn_wrapper = true;
+        if (std.mem.startsWith(u8, fsig.name, "sla_thread_worker_")) saw_worker = true;
+    }
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .raw_cast) saw_raw_cast = true;
+        if (item.kind == .assume_safe) saw_assume_safe = true;
+        if (item.kind == .call_indirect) saw_call_indirect = true;
+    }
+    try std.testing.expect(saw_thread_vtable);
+    try std.testing.expect(saw_spawn_wrapper);
+    try std.testing.expect(saw_worker);
+    try std.testing.expect(saw_raw_cast);
+    try std.testing.expect(saw_assume_safe);
+    try std.testing.expect(saw_call_indirect);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab backend lowers multi-argument calls directly" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -2983,6 +3031,45 @@ test "sla sab backend lowers std surface function metadata directly" {
     }
     try std.testing.expect(saw_vec_len);
     try std.testing.expect(saw_len_call);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend lowers typed vec index directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_vec_index_direct.sla",
+        ".sla-cache/sab/vec_index_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct vec i32 index uses element width", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_i32_load = false;
+    var saw_i32_stride = false;
+    var saw_u64_stride = false;
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .load and item.operands[3] == .ty and item.operands[3].ty == @intFromEnum(sci_bridge.sab.signature.PrimType.i32)) {
+            saw_i32_load = true;
+        }
+        if (item.kind == .op and item.op_kind == .mul and item.operands[2] == .imm_i64) {
+            if (item.operands[2].imm_i64 == 4) saw_i32_stride = true;
+            if (item.operands[2].imm_i64 == 8) saw_u64_stride = true;
+        }
+    }
+    try std.testing.expect(saw_i32_load);
+    try std.testing.expect(saw_i32_stride);
+    try std.testing.expect(!saw_u64_stride);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

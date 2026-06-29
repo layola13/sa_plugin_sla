@@ -1,6 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const type_checker = @import("type_checker.zig");
+const lowering_rules = @import("lowering_rules.zig");
 
 pub const CodegenError = error{
     CodegenError,
@@ -2177,16 +2178,11 @@ pub const Codegen = struct {
     }
 
     fn deriveNameMatches(actual: []const u8, wanted: []const u8) bool {
-        return std.ascii.eqlIgnoreCase(actual, wanted);
+        return lowering_rules.deriveNameMatches(actual, wanted);
     }
 
     fn structHasDerive(decl: *const ast.StructDecl, name: []const u8) bool {
-        for (decl.derives) |derive| {
-            if (deriveNameMatches(derive, name)) return true;
-            if (deriveNameMatches(name, "eq") and deriveNameMatches(derive, "PartialEq")) return true;
-            if (deriveNameMatches(name, "ord") and deriveNameMatches(derive, "PartialOrd")) return true;
-        }
-        return false;
+        return lowering_rules.structHasDerive(decl, name);
     }
 
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
@@ -6676,11 +6672,8 @@ pub const Codegen = struct {
     }
 
     fn genCallArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
-        if (arg.* == .borrow_expr and arg.borrow_expr.expr.* == .identifier) {
-            return std.fmt.allocPrint(self.allocator, "&{s}", .{arg.borrow_expr.expr.identifier}) catch return CodegenError.OutOfMemory;
-        }
-        if (arg.* == .move_expr and arg.move_expr.expr.* == .identifier) {
-            return std.fmt.allocPrint(self.allocator, "^{s}", .{arg.move_expr.expr.identifier}) catch return CodegenError.OutOfMemory;
+        if (lowering_rules.prefixedIdentifierCallArg(arg)) |prefixed| {
+            return std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefixed.prefix, prefixed.name }) catch return CodegenError.OutOfMemory;
         }
         return try self.genExpr(arg, hoisted_allocs);
     }
@@ -6745,13 +6738,14 @@ pub const Codegen = struct {
 
     fn genResolvedFunctionCall(
         self: *Codegen,
-        symbol: []const u8,
+        plan: lowering_rules.StaticCallPlan,
         call: *const ast.CallExpr,
         hoisted_allocs: *const std.ArrayList([]const u8),
         auto_borrow_receiver: bool,
     ) CodegenError![]const u8 {
+        const symbol = plan.target_symbol;
         const func = self.tc.funcs.get(symbol) orelse return CodegenError.CodegenError;
-        if (func.params.len != call.args.len) return CodegenError.CodegenError;
+        if (func.params.len != plan.arg_count or func.params.len != call.args.len) return CodegenError.CodegenError;
 
         var arg_regs = std.ArrayList([]const u8).init(self.allocator);
         defer arg_regs.deinit();
@@ -8941,7 +8935,8 @@ pub const Codegen = struct {
                         .generics = &.{},
                         .args = &.{ bin.left, bin.right },
                     };
-                    return try self.genResolvedFunctionCall(symbol, &call, hoisted_allocs, false);
+                    const plan = lowering_rules.planResolvedStaticCall(self.tc, expr, call) orelse return CodegenError.CodegenError;
+                    return try self.genResolvedFunctionCall(plan, &call, hoisted_allocs, false);
                 }
                 const left_ty = self.tc.expr_types.get(bin.left) orelse return CodegenError.CodegenError;
                 const right_ty = self.tc.expr_types.get(bin.right) orelse return CodegenError.CodegenError;
@@ -9276,8 +9271,8 @@ pub const Codegen = struct {
                 return try self.genSliceExpr(&slc, hoisted_allocs);
             },
             .call_expr => |call| {
-                if (self.tc.resolved_call_symbols.get(expr)) |symbol| {
-                    return try self.genResolvedFunctionCall(symbol, &call, hoisted_allocs, call.associated_target == null);
+                if (lowering_rules.planResolvedStaticCall(self.tc, expr, call)) |plan| {
+                    return try self.genResolvedFunctionCall(plan, &call, hoisted_allocs, call.associated_target == null);
                 }
                 if (std.mem.eql(u8, call.func_name, "format")) {
                     return try self.genFormatCall(&call, hoisted_allocs);

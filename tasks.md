@@ -90,7 +90,11 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] Add parser and direct SAB lowering for boolean `&&` / `||` expressions, including dev-plugin no-fallback verification.
   - [x] Add direct SAB lowering for primitive numeric `as` casts, including structured conversion op operands and dev-plugin no-fallback verification.
   - [x] Add direct SAB lowering for scalar borrow/deref and non-void tail-expression returns, including direct-only regression coverage.
+  - [x] Extend direct SAB borrow lowering to addressable field/deref/index sources, covering postfix-under-prefix precedence such as `&item.value` and `&*value` without fallback.
   - [x] Add direct SAB lowering for move-prefixed call arguments, including type-checker single-consumption handling and dev-plugin no-fallback verification.
+  - [x] Add direct SAB inline expansion for focused user `macro` calls with hygienic macro-local renaming and caller-scope argument substitution.
+  - [x] Extend direct SAB user macro expansion through nested control flow, ordinary/nested macro calls, casts, aggregate literals, tuple destructuring, index access/assignment, and block-scoped hygienic shadowing.
+  - [x] Add direct SAB `stack_alloc()` lowering and raw stack-allocation lifetime tracking.
   - [x] Move the first std surface lowering path into generic import metadata / macro-fragment lowering so direct SAB can consume std macros without hardcoding ordinary library logic in Zig.
   - [x] Extend the std surface metadata format beyond the current associated/method/index macro bridge, still without adding compiler branches for `Vec`, `thread`, ECS, or other library names.
   - [x] Add generic fallible std surface macro metadata with explicit ok/output slots and panic-on-false lowering, covering `Vec.remove` without a `Vec.remove` compiler branch.
@@ -98,8 +102,25 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] Preserve const-bearing std macro fragments in direct SAB lowering, including structured `panic_msg` operands and focused `Option.unwrap()` coverage without `Option` compiler branches.
   - [x] Add focused direct SAB metadata coverage for `Option.unwrap_or`, including no-fallback Some/None branch regression coverage without `Option` compiler branches.
   - [x] Add focused direct SAB metadata coverage for `Result` `Ok`/`Err` construction plus `is_ok`/`is_err`/`unwrap`/`unwrap_or`, including no-fallback regression coverage without `Result` compiler branches.
+  - [x] Start the Y-shaped shared lowering-rules path instead of growing independent SA-text and SAB semantic branches.
+    - Progress: `src/lowering_rules.zig` now owns shared derive-name matching, struct derive lookup, ordinary static-call target resolution, and call-argument prefix rules used by both `codegen.zig` and `sab_codegen.zig`.
+    - Progress: `lowering_rules.StaticCallPlan` now feeds resolved/static call target selection in both emitters, and `prefixedIdentifierCallArg` owns the shared `&name` / `^name` spelling rule for SA text call arguments.
+    - Progress estimate: the first shared-rules extraction and static-call plan slices are 100%; the broader Y/shared-lowering track is approximately 16%.
+    - Constraint: do not implement high-level language/library semantics only in `sab_codegen.zig`; future direct SAB work should extend shared rules/plans or std surface metadata so SA text and SAB emitters converge through the shared contract.
+  - [x] Fix thread-closure SAB call lowering so captured-argument calls keep a pure call target symbol instead of generating illegal `@func(arg)` call text; reproduce with `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+    - Note: the original fallback `parallel.sla` ForbiddenSyntax repro is unblocked in the updated SCI host by accepting fallback-generated single-operand structured `panic_msg` in SAB v4 decode/verify.
+    - Progress: direct no-fallback lowers the focused escaped thread closure case `thread::spawn(^|| f(value))` where `f` is a captured function-pointer callee, using generated vtable/spawn-wrapper/worker entries and structured `call_indirect` inside the worker.
+    - Progress: the full `SLA_SAB_NO_FALLBACK=1 ... /home/vscode/projects/sla_ecs/lib/parallel.sla` path now passes after expanding std-dependency preloading and moving typed `Vec<T>` index reads to std surface metadata.
+    - Progress estimate: 100% for the reported illegal call-target blocker.
+    - Verified with `SLA_SAB_NO_FALLBACK=1 SLA_PROFILE=1 timeout 180s ./zig-out/bin/sla-local-cli sla test /home/vscode/projects/sla_ecs/lib/parallel.sla --test-backend sab --jobs 1 --trace-panic`.
+  - [x] Replace the temporary direct `Vec<T>` index ABI lowering with typed std surface metadata/macro lowering once `sa_std` exposes typed element-load slice/vec macros.
+    - Progress: `sla_std/std_surface.sla_meta` uses `VEC_GET_TYPED_{elem_ty}`, direct SAB carries `StdSurfaceArgKind.elem_ty`, `elementLoadType`, and `stdSurfaceMacroName`, and concrete typed Vec/Slice macros provide the element-width-specific loads.
+    - Progress estimate: 100%; `genIndex` now uses the generic std surface rule for Vec indexing instead of a direct Vec ABI branch.
   - [ ] Add generic exported closure/function-object entry lowering before enabling no-fallback thread-spawn style cases; do not copy the legacy text backend's `thread`-specific lowering into `sab_codegen.zig`.
+    - Progress: first direct entry model is in place for zero-arg escaped thread closures, including capture collection, slot materialization, vtable const emission, worker emission, and FFI spawn wrapper emission. General exported closure/function-object lowering beyond this focused consumer remains open.
   - [ ] Remove the remaining in-memory SA-compatible fallback from the normal SAB path by replacing std/macro/closure gaps with generic direct SAB lowering or a generic SAB macro representation, not library-name special cases.
+    - Progress estimate: approximately 72% overall direct SAB fallback removal; next priority is a shared call/materialization plan contract so both emitters reuse lowering decisions.
+  - [ ] Expand the shared static-call plan into a full call/materialization plan, including parameter-aware auto-borrow, array-to-slice borrow, dyn fat-pointer borrow, temp release policy, and result destination contract shared by SA text and SAB emitters.
 - [x] **SLA CLI Project Helpers**
   - [x] Add `sa sla init [path]` to scaffold a minimal SLA binary project without overwriting existing files.
   - [x] Add `sa sla skills [--json]` to list plugin capabilities and generate Codex/Claude agent skill files in text mode.

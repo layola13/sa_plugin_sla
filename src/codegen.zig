@@ -6715,6 +6715,7 @@ pub const Codegen = struct {
     const LoweredCallArg = struct {
         reg: []const u8,
         release_after_call: bool,
+        release_reg: ?[]const u8 = null,
     };
 
     fn genCallArgFromMaterializationPlan(
@@ -6728,6 +6729,12 @@ pub const Codegen = struct {
             .array_to_slice_borrow => .{
                 .reg = try self.genArrayBorrowToSliceArg(arg, hoisted_allocs),
                 .release_after_call = materialization.release_after_call,
+            },
+            .dyn_borrow => blk: {
+                const trait_name = materialization.dyn_borrow_trait_name orelse return CodegenError.CodegenError;
+                const fat_reg = try self.genDynBorrowCoercionArg(arg, trait_name, hoisted_allocs);
+                const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{fat_reg}) catch return CodegenError.OutOfMemory;
+                break :blk .{ .reg = borrow_arg, .release_after_call = false, .release_reg = fat_reg };
             },
             .auto_borrow => blk: {
                 const recv_reg = try self.genExpr(arg, hoisted_allocs);
@@ -6779,8 +6786,8 @@ pub const Codegen = struct {
 
         var arg_regs = std.ArrayList([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var release_flags = std.ArrayList(bool).init(self.allocator);
-        defer release_flags.deinit();
+        var release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        defer release_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
             const param = func.params[i];
@@ -6791,13 +6798,14 @@ pub const Codegen = struct {
                 .arg_index = i,
                 .auto_borrow_receiver = auto_borrow_receiver,
                 .array_to_slice_borrow = self.tc.array_to_slice_borrow_args.contains(arg),
+                .dyn_borrow_trait_name = self.tc.dyn_borrow_args.get(arg),
                 .copy_struct_value = !param.is_borrow and !param.is_move and arg.* == .identifier and self.typeIsCopyStruct(param.ty),
                 .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(arg),
                 .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(arg),
             });
             const lowered_arg = try self.genCallArgFromMaterializationPlan(arg, param, materialization, hoisted_allocs);
             arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
-            release_flags.append(lowered_arg.release_after_call) catch return CodegenError.OutOfMemory;
+            release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
         }
 
         const reg = try self.newTmp();
@@ -6810,8 +6818,8 @@ pub const Codegen = struct {
         }
         self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
 
-        for (arg_regs.items, release_flags.items) |arg_reg, release_after_call| {
-            if (release_after_call) try self.emitRelease(arg_reg);
+        for (release_regs.items) |release_reg| {
+            if (release_reg) |arg_reg| try self.emitRelease(arg_reg);
         }
         return reg;
     }

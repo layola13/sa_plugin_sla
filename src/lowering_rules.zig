@@ -31,6 +31,7 @@ pub const PrefixedIdentifierArg = struct {
 
 pub const CallArgMaterializationKind = enum {
     array_to_slice_borrow,
+    dyn_borrow,
     auto_borrow,
     copy_struct_value,
     value,
@@ -42,6 +43,7 @@ pub const CallArgMaterializationInput = struct {
     arg_index: usize = 0,
     auto_borrow_receiver: bool = false,
     array_to_slice_borrow: bool = false,
+    dyn_borrow_trait_name: ?[]const u8 = null,
     copy_struct_value: bool = false,
     generated_fn_ptr_identifier: bool = false,
     generated_scalar_const_identifier: bool = false,
@@ -50,6 +52,7 @@ pub const CallArgMaterializationInput = struct {
 pub const CallArgMaterializationPlan = struct {
     kind: CallArgMaterializationKind,
     release_after_call: bool,
+    dyn_borrow_trait_name: ?[]const u8 = null,
 };
 
 pub fn planResolvedStaticCall(tc: *type_checker.TypeChecker, expr: *const ast.Node, call: ast.CallExpr) ?StaticCallPlan {
@@ -133,6 +136,9 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
     if (input.array_to_slice_borrow) {
         return .{ .kind = .array_to_slice_borrow, .release_after_call = callArgNeedsRelease(arg) };
     }
+    if (input.dyn_borrow_trait_name) |trait_name| {
+        return .{ .kind = .dyn_borrow, .release_after_call = false, .dyn_borrow_trait_name = trait_name };
+    }
     if (input.param) |param| {
         if (input.arg_ty) |arg_ty| {
             if (shouldAutoBorrowResolvedArg(param, arg, arg_ty, input.arg_index, input.auto_borrow_receiver)) {
@@ -211,6 +217,11 @@ test "shared lowering rules classify call materialization decisions" {
     const array_plan = planCallArgMaterialization(&field, .{ .array_to_slice_borrow = true });
     try std.testing.expectEqual(CallArgMaterializationKind.array_to_slice_borrow, array_plan.kind);
     try std.testing.expect(array_plan.release_after_call);
+
+    const dyn_plan = planCallArgMaterialization(&value, .{ .dyn_borrow_trait_name = "Drawable" });
+    try std.testing.expectEqual(CallArgMaterializationKind.dyn_borrow, dyn_plan.kind);
+    try std.testing.expect(!dyn_plan.release_after_call);
+    try std.testing.expectEqualSlices(u8, "Drawable", dyn_plan.dyn_borrow_trait_name.?);
 
     const auto_borrow_plan = planCallArgMaterialization(&value, .{
         .param = borrow_param,

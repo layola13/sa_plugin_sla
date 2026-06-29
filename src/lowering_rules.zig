@@ -43,6 +43,7 @@ pub const CallArgMaterializationInput = struct {
     arg_index: usize = 0,
     auto_borrow_receiver: bool = false,
     receiver_style_auto_borrow: bool = false,
+    statement_receiver_auto_borrow: bool = false,
     array_to_slice_borrow: bool = false,
     dyn_borrow_trait_name: ?[]const u8 = null,
     copy_struct_value: bool = false,
@@ -133,6 +134,11 @@ pub fn shouldAutoBorrowReceiverArg(param: ast.Param, arg: *const ast.Node, arg_t
     return arg.* != .borrow_expr;
 }
 
+pub fn shouldAutoBorrowStatementReceiverArg(param: ast.Param, arg: *const ast.Node, arg_ty: *const ast.Type) bool {
+    if (!param.is_borrow or arg.* == .borrow_expr) return false;
+    return arg_ty.* != .borrow;
+}
+
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
     if (input.array_to_slice_borrow) {
         return .{ .kind = .array_to_slice_borrow, .release_after_call = callArgNeedsRelease(arg) };
@@ -142,7 +148,11 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
     }
     if (input.param) |param| {
         if (input.arg_ty) |arg_ty| {
-            if (input.receiver_style_auto_borrow) {
+            if (input.statement_receiver_auto_borrow) {
+                if (shouldAutoBorrowStatementReceiverArg(param, arg, arg_ty)) {
+                    return .{ .kind = .auto_borrow, .release_after_call = input.generated_scalar_const_identifier };
+                }
+            } else if (input.receiver_style_auto_borrow) {
                 if (shouldAutoBorrowReceiverArg(param, arg, arg_ty)) {
                     return .{ .kind = .auto_borrow, .release_after_call = input.generated_scalar_const_identifier };
                 }
@@ -218,6 +228,9 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(shouldAutoBorrowReceiverArg(borrow_param, &value, &i64_ty));
     try std.testing.expect(shouldAutoBorrowReceiverArg(borrow_param, &value, &borrow_i64_ty));
     try std.testing.expect(!shouldAutoBorrowReceiverArg(plain_param, &value, &i64_ty));
+    try std.testing.expect(shouldAutoBorrowStatementReceiverArg(borrow_param, &value, &i64_ty));
+    try std.testing.expect(!shouldAutoBorrowStatementReceiverArg(borrow_param, &value, &borrow_i64_ty));
+    try std.testing.expect(!shouldAutoBorrowStatementReceiverArg(plain_param, &value, &i64_ty));
 
     const array_plan = planCallArgMaterialization(&field, .{ .array_to_slice_borrow = true });
     try std.testing.expectEqual(CallArgMaterializationKind.array_to_slice_borrow, array_plan.kind);
@@ -253,6 +266,13 @@ test "shared lowering rules classify call materialization decisions" {
         .receiver_style_auto_borrow = true,
     });
     try std.testing.expectEqual(CallArgMaterializationKind.auto_borrow, receiver_style_plan.kind);
+
+    const statement_receiver_plan = planCallArgMaterialization(&value, .{
+        .param = borrow_param,
+        .arg_ty = &borrow_i64_ty,
+        .statement_receiver_auto_borrow = true,
+    });
+    try std.testing.expectEqual(CallArgMaterializationKind.value, statement_receiver_plan.kind);
 
     const copy_plan = planCallArgMaterialization(&value, .{ .copy_struct_value = true });
     try std.testing.expectEqual(CallArgMaterializationKind.copy_struct_value, copy_plan.kind);

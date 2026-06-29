@@ -4,6 +4,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Remaining SA text legacy method/statement call branches now consume the shared materialization helper.
+  - Replaced the remaining expression-level user-defined method fallback, associated-target method fallback, `str` associated fallback, default call-statement fallback, and receiver-style call-statement dyn/auto-borrow handling with the shared `genPlannedCallArg` path.
+  - Added a shared statement-receiver auto-borrow predicate so the old statement semantics remain explicit: non-borrow receiver values are auto-borrowed, while arguments already typed as borrows are passed through as values.
+  - After this slice, `codegen.zig` no longer has legacy call branches directly checking `array_to_slice_borrow_args`, `dyn_borrow_args`, or receiver auto-borrow predicates; those decisions enter through `lowering_rules.CallArgMaterializationPlan`.
+  - Feature completion: 100% for SA text legacy method/statement call materialization adoption. Broader Y/shared-lowering progress is now approximately 34%; overall direct SAB fallback-removal progress remains approximately 72%.
+
 - [done] Ordinary function/extern expression-call arguments now route through the shared materialization helper.
   - Added a single SA text emitter helper that consumes `lowering_rules.CallArgMaterializationPlan` and returns both the call operand spelling and the real register that must be released after the call.
   - Extended the shared plan with receiver-style auto-borrow selection plus auto-borrow temporary release policy, so generated scalar-const receiver temps are released through the same plan instead of a hand-written call-site branch.

@@ -4,6 +4,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Direct SAB macro-expanded static calls now consume the shared call-argument materialization plan.
+  - Updated `genMacroCall` so macro-expanded static calls use the same SAB planned-call helper shape as ordinary direct calls: effective macro arguments feed `lowering_rules.CallArgMaterializationPlan`, while the original macro argument expression is materialized in the current macro context.
+  - Preserved macro substitution semantics by using `macroEffectiveArg` for prefix/materialization decisions and `genMacroExpr` for the actual register emitted into the call operand.
+  - Verified with full Zig tests plus no-fallback direct SAB user-macro, tuple-macro, and `parallel.sla` fixtures.
+  - Feature completion: 100% for SAB macro-expanded static-call shared-plan consumption. Broader Y/shared-lowering progress is now approximately 38%; overall direct SAB fallback-removal progress remains approximately 72%.
+
 - [done] Direct SAB ordinary static calls now consume the shared call-argument materialization plan.
   - Added a SAB call-argument helper that consumes `lowering_rules.CallArgMaterializationPlan` for ordinary direct static calls, sharing value argument spelling, parameter-aware auto-borrow, generated identifier classification, and temporary release selection with the SA text emitter.
   - Kept unsupported SAB direct materializations explicit: array-to-slice borrow, dyn fat-pointer borrow, and copy-struct value still return `UnsupportedSabDirectFeature` instead of adding SAB-only semantics.

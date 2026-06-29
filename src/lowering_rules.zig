@@ -29,6 +29,29 @@ pub const PrefixedIdentifierArg = struct {
     name: []const u8,
 };
 
+pub const CallArgMaterializationKind = enum {
+    array_to_slice_borrow,
+    auto_borrow,
+    copy_struct_value,
+    value,
+};
+
+pub const CallArgMaterializationInput = struct {
+    param: ?ast.Param = null,
+    arg_ty: ?*const ast.Type = null,
+    arg_index: usize = 0,
+    auto_borrow_receiver: bool = false,
+    array_to_slice_borrow: bool = false,
+    copy_struct_value: bool = false,
+    generated_fn_ptr_identifier: bool = false,
+    generated_scalar_const_identifier: bool = false,
+};
+
+pub const CallArgMaterializationPlan = struct {
+    kind: CallArgMaterializationKind,
+    release_after_call: bool,
+};
+
 pub fn planResolvedStaticCall(tc: *type_checker.TypeChecker, expr: *const ast.Node, call: ast.CallExpr) ?StaticCallPlan {
     const symbol = tc.resolved_call_symbols.get(expr) orelse return null;
     return .{ .target_symbol = symbol, .arg_count = call.args.len };
@@ -106,6 +129,28 @@ pub fn shouldAutoBorrowReceiverArg(param: ast.Param, arg: *const ast.Node, arg_t
     return arg.* != .borrow_expr;
 }
 
+pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
+    if (input.array_to_slice_borrow) {
+        return .{ .kind = .array_to_slice_borrow, .release_after_call = callArgNeedsRelease(arg) };
+    }
+    if (input.param) |param| {
+        if (input.arg_ty) |arg_ty| {
+            if (shouldAutoBorrowResolvedArg(param, arg, arg_ty, input.arg_index, input.auto_borrow_receiver)) {
+                return .{ .kind = .auto_borrow, .release_after_call = false };
+            }
+        }
+    }
+    if (input.copy_struct_value) {
+        return .{ .kind = .copy_struct_value, .release_after_call = true };
+    }
+    return .{
+        .kind = .value,
+        .release_after_call = callArgNeedsRelease(arg) or
+            input.generated_fn_ptr_identifier or
+            input.generated_scalar_const_identifier,
+    };
+}
+
 test "shared lowering rules normalize derives and call argument prefixes" {
     const derives = [_][]const u8{ "PartialEq", "Hash" };
     const decl = ast.StructDecl{
@@ -162,4 +207,25 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(shouldAutoBorrowReceiverArg(borrow_param, &value, &i64_ty));
     try std.testing.expect(shouldAutoBorrowReceiverArg(borrow_param, &value, &borrow_i64_ty));
     try std.testing.expect(!shouldAutoBorrowReceiverArg(plain_param, &value, &i64_ty));
+
+    const array_plan = planCallArgMaterialization(&field, .{ .array_to_slice_borrow = true });
+    try std.testing.expectEqual(CallArgMaterializationKind.array_to_slice_borrow, array_plan.kind);
+    try std.testing.expect(array_plan.release_after_call);
+
+    const auto_borrow_plan = planCallArgMaterialization(&value, .{
+        .param = borrow_param,
+        .arg_ty = &i64_ty,
+        .arg_index = 0,
+        .auto_borrow_receiver = true,
+    });
+    try std.testing.expectEqual(CallArgMaterializationKind.auto_borrow, auto_borrow_plan.kind);
+    try std.testing.expect(!auto_borrow_plan.release_after_call);
+
+    const copy_plan = planCallArgMaterialization(&value, .{ .copy_struct_value = true });
+    try std.testing.expectEqual(CallArgMaterializationKind.copy_struct_value, copy_plan.kind);
+    try std.testing.expect(copy_plan.release_after_call);
+
+    const generated_plan = planCallArgMaterialization(&value, .{ .generated_fn_ptr_identifier = true });
+    try std.testing.expectEqual(CallArgMaterializationKind.value, generated_plan.kind);
+    try std.testing.expect(generated_plan.release_after_call);
 }

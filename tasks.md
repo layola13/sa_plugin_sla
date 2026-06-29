@@ -106,7 +106,8 @@ This document tracks the tasks and implementation progress of the Sla compiler p
     - Progress: `src/lowering_rules.zig` now owns shared derive-name matching, struct derive lookup, ordinary static-call target resolution, and call-argument prefix rules used by both `codegen.zig` and `sab_codegen.zig`.
     - Progress: `lowering_rules.StaticCallPlan` now feeds resolved/static call target selection in both emitters, and `prefixedIdentifierCallArg` owns the shared `&name` / `^name` spelling rule for SA text call arguments.
     - Progress: release classification and parameter-aware auto-borrow predicates now live in shared lowering rules, with the SA text emitter delegating to them.
-    - Progress estimate: the first shared-rules extraction, static-call plan, and call-materialization predicate slices are 100%; the broader Y/shared-lowering track is approximately 20%.
+    - Progress: `CallArgMaterializationPlan` now represents array-to-slice borrow, auto-borrow, copy-struct value, ordinary value, and release decisions for resolved static-call arguments, and the SA text resolved-call path consumes it.
+    - Progress estimate: the first shared-rules extraction, static-call plan, call-materialization predicate, and resolved-call materialization-plan slices are 100%; the broader Y/shared-lowering track is approximately 24%.
     - Constraint: do not implement high-level language/library semantics only in `sab_codegen.zig`; future direct SAB work should extend shared rules/plans or std surface metadata so SA text and SAB emitters converge through the shared contract.
   - [x] Fix thread-closure SAB call lowering so captured-argument calls keep a pure call target symbol instead of generating illegal `@func(arg)` call text; reproduce with `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
     - Note: the original fallback `parallel.sla` ForbiddenSyntax repro is unblocked in the updated SCI host by accepting fallback-generated single-operand structured `panic_msg` in SAB v4 decode/verify.
@@ -122,7 +123,7 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Remove the remaining in-memory SA-compatible fallback from the normal SAB path by replacing std/macro/closure gaps with generic direct SAB lowering or a generic SAB macro representation, not library-name special cases.
     - Progress estimate: approximately 72% overall direct SAB fallback removal; next priority is a shared call/materialization plan contract so both emitters reuse lowering decisions.
   - [ ] Expand the shared static-call plan into a full call/materialization plan, including parameter-aware auto-borrow, array-to-slice borrow, dyn fat-pointer borrow, temp release policy, and result destination contract shared by SA text and SAB emitters.
-    - Progress: shared release policy and auto-borrow predicates are in place; remaining pieces are array-to-slice materialization, dyn fat-pointer borrow materialization, explicit result destination planning, and SAB emitter consumption of the richer plan.
+    - Progress: shared release policy, auto-borrow predicates, and resolved static-call argument materialization plans are in place; remaining pieces are dyn fat-pointer borrow materialization, explicit result destination planning, broader legacy-call-path adoption, and SAB emitter consumption of the richer plan.
 - [x] **SLA CLI Project Helpers**
   - [x] Add `sa sla init [path]` to scaffold a minimal SLA binary project without overwriting existing files.
   - [x] Add `sa sla skills [--json]` to list plugin capabilities and generate Codex/Claude agent skill files in text mode.

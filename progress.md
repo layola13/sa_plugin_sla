@@ -4,18 +4,24 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Shared call-materialization rules now cover release policy and auto-borrow predicates.
+  - Moved expression-result and call-argument temporary release classification into `lowering_rules.callArgNeedsRelease` / `exprResultNeedsRelease`, with the existing SA text backend delegating to those shared rules.
+  - Added shared parameter-aware auto-borrow predicates for resolved calls and receiver-style calls, then replaced the repeated SA text emitter checks with those predicates.
+  - Added focused unit coverage for release classification and auto-borrow decisions in `src/lowering_rules.zig`.
+  - Feature completion: 100% for this call-materialization shared-rule slice. Broader Y/shared-lowering progress is now approximately 20%; overall direct SAB fallback-removal progress remains approximately 72%.
+
 - [done] Shared static-call lowering plan now feeds both SA text and SAB emitters.
   - Added `lowering_rules.StaticCallPlan` so ordinary/resolved static call target selection is expressed once and consumed by both `codegen.zig` and `sab_codegen.zig`.
   - Moved identifier argument shorthand detection for `&name` / `^name` into `lowering_rules.prefixedIdentifierCallArg`, so the SA text emitter no longer owns a separate spelling rule for those call arguments.
   - Updated SAB ordinary calls and macro-expanded calls to use `planStaticCall(...).target_symbol` and `plan.argPrefix(...)`, keeping call target strings pure while preserving borrow/move argument prefixes.
-  - Feature completion: 100% for this static-call shared-rule slice. Broader Y/shared-lowering progress is now approximately 16%; overall direct SAB fallback-removal progress remains approximately 72%.
+  - Feature completion: 100% for this static-call shared-rule slice. After the release-policy/auto-borrow shared slice, broader Y/shared-lowering progress is now approximately 20%; overall direct SAB fallback-removal progress remains approximately 72%.
 
 - [done] First shared lowering-rules slice for the Y-shaped compiler path is in place.
   - Added `src/lowering_rules.zig` as a shared rule module consumed by both `codegen.zig` and `sab_codegen.zig`, starting the convergence shape `SLA AST/typecheck -> shared lowering rules -> {SA text emitter, SAB structured emitter}`.
   - Moved pure derive-name/derive-presence matching and ordinary static-call target / call-argument-prefix rules into the shared module. The SAB backend now reuses those rules instead of owning a separate interpretation for these cases.
   - Added focused unit coverage for the shared derive and call-argument-prefix rules.
   - Architecture boundary: this is not a license to copy high-level library or derive semantics into `sab_codegen.zig`; new direct SAB work should either extend shared lowering rules/plans or std surface metadata, then let SA text and SAB emitters meet through that shared contract.
-  - Progress: this first shared-rules extraction slice is 100% complete; after the shared static-call plan slice, the broader Y/shared-lowering track is approximately 16% complete. Overall direct SAB fallback-removal progress remains approximately 72%.
+  - Progress: this first shared-rules extraction slice is 100% complete; after the shared static-call and call-materialization predicate slices, the broader Y/shared-lowering track is approximately 20% complete. Overall direct SAB fallback-removal progress remains approximately 72%.
 
 - [done] Direct SAB `Vec<T>` index lowering now uses typed std surface metadata instead of a compiler-side Vec ABI branch.
   - Updated `sla_std/std_surface.sla_meta` to use macro-name templating: `index Vec sa_std/vec.sa VEC_GET_TYPED_{elem_ty} out,receiver,index,elem_size`.

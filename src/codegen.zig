@@ -6761,7 +6761,7 @@ pub const Codegen = struct {
 
             if (func.params[i].is_borrow and arg.* != .borrow_expr) {
                 const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
-                if (auto_borrow_receiver and i == 0 or arg_ty.* == .borrow) {
+                if (lowering_rules.shouldAutoBorrowResolvedArg(func.params[i], arg, arg_ty, i, auto_borrow_receiver)) {
                     const recv_reg = try self.genExpr(arg, hoisted_allocs);
                     const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
                     arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
@@ -6872,28 +6872,11 @@ pub const Codegen = struct {
     }
 
     fn callArgNeedsRelease(arg: *const ast.Node) bool {
-        return switch (arg.*) {
-            .identifier => false,
-            .field_expr => true,
-            .index_expr => true,
-            .borrow_expr => |borrow| exprResultNeedsRelease(borrow.expr),
-            .move_expr => |move| exprResultNeedsRelease(move.expr),
-            .deref_expr => true,
-            .cast_expr => false,
-            else => true,
-        };
+        return lowering_rules.callArgNeedsRelease(arg);
     }
 
     fn exprResultNeedsRelease(expr: *const ast.Node) bool {
-        return switch (expr.*) {
-            .identifier => false,
-            .field_expr => true,
-            .index_expr => true,
-            .borrow_expr => false,
-            .deref_expr => true,
-            .cast_expr => false,
-            else => true,
-        };
+        return lowering_rules.exprResultNeedsRelease(expr);
     }
 
     fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
@@ -10883,18 +10866,14 @@ pub const Codegen = struct {
                                             }
                                             if (i == 0) {
                                                 if (method_func) |func| {
-                                                    const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
-                                                    if (func.params.len > 0 and func.params[0].is_borrow and arg.* != .borrow_expr and arg_ty.* != .borrow) {
-                                                        const recv_reg = try self.genExpr(arg, hoisted_allocs);
-                                                        const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
-                                                        arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
-                                                        continue;
-                                                    }
-                                                    if (func.params.len > 0 and func.params[0].is_borrow and arg_ty.* == .borrow) {
-                                                        const recv_reg = try self.genExpr(arg, hoisted_allocs);
-                                                        const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
-                                                        arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
-                                                        continue;
+                                                    if (func.params.len > 0) {
+                                                        const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+                                                        if (lowering_rules.shouldAutoBorrowReceiverArg(func.params[0], arg, arg_ty)) {
+                                                            const recv_reg = try self.genExpr(arg, hoisted_allocs);
+                                                            const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
+                                                            arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
+                                                            continue;
+                                                        }
                                                     }
                                                 }
                                             }
@@ -10962,20 +10941,15 @@ pub const Codegen = struct {
                         }
                         if (i == 0) {
                             if (maybe_func) |func| {
-                                const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
-                                if (func.params.len > 0 and func.params[0].is_borrow and arg.* != .borrow_expr and arg_ty.* != .borrow) {
-                                    const recv_reg = try self.genExpr(arg, hoisted_allocs);
-                                    const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
-                                    arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
-                                    arg_release_regs.append(if (self.generatedScalarConstIdentifierArg(arg)) recv_reg else null) catch return CodegenError.OutOfMemory;
-                                    continue;
-                                }
-                                if (func.params.len > 0 and func.params[0].is_borrow and arg_ty.* == .borrow) {
-                                    const recv_reg = try self.genExpr(arg, hoisted_allocs);
-                                    const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
-                                    arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
-                                    arg_release_regs.append(if (self.generatedScalarConstIdentifierArg(arg)) recv_reg else null) catch return CodegenError.OutOfMemory;
-                                    continue;
+                                if (func.params.len > 0) {
+                                    const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+                                    if (lowering_rules.shouldAutoBorrowReceiverArg(func.params[0], arg, arg_ty)) {
+                                        const recv_reg = try self.genExpr(arg, hoisted_allocs);
+                                        const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
+                                        arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
+                                        arg_release_regs.append(if (self.generatedScalarConstIdentifierArg(arg)) recv_reg else null) catch return CodegenError.OutOfMemory;
+                                        continue;
+                                    }
                                 }
                             }
                         }
@@ -11029,18 +11003,14 @@ pub const Codegen = struct {
                             }
                             if (i == 0) {
                                 if (maybe_func) |func| {
-                                    const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
-                                    if (func.params.len > 0 and func.params[0].is_borrow and arg.* != .borrow_expr and arg_ty.* != .borrow) {
-                                        const recv_reg = try self.genExpr(arg, hoisted_allocs);
-                                        const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
-                                        arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
-                                        continue;
-                                    }
-                                    if (func.params.len > 0 and func.params[0].is_borrow and arg_ty.* == .borrow) {
-                                        const recv_reg = try self.genExpr(arg, hoisted_allocs);
-                                        const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
-                                        arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
-                                        continue;
+                                    if (func.params.len > 0) {
+                                        const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+                                        if (lowering_rules.shouldAutoBorrowReceiverArg(func.params[0], arg, arg_ty)) {
+                                            const recv_reg = try self.genExpr(arg, hoisted_allocs);
+                                            const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
+                                            arg_regs.append(borrow_arg) catch return CodegenError.OutOfMemory;
+                                            continue;
+                                        }
                                     }
                                 }
                             }

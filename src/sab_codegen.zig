@@ -766,6 +766,25 @@ pub const Codegen = struct {
         return Error.UnsupportedSabDirectFeature;
     }
 
+    fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| p != .void_type,
+            .user_defined => blk: {
+                const decl = self.structDeclForType(ty) orelse break :blk false;
+                if (!lowering_rules.structHasDerive(decl, "copy") or decl.is_opaque or decl.is_union) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeHasCopyDerive(field.ty)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
+    fn typeIsCopyStruct(self: *Codegen, ty: *const ast.Type) bool {
+        return self.structDeclForType(ty) != null and self.typeHasCopyDerive(ty);
+    }
+
     fn fieldType(self: *Codegen, ty: *const ast.Type, name: []const u8) ?*ast.Type {
         const decl = self.structDeclForType(ty) orelse return null;
         for (decl.fields) |field| {
@@ -3949,13 +3968,18 @@ pub const Codegen = struct {
             .auto_borrow_receiver = auto_borrow_receiver,
             .array_to_slice_borrow = self.tc.array_to_slice_borrow_args.contains(arg),
             .dyn_borrow_trait_name = self.tc.dyn_borrow_args.get(arg),
-            .copy_struct_value = false,
+            .copy_struct_value = if (param) |p| !p.is_borrow and !p.is_move and arg.* == .identifier and self.typeIsCopyStruct(p.ty) else false,
             .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(arg),
             .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(arg),
         });
 
         return switch (materialization.kind) {
-            .array_to_slice_borrow, .dyn_borrow, .copy_struct_value => Error.UnsupportedSabDirectFeature,
+            .array_to_slice_borrow, .dyn_borrow => Error.UnsupportedSabDirectFeature,
+            .copy_struct_value => blk: {
+                const source_reg = try self.genExpr(@constCast(arg));
+                const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
+                break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
+            },
             .auto_borrow => blk: {
                 const arg_reg = try self.genExpr(@constCast(arg));
                 break :blk .{
@@ -3993,13 +4017,18 @@ pub const Codegen = struct {
             .auto_borrow_receiver = auto_borrow_receiver,
             .array_to_slice_borrow = self.tc.array_to_slice_borrow_args.contains(effective_arg),
             .dyn_borrow_trait_name = self.tc.dyn_borrow_args.get(effective_arg),
-            .copy_struct_value = false,
+            .copy_struct_value = if (param) |p| !p.is_borrow and !p.is_move and effective_arg.* == .identifier and self.typeIsCopyStruct(p.ty) else false,
             .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(effective_arg),
             .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(effective_arg),
         });
 
         return switch (materialization.kind) {
-            .array_to_slice_borrow, .dyn_borrow, .copy_struct_value => Error.UnsupportedSabDirectFeature,
+            .array_to_slice_borrow, .dyn_borrow => Error.UnsupportedSabDirectFeature,
+            .copy_struct_value => blk: {
+                const source_reg = try self.genMacroExpr(@constCast(arg), ctx);
+                const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
+                break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
+            },
             .auto_borrow => blk: {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 break :blk .{
@@ -4339,6 +4368,29 @@ pub const Codegen = struct {
             if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
         }
 
+        return dst;
+    }
+
+    fn genCopyValue(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!u32 {
+        const decl = self.structDeclForType(ty) orelse return Error.UnsupportedSabDirectFeature;
+        if (!self.typeHasCopyDerive(ty) or decl.is_opaque or decl.is_union) return Error.UnsupportedSabDirectFeature;
+
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, structSize(decl));
+        for (decl.fields) |field| {
+            const layout = try self.fieldLayout(ty, field.name);
+            const field_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(field_reg, source, layout.offset, layout.ty);
+            if (self.structDeclForType(field.ty) != null) {
+                const copied_field = try self.genCopyValue(field_reg, field.ty);
+                try self.emitStore(dst, layout.offset, copied_field, layout.ty);
+                try self.emitRelease(copied_field);
+                try self.emitRelease(field_reg);
+            } else {
+                try self.emitStore(dst, layout.offset, field_reg, layout.ty);
+                try self.emitRelease(field_reg);
+            }
+        }
         return dst;
     }
 

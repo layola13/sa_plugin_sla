@@ -4,6 +4,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Ordinary function/extern expression-call arguments now route through the shared materialization helper.
+  - Added a single SA text emitter helper that consumes `lowering_rules.CallArgMaterializationPlan` and returns both the call operand spelling and the real register that must be released after the call.
+  - Extended the shared plan with receiver-style auto-borrow selection plus auto-borrow temporary release policy, so generated scalar-const receiver temps are released through the same plan instead of a hand-written call-site branch.
+  - Updated the resolved static-call path and the legacy ordinary function/extern expression fallback to use the helper for array-to-slice borrow, dyn fat-pointer borrow, receiver-style auto-borrow, copy-struct value, ordinary value, generated function-pointer identifier, generated scalar const, and release decisions.
+  - Feature completion: 100% for this ordinary function/extern expression-call adoption slice. Broader Y/shared-lowering progress is now approximately 32%; overall direct SAB fallback-removal progress remains approximately 72%.
+
 - [done] Legacy parameter-aware call helper now delegates to the shared materialization plan.
   - Updated `genCallArgForParam` so historical SA text call paths use `lowering_rules.planCallArgMaterialization` for copy-struct value, ordinary value, generated function-pointer identifier, generated scalar const, and release decisions.
   - Kept existing outer array-to-slice and dyn-borrow branches in those historical paths unchanged for this slice; the shared helper adoption narrows duplicated copy/value/release logic without expanding SAB-only semantics.

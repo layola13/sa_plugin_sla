@@ -42,6 +42,7 @@ pub const CallArgMaterializationInput = struct {
     arg_ty: ?*const ast.Type = null,
     arg_index: usize = 0,
     auto_borrow_receiver: bool = false,
+    receiver_style_auto_borrow: bool = false,
     array_to_slice_borrow: bool = false,
     dyn_borrow_trait_name: ?[]const u8 = null,
     copy_struct_value: bool = false,
@@ -141,8 +142,12 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
     }
     if (input.param) |param| {
         if (input.arg_ty) |arg_ty| {
-            if (shouldAutoBorrowResolvedArg(param, arg, arg_ty, input.arg_index, input.auto_borrow_receiver)) {
-                return .{ .kind = .auto_borrow, .release_after_call = false };
+            if (input.receiver_style_auto_borrow) {
+                if (shouldAutoBorrowReceiverArg(param, arg, arg_ty)) {
+                    return .{ .kind = .auto_borrow, .release_after_call = input.generated_scalar_const_identifier };
+                }
+            } else if (shouldAutoBorrowResolvedArg(param, arg, arg_ty, input.arg_index, input.auto_borrow_receiver)) {
+                return .{ .kind = .auto_borrow, .release_after_call = input.generated_scalar_const_identifier };
             }
         }
     }
@@ -231,6 +236,23 @@ test "shared lowering rules classify call materialization decisions" {
     });
     try std.testing.expectEqual(CallArgMaterializationKind.auto_borrow, auto_borrow_plan.kind);
     try std.testing.expect(!auto_borrow_plan.release_after_call);
+
+    const generated_auto_borrow_plan = planCallArgMaterialization(&value, .{
+        .param = borrow_param,
+        .arg_ty = &i64_ty,
+        .arg_index = 0,
+        .auto_borrow_receiver = true,
+        .generated_scalar_const_identifier = true,
+    });
+    try std.testing.expectEqual(CallArgMaterializationKind.auto_borrow, generated_auto_borrow_plan.kind);
+    try std.testing.expect(generated_auto_borrow_plan.release_after_call);
+
+    const receiver_style_plan = planCallArgMaterialization(&value, .{
+        .param = borrow_param,
+        .arg_ty = &i64_ty,
+        .receiver_style_auto_borrow = true,
+    });
+    try std.testing.expectEqual(CallArgMaterializationKind.auto_borrow, receiver_style_plan.kind);
 
     const copy_plan = planCallArgMaterialization(&value, .{ .copy_struct_value = true });
     try std.testing.expectEqual(CallArgMaterializationKind.copy_struct_value, copy_plan.kind);

@@ -6760,17 +6760,14 @@ pub const Codegen = struct {
         param: ast.Param,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
-        if (!param.is_borrow and !param.is_move and arg.* == .identifier and self.typeIsCopyStruct(param.ty)) {
-            const source_reg = try self.genExpr(arg, hoisted_allocs);
-            const copied = try self.newTmp();
-            try self.genCopyValueInto(copied, source_reg, param.ty);
-            return .{ .reg = copied, .release_after_call = true };
-        }
-        const arg_reg = try self.genCallArg(arg, hoisted_allocs);
-        return .{
-            .reg = arg_reg,
-            .release_after_call = callArgNeedsRelease(arg) or self.generatedFnPtrIdentifierArg(arg) or self.generatedScalarConstIdentifierArg(arg),
-        };
+        const materialization = lowering_rules.planCallArgMaterialization(arg, .{
+            .param = param,
+            .arg_ty = self.tc.expr_types.get(arg),
+            .copy_struct_value = !param.is_borrow and !param.is_move and arg.* == .identifier and self.typeIsCopyStruct(param.ty),
+            .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(arg),
+            .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(arg),
+        });
+        return try self.genCallArgFromMaterializationPlan(arg, param, materialization, hoisted_allocs);
     }
 
     fn genResolvedFunctionCall(

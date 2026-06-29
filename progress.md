@@ -4,11 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Legacy parameter-aware call helper now delegates to the shared materialization plan.
+  - Updated `genCallArgForParam` so historical SA text call paths use `lowering_rules.planCallArgMaterialization` for copy-struct value, ordinary value, generated function-pointer identifier, generated scalar const, and release decisions.
+  - Kept existing outer array-to-slice and dyn-borrow branches in those historical paths unchanged for this slice; the shared helper adoption narrows duplicated copy/value/release logic without expanding SAB-only semantics.
+  - Feature completion: 100% for this legacy helper adoption slice. Broader Y/shared-lowering progress is now approximately 30%; overall direct SAB fallback-removal progress remains approximately 72%.
+
 - [done] Resolved static-call materialization plans now cover dyn fat-pointer borrow arguments.
   - Extended `lowering_rules.CallArgMaterializationPlan` with a `dyn_borrow` materialization kind carrying the target trait name.
   - Updated the SA text resolved static-call path so dyn borrow arguments materialize through the shared plan: create the fat pointer, pass `&fat_reg` to the call, and release the real fat-pointer register after the call.
   - Added `tests/test_unit_dyn_borrow_arg.sla` to cover `&Concrete -> &dyn Trait` argument coercion through an ordinary resolved function call.
-  - Feature completion: 100% for resolved static-call dyn borrow materialization through the shared plan. Broader Y/shared-lowering progress is now approximately 28%; overall direct SAB fallback-removal progress remains approximately 72%.
+  - Feature completion: 100% for resolved static-call dyn borrow materialization through the shared plan. After the legacy helper adoption slice, broader Y/shared-lowering progress is now approximately 30%; overall direct SAB fallback-removal progress remains approximately 72%.
 
 - [done] Resolved static calls now consume a shared call-argument materialization plan.
   - Added `lowering_rules.CallArgMaterializationPlan`, covering array-to-slice borrow, auto-borrow, copy-struct value materialization, and ordinary value argument cases with a shared `release_after_call` decision.

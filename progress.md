@@ -4,6 +4,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Direct SAB ordinary static calls now consume the shared call-argument materialization plan.
+  - Added a SAB call-argument helper that consumes `lowering_rules.CallArgMaterializationPlan` for ordinary direct static calls, sharing value argument spelling, parameter-aware auto-borrow, generated identifier classification, and temporary release selection with the SA text emitter.
+  - Kept unsupported SAB direct materializations explicit: array-to-slice borrow, dyn fat-pointer borrow, and copy-struct value still return `UnsupportedSabDirectFeature` instead of adding SAB-only semantics.
+  - Verified the path with full Zig tests plus no-fallback direct SAB borrow/function-pointer/parallel fixtures.
+  - Feature completion: 100% for SAB ordinary static-call shared-plan consumption. Broader Y/shared-lowering progress is now approximately 36%; overall direct SAB fallback-removal progress remains approximately 72%.
+
 - [done] Remaining SA text legacy method/statement call branches now consume the shared materialization helper.
   - Replaced the remaining expression-level user-defined method fallback, associated-target method fallback, `str` associated fallback, default call-statement fallback, and receiver-style call-statement dyn/auto-borrow handling with the shared `genPlannedCallArg` path.
   - Added a shared statement-receiver auto-borrow predicate so the old statement semantics remain explicit: non-borrow receiver values are auto-borrowed, while arguments already typed as borrows are passed through as values.

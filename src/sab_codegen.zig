@@ -3900,23 +3900,79 @@ pub const Codegen = struct {
         try self.recordReg(dst);
         const lowered = try self.loweredFuncSymbol(call_plan.target_symbol);
         var text = std.ArrayList(u8).init(self.allocator);
-        var arg_regs = std.ArrayList(u32).init(self.allocator);
-        defer arg_regs.deinit();
+        var release_regs = std.ArrayList(u32).init(self.allocator);
+        defer release_regs.deinit();
+        const maybe_func = self.tc.funcs.get(call_plan.target_symbol);
         try text.writer().print("@{s}(", .{lowered});
         for (call.args, 0..) |arg, i| {
-            const arg_reg = try self.genExpr(@constCast(arg));
-            try arg_regs.append(arg_reg);
+            const param = if (maybe_func) |func| if (i < func.params.len) func.params[i] else null else null;
+            const lowered_arg = try self.genPlannedSabCallArg(arg, call_plan, param, i, call.associated_target == null);
+            try release_regs.append(lowered_arg.release_reg);
             if (i > 0) try text.appendSlice(", ");
-            if (call_plan.argPrefix(arg)) |prefix| try text.append(prefix);
-            try text.writer().print("{s}", .{self.symbols.items[arg_reg]});
+            try text.appendSlice(lowered_arg.operand);
         }
         try text.append(')');
         var item = self.makeInst(.call);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .text = try text.toOwnedSlice() };
         try self.appendInst(item);
-        try self.releaseNonLocalTemps(arg_regs.items);
+        try self.releaseNonLocalTemps(release_regs.items);
         return dst;
+    }
+
+    const SabLoweredCallArg = struct {
+        operand: []const u8,
+        release_reg: u32,
+    };
+
+    fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
+        return arg.* == .identifier and self.tc.funcs.contains(arg.identifier) and self.exprHasFnPtrType(arg);
+    }
+
+    fn generatedScalarConstIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
+        return arg.* == .identifier and self.global_scalar_consts.contains(arg.identifier);
+    }
+
+    fn genPlannedSabCallArg(
+        self: *Codegen,
+        arg: *const ast.Node,
+        call_plan: lowering_rules.StaticCallPlan,
+        param: ?ast.Param,
+        arg_index: usize,
+        auto_borrow_receiver: bool,
+    ) anyerror!SabLoweredCallArg {
+        const materialization = lowering_rules.planCallArgMaterialization(arg, .{
+            .param = param,
+            .arg_ty = self.tc.expr_types.get(arg),
+            .arg_index = arg_index,
+            .auto_borrow_receiver = auto_borrow_receiver,
+            .array_to_slice_borrow = self.tc.array_to_slice_borrow_args.contains(arg),
+            .dyn_borrow_trait_name = self.tc.dyn_borrow_args.get(arg),
+            .copy_struct_value = false,
+            .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(arg),
+            .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(arg),
+        });
+
+        return switch (materialization.kind) {
+            .array_to_slice_borrow, .dyn_borrow, .copy_struct_value => Error.UnsupportedSabDirectFeature,
+            .auto_borrow => blk: {
+                const arg_reg = try self.genExpr(@constCast(arg));
+                break :blk .{
+                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[arg_reg]}),
+                    .release_reg = arg_reg,
+                };
+            },
+            .value => blk: {
+                const arg_reg = try self.genExpr(@constCast(arg));
+                if (call_plan.argPrefix(arg)) |prefix| {
+                    break :blk .{
+                        .operand = try std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, self.symbols.items[arg_reg] }),
+                        .release_reg = arg_reg,
+                    };
+                }
+                break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
+            },
+        };
     }
 
     fn restoreClosureParams(self: *Codegen, saved: []const SavedClosureParam) void {

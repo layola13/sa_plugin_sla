@@ -3575,6 +3575,7 @@ pub const TypeChecker = struct {
                     const method_key = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ target_name, call.func_name });
                     if (self.funcs.get(method_key)) |func| {
                         try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, false);
+                        self.resolved_call_symbols.put(expr, method_key) catch return TypeError.OutOfMemory;
                         if (func.is_async) return try self.makeFutureType(func.ret_ty);
                         return func.ret_ty;
                     }
@@ -4343,6 +4344,8 @@ pub const TypeChecker = struct {
                 if (method_match) |method_name| {
                     if (self.funcs.get(method_name)) |func| {
                         try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, true);
+                        const resolved = std.fmt.allocPrint(self.allocator, "{s}", .{method_name}) catch return TypeError.OutOfMemory;
+                        self.resolved_call_symbols.put(expr, resolved) catch return TypeError.OutOfMemory;
                         if (func.is_async) {
                             return try self.makeFutureType(func.ret_ty);
                         }

@@ -10,6 +10,7 @@ method Vec push sa_std/vec.sa VEC_PUSH receiver,value,elem_size deps=sa_vec_push
 fallible_method Vec remove sa_std/vec.sa VEC_REMOVE ok,out,receiver,index,elem_size deps=sa_vec_try_remove panic=86
 index Vec sa_std/vec.sa VEC_GET_TYPED_{elem_ty} out,receiver,index,elem_size
 index_assign Vec sa_std/vec.sa VEC_SET_TYPED receiver,index,value,elem_size,elem_ty
+index Slice sa_std/core/slice.sa SLICE_GET_TYPED_{elem_ty} out,receiver,index,elem_size
 constructor Some Option sa_std/core/option.sa OPTION_NEW_SOME out,value
 constructor None Option sa_std/core/option.sa OPTION_NEW_NONE out
 method Option is_some sa_std/core/option.sa OPTION_IS_SOME out,receiver

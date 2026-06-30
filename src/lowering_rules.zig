@@ -63,6 +63,12 @@ pub const AbiFieldLayout = struct {
     ty: *const ast.Type,
 };
 
+pub const SliceAbi = struct {
+    pub const size: usize = 16;
+    pub const ptr_offset: usize = 0;
+    pub const len_offset: usize = 8;
+};
+
 pub fn abiTypeSize(ty: *const ast.Type) usize {
     return switch (ty.*) {
         .primitive => |p| switch (p) {
@@ -117,6 +123,11 @@ pub fn arrayElementLayout(arr: ast.ArrayType, index: usize) ?AbiFieldLayout {
     if (index >= arr.len) return null;
     const stride = inlineArrayStride(arr.elem);
     return .{ .offset = stride * index, .size = stride, .ty = arr.elem };
+}
+
+pub fn arrayRestLen(arr: ast.ArrayType, prefix_count: usize) ?usize {
+    if (prefix_count > arr.len) return null;
+    return arr.len - prefix_count;
 }
 
 pub fn structAbiSize(decl: *const ast.StructDecl) usize {
@@ -466,6 +477,11 @@ test "shared ABI layout keeps fixed-array fields as pointer slots" {
     try std.testing.expectEqual(@as(usize, 8), abiTypeSize(&bool_array_ty));
     try std.testing.expectEqual(@as(usize, 2), inlineArraySize(bool_array_ty.array));
     try std.testing.expectEqual(@as(usize, 16), structAbiSize(&decl));
+    try std.testing.expectEqual(@as(usize, 16), SliceAbi.size);
+    try std.testing.expectEqual(@as(usize, 0), SliceAbi.ptr_offset);
+    try std.testing.expectEqual(@as(usize, 8), SliceAbi.len_offset);
+    try std.testing.expectEqual(@as(?usize, 1), arrayRestLen(bool_array_ty.array, 1));
+    try std.testing.expectEqual(@as(?usize, null), arrayRestLen(bool_array_ty.array, 3));
 
     const active = structFieldLayout(&decl, "active") orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(usize, 0), active.offset);

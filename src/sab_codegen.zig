@@ -1236,6 +1236,11 @@ pub const Codegen = struct {
         try self.locals.append(.{ .name = name, .reg = reg, .is_param = false, .is_stack_alloc = true });
     }
 
+    fn pushStackAllocTypedLocal(self: *Codegen, name: []const u8, reg: u32, ty: *const ast.Type) !void {
+        try self.recordReg(reg);
+        try self.locals.append(.{ .name = name, .reg = reg, .is_param = false, .is_stack_alloc = true, .ty = ty });
+    }
+
     fn beginFunction(self: *Codegen) void {
         self.current_reg_ids.clearRetainingCapacity();
         self.current_reg_seen.clearRetainingCapacity();
@@ -2691,6 +2696,10 @@ pub const Codegen = struct {
             return;
         }
         const src = try self.genExpr(let.value);
+        if (std.mem.eql(u8, let.name, "_")) {
+            if (!self.isLocalReg(src)) try self.emitRelease(src);
+            return;
+        }
         try self.genLetFromValue(let.name, let.ty, let.value, src);
     }
 
@@ -2789,6 +2798,14 @@ pub const Codegen = struct {
     fn makePrimitiveType(self: *Codegen, primitive: ast.Primitive) !*const ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .primitive = primitive };
+        return ty;
+    }
+
+    fn makeSliceType(self: *Codegen, elem_ty: *ast.Type) !*const ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = elem_ty;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Slice", .generics = generics } };
         return ty;
     }
 
@@ -3406,6 +3423,10 @@ pub const Codegen = struct {
     fn genMacroLet(self: *Codegen, let: ast.LetStmt, ctx: *MacroExpansionContext) anyerror!void {
         const expected_ty = if (let.ty) |ty| @as(?*const ast.Type, ty) else try self.macroExprType(let.value, ctx);
         const value = try self.genMacroExprTyped(let.value, ctx, expected_ty);
+        if (std.mem.eql(u8, let.name, "_")) {
+            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            return;
+        }
         const mapped = try self.defineMacroLocal(ctx, let.name, expected_ty);
         try self.genLetFromValue(mapped, expected_ty, let.value, value);
     }
@@ -3645,8 +3666,12 @@ pub const Codegen = struct {
     }
 
     fn genLetDestructure(self: *Codegen, let: ast.LetDestructureStmt) anyerror!void {
-        if (let.is_slice or let.rest_name != null or let.rest_alias != null) return Error.UnsupportedSabDirectFeature;
         const value_ty = self.tc.expr_types.get(let.value) orelse return Error.MissingType;
+        if (let.is_slice) {
+            try self.genArrayLetDestructure(let, value_ty);
+            return;
+        }
+        if (let.rest_name != null or let.rest_alias != null) return Error.UnsupportedSabDirectFeature;
         if (value_ty.* != .tuple or value_ty.tuple.elems.len != let.names.len) return Error.UnsupportedSabDirectFeature;
         const value = try self.genExpr(let.value);
         for (let.names, 0..) |name, idx| {
@@ -3660,6 +3685,62 @@ pub const Codegen = struct {
                 try self.pushTypedLocal(name, dst, false, value_ty.tuple.elems[idx]);
             }
         }
+        if (!self.isLocalReg(value)) try self.emitRelease(value);
+    }
+
+    fn genArrayLetDestructure(self: *Codegen, let: ast.LetDestructureStmt, value_ty: *const ast.Type) anyerror!void {
+        if (value_ty.* != .array) return Error.UnsupportedSabDirectFeature;
+        const arr = value_ty.array;
+        if (let.names.len > arr.len) return Error.UnsupportedSabDirectFeature;
+        const rest_name = let.rest_name orelse return Error.UnsupportedSabDirectFeature;
+        const rest_is_discard = std.mem.eql(u8, rest_name, "_");
+        if (rest_is_discard) {
+            if (let.rest_alias) |alias| {
+                if (!std.mem.eql(u8, alias, "_")) return Error.UnsupportedSabDirectFeature;
+            }
+        }
+
+        const value = try self.genExpr(let.value);
+        const keep_owner = !rest_is_discard and !self.isLocalReg(value);
+        if (keep_owner) {
+            try self.pushTypedLocal(try self.newTmp(), value, false, value_ty);
+        }
+
+        for (let.names, 0..) |name, idx| {
+            if (std.mem.eql(u8, name, "_")) continue;
+            const layout = arrayElementLayout(arr, idx) orelse return Error.UnsupportedSabDirectFeature;
+            const dst = try self.intern(name);
+            try self.emitLoad(dst, value, layout.offset, layout.ty);
+            try self.pushTypedLocal(name, dst, false, arr.elem);
+        }
+
+        if (!rest_is_discard) {
+            const rest_len = lowering_rules.arrayRestLen(arr, let.names.len) orelse return Error.UnsupportedSabDirectFeature;
+            const rest_ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(rest_ptr, value, .{ .imm_u64 = @intCast(arrayStride(arr.elem) * let.names.len) });
+
+            const rest_len_reg = try self.intern(try self.newTmp());
+            try self.emitAssignImm(rest_len_reg, @intCast(rest_len));
+
+            const rest_reg = try self.intern(rest_name);
+            const slice_ty = try self.makeSliceType(arr.elem);
+            try self.emitStackAlloc(rest_reg, lowering_rules.SliceAbi.size);
+            try self.emitStdMacroFragment("sa_std/core/slice.sa", "SLICE_NEW", &.{
+                self.symbols.items[rest_reg],
+                self.symbols.items[rest_ptr],
+                self.symbols.items[rest_len_reg],
+            });
+            try self.emitRelease(rest_len_reg);
+            try self.emitRelease(rest_ptr);
+            try self.pushStackAllocTypedLocal(rest_name, rest_reg, slice_ty);
+
+            if (let.rest_alias) |alias| {
+                if (!std.mem.eql(u8, alias, "_")) {
+                    try self.pushStackAllocTypedLocal(alias, rest_reg, slice_ty);
+                }
+            }
+        }
+
         if (!self.isLocalReg(value)) try self.emitRelease(value);
     }
 

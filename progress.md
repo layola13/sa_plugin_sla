@@ -4,6 +4,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Direct SAB blank identifiers and fixed-array slice destructuring now lower through shared array/slice ABI rules.
+  - Added shared `SliceAbi` and fixed-array rest-length rules in `src/lowering_rules.zig`; direct SAB destructuring consumes those rules plus the existing shared array element layout instead of inventing a separate SAB-only layout path.
+  - Direct SAB now supports `let [_, second, ..rest] = [10, 20, 30, 40]` for fixed arrays, keeps the array owner alive when a rest slice is materialized, and treats ordinary `let _ = value` as a discard instead of entering `_` into the local table.
+  - Added `Slice<T>` index metadata to `sla_std/std_surface.sla_meta` and `SLICE_GET_TYPED_*` wrappers to both the active `sa_std/core/slice.sa` and the source `sci/sa_std/core/slice.sa`, so `rest[0]` lowers through std surface macro fragments rather than a compiler-side `Slice` branch.
+  - Verified local and host-dispatched no-fallback SAB for `tests/test_unit_blank_identifier.sla`, SA-text backend for the same fixture, no-fallback SAB regressions for `tests/test_unit_arrays.sla`, `tests/test_unit_vec_index_assign.sla`, `tests/test_unit_user_macro_direct.sla`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`, plus `zig build --summary all` and `zig build test --summary all`.
+  - Full current no-fallback `tests/test_unit_*.sla` sweep is now 46/64 passing. Remaining 18 failures are async, borrow-temp release ordering, cell bool, derive semantics, enum match, for-in protocols, Option methods, pkgjson codegen, rc/dyn trait, refcell/smart-pointer paths, sets, nested import contract extern callee resolution, spaceship compare, std import, struct update, and var comprehensive.
+  - Feature completion: 100% for fixed-array destructuring/blank identifier direct SAB support through shared ABI and std surface metadata. Broader Y/shared-lowering progress is now approximately 55%; direct SAB fallback-removal progress is now approximately 79% by feature track, with current no-fallback unit-file pass rate at 46/64.
+
 - [done] Direct SAB `Vec<T>` index assignment now lowers through std surface metadata instead of a compiler-side Vec ABI branch.
   - Added an `index_assign` std surface rule so `values[index] = value` is selected from `sla_std/std_surface.sla_meta`, matching the existing metadata-driven `Vec<T>` index-read path and keeping Vec layout semantics out of `src/sab_codegen.zig`.
   - Added a generic `VEC_SET_TYPED` macro to the active `sa_std/vec.sa` surface and the source `sci/sa_std/vec.sa`; the rule supplies `receiver,index,value,elem_size,elem_ty`, so scalar and pointer-backed struct element writes share one std-surface contract.

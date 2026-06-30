@@ -5,15 +5,29 @@
 # macros without hardcoding ordinary library semantics in Zig.
 
 associated Vec new sa_std/vec.sa VEC_NEW out deps=sa_vec_new
+associated Box new sa_std/core/box.sa BOX_NEW out,value
+associated Rc new sa_std/core/rc.sa RC_NEW out,value
+associated Rc clone sa_std/core/rc.sa RC_CLONE_OUT out,value
+associated Arc new sa_std/core/arc.sa ARC_NEW out,value
+associated Arc clone sa_std/core/arc.sa ARC_CLONE_OUT out,value
+associated RefCell new sa_std/core/refcell.sa REFCELL_U64_NEW out,value
 associated Cell new sa_std/core/cell.sa CELL_NEW_VALUE out,value
 method Cell get sa_std/core/cell.sa CELL_GET out,receiver
 method Cell set sa_std/core/cell.sa CELL_SET receiver,value
+method Box get sa_std/core/box.sa BOX_GET_U64 out,receiver
+method Box as_ptr sa_std/core/box.sa BOX_AS_PTR out,receiver
+method Rc get sa_std/core/rc.sa RC_GET out,receiver
+method Rc as_ptr sa_std/core/rc.sa RC_AS_PTR out,receiver
+method Arc get sa_std/core/arc.sa ARC_GET out,receiver
+method Arc as_ptr sa_std/core/arc.sa ARC_AS_PTR out,receiver
 function len Vec sa_std/vec.sa VEC_LEN out,receiver deps=sa_vec_len
 method Vec push sa_std/vec.sa VEC_PUSH receiver,value,elem_size deps=sa_vec_push,sa_mem_copy
 fallible_method Vec remove sa_std/vec.sa VEC_REMOVE ok,out,receiver,index,elem_size deps=sa_vec_try_remove panic=86
 index Vec sa_std/vec.sa VEC_GET_TYPED_{elem_ty} out,receiver,index,elem_size
+index_address Vec sa_std/vec.sa VEC_GET_MUT_PTR_U64 out,receiver,index
 index_assign Vec sa_std/vec.sa VEC_SET_TYPED receiver,index,value,elem_size,elem_ty
 index Slice sa_std/core/slice.sa SLICE_GET_TYPED_{elem_ty} out,receiver,index,elem_size
+index_address Slice sa_std/core/slice.sa SLICE_GET_MUT_PTR_U64 out,receiver,index
 constructor Some Option sa_std/core/option.sa OPTION_NEW_SOME out,value
 constructor None Option sa_std/core/option.sa OPTION_NEW_NONE out
 method Option is_some sa_std/core/option.sa OPTION_IS_SOME out,receiver

@@ -26,6 +26,11 @@ const Local = struct {
     is_stack_alloc: bool = false,
 };
 
+const RefCellBorrowValue = struct {
+    cell_reg: u32,
+    is_mut: bool,
+};
+
 const MacroArgBinding = struct {
     name: []const u8,
     arg: *const ast.Node,
@@ -86,6 +91,7 @@ const FieldLayout = struct {
 
 const AddressSource = struct {
     reg: u32,
+    release_regs: []const u32 = &.{},
 };
 
 const StdSurfaceRuleKind = enum {
@@ -95,6 +101,7 @@ const StdSurfaceRuleKind = enum {
     method,
     fallible_method,
     index,
+    index_address,
     index_assign,
 };
 
@@ -153,6 +160,9 @@ pub const Codegen = struct {
     std_macro_templates: std.ArrayList(StdMacroTemplate),
     std_macro_template_ids: std.StringHashMap(usize),
     escaped_closure_entries: std.AutoHashMap(*const ast.Node, EscapedClosureEntry),
+    refcell_borrow_values: std.AutoHashMap(u32, RefCellBorrowValue),
+    borrow_address_temps: std.AutoHashMap(u32, []const u32),
+    non_owning_regs: std.AutoHashMap(u32, void),
     global_scalar_consts: std.StringHashMap(*const ast.Node),
     sa_std_root: ?[]const u8 = null,
     instructions: std.ArrayList(inst.Instruction),
@@ -186,6 +196,9 @@ pub const Codegen = struct {
             .std_macro_templates = std.ArrayList(StdMacroTemplate).init(allocator),
             .std_macro_template_ids = std.StringHashMap(usize).init(allocator),
             .escaped_closure_entries = std.AutoHashMap(*const ast.Node, EscapedClosureEntry).init(allocator),
+            .refcell_borrow_values = std.AutoHashMap(u32, RefCellBorrowValue).init(allocator),
+            .borrow_address_temps = std.AutoHashMap(u32, []const u32).init(allocator),
+            .non_owning_regs = std.AutoHashMap(u32, void).init(allocator),
             .global_scalar_consts = std.StringHashMap(*const ast.Node).init(allocator),
             .instructions = std.ArrayList(inst.Instruction).init(allocator),
             .function_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
@@ -237,6 +250,10 @@ pub const Codegen = struct {
             if (entry.captures.len != 0) self.allocator.free(entry.captures);
         }
         self.escaped_closure_entries.deinit();
+        self.refcell_borrow_values.deinit();
+        self.clearBorrowAddressTemps();
+        self.borrow_address_temps.deinit();
+        self.non_owning_regs.deinit();
         self.global_scalar_consts.deinit();
         if (self.sa_std_root) |root| self.allocator.free(root);
         self.instructions.deinit();
@@ -720,6 +737,14 @@ pub const Codegen = struct {
                 var options = StdSurfaceRuleOptions{};
                 while (parts.next()) |option| try self.parseStdSurfaceOption(option, &options);
                 try self.appendStdSurfaceRule(.index, type_name, null, import_path, macro_name, arg_text, options);
+            } else if (std.mem.eql(u8, raw_kind, "index_address")) {
+                const type_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const import_path = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const macro_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const arg_text = parts.next() orelse "";
+                var options = StdSurfaceRuleOptions{};
+                while (parts.next()) |option| try self.parseStdSurfaceOption(option, &options);
+                try self.appendStdSurfaceRule(.index_address, type_name, null, import_path, macro_name, arg_text, options);
             } else if (std.mem.eql(u8, raw_kind, "index_assign")) {
                 const type_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
                 const import_path = parts.next() orelse return Error.UnsupportedSabDirectFeature;
@@ -1053,6 +1078,7 @@ pub const Codegen = struct {
                 if (self.tc.expr_types.get(idx.target)) |target_ty| {
                     if (typeBaseName(target_ty)) |target_type_name| {
                         if (self.findStdSurfaceRule(.index, target_type_name, null)) |rule| try self.ensureRuleDeps(rule);
+                        if (self.findStdSurfaceRule(.index_address, target_type_name, null)) |rule| try self.ensureRuleDeps(rule);
                     }
                 }
                 try self.preloadNodeStdSurfaceDeps(idx.target);
@@ -1248,6 +1274,57 @@ pub const Codegen = struct {
         self.closure_bindings.clearRetainingCapacity();
         self.closure_param_regs.clearRetainingCapacity();
         self.borrowed_bindings.clearRetainingCapacity();
+        self.refcell_borrow_values.clearRetainingCapacity();
+        self.clearBorrowAddressTemps();
+        self.non_owning_regs.clearRetainingCapacity();
+    }
+
+    fn clearBorrowAddressTemps(self: *Codegen) void {
+        var iter = self.borrow_address_temps.valueIterator();
+        while (iter.next()) |regs| {
+            if (regs.len != 0) self.allocator.free(regs.*);
+        }
+        self.borrow_address_temps.clearRetainingCapacity();
+    }
+
+    fn singleReleaseReg(self: *Codegen, reg: u32) ![]const u32 {
+        var regs = [_]u32{reg};
+        return try self.allocator.dupe(u32, regs[0..]);
+    }
+
+    fn ownedReleaseRegs(self: *Codegen, regs: []const u32) ![]const u32 {
+        if (regs.len == 0) return &.{};
+        return try self.allocator.dupe(u32, regs);
+    }
+
+    fn rememberBorrowAddressTemps(self: *Codegen, borrow_reg: u32, source: AddressSource) !void {
+        var regs = std.ArrayList(u32).init(self.allocator);
+        defer regs.deinit();
+        if (!self.isLocalReg(source.reg)) try regs.append(source.reg);
+        try regs.appendSlice(source.release_regs);
+        if (regs.items.len == 0) return;
+        try self.borrow_address_temps.put(borrow_reg, try regs.toOwnedSlice());
+    }
+
+    fn transferReleaseMetadata(self: *Codegen, dst: u32, src: u32) !void {
+        if (dst == src) return;
+        if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
+            _ = self.refcell_borrow_values.remove(dst);
+            try self.refcell_borrow_values.put(dst, entry.value);
+        }
+        if (self.borrow_address_temps.fetchRemove(src)) |entry| {
+            if (self.borrow_address_temps.fetchRemove(dst)) |old| {
+                if (old.value.len != 0) self.allocator.free(old.value);
+            }
+            try self.borrow_address_temps.put(dst, entry.value);
+        }
+        if (self.non_owning_regs.contains(src)) {
+            try self.non_owning_regs.put(dst, {});
+        }
+    }
+
+    fn markNonOwningReg(self: *Codegen, reg: u32) !void {
+        try self.non_owning_regs.put(reg, {});
     }
 
     fn collectBorrowedBindingsInBlock(self: *Codegen, body: []const *ast.Node) anyerror!void {
@@ -1313,9 +1390,9 @@ pub const Codegen = struct {
         return try self.allocator.dupe(u32, self.current_reg_ids.items);
     }
 
-    fn releaseOpenLocals(self: *Codegen, except: ?u32) !void {
+    fn releaseLocalsFrom(self: *Codegen, start: usize, except: ?u32) !void {
         var i = self.locals.items.len;
-        while (i > 0) {
+        while (i > start) {
             i -= 1;
             const local = self.locals.items[i];
             if (local.is_param) {
@@ -1329,6 +1406,10 @@ pub const Codegen = struct {
             if (self.released_regs.contains(local.reg)) continue;
             try self.emitRelease(local.reg);
         }
+    }
+
+    fn releaseOpenLocals(self: *Codegen, except: ?u32) !void {
+        try self.releaseLocalsFrom(0, except);
     }
 
     fn popLocalsTo(self: *Codegen, len: usize) void {
@@ -1595,12 +1676,29 @@ pub const Codegen = struct {
         try self.appendInst(item);
     }
 
+    fn emitRefCellBorrowRelease(self: *Codegen, handle: RefCellBorrowValue) !void {
+        try self.emitStdMacroFragment("sa_std/core/refcell.sa", if (handle.is_mut) "REFCELL_U64_RELEASE_MUT" else "REFCELL_U64_RELEASE_SHARED", &.{
+            self.symbols.items[handle.cell_reg],
+        });
+    }
+
     fn emitRelease(self: *Codegen, reg: u32) !void {
         if (self.released_regs.contains(reg)) return;
+        if (self.refcell_borrow_values.fetchRemove(reg)) |entry| {
+            try self.emitRefCellBorrowRelease(entry.value);
+        }
+        if (self.non_owning_regs.fetchRemove(reg)) |_| {
+            try self.released_regs.put(reg, {});
+            return;
+        }
         var item = self.makeInst(.release);
         item.operands[0] = .{ .reg = reg };
         try self.appendInst(item);
         try self.released_regs.put(reg, {});
+        if (self.borrow_address_temps.fetchRemove(reg)) |entry| {
+            for (entry.value) |temp| try self.emitRelease(temp);
+            if (entry.value.len != 0) self.allocator.free(entry.value);
+        }
     }
 
     fn markConsumed(self: *Codegen, reg: u32) !void {
@@ -1642,6 +1740,8 @@ pub const Codegen = struct {
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .reg = src };
         try self.appendInst(item);
+        try self.transferReleaseMetadata(dst, src);
+        if (!self.isLocalReg(src)) try self.markConsumed(src);
     }
 
     fn emitOp(self: *Codegen, dst: u32, op: inst.OpKind, lhs: inst.Operand, rhs: inst.Operand) !void {
@@ -1682,6 +1782,16 @@ pub const Codegen = struct {
     fn emitLoad(self: *Codegen, dst: u32, base: u32, offset: usize, ty: sig.PrimType) !void {
         try self.recordReg(dst);
         var item = self.makeInst(.load);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = .{ .reg = base };
+        item.operands[2] = .{ .imm_u64 = @intCast(offset) };
+        item.operands[3] = .{ .ty = @intFromEnum(ty) };
+        try self.appendInst(item);
+    }
+
+    fn emitTake(self: *Codegen, dst: u32, base: u32, offset: usize, ty: sig.PrimType) !void {
+        try self.recordReg(dst);
+        var item = self.makeInst(.take);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .reg = base };
         item.operands[2] = .{ .imm_u64 = @intCast(offset) };
@@ -1813,6 +1923,32 @@ pub const Codegen = struct {
             .native_text => |text| .{ .native_text = try self.replaceStdMacroPlaceholders(text, args) },
             else => operand,
         };
+    }
+
+    fn coerceTemplateValueOperand(self: *Codegen, operand: *inst.Operand) !void {
+        if (operand.* != .text) return;
+        const text = std.mem.trim(u8, operand.text, " \t\r\n");
+        if (isStdMacroTemplateIntegerArg(text)) {
+            operand.* = try stdMacroTemplateIntegerOperand(text);
+            return;
+        }
+        const reg = self.symbol_ids.get(text) orelse return;
+        if (!self.current_reg_seen.contains(reg)) return;
+        operand.* = .{ .reg = reg };
+    }
+
+    fn coerceTemplateInstructionOperands(self: *Codegen, item: *inst.Instruction) !void {
+        switch (item.kind) {
+            .store => try self.coerceTemplateValueOperand(&item.operands[2]),
+            .assign => try self.coerceTemplateValueOperand(&item.operands[1]),
+            .op => {
+                try self.coerceTemplateValueOperand(&item.operands[1]);
+                try self.coerceTemplateValueOperand(&item.operands[2]);
+            },
+            .ptr_add, .borrow => try self.coerceTemplateValueOperand(&item.operands[1]),
+            .release => try self.coerceTemplateValueOperand(&item.operands[0]),
+            else => {},
+        }
     }
 
     fn cloneTemplateTextList(self: *Codegen, items: []const []const u8, args: []const []const u8) ![]const []const u8 {
@@ -1947,6 +2083,7 @@ pub const Codegen = struct {
         out.atomic_new_text = if (source.atomic_new_text) |text| try self.replaceStdMacroPlaceholders(text, args) else null;
         out.native_reg_names = try self.cloneTemplateTextList(source.native_reg_names, args);
         for (&out.operands) |*operand| operand.* = try self.remapTemplateOperand(symbols, operand.*, args);
+        try self.coerceTemplateInstructionOperands(&out);
         if (out.kind == .panic_msg and out.operands[0] == .text) {
             if (try self.structuredPanicMsgOperands(out.operands[0].text)) |ops| {
                 out.operands[0] = ops[0];
@@ -2671,6 +2808,10 @@ pub const Codegen = struct {
             return;
         }
         const let_ty = if (explicit_ty) |ty| ty else (try self.exprTypeOrFallback(value_expr)) orelse return Error.MissingType;
+        if (self.refcell_borrow_values.contains(src)) {
+            try self.pushTypedLocal(name, src, false, let_ty);
+            return;
+        }
         if (self.borrowed_bindings.contains(name) and isStackAddressableType(let_ty)) {
             try self.emitStackAlloc(dst, typeSize(let_ty));
             try self.emitStore(dst, 0, src, try primType(let_ty));
@@ -2968,7 +3109,9 @@ pub const Codegen = struct {
             break :blk tupleFieldLayout(expr_ty.tuple, index) orelse return Error.UnsupportedSabDirectFeature;
         } else try self.fieldLayout(expr_ty, field.field_name);
         const base = try self.genMacroExpr(field.expr, ctx);
-        return try self.addressWithOffset(base, layout.offset);
+        var source = try self.addressWithOffset(base, layout.offset);
+        if (layout.offset != 0 and !self.isLocalReg(base)) source.release_regs = try self.singleReleaseReg(base);
+        return source;
     }
 
     fn genMacroIndexAddress(self: *Codegen, idx: ast.IndexExpr, ctx: *MacroExpansionContext) anyerror!AddressSource {
@@ -2979,14 +3122,19 @@ pub const Codegen = struct {
             const raw_index = idx.index.literal.int_val;
             if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
             const layout = arrayElementLayout(target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
-            return try self.addressWithOffset(target_reg, layout.offset);
+            var source = try self.addressWithOffset(target_reg, layout.offset);
+            if (layout.offset != 0 and !self.isLocalReg(target_reg)) source.release_regs = try self.singleReleaseReg(target_reg);
+            return source;
         }
 
         const index_reg = try self.genMacroExpr(idx.index, ctx);
         const elem_ptr = try self.genArrayElementPtr(target_ty.array, target_reg, index_reg);
         if (elem_ptr.offset) |offset| try self.emitRelease(offset);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
-        return .{ .reg = elem_ptr.ptr };
+        return .{
+            .reg = elem_ptr.ptr,
+            .release_regs = if (!self.isLocalReg(target_reg)) try self.singleReleaseReg(target_reg) else &.{},
+        };
     }
 
     fn genMacroAddressOf(self: *Codegen, expr: *ast.Node, ctx: *MacroExpansionContext) anyerror!AddressSource {
@@ -3014,6 +3162,7 @@ pub const Codegen = struct {
         const source = try self.genMacroAddressOf(borrow.expr, ctx);
         const dst = try self.intern(try self.newTmp());
         try self.emitBorrowReg(dst, source.reg, "read");
+        try self.rememberBorrowAddressTemps(dst, source);
         return dst;
     }
 
@@ -3232,8 +3381,6 @@ pub const Codegen = struct {
 
         const call_plan = lowering_rules.planStaticCall(self.tc, expr, call) orelse return Error.UnsupportedSabDirectFeature;
 
-        const dst = try self.intern(try self.newTmp());
-        try self.recordReg(dst);
         const lowered = try self.loweredFuncSymbol(call_plan.target_symbol);
         var text = std.ArrayList(u8).init(self.allocator);
         var release_regs = std.ArrayList(u32).init(self.allocator);
@@ -3249,10 +3396,7 @@ pub const Codegen = struct {
             try text.appendSlice(lowered_arg.operand);
         }
         try text.append(')');
-        var item = self.makeInst(.call);
-        item.operands[0] = .{ .reg = dst };
-        item.operands[1] = .{ .text = try text.toOwnedSlice() };
-        try self.appendInst(item);
+        const dst = try self.emitPlannedCallBody(lowering_rules.planStaticCallResult(self.tc, call_plan, self.tc.expr_types.get(expr)), try text.toOwnedSlice());
         try self.releaseNonLocalTemps(release_regs.items);
         return dst;
     }
@@ -4023,25 +4167,110 @@ pub const Codegen = struct {
             break :blk tupleFieldLayout(expr_ty.tuple, index) orelse return Error.UnsupportedSabDirectFeature;
         } else try self.fieldLayout(expr_ty, field.field_name);
         const base = try self.genExpr(field.expr);
-        return try self.addressWithOffset(base, layout.offset);
+        var source = try self.addressWithOffset(base, layout.offset);
+        if (layout.offset != 0 and !self.isLocalReg(base)) source.release_regs = try self.singleReleaseReg(base);
+        return source;
     }
 
     fn genIndexAddress(self: *Codegen, idx: ast.IndexExpr) anyerror!AddressSource {
         const target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType;
-        if (target_ty.* != .array) return Error.UnsupportedSabDirectFeature;
+        if (target_ty.* != .array) {
+            const elem_ty = firstGenericArg(target_ty) orelse return Error.UnsupportedSabDirectFeature;
+            if (lowering_rules.smartPointerType(elem_ty) == null) return Error.UnsupportedSabDirectFeature;
+            const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
+            const rule = self.findStdSurfaceRule(.index_address, target_type_name, null) orelse return Error.UnsupportedSabDirectFeature;
+            const target_reg = try self.genExpr(idx.target);
+            const index_reg = try self.genExpr(idx.index);
+            const dst = try self.intern(try self.newTmp());
+            try self.recordReg(dst);
+            try self.emitStdSurfaceRule(rule, .{
+                .out = dst,
+                .receiver = target_reg,
+                .index = index_reg,
+                .elem_size = self.elementSlotSize(target_ty),
+                .elem_ty = try self.elementLoadType(target_ty),
+            });
+            try self.releaseNonLocalTemps(&.{ target_reg, index_reg });
+            return .{ .reg = dst };
+        }
         const target_reg = try self.genExpr(idx.target);
         if (idx.index.* == .literal and idx.index.literal == .int_val) {
             const raw_index = idx.index.literal.int_val;
             if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
             const layout = arrayElementLayout(target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
-            return try self.addressWithOffset(target_reg, layout.offset);
+            var source = try self.addressWithOffset(target_reg, layout.offset);
+            if (layout.offset != 0 and !self.isLocalReg(target_reg)) source.release_regs = try self.singleReleaseReg(target_reg);
+            return source;
         }
 
         const index_reg = try self.genExpr(idx.index);
         const elem_ptr = try self.genArrayElementPtr(target_ty.array, target_reg, index_reg);
         if (elem_ptr.offset) |offset| try self.emitRelease(offset);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
-        return .{ .reg = elem_ptr.ptr };
+        return .{
+            .reg = elem_ptr.ptr,
+            .release_regs = if (!self.isLocalReg(target_reg)) try self.singleReleaseReg(target_reg) else &.{},
+        };
+    }
+
+    fn genSmartPointerGet(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?u32 {
+        const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return null;
+        _ = smart;
+        const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
+            const loaded = try self.intern(try self.newTmp());
+            try self.emitLoad(loaded, source, 0, .ptr);
+            try self.markNonOwningReg(loaded);
+            break :blk loaded;
+        } else source;
+        const dst = try self.intern(try self.newTmp());
+        try self.emitStdSurfaceMethod(source_ty, "get", dst, receiver);
+        try self.markNonOwningReg(dst);
+        if (receiver != source and !self.isLocalReg(receiver)) try self.emitRelease(receiver);
+        return dst;
+    }
+
+    fn genSmartPointerValueSlot(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?u32 {
+        const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return null;
+        if (!lowering_rules.smartPointerDerefNeedsValueSlot(smart.inner)) return null;
+        const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
+            const loaded = try self.intern(try self.newTmp());
+            try self.emitLoad(loaded, source, 0, .ptr);
+            try self.markNonOwningReg(loaded);
+            break :blk loaded;
+        } else source;
+        const dst = try self.intern(try self.newTmp());
+        try self.emitStdSurfaceMethod(source_ty, "as_ptr", dst, receiver);
+        if (receiver != source and !self.isLocalReg(receiver)) try self.emitRelease(receiver);
+        return dst;
+    }
+
+    fn genSmartPointerAddressSource(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?AddressSource {
+        const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return null;
+        const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
+            const loaded = try self.intern(try self.newTmp());
+            try self.emitLoad(loaded, source, 0, .ptr);
+            break :blk loaded;
+        } else source;
+
+        var release_regs = std.ArrayList(u32).init(self.allocator);
+        defer release_regs.deinit();
+
+        const slot = try self.intern(try self.newTmp());
+        try self.emitStdSurfaceMethod(source_ty, "as_ptr", slot, receiver);
+        if (lowering_rules.smartPointerDerefLoadsPointerBackedValue(smart.inner)) {
+            const value = try self.intern(try self.newTmp());
+            try self.emitTake(value, slot, 0, .ptr);
+            try release_regs.append(slot);
+            if (receiver != source and !self.isLocalReg(receiver)) try release_regs.append(receiver);
+            if (!self.isLocalReg(source) and source != receiver) try release_regs.append(source);
+            if (source == receiver and !self.isLocalReg(source)) try release_regs.append(source);
+            return .{ .reg = value, .release_regs = try self.ownedReleaseRegs(release_regs.items) };
+        }
+
+        if (receiver != source and !self.isLocalReg(receiver)) try release_regs.append(receiver);
+        if (!self.isLocalReg(source) and source != receiver) try release_regs.append(source);
+        if (source == receiver and !self.isLocalReg(source)) try release_regs.append(source);
+        return .{ .reg = slot, .release_regs = try self.ownedReleaseRegs(release_regs.items) };
     }
 
     fn genAddressOf(self: *Codegen, expr: *ast.Node) anyerror!AddressSource {
@@ -4050,7 +4279,20 @@ pub const Codegen = struct {
                 if (self.stackLocal(name)) |slot| break :blk .{ .reg = slot.reg };
                 break :blk .{ .reg = try self.genExpr(expr) };
             },
-            .deref_expr => |deref| .{ .reg = try self.genExpr(deref.expr) },
+            .deref_expr => |deref| blk: {
+                const source_ty = self.tc.expr_types.get(deref.expr) orelse return Error.MissingType;
+                const source = try self.genExpr(deref.expr);
+                if (try self.genSmartPointerAddressSource(source_ty, source)) |address| break :blk address;
+                if (try self.genSmartPointerValueSlot(source_ty, source)) |slot| {
+                    if (!self.isLocalReg(source)) try self.emitRelease(source);
+                    break :blk .{ .reg = slot };
+                }
+                if (try self.genSmartPointerGet(source_ty, source)) |value| {
+                    if (!self.isLocalReg(source)) try self.emitRelease(source);
+                    break :blk .{ .reg = value };
+                }
+                break :blk .{ .reg = source };
+            },
             .field_expr => |field| try self.genFieldAddress(field),
             .index_expr => |idx| try self.genIndexAddress(idx),
             else => .{ .reg = try self.genExpr(expr) },
@@ -4061,6 +4303,7 @@ pub const Codegen = struct {
         const source = try self.genAddressOf(borrow.expr);
         const dst = try self.intern(try self.newTmp());
         try self.emitBorrowReg(dst, source.reg, "read");
+        try self.rememberBorrowAddressTemps(dst, source);
         return dst;
     }
 
@@ -4072,7 +4315,12 @@ pub const Codegen = struct {
 
     fn genDeref(self: *Codegen, expr: *const ast.Node, deref: ast.DerefExpr) anyerror!u32 {
         const deref_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        const source_ty = self.tc.expr_types.get(deref.expr) orelse return Error.MissingType;
         const source = try self.genExpr(deref.expr);
+        if (try self.genSmartPointerGet(source_ty, source)) |value| {
+            if (!self.isLocalReg(source)) try self.emitRelease(source);
+            return value;
+        }
         const dst = try self.intern(try self.newTmp());
         try self.emitLoad(dst, source, 0, try primType(deref_ty));
         if (!self.isLocalReg(source)) try self.emitRelease(source);
@@ -4285,7 +4533,7 @@ pub const Codegen = struct {
         try self.appendInst(br);
     }
 
-    fn emitStdOptionMethod(self: *Codegen, receiver_ty: *const ast.Type, member_name: []const u8, out: u32, receiver: u32) !void {
+    fn emitStdSurfaceMethod(self: *Codegen, receiver_ty: *const ast.Type, member_name: []const u8, out: u32, receiver: u32) !void {
         const type_name = typeBaseName(receiver_ty) orelse return Error.UnsupportedSabDirectFeature;
         const rule = self.findStdSurfaceRule(.method, type_name, member_name) orelse return Error.UnsupportedSabDirectFeature;
         try self.recordReg(out);
@@ -4294,6 +4542,10 @@ pub const Codegen = struct {
             .receiver = receiver,
             .elem_size = self.elementSlotSize(receiver_ty),
         });
+    }
+
+    fn emitStdOptionMethod(self: *Codegen, receiver_ty: *const ast.Type, member_name: []const u8, out: u32, receiver: u32) !void {
+        try self.emitStdSurfaceMethod(receiver_ty, member_name, out, receiver);
     }
 
     fn emitStdOptionConstructor(self: *Codegen, result_ty: *const ast.Type, member_name: []const u8, out: u32, value: ?u32) !void {
@@ -4466,6 +4718,42 @@ pub const Codegen = struct {
         };
     }
 
+    fn genRefCellBorrowCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len == 0) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const plan = lowering_rules.planRefCellBorrowCall(call, receiver_ty) orelse return null;
+
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const ok_reg = try self.intern(try self.newTmp());
+        const borrow_slot_reg = try self.intern(try self.newTmp());
+        try self.recordReg(ok_reg);
+        try self.recordReg(borrow_slot_reg);
+        try self.emitStdMacroFragment("sa_std/core/refcell.sa", if (plan.isMutable()) "REFCELL_U64_TRY_BORROW_MUT" else "REFCELL_U64_TRY_BORROW", &.{
+            self.symbols.items[ok_reg],
+            self.symbols.items[borrow_slot_reg],
+            self.symbols.items[recv_reg],
+        });
+
+        const ok_label = try self.newLabel("L_REFCELL_BORROW_OK");
+        const err_label = try self.newLabel("L_REFCELL_BORROW_PANIC");
+        try self.emitBranch(ok_reg, ok_label, err_label);
+
+        try self.emitLabel(err_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitPanicCode(107);
+
+        try self.emitLabel(ok_label);
+        try self.emitBranchRelease(ok_reg);
+        const borrow_reg = if (lowering_rules.smartPointerDerefType(plan.inner) != null) borrow_slot_reg else if (lowering_rules.refCellPayloadIsPointer(plan.inner)) blk: {
+            const payload_reg = try self.intern(try self.newTmp());
+            try self.emitTake(payload_reg, borrow_slot_reg, 0, .ptr);
+            try self.borrow_address_temps.put(payload_reg, try self.singleReleaseReg(borrow_slot_reg));
+            break :blk payload_reg;
+        } else borrow_slot_reg;
+        try self.refcell_borrow_values.put(borrow_reg, .{ .cell_reg = recv_reg, .is_mut = plan.isMutable() });
+        return borrow_reg;
+    }
+
     fn genCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!u32 {
         if (std.mem.eql(u8, call.func_name, "panic")) {
             var item = self.makeInst(.panic);
@@ -4499,9 +4787,10 @@ pub const Codegen = struct {
         if (try self.genJoinHandleJoin(expr, call)) |reg| return reg;
         if (try self.genDynMethodCall(expr, call)) |reg| return reg;
         if (try self.genOptionClosureCall(expr, call)) |reg| return reg;
+        if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const call_plan = lowering_rules.planStaticCall(self.tc, expr, call) orelse return Error.UnsupportedSabDirectFeature;
-        return try self.emitPlannedStaticCall(call_plan, call);
+        return try self.emitPlannedStaticCall(self.tc.expr_types.get(expr), call_plan, call);
     }
 
     /// Emit a planned static call: `dst = call @<symbol>(args...)`, materializing
@@ -4511,11 +4800,10 @@ pub const Codegen = struct {
     /// the SA-text emitter uses.
     fn emitPlannedStaticCall(
         self: *Codegen,
+        expr_ty: ?*const ast.Type,
         call_plan: lowering_rules.StaticCallPlan,
         call: ast.CallExpr,
     ) anyerror!u32 {
-        const dst = try self.intern(try self.newTmp());
-        try self.recordReg(dst);
         const lowered = try self.loweredFuncSymbol(call_plan.target_symbol);
         var text = std.ArrayList(u8).init(self.allocator);
         var release_regs = std.ArrayList(u32).init(self.allocator);
@@ -4530,12 +4818,21 @@ pub const Codegen = struct {
             try text.appendSlice(lowered_arg.operand);
         }
         try text.append(')');
-        var item = self.makeInst(.call);
-        item.operands[0] = .{ .reg = dst };
-        item.operands[1] = .{ .text = try text.toOwnedSlice() };
-        try self.appendInst(item);
+        const dst = try self.emitPlannedCallBody(lowering_rules.planStaticCallResult(self.tc, call_plan, expr_ty), try text.toOwnedSlice());
         try self.releaseNonLocalTemps(release_regs.items);
         return dst;
+    }
+
+    fn emitPlannedCallBody(self: *Codegen, result_plan: lowering_rules.StaticCallResultPlan, body: []const u8) !u32 {
+        if (!result_plan.returns_void) {
+            const dst = try self.intern(try self.newTmp());
+            try self.emitCallBody(dst, body);
+            return dst;
+        }
+        try self.emitCallBody(null, body);
+        const sentinel = try self.intern(try self.newTmp());
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
     }
 
     const SabLoweredCallArg = struct {
@@ -4744,7 +5041,10 @@ pub const Codegen = struct {
         try self.emitLabel(body_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         try self.genBlock(w.body);
-        if (!self.lastIsTerminator()) try self.emitJmp(head_label);
+        if (!self.lastIsTerminator()) {
+            try self.releaseLocalsFrom(body_locals_len, null);
+            try self.emitJmp(head_label);
+        }
 
         self.popLocalsTo(body_locals_len);
         try self.restoreReleased(&pre_released);
@@ -5151,7 +5451,10 @@ pub const Codegen = struct {
         try self.emitLabel(then_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         const then_terminated = try self.genBlockTailValueStore(ife.then_block, result_slot, result_ty);
-        if (!then_terminated) try self.emitJmp(merge_label);
+        if (!then_terminated) {
+            try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.emitJmp(merge_label);
+        }
         var then_released = try self.released_regs.clone();
         defer then_released.deinit();
 
@@ -5161,7 +5464,10 @@ pub const Codegen = struct {
         try self.emitLabel(else_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         const else_terminated = try self.genBlockTailValueStore(else_block, result_slot, result_ty);
-        if (!else_terminated) try self.emitJmp(merge_label);
+        if (!else_terminated) {
+            try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.emitJmp(merge_label);
+        }
         var else_released = try self.released_regs.clone();
         defer else_released.deinit();
 
@@ -5209,7 +5515,10 @@ pub const Codegen = struct {
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         try self.genBlock(ife.then_block);
         const then_terminated = self.lastIsTerminator();
-        if (!then_terminated) try self.emitJmp(merge_label);
+        if (!then_terminated) {
+            try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.emitJmp(merge_label);
+        }
         var then_released = try self.released_regs.clone();
         defer then_released.deinit();
 
@@ -5220,7 +5529,10 @@ pub const Codegen = struct {
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         if (ife.else_block) |else_block| try self.genBlock(else_block);
         const else_terminated = self.lastIsTerminator();
-        if (!else_terminated) try self.emitJmp(merge_label);
+        if (!else_terminated) {
+            try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.emitJmp(merge_label);
+        }
         var else_released = try self.released_regs.clone();
         defer else_released.deinit();
 

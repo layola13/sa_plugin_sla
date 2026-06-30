@@ -2,6 +2,18 @@
 
 Update this file every time a compiler feature or demo milestone is completed and tested.
 
+## In Progress / Not Yet Counted
+
+- [draft] Smart-pointer, borrow-precedence, and RefCell lifecycle convergence for direct SAB is active but not complete.
+  - Scope: keep the Y shape by moving `Box`/`Rc`/`Arc`/focused `RefCell` classification, deref/address behavior, `void` planned-call result handling, RefCell borrow-release metadata, and pointer-backed collection index-address behavior through `src/lowering_rules.zig` plus `sla_std/std_surface.sla_meta`, with SAB emitting structured std macro fragments from those shared rules.
+  - Current dirty implementation is expected in `sla_std/std_surface.sla_meta`, `src/lowering_rules.zig`, `src/codegen.zig`, `src/sab_codegen.zig`, `tasks.md`, `progress.md`, active/source std Vec files, and active/source std Rc/Arc files; `tasks.md` is the recovery source of truth for the active checklist. Inspect any generated `.test.sa` artifact deletion before staging.
+  - Local draft status: `zig build --summary all` and `zig build test -Dtest-filter="lowering" --summary all` have passed during this slice. Full local direct-SAB no-fallback for `tests/test_unit_borrow_temp_release_order.sla` now passes 25/25, SA-text parity for the same fixture passes 25/25, and `tests/test_unit_smart_pointer_struct_field_cleanup.sla` passes local direct-SAB no-fallback 3/3.
+  - Latest std-surface movement: `VEC_GET_MUT_PTR_U64` routes `Vec<T>` index-address through std metadata; `RC_CLONE_OUT` and `ARC_CLONE_OUT` wrappers plus Rc/Arc clone metadata are drafted. These remain part of the active unverified slice, not completed features.
+  - Current blocker: local direct-SAB no-fallback for `tests/test_unit_refcell_struct_payload.sla` passes the first test but `rc refcell struct payload shared mutation` still fails with signal 11. The suspected cause is `Rc::clone(&rc1)` cloning a borrowed/view register instead of materializing the underlying Rc pointer from the borrowed local slot; the fix should be shared receiver/materialization metadata and should apply to `Arc::clone(&arc1)` too.
+  - Remaining syntax blocker: some SAB disasm still shows call targets containing arguments such as `call "@sla__refcell_payload_write(tmp_35, tmp_36)"`. The planned-call/void-call work is not complete until tracked SAB artifacts use pure `@func` targets with arguments materialized separately.
+  - Completion gates before this becomes a `[done]` feature: local `zig build --summary all`; `zig build test --summary all`; full local direct-SAB no-fallback for `tests/test_unit_borrow_temp_release_order.sla`, `tests/test_unit_refcell_struct_payload.sla`, and `tests/test_unit_smart_pointer_struct_field_cleanup.sla`; SA-text parity; disasm proof that tracked call targets are pure; official `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host direct-SAB focused fixtures; host regressions for `tests/test_unit_option_methods.sla`, `tests/test_unit_option_direct.sla`, `tests/test_unit_result_direct.sla`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`; full no-fallback sweep count update.
+  - Progress accounting: active slice is roughly 80% drafted but 0% completed/verified by the official 100% rule. Keep broader Y/shared-lowering at approximately 58%, direct SAB fallback-removal at approximately 81%, and full no-fallback unit-file count at 48/64 until the gates above pass.
+
 ## Completed Features
 
 - [done] Direct SAB `Option` closure methods now lower through a shared Option-closure plan and std surface rules.

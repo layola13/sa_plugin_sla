@@ -24,6 +24,22 @@ pub const StaticCallPlan = struct {
     }
 };
 
+pub const StaticCallResultPlan = struct {
+    returns_void: bool,
+};
+
+pub fn isVoidType(ty: *const ast.Type) bool {
+    return ty.* == .primitive and ty.primitive == .void_type;
+}
+
+pub fn planStaticCallResult(tc: *type_checker.TypeChecker, call_plan: StaticCallPlan, expr_ty: ?*const ast.Type) StaticCallResultPlan {
+    if (expr_ty) |ty| return .{ .returns_void = isVoidType(ty) };
+    if (tc.funcs.get(call_plan.target_symbol)) |func| {
+        return .{ .returns_void = !func.is_async and isVoidType(func.ret_ty) };
+    }
+    return .{ .returns_void = false };
+}
+
 pub const PrefixedIdentifierArg = struct {
     prefix: u8,
     name: []const u8,
@@ -80,6 +96,32 @@ pub const OptionClosureCallPlan = struct {
     receiver_arg_index: usize = 0,
     closure_arg_index: usize = 1,
     closure_arity: usize,
+};
+
+pub const SmartPointerKind = enum {
+    box,
+    rc,
+    arc,
+    refcell,
+};
+
+pub const SmartPointerType = struct {
+    kind: SmartPointerKind,
+    inner: *ast.Type,
+};
+
+pub const RefCellBorrowKind = enum {
+    shared,
+    mutable,
+};
+
+pub const RefCellBorrowPlan = struct {
+    kind: RefCellBorrowKind,
+    inner: *ast.Type,
+
+    pub fn isMutable(self: RefCellBorrowPlan) bool {
+        return self.kind == .mutable;
+    }
 };
 
 pub fn abiTypeSize(ty: *const ast.Type) usize {
@@ -156,6 +198,87 @@ pub fn optionInnerType(ty: *const ast.Type) ?*ast.Type {
             else => return null,
         }
     }
+}
+
+fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, name) and ud.generics.len == 1) return ud.generics[0];
+                return null;
+            },
+            else => return null,
+        }
+    }
+}
+
+pub fn boxInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Box");
+}
+
+pub fn rcInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Rc");
+}
+
+pub fn arcInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Arc");
+}
+
+pub fn refCellInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "RefCell");
+}
+
+pub fn smartPointerType(ty: *const ast.Type) ?SmartPointerType {
+    if (boxInnerType(ty)) |inner| return .{ .kind = .box, .inner = inner };
+    if (rcInnerType(ty)) |inner| return .{ .kind = .rc, .inner = inner };
+    if (arcInnerType(ty)) |inner| return .{ .kind = .arc, .inner = inner };
+    if (refCellInnerType(ty)) |inner| return .{ .kind = .refcell, .inner = inner };
+    return null;
+}
+
+pub fn smartPointerDerefType(ty: *const ast.Type) ?SmartPointerType {
+    const smart = smartPointerType(ty) orelse return null;
+    return switch (smart.kind) {
+        .box, .rc, .arc => smart,
+        .refcell => null,
+    };
+}
+
+pub fn smartPointerReceiverNeedsLoad(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .borrow, .pointer => smartPointerDerefType(ty) != null,
+        else => false,
+    };
+}
+
+pub fn smartPointerDerefNeedsValueSlot(inner_ty: *const ast.Type) bool {
+    return smartPointerDerefType(inner_ty) != null;
+}
+
+pub fn smartPointerDerefLoadsPointerBackedValue(inner_ty: *const ast.Type) bool {
+    return switch (inner_ty.*) {
+        .user_defined => smartPointerDerefType(inner_ty) == null,
+        .tuple, .array => true,
+        else => false,
+    };
+}
+
+pub fn refCellPayloadIsPointer(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .primitive => |p| p == .void_type,
+        else => true,
+    };
+}
+
+pub fn planRefCellBorrowCall(call: ast.CallExpr, receiver_ty: *const ast.Type) ?RefCellBorrowPlan {
+    if (call.args.len != 1) return null;
+    const inner = refCellInnerType(receiver_ty) orelse return null;
+    if (std.mem.eql(u8, call.func_name, "borrow")) return .{ .kind = .shared, .inner = inner };
+    if (std.mem.eql(u8, call.func_name, "borrow_mut")) return .{ .kind = .mutable, .inner = inner };
+    return null;
 }
 
 fn closureLiteralArity(expr: *const ast.Node) ?usize {

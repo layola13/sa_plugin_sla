@@ -1815,20 +1815,7 @@ pub const Codegen = struct {
     }
 
     fn boxInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Box") and ud.generics.len == 1) {
-                        return ud.generics[0];
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.boxInnerType(ty);
     }
 
     fn manuallyDropInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -3217,18 +3204,7 @@ pub const Codegen = struct {
     }
 
     fn refCellInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "RefCell") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.refCellInnerType(ty);
     }
 
     fn mutexInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -3354,10 +3330,7 @@ pub const Codegen = struct {
     }
 
     fn refCellPayloadIsPointer(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| p == .void_type,
-            else => true,
-        };
+        return lowering_rules.refCellPayloadIsPointer(ty);
     }
 
     fn atomicOrderingToken(expr: *const ast.Node) CodegenError![]const u8 {
@@ -3589,33 +3562,11 @@ pub const Codegen = struct {
     }
 
     fn rcInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Rc") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.rcInnerType(ty);
     }
 
     fn arcInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Arc") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.arcInnerType(ty);
     }
 
     fn atomicPtrInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -10319,15 +10270,16 @@ pub const Codegen = struct {
                                 return "return_ty_sentinel";
                             }
                         }
-                        if (refCellInnerType(ty)) |inner_ty| {
-                            if (std.mem.eql(u8, call.func_name, "borrow") or std.mem.eql(u8, call.func_name, "borrow_mut")) {
+                        if (lowering_rules.planRefCellBorrowCall(call, ty)) |borrow_plan| {
+                            const inner_ty = borrow_plan.inner;
+                            {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ok_reg = try self.newTmp();
                                 const borrow_slot_reg = try self.newTmp();
                                 const err_label = try self.newLabel("L_REFCELL_BORROW_PANIC");
                                 const end_label = try self.newLabel("L_REFCELL_BORROW_END");
-                                const is_mut = std.mem.eql(u8, call.func_name, "borrow_mut");
+                                const is_mut = borrow_plan.isMutable();
                                 if (is_mut) {
                                     self.out.writer().print("    EXPAND REFCELL_U64_TRY_BORROW_MUT {s}, {s}, {s}\n", .{ ok_reg, borrow_slot_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else {

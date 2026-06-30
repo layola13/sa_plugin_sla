@@ -919,63 +919,87 @@ fn compileSlaToSaString(
     return compileSlaToSaStringWithOptions(allocator, file, output_file, stderr, .{});
 }
 
-fn compileSlaToSaStringWithOptions(
+/// Shared SLA compilation front-end: the trunk of the Y shared by the SA-text
+/// (`compileSlaToSaStringWithOptions`) and SAB (`compileSlaFileToSabWithOptions`)
+/// tails. Runs the byte-identical pipeline: read -> source-expand -> parse ->
+/// `@import`-expand -> test-filter -> monomorphize -> load-contracts -> type-check ->
+/// primary-decl filter.
+///
+/// `mono` and `tc` are caller-owned: the caller must `init`/`deinit` them (and
+/// keep them alive across its tail codegen, which reads back from them). On any
+/// front-end failure the diagnostic is printed and `null` is returned. On success
+/// the type-checked, primary-decl-filtered program is returned.
+fn runSlaFrontend(
     allocator: std.mem.Allocator,
     file: []const u8,
-    output_file: ?[]const u8,
-    stderr: std.io.AnyWriter,
+    mono: *monomorphizer_mod.Monomorphizer,
+    tc: *type_checker_mod.TypeChecker,
     options: SlaCompileOptions,
-) !?[]const u8 {
+    stderr: std.io.AnyWriter,
+    profile: bool,
+) !?*ast.Node {
+    var stage_start = std.time.nanoTimestamp();
     const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
         try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
         return null;
     };
+    slaProfileStage(stderr, profile, "read source", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     const expanded_content = source_expand.expand(allocator, content) catch |err| {
         try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
         return null;
     };
+    slaProfileStage(stderr, profile, "source expand", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     const sla_base_dir = std.fs.path.dirname(file) orelse ".";
     var p = parser_mod.Parser.initWithDir(allocator, expanded_content, sla_base_dir);
     const prog = p.parseProgram() catch |err| {
         try p.printDiagnostic(stderr, file, err);
         return null;
     };
+    slaProfileStage(stderr, profile, "parse", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
         return null;
     };
+    slaProfileStage(stderr, profile, "import expand", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     pruneTestsByFilter(allocator, expanded_prog, options.test_filter) catch |err| {
         try stderr.print("Test Filter Error: failed to prune @test declarations: {}\n", .{err});
         return null;
     };
+    slaProfileStage(stderr, profile, "test filter prune", stage_start);
 
-    var mono = monomorphizer_mod.Monomorphizer.init(allocator);
-    defer mono.deinit();
+    stage_start = std.time.nanoTimestamp();
     var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
         try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
         return null;
     };
+    slaProfileStage(stderr, profile, "monomorphize", stage_start);
 
-    var tc = type_checker_mod.TypeChecker.init(allocator);
-    defer tc.deinit();
-
-    loadImportedContracts(&tc, allocator, specialized_prog, file) catch |err| {
+    stage_start = std.time.nanoTimestamp();
+    loadImportedContracts(tc, allocator, specialized_prog, file) catch |err| {
         try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
         return null;
     };
+    slaProfileStage(stderr, profile, "load contracts", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     tc.checkProgram(specialized_prog) catch |err| {
         try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
         return null;
     };
+    slaProfileStage(stderr, profile, "type check", stage_start);
 
     // Filter specialized_prog to only include primary declarations
+    stage_start = std.time.nanoTimestamp();
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
     for (specialized_prog.program.decls) |decl| {
         if (specialized_primary_decls.contains(decl)) {
@@ -983,20 +1007,45 @@ fn compileSlaToSaStringWithOptions(
         }
     }
     specialized_prog.program.decls = try filtered_decls.toOwnedSlice();
+    slaProfileStage(stderr, profile, "primary decl filter", stage_start);
 
+    return specialized_prog;
+}
+
+fn compileSlaToSaStringWithOptions(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    output_file: ?[]const u8,
+    stderr: std.io.AnyWriter,
+    options: SlaCompileOptions,
+) !?[]const u8 {
+    const profile = slaProfileEnabled(allocator);
+
+    var mono = monomorphizer_mod.Monomorphizer.init(allocator);
+    defer mono.deinit();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+
+    const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile)) orelse return null;
+
+    var stage_start = std.time.nanoTimestamp();
     rewriteProgramImportsForOutput(allocator, specialized_prog, file, output_file) catch |err| {
         try stderr.print("Import Error: failed to rewrite @import paths for output: {}\n", .{err});
         return null;
     };
+    slaProfileStage(stderr, profile, "rewrite imports", stage_start);
 
+    stage_start = std.time.nanoTimestamp();
     var cg = codegen_mod.Codegen.init(allocator, &tc);
     defer cg.deinit();
 
-    return cg.generate(specialized_prog) catch |err| {
+    const sa_code = cg.generate(specialized_prog) catch |err| {
         try stderr.print("Codegen Error: failed to generate SA code: {}\n", .{err});
         if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
         return null;
     };
+    slaProfileStage(stderr, profile, "sa codegen", stage_start);
+    return sa_code;
 }
 
 fn compileSlaFileToSa(
@@ -1743,82 +1792,15 @@ fn compileSlaFileToSabWithOptions(
     options: SlaCompileOptions,
 ) !?[]u8 {
     const profile = slaProfileEnabled(allocator);
-    var stage_start = std.time.nanoTimestamp();
-    const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
-        try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
-        return null;
-    };
-    slaProfileStage(stderr, profile, "read source", stage_start);
 
-    stage_start = std.time.nanoTimestamp();
-    const expanded_content = source_expand.expand(allocator, content) catch |err| {
-        try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
-        return null;
-    };
-    slaProfileStage(stderr, profile, "source expand", stage_start);
-
-    stage_start = std.time.nanoTimestamp();
-    const sla_base_dir = std.fs.path.dirname(file) orelse ".";
-    var p = parser_mod.Parser.initWithDir(allocator, expanded_content, sla_base_dir);
-    const prog = p.parseProgram() catch |err| {
-        try p.printDiagnostic(stderr, file, err);
-        return null;
-    };
-    slaProfileStage(stderr, profile, "parse", stage_start);
-
-    stage_start = std.time.nanoTimestamp();
-    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-    const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
-        try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
-        return null;
-    };
-    slaProfileStage(stderr, profile, "import expand", stage_start);
-
-    stage_start = std.time.nanoTimestamp();
-    pruneTestsByFilter(allocator, expanded_prog, options.test_filter) catch |err| {
-        try stderr.print("Test Filter Error: failed to prune @test declarations: {}\n", .{err});
-        return null;
-    };
-    slaProfileStage(stderr, profile, "test filter prune", stage_start);
-
-    stage_start = std.time.nanoTimestamp();
     var mono = monomorphizer_mod.Monomorphizer.init(allocator);
     defer mono.deinit();
-    var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-    const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
-        try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
-        return null;
-    };
-    slaProfileStage(stderr, profile, "monomorphize", stage_start);
-
-    stage_start = std.time.nanoTimestamp();
     var tc = type_checker_mod.TypeChecker.init(allocator);
     defer tc.deinit();
 
-    loadImportedContracts(&tc, allocator, specialized_prog, file) catch |err| {
-        try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
-        return null;
-    };
-    slaProfileStage(stderr, profile, "load contracts", stage_start);
+    const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile)) orelse return null;
 
-    stage_start = std.time.nanoTimestamp();
-    tc.checkProgram(specialized_prog) catch |err| {
-        try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
-        return null;
-    };
-    slaProfileStage(stderr, profile, "type check", stage_start);
-
-    stage_start = std.time.nanoTimestamp();
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
-    for (specialized_prog.program.decls) |decl| {
-        if (specialized_primary_decls.contains(decl)) {
-            try filtered_decls.append(decl);
-        }
-    }
-    specialized_prog.program.decls = try filtered_decls.toOwnedSlice();
-    slaProfileStage(stderr, profile, "primary decl filter", stage_start);
-
-    stage_start = std.time.nanoTimestamp();
+    var stage_start = std.time.nanoTimestamp();
     pruneUnreachableFilteredTestDecls(allocator, specialized_prog, &tc, options.test_filter) catch |err| {
         try stderr.print("Test Filter Error: failed to prune unreachable declarations: {}\n", .{err});
         return null;

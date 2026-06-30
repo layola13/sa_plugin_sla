@@ -1277,6 +1277,57 @@ pub const Codegen = struct {
         self.locals.shrinkRetainingCapacity(len);
     }
 
+    /// Rebuild `released_regs` to match a previously-cloned snapshot. Used to
+    /// scope per-branch release state so a release emitted inside one `if`
+    /// branch (typically along an early-return path) does not poison the
+    /// sibling branch or the merge path. This mirrors the SA-text emitter,
+    /// where release placement is branch-scoped via the type checker's
+    /// per-node cleanup lists.
+    fn restoreReleased(self: *Codegen, snapshot: *const std.AutoHashMap(u32, void)) !void {
+        self.released_regs.clearRetainingCapacity();
+        var it = snapshot.iterator();
+        while (it.next()) |entry| try self.released_regs.put(entry.key_ptr.*, {});
+    }
+
+    /// Compute the release state at an `if` merge point and install it as the
+    /// current `released_regs`. The merge is reachable only from the branches
+    /// that fall through (do not terminate via return/panic/jmp-out). A
+    /// register is considered released at the merge iff it is released on every
+    /// reachable incoming path: the intersection of the fall-through
+    /// branches' release sets. If both branches terminate, the merge is dead
+    /// and we fall back to the pre-`if` state. This keeps the function-end
+    /// `releaseOpenLocals` from either double-releasing a register that both
+    /// branches already released or leaking one that only a single branch did.
+    fn setMergeReleased(
+        self: *Codegen,
+        then_terminated: bool,
+        then_released: *const std.AutoHashMap(u32, void),
+        else_terminated: bool,
+        else_released: *const std.AutoHashMap(u32, void),
+        pre_released: *const std.AutoHashMap(u32, void),
+    ) !void {
+        if (then_terminated and else_terminated) {
+            // Merge is unreachable; state is irrelevant but keep it well-formed.
+            try self.restoreReleased(pre_released);
+            return;
+        }
+        if (then_terminated) {
+            try self.restoreReleased(else_released);
+            return;
+        }
+        if (else_terminated) {
+            try self.restoreReleased(then_released);
+            return;
+        }
+        // Both branches fall through: intersection of the two release sets.
+        self.released_regs.clearRetainingCapacity();
+        var it = then_released.iterator();
+        while (it.next()) |entry| {
+            const reg = entry.key_ptr.*;
+            if (else_released.contains(reg)) try self.released_regs.put(reg, {});
+        }
+    }
+
     fn closureLiteralFromExpr(expr: *const ast.Node) ?*const ast.ClosureLiteral {
         return switch (expr.*) {
             .closure_literal => |*lit| lit,
@@ -3648,6 +3699,15 @@ pub const Codegen = struct {
     }
 
     fn genBinary(self: *Codegen, bin: ast.BinaryExpr) anyerror!u32 {
+        // Struct-typed operands (e.g. an `@overload Vec2 { fn +(...) }`) must be
+        // lowered field-wise, mirroring the SA-text emitter's
+        // `genStructArithmeticExpr`. Without this, the generic path below emits a
+        // primitive `op.add` on two struct *pointers* (since `primType` of a
+        // struct is `.ptr`), producing a garbage pointer that segfaults on the
+        // next field load. If neither operand is a struct this returns null and
+        // we fall through to the primitive path.
+        if (try self.genStructArithmetic(bin)) |reg| return reg;
+
         const lhs = try self.genExpr(bin.left);
         const rhs = try self.genExpr(bin.right);
         const dst = try self.intern(try self.newTmp());
@@ -3660,6 +3720,82 @@ pub const Codegen = struct {
         try self.appendInst(item);
         try self.releaseNonLocalTemps(&.{ lhs, rhs });
         return dst;
+    }
+
+    /// Field-wise lowering of arithmetic on struct-typed operands, mirroring the
+    /// SA-text emitter's `genStructArithmeticExpr`. Handles the same matrix:
+    /// same-struct `+`/`-`, and scalar `*` in either operand order. Returns null
+    /// when neither operand is a struct (caller uses the primitive path); returns
+    /// `Error.UnsupportedSabDirectFeature` for struct shapes outside this matrix
+    /// so the SA-compatible fallback can take over instead of emitting a bad op.
+    fn genStructArithmetic(self: *Codegen, bin: ast.BinaryExpr) anyerror!?u32 {
+        const left_ty = self.tc.expr_types.get(bin.left) orelse return null;
+        const right_ty = self.tc.expr_types.get(bin.right) orelse return null;
+        const left_struct = self.structDeclForType(left_ty);
+        const right_struct = self.structDeclForType(right_ty);
+        if (left_struct == null and right_struct == null) return null;
+
+        const struct_decl = left_struct orelse right_struct.?;
+        if (struct_decl.is_opaque or struct_decl.is_union) return Error.UnsupportedSabDirectFeature;
+
+        const op_kind: inst.OpKind = switch (bin.op) {
+            .add => .add,
+            .sub => .sub,
+            .mul => .mul,
+            else => return Error.UnsupportedSabDirectFeature,
+        };
+
+        // Same-struct add/sub: field[i] = left.field[i] <op> right.field[i].
+        if (left_struct != null and right_struct != null) {
+            if (left_struct.? != right_struct.? or !(bin.op == .add or bin.op == .sub)) {
+                return Error.UnsupportedSabDirectFeature;
+            }
+            const result = try self.intern(try self.newTmp());
+            try self.emitAlloc(result, structSize(struct_decl));
+            const left_reg = try self.genExpr(bin.left);
+            const right_reg = try self.genExpr(bin.right);
+            for (struct_decl.fields) |field| {
+                if (!isNumericType(field.ty)) return Error.UnsupportedSabDirectFeature;
+                const layout = try self.fieldLayout(left_ty, field.name);
+                const lhs = try self.intern(try self.newTmp());
+                const rhs = try self.intern(try self.newTmp());
+                const value = try self.intern(try self.newTmp());
+                try self.emitLoad(lhs, left_reg, layout.offset, layout.ty);
+                try self.emitLoad(rhs, right_reg, layout.offset, layout.ty);
+                try self.emitOp(value, op_kind, .{ .reg = lhs }, .{ .reg = rhs });
+                try self.emitStore(result, layout.offset, value, layout.ty);
+                try self.releaseNonLocalTemps(&.{ lhs, rhs, value });
+            }
+            try self.releaseNonLocalTemps(&.{ left_reg, right_reg });
+            return result;
+        }
+
+        // Scalar multiply: struct * scalar or scalar * struct.
+        if (bin.op == .mul) {
+            const struct_is_left = left_struct != null;
+            const scalar_ty = if (struct_is_left) right_ty else left_ty;
+            if (!isNumericType(scalar_ty)) return Error.UnsupportedSabDirectFeature;
+            const struct_ty = if (struct_is_left) left_ty else right_ty;
+            const result = try self.intern(try self.newTmp());
+            try self.emitAlloc(result, structSize(struct_decl));
+            const struct_reg = try self.genExpr(if (struct_is_left) bin.left else bin.right);
+            const scalar_reg = try self.genExpr(if (struct_is_left) bin.right else bin.left);
+            for (struct_decl.fields) |field| {
+                if (!isNumericType(field.ty)) return Error.UnsupportedSabDirectFeature;
+                const layout = try self.fieldLayout(struct_ty, field.name);
+                const fld = try self.intern(try self.newTmp());
+                const value = try self.intern(try self.newTmp());
+                try self.emitLoad(fld, struct_reg, layout.offset, layout.ty);
+                // Keep field on the left so non-commutative widths stay stable.
+                try self.emitOp(value, .mul, .{ .reg = fld }, .{ .reg = scalar_reg });
+                try self.emitStore(result, layout.offset, value, layout.ty);
+                try self.releaseNonLocalTemps(&.{ fld, value });
+            }
+            try self.releaseNonLocalTemps(&.{ struct_reg, scalar_reg });
+            return result;
+        }
+
+        return Error.UnsupportedSabDirectFeature;
     }
 
     fn genCast(self: *Codegen, cast: ast.CastExpr) anyerror!u32 {
@@ -3915,7 +4051,19 @@ pub const Codegen = struct {
         if (try self.genJoinHandleJoin(expr, call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const call_plan = lowering_rules.planStaticCall(self.tc, expr, call) orelse return Error.UnsupportedSabDirectFeature;
+        return try self.emitPlannedStaticCall(call_plan, call);
+    }
 
+    /// Emit a planned static call: `dst = call @<symbol>(args...)`, materializing
+    /// each argument through the shared `CallArgMaterializationPlan`. Shared by
+    /// ordinary calls (`genCall`) and resolved operator-overload binaries
+    /// (`genBinary`), so both consult the same `resolved_call_symbols` contract
+    /// the SA-text emitter uses.
+    fn emitPlannedStaticCall(
+        self: *Codegen,
+        call_plan: lowering_rules.StaticCallPlan,
+        call: ast.CallExpr,
+    ) anyerror!u32 {
         const dst = try self.intern(try self.newTmp());
         try self.recordReg(dst);
         const lowered = try self.loweredFuncSymbol(call_plan.target_symbol);
@@ -4101,10 +4249,24 @@ pub const Codegen = struct {
         br.operands[3] = .{ .label = try self.intern(exit_label) };
         try self.appendInst(br);
 
+        // Scope the loop body's locals/release state. A `let` declared inside
+        // the body (e.g. `let next = ...`) must not leak past the loop: after
+        // the loop, code such as a trailing `return` runs `releaseOpenLocals`,
+        // which would otherwise emit `release next` on the zero-iteration path
+        // where `next` was never assigned (UnknownRegister at SAB verify time).
+        // The body's releases likewise belong to the back-edge path, not the
+        // exit path, so the post-loop release state is restored to pre-loop.
+        const body_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
         try self.emitLabel(body_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         try self.genBlock(w.body);
         if (!self.lastIsTerminator()) try self.emitJmp(head_label);
+
+        self.popLocalsTo(body_locals_len);
+        try self.restoreReleased(&pre_released);
 
         try self.emitLabel(exit_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
@@ -4490,14 +4652,32 @@ pub const Codegen = struct {
         br.operands[2] = .{ .label = try self.intern(then_label) };
         br.operands[3] = .{ .label = try self.intern(else_label) };
         try self.appendInst(br);
+
+        // Scope each branch's locals/release state; see genIfStatement.
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
         try self.emitLabel(then_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         const then_terminated = try self.genBlockTailValueStore(ife.then_block, result_slot, result_ty);
         if (!then_terminated) try self.emitJmp(merge_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+
         try self.emitLabel(else_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         const else_terminated = try self.genBlockTailValueStore(else_block, result_slot, result_ty);
         if (!else_terminated) try self.emitJmp(merge_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.setMergeReleased(then_terminated, &then_released, else_terminated, &else_released, &pre_released);
+
         if (!then_terminated or !else_terminated) {
             try self.emitLabel(merge_label);
             const result = try self.intern(try self.newTmp());
@@ -4523,16 +4703,46 @@ pub const Codegen = struct {
         br.operands[2] = .{ .label = try self.intern(then_label) };
         br.operands[3] = .{ .label = try self.intern(else_label) };
         try self.appendInst(br);
+
+        // Scope each branch's `self.locals` and `released_regs` so a `let`
+        // binding or a release emitted inside one branch (e.g. on an
+        // early-return path) does not leak into the sibling branch or the
+        // merge path. Without this, a `let v = ...; return v` in the then
+        // branch leaves `v` in `self.locals` for the else branch's
+        // `releaseOpenLocals`, emitting `release v` on a path where `v` was
+        // never assigned (UnknownRegister at SAB verify time).
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
         try self.emitLabel(then_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         try self.genBlock(ife.then_block);
         const then_terminated = self.lastIsTerminator();
         if (!then_terminated) try self.emitJmp(merge_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+
         try self.emitLabel(else_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         if (ife.else_block) |else_block| try self.genBlock(else_block);
         const else_terminated = self.lastIsTerminator();
         if (!else_terminated) try self.emitJmp(merge_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        // The merge is reached only by the non-terminated incoming paths; a
+        // register is released at the merge iff it is released on every such
+        // path (intersection). This keeps the merge release state in sync with
+        // both branches so the function-end `releaseOpenLocals` neither
+        // double-releases (release present on all paths) nor leaks (release
+        // present on only one path).
+        try self.setMergeReleased(then_terminated, &then_released, else_terminated, &else_released, &pre_released);
+
         if (!then_terminated or !else_terminated) try self.emitLabel(merge_label);
         const result = try self.intern(try self.newTmp());
         try self.recordReg(result);

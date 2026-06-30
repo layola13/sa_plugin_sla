@@ -4,6 +4,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Direct SAB `Cell<T>` bool construction/get/set now lowers through std surface metadata.
+  - Extended generic associated std-surface call consumption so rules can request a `value` argument instead of only `out`, keeping associated constructors like `Cell::new(value)` data-driven.
+  - Added `Cell` std surface metadata for `new`, `get`, and `set`; direct SAB now lowers `Cell::new(false)`, `flag.get()`, and `flag.set(true)` through imported `sa_std/core/cell.sa` macro fragments rather than a compiler-side Cell branch.
+  - Added `CELL_NEW_VALUE` to both the active `sa_std/core/cell.sa` and the source `sci/sa_std/core/cell.sa`, reusing the existing `CELL_SET` macro so Cell layout remains owned by the std surface.
+  - Verified with official `sa plugin install --dev .` (not manual plugin sync), `SA_PLUGIN_DEV=1 sa sla help`, host no-fallback SAB for `tests/test_unit_cell_bool.sla`, SA-text backend for the same fixture, no-fallback SAB regressions for `tests/test_unit_option_direct.sla`, `tests/test_unit_vec_len_direct.sla`, `tests/test_unit_blank_identifier.sla`, and `tests/test_unit_vec_index_assign.sla`, plus `zig build --summary all`, `zig build test --summary all`, `git diff --check`, and active/source Cell std parity.
+  - Full current no-fallback `tests/test_unit_*.sla` sweep is now 47/64 passing. Remaining 17 failures are async, borrow-temp release ordering, derive semantics, enum match, for-in protocols, Option methods, pkgjson codegen, rc/dyn trait, refcell/smart-pointer paths, sets, nested import contract extern callee resolution, spaceship compare, std import, struct update, and var comprehensive.
+  - Feature completion: 100% for metadata-driven `Cell<T>` bool support. Broader Y/shared-lowering progress is now approximately 56%; direct SAB fallback-removal progress is now approximately 80% by feature track, with current no-fallback unit-file pass rate at 47/64.
+
 - [done] Direct SAB blank identifiers and fixed-array slice destructuring now lower through shared array/slice ABI rules.
   - Added shared `SliceAbi` and fixed-array rest-length rules in `src/lowering_rules.zig`; direct SAB destructuring consumes those rules plus the existing shared array element layout instead of inventing a separate SAB-only layout path.
   - Direct SAB now supports `let [_, second, ..rest] = [10, 20, 30, 40]` for fixed arrays, keeps the array owner alive when a rest slice is materialized, and treats ordinary `let _ = value` as a discard instead of entering `_` into the local table.

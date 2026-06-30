@@ -4600,13 +4600,22 @@ pub const Codegen = struct {
     fn genStdSurfaceCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         if (call.associated_target) |target_name| {
             if (self.findStdSurfaceRule(.associated, target_name, call.func_name)) |rule| {
+                const value_reg = if (stdSurfaceRuleHasArg(rule, .value)) blk: {
+                    if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+                    break :blk try self.genExpr(@constCast(call.args[0]));
+                } else blk: {
+                    if (call.args.len != 0) return Error.UnsupportedSabDirectFeature;
+                    break :blk null;
+                };
                 const dst = try self.intern(try self.newTmp());
                 try self.recordReg(dst);
                 const expr_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
                 try self.emitStdSurfaceRule(rule, .{
                     .out = dst,
+                    .value = value_reg,
                     .elem_size = self.elementSlotSize(expr_ty),
                 });
+                if (value_reg) |reg| if (!self.isLocalReg(reg)) try self.emitRelease(reg);
                 return dst;
             }
             return null;

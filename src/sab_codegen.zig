@@ -95,6 +95,7 @@ const StdSurfaceRuleKind = enum {
     method,
     fallible_method,
     index,
+    index_assign,
 };
 
 const StdSurfaceArgKind = enum {
@@ -719,6 +720,14 @@ pub const Codegen = struct {
                 var options = StdSurfaceRuleOptions{};
                 while (parts.next()) |option| try self.parseStdSurfaceOption(option, &options);
                 try self.appendStdSurfaceRule(.index, type_name, null, import_path, macro_name, arg_text, options);
+            } else if (std.mem.eql(u8, raw_kind, "index_assign")) {
+                const type_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const import_path = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const macro_name = parts.next() orelse return Error.UnsupportedSabDirectFeature;
+                const arg_text = parts.next() orelse "";
+                var options = StdSurfaceRuleOptions{};
+                while (parts.next()) |option| try self.parseStdSurfaceOption(option, &options);
+                try self.appendStdSurfaceRule(.index_assign, type_name, null, import_path, macro_name, arg_text, options);
             } else {
                 return Error.UnsupportedSabDirectFeature;
             }
@@ -975,6 +984,14 @@ pub const Codegen = struct {
             .const_stmt => |c| try self.preloadNodeStdSurfaceDeps(c.value),
             .var_stmt => {},
             .assign_stmt => |assign| {
+                if (assign.target.* == .index_expr) {
+                    const idx = assign.target.index_expr;
+                    if (self.tc.expr_types.get(idx.target)) |target_ty| {
+                        if (typeBaseName(target_ty)) |target_type_name| {
+                            if (self.findStdSurfaceRule(.index_assign, target_type_name, null)) |rule| try self.ensureRuleDeps(rule);
+                        }
+                    }
+                }
                 try self.preloadNodeStdSurfaceDeps(assign.target);
                 try self.preloadNodeStdSurfaceDeps(assign.value);
             },
@@ -2239,7 +2256,11 @@ pub const Codegen = struct {
     }
 
     fn emitStdMacroFragment(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8) !void {
-        if (try self.emitCachedStdMacroFragment(import_path, macro_name, args)) return;
+        const used_cached = self.emitCachedStdMacroFragment(import_path, macro_name, args) catch |err| switch (err) {
+            error.UnsupportedType => false,
+            else => return err,
+        };
+        if (used_cached) return;
 
         const func_name = try std.fmt.allocPrint(self.allocator, "__sla_macro_fragment_{}", .{self.macro_fragment_idx});
         self.macro_fragment_idx += 1;
@@ -3662,7 +3683,22 @@ pub const Codegen = struct {
         if (assign.target.* == .index_expr) {
             const idx = assign.target.index_expr;
             const target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType;
-            if (target_ty.* != .array) return Error.UnsupportedSabDirectFeature;
+            if (target_ty.* != .array) {
+                const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
+                const rule = self.findStdSurfaceRule(.index_assign, target_type_name, null) orelse return Error.UnsupportedSabDirectFeature;
+                const target_reg = try self.genExpr(idx.target);
+                const index_reg = try self.genExpr(idx.index);
+                const value = try self.genExpr(assign.value);
+                try self.emitStdSurfaceRule(rule, .{
+                    .receiver = target_reg,
+                    .index = index_reg,
+                    .value = value,
+                    .elem_size = self.elementSlotSize(target_ty),
+                    .elem_ty = try self.elementLoadType(target_ty),
+                });
+                try self.releaseNonLocalTemps(&.{ target_reg, index_reg, value });
+                return;
+            }
             const target_reg = try self.genExpr(idx.target);
             const value = try self.genExpr(assign.value);
             if (idx.index.* == .literal and idx.index.literal == .int_val) {

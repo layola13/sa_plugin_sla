@@ -263,11 +263,11 @@ pub const Codegen = struct {
     }
 
     fn mangleMethodName(self: *Codegen, ty_name: []const u8, method_name: []const u8) CodegenError![]const u8 {
-        return std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ ty_name, method_name }) catch return CodegenError.OutOfMemory;
+        return lowering_rules.mangleMethodName(self.allocator, ty_name, method_name) catch return CodegenError.OutOfMemory;
     }
 
     fn mangleTraitMethodName(self: *Codegen, ty_name: []const u8, trait_name: []const u8, method_name: []const u8) CodegenError![]const u8 {
-        return std.fmt.allocPrint(self.allocator, "{s}__{s}_{s}", .{ ty_name, trait_name, method_name }) catch return CodegenError.OutOfMemory;
+        return lowering_rules.mangleTraitMethodName(self.allocator, ty_name, trait_name, method_name) catch return CodegenError.OutOfMemory;
     }
 
     fn loweredFuncSymbol(self: *Codegen, name: []const u8) CodegenError![]const u8 {
@@ -286,63 +286,27 @@ pub const Codegen = struct {
     }
 
     fn traitMethodCount(self: *Codegen, trait_name: []const u8) ?usize {
-        const trait_decl = self.tc.traits.get(trait_name) orelse return null;
-        var count: usize = 0;
-        for (trait_decl.supertraits) |supertrait| {
-            count += self.traitMethodCount(supertrait) orelse return null;
-        }
-        count += trait_decl.methods.len;
-        return count;
+        return lowering_rules.traitMethodCount(self.tc, trait_name);
     }
 
     fn dynMethodSlot(self: *Codegen, trait_name: []const u8, method_name: []const u8) ?usize {
-        const trait_decl = self.tc.traits.get(trait_name) orelse return null;
-        var base: usize = 0;
-        for (trait_decl.supertraits) |supertrait| {
-            if (self.dynMethodSlot(supertrait, method_name)) |slot| return base + slot;
-            base += (self.traitMethodCount(supertrait) orelse return null) * 8;
-        }
-        for (trait_decl.methods, 0..) |method, i| {
-            if (std.mem.eql(u8, method.name, method_name)) return base + i * 8;
-        }
-        return null;
+        return lowering_rules.dynMethodSlot(self.tc, trait_name, method_name);
     }
 
     fn concreteTypeName(ty: *const ast.Type) ?[]const u8 {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .borrow => |b| curr = b,
-                .pointer => |p| curr = p,
-                .user_defined => |ud| return ud.name,
-                else => return null,
-            }
-        }
+        return lowering_rules.concreteTypeName(ty);
     }
 
     fn dynTraitName(ty: *const ast.Type) ?[]const u8 {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .borrow => |b| curr = b,
-                .pointer => |p| curr = p,
-                .user_defined => |ud| {
-                    if (std.mem.startsWith(u8, ud.name, "__dyn_")) {
-                        return ud.name["__dyn_".len..];
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.dynTraitName(ty);
     }
 
     fn vtableName(self: *Codegen, trait_name: []const u8, type_name: []const u8) CodegenError![]const u8 {
-        return std.fmt.allocPrint(self.allocator, "VT_{s}_{s}", .{ type_name, trait_name }) catch return CodegenError.OutOfMemory;
+        return lowering_rules.vtableName(self.allocator, trait_name, type_name) catch return CodegenError.OutOfMemory;
     }
 
     fn dynVtableUpcastName(self: *Codegen, from_trait: []const u8, to_trait: []const u8) CodegenError![]const u8 {
-        return std.fmt.allocPrint(self.allocator, "VT_DYN_{s}_TO_{s}", .{ from_trait, to_trait }) catch return CodegenError.OutOfMemory;
+        return lowering_rules.dynVtableUpcastName(self.allocator, from_trait, to_trait) catch return CodegenError.OutOfMemory;
     }
 
     fn fnPtrVTableName(self: *Codegen, func_name: []const u8) CodegenError![]const u8 {

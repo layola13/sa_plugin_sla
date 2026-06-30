@@ -256,6 +256,11 @@ pub const Codegen = struct {
             return err;
         };
         for (program.program.decls) |decl| {
+            if (decl.* == .impl_decl and decl.impl_decl.trait_name != null) {
+                try self.emitTraitVTableDecl(&decl.impl_decl);
+            }
+        }
+        for (program.program.decls) |decl| {
             switch (decl.*) {
                 .func_decl => |*f| {
                     if (!f.is_decl_only) {
@@ -271,7 +276,19 @@ pub const Codegen = struct {
                         return err;
                     };
                 },
-                .struct_decl, .enum_decl, .trait_decl, .impl_decl, .type_alias_decl, .overload_decl, .macro_decl, .import_decl, .using_decl, .const_stmt => {},
+                .impl_decl => |*i| {
+                    self.genImplDecl(i) catch |err| {
+                        self.traceUnsupported("impl decl failed: {s}\n", .{@errorName(err)});
+                        return err;
+                    };
+                },
+                .overload_decl => |*o| {
+                    self.genOverloadDecl(o) catch |err| {
+                        self.traceUnsupported("overload decl failed: {s}\n", .{@errorName(err)});
+                        return err;
+                    };
+                },
+                .struct_decl, .enum_decl, .trait_decl, .type_alias_decl, .macro_decl, .import_decl, .using_decl, .const_stmt => {},
                 else => {
                     self.traceUnsupported("top-level decl {s} failed\n", .{@tagName(decl.*)});
                     return Error.UnsupportedSabDirectFeature;
@@ -322,6 +339,75 @@ pub const Codegen = struct {
         }
         if (self.tc.extern_funcs.contains(name) or std.mem.startsWith(u8, name, "sa_")) return name;
         return try std.fmt.allocPrint(self.allocator, "sla__{s}", .{name});
+    }
+
+    fn mangleMethodName(self: *Codegen, ty_name: []const u8, method_name: []const u8) ![]const u8 {
+        return try lowering_rules.mangleMethodName(self.allocator, ty_name, method_name);
+    }
+
+    fn mangleTraitMethodName(self: *Codegen, ty_name: []const u8, trait_name: []const u8, method_name: []const u8) ![]const u8 {
+        return try lowering_rules.mangleTraitMethodName(self.allocator, ty_name, trait_name, method_name);
+    }
+
+    fn concreteTypeName(ty: *const ast.Type) ?[]const u8 {
+        return lowering_rules.concreteTypeName(ty);
+    }
+
+    fn dynTraitName(ty: *const ast.Type) ?[]const u8 {
+        return lowering_rules.dynTraitName(ty);
+    }
+
+    fn vtableName(self: *Codegen, trait_name: []const u8, type_name: []const u8) ![]u8 {
+        return try lowering_rules.vtableName(self.allocator, trait_name, type_name);
+    }
+
+    fn appendTraitVTableEntries(
+        self: *Codegen,
+        trait_name: []const u8,
+        type_name: []const u8,
+        slots: *std.ArrayList(const_decl.VTableSlot),
+        literal: *std.ArrayList(u8),
+    ) !void {
+        const trait_decl = self.tc.traits.get(trait_name) orelse return Error.UnsupportedSabDirectFeature;
+        for (trait_decl.supertraits) |supertrait| {
+            try self.appendTraitVTableEntries(supertrait, type_name, slots, literal);
+        }
+        for (trait_decl.methods) |method| {
+            if (slots.items.len > 0) try literal.appendSlice(", ");
+            const mangled = try self.mangleTraitMethodName(type_name, trait_name, method.name);
+            const lowered = try self.loweredFuncSymbol(mangled);
+            try literal.writer().print("{s} = @{s}", .{ method.name, lowered });
+            try slots.append(.{
+                .name = try self.allocator.dupe(u8, method.name),
+                .func_name = try self.allocator.dupe(u8, lowered),
+            });
+            _ = try self.intern(lowered);
+        }
+    }
+
+    fn emitTraitVTableDecl(self: *Codegen, decl: *const ast.ImplDecl) !void {
+        const trait_name = decl.trait_name orelse return;
+        const type_name = concreteTypeName(decl.target_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const vt_name = try self.vtableName(trait_name, type_name);
+
+        var slots = std.ArrayList(const_decl.VTableSlot).init(self.allocator);
+        var literal = std.ArrayList(u8).init(self.allocator);
+        try literal.appendSlice("vtable { ");
+        try self.appendTraitVTableEntries(trait_name, type_name, &slots, &literal);
+        try literal.appendSlice(" }");
+        const literal_text = try literal.toOwnedSlice();
+        const raw_text = try std.fmt.allocPrint(self.allocator, "@const {s} = {s}", .{ vt_name, literal_text });
+
+        try self.const_decls.append(.{
+            .source_line = 0,
+            .expanded_line = 0,
+            .upstream_loc = null,
+            .raw_text = raw_text,
+            .name = vt_name,
+            .literal_text = literal_text,
+            .value = .{ .vtable = .{ .slots = try slots.toOwnedSlice() } },
+        });
+        _ = try self.intern(vt_name);
     }
 
     fn fnPtrVTableName(self: *Codegen, func_name: []const u8) ![]u8 {
@@ -2408,12 +2494,12 @@ pub const Codegen = struct {
         }
     }
 
-    fn genFuncDecl(self: *Codegen, f: *const ast.FuncDecl) !void {
+    fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) !void {
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
         self.beginFunction();
         try self.collectBorrowedBindingsInBlock(f.body);
-        var fsig = try self.genFuncSig(f.name, .normal, f.params, f.ret_ty, false, false);
+        var fsig = try self.genFuncSig(name, .normal, f.params, f.ret_ty, false, false);
         try self.appendDeclInst(fsig);
         try self.emitLabel("L_ENTRY");
         try self.materializeBorrowedParams(f.params);
@@ -2422,7 +2508,7 @@ pub const Codegen = struct {
             const tail = blockTailExpr(f.body).?;
             for (f.body[0 .. f.body.len - 1]) |stmt| {
                 self.genStmt(stmt) catch |err| {
-                    self.traceUnsupported("func {s} stmt {s} failed: {s}\n", .{ f.name, @tagName(stmt.*), @errorName(err) });
+                    self.traceUnsupported("func {s} stmt {s} failed: {s}\n", .{ name, @tagName(stmt.*), @errorName(err) });
                     return err;
                 };
                 if (self.lastIsTerminator()) break;
@@ -2436,7 +2522,7 @@ pub const Codegen = struct {
             }
         } else {
             self.genBlock(f.body) catch |err| {
-                self.traceUnsupported("func {s} block failed: {s}\n", .{ f.name, @errorName(err) });
+                self.traceUnsupported("func {s} block failed: {s}\n", .{ name, @errorName(err) });
                 return err;
             };
         }
@@ -2446,6 +2532,31 @@ pub const Codegen = struct {
         }
         fsig.reg_ids = try self.finishFunctionRegs();
         try self.function_sigs.append(fsig);
+    }
+
+    fn genFuncDecl(self: *Codegen, f: *const ast.FuncDecl) !void {
+        try self.genFuncDeclNamed(f.name, f);
+    }
+
+    fn genImplDecl(self: *Codegen, impl_decl: *const ast.ImplDecl) !void {
+        const impl_name = concreteTypeName(impl_decl.target_ty) orelse return Error.UnsupportedSabDirectFeature;
+        for (impl_decl.methods) |method| {
+            if (method.* != .func_decl) return Error.UnsupportedSabDirectFeature;
+            const mangled = if (impl_decl.trait_name) |trait_name|
+                try self.mangleTraitMethodName(impl_name, trait_name, method.func_decl.name)
+            else
+                try self.mangleMethodName(impl_name, method.func_decl.name);
+            try self.genFuncDeclNamed(mangled, &method.func_decl);
+        }
+    }
+
+    fn genOverloadDecl(self: *Codegen, overload_decl: *const ast.OverloadDecl) !void {
+        const overload_name = concreteTypeName(overload_decl.target_ty) orelse return Error.UnsupportedSabDirectFeature;
+        for (overload_decl.methods) |method| {
+            if (method.* != .func_decl) return Error.UnsupportedSabDirectFeature;
+            const mangled = try self.mangleMethodName(overload_name, method.func_decl.name);
+            try self.genFuncDeclNamed(mangled, &method.func_decl);
+        }
     }
 
     fn genTestDecl(self: *Codegen, t: *const ast.TestDecl) !void {
@@ -3851,6 +3962,86 @@ pub const Codegen = struct {
         return dst;
     }
 
+    fn emitDynNew(self: *Codegen, fat_reg: u32, data_reg: u32, vtable_reg: u32) !void {
+        try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_NEW", &.{
+            self.symbols.items[fat_reg],
+            self.symbols.items[data_reg],
+            self.symbols.items[vtable_reg],
+        });
+    }
+
+    fn genDynBorrowFromReg(self: *Codegen, source_ty: *const ast.Type, source_reg: u32, trait_name: []const u8) anyerror!u32 {
+        const fat_reg = try self.intern(try self.newTmp());
+        try self.recordReg(fat_reg);
+
+        if (dynTraitName(source_ty) != null) {
+            const data_reg = try self.intern(try self.newTmp());
+            const vtable_reg = try self.intern(try self.newTmp());
+            try self.recordReg(data_reg);
+            try self.recordReg(vtable_reg);
+            try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_GET_DATA", &.{ self.symbols.items[data_reg], self.symbols.items[source_reg] });
+            try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_GET_VTABLE", &.{ self.symbols.items[vtable_reg], self.symbols.items[source_reg] });
+            try self.emitDynNew(fat_reg, data_reg, vtable_reg);
+            try self.emitRelease(vtable_reg);
+            try self.emitRelease(data_reg);
+        } else {
+            const type_name = concreteTypeName(source_ty) orelse return Error.UnsupportedSabDirectFeature;
+            const vt_name = try self.vtableName(trait_name, type_name);
+            const vtable_reg = try self.intern(try self.newTmp());
+            try self.emitBorrowSymbol(vtable_reg, vt_name);
+            try self.emitDynNew(fat_reg, source_reg, vtable_reg);
+            try self.emitRelease(vtable_reg);
+        }
+
+        if (!self.isLocalReg(source_reg)) try self.emitRelease(source_reg);
+        return fat_reg;
+    }
+
+    fn genDynBorrowArg(self: *Codegen, arg: *const ast.Node, trait_name: []const u8) anyerror!u32 {
+        const source_expr = if (arg.* == .borrow_expr) arg.borrow_expr.expr else arg;
+        const source_ty = self.tc.expr_types.get(source_expr) orelse return Error.MissingType;
+        const source_reg = try self.genExpr(@constCast(source_expr));
+        return try self.genDynBorrowFromReg(source_ty, source_reg, trait_name);
+    }
+
+    fn genMacroDynBorrowArg(self: *Codegen, arg: *const ast.Node, ctx: *MacroExpansionContext, trait_name: []const u8) anyerror!u32 {
+        const source_expr = if (arg.* == .borrow_expr) arg.borrow_expr.expr else arg;
+        const source_ty = (try self.macroExprType(@constCast(source_expr), ctx)) orelse return Error.MissingType;
+        const source_reg = try self.genMacroExpr(@constCast(source_expr), ctx);
+        return try self.genDynBorrowFromReg(source_ty, source_reg, trait_name);
+    }
+
+    fn genDynMethodCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        const trait_name = self.tc.dyn_call_traits.get(expr) orelse return null;
+        if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+        const slot = lowering_rules.dynMethodSlot(self.tc, trait_name, call.func_name) orelse return Error.UnsupportedSabDirectFeature;
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const data_reg = try self.intern(try self.newTmp());
+        const vtable_reg = try self.intern(try self.newTmp());
+        const fn_reg = try self.intern(try self.newTmp());
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(data_reg);
+        try self.recordReg(vtable_reg);
+        try self.recordReg(fn_reg);
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_GET_DATA", &.{ self.symbols.items[data_reg], self.symbols.items[receiver_reg] });
+        try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_GET_VTABLE", &.{ self.symbols.items[vtable_reg], self.symbols.items[receiver_reg] });
+        try self.emitLoad(fn_reg, vtable_reg, slot, .ptr);
+
+        var body = std.ArrayList(u8).init(self.allocator);
+        try body.writer().print("{s}(&{s})", .{ self.symbols.items[fn_reg], self.symbols.items[data_reg] });
+        var item = self.makeInst(.call_indirect);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = .{ .text = try body.toOwnedSlice() };
+        try self.appendInst(item);
+
+        try self.emitRelease(fn_reg);
+        try self.emitRelease(vtable_reg);
+        try self.emitRelease(data_reg);
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        return dst;
+    }
+
     fn escapedClosureEntryForThreadSpawn(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!EscapedClosureEntry {
         if (self.escaped_closure_entries.get(expr)) |entry| return entry;
         const closure = closureLiteralFromExpr(call.args[0]) orelse return Error.UnsupportedSabDirectFeature;
@@ -3999,6 +4190,7 @@ pub const Codegen = struct {
         }
         if (isThreadSpawnCall(call)) return try self.genThreadSpawn(expr, call);
         if (try self.genJoinHandleJoin(expr, call)) |reg| return reg;
+        if (try self.genDynMethodCall(expr, call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const call_plan = lowering_rules.planStaticCall(self.tc, expr, call) orelse return Error.UnsupportedSabDirectFeature;
         return try self.emitPlannedStaticCall(call_plan, call);
@@ -4072,7 +4264,15 @@ pub const Codegen = struct {
         });
 
         return switch (materialization.kind) {
-            .array_to_slice_borrow, .dyn_borrow => Error.UnsupportedSabDirectFeature,
+            .array_to_slice_borrow => Error.UnsupportedSabDirectFeature,
+            .dyn_borrow => blk: {
+                const trait_name = materialization.dyn_borrow_trait_name orelse return Error.UnsupportedSabDirectFeature;
+                const fat_reg = try self.genDynBorrowArg(arg, trait_name);
+                break :blk .{
+                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[fat_reg]}),
+                    .release_reg = fat_reg,
+                };
+            },
             .copy_struct_value => blk: {
                 const source_reg = try self.genExpr(@constCast(arg));
                 const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
@@ -4121,7 +4321,15 @@ pub const Codegen = struct {
         });
 
         return switch (materialization.kind) {
-            .array_to_slice_borrow, .dyn_borrow => Error.UnsupportedSabDirectFeature,
+            .array_to_slice_borrow => Error.UnsupportedSabDirectFeature,
+            .dyn_borrow => blk: {
+                const trait_name = materialization.dyn_borrow_trait_name orelse return Error.UnsupportedSabDirectFeature;
+                const fat_reg = try self.genMacroDynBorrowArg(arg, ctx, trait_name);
+                break :blk .{
+                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[fat_reg]}),
+                    .release_reg = fat_reg,
+                };
+            },
             .copy_struct_value => blk: {
                 const source_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);

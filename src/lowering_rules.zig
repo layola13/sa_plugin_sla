@@ -156,6 +156,72 @@ pub fn structFieldLayout(decl: *const ast.StructDecl, name: []const u8) ?AbiFiel
     return null;
 }
 
+pub fn mangleMethodName(allocator: std.mem.Allocator, ty_name: []const u8, method_name: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}_{s}", .{ ty_name, method_name });
+}
+
+pub fn mangleTraitMethodName(allocator: std.mem.Allocator, ty_name: []const u8, trait_name: []const u8, method_name: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{s}__{s}_{s}", .{ ty_name, trait_name, method_name });
+}
+
+pub fn concreteTypeName(ty: *const ast.Type) ?[]const u8 {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .borrow => |b| curr = b,
+            .pointer => |p| curr = p,
+            .user_defined => |ud| return ud.name,
+            else => return null,
+        }
+    }
+}
+
+pub fn dynTraitName(ty: *const ast.Type) ?[]const u8 {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .borrow => |b| curr = b,
+            .pointer => |p| curr = p,
+            .user_defined => |ud| {
+                if (std.mem.startsWith(u8, ud.name, "__dyn_")) return ud.name["__dyn_".len..];
+                return null;
+            },
+            else => return null,
+        }
+    }
+}
+
+pub fn vtableName(allocator: std.mem.Allocator, trait_name: []const u8, type_name: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "VT_{s}_{s}", .{ type_name, trait_name });
+}
+
+pub fn dynVtableUpcastName(allocator: std.mem.Allocator, from_trait: []const u8, to_trait: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "VT_DYN_{s}_TO_{s}", .{ from_trait, to_trait });
+}
+
+pub fn traitMethodCount(tc: *type_checker.TypeChecker, trait_name: []const u8) ?usize {
+    const trait_decl = tc.traits.get(trait_name) orelse return null;
+    var count: usize = 0;
+    for (trait_decl.supertraits) |supertrait| {
+        count += traitMethodCount(tc, supertrait) orelse return null;
+    }
+    count += trait_decl.methods.len;
+    return count;
+}
+
+pub fn dynMethodSlot(tc: *type_checker.TypeChecker, trait_name: []const u8, method_name: []const u8) ?usize {
+    const trait_decl = tc.traits.get(trait_name) orelse return null;
+    var base: usize = 0;
+    for (trait_decl.supertraits) |supertrait| {
+        if (dynMethodSlot(tc, supertrait, method_name)) |slot| return base + slot;
+        base += (traitMethodCount(tc, supertrait) orelse return null) * 8;
+    }
+    for (trait_decl.methods, 0..) |method, i| {
+        if (std.mem.eql(u8, method.name, method_name)) return base + i * 8;
+    }
+    return null;
+}
+
 pub fn planResolvedStaticCall(tc: *type_checker.TypeChecker, expr: *const ast.Node, call: ast.CallExpr) ?StaticCallPlan {
     const symbol = tc.resolved_call_symbols.get(expr) orelse return null;
     return .{ .target_symbol = symbol, .arg_count = call.args.len };
@@ -411,4 +477,35 @@ test "shared ABI layout keeps fixed-array fields as pointer slots" {
     const elem = arrayElementLayout(bool_array_ty.array, 1) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(usize, 1), elem.offset);
     try std.testing.expectEqual(@as(usize, 1), elem.size);
+}
+
+test "shared dyn trait naming and method slots" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var sprite_ty = ast.Type{ .user_defined = .{ .name = "Sprite", .generics = &.{} } };
+    var dyn_draw_ty = ast.Type{ .user_defined = .{ .name = "__dyn_Draw", .generics = &.{} } };
+    var borrowed_dyn_draw_ty = ast.Type{ .borrow = &dyn_draw_ty };
+    const self_param = ast.Param{ .name = "self", .ty = &sprite_ty, .is_borrow = true };
+    const base_methods = [_]ast.TraitMethod{.{ .name = "base", .params = &.{self_param}, .ret_ty = &i32_ty }};
+    const draw_methods = [_]ast.TraitMethod{.{ .name = "draw", .params = &.{self_param}, .ret_ty = &i32_ty }};
+    const base_trait = ast.TraitDecl{ .name = "Base", .methods = base_methods[0..] };
+    const supers = [_][]const u8{"Base"};
+    const draw_trait = ast.TraitDecl{ .name = "Draw", .supertraits = supers[0..], .methods = draw_methods[0..] };
+
+    var tc = type_checker.TypeChecker.init(std.testing.allocator);
+    defer tc.deinit();
+    try tc.traits.put("Base", @constCast(&base_trait));
+    try tc.traits.put("Draw", @constCast(&draw_trait));
+
+    try std.testing.expectEqualSlices(u8, "Sprite", concreteTypeName(&sprite_ty).?);
+    try std.testing.expectEqualSlices(u8, "Draw", dynTraitName(&borrowed_dyn_draw_ty).?);
+    try std.testing.expectEqual(@as(usize, 0), dynMethodSlot(&tc, "Draw", "base").?);
+    try std.testing.expectEqual(@as(usize, 8), dynMethodSlot(&tc, "Draw", "draw").?);
+
+    const mangled = try mangleTraitMethodName(std.testing.allocator, "Sprite", "Draw", "draw");
+    defer std.testing.allocator.free(mangled);
+    try std.testing.expectEqualSlices(u8, "Sprite__Draw_draw", mangled);
+
+    const vt = try vtableName(std.testing.allocator, "Draw", "Sprite");
+    defer std.testing.allocator.free(vt);
+    try std.testing.expectEqualSlices(u8, "VT_Sprite_Draw", vt);
 }

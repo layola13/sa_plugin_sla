@@ -661,75 +661,37 @@ pub const Codegen = struct {
     }
 
     fn typeSize(ty: *const ast.Type) usize {
-        return switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .boolean, .u8, .i8 => 1,
-                .u16, .i16 => 2,
-                .u32, .i32, .f32 => 4,
-                .u64, .i64, .usize, .isize, .f64 => 8,
-                .integer, .float => 8,
-                .void_type => 8,
-            },
-            .tuple => |tuple| tupleSize(tuple),
-            .array => |arr| arraySize(arr),
-            else => 8,
-        };
+        return lowering_rules.abiTypeSize(ty);
     }
 
     fn alignOffset(offset: usize, size: usize) usize {
-        if (size == 8) return (offset + 7) & ~@as(usize, 7);
-        return offset;
+        return lowering_rules.alignAggregateOffset(offset, size);
     }
 
     fn tupleSize(tuple: ast.TupleType) usize {
-        var offset: usize = 0;
-        for (tuple.elems) |elem_ty| {
-            const size = typeSize(elem_ty);
-            offset = alignOffset(offset, size);
-            offset += size;
-        }
-        return @max(offset, 1);
+        return lowering_rules.tupleAbiSize(tuple);
     }
 
     fn tupleFieldLayout(tuple: ast.TupleType, index: usize) ?FieldLayout {
-        var offset: usize = 0;
-        for (tuple.elems, 0..) |elem_ty, i| {
-            const size = typeSize(elem_ty);
-            offset = alignOffset(offset, size);
-            if (i == index) return .{ .offset = offset, .ty = primType(elem_ty) catch return null };
-            offset += size;
-        }
-        return null;
+        const layout = lowering_rules.tupleFieldLayout(tuple, index) orelse return null;
+        return .{ .offset = layout.offset, .ty = primType(layout.ty) catch return null };
     }
 
     fn arrayStride(elem_ty: *const ast.Type) usize {
-        return @max(typeSize(elem_ty), 1);
+        return lowering_rules.inlineArrayStride(elem_ty);
     }
 
     fn arraySize(arr: ast.ArrayType) usize {
-        return @max(arrayStride(arr.elem) * arr.len, 1);
+        return lowering_rules.inlineArraySize(arr);
     }
 
     fn arrayElementLayout(arr: ast.ArrayType, index: usize) ?FieldLayout {
-        if (index >= arr.len) return null;
-        const stride = arrayStride(arr.elem);
-        return .{ .offset = stride * index, .ty = primType(arr.elem) catch return null };
+        const layout = lowering_rules.arrayElementLayout(arr, index) orelse return null;
+        return .{ .offset = layout.offset, .ty = primType(layout.ty) catch return null };
     }
 
     fn structSize(s: *const ast.StructDecl) usize {
-        if (s.is_opaque) return 1;
-        if (s.is_union) {
-            var max_size: usize = 0;
-            for (s.fields) |f| max_size = @max(max_size, typeSize(f.ty));
-            return @max(max_size, 1);
-        }
-        var offset: usize = 0;
-        for (s.fields) |f| {
-            const size = typeSize(f.ty);
-            offset = alignOffset(offset, size);
-            offset += size;
-        }
-        return @max(offset, 1);
+        return lowering_rules.structAbiSize(s);
     }
 
     fn structDeclForType(self: *Codegen, ty: *const ast.Type) ?*ast.StructDecl {
@@ -750,20 +712,8 @@ pub const Codegen = struct {
     fn fieldLayout(self: *Codegen, ty: *const ast.Type, name: []const u8) !FieldLayout {
         const decl = self.structDeclForType(ty) orelse return Error.UnsupportedSabDirectFeature;
         if (decl.is_opaque) return Error.UnsupportedSabDirectFeature;
-        if (decl.is_union) {
-            for (decl.fields) |field| {
-                if (std.mem.eql(u8, field.name, name)) return .{ .offset = 0, .ty = try primType(field.ty) };
-            }
-            return Error.UnsupportedSabDirectFeature;
-        }
-        var offset: usize = 0;
-        for (decl.fields) |field| {
-            const size = typeSize(field.ty);
-            offset = alignOffset(offset, size);
-            if (std.mem.eql(u8, field.name, name)) return .{ .offset = offset, .ty = try primType(field.ty) };
-            offset += size;
-        }
-        return Error.UnsupportedSabDirectFeature;
+        const layout = lowering_rules.structFieldLayout(decl, name) orelse return Error.UnsupportedSabDirectFeature;
+        return .{ .offset = layout.offset, .ty = try primType(layout.ty) };
     }
 
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {

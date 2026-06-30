@@ -1533,19 +1533,7 @@ pub const Codegen = struct {
     };
 
     fn typeSize(ty: *const ast.Type) usize {
-        return switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .boolean, .u8, .i8 => 1,
-                .u16, .i16 => 2,
-                .u32, .i32, .f32 => 4,
-                .u64, .i64, .usize, .isize, .f64 => 8,
-                .integer, .float => 8,
-                .void_type => 8,
-            },
-            .array => 8,
-            .tuple => |tuple| tupleSize(tuple),
-            else => 8,
-        };
+        return lowering_rules.abiTypeSize(ty);
     }
 
     fn vecElementSlotSize(ty: *const ast.Type) usize {
@@ -2075,75 +2063,25 @@ pub const Codegen = struct {
     }
 
     fn alignOffset(offset: usize, size: usize) usize {
-        if (size == 8) {
-            return (offset + 7) & ~@as(usize, 7);
-        }
-        return offset;
+        return lowering_rules.alignAggregateOffset(offset, size);
     }
 
     fn structSize(s: *const ast.StructDecl) usize {
-        if (s.is_opaque) return 1;
-        if (s.is_union) {
-            var max_size: usize = 0;
-            for (s.fields) |f| {
-                max_size = @max(max_size, typeSize(f.ty));
-            }
-            return @max(max_size, 1);
-        }
-        var offset: usize = 0;
-        for (s.fields) |f| {
-            const size = typeSize(f.ty);
-            offset = alignOffset(offset, size);
-            offset += size;
-        }
-        return @max(offset, 1);
+        return lowering_rules.structAbiSize(s);
     }
 
     fn tupleSize(tuple: ast.TupleType) usize {
-        var offset: usize = 0;
-        for (tuple.elems) |elem_ty| {
-            const size = typeSize(elem_ty);
-            offset = alignOffset(offset, size);
-            offset += size;
-        }
-        return @max(offset, 1);
+        return lowering_rules.tupleAbiSize(tuple);
     }
 
     fn tupleFieldLayout(tuple: ast.TupleType, index: usize) ?FieldLayout {
-        var offset: usize = 0;
-        for (tuple.elems, 0..) |elem_ty, i| {
-            const size = typeSize(elem_ty);
-            offset = alignOffset(offset, size);
-            if (i == index) {
-                return .{ .offset = offset, .ty_str = typeString(elem_ty) };
-            }
-            offset += size;
-        }
-        return null;
+        const layout = lowering_rules.tupleFieldLayout(tuple, index) orelse return null;
+        return .{ .offset = layout.offset, .ty_str = typeString(layout.ty) };
     }
 
     fn fieldLayout(s: *const ast.StructDecl, name: []const u8) ?FieldLayout {
-        if (s.is_union) {
-            for (s.fields) |f| {
-                if (std.mem.eql(u8, f.name, name)) {
-                    return .{ .offset = 0, .ty_str = typeString(f.ty) };
-                }
-            }
-            return null;
-        }
-        var offset: usize = 0;
-        for (s.fields) |f| {
-            const size = typeSize(f.ty);
-            offset = alignOffset(offset, size);
-            if (std.mem.eql(u8, f.name, name)) {
-                return .{
-                    .offset = offset,
-                    .ty_str = typeString(f.ty),
-                };
-            }
-            offset += size;
-        }
-        return null;
+        const layout = lowering_rules.structFieldLayout(s, name) orelse return null;
+        return .{ .offset = layout.offset, .ty_str = typeString(layout.ty) };
     }
 
     fn aggregateFieldLayout(self: *Codegen, ty: *const ast.Type, name: []const u8) ?FieldLayout {

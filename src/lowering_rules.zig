@@ -57,6 +57,105 @@ pub const CallArgMaterializationPlan = struct {
     dyn_borrow_trait_name: ?[]const u8 = null,
 };
 
+pub const AbiFieldLayout = struct {
+    offset: usize,
+    size: usize,
+    ty: *const ast.Type,
+};
+
+pub fn abiTypeSize(ty: *const ast.Type) usize {
+    return switch (ty.*) {
+        .primitive => |p| switch (p) {
+            .boolean, .u8, .i8 => 1,
+            .u16, .i16 => 2,
+            .u32, .i32, .f32 => 4,
+            .u64, .i64, .usize, .isize, .f64 => 8,
+            .integer, .float => 8,
+            .void_type => 8,
+        },
+        .array => 8,
+        .tuple => |tuple| tupleAbiSize(tuple),
+        else => 8,
+    };
+}
+
+pub fn alignAggregateOffset(offset: usize, size: usize) usize {
+    if (size == 8) return (offset + 7) & ~@as(usize, 7);
+    return offset;
+}
+
+pub fn tupleAbiSize(tuple: ast.TupleType) usize {
+    var offset: usize = 0;
+    for (tuple.elems) |elem_ty| {
+        const size = abiTypeSize(elem_ty);
+        offset = alignAggregateOffset(offset, size);
+        offset += size;
+    }
+    return @max(offset, 1);
+}
+
+pub fn tupleFieldLayout(tuple: ast.TupleType, index: usize) ?AbiFieldLayout {
+    var offset: usize = 0;
+    for (tuple.elems, 0..) |elem_ty, i| {
+        const size = abiTypeSize(elem_ty);
+        offset = alignAggregateOffset(offset, size);
+        if (i == index) return .{ .offset = offset, .size = size, .ty = elem_ty };
+        offset += size;
+    }
+    return null;
+}
+
+pub fn inlineArrayStride(elem_ty: *const ast.Type) usize {
+    return @max(abiTypeSize(elem_ty), 1);
+}
+
+pub fn inlineArraySize(arr: ast.ArrayType) usize {
+    return @max(inlineArrayStride(arr.elem) * arr.len, 1);
+}
+
+pub fn arrayElementLayout(arr: ast.ArrayType, index: usize) ?AbiFieldLayout {
+    if (index >= arr.len) return null;
+    const stride = inlineArrayStride(arr.elem);
+    return .{ .offset = stride * index, .size = stride, .ty = arr.elem };
+}
+
+pub fn structAbiSize(decl: *const ast.StructDecl) usize {
+    if (decl.is_opaque) return 1;
+    if (decl.is_union) {
+        var max_size: usize = 0;
+        for (decl.fields) |field| max_size = @max(max_size, abiTypeSize(field.ty));
+        return @max(max_size, 1);
+    }
+    var offset: usize = 0;
+    for (decl.fields) |field| {
+        const size = abiTypeSize(field.ty);
+        offset = alignAggregateOffset(offset, size);
+        offset += size;
+    }
+    return @max(offset, 1);
+}
+
+pub fn structFieldLayout(decl: *const ast.StructDecl, name: []const u8) ?AbiFieldLayout {
+    if (decl.is_union) {
+        for (decl.fields) |field| {
+            if (std.mem.eql(u8, field.name, name)) {
+                return .{ .offset = 0, .size = abiTypeSize(field.ty), .ty = field.ty };
+            }
+        }
+        return null;
+    }
+    var offset: usize = 0;
+    for (decl.fields) |field| {
+        const size = abiTypeSize(field.ty);
+        offset = alignAggregateOffset(offset, size);
+        if (std.mem.eql(u8, field.name, name)) {
+            return .{ .offset = offset, .size = size, .ty = field.ty };
+        }
+        offset += size;
+    }
+    return null;
+}
+
 pub fn planResolvedStaticCall(tc: *type_checker.TypeChecker, expr: *const ast.Node, call: ast.CallExpr) ?StaticCallPlan {
     const symbol = tc.resolved_call_symbols.get(expr) orelse return null;
     return .{ .target_symbol = symbol, .arg_count = call.args.len };
@@ -281,4 +380,35 @@ test "shared lowering rules classify call materialization decisions" {
     const generated_plan = planCallArgMaterialization(&value, .{ .generated_fn_ptr_identifier = true });
     try std.testing.expectEqual(CallArgMaterializationKind.value, generated_plan.kind);
     try std.testing.expect(generated_plan.release_after_call);
+}
+
+test "shared ABI layout keeps fixed-array fields as pointer slots" {
+    var bool_ty = ast.Type{ .primitive = .boolean };
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var bool_array_ty = ast.Type{ .array = .{ .elem = &bool_ty, .len = 2 } };
+    var i32_array_ty = ast.Type{ .array = .{ .elem = &i32_ty, .len = 2 } };
+    const fields = [_]ast.Field{
+        .{ .name = "active", .ty = &bool_array_ty },
+        .{ .name = "values", .ty = &i32_array_ty },
+    };
+    const decl = ast.StructDecl{
+        .name = "Bag",
+        .generics = &.{},
+        .fields = fields[0..],
+    };
+
+    try std.testing.expectEqual(@as(usize, 8), abiTypeSize(&bool_array_ty));
+    try std.testing.expectEqual(@as(usize, 2), inlineArraySize(bool_array_ty.array));
+    try std.testing.expectEqual(@as(usize, 16), structAbiSize(&decl));
+
+    const active = structFieldLayout(&decl, "active") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 0), active.offset);
+    try std.testing.expectEqual(@as(usize, 8), active.size);
+    const values = structFieldLayout(&decl, "values") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 8), values.offset);
+    try std.testing.expectEqual(@as(usize, 8), values.size);
+
+    const elem = arrayElementLayout(bool_array_ty.array, 1) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1), elem.offset);
+    try std.testing.expectEqual(@as(usize, 1), elem.size);
 }

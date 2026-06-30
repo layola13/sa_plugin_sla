@@ -3473,18 +3473,7 @@ pub const Codegen = struct {
     }
 
     fn optionInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Option") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.optionInnerType(ty);
     }
 
     fn resultOkType(ty: *const ast.Type) ?*ast.Type {
@@ -9973,7 +9962,8 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "map")) {
+                            const option_closure_plan = lowering_rules.planOptionClosureCall(call, ty);
+                            if (option_closure_plan != null and option_closure_plan.?.kind == .map) {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_some = try self.newTmp();
@@ -10003,7 +9993,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "and_then")) {
+                            if (option_closure_plan != null and option_closure_plan.?.kind == .and_then) {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_some = try self.newTmp();
@@ -10055,7 +10045,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(default_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "unwrap_or_else")) {
+                            if (option_closure_plan != null and option_closure_plan.?.kind == .unwrap_or_else) {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_some = try self.newTmp();

@@ -4276,6 +4276,196 @@ pub const Codegen = struct {
         return result_reg;
     }
 
+    fn emitBranch(self: *Codegen, cond: u32, then_label: []const u8, else_label: []const u8) !void {
+        var br = self.makeInst(.br);
+        br.operands[0] = .{ .reg = cond };
+        br.operands[1] = .{ .label = try self.intern(then_label) };
+        br.operands[2] = .{ .label = try self.intern(then_label) };
+        br.operands[3] = .{ .label = try self.intern(else_label) };
+        try self.appendInst(br);
+    }
+
+    fn emitStdOptionMethod(self: *Codegen, receiver_ty: *const ast.Type, member_name: []const u8, out: u32, receiver: u32) !void {
+        const type_name = typeBaseName(receiver_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const rule = self.findStdSurfaceRule(.method, type_name, member_name) orelse return Error.UnsupportedSabDirectFeature;
+        try self.recordReg(out);
+        try self.emitStdSurfaceRule(rule, .{
+            .out = out,
+            .receiver = receiver,
+            .elem_size = self.elementSlotSize(receiver_ty),
+        });
+    }
+
+    fn emitStdOptionConstructor(self: *Codegen, result_ty: *const ast.Type, member_name: []const u8, out: u32, value: ?u32) !void {
+        const type_name = typeBaseName(result_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const rule = self.findStdSurfaceRule(.constructor, type_name, member_name) orelse return Error.UnsupportedSabDirectFeature;
+        try self.recordReg(out);
+        try self.emitStdSurfaceRule(rule, .{
+            .out = out,
+            .value = value,
+            .elem_size = self.elementSlotSize(result_ty),
+        });
+    }
+
+    fn genOptionMapClosureCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr, receiver_ty: *const ast.Type, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        const result_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const is_some = try self.intern(try self.newTmp());
+        try self.emitStdOptionMethod(receiver_ty, "is_some", is_some, receiver_reg);
+
+        const some_label = try self.newLabel("L_OPTION_MAP_SOME");
+        const none_label = try self.newLabel("L_OPTION_MAP_NONE");
+        const end_label = try self.newLabel("L_OPTION_MAP_END");
+        const result_reg = try self.intern(try self.newTmp());
+        try self.recordReg(result_reg);
+        try self.emitBranch(is_some, some_label, none_label);
+
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(is_some);
+        const value_reg = try self.intern(try self.newTmp());
+        try self.emitStdOptionMethod(receiver_ty, "get", value_reg, receiver_reg);
+        const mapped_reg = try self.genInlineClosureUnary(closure, value_reg);
+        try self.emitStdOptionConstructor(result_ty, "Some", result_reg, mapped_reg);
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        if (mapped_reg != value_reg and !self.isLocalReg(mapped_reg)) try self.emitRelease(mapped_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(is_some);
+        try self.emitStdOptionConstructor(result_ty, "None", result_reg, null);
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        return result_reg;
+    }
+
+    fn genOptionAndThenClosureCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr, receiver_ty: *const ast.Type, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        const result_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const is_some = try self.intern(try self.newTmp());
+        try self.emitStdOptionMethod(receiver_ty, "is_some", is_some, receiver_reg);
+
+        const some_label = try self.newLabel("L_OPTION_AND_THEN_SOME");
+        const none_label = try self.newLabel("L_OPTION_AND_THEN_NONE");
+        const end_label = try self.newLabel("L_OPTION_AND_THEN_END");
+        const result_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(result_slot, 8);
+        try self.emitBranch(is_some, some_label, none_label);
+
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(is_some);
+        const value_reg = try self.intern(try self.newTmp());
+        try self.emitStdOptionMethod(receiver_ty, "get", value_reg, receiver_reg);
+        const chained_reg = try self.genInlineClosureUnary(closure, value_reg);
+        try self.emitStore(result_slot, 0, chained_reg, .ptr);
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(is_some);
+        const none_reg = try self.intern(try self.newTmp());
+        try self.emitStdOptionConstructor(result_ty, "None", none_reg, null);
+        try self.emitStore(result_slot, 0, none_reg, .ptr);
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+
+        try self.emitLabel(end_label);
+        const result_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(result_reg, result_slot, 0, try primType(result_ty));
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        return result_reg;
+    }
+
+    fn genOptionUnwrapOrElseClosureCall(self: *Codegen, call: ast.CallExpr, receiver_ty: *const ast.Type, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        const inner_ty = lowering_rules.optionInnerType(receiver_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const is_some = try self.intern(try self.newTmp());
+        try self.emitStdOptionMethod(receiver_ty, "is_some", is_some, receiver_reg);
+
+        const some_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_SOME");
+        const none_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_NONE");
+        const end_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_END");
+        const result_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(result_slot, typeSize(inner_ty));
+        try self.emitBranch(is_some, some_label, none_label);
+
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(is_some);
+        const value_reg = try self.intern(try self.newTmp());
+        try self.emitStdOptionMethod(receiver_ty, "get", value_reg, receiver_reg);
+        try self.emitStore(result_slot, 0, value_reg, try primType(inner_ty));
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(is_some);
+        const default_reg = try self.genInlineClosureNullary(closure);
+        try self.emitStore(result_slot, 0, default_reg, try primType(inner_ty));
+        if (!self.isLocalReg(default_reg)) try self.emitRelease(default_reg);
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+
+        try self.emitLabel(end_label);
+        const result_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(result_reg, result_slot, 0, try primType(inner_ty));
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        return result_reg;
+    }
+
+    fn genOptionClosureCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len == 0) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const plan = lowering_rules.planOptionClosureCall(call, receiver_ty) orelse return null;
+        const closure = closureLiteralFromExpr(call.args[plan.closure_arg_index]) orelse return Error.UnsupportedSabDirectFeature;
+        if (closure.params.len != plan.closure_arity) return Error.UnsupportedSabDirectFeature;
+        return switch (plan.kind) {
+            .map => try self.genOptionMapClosureCall(expr, call, receiver_ty, closure),
+            .and_then => try self.genOptionAndThenClosureCall(expr, call, receiver_ty, closure),
+            .unwrap_or_else => try self.genOptionUnwrapOrElseClosureCall(call, receiver_ty, closure),
+        };
+    }
+
     fn genCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!u32 {
         if (std.mem.eql(u8, call.func_name, "panic")) {
             var item = self.makeInst(.panic);
@@ -4308,6 +4498,7 @@ pub const Codegen = struct {
         if (isThreadSpawnCall(call)) return try self.genThreadSpawn(expr, call);
         if (try self.genJoinHandleJoin(expr, call)) |reg| return reg;
         if (try self.genDynMethodCall(expr, call)) |reg| return reg;
+        if (try self.genOptionClosureCall(expr, call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const call_plan = lowering_rules.planStaticCall(self.tc, expr, call) orelse return Error.UnsupportedSabDirectFeature;
         return try self.emitPlannedStaticCall(call_plan, call);
@@ -4483,6 +4674,21 @@ pub const Codegen = struct {
                 _ = self.closure_param_regs.remove(item.name);
             }
         }
+    }
+
+    fn genInlineClosureUnary(self: *Codegen, closure: *const ast.ClosureLiteral, arg_reg: u32) anyerror!u32 {
+        if (closure.params.len != 1) return Error.UnsupportedSabDirectFeature;
+        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        defer saved.deinit();
+        try saved.append(.{ .name = closure.params[0].name, .old = self.closure_param_regs.get(closure.params[0].name) });
+        try self.closure_param_regs.put(closure.params[0].name, arg_reg);
+        defer self.restoreClosureParams(saved.items);
+        return try self.genExpr(@constCast(closure.body));
+    }
+
+    fn genInlineClosureNullary(self: *Codegen, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        if (closure.params.len != 0) return Error.UnsupportedSabDirectFeature;
+        return try self.genExpr(@constCast(closure.body));
     }
 
     fn genClosureCall(self: *Codegen, closure: *const ast.ClosureLiteral, call: ast.CallExpr) anyerror!u32 {

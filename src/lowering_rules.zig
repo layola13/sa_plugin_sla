@@ -69,6 +69,19 @@ pub const SliceAbi = struct {
     pub const len_offset: usize = 8;
 };
 
+pub const OptionClosureMethodKind = enum {
+    map,
+    and_then,
+    unwrap_or_else,
+};
+
+pub const OptionClosureCallPlan = struct {
+    kind: OptionClosureMethodKind,
+    receiver_arg_index: usize = 0,
+    closure_arg_index: usize = 1,
+    closure_arity: usize,
+};
+
 pub fn abiTypeSize(ty: *const ast.Type) usize {
     return switch (ty.*) {
         .primitive => |p| switch (p) {
@@ -128,6 +141,48 @@ pub fn arrayElementLayout(arr: ast.ArrayType, index: usize) ?AbiFieldLayout {
 pub fn arrayRestLen(arr: ast.ArrayType, prefix_count: usize) ?usize {
     if (prefix_count > arr.len) return null;
     return arr.len - prefix_count;
+}
+
+pub fn optionInnerType(ty: *const ast.Type) ?*ast.Type {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, "Option") and ud.generics.len == 1) return ud.generics[0];
+                return null;
+            },
+            else => return null,
+        }
+    }
+}
+
+fn closureLiteralArity(expr: *const ast.Node) ?usize {
+    return switch (expr.*) {
+        .closure_literal => |lit| lit.params.len,
+        .move_expr => |move| closureLiteralArity(move.expr),
+        else => null,
+    };
+}
+
+pub fn planOptionClosureCall(call: ast.CallExpr, receiver_ty: *const ast.Type) ?OptionClosureCallPlan {
+    if (call.args.len != 2) return null;
+    if (optionInnerType(receiver_ty) == null) return null;
+    const arity = closureLiteralArity(call.args[1]) orelse return null;
+    if (std.mem.eql(u8, call.func_name, "map")) {
+        if (arity != 1) return null;
+        return .{ .kind = .map, .closure_arity = arity };
+    }
+    if (std.mem.eql(u8, call.func_name, "and_then")) {
+        if (arity != 1) return null;
+        return .{ .kind = .and_then, .closure_arity = arity };
+    }
+    if (std.mem.eql(u8, call.func_name, "unwrap_or_else")) {
+        if (arity != 0) return null;
+        return .{ .kind = .unwrap_or_else, .closure_arity = arity };
+    }
+    return null;
 }
 
 pub fn structAbiSize(decl: *const ast.StructDecl) usize {

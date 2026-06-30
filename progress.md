@@ -4,6 +4,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Direct SAB `Option` closure methods now lower through a shared Option-closure plan and std surface rules.
+  - Added `OptionClosureCallPlan` in `src/lowering_rules.zig` for `Option.map`, `Option.and_then`, and `Option.unwrap_or_else`, including receiver/closure argument positions and closure arity. The SA-text emitter now uses this shared plan for its existing Option closure-method dispatch instead of owning the method classification locally.
+  - Direct SAB consumes the same shared plan and emits structured branch/control-flow lowering, inline closure execution, and std surface macro fragments for `OPTION_IS_SOME`, `OPTION_GET`, `OPTION_NEW_SOME`, and `OPTION_NEW_NONE`; `Option` payload access is exposed through `sla_std/std_surface.sla_meta` as `method Option get ... OPTION_GET out,receiver` rather than a direct layout branch.
+  - Verified with local no-fallback SAB for `tests/test_unit_option_methods.sla`, SA-text backend for the same fixture, local no-fallback regressions for `tests/test_unit_option_direct.sla`, `tests/test_unit_result_direct.sla`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`, plus `zig build --summary all` and `zig build test --summary all` (58/58).
+  - Installed through official `sa plugin install --dev .` and reverified with `SA_PLUGIN_DEV=1 sa sla help`, host no-fallback SAB for `tests/test_unit_option_methods.sla`, host SA-text backend for the same fixture, and host no-fallback SAB for `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+  - Full current no-fallback `tests/test_unit_*.sla` sweep is now 48/64 passing. Remaining 16 failures are async, borrow-temp release ordering, derive semantics, enum match, for-in protocols, pkgjson codegen, rc/dyn trait, refcell/smart-pointer paths, sets, nested import contract extern callee resolution, spaceship compare, std import, struct update, and var comprehensive.
+  - Feature completion: 100% for shared-plan `Option` closure-method direct SAB support. Broader Y/shared-lowering progress is now approximately 58%; direct SAB fallback-removal progress is now approximately 81% by feature track, with current no-fallback unit-file pass rate at 48/64.
+
 - [done] Direct SAB `Cell<T>` bool construction/get/set now lowers through std surface metadata.
   - Extended generic associated std-surface call consumption so rules can request a `value` argument instead of only `out`, keeping associated constructors like `Cell::new(value)` data-driven.
   - Added `Cell` std surface metadata for `new`, `get`, and `set`; direct SAB now lowers `Cell::new(false)`, `flag.get()`, and `flag.set(true)` through imported `sa_std/core/cell.sa` macro fragments rather than a compiler-side Cell branch.

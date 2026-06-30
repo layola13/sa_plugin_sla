@@ -18,6 +18,7 @@ constructor Some Option sa_std/core/option.sa OPTION_NEW_SOME out,value
 constructor None Option sa_std/core/option.sa OPTION_NEW_NONE out
 method Option is_some sa_std/core/option.sa OPTION_IS_SOME out,receiver
 method Option is_none sa_std/core/option.sa OPTION_IS_NONE out,receiver
+method Option get sa_std/core/option.sa OPTION_GET out,receiver
 method Option unwrap sa_std/core/option.sa OPTION_UNWRAP out,receiver
 method Option unwrap_or sa_std/core/option.sa OPTION_UNWRAP_OR out,receiver,value
 constructor Ok Result sa_std/core/result.sa RESULT_NEW_OK out,value

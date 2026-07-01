@@ -14,55 +14,55 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
-- Previous committed baseline before the Rc dyn trait slice: `f31051b Share loop-control scoped var cleanup`.
-- Latest completed slice: Rc dyn trait coercion/dispatch through shared lowering rules.
-- Current full dev-mode direct SAB no-fallback sweep: 61/69 passing.
-- Current global estimates after the Rc dyn trait slice: Y/shared-lowering about 77%; direct SAB fallback-removal about 91%.
-- Current feature report: `Feature: Rc dyn trait coercion/dispatch 100%; Y/shared-lowering: 75% -> 77%; direct SAB fallback-removal: 90% -> 91%; no-fallback sweep: 61/69; host gate: passed; commit: completed slice commit`.
+- Latest committed baseline before this slice: `ecd9570 Share dyn trait coercion lowering`.
+- Latest completed slice: Set collection std-surface metadata lowering.
+- Current full dev-mode direct SAB no-fallback sweep: 62/69 passing.
+- Current global estimates after the sets slice: Y/shared-lowering about 79%; direct SAB fallback-removal about 92%.
+- Current feature report: `Feature: Set collection std metadata 100%; Y/shared-lowering: 77% -> 79%; direct SAB fallback-removal: 91% -> 92%; no-fallback sweep: 62/69; host gate: passed; commit: completed slice commit`.
 
 ## Completed Active Slice
 
-- Target: `tests/test_unit_rc_dyn_trait.sla`.
-- Owner phases: Phase 3 call/materialization plus Phase 4 std metadata.
-- Shared contract: `src/lowering_rules.zig` owns `DynCoercionPlan` plus dyn-dispatch receiver planning for direct dyn receivers and `Rc<dyn>` receivers that must materialize an inner fat pointer.
-- SA-text tail: `src/codegen.zig` consumes the shared dyn coercion and receiver plans instead of directly branching on `dyn_box_coercions`, `dyn_rc_coercions`, and Rc receiver shape at call sites.
-- SAB tail: `src/sab_codegen.zig` consumes the same plans; `Rc::new(T) -> Rc<dyn Trait>` constructs a `Dyn` fat pointer before metadata-driven `RC_NEW`; `Box::new(T) -> Box<dyn Trait>` becomes a direct dyn fat pointer; `Rc<dyn>.method()` materializes the inner fat pointer through std surface `get`.
-- Recursion fix: Box dyn coercion lowers the underlying Box expression without re-entering dyn coercion, avoiding the prior signal 139 recursion through `genExpr(expr)` on the same marked node.
+- Target: `tests/test_unit_sets.sla`.
+- Owner phase: Phase 4 std surface metadata generalization.
+- Shared/data contract: `sla_std/std_surface.sla_meta` now describes `HashSet::new`, `BTreeSet::new`, `len(HashSet)`, `len(BTreeSet)`, `HashSet.insert`, `HashSet.contains`, `BTreeSet.insert`, and `BTreeSet.contains`, including their required `sa_std` helper dependencies.
+- SAB tail: direct SAB consumes the generic std-surface associated/function/method path for set operations instead of adding Set-specific type-name branches.
+- Stack slice fix: direct SAB string literals used as set keys are stack-allocated `Slice` values and now enter the existing non-owning register path so generic cleanup does not emit an illegal `release` for stack allocation.
 
 ## Verified Gates For Completed Slice
 
-- `zig build test --summary all` passed 60/60.
+- `zig fmt --check src/sab_codegen.zig` passed.
 - `zig build --summary all` passed.
+- `zig build test --summary all` passed 60/60.
 - `sa plugin install --dev .` passed.
-- `SA_PLUGIN_DEV=1 sa sla help` passed.
-- `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_rc_dyn_trait.sla --test-backend sab --jobs 1 --trace-panic` passed 3/3.
-- `SA_PLUGIN_DEV=1 sa sla test tests/test_unit_rc_dyn_trait.sla --test-backend sa --jobs 1 --trace-panic` passed 3/3.
-- Dev-mode no-fallback guards passed for `tests/test_unit_var_comprehensive.sla`, assignment cleanup, field assignment cleanup, `tests/test_unit_pkgjson_codegen.sla`, `tests/test_unit_refcell_struct_payload.sla`, `tests/test_unit_trait_static_dispatch.sla`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
-- Disasm guard passed for latest `rc_dyn_trait` and `parallel.sla` artifacts: `rg 'call .*@[^" ]+\('` returned no matches.
+- `SA_PLUGIN_DEV=1 sa sla help` passed earlier in this worktree and the dev plugin was reinstalled before focused gates.
+- `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_sets.sla --test-backend sab --jobs 1 --trace-panic` passed 2/2.
+- `SA_PLUGIN_DEV=1 sa sla test tests/test_unit_sets.sla --test-backend sa --jobs 1 --trace-panic` passed 2/2.
+- Dev-mode no-fallback guards passed for `tests/test_unit_rc_dyn_trait.sla`, `tests/test_unit_var_comprehensive.sla`, assignment cleanup, field assignment cleanup, `tests/test_unit_pkgjson_codegen.sla`, `tests/test_unit_refcell_struct_payload.sla`, `tests/test_unit_trait_static_dispatch.sla`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+- Full dev-mode no-fallback sweep passed 62/69.
+- Disasm guard passed for latest `test_unit_sets` and `parallel.sla` artifacts: `rg 'call .*@[^" ]+\('` returned no matches.
 
-## Remaining 61/69 Sweep Failures
+## Remaining 62/69 Sweep Failures
 
 - `tests/test_unit_async_await.sla`.
 - `tests/test_unit_derive_semantics.sla`.
 - `tests/test_unit_enum_match.sla`.
 - `tests/test_unit_for_in_protocol.sla`.
 - `tests/test_unit_generic_for_in_protocol.sla`.
-- `tests/test_unit_sets.sla`.
 - `tests/test_unit_spaceship_cmp.sla`.
 - `tests/test_unit_struct_update.sla`.
 
 ## Next Active Slice
 
-- Target: `tests/test_unit_sets.sla`.
-- Owner phase: Phase 4 std surface metadata generalization.
-- Initial progress: 0% until the unsupported lowering kind is reproduced and assigned to a shared metadata/rule owner.
-- Boundary: Set/BTreeSet facts belong in `sla_std/std_surface.sla_meta` plus `sa_std` macros or shared std metadata rules. Do not add Set-specific type-name semantics directly in `src/sab_codegen.zig`.
-- Expected verification: focused dev-mode direct SAB no-fallback, SA-text parity, completed-slice guards including `rc_dyn_trait`, full dev-mode no-fallback sweep, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, `/home/vscode/projects/sla_ecs/lib/parallel.sla`, disasm guard if calls are touched, docs sync, and `git diff --check`.
+- Target: `tests/test_unit_struct_update.sla`.
+- Owner phase: Phase 5 aggregate, enum, derive, and operator semantics.
+- Initial progress: 0% until the unsupported lowering kind is reproduced and assigned to a shared aggregate/update owner.
+- Boundary: struct update/copy/drop decisions belong in shared aggregate layout/update rules in `src/lowering_rules.zig` or shared typecheck metadata. SAB should emit structured loads/stores from the plan, not invent separate aggregate update semantics.
+- Expected verification: focused dev-mode direct SAB no-fallback, SA-text parity, completed-slice guards including `sets`, full dev-mode no-fallback sweep, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, `/home/vscode/projects/sla_ecs/lib/parallel.sla`, disasm guard if calls are touched, docs sync, and `git diff --check`.
 
 ## Dirty Worktree Caveat
 
 Do not blindly restore, delete, stage, or commit unrelated/generated changes:
 
 - `README.md` is modified.
-- Generated `.test.sa` files are deleted: `tests/test_unit_rc_dyn_trait.test.sa`, `tests/test_unit_smart_pointer_struct_field_cleanup.test.sa`, and `tests/test_unit_var_comprehensive.test.sa`.
+- Generated `.test.sa` files are deleted: `tests/test_unit_rc_dyn_trait.test.sa`, `tests/test_unit_sets.test.sa`, `tests/test_unit_smart_pointer_struct_field_cleanup.test.sa`, and `tests/test_unit_var_comprehensive.test.sa`.
 - Untracked status/docs files include `COMPLETION_STATUS.md`, `WORK_SESSION_SUMMARY.md`, and `docs/*_cn.md`.

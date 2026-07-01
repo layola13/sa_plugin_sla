@@ -4,15 +4,24 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] Next active slice is `tests/test_unit_sets.sla` under Phase 4 std surface metadata generalization.
-  - Current verified baseline after the Rc dyn trait coercion/dispatch slice: full dev-mode direct-SAB no-fallback sweep is 61/69 passing; Y/shared-lowering is approximately 77%; direct SAB fallback-removal is approximately 91%.
-  - Remaining no-fallback failures are tracked in `tasks.md`: async/await, derive semantics, enum match, for-in protocols, generic for-in, sets, spaceship compare, and struct update.
-  - `tests/test_unit_rc_dyn_trait.sla`, `tests/test_unit_var_comprehensive.sla`, assignment cleanup, `tests/test_unit_pkgjson_codegen.sla`, RefCell struct payload, trait static dispatch, and `/home/vscode/projects/sla_ecs/lib/parallel.sla` are completed regressions and must stay in later host gates.
-  - Active slice progress: `tests/test_unit_sets.sla` is 0% until the failing direct-SAB lowering kind is reproduced and assigned to a shared owner. Set/BTreeSet semantics should be represented through `sla_std/std_surface.sla_meta`, `sa_std` macros, or shared std metadata rules, not Set-specific type-name branches in `src/sab_codegen.zig`.
+- [draft] Next active slice is `tests/test_unit_struct_update.sla` under Phase 5 aggregate/update semantics.
+  - Current verified baseline after the set collection std metadata slice: full dev-mode direct-SAB no-fallback sweep is 62/69 passing; Y/shared-lowering is approximately 79%; direct SAB fallback-removal is approximately 92%.
+  - Remaining no-fallback failures are tracked in `tasks.md`: async/await, derive semantics, enum match, for-in protocols, generic for-in, spaceship compare, and struct update.
+  - `tests/test_unit_sets.sla`, `tests/test_unit_rc_dyn_trait.sla`, `tests/test_unit_var_comprehensive.sla`, assignment cleanup, `tests/test_unit_pkgjson_codegen.sla`, RefCell struct payload, trait static dispatch, and `/home/vscode/projects/sla_ecs/lib/parallel.sla` are completed regressions and must stay in later host gates.
+  - Active slice progress: `tests/test_unit_struct_update.sla` is 0% until the failing direct-SAB lowering kind is reproduced and assigned to a shared aggregate/update owner. Struct update/copy/drop decisions should live in shared aggregate layout/update rules or typecheck metadata, not SAB-only aggregate semantics.
   - Dev-mode rule for all active CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
-  - Dirty worktree caveat: do not stage or restore unrelated `README.md`, deleted generated `.test.sa` files, `COMPLETION_STATUS.md`, `WORK_SESSION_SUMMARY.md`, or unrelated `docs/*_cn.md` files while committing verified compiler slices.
+  - Dirty worktree caveat: do not stage or restore unrelated `README.md`, deleted generated `.test.sa` files including `tests/test_unit_sets.test.sa`, `COMPLETION_STATUS.md`, `WORK_SESSION_SUMMARY.md`, or unrelated `docs/*_cn.md` files while committing verified compiler slices.
 
 ## Completed Features
+
+- [done] Set collection operations now lower through std surface metadata.
+  - `sla_std/std_surface.sla_meta` now owns `HashSet` and `BTreeSet` associated/function/method rules for `new`, `len`, `insert`, and `contains`, including explicit `sa_std` helper dependencies for the underlying hash map and btree map implementations.
+  - Direct SAB consumes the existing generic std-surface associated/function/method path for set operations instead of adding Set-specific type-name branches.
+  - Direct SAB string literals used as set keys are stack-allocated `Slice` values and now mark their slice register as non-owning, so generic cleanup no longer emits an illegal `release` for stack allocation.
+  - Verified with `zig fmt --check src/sab_codegen.zig`, `zig build --summary all`, `zig build test --summary all` (60/60), `sa plugin install --dev .`, dev-mode no-fallback SAB and SA-text parity for `tests/test_unit_sets.sla` 2/2, completed-slice no-fallback guards, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+  - Full dev-mode no-fallback `tests/test_unit_*.sla` sweep is now 62/69 passing. The remaining failures are async/await, derive semantics, enum match, for-in protocol, generic for-in protocol, spaceship compare, and struct update.
+  - Disasm guard passed for latest `test_unit_sets` and `parallel.sla` artifacts: `rg 'call .*@[^" ]+\('` returned no matches.
+  - Feature completion: 100% for set collection std metadata. Broader Y/shared-lowering progress is now approximately 79%; direct SAB fallback-removal progress is approximately 92%; current no-fallback unit-file pass rate is 62/69; included in the completed slice commit.
 
 - [done] Rc dyn trait coercion/dispatch now lowers through shared dyn coercion and receiver plans.
   - `src/lowering_rules.zig` owns `DynCoercionPlan`, `DynDispatchReceiverPlan`, and the receiver-kind decision for direct dyn receivers versus `Rc<dyn>` receivers that need an inner fat pointer.

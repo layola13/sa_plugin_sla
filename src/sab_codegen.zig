@@ -4403,6 +4403,7 @@ pub const Codegen = struct {
 
         const slice_reg = try self.intern(try self.newTmp());
         try self.emitStackAlloc(slice_reg, lowering_rules.SliceAbi.size);
+        try self.markNonOwningReg(slice_reg);
         const data_arg = try std.fmt.allocPrint(self.allocator, "&{s}", .{label});
         try self.emitStdMacroFragment("sa_std/core/slice.sa", "SLICE_NEW", &.{ self.symbols.items[slice_reg], data_arg, self.symbols.items[len_reg] });
         try self.emitRelease(len_reg);

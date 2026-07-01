@@ -15,6 +15,24 @@ This is the standalone Sla compiler plugin, providing Sla-to-SA compilation capa
 - `sa sla check <file>`: Lex, parse, and type-check a `.sla` source file without emitting final SA assembly.
 - `sa sla test <file>`: Compile a `.sla` test file to managed SAB under `.sla-cache/sab/` and run it through `sa test`. The default `auto` backend uses the SAB mainline; use `--test-backend sa` only when explicitly debugging the legacy `.test.sa` path, or `--test-backend sab` to spell out strict SAB mode.
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [`docs/architecture_cn.md`](docs/architecture_cn.md) | Y-shaped compiler architecture, shared front-end trunk, lowering rules, and emitter design |
+| [`docs/std_surface_metadata_cn.md`](docs/std_surface_metadata_cn.md) | `std_surface.sla_meta` format specification and rule reference |
+| [`docs/testing_and_verification_cn.md`](docs/testing_and_verification_cn.md) | Test writing, no-fallback testing, and the 9-step verification gate process |
+| [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) | Current completion progress (58/69 sweep), Phase 1-9 roadmap, and remaining failure ownership |
+| [`docs/sab_pipeline_cn.md`](docs/sab_pipeline_cn.md) | SAB pipeline design and binary format |
+| [`docs/compilation_optimization_cn.md`](docs/compilation_optimization_cn.md) | Compilation optimization strategies |
+| [`docs/mutability_decision_cn.md`](docs/mutability_decision_cn.md) | Mutability design decisions (`let mut`, `&mut T` Phase 1/2) |
+| [`docs/operator_overload_decision_cn.md`](docs/operator_overload_decision_cn.md) | Operator overload design (`@overload` block, `@derive(Add/...)` route) |
+| [`docs/sla_language_specification_cn.md`](docs/sla_language_specification_cn.md) | Complete Sla language specification |
+| [`docs/macro_vs_rust_cn.md`](docs/macro_vs_rust_cn.md) | Macro system comparison: Sla vs Rust |
+| [`docs/rust_vs_sla_final_cn.md`](docs/rust_vs_sla_final_cn.md) | Rust vs Sla comprehensive comparison (verified) |
+| [`docs/bevy_syntax_gap_analysis_cn.md`](docs/bevy_syntax_gap_analysis_cn.md) | Bevy ECS syntax gap analysis |
+| [`tutor/01_intro.md`](docs/tutor/01_intro.md) through [`07_builtin_api.md`](docs/tutor/07_builtin_api.md) | Tutorial series |
+
 Sla source uses compiler-managed lifetime cleanup by default. User-facing `.sla` code should not need explicit `!x;` releases; generated `.sa` may still contain `!` instructions because that is SA's ownership primitive. Sla intentionally does not add a `drop` keyword or `drop()` function.
 
 Recent frontend additions include discard bindings (`_`), struct update / slice rest patterns (`Struct { ..base }`, `[a, b, ..rest]`), explicit `using` static extensions for module-backed method-style calls, `type` aliases with flattened `&` composition for plain data layouts, and a restricted `@overload` block for `+ - * /` on explicit target types. These features are handled entirely in the frontend and lower to existing SA shapes without adding runtime dispatch.

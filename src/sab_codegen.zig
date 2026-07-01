@@ -921,6 +921,21 @@ pub const Codegen = struct {
         return self.structDeclForType(ty) != null and self.typeHasCopyDerive(ty);
     }
 
+    fn typeIsCopyValue(self: *Codegen, ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |p| p != .void_type,
+            .fn_ptr => true,
+            .user_defined => self.typeHasCopyDerive(ty),
+            .tuple => |tuple| blk: {
+                for (tuple.elems) |elem| {
+                    if (!self.typeIsCopyValue(elem)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
     fn fieldType(self: *Codegen, ty: *const ast.Type, name: []const u8) ?*ast.Type {
         const decl = self.structDeclForType(ty) orelse return null;
         for (decl.fields) |field| {
@@ -3114,6 +3129,14 @@ pub const Codegen = struct {
         try self.emitAssignReg(dst, value);
     }
 
+    fn markAssignmentMovedSource(self: *Codegen, target: *const ast.Node, value: *const ast.Node) anyerror!void {
+        if (value.* != .identifier) return;
+        const value_ty = (try self.exprTypeOrFallback(value)) orelse return Error.MissingType;
+        const source_name = lowering_rules.assignmentMovesIdentifier(target, value, value_ty, self.typeIsCopyValue(value_ty)) orelse return;
+        const source_reg = self.localReg(source_name) orelse return;
+        try self.markConsumed(source_reg);
+    }
+
     fn macroArgBinding(ctx: *const MacroExpansionContext, name: []const u8) ?MacroArgBinding {
         for (ctx.args) |binding| {
             if (std.mem.eql(u8, binding.name, name)) return binding;
@@ -4161,6 +4184,7 @@ pub const Codegen = struct {
             try self.emitStore(target.reg, 0, value, try primType(field_ty));
             if (!self.isLocalReg(value)) try self.emitRelease(value);
             if (!self.isLocalReg(target.reg)) try self.emitRelease(target.reg);
+            try self.markAssignmentMovedSource(assign.target, assign.value);
             return;
         }
 
@@ -4181,6 +4205,7 @@ pub const Codegen = struct {
                     .elem_ty = try self.elementLoadType(target_ty),
                 });
                 try self.releaseNonLocalTemps(&.{ target_reg, index_reg, value });
+                try self.markAssignmentMovedSource(assign.target, assign.value);
                 return;
             }
             const target_reg = try self.genExpr(idx.target);
@@ -4200,6 +4225,7 @@ pub const Codegen = struct {
             }
             if (!self.isLocalReg(value)) try self.emitRelease(value);
             if (!self.isLocalReg(target_reg)) try self.emitRelease(target_reg);
+            try self.markAssignmentMovedSource(assign.target, assign.value);
             return;
         }
 
@@ -4207,6 +4233,7 @@ pub const Codegen = struct {
         const name = assign.target.identifier;
         const value = try self.genExpr(assign.value);
         try self.assignToIdentifier(name, value);
+        try self.markAssignmentMovedSource(assign.target, assign.value);
     }
 
     fn genExpr(self: *Codegen, expr: *ast.Node) anyerror!u32 {

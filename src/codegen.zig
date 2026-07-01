@@ -6777,7 +6777,8 @@ pub const Codegen = struct {
     }
 
     fn storedIdentifierNeedsRelease(self: *Codegen, value: *const ast.Node, value_ty: *const ast.Type) bool {
-        return value.* == .identifier and value_ty.* != .primitive and value_ty.* != .fn_ptr and !self.typeIsCopyStruct(value_ty);
+        const value_is_copy = value_ty.* == .primitive or value_ty.* == .fn_ptr or self.typeIsCopyStruct(value_ty);
+        return lowering_rules.storedValueMovesIdentifier(value, value_ty, value_is_copy) != null;
     }
 
     fn isNonOwningPointerCarrierCastArg(arg: *const ast.Node) bool {

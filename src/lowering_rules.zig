@@ -523,6 +523,42 @@ pub fn exprResultNeedsRelease(expr: *const ast.Node) bool {
     };
 }
 
+pub fn rootIdentifier(expr: *const ast.Node) ?[]const u8 {
+    return switch (expr.*) {
+        .identifier => |name| name,
+        .field_expr => |field| rootIdentifier(field.expr),
+        .index_expr => |idx| rootIdentifier(idx.target),
+        else => null,
+    };
+}
+
+pub fn isBorrowLikeType(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .borrow => true,
+        .primitive => |p| p == .void_type,
+        else => false,
+    };
+}
+
+pub fn storedValueMovesIdentifier(value: *const ast.Node, value_ty: *const ast.Type, value_is_copy: bool) ?[]const u8 {
+    if (value.* != .identifier) return null;
+    if (value_is_copy or isBorrowLikeType(value_ty)) return null;
+    return value.identifier;
+}
+
+pub fn assignmentMovesIdentifier(
+    target: *const ast.Node,
+    value: *const ast.Node,
+    value_ty: *const ast.Type,
+    value_is_copy: bool,
+) ?[]const u8 {
+    const value_name = storedValueMovesIdentifier(value, value_ty, value_is_copy) orelse return null;
+    if (rootIdentifier(target)) |target_name| {
+        if (std.mem.eql(u8, target_name, value_name)) return null;
+    }
+    return value_name;
+}
+
 pub fn shouldAutoBorrowResolvedArg(
     param: ast.Param,
     arg: *const ast.Node,
@@ -623,6 +659,23 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(!exprResultNeedsRelease(&value));
     try std.testing.expect(exprResultNeedsRelease(&field));
     try std.testing.expect(exprResultNeedsRelease(&borrowed_value));
+
+    var boxed_ty = ast.Type{ .user_defined = .{ .name = "Boxed", .generics = &.{} } };
+    var primitive_ty = ast.Type{ .primitive = .i32 };
+    var borrow_boxed_ty = ast.Type{ .borrow = &boxed_ty };
+    var target = ast.Node{ .identifier = "target" };
+    var source = ast.Node{ .identifier = "source" };
+    var same_target = ast.Node{ .identifier = "source" };
+    var target_field = ast.Node{ .field_expr = .{ .expr = &target, .field_name = "field" } };
+
+    const moved_to_identifier = assignmentMovesIdentifier(&target, &source, &boxed_ty, false) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualSlices(u8, "source", moved_to_identifier);
+    const moved_to_field = assignmentMovesIdentifier(&target_field, &source, &boxed_ty, false) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualSlices(u8, "source", moved_to_field);
+    try std.testing.expect(assignmentMovesIdentifier(&same_target, &source, &boxed_ty, false) == null);
+    try std.testing.expect(assignmentMovesIdentifier(&target, &source, &primitive_ty, true) == null);
+    try std.testing.expect(assignmentMovesIdentifier(&target, &source, &borrow_boxed_ty, false) == null);
+    try std.testing.expect(assignmentMovesIdentifier(&target, &field, &boxed_ty, false) == null);
 
     var i64_ty = ast.Type{ .primitive = .i64 };
     var borrow_i64_ty = ast.Type{ .borrow = &i64_ty };

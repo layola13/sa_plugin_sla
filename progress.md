@@ -4,14 +4,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] Next slice is Phase 3 call/result/assignment stabilization, with Phase 4 std metadata and Phase 5 aggregate/operator work after that.
-  - Current verified baseline after the imported SA macro slice: full local direct-SAB no-fallback sweep is 58/69 passing; Y/shared-lowering is approximately 72%; direct SAB fallback-removal is approximately 88%.
-  - Remaining no-fallback failures are tracked in `tasks.md`: assign-move cleanup, async/await, derive semantics, enum match, for-in protocols, generic for-in, rc/dyn trait, sets, spaceship compare, struct update, and var comprehensive.
+- [draft] Next slice remains Phase 3 call/result/assignment stabilization, with Phase 4 std metadata and Phase 5 aggregate/operator work after that.
+  - Current verified baseline after the assignment-move cleanup slice: full local direct-SAB no-fallback sweep is 59/69 passing; Y/shared-lowering is approximately 73%; direct SAB fallback-removal is approximately 89%.
+  - Remaining no-fallback failures are tracked in `tasks.md`: async/await, derive semantics, enum match, for-in protocols, generic for-in, rc/dyn trait, sets, spaceship compare, struct update, and var comprehensive.
   - `tests/test_unit_pkgjson_codegen.sla` is now a completed regression, not the active blocker. Keep it in every macro/import gate with both no-fallback SAB and SA-text parity.
   - Keep completed-slice guards in every later host gate: pkgjson, imported JSON/FS macro fixtures, borrow-temp, RefCell struct payload, smart-pointer cleanup, Option methods/direct, Result direct, trait static dispatch, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
-  - Active next-slice progress: Phase 3 call/result/assignment is 25% classified; global Y/shared-lowering and direct SAB fallback-removal stay at 72%/88% until the next verified slice passes host gates.
+  - Active next-slice progress: Phase 3 assignment-move cleanup is 100%; the broader Phase 3 call/result/argument plan remains open for `var_comprehensive` and `rc_dyn_trait`.
 
 ## Completed Features
+
+- [done] Assignment moved-local cleanup now lowers through shared assignment-move rules.
+  - `src/lowering_rules.zig` now owns `rootIdentifier`, `storedValueMovesIdentifier`, and `assignmentMovesIdentifier`, so emitters share the rule for when a bare RHS identifier is moved by assignment.
+  - `src/sab_codegen.zig` consumes that rule after field, index, and identifier assignments, marking the moved RHS local register consumed so loop/body cleanup does not emit a second `release`.
+  - `src/codegen.zig` reuses the shared stored-value move rule for the existing SA-text release decision.
+  - Verified with `zig build --summary all`, `zig build test --summary all` (58/58), focused local and host direct-SAB no-fallback plus SA-text parity for `tests/test_unit_assign_move_cleanup.sla` and `tests/test_unit_field_assign_move_cleanup.sla`, local no-fallback regressions for pkgjson/user-macro/RefCell/trait-static/Option/Result, full local no-fallback sweep at 59/69, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, host no-fallback pkgjson/RefCell/trait-static, and host no-fallback `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+  - Feature completion: 100% for assignment moved-local cleanup. Broader Y/shared-lowering progress is now approximately 73%; direct SAB fallback-removal progress is approximately 89%; current no-fallback unit-file pass rate is 59/69; committed in this slice.
 
 - [done] Imported SA expression-output macros now lower through the shared Y path with addressable borrowed arguments.
   - `src/plugin.zig` now records imported macro source paths, expression-output arity, direct `&%param` use, and nested `EXPAND` borrowed-parameter propagation before the SA/SAB emitter split.
@@ -19,7 +26,7 @@ Update this file every time a compiler feature or demo milestone is completed an
   - Direct SAB now materializes address-taken imported macro args into stack slots when needed, emits generic imported helper macro fragments from their import path, and keeps SAB call targets pure (`"@func"`) with arguments separate instead of generating `"@func(arg)"`.
   - Added/imported regressions for `pkgjson`, FS exists/read, JSON object/string/struct helpers, and nested imported macro borrowed-arg propagation.
   - Verified with `zig build --summary all`, `zig build test --summary all` (58/58), full local no-fallback `tests/test_unit_*.sla` sweep at 58/69, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, host no-fallback `tests/test_unit_pkgjson_codegen.sla`, host SA-text `pkgjson`, host no-fallback RefCell/trait-static guards, and host no-fallback `/home/vscode/projects/sla_ecs/lib/parallel.sla` with disasm showing `call ...,"@sla__ecs_parallel_sum_i32_chunk","tmp_52"`.
-  - Feature completion: 100% for imported SA macro expression-output/addressable args. Broader Y/shared-lowering progress is now approximately 72%; direct SAB fallback-removal progress is approximately 88%; current no-fallback unit-file pass rate is 58/69; commit is pending final diff review.
+  - Feature completion: 100% for imported SA macro expression-output/addressable args. Broader Y/shared-lowering progress reached approximately 72%; direct SAB fallback-removal progress reached approximately 88%; no-fallback unit-file pass rate reached 58/69; committed as `b1c09b6`.
 
 - [done] Focused smart-pointer, borrow-precedence, RefCell, and visible call-target convergence is complete through the shared Y path.
   - Shared contracts now own the important semantics: `src/lowering_rules.zig` provides smart-pointer helpers and `associatedRuleNeedsUnderlyingSmartPointer`; `sla_std/std_surface.sla_meta` owns Rc/Arc clone and Vec index-address metadata; `sa_std` owns `RC_CLONE_OUT`, `ARC_CLONE_OUT`, and `VEC_GET_MUT_PTR_U64` wrappers.

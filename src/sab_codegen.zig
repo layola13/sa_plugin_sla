@@ -4363,6 +4363,7 @@ pub const Codegen = struct {
             },
             .binary_expr => |bin| try self.genBinary(bin),
             .call_expr => |call| blk: {
+                if (lowering_rules.planDynCoercion(self.tc, expr)) |plan| break :blk try self.genDynCoercionExpr(expr, plan);
                 if (self.tc.fn_ptr_calls.contains(expr)) break :blk try self.genFnPtrCall(call);
                 break :blk try self.genCall(expr, call);
             },
@@ -4604,7 +4605,7 @@ pub const Codegen = struct {
 
     fn genSmartPointerGet(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?u32 {
         const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return null;
-        _ = smart;
+        if (smart.kind == .box and lowering_rules.smartPointerDerefIsDynBox(source_ty)) return source;
         const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);
@@ -4635,6 +4636,9 @@ pub const Codegen = struct {
 
     fn genSmartPointerAddressSource(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?AddressSource {
         const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return null;
+        if (smart.kind == .box and lowering_rules.smartPointerDerefIsDynBox(source_ty)) {
+            return .{ .reg = source };
+        }
         const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);
@@ -4721,7 +4725,7 @@ pub const Codegen = struct {
         const source_ty = self.tc.expr_types.get(deref.expr) orelse return Error.MissingType;
         const source = try self.genExpr(deref.expr);
         if (try self.genSmartPointerGet(source_ty, source)) |value| {
-            if (!self.isLocalReg(source)) try self.emitRelease(source);
+            if (value != source and !self.isLocalReg(source)) try self.emitRelease(source);
             return value;
         }
         const dst = try self.intern(try self.newTmp());
@@ -4765,6 +4769,72 @@ pub const Codegen = struct {
         return fat_reg;
     }
 
+    fn genDynConcreteFatPointer(self: *Codegen, source_expr: *ast.Node, trait_name: []const u8) anyerror!u32 {
+        const source_ty = self.tc.expr_types.get(source_expr) orelse return Error.MissingType;
+        const type_name = concreteTypeName(source_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const data_reg = try self.genExpr(source_expr);
+        const vtable_reg = try self.intern(try self.newTmp());
+        const vt_name = try self.vtableName(trait_name, type_name);
+        try self.emitBorrowSymbol(vtable_reg, vt_name);
+
+        const fat_reg = try self.intern(try self.newTmp());
+        try self.emitDynNew(fat_reg, data_reg, vtable_reg);
+        try self.emitRelease(vtable_reg);
+        try self.releaseExprResultIfNeeded(source_expr, data_reg);
+        return fat_reg;
+    }
+
+    fn genExprWithoutDynCoercion(self: *Codegen, expr: *ast.Node) anyerror!u32 {
+        if (expr.* == .call_expr) return try self.genCall(expr, expr.call_expr);
+        return try self.genExpr(expr);
+    }
+
+    fn genDynBoxCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8) anyerror!u32 {
+        const expr_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        const inner_ty = lowering_rules.boxInnerType(expr_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const type_name = concreteTypeName(inner_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const box_reg = try self.genExprWithoutDynCoercion(expr);
+
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitStdSurfaceMethod(expr_ty, "get", data_reg, box_reg);
+
+        const vtable_reg = try self.intern(try self.newTmp());
+        const vt_name = try self.vtableName(trait_name, type_name);
+        try self.emitBorrowSymbol(vtable_reg, vt_name);
+
+        const fat_reg = try self.intern(try self.newTmp());
+        try self.emitDynNew(fat_reg, data_reg, vtable_reg);
+        try self.emitRelease(vtable_reg);
+        try self.releaseNonLocalTemps(&.{ data_reg, box_reg });
+        return fat_reg;
+    }
+
+    fn genDynRcCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8) anyerror!u32 {
+        if (expr.* != .call_expr) return Error.UnsupportedSabDirectFeature;
+        const call = expr.call_expr;
+        if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+
+        const fat_reg = try self.genDynConcreteFatPointer(@constCast(call.args[0]), trait_name);
+        const rule = self.findStdSurfaceRule(.associated, "Rc", "new") orelse return Error.UnsupportedSabDirectFeature;
+        const rc_reg = try self.intern(try self.newTmp());
+        try self.recordReg(rc_reg);
+        const expr_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        try self.emitStdSurfaceRule(rule, .{
+            .out = rc_reg,
+            .value = fat_reg,
+            .elem_size = self.elementSlotSize(expr_ty),
+        });
+        try self.releaseNonLocalTemps(&.{fat_reg});
+        return rc_reg;
+    }
+
+    fn genDynCoercionExpr(self: *Codegen, expr: *ast.Node, plan: lowering_rules.DynCoercionPlan) anyerror!u32 {
+        return switch (plan.kind) {
+            .box_to_dyn => try self.genDynBoxCoercionExpr(expr, plan.trait_name),
+            .rc_new_to_dyn_rc => try self.genDynRcCoercionExpr(expr, plan.trait_name),
+        };
+    }
+
     fn genDynBorrowArg(self: *Codegen, arg: *const ast.Node, trait_name: []const u8) anyerror!u32 {
         const source_expr = if (arg.* == .borrow_expr) arg.borrow_expr.expr else arg;
         const source_ty = self.tc.expr_types.get(source_expr) orelse return Error.MissingType;
@@ -4783,7 +4853,18 @@ pub const Codegen = struct {
         const trait_name = self.tc.dyn_call_traits.get(expr) orelse return null;
         if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
         const slot = lowering_rules.dynMethodSlot(self.tc, trait_name, call.func_name) orelse return Error.UnsupportedSabDirectFeature;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
         const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        var dyn_reg = receiver_reg;
+        if (lowering_rules.planDynDispatchReceiver(receiver_ty)) |receiver_plan| {
+            switch (receiver_plan.kind) {
+                .direct_dyn => {},
+                .rc_get_dyn => {
+                    dyn_reg = try self.intern(try self.newTmp());
+                    try self.emitStdSurfaceMethod(receiver_ty, "get", dyn_reg, receiver_reg);
+                },
+            }
+        }
         const data_reg = try self.intern(try self.newTmp());
         const vtable_reg = try self.intern(try self.newTmp());
         const fn_reg = try self.intern(try self.newTmp());
@@ -4792,8 +4873,8 @@ pub const Codegen = struct {
         try self.recordReg(vtable_reg);
         try self.recordReg(fn_reg);
         try self.recordReg(dst);
-        try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_GET_DATA", &.{ self.symbols.items[data_reg], self.symbols.items[receiver_reg] });
-        try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_GET_VTABLE", &.{ self.symbols.items[vtable_reg], self.symbols.items[receiver_reg] });
+        try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_GET_DATA", &.{ self.symbols.items[data_reg], self.symbols.items[dyn_reg] });
+        try self.emitStdMacroFragment("sa_std/core/trait_object.sa", "DYN_GET_VTABLE", &.{ self.symbols.items[vtable_reg], self.symbols.items[dyn_reg] });
         try self.emitLoad(fn_reg, vtable_reg, slot, .ptr);
 
         var body = std.ArrayList(u8).init(self.allocator);
@@ -4806,6 +4887,7 @@ pub const Codegen = struct {
         try self.emitRelease(fn_reg);
         try self.emitRelease(vtable_reg);
         try self.emitRelease(data_reg);
+        if (dyn_reg != receiver_reg and !self.isLocalReg(dyn_reg)) try self.emitRelease(dyn_reg);
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
         return dst;
     }

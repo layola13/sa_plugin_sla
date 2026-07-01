@@ -52,6 +52,42 @@ pub const LoopControlPlan = struct {
     has_continue: bool,
 };
 
+pub const DynCoercionKind = enum {
+    box_to_dyn,
+    rc_new_to_dyn_rc,
+};
+
+pub const DynCoercionPlan = struct {
+    kind: DynCoercionKind,
+    trait_name: []const u8,
+};
+
+pub fn planDynCoercion(tc: *type_checker.TypeChecker, expr: *const ast.Node) ?DynCoercionPlan {
+    if (tc.dyn_box_coercions.get(expr)) |trait_name| return .{ .kind = .box_to_dyn, .trait_name = trait_name };
+    if (tc.dyn_rc_coercions.get(expr)) |trait_name| return .{ .kind = .rc_new_to_dyn_rc, .trait_name = trait_name };
+    return null;
+}
+
+pub const DynDispatchReceiverKind = enum {
+    direct_dyn,
+    rc_get_dyn,
+};
+
+pub const DynDispatchReceiverPlan = struct {
+    kind: DynDispatchReceiverKind,
+};
+
+pub fn planDynDispatchReceiver(receiver_ty: *const ast.Type) ?DynDispatchReceiverPlan {
+    if (rcInnerType(receiver_ty)) |inner| {
+        if (dynTraitName(inner) != null) return .{ .kind = .rc_get_dyn };
+    }
+    if (dynTraitName(receiver_ty) != null) return .{ .kind = .direct_dyn };
+    if (boxInnerType(receiver_ty)) |inner| {
+        if (dynTraitName(inner) != null) return .{ .kind = .direct_dyn };
+    }
+    return null;
+}
+
 pub fn planLoopControl(body: []const *ast.Node) LoopControlPlan {
     return .{
         .has_break = blockContainsCurrentLoopBreak(body),
@@ -413,6 +449,11 @@ pub fn smartPointerReceiverNeedsLoad(ty: *const ast.Type) bool {
 
 pub fn smartPointerDerefNeedsValueSlot(inner_ty: *const ast.Type) bool {
     return smartPointerDerefType(inner_ty) != null;
+}
+
+pub fn smartPointerDerefIsDynBox(ty: *const ast.Type) bool {
+    const inner = boxInnerType(ty) orelse return false;
+    return dynTraitName(inner) != null;
 }
 
 /// Returns true when an associated-call rule (e.g. `Rc::clone`, `Arc::clone`)
@@ -954,4 +995,38 @@ test "shared dyn trait naming and method slots" {
     const vt = try vtableName(std.testing.allocator, "Draw", "Sprite");
     defer std.testing.allocator.free(vt);
     try std.testing.expectEqualSlices(u8, "VT_Sprite_Draw", vt);
+}
+
+test "shared dyn coercion and receiver plans" {
+    var concrete_ty = ast.Type{ .user_defined = .{ .name = "Sprite", .generics = &.{} } };
+    var dyn_ty = ast.Type{ .user_defined = .{ .name = "__dyn_Draw", .generics = &.{} } };
+    const rc_generics = [_]*ast.Type{&dyn_ty};
+    const box_generics = [_]*ast.Type{&dyn_ty};
+    var rc_dyn_ty = ast.Type{ .user_defined = .{ .name = "Rc", .generics = rc_generics[0..] } };
+    var box_dyn_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = box_generics[0..] } };
+    var borrowed_dyn_ty = ast.Type{ .borrow = &dyn_ty };
+
+    const rc_plan = planDynDispatchReceiver(&rc_dyn_ty) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(DynDispatchReceiverKind.rc_get_dyn, rc_plan.kind);
+    const box_plan = planDynDispatchReceiver(&box_dyn_ty) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(DynDispatchReceiverKind.direct_dyn, box_plan.kind);
+    const borrowed_plan = planDynDispatchReceiver(&borrowed_dyn_ty) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(DynDispatchReceiverKind.direct_dyn, borrowed_plan.kind);
+    try std.testing.expect(smartPointerDerefIsDynBox(&box_dyn_ty));
+    try std.testing.expect(!smartPointerDerefIsDynBox(&rc_dyn_ty));
+    try std.testing.expect(planDynDispatchReceiver(&concrete_ty) == null);
+
+    var rc_expr = ast.Node{ .identifier = "make_rc" };
+    var box_expr = ast.Node{ .identifier = "make_box" };
+    var tc = type_checker.TypeChecker.init(std.testing.allocator);
+    defer tc.deinit();
+    try tc.dyn_rc_coercions.put(&rc_expr, "Draw");
+    try tc.dyn_box_coercions.put(&box_expr, "Draw");
+
+    const rc_coercion = planDynCoercion(&tc, &rc_expr) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(DynCoercionKind.rc_new_to_dyn_rc, rc_coercion.kind);
+    try std.testing.expectEqualSlices(u8, "Draw", rc_coercion.trait_name);
+    const box_coercion = planDynCoercion(&tc, &box_expr) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(DynCoercionKind.box_to_dyn, box_coercion.kind);
+    try std.testing.expectEqualSlices(u8, "Draw", box_coercion.trait_name);
 }

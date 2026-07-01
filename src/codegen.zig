@@ -415,6 +415,13 @@ pub const Codegen = struct {
         return rc_reg;
     }
 
+    fn genDynCoercionExpr(self: *Codegen, expr: *ast.Node, plan: lowering_rules.DynCoercionPlan, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+        return switch (plan.kind) {
+            .box_to_dyn => try self.genDynBoxCoercionExpr(expr, plan.trait_name, hoisted_allocs),
+            .rc_new_to_dyn_rc => try self.genDynRcCoercionExpr(expr, plan.trait_name, hoisted_allocs),
+        };
+    }
+
     fn emitIntConst(self: *Codegen, target: []const u8, value: i64) CodegenError!void {
         self.out.writer().print("    {s} = {}\n", .{ target, value }) catch return CodegenError.CodegenError;
     }
@@ -3664,7 +3671,9 @@ pub const Codegen = struct {
     }
 
     fn exprNeedsVecMacros(self: *Codegen, expr: *const ast.Node) bool {
-        if (self.tc.dyn_box_coercions.contains(expr)) return true;
+        if (lowering_rules.planDynCoercion(self.tc, expr)) |plan| {
+            if (plan.kind == .box_to_dyn) return true;
+        }
         if (self.tc.expr_types.get(expr)) |ty| {
             if (vecElementType(ty) != null) return true;
         }
@@ -5226,7 +5235,7 @@ pub const Codegen = struct {
     }
 
     fn exprNeedsTraitObjectMacros(self: *Codegen, expr: *const ast.Node) bool {
-        if (self.tc.dyn_box_coercions.contains(expr) or self.tc.dyn_rc_coercions.contains(expr)) return true;
+        if (lowering_rules.planDynCoercion(self.tc, expr) != null) return true;
         return switch (expr.*) {
             .call_expr => |call| blk: {
                 _ = call;
@@ -6912,11 +6921,8 @@ pub const Codegen = struct {
                 } else if (let.value.* == .identifier and self.typeIsCopyStruct(let_ty)) {
                     const source_reg = try self.genExpr(let.value, hoisted_allocs);
                     try self.genCopyValueInto(let.name, source_reg, let_ty);
-                } else if (self.tc.dyn_box_coercions.get(let.value)) |trait_name| {
-                    const val_reg = try self.genDynBoxCoercionExpr(let.value, trait_name, hoisted_allocs);
-                    self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
-                } else if (self.tc.dyn_rc_coercions.get(let.value)) |trait_name| {
-                    const val_reg = try self.genDynRcCoercionExpr(let.value, trait_name, hoisted_allocs);
+                } else if (lowering_rules.planDynCoercion(self.tc, let.value)) |plan| {
+                    const val_reg = try self.genDynCoercionExpr(let.value, plan, hoisted_allocs);
                     self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
@@ -7153,11 +7159,8 @@ pub const Codegen = struct {
                 } else if (c.value.* == .identifier and self.typeIsCopyStruct(const_ty)) {
                     const source_reg = try self.genExpr(c.value, hoisted_allocs);
                     try self.genCopyValueInto(c.name, source_reg, const_ty);
-                } else if (self.tc.dyn_box_coercions.get(c.value)) |trait_name| {
-                    const val_reg = try self.genDynBoxCoercionExpr(c.value, trait_name, hoisted_allocs);
-                    self.out.writer().print("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
-                } else if (self.tc.dyn_rc_coercions.get(c.value)) |trait_name| {
-                    const val_reg = try self.genDynRcCoercionExpr(c.value, trait_name, hoisted_allocs);
+                } else if (lowering_rules.planDynCoercion(self.tc, c.value)) |plan| {
+                    const val_reg = try self.genDynCoercionExpr(c.value, plan, hoisted_allocs);
                     self.out.writer().print("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(c.value, hoisted_allocs);
@@ -10570,10 +10573,13 @@ pub const Codegen = struct {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     var dyn_reg = recv_reg;
-                    if (rcInnerType(recv_ty)) |rc_inner| {
-                        if (dynTraitName(rc_inner) != null) {
-                            dyn_reg = try self.newTmp();
-                            self.out.writer().print("    EXPAND RC_GET {s}, {s}\n", .{ dyn_reg, recv_reg }) catch return CodegenError.CodegenError;
+                    if (lowering_rules.planDynDispatchReceiver(recv_ty)) |receiver_plan| {
+                        switch (receiver_plan.kind) {
+                            .direct_dyn => {},
+                            .rc_get_dyn => {
+                                dyn_reg = try self.newTmp();
+                                self.out.writer().print("    EXPAND RC_GET {s}, {s}\n", .{ dyn_reg, recv_reg }) catch return CodegenError.CodegenError;
+                            },
                         }
                     }
 

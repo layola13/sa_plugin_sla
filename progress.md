@@ -4,14 +4,25 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] Next slice remains Phase 3 call/result/assignment stabilization, with Phase 4 std metadata and Phase 5 aggregate/operator work after that.
-  - Current verified baseline after the var loop-control/scoped-slot cleanup slice: full local direct-SAB no-fallback sweep is 60/69 passing; Y/shared-lowering is approximately 75%; direct SAB fallback-removal is approximately 90%.
-  - Remaining no-fallback failures are tracked in `tasks.md`: async/await, derive semantics, enum match, for-in protocols, generic for-in, rc/dyn trait, sets, spaceship compare, and struct update.
-  - `tests/test_unit_pkgjson_codegen.sla` is now a completed regression, not the active blocker. Keep it in every macro/import gate with both no-fallback SAB and SA-text parity.
-  - Keep completed-slice guards in every later host gate: var comprehensive, assignment cleanup, pkgjson, imported JSON/FS macro fixtures, borrow-temp, RefCell struct payload, smart-pointer cleanup, Option methods/direct, Result direct, trait static dispatch, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
-  - Active next-slice progress: Phase 3 var loop-control/scoped-slot cleanup is 100%; the broader Phase 3 call/result/argument plan remains open for `rc_dyn_trait` and deeper call materialization.
+- [draft] Next active slice is `tests/test_unit_sets.sla` under Phase 4 std surface metadata generalization.
+  - Current verified baseline after the Rc dyn trait coercion/dispatch slice: full dev-mode direct-SAB no-fallback sweep is 61/69 passing; Y/shared-lowering is approximately 77%; direct SAB fallback-removal is approximately 91%.
+  - Remaining no-fallback failures are tracked in `tasks.md`: async/await, derive semantics, enum match, for-in protocols, generic for-in, sets, spaceship compare, and struct update.
+  - `tests/test_unit_rc_dyn_trait.sla`, `tests/test_unit_var_comprehensive.sla`, assignment cleanup, `tests/test_unit_pkgjson_codegen.sla`, RefCell struct payload, trait static dispatch, and `/home/vscode/projects/sla_ecs/lib/parallel.sla` are completed regressions and must stay in later host gates.
+  - Active slice progress: `tests/test_unit_sets.sla` is 0% until the failing direct-SAB lowering kind is reproduced and assigned to a shared owner. Set/BTreeSet semantics should be represented through `sla_std/std_surface.sla_meta`, `sa_std` macros, or shared std metadata rules, not Set-specific type-name branches in `src/sab_codegen.zig`.
+  - Dev-mode rule for all active CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
+  - Dirty worktree caveat: do not stage or restore unrelated `README.md`, deleted generated `.test.sa` files, `COMPLETION_STATUS.md`, `WORK_SESSION_SUMMARY.md`, or unrelated `docs/*_cn.md` files while committing verified compiler slices.
 
 ## Completed Features
+
+- [done] Rc dyn trait coercion/dispatch now lowers through shared dyn coercion and receiver plans.
+  - `src/lowering_rules.zig` owns `DynCoercionPlan`, `DynDispatchReceiverPlan`, and the receiver-kind decision for direct dyn receivers versus `Rc<dyn>` receivers that need an inner fat pointer.
+  - `src/codegen.zig` consumes those shared plans for SA text instead of directly branching on `dyn_box_coercions`, `dyn_rc_coercions`, and Rc receiver shape at call sites.
+  - Direct SAB consumes the same plans: `Rc::new(T) -> Rc<dyn Trait>` builds a `Dyn` fat pointer before metadata-driven `RC_NEW`, `Box::new(T) -> Box<dyn Trait>` becomes a direct dyn fat pointer, and `Rc<dyn>.method()` materializes the inner fat pointer through std surface `get`.
+  - The Box dyn coercion recursion bug is fixed by lowering the underlying Box expression without re-entering dyn coercion, avoiding the prior signal 139 path.
+  - Verified with `zig build --summary all`, `zig build test --summary all` (60/60), `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, dev-mode no-fallback SAB and SA-text parity for `tests/test_unit_rc_dyn_trait.sla` 3/3, completed-slice no-fallback guards, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+  - Full dev-mode no-fallback `tests/test_unit_*.sla` sweep is now 61/69 passing. The remaining failures are async/await, derive semantics, enum match, for-in protocol, generic for-in protocol, sets, spaceship compare, and struct update.
+  - Disasm guard passed for latest `rc_dyn_trait` and `parallel.sla` artifacts: `rg 'call .*@[^" ]+\('` returned no matches.
+  - Feature completion: 100% for Rc dyn trait coercion/dispatch. Broader Y/shared-lowering progress is now approximately 77%; direct SAB fallback-removal progress is approximately 91%; current no-fallback unit-file pass rate is 61/69; included in the completed slice commit.
 
 - [done] Var loop-control, explicit release, and scoped shadow slots now lower through the shared Y path.
   - `src/lowering_rules.zig` now owns `LoopControlPlan`, current-loop-only break/continue detection, and shared block/statement termination checks. `src/codegen.zig` delegates its previous local AST scan to those shared rules.

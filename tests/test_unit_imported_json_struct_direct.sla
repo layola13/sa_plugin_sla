@@ -1,0 +1,21 @@
+@import "sa_std/string.sa"
+@import "sa_std/encoding/json.sa"
+@import "import_fixtures/pkgjson/json_helpers.sa"
+
+struct ImportedJsonEntry {
+    present: bool,
+    entry_ptr: ptr,
+    entry_len: int,
+}
+
+fn imported_json_struct(data: ptr, data_len: int) -> ImportedJsonEntry {
+    let root = JSON_PARSE(data, data_len);
+    let t = SLA_JSON_OBJECT_GET(root, STR_PTR("types"), STR_LEN("types"));
+    return ImportedJsonEntry { present: true, entry_ptr: SLA_JSON_STRING_PTR(t), entry_len: SLA_JSON_STRING_LEN(t) };
+}
+
+@test "imported json struct direct sab"() {
+    let entry = imported_json_struct("{\"types\":\"x\"}", 13);
+    if entry.present != true { panic(39041); };
+    if entry.entry_len < 0 { panic(39042); };
+}

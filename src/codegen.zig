@@ -6680,11 +6680,8 @@ pub const Codegen = struct {
         return reg;
     }
 
-    fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, macro: type_checker.ImportedMacro, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
-        const expression_output = macro.leading_outputs == 1 and call.args.len + 1 == macro.arity;
-        if (call.args.len != macro.arity and !expression_output) return CodegenError.CodegenError;
-
-        const reg = if (expression_output) try self.newTmp() else "return_ty_sentinel";
+    fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+        const reg = if (plan.expression_output) try self.newTmp() else "return_ty_sentinel";
         var arg_regs = std.ArrayList([]const u8).init(self.allocator);
         defer arg_regs.deinit();
         for (call.args) |arg| {
@@ -6695,12 +6692,12 @@ pub const Codegen = struct {
             try arg_regs.append(arg_reg);
         }
 
-        self.out.writer().print("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
-        if (expression_output) {
+        self.out.writer().print("    EXPAND {s}", .{plan.macro_name}) catch return CodegenError.CodegenError;
+        if (plan.expression_output) {
             self.out.writer().print(" {s}", .{reg}) catch return CodegenError.CodegenError;
         }
         for (arg_regs.items, 0..) |arg_reg, i| {
-            if (expression_output or i > 0) {
+            if (plan.expression_output or i > 0) {
                 self.out.writer().print(", {s}", .{arg_reg}) catch return CodegenError.CodegenError;
             } else {
                 self.out.writer().print(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
@@ -10960,8 +10957,8 @@ pub const Codegen = struct {
                 }
 
                 if (!(call.args.len > 0 and std.mem.eql(u8, call.func_name, "metadata"))) {
-                    if (self.tc.imported_macros.get(call.func_name)) |macro| {
-                        return try self.genImportedMacroCall(&call, macro, hoisted_allocs);
+                    if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
+                        return try self.genImportedMacroCall(&call, plan, hoisted_allocs);
                     }
                 }
 

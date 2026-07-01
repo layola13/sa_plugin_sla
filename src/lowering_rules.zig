@@ -28,6 +28,25 @@ pub const StaticCallResultPlan = struct {
     returns_void: bool,
 };
 
+pub const ImportedMacroCallPlan = struct {
+    macro_name: []const u8,
+    import_path: ?[]const u8,
+    arity: usize,
+    leading_outputs: usize,
+    borrowed_arg_mask: u64,
+    expression_output: bool,
+
+    pub fn macroParamIndexForCallArg(self: ImportedMacroCallPlan, call_arg_index: usize) usize {
+        return if (self.expression_output) call_arg_index + self.leading_outputs else call_arg_index;
+    }
+
+    pub fn callArgNeedsAddressableSlot(self: ImportedMacroCallPlan, call_arg_index: usize) bool {
+        const macro_idx = self.macroParamIndexForCallArg(call_arg_index);
+        if (macro_idx >= 64) return false;
+        return (self.borrowed_arg_mask & (@as(u64, 1) << @intCast(macro_idx))) != 0;
+    }
+};
+
 pub fn isVoidType(ty: *const ast.Type) bool {
     return ty.* == .primitive and ty.primitive == .void_type;
 }
@@ -38,6 +57,25 @@ pub fn planStaticCallResult(tc: *type_checker.TypeChecker, call_plan: StaticCall
         return .{ .returns_void = !func.is_async and isVoidType(func.ret_ty) };
     }
     return .{ .returns_void = false };
+}
+
+pub fn importedMacroUsesExpressionOutput(macro: type_checker.ImportedMacro, arg_count: usize) bool {
+    return macro.leading_outputs == 1 and arg_count + 1 == macro.arity;
+}
+
+pub fn planImportedMacroCall(tc: *type_checker.TypeChecker, call: ast.CallExpr) ?ImportedMacroCallPlan {
+    if (call.associated_target != null) return null;
+    const macro = tc.imported_macros.get(call.func_name) orelse return null;
+    const expression_output = importedMacroUsesExpressionOutput(macro, call.args.len);
+    if (call.args.len != macro.arity and !expression_output) return null;
+    return .{
+        .macro_name = call.func_name,
+        .import_path = macro.import_path,
+        .arity = macro.arity,
+        .leading_outputs = macro.leading_outputs,
+        .borrowed_arg_mask = macro.borrowed_arg_mask,
+        .expression_output = expression_output,
+    };
 }
 
 pub const PrefixedIdentifierArg = struct {
@@ -258,6 +296,18 @@ pub fn smartPointerDerefNeedsValueSlot(inner_ty: *const ast.Type) bool {
     return smartPointerDerefType(inner_ty) != null;
 }
 
+/// Returns true when an associated-call rule (e.g. `Rc::clone`, `Arc::clone`)
+/// expects its `value` argument to be the underlying smart-pointer value rather
+/// than a `borrow` handle. The SA-text emitter treats `&rc1` as a transparent
+/// register copy, but the SAB emitter would otherwise emit a real `borrow`
+/// instruction that produces a separate handle and breaks the `RC_CLONE_OUT`
+/// (or `ARC_CLONE_OUT`) macro expansion. Both emitters share this contract via
+/// this helper so they materialize the receiver consistently.
+pub fn associatedRuleNeedsUnderlyingSmartPointer(type_name: []const u8, member_name: []const u8) bool {
+    if (!std.mem.eql(u8, member_name, "clone")) return false;
+    return std.mem.eql(u8, type_name, "Rc") or std.mem.eql(u8, type_name, "Arc");
+}
+
 pub fn smartPointerDerefLoadsPointerBackedValue(inner_ty: *const ast.Type) bool {
     return switch (inner_ty.*) {
         .user_defined => smartPointerDerefType(inner_ty) == null,
@@ -448,10 +498,11 @@ pub fn prefixedIdentifierCallArg(arg: *const ast.Node) ?PrefixedIdentifierArg {
 
 pub fn callArgNeedsRelease(arg: *const ast.Node) bool {
     return switch (arg.*) {
+        .literal => |lit| lit != .string_val,
         .identifier => false,
         .field_expr => true,
         .index_expr => true,
-        .borrow_expr => |borrow| exprResultNeedsRelease(borrow.expr),
+        .borrow_expr => true,
         .move_expr => |move| exprResultNeedsRelease(move.expr),
         .deref_expr => true,
         .cast_expr => false,
@@ -461,10 +512,11 @@ pub fn callArgNeedsRelease(arg: *const ast.Node) bool {
 
 pub fn exprResultNeedsRelease(expr: *const ast.Node) bool {
     return switch (expr.*) {
+        .literal => |lit| lit != .string_val,
         .identifier => false,
         .field_expr => true,
         .index_expr => true,
-        .borrow_expr => false,
+        .borrow_expr => true,
         .deref_expr => true,
         .cast_expr => false,
         else => true,
@@ -558,16 +610,19 @@ test "shared lowering rules normalize derives and call argument prefixes" {
 test "shared lowering rules classify call materialization decisions" {
     var value = ast.Node{ .identifier = "value" };
     var field = ast.Node{ .field_expr = .{ .expr = &value, .field_name = "field" } };
+    var borrowed_value = ast.Node{ .borrow_expr = .{ .expr = &value } };
     var borrowed_field = ast.Node{ .borrow_expr = .{ .expr = &field } };
     var cast_ty = ast.Type{ .primitive = .i64 };
     var cast_value = ast.Node{ .cast_expr = .{ .expr = &value, .ty = &cast_ty } };
 
     try std.testing.expect(!callArgNeedsRelease(&value));
     try std.testing.expect(callArgNeedsRelease(&field));
+    try std.testing.expect(callArgNeedsRelease(&borrowed_value));
     try std.testing.expect(callArgNeedsRelease(&borrowed_field));
     try std.testing.expect(!callArgNeedsRelease(&cast_value));
     try std.testing.expect(!exprResultNeedsRelease(&value));
     try std.testing.expect(exprResultNeedsRelease(&field));
+    try std.testing.expect(exprResultNeedsRelease(&borrowed_value));
 
     var i64_ty = ast.Type{ .primitive = .i64 };
     var borrow_i64_ty = ast.Type{ .borrow = &i64_ty };

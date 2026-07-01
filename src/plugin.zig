@@ -408,7 +408,45 @@ fn isLeadingOutputMacroParam(raw: []const u8) bool {
         std.mem.eql(u8, param, "repeat");
 }
 
-fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, source: []const u8) !void {
+fn macroParamIndex(param_names: []const []const u8, name: []const u8) ?usize {
+    for (param_names, 0..) |param, idx| {
+        if (std.mem.eql(u8, param, name)) return idx;
+    }
+    return null;
+}
+
+fn markBorrowedParam(mask: *u64, param_names: []const []const u8, raw_name: []const u8) void {
+    const name = macroParamName(raw_name);
+    if (macroParamIndex(param_names, name)) |idx| {
+        if (idx < 64) mask.* |= (@as(u64, 1) << @intCast(idx));
+    }
+}
+
+fn markDirectBorrowedMacroParams(allocator: std.mem.Allocator, mask: *u64, param_names: []const []const u8, line: []const u8) !void {
+    for (param_names) |param| {
+        const needle = try std.fmt.allocPrint(allocator, "&%{s}", .{param});
+        defer allocator.free(needle);
+        if (std.mem.indexOf(u8, line, needle) != null) markBorrowedParam(mask, param_names, param);
+    }
+}
+
+fn markExpandedBorrowedMacroParams(tc: *type_checker_mod.TypeChecker, mask: *u64, param_names: []const []const u8, line: []const u8) void {
+    if (!std.mem.startsWith(u8, line, "EXPAND")) return;
+    var parts = std.mem.tokenizeAny(u8, line["EXPAND".len..], " \t,");
+    const expanded_name = parts.next() orelse return;
+    const expanded = tc.imported_macros.get(expanded_name) orelse return;
+
+    var arg_idx: usize = 0;
+    while (parts.next()) |raw_arg| : (arg_idx += 1) {
+        if (arg_idx >= 64) continue;
+        if ((expanded.borrowed_arg_mask & (@as(u64, 1) << @intCast(arg_idx))) == 0) continue;
+        const trimmed = std.mem.trim(u8, raw_arg, " \t\r,");
+        if (trimmed.len == 0 or trimmed[0] != '%') continue;
+        markBorrowedParam(mask, param_names, trimmed);
+    }
+}
+
+fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, source: []const u8, import_path: ?[]const u8) !void {
     const expanded_source = try source_expand.expand(allocator, source);
     var lines = std.mem.splitScalar(u8, expanded_source, '\n');
     while (lines.next()) |raw_line| {
@@ -419,12 +457,15 @@ fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allo
         const raw_name = parts.next() orelse continue;
         const name = try allocator.dupe(u8, std.mem.trim(u8, raw_name, " \t\r,"));
 
+        var param_names = std.ArrayList([]const u8).init(allocator);
+        defer param_names.deinit();
         var arity: usize = 0;
         var leading_outputs: usize = 0;
         var still_leading = true;
         while (parts.next()) |raw_param| {
             const param = macroParamName(raw_param);
             if (param.len == 0) continue;
+            try param_names.append(param);
             if (still_leading and isLeadingOutputMacroParam(raw_param)) {
                 leading_outputs += 1;
             } else {
@@ -433,7 +474,16 @@ fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allo
             arity += 1;
         }
 
-        try tc.registerImportedMacro(name, arity, leading_outputs);
+        var borrowed_arg_mask: u64 = 0;
+        while (lines.next()) |body_raw_line| {
+            const body_line = std.mem.trim(u8, body_raw_line, " \t\r");
+            if (std.mem.startsWith(u8, body_line, "[END_MACRO]")) break;
+            try markDirectBorrowedMacroParams(allocator, &borrowed_arg_mask, param_names.items, body_line);
+            markExpandedBorrowedMacroParams(tc, &borrowed_arg_mask, param_names.items, body_line);
+        }
+
+        const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
+        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask);
     }
 }
 
@@ -630,7 +680,7 @@ fn loadImportContractsRecursive(
         } else if (std.mem.endsWith(u8, resolved.path, ".sal")) {
             try tc.loadContracts("", expanded_source);
         }
-        try loadImportedMacros(tc, allocator, expanded_source);
+        try loadImportedMacros(tc, allocator, expanded_source, resolved.output_path);
     }
 }
 

@@ -27,6 +27,8 @@ pub const ValueState = enum {
 pub const ImportedMacro = struct {
     arity: usize,
     leading_outputs: usize,
+    import_path: ?[]const u8 = null,
+    borrowed_arg_mask: u64 = 0,
 };
 
 pub const Symbol = struct {
@@ -2042,8 +2044,8 @@ pub const TypeChecker = struct {
         }
     }
 
-    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize) !void {
-        try self.imported_macros.put(name, .{ .arity = arity, .leading_outputs = leading_outputs });
+    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64) !void {
+        try self.imported_macros.put(name, .{ .arity = arity, .leading_outputs = leading_outputs, .import_path = import_path, .borrowed_arg_mask = borrowed_arg_mask });
     }
 
     pub fn checkProgram(self: *TypeChecker, program: *ast.Node) !void {
@@ -4063,12 +4065,12 @@ pub const TypeChecker = struct {
 
                     if (rcInnerType(recv_ty) != null and std.mem.eql(u8, call.func_name, "clone")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
-                        return recv_ty;
+                        return unwrappedReceiverType(recv_ty);
                     }
 
                     if (arcInnerType(recv_ty) != null and std.mem.eql(u8, call.func_name, "clone")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
-                        return recv_ty;
+                        return unwrappedReceiverType(recv_ty);
                     }
 
                     if (atomicPtrInnerType(recv_ty)) |inner_ty| {

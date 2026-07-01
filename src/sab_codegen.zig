@@ -10,6 +10,10 @@ const inst = sab.instruction;
 const sig = sab.signature;
 const const_decl = sab.const_decl;
 
+fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
 pub const Error = error{
     UnsupportedSabDirectFeature,
     MissingType,
@@ -174,6 +178,7 @@ pub const Codegen = struct {
     released_regs: std.AutoHashMap(u32, void),
     tmp_idx: usize = 0,
     label_idx: usize = 0,
+    string_idx: usize = 0,
     macro_fragment_idx: usize = 0,
     macro_call_idx: usize = 0,
     escaped_closure_idx: usize = 0,
@@ -281,7 +286,14 @@ pub const Codegen = struct {
         for (program.program.decls) |decl| {
             switch (decl.*) {
                 .func_decl => |*f| {
-                    if (!f.is_decl_only) {
+                    if (f.is_decl_only) {
+                        if (f.is_extern) {
+                            self.genExternDecl(f) catch |err| {
+                                self.traceUnsupported("extern decl {s} failed: {s}\n", .{ f.name, @errorName(err) });
+                                return err;
+                            };
+                        }
+                    } else {
                         self.genFuncDecl(f) catch |err| {
                             self.traceUnsupported("func decl {s} failed: {s}\n", .{ f.name, @errorName(err) });
                             return err;
@@ -314,6 +326,7 @@ pub const Codegen = struct {
             }
         }
         try self.emitEscapedClosureEntries();
+        try self.emitReferencedContractExternDecls();
         return try sab.encodeProgramWithConsts(
             self.allocator,
             self.symbols.items,
@@ -498,6 +511,44 @@ pub const Codegen = struct {
         const name = try std.fmt.allocPrint(self.allocator, "{s}_{}", .{ prefix, self.label_idx });
         self.label_idx += 1;
         return name;
+    }
+
+    fn newStringConst(self: *Codegen) ![]const u8 {
+        const name = try std.fmt.allocPrint(self.allocator, "SLA_STR_{}", .{self.string_idx});
+        self.string_idx += 1;
+        return name;
+    }
+
+    fn escapedStringByteLen(value: []const u8) usize {
+        var len: usize = 0;
+        var i: usize = 0;
+        while (i < value.len) : (i += 1) {
+            if (value[i] == '\\' and i + 1 < value.len) i += 1;
+            len += 1;
+        }
+        return len;
+    }
+
+    fn appendUtf8Const(self: *Codegen, name: []const u8, value: []const u8) !void {
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const literal_text = try std.fmt.allocPrint(self.allocator, "utf8:\"{s}\"", .{value});
+        errdefer self.allocator.free(literal_text);
+        const raw_text = try std.fmt.allocPrint(self.allocator, "@const {s} = {s}", .{ name, literal_text });
+        errdefer self.allocator.free(raw_text);
+        try self.const_decls.append(.{
+            .source_line = 0,
+            .expanded_line = 0,
+            .upstream_loc = null,
+            .raw_text = raw_text,
+            .name = owned_name,
+            .literal_text = literal_text,
+            .value = .{ .utf8 = .{
+                .kind = .utf8,
+                .bytes = try self.allocator.dupe(u8, value),
+            } },
+        });
+        _ = try self.intern(name);
     }
 
     fn readStdSurfaceFile(self: *Codegen) !?[]const u8 {
@@ -780,6 +831,21 @@ pub const Codegen = struct {
         };
     }
 
+    fn paramPrimType(ty: *const ast.Type) !sig.PrimType {
+        if (ty.* == .primitive and ty.primitive == .void_type) return .ptr;
+        return try primType(ty);
+    }
+
+    fn storagePrimType(ty: *const ast.Type) !sig.PrimType {
+        if (ty.* == .primitive and ty.primitive == .void_type) return .ptr;
+        return try primType(ty);
+    }
+
+    fn addressableSlotPrimType(ty: *const ast.Type) !sig.PrimType {
+        if (ty.* == .infer) return .ptr;
+        return try storagePrimType(ty);
+    }
+
     fn typeSize(ty: *const ast.Type) usize {
         return lowering_rules.abiTypeSize(ty);
     }
@@ -794,7 +860,7 @@ pub const Codegen = struct {
 
     fn tupleFieldLayout(tuple: ast.TupleType, index: usize) ?FieldLayout {
         const layout = lowering_rules.tupleFieldLayout(tuple, index) orelse return null;
-        return .{ .offset = layout.offset, .ty = primType(layout.ty) catch return null };
+        return .{ .offset = layout.offset, .ty = storagePrimType(layout.ty) catch return null };
     }
 
     fn arrayStride(elem_ty: *const ast.Type) usize {
@@ -807,7 +873,7 @@ pub const Codegen = struct {
 
     fn arrayElementLayout(arr: ast.ArrayType, index: usize) ?FieldLayout {
         const layout = lowering_rules.arrayElementLayout(arr, index) orelse return null;
-        return .{ .offset = layout.offset, .ty = primType(layout.ty) catch return null };
+        return .{ .offset = layout.offset, .ty = storagePrimType(layout.ty) catch return null };
     }
 
     fn structSize(s: *const ast.StructDecl) usize {
@@ -833,7 +899,7 @@ pub const Codegen = struct {
         const decl = self.structDeclForType(ty) orelse return Error.UnsupportedSabDirectFeature;
         if (decl.is_opaque) return Error.UnsupportedSabDirectFeature;
         const layout = lowering_rules.structFieldLayout(decl, name) orelse return Error.UnsupportedSabDirectFeature;
-        return .{ .offset = layout.offset, .ty = try primType(layout.ty) };
+        return .{ .offset = layout.offset, .ty = try storagePrimType(layout.ty) };
     }
 
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
@@ -1150,7 +1216,7 @@ pub const Codegen = struct {
     }
 
     fn isStackAddressableType(ty: *const ast.Type) bool {
-        return ty.* == .primitive and ty.primitive != .void_type;
+        return ty.* == .primitive;
     }
 
     fn stackAllocSize(call: ast.CallExpr) !usize {
@@ -1344,7 +1410,15 @@ pub const Codegen = struct {
                 try self.collectBorrowedBindingsInNode(bin.left);
                 try self.collectBorrowedBindingsInNode(bin.right);
             },
-            .call_expr => |call| for (call.args) |arg| try self.collectBorrowedBindingsInNode(arg),
+            .call_expr => |call| {
+                if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
+                    for (call.args, 0..) |arg, i| {
+                        if (!plan.callArgNeedsAddressableSlot(i)) continue;
+                        if (arg.* == .identifier) try self.borrowed_bindings.put(arg.identifier, {});
+                    }
+                }
+                for (call.args) |arg| try self.collectBorrowedBindingsInNode(arg);
+            },
             .field_expr => |field| try self.collectBorrowedBindingsInNode(field.expr),
             .struct_literal => |lit| {
                 for (lit.fields) |field| try self.collectBorrowedBindingsInNode(field.value);
@@ -1666,6 +1740,11 @@ pub const Codegen = struct {
         for (regs) |reg| {
             if (!self.isLocalReg(reg)) try self.emitRelease(reg);
         }
+    }
+
+    fn releaseExprResultIfNeeded(self: *Codegen, expr: *const ast.Node, reg: u32) !void {
+        if (!lowering_rules.exprResultNeedsRelease(expr)) return;
+        if (!self.isLocalReg(reg)) try self.emitRelease(reg);
     }
 
     fn emitLabel(self: *Codegen, name: []const u8) !void {
@@ -2605,7 +2684,7 @@ pub const Codegen = struct {
             const cap: inst.CapPrefix = if (param.is_borrow) .borrow else if (param.is_move) .move else .by_value;
             specs[i] = .{
                 .name = param.name,
-                .ty = try primType(param.ty),
+                .ty = try paramPrimType(param.ty),
                 .cap = cap,
             };
             param_ids[i] = param_id;
@@ -2628,7 +2707,7 @@ pub const Codegen = struct {
         };
     }
 
-    fn appendDeclInst(self: *Codegen, fsig: sig.FunctionSig) !void {
+    fn declInstForSig(self: *Codegen, fsig: sig.FunctionSig, expanded_line: usize) !inst.Instruction {
         const id = try self.intern(fsig.name);
         const kind: inst.InstKind = switch (fsig.kind) {
             .normal => .func_decl,
@@ -2637,9 +2716,14 @@ pub const Codegen = struct {
             .exported => .export_decl,
             .test_func => .test_decl,
         };
-        var item = self.makeInst(kind);
+        var item = inst.makeInstruction(kind, 0, @intCast(expanded_line), null, "");
         item.operands[0] = .{ .symbol = id };
         item.operands[1] = .{ .func = id };
+        return item;
+    }
+
+    fn appendDeclInst(self: *Codegen, fsig: sig.FunctionSig) !void {
+        const item = try self.declInstForSig(fsig, self.instructions.items.len);
         try self.appendInst(item);
     }
 
@@ -2652,7 +2736,7 @@ pub const Codegen = struct {
             const slot = try self.intern(slot_name);
             const param_reg = self.localReg(param.name) orelse return Error.UnsupportedSabDirectFeature;
             try self.emitStackAlloc(slot, typeSize(param.ty));
-            try self.emitStore(slot, 0, param_reg, try primType(param.ty));
+            try self.emitStore(slot, 0, param_reg, try storagePrimType(param.ty));
             try self.pushStackLocal(param.name, slot, param.ty);
         }
     }
@@ -2699,6 +2783,179 @@ pub const Codegen = struct {
 
     fn genFuncDecl(self: *Codegen, f: *const ast.FuncDecl) !void {
         try self.genFuncDeclNamed(f.name, f);
+    }
+
+    fn genExternDecl(self: *Codegen, f: *const ast.FuncDecl) !void {
+        var fsig = try self.genFuncSig(f.name, .external, f.params, f.ret_ty, false, false);
+        try self.appendDeclInst(fsig);
+        fsig.reg_ids = fsig.param_ids;
+        try self.function_sigs.append(fsig);
+    }
+
+    fn abiPrimType(raw: []const u8) sig.PrimType {
+        var name = std.mem.trim(u8, raw, " \t\r");
+        if (name.len > 0 and (name[0] == '&' or name[0] == '^')) name = std.mem.trim(u8, name[1..], " \t\r");
+        if (std.mem.endsWith(u8, name, "!")) name = std.mem.trim(u8, name[0 .. name.len - 1], " \t\r");
+        if (std.mem.eql(u8, name, "ptr")) return .ptr;
+        if (std.mem.eql(u8, name, "bool")) return .i1;
+        if (std.mem.eql(u8, name, "i8")) return .i8;
+        if (std.mem.eql(u8, name, "i16")) return .i16;
+        if (std.mem.eql(u8, name, "i32")) return .i32;
+        if (std.mem.eql(u8, name, "i64") or std.mem.eql(u8, name, "int") or std.mem.eql(u8, name, "isize")) return .i64;
+        if (std.mem.eql(u8, name, "u8")) return .u8;
+        if (std.mem.eql(u8, name, "u16")) return .u16;
+        if (std.mem.eql(u8, name, "u32")) return .u32;
+        if (std.mem.eql(u8, name, "u64") or std.mem.eql(u8, name, "usize")) return .u64;
+        if (std.mem.eql(u8, name, "f32")) return .f32;
+        if (std.mem.eql(u8, name, "f64") or std.mem.eql(u8, name, "float")) return .f64;
+        return .void;
+    }
+
+    fn hasFunctionSig(self: *Codegen, name: []const u8, kind: sig.FunctionKind) bool {
+        for (self.function_sigs.items) |fsig| {
+            if (fsig.kind == kind and std.mem.eql(u8, fsig.name, name)) return true;
+        }
+        return false;
+    }
+
+    fn makeContractExternSig(self: *Codegen, name: []const u8, entry_inst_idx: usize) !sig.FunctionSig {
+        const ext = self.tc.extern_funcs.get(name) orelse return Error.UnsupportedSabDirectFeature;
+        const lowered = try self.loweredFuncSymbol(name);
+        _ = try self.intern(lowered);
+
+        const specs = try self.allocator.alloc(sig.ParamSpec, ext.params.len);
+        const param_ids = try self.allocator.alloc(u32, ext.params.len);
+        for (ext.params, 0..) |param, idx| {
+            const cap: inst.CapPrefix = if (param.is_borrow) .borrow else if (param.is_move) .move else .by_value;
+            specs[idx] = .{
+                .name = param.name,
+                .ty = abiPrimType(param.ty),
+                .cap = cap,
+            };
+            param_ids[idx] = try self.intern(param.name);
+        }
+
+        return sig.FunctionSig{
+            .id = 0,
+            .name = lowered,
+            .params = specs,
+            .kind = .external,
+            .return_cap = null,
+            .return_ty = abiPrimType(ext.ret_ty),
+            .entry_inst_idx = @intCast(entry_inst_idx),
+            .is_ffi_wrapper = false,
+            .param_ids = param_ids,
+            .reg_ids = param_ids,
+            .llvm_name = null,
+            .ignored = false,
+            .should_panic = false,
+        };
+    }
+
+    fn emitContractExternDecl(self: *Codegen, name: []const u8) !void {
+        const lowered = try self.loweredFuncSymbol(name);
+        if (self.hasFunctionSig(lowered, .external)) return;
+        var fsig = try self.makeContractExternSig(name, self.instructions.items.len);
+        fsig.id = @intCast(self.function_sigs.items.len);
+        try self.appendDeclInst(fsig);
+        try self.function_sigs.append(fsig);
+    }
+
+    fn emitContractExternDecls(self: *Codegen) !void {
+        var names = std.ArrayList([]const u8).init(self.allocator);
+        defer names.deinit();
+        var iter = self.tc.extern_funcs.keyIterator();
+        while (iter.next()) |name| try names.append(name.*);
+        std.mem.sort([]const u8, names.items, {}, stringSliceLessThan);
+        for (names.items) |name| try self.emitContractExternDecl(name);
+    }
+
+    fn callInstructionBody(item: inst.Instruction) ?[]const u8 {
+        if (item.kind != .call) return null;
+        if (item.operands[1] == .text) return item.operands[1].text;
+        if (item.operands[0] == .text) return item.operands[0].text;
+        return null;
+    }
+
+    fn isCallTargetChar(ch: u8) bool {
+        return std.ascii.isAlphanumeric(ch) or ch == '_';
+    }
+
+    fn callTargetName(body: []const u8) ?[]const u8 {
+        const trimmed = std.mem.trimLeft(u8, body, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] != '@') return null;
+        var end: usize = 1;
+        while (end < trimmed.len and isCallTargetChar(trimmed[end])) : (end += 1) {}
+        if (end == 1) return null;
+        return trimmed[1..end];
+    }
+
+    fn emitReferencedContractExternDecls(self: *Codegen) !void {
+        var names = std.StringHashMap(void).init(self.allocator);
+        defer names.deinit();
+        for (self.instructions.items) |item| {
+            const target = callTargetName(callInstructionBody(item) orelse continue) orelse continue;
+            if (!self.tc.extern_funcs.contains(target)) continue;
+            if (self.hasFunctionSig(target, .external)) continue;
+            try names.put(target, {});
+        }
+
+        var sorted = std.ArrayList([]const u8).init(self.allocator);
+        defer sorted.deinit();
+        var iter = names.keyIterator();
+        while (iter.next()) |name| try sorted.append(name.*);
+        std.mem.sort([]const u8, sorted.items, {}, stringSliceLessThan);
+        if (sorted.items.len == 0) return;
+
+        var extern_sigs = std.ArrayList(sig.FunctionSig).init(self.allocator);
+        defer extern_sigs.deinit();
+        var extern_insts = std.ArrayList(inst.Instruction).init(self.allocator);
+        defer extern_insts.deinit();
+        for (sorted.items, 0..) |name, idx| {
+            var fsig = try self.makeContractExternSig(name, idx);
+            fsig.id = @intCast(idx);
+            try extern_insts.append(try self.declInstForSig(fsig, idx));
+            try extern_sigs.append(fsig);
+        }
+
+        const shift = extern_insts.items.len;
+        var shifted_insts = std.ArrayList(inst.Instruction).init(self.allocator);
+        try shifted_insts.ensureTotalCapacity(shift + self.instructions.items.len);
+        shifted_insts.appendSliceAssumeCapacity(extern_insts.items);
+        shifted_insts.appendSliceAssumeCapacity(self.instructions.items);
+        self.instructions.deinit();
+        self.instructions = shifted_insts;
+
+        var shifted_sigs = std.ArrayList(sig.FunctionSig).init(self.allocator);
+        try shifted_sigs.ensureTotalCapacity(extern_sigs.items.len + self.function_sigs.items.len);
+        shifted_sigs.appendSliceAssumeCapacity(extern_sigs.items);
+        for (self.function_sigs.items) |fsig| {
+            var shifted = fsig;
+            shifted.entry_inst_idx += @intCast(shift);
+            shifted_sigs.appendAssumeCapacity(shifted);
+        }
+        self.function_sigs.deinit();
+        self.function_sigs = shifted_sigs;
+
+        for (self.test_sigs.items) |*test_sig| {
+            test_sig.entry_inst_idx += @intCast(shift);
+        }
+        self.renumberFunctionSigs();
+    }
+
+    fn renumberFunctionSigs(self: *Codegen) void {
+        for (self.function_sigs.items, 0..) |*fsig, idx| {
+            fsig.id = @intCast(idx);
+        }
+        for (self.test_sigs.items) |*test_sig| {
+            for (self.function_sigs.items) |fsig| {
+                if (fsig.kind == .test_func and std.mem.eql(u8, fsig.name, test_sig.name)) {
+                    test_sig.id = fsig.id;
+                    test_sig.entry_inst_idx = fsig.entry_inst_idx;
+                    break;
+                }
+            }
+        }
     }
 
     fn genImplDecl(self: *Codegen, impl_decl: *const ast.ImplDecl) !void {
@@ -2814,7 +3071,7 @@ pub const Codegen = struct {
         }
         if (self.borrowed_bindings.contains(name) and isStackAddressableType(let_ty)) {
             try self.emitStackAlloc(dst, typeSize(let_ty));
-            try self.emitStore(dst, 0, src, try primType(let_ty));
+            try self.emitStore(dst, 0, src, try storagePrimType(let_ty));
             if (!self.isLocalReg(src)) try self.emitRelease(src);
             try self.pushStackLocal(name, dst, let_ty);
             return;
@@ -3186,7 +3443,8 @@ pub const Codegen = struct {
         item.operands[1] = .{ .reg = lhs };
         item.operands[2] = .{ .reg = rhs };
         try self.appendInst(item);
-        try self.releaseNonLocalTemps(&.{ lhs, rhs });
+        try self.releaseExprResultIfNeeded(bin.left, lhs);
+        try self.releaseExprResultIfNeeded(bin.right, rhs);
         return dst;
     }
 
@@ -3276,7 +3534,7 @@ pub const Codegen = struct {
             const layout = try self.fieldLayout(lit.ty, decl_field.name);
             const value_reg = try self.genMacroExpr(value, ctx);
             try self.emitStore(dst, layout.offset, value_reg, layout.ty);
-            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+            try self.releaseExprResultIfNeeded(value, value_reg);
         }
 
         return dst;
@@ -3295,7 +3553,7 @@ pub const Codegen = struct {
             const layout = tupleFieldLayout(tuple_ty, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genMacroExpr(elem, ctx);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            try self.releaseExprResultIfNeeded(elem, value);
         }
         return dst;
     }
@@ -3309,7 +3567,7 @@ pub const Codegen = struct {
             const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genMacroExpr(elem, ctx);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            try self.releaseExprResultIfNeeded(elem, value);
         }
         return dst;
     }
@@ -3325,7 +3583,7 @@ pub const Codegen = struct {
             const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
             try self.emitStore(dst, layout.offset, value, layout.ty);
         }
-        if (!self.isLocalReg(value)) try self.emitRelease(value);
+        try self.releaseExprResultIfNeeded(lit.value, value);
         return dst;
     }
 
@@ -3377,6 +3635,7 @@ pub const Codegen = struct {
                 try self.emitAssignImm(sentinel, 0);
                 return sentinel;
             }
+            if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| return try self.genImportedMacroCall(call, plan, ctx);
         }
 
         const call_plan = lowering_rules.planStaticCall(self.tc, expr, call) orelse return Error.UnsupportedSabDirectFeature;
@@ -3391,7 +3650,7 @@ pub const Codegen = struct {
             const effective = macroEffectiveArg(ctx, arg);
             const param = if (maybe_func) |func| if (i < func.params.len) func.params[i] else null else null;
             const lowered_arg = try self.genPlannedSabMacroCallArg(arg, effective, ctx, call_plan, param, i, call.associated_target == null);
-            try release_regs.append(lowered_arg.release_reg);
+            if (lowered_arg.release_reg) |reg| try release_regs.append(reg);
             if (i > 0) try text.appendSlice(", ");
             try text.appendSlice(lowered_arg.operand);
         }
@@ -4015,9 +4274,24 @@ pub const Codegen = struct {
             .int_val => |v| try self.emitAssignImm(reg, v),
             .float_val => |v| try self.emitAssignFloat(reg, v),
             .bool_val => |v| try self.emitAssignImm(reg, if (v) 1 else 0),
-            else => return Error.UnsupportedSabDirectFeature,
+            .string_val => |v| return try self.genStringLiteral(v),
         }
         return reg;
+    }
+
+    fn genStringLiteral(self: *Codegen, value: []const u8) anyerror!u32 {
+        const label = try self.newStringConst();
+        try self.appendUtf8Const(label, value);
+
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(len_reg, @intCast(escapedStringByteLen(value)));
+
+        const slice_reg = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(slice_reg, lowering_rules.SliceAbi.size);
+        const data_arg = try std.fmt.allocPrint(self.allocator, "&{s}", .{label});
+        try self.emitStdMacroFragment("sa_std/core/slice.sa", "SLICE_NEW", &.{ self.symbols.items[slice_reg], data_arg, self.symbols.items[len_reg] });
+        try self.emitRelease(len_reg);
+        return slice_reg;
     }
 
     fn genBinary(self: *Codegen, bin: ast.BinaryExpr) anyerror!u32 {
@@ -4040,7 +4314,8 @@ pub const Codegen = struct {
         item.operands[1] = .{ .reg = lhs };
         item.operands[2] = .{ .reg = rhs };
         try self.appendInst(item);
-        try self.releaseNonLocalTemps(&.{ lhs, rhs });
+        try self.releaseExprResultIfNeeded(bin.left, lhs);
+        try self.releaseExprResultIfNeeded(bin.right, rhs);
         return dst;
     }
 
@@ -4297,6 +4572,20 @@ pub const Codegen = struct {
             .index_expr => |idx| try self.genIndexAddress(idx),
             else => .{ .reg = try self.genExpr(expr) },
         };
+    }
+
+    fn genAssociatedValueArg(
+        self: *Codegen,
+        target_name: []const u8,
+        member_name: []const u8,
+        arg: *ast.Node,
+    ) anyerror!u32 {
+        if (lowering_rules.associatedRuleNeedsUnderlyingSmartPointer(target_name, member_name)) {
+            if (arg.* == .borrow_expr) {
+                return try self.genExpr(@constCast(arg.borrow_expr.expr));
+            }
+        }
+        return try self.genExpr(arg);
     }
 
     fn genBorrow(self: *Codegen, borrow: ast.BorrowExpr) anyerror!u32 {
@@ -4754,6 +5043,97 @@ pub const Codegen = struct {
         return borrow_reg;
     }
 
+    fn importedMacroExistingAddressableSymbol(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) ?[]const u8 {
+        if (arg.* != .identifier) return null;
+        const name = arg.identifier;
+        if (ctx) |macro_ctx| {
+            if (macroIdentifierName(macro_ctx, name)) |mapped| {
+                if (self.stackLocal(mapped)) |slot| return self.symbols.items[slot.reg];
+                return null;
+            }
+            if (macroArgBinding(macro_ctx, name)) |binding| {
+                return self.importedMacroExistingAddressableSymbol(binding.arg, binding.ctx);
+            }
+        }
+        if (self.stackLocal(name)) |slot| return self.symbols.items[slot.reg];
+        return null;
+    }
+
+    fn importedMacroArgType(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!?*const ast.Type {
+        if (ctx) |macro_ctx| return try self.macroExprType(arg, macro_ctx);
+        return try self.exprTypeOrFallback(arg);
+    }
+
+    fn genImportedMacroValueArg(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
+        const arg_reg = if (ctx) |macro_ctx| try self.genMacroExpr(@constCast(arg), macro_ctx) else try self.genExpr(@constCast(arg));
+        return .{
+            .operand = self.symbols.items[arg_reg],
+            .release_reg = if (lowering_rules.callArgNeedsRelease(arg)) arg_reg else null,
+        };
+    }
+
+    fn genImportedMacroAddressableArg(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
+        if (self.importedMacroExistingAddressableSymbol(arg, ctx)) |symbol| {
+            return .{ .operand = symbol, .release_reg = null };
+        }
+
+        const value_reg = (if (ctx) |macro_ctx| self.genMacroExpr(@constCast(arg), macro_ctx) else self.genExpr(@constCast(arg))) catch |err| {
+            self.traceUnsupported("imported macro addressable value {s} failed: {s}\n", .{ @tagName(arg.*), @errorName(err) });
+            return err;
+        };
+        const arg_ty = ((try self.importedMacroArgType(arg, ctx)) orelse {
+            self.traceUnsupported("imported macro addressable type {s} missing\n", .{@tagName(arg.*)});
+            return Error.MissingType;
+        });
+        const slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(slot, typeSize(arg_ty));
+        const store_ty = addressableSlotPrimType(arg_ty) catch |err| {
+            self.traceUnsupported("imported macro addressable storage type {s} failed: {s}\n", .{ @tagName(arg_ty.*), @errorName(err) });
+            return err;
+        };
+        try self.emitStore(slot, 0, value_reg, store_ty);
+        try self.releaseExprResultIfNeeded(arg, value_reg);
+        return .{ .operand = self.symbols.items[slot], .release_reg = null };
+    }
+
+    fn genImportedMacroCall(self: *Codegen, call: ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, ctx: ?*MacroExpansionContext) anyerror!u32 {
+        const import_path = plan.import_path orelse return Error.UnsupportedSabDirectFeature;
+        const dst = if (plan.expression_output) blk: {
+            const reg = try self.intern(try self.newTmp());
+            try self.recordReg(reg);
+            break :blk reg;
+        } else null;
+
+        var arg_names = std.ArrayList([]const u8).init(self.allocator);
+        defer arg_names.deinit();
+        var release_regs = std.ArrayList(u32).init(self.allocator);
+        defer release_regs.deinit();
+
+        if (dst) |reg| try arg_names.append(self.symbols.items[reg]);
+        for (call.args, 0..) |arg, i| {
+            const lowered_arg = (if (plan.callArgNeedsAddressableSlot(i))
+                self.genImportedMacroAddressableArg(arg, ctx)
+            else
+                self.genImportedMacroValueArg(arg, ctx)) catch |err| {
+                self.traceUnsupported("imported macro {s} arg {} failed: {s}\n", .{ plan.macro_name, i, @errorName(err) });
+                return err;
+            };
+            try arg_names.append(lowered_arg.operand);
+            if (lowered_arg.release_reg) |reg| try release_regs.append(reg);
+        }
+
+        self.emitStdMacroFragment(import_path, plan.macro_name, arg_names.items) catch |err| {
+            self.traceUnsupported("imported macro {s} fragment failed: {s}\n", .{ plan.macro_name, @errorName(err) });
+            return err;
+        };
+        try self.releaseNonLocalTemps(release_regs.items);
+        if (dst) |reg| return reg;
+
+        const sentinel = try self.intern(try self.newTmp());
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
+    }
+
     fn genCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!u32 {
         if (std.mem.eql(u8, call.func_name, "panic")) {
             var item = self.makeInst(.panic);
@@ -4782,6 +5162,7 @@ pub const Codegen = struct {
                 try self.emitAssignImm(sentinel, 0);
                 return sentinel;
             }
+            if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| return try self.genImportedMacroCall(call, plan, null);
         }
         if (isThreadSpawnCall(call)) return try self.genThreadSpawn(expr, call);
         if (try self.genJoinHandleJoin(expr, call)) |reg| return reg;
@@ -4813,7 +5194,7 @@ pub const Codegen = struct {
         for (call.args, 0..) |arg, i| {
             const param = if (maybe_func) |func| if (i < func.params.len) func.params[i] else null else null;
             const lowered_arg = try self.genPlannedSabCallArg(arg, call_plan, param, i, call.associated_target == null);
-            try release_regs.append(lowered_arg.release_reg);
+            if (lowered_arg.release_reg) |reg| try release_regs.append(reg);
             if (i > 0) try text.appendSlice(", ");
             try text.appendSlice(lowered_arg.operand);
         }
@@ -4837,7 +5218,7 @@ pub const Codegen = struct {
 
     const SabLoweredCallArg = struct {
         operand: []const u8,
-        release_reg: u32,
+        release_reg: ?u32,
     };
 
     fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
@@ -4892,13 +5273,14 @@ pub const Codegen = struct {
             },
             .value => blk: {
                 const arg_reg = try self.genExpr(@constCast(arg));
+                const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                 if (call_plan.argPrefix(arg)) |prefix| {
                     break :blk .{
                         .operand = try std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, self.symbols.items[arg_reg] }),
-                        .release_reg = arg_reg,
+                        .release_reg = release_reg,
                     };
                 }
-                break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
+                break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = release_reg };
             },
         };
     }
@@ -4949,13 +5331,14 @@ pub const Codegen = struct {
             },
             .value => blk: {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
+                const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                 if (call_plan.argPrefix(effective_arg)) |prefix| {
                     break :blk .{
                         .operand = try std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, self.symbols.items[arg_reg] }),
-                        .release_reg = arg_reg,
+                        .release_reg = release_reg,
                     };
                 }
-                break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
+                break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = release_reg };
             },
         };
     }
@@ -5108,7 +5491,7 @@ pub const Codegen = struct {
             if (self.findStdSurfaceRule(.associated, target_name, call.func_name)) |rule| {
                 const value_reg = if (stdSurfaceRuleHasArg(rule, .value)) blk: {
                     if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
-                    break :blk try self.genExpr(@constCast(call.args[0]));
+                    break :blk try self.genAssociatedValueArg(target_name, call.func_name, @constCast(call.args[0]));
                 } else blk: {
                     if (call.args.len != 0) return Error.UnsupportedSabDirectFeature;
                     break :blk null;
@@ -5317,7 +5700,7 @@ pub const Codegen = struct {
             const layout = try self.fieldLayout(lit.ty, decl_field.name);
             const value_reg = try self.genExpr(value);
             try self.emitStore(dst, layout.offset, value_reg, layout.ty);
-            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+            try self.releaseExprResultIfNeeded(value, value_reg);
         }
 
         return dst;
@@ -5359,7 +5742,7 @@ pub const Codegen = struct {
             const layout = tupleFieldLayout(tuple_ty, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genExpr(elem);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            try self.releaseExprResultIfNeeded(elem, value);
         }
         return dst;
     }
@@ -5374,7 +5757,7 @@ pub const Codegen = struct {
             const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genExpr(elem);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            try self.releaseExprResultIfNeeded(elem, value);
         }
         return dst;
     }
@@ -5391,7 +5774,7 @@ pub const Codegen = struct {
             const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
             try self.emitStore(dst, layout.offset, value, layout.ty);
         }
-        if (!self.isLocalReg(value)) try self.emitRelease(value);
+        try self.releaseExprResultIfNeeded(lit.value, value);
         return dst;
     }
 

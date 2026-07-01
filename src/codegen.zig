@@ -448,110 +448,11 @@ pub const Codegen = struct {
     }
 
     fn blockTerminates(block: []const *ast.Node) bool {
-        if (block.len == 0) return false;
-        return stmtTerminates(block[block.len - 1]);
+        return lowering_rules.blockTerminates(block);
     }
 
     fn stmtTerminates(stmt: *const ast.Node) bool {
-        return switch (stmt.*) {
-            .return_stmt => true,
-            .break_stmt => true,
-            .continue_stmt => true,
-            .expr_stmt => |expr| exprTerminates(expr),
-            else => false,
-        };
-    }
-
-    fn blockContainsCurrentLoopBreak(block: []const *ast.Node) bool {
-        for (block) |stmt| {
-            if (stmtContainsCurrentLoopBreak(stmt)) return true;
-        }
-        return false;
-    }
-
-    fn blockContainsCurrentLoopContinue(block: []const *ast.Node) bool {
-        for (block) |stmt| {
-            if (stmtContainsCurrentLoopContinue(stmt)) return true;
-        }
-        return false;
-    }
-
-    fn stmtContainsCurrentLoopBreak(stmt: *const ast.Node) bool {
-        return switch (stmt.*) {
-            .break_stmt => true,
-            .for_stmt, .while_stmt => false,
-            .block_stmt => |blk| blockContainsCurrentLoopBreak(blk.body),
-            .let_else_stmt => |let_else| blockContainsCurrentLoopBreak(let_else.else_block),
-            .expr_stmt => |expr| exprContainsCurrentLoopBreak(expr),
-            else => false,
-        };
-    }
-
-    fn stmtContainsCurrentLoopContinue(stmt: *const ast.Node) bool {
-        return switch (stmt.*) {
-            .continue_stmt => true,
-            .for_stmt, .while_stmt => false,
-            .block_stmt => |blk| blockContainsCurrentLoopContinue(blk.body),
-            .let_else_stmt => |let_else| blockContainsCurrentLoopContinue(let_else.else_block),
-            .expr_stmt => |expr| exprContainsCurrentLoopContinue(expr),
-            else => false,
-        };
-    }
-
-    fn exprContainsCurrentLoopBreak(expr: *const ast.Node) bool {
-        return switch (expr.*) {
-            .if_expr => |ife| blockContainsCurrentLoopBreak(ife.then_block) or if (ife.else_block) |eb| blockContainsCurrentLoopBreak(eb) else false,
-            .switch_expr => |swe| blk: {
-                for (swe.cases) |case| {
-                    if (blockContainsCurrentLoopBreak(case.body)) break :blk true;
-                }
-                break :blk false;
-            },
-            .match_expr => |mat| blk: {
-                for (mat.cases) |case| {
-                    if (blockContainsCurrentLoopBreak(case.body)) break :blk true;
-                }
-                break :blk false;
-            },
-            .unsafe_expr => |ue| blockContainsCurrentLoopBreak(ue.body),
-            else => false,
-        };
-    }
-
-    fn exprContainsCurrentLoopContinue(expr: *const ast.Node) bool {
-        return switch (expr.*) {
-            .if_expr => |ife| blockContainsCurrentLoopContinue(ife.then_block) or if (ife.else_block) |eb| blockContainsCurrentLoopContinue(eb) else false,
-            .switch_expr => |swe| blk: {
-                for (swe.cases) |case| {
-                    if (blockContainsCurrentLoopContinue(case.body)) break :blk true;
-                }
-                break :blk false;
-            },
-            .match_expr => |mat| blk: {
-                for (mat.cases) |case| {
-                    if (blockContainsCurrentLoopContinue(case.body)) break :blk true;
-                }
-                break :blk false;
-            },
-            .unsafe_expr => |ue| blockContainsCurrentLoopContinue(ue.body),
-            else => false,
-        };
-    }
-
-    fn exprTerminates(expr: *const ast.Node) bool {
-        return switch (expr.*) {
-            .call_expr => |call| std.mem.eql(u8, call.func_name, "panic"),
-            .unsafe_expr => |ue| blockTerminates(ue.body),
-            .if_expr => |ife| blockTerminates(ife.then_block) and if (ife.else_block) |eb| blockTerminates(eb) else false,
-            .match_expr => |mat| {
-                if (mat.cases.len == 0) return false;
-                for (mat.cases) |case| {
-                    if (!blockTerminates(case.body)) return false;
-                }
-                return true;
-            },
-            else => false,
-        };
+        return lowering_rules.stmtTerminates(stmt);
     }
 
     fn emitRelease(self: *Codegen, name: []const u8) CodegenError!void {
@@ -7391,8 +7292,7 @@ pub const Codegen = struct {
                 const loop_cond_false = try self.newLabel("L_LOOP_COND_FALSE");
                 const loop_break_cleanup = try self.newLabel("L_LOOP_BREAK_CLEANUP");
                 const loop_exit = try self.newLabel("L_LOOP_EXIT");
-                const body_contains_break = blockContainsCurrentLoopBreak(f.body);
-                const body_contains_continue = blockContainsCurrentLoopContinue(f.body);
+                const loop_control = lowering_rules.planLoopControl(f.body);
 
                 const start_reg = try self.genExpr(f.start, hoisted_allocs);
                 const end_reg = if (f.end) |end_expr| try self.genExpr(end_expr, hoisted_allocs) else null;
@@ -7480,8 +7380,8 @@ pub const Codegen = struct {
                         return CodegenError.CodegenError;
                     }
                 }
-                self.loop_continue_labels.append(if (body_contains_continue) loop_continue_from_stmt else loop_continue) catch return CodegenError.OutOfMemory;
-                self.loop_break_labels.append(if (body_contains_break) loop_break_cleanup else loop_exit) catch return CodegenError.OutOfMemory;
+                self.loop_continue_labels.append(if (loop_control.has_continue) loop_continue_from_stmt else loop_continue) catch return CodegenError.OutOfMemory;
+                self.loop_break_labels.append(if (loop_control.has_break) loop_break_cleanup else loop_exit) catch return CodegenError.OutOfMemory;
 
                 try self.genBlock(f.body, hoisted_allocs);
                 _ = self.loop_continue_labels.pop();
@@ -7496,7 +7396,7 @@ pub const Codegen = struct {
                 self.out.writer().print("    !{s}\n", .{f.var_name}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
 
-                if (body_contains_continue) {
+                if (loop_control.has_continue) {
                     self.out.writer().print("{s}:\n", .{loop_continue_from_stmt}) catch return CodegenError.CodegenError;
                     const next_i_from_continue = try self.newTmp();
                     self.out.writer().print("    {s} = add {s}, 1\n", .{ next_i_from_continue, index_reg }) catch return CodegenError.CodegenError;
@@ -7506,7 +7406,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
                 }
 
-                if (body_contains_break) {
+                if (loop_control.has_break) {
                     self.out.writer().print("{s}:\n", .{loop_break_cleanup}) catch return CodegenError.CodegenError;
                     self.out.writer().print("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
                     self.out.writer().print("    jmp {s}\n\n", .{loop_exit}) catch return CodegenError.CodegenError;

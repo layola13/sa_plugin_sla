@@ -5,13 +5,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## In Progress / Not Yet Counted
 
 - [draft] Next slice remains Phase 3 call/result/assignment stabilization, with Phase 4 std metadata and Phase 5 aggregate/operator work after that.
-  - Current verified baseline after the assignment-move cleanup slice: full local direct-SAB no-fallback sweep is 59/69 passing; Y/shared-lowering is approximately 73%; direct SAB fallback-removal is approximately 89%.
-  - Remaining no-fallback failures are tracked in `tasks.md`: async/await, derive semantics, enum match, for-in protocols, generic for-in, rc/dyn trait, sets, spaceship compare, struct update, and var comprehensive.
+  - Current verified baseline after the var loop-control/scoped-slot cleanup slice: full local direct-SAB no-fallback sweep is 60/69 passing; Y/shared-lowering is approximately 75%; direct SAB fallback-removal is approximately 90%.
+  - Remaining no-fallback failures are tracked in `tasks.md`: async/await, derive semantics, enum match, for-in protocols, generic for-in, rc/dyn trait, sets, spaceship compare, and struct update.
   - `tests/test_unit_pkgjson_codegen.sla` is now a completed regression, not the active blocker. Keep it in every macro/import gate with both no-fallback SAB and SA-text parity.
-  - Keep completed-slice guards in every later host gate: pkgjson, imported JSON/FS macro fixtures, borrow-temp, RefCell struct payload, smart-pointer cleanup, Option methods/direct, Result direct, trait static dispatch, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
-  - Active next-slice progress: Phase 3 assignment-move cleanup is 100%; the broader Phase 3 call/result/argument plan remains open for `var_comprehensive` and `rc_dyn_trait`.
+  - Keep completed-slice guards in every later host gate: var comprehensive, assignment cleanup, pkgjson, imported JSON/FS macro fixtures, borrow-temp, RefCell struct payload, smart-pointer cleanup, Option methods/direct, Result direct, trait static dispatch, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+  - Active next-slice progress: Phase 3 var loop-control/scoped-slot cleanup is 100%; the broader Phase 3 call/result/argument plan remains open for `rc_dyn_trait` and deeper call materialization.
 
 ## Completed Features
+
+- [done] Var loop-control, explicit release, and scoped shadow slots now lower through the shared Y path.
+  - `src/lowering_rules.zig` now owns `LoopControlPlan`, current-loop-only break/continue detection, and shared block/statement termination checks. `src/codegen.zig` delegates its previous local AST scan to those shared rules.
+  - Direct SAB now consumes that plan for `for`/`while`, emits break/continue jumps with typechecker cleanup lists, supports explicit `release`, scopes block-local bindings, and uses unique stack slots for shadowed `var` declarations.
+  - The cleanup boundary stays narrow: ordinary open-scope cleanup still skips stack slots, so imported macro addressable helper slots are not released; explicit `release` and cleanup-list names release var stack values when required.
+  - Verified with `zig fmt`, `zig build --summary all`, `zig build test --summary all` (59/59), local direct-SAB no-fallback and SA-text parity for `tests/test_unit_var_comprehensive.sla`, local direct-SAB no-fallback `tests/test_unit_pkgjson_codegen.sla`, assignment cleanup regressions, and full local no-fallback sweep at 60/69.
+  - Official host gates passed: `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, host direct-SAB no-fallback and host SA-text parity for `tests/test_unit_var_comprehensive.sla`, host direct-SAB no-fallback `tests/test_unit_pkgjson_codegen.sla`, and host direct-SAB no-fallback `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+  - Feature completion: 100% for var loop-control/scoped-slot cleanup. Broader Y/shared-lowering progress is now approximately 75%; direct SAB fallback-removal progress is approximately 90%; current no-fallback unit-file pass rate is 60/69; committed in this slice.
 
 - [done] Assignment moved-local cleanup now lowers through shared assignment-move rules.
   - `src/lowering_rules.zig` now owns `rootIdentifier`, `storedValueMovesIdentifier`, and `assignmentMovesIdentifier`, so emitters share the rule for when a bare RHS identifier is moved by assignment.

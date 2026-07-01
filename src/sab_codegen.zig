@@ -35,6 +35,11 @@ const RefCellBorrowValue = struct {
     is_mut: bool,
 };
 
+const LoopJumpKind = enum {
+    break_,
+    continue_,
+};
+
 const MacroArgBinding = struct {
     name: []const u8,
     arg: *const ast.Node,
@@ -173,6 +178,8 @@ pub const Codegen = struct {
     function_sigs: std.ArrayList(sig.FunctionSig),
     test_sigs: std.ArrayList(sig.FunctionSig),
     locals: std.ArrayList(Local),
+    loop_continue_labels: std.ArrayList([]const u8),
+    loop_break_labels: std.ArrayList([]const u8),
     current_reg_ids: std.ArrayList(u32),
     current_reg_seen: std.AutoHashMap(u32, void),
     released_regs: std.AutoHashMap(u32, void),
@@ -209,6 +216,8 @@ pub const Codegen = struct {
             .function_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
             .test_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
             .locals = std.ArrayList(Local).init(allocator),
+            .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
+            .loop_break_labels = std.ArrayList([]const u8).init(allocator),
             .current_reg_ids = std.ArrayList(u32).init(allocator),
             .current_reg_seen = std.AutoHashMap(u32, void).init(allocator),
             .released_regs = std.AutoHashMap(u32, void).init(allocator),
@@ -265,6 +274,8 @@ pub const Codegen = struct {
         self.function_sigs.deinit();
         self.test_sigs.deinit();
         self.locals.deinit();
+        self.loop_continue_labels.deinit();
+        self.loop_break_labels.deinit();
         self.current_reg_ids.deinit();
         self.current_reg_seen.deinit();
         self.released_regs.deinit();
@@ -1352,6 +1363,8 @@ pub const Codegen = struct {
         self.current_reg_ids.clearRetainingCapacity();
         self.current_reg_seen.clearRetainingCapacity();
         self.released_regs.clearRetainingCapacity();
+        self.loop_continue_labels.clearRetainingCapacity();
+        self.loop_break_labels.clearRetainingCapacity();
         self.closure_bindings.clearRetainingCapacity();
         self.closure_param_regs.clearRetainingCapacity();
         self.borrowed_bindings.clearRetainingCapacity();
@@ -1495,6 +1508,77 @@ pub const Codegen = struct {
             if (self.released_regs.contains(local.reg)) continue;
             try self.emitRelease(local.reg);
         }
+    }
+
+    fn releaseStackLocalValue(self: *Codegen, local: Local) !void {
+        const ty = local.stack_ty orelse return;
+        if (self.released_regs.contains(local.reg)) return;
+        if (self.typeIsCopyValue(ty)) {
+            try self.markConsumed(local.reg);
+            return;
+        }
+        const value = try self.intern(try self.newTmp());
+        try self.emitLoad(value, local.reg, 0, try primType(ty));
+        try self.emitRelease(value);
+        try self.markConsumed(local.reg);
+    }
+
+    fn releaseCleanupName(self: *Codegen, name: []const u8) !void {
+        var i = self.locals.items.len;
+        while (i > 0) {
+            i -= 1;
+            const local = self.locals.items[i];
+            if (!std.mem.eql(u8, local.name, name)) continue;
+            if (local.is_param) {
+                if (local.param_cap != .by_value) return;
+                const ty = local.ty orelse return;
+                if ((try primType(ty)) != .ptr) return;
+            }
+            if (local.stack_ty != null) return try self.releaseStackLocalValue(local);
+            if (local.is_stack_alloc) return;
+            if (self.released_regs.contains(local.reg)) return;
+            try self.emitRelease(local.reg);
+            return;
+        }
+
+        const reg = try self.intern(name);
+        if (!self.released_regs.contains(reg)) try self.emitRelease(reg);
+    }
+
+    fn releaseCleanupForStmt(self: *Codegen, stmt: *const ast.Node) !void {
+        if (self.tc.cleanups.get(stmt)) |list| {
+            for (list.items) |name| try self.releaseCleanupName(name);
+        }
+    }
+
+    fn genLoopJump(self: *Codegen, stmt: *const ast.Node, kind: LoopJumpKind) !void {
+        try self.releaseCleanupForStmt(stmt);
+        const labels = switch (kind) {
+            .break_ => self.loop_break_labels.items,
+            .continue_ => self.loop_continue_labels.items,
+        };
+        if (labels.len == 0) return Error.UnsupportedSabDirectFeature;
+        try self.emitJmp(labels[labels.len - 1]);
+    }
+
+    fn genReleaseStmt(self: *Codegen, rel: ast.ReleaseStmt) !void {
+        if (self.stackLocal(rel.var_name)) |local| return try self.releaseStackLocalValue(local);
+
+        const reg = self.localReg(rel.var_name) orelse try self.intern(rel.var_name);
+        if (self.localType(rel.var_name)) |ty| {
+            if (self.typeIsCopyValue(ty)) {
+                try self.markConsumed(reg);
+                return;
+            }
+        }
+        try self.emitRelease(reg);
+    }
+
+    fn genScopedBlock(self: *Codegen, body: []const *ast.Node) !void {
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
+        try self.genBlock(body);
+        if (!self.lastIsTerminator()) try self.releaseLocalsFrom(old_locals, null);
     }
 
     fn releaseOpenLocals(self: *Codegen, except: ?u32) !void {
@@ -4055,7 +4139,7 @@ pub const Codegen = struct {
     fn genStmt(self: *Codegen, stmt: *ast.Node) anyerror!void {
         switch (stmt.*) {
             .var_stmt => |v| {
-                const dst = try self.intern(v.name);
+                const dst = try self.intern(try self.newTmp());
                 try self.emitStackAlloc(dst, typeSize(v.ty));
                 try self.pushStackLocal(v.name, dst, v.ty);
             },
@@ -4084,9 +4168,12 @@ pub const Codegen = struct {
                 try self.releaseOpenLocals(value);
                 try self.emitReturn(value);
             },
-            .block_stmt => |blk| try self.genBlock(blk.body),
+            .block_stmt => |blk| try self.genScopedBlock(blk.body),
             .for_stmt => |f| try self.genFor(f),
             .while_stmt => |w| try self.genWhile(w),
+            .break_stmt => try self.genLoopJump(stmt, .break_),
+            .continue_stmt => try self.genLoopJump(stmt, .continue_),
+            .release_stmt => |rel| try self.genReleaseStmt(rel),
             else => return Error.UnsupportedSabDirectFeature,
         }
     }
@@ -5425,6 +5512,7 @@ pub const Codegen = struct {
         if (w.let_pattern != null) return Error.UnsupportedSabDirectFeature;
         const head_label = try self.newLabel("L_WHILE_HEAD");
         const body_label = try self.newLabel("L_WHILE_BODY");
+        const cond_false_label = try self.newLabel("L_WHILE_COND_FALSE");
         const exit_label = try self.newLabel("L_WHILE_EXIT");
 
         try self.emitJmp(head_label);
@@ -5434,7 +5522,7 @@ pub const Codegen = struct {
         br.operands[0] = .{ .reg = cond };
         br.operands[1] = .{ .label = try self.intern(body_label) };
         br.operands[2] = .{ .label = try self.intern(body_label) };
-        br.operands[3] = .{ .label = try self.intern(exit_label) };
+        br.operands[3] = .{ .label = try self.intern(cond_false_label) };
         try self.appendInst(br);
 
         // Scope the loop body's locals/release state. A `let` declared inside
@@ -5450,7 +5538,11 @@ pub const Codegen = struct {
 
         try self.emitLabel(body_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
+        try self.loop_continue_labels.append(head_label);
+        try self.loop_break_labels.append(exit_label);
         try self.genBlock(w.body);
+        _ = self.loop_continue_labels.pop();
+        _ = self.loop_break_labels.pop();
         if (!self.lastIsTerminator()) {
             try self.releaseLocalsFrom(body_locals_len, null);
             try self.emitJmp(head_label);
@@ -5459,14 +5551,18 @@ pub const Codegen = struct {
         self.popLocalsTo(body_locals_len);
         try self.restoreReleased(&pre_released);
 
-        try self.emitLabel(exit_label);
+        try self.emitLabel(cond_false_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
+        try self.emitJmp(exit_label);
+
+        try self.emitLabel(exit_label);
     }
 
     fn genFor(self: *Codegen, f: ast.ForStmt) anyerror!void {
         const end_expr = f.end orelse return Error.UnsupportedSabDirectFeature;
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
+        const loop_control = lowering_rules.planLoopControl(f.body);
 
         const counter_slot = try self.intern(try self.newTmp());
         try self.emitStackAlloc(counter_slot, 8);
@@ -5478,6 +5574,8 @@ pub const Codegen = struct {
         const head_label = try self.newLabel("L_FOR_HEAD");
         const body_label = try self.newLabel("L_FOR_BODY");
         const cont_label = try self.newLabel("L_FOR_CONTINUE");
+        const cond_false_label = try self.newLabel("L_FOR_COND_FALSE");
+        const break_cleanup_label = try self.newLabel("L_FOR_BREAK_CLEANUP");
         const exit_label = try self.newLabel("L_FOR_EXIT");
 
         try self.emitJmp(head_label);
@@ -5491,25 +5589,51 @@ pub const Codegen = struct {
         br.operands[0] = .{ .reg = cond };
         br.operands[1] = .{ .label = try self.intern(body_label) };
         br.operands[2] = .{ .label = try self.intern(body_label) };
-        br.operands[3] = .{ .label = try self.intern(exit_label) };
+        br.operands[3] = .{ .label = try self.intern(cond_false_label) };
         try self.appendInst(br);
+
+        const body_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
 
         try self.emitLabel(body_label);
         try self.emitBranchRelease(cond);
-        try self.pushLocal(f.var_name, index_reg, false);
+        const loop_value = try self.intern(try self.newTmp());
+        try self.emitOp(loop_value, .add, .{ .reg = index_reg }, .{ .imm_i64 = 0 });
+        try self.pushLocal(f.var_name, loop_value, false);
+        try self.loop_continue_labels.append(cont_label);
+        try self.loop_break_labels.append(if (loop_control.has_break) break_cleanup_label else exit_label);
         try self.genBlock(f.body);
-        if (!self.lastIsTerminator()) try self.emitJmp(cont_label);
+        _ = self.loop_continue_labels.pop();
+        _ = self.loop_break_labels.pop();
+        if (!self.lastIsTerminator()) {
+            try self.releaseLocalsFrom(body_locals_len, null);
+            try self.emitJmp(cont_label);
+        }
+
+        self.popLocalsTo(body_locals_len);
+        try self.restoreReleased(&pre_released);
 
         try self.emitLabel(cont_label);
         const next = try self.intern(try self.newTmp());
         try self.emitOp(next, .add, .{ .reg = index_reg }, .{ .imm_i64 = 1 });
         try self.emitStore(counter_slot, 0, next, .i64);
         try self.emitRelease(next);
-        if (!self.released_regs.contains(index_reg)) try self.emitRelease(index_reg);
+        try self.emitBranchRelease(index_reg);
         try self.emitJmp(head_label);
 
-        try self.emitLabel(exit_label);
+        if (loop_control.has_break) {
+            try self.emitLabel(break_cleanup_label);
+            try self.emitBranchRelease(index_reg);
+            try self.emitJmp(exit_label);
+        }
+
+        try self.emitLabel(cond_false_label);
         try self.emitBranchRelease(cond);
+        try self.emitBranchRelease(index_reg);
+        try self.emitJmp(exit_label);
+
+        try self.emitLabel(exit_label);
         if (!self.isLocalReg(end_reg)) try self.emitRelease(end_reg);
     }
 

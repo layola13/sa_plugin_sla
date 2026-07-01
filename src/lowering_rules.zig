@@ -272,6 +272,18 @@ pub const AbiFieldLayout = struct {
     ty: *const ast.Type,
 };
 
+pub const StructLiteralFieldSource = enum {
+    explicit,
+    update,
+};
+
+pub const StructLiteralFieldPlan = struct {
+    source: StructLiteralFieldSource,
+    name: []const u8,
+    value: ?*ast.Node,
+    layout: AbiFieldLayout,
+};
+
 pub const SliceAbi = struct {
     pub const size: usize = 16;
     pub const ptr_offset: usize = 0;
@@ -551,6 +563,24 @@ pub fn structFieldLayout(decl: *const ast.StructDecl, name: []const u8) ?AbiFiel
             return .{ .offset = offset, .size = size, .ty = field.ty };
         }
         offset += size;
+    }
+    return null;
+}
+
+pub fn structLiteralExplicitValue(lit: *const ast.StructLiteral, name: []const u8) ?*ast.Node {
+    for (lit.fields) |field| {
+        if (std.mem.eql(u8, field.name, name)) return field.value;
+    }
+    return null;
+}
+
+pub fn planStructLiteralField(decl: *const ast.StructDecl, lit: *const ast.StructLiteral, field: ast.Field) ?StructLiteralFieldPlan {
+    const layout = structFieldLayout(decl, field.name) orelse return null;
+    if (structLiteralExplicitValue(lit, field.name)) |value| {
+        return .{ .source = .explicit, .name = field.name, .value = value, .layout = layout };
+    }
+    if (lit.update_expr != null) {
+        return .{ .source = .update, .name = field.name, .value = null, .layout = layout };
     }
     return null;
 }
@@ -964,6 +994,37 @@ test "shared ABI layout keeps fixed-array fields as pointer slots" {
     const elem = arrayElementLayout(bool_array_ty.array, 1) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(usize, 1), elem.offset);
     try std.testing.expectEqual(@as(usize, 1), elem.size);
+}
+
+test "shared struct literal update field plan" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    const fields = [_]ast.Field{
+        .{ .name = "x", .ty = &i32_ty },
+        .{ .name = "y", .ty = &i32_ty },
+    };
+    const decl = ast.StructDecl{
+        .name = "Point",
+        .generics = &.{},
+        .fields = fields[0..],
+    };
+    var x_value = ast.Node{ .identifier = "new_x" };
+    var base_value = ast.Node{ .identifier = "old" };
+    const literal_fields = [_]ast.StructLiteralField{.{ .name = "x", .value = &x_value }};
+    const lit = ast.StructLiteral{
+        .ty = undefined,
+        .fields = literal_fields[0..],
+        .update_expr = &base_value,
+    };
+
+    const x_plan = planStructLiteralField(&decl, &lit, fields[0]) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(StructLiteralFieldSource.explicit, x_plan.source);
+    try std.testing.expect(x_plan.value.? == &x_value);
+    try std.testing.expectEqual(@as(usize, 0), x_plan.layout.offset);
+
+    const y_plan = planStructLiteralField(&decl, &lit, fields[1]) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(StructLiteralFieldSource.update, y_plan.source);
+    try std.testing.expect(y_plan.value == null);
+    try std.testing.expectEqual(@as(usize, 4), y_plan.layout.offset);
 }
 
 test "shared dyn trait naming and method slots" {

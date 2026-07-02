@@ -152,6 +152,11 @@ const StdMacroTemplate = struct {
     module: sab.Module,
 };
 
+const PendingStdDep = struct {
+    import_path: []const u8,
+    dep: []const u8,
+};
+
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
@@ -164,6 +169,7 @@ pub const Codegen = struct {
     borrowed_bindings: std.StringHashMap(void),
     std_surface_rules: std.ArrayList(StdSurfaceRule),
     included_imports: std.StringHashMap(void),
+    pending_std_deps: std.ArrayList(PendingStdDep),
     std_import_modules: std.ArrayList(StdImportModule),
     std_import_module_ids: std.StringHashMap(usize),
     std_macro_templates: std.ArrayList(StdMacroTemplate),
@@ -189,6 +195,17 @@ pub const Codegen = struct {
     macro_fragment_idx: usize = 0,
     macro_call_idx: usize = 0,
     escaped_closure_idx: usize = 0,
+    in_function_body: bool = false,
+    // When appending a decoded std-macro fragment, fragment-internal temp/local
+    // registers (named `tmp_N`, `__...` by the snippet flattener) share the
+    // `tmp_N` namespace across independently-flattened fragments and with main
+    // codegen. Name-based interning would alias them, so while a fragment is
+    // being appended this map renames each such internal register to a fresh
+    // globally-unique name. Arg-passed names (real main-codegen registers) are
+    // excluded so their references still resolve to the caller's registers.
+    fragment_rename: ?*std.StringHashMap([]const u8) = null,
+    fragment_rename_args: ?[]const []const u8 = null,
+    fragment_rename_idx: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker) Codegen {
         return .{
@@ -203,6 +220,7 @@ pub const Codegen = struct {
             .borrowed_bindings = std.StringHashMap(void).init(allocator),
             .std_surface_rules = std.ArrayList(StdSurfaceRule).init(allocator),
             .included_imports = std.StringHashMap(void).init(allocator),
+            .pending_std_deps = std.ArrayList(PendingStdDep).init(allocator),
             .std_import_modules = std.ArrayList(StdImportModule).init(allocator),
             .std_import_module_ids = std.StringHashMap(usize).init(allocator),
             .std_macro_templates = std.ArrayList(StdMacroTemplate).init(allocator),
@@ -243,6 +261,11 @@ pub const Codegen = struct {
         }
         self.std_surface_rules.deinit();
         self.included_imports.deinit();
+        for (self.pending_std_deps.items) |dep| {
+            self.allocator.free(dep.import_path);
+            self.allocator.free(dep.dep);
+        }
+        self.pending_std_deps.deinit();
         for (self.std_import_modules.items) |*entry| {
             self.allocator.free(entry.import_path);
             entry.module.deinit(self.allocator);
@@ -514,6 +537,17 @@ pub const Codegen = struct {
 
     fn newTmp(self: *Codegen) ![]const u8 {
         const name = try std.fmt.allocPrint(self.allocator, "tmp_{}", .{self.tmp_idx});
+        self.tmp_idx += 1;
+        return name;
+    }
+
+    /// A unique hygiene-suffix token for FORMAT/STRFMT macros' `%tag` parameter.
+    /// It must NOT collide with the `tmp_N` register namespace used by the
+    /// snippet flattener, so it uses a distinct `fmttag_N` prefix. The macros
+    /// only use `%tag` to build unique local names (`__format_..._%tag`), never
+    /// as a value register.
+    fn newFormatTag(self: *Codegen) ![]const u8 {
+        const name = try std.fmt.allocPrint(self.allocator, "fmttag_{}", .{self.tmp_idx});
         self.tmp_idx += 1;
         return name;
     }
@@ -1034,6 +1068,13 @@ pub const Codegen = struct {
         };
     }
 
+    fn stdSurfaceArgMustBeLiteral(kind: StdSurfaceArgKind) bool {
+        return switch (kind) {
+            .elem_ty => true,
+            else => false,
+        };
+    }
+
     fn primTypeMacroSuffix(ty: sig.PrimType) ![]const u8 {
         return switch (ty) {
             .i1 => "I1",
@@ -1060,12 +1101,18 @@ pub const Codegen = struct {
     }
 
     fn emitStdSurfaceRule(self: *Codegen, rule: StdSurfaceRule, values: StdSurfaceValues) !void {
+        try self.ensureRuleDeps(rule);
         var args = std.ArrayList([]const u8).init(self.allocator);
         defer args.deinit();
-        for (rule.args) |arg_kind| try args.append(try self.stdSurfaceArgText(arg_kind, values));
+        var literal_args = std.ArrayList(bool).init(self.allocator);
+        defer literal_args.deinit();
+        for (rule.args) |arg_kind| {
+            try args.append(try self.stdSurfaceArgText(arg_kind, values));
+            try literal_args.append(stdSurfaceArgMustBeLiteral(arg_kind));
+        }
         const macro_name = try self.stdSurfaceMacroName(rule, values);
         defer self.allocator.free(macro_name);
-        try self.emitStdMacroFragment(rule.import_path, macro_name, args.items);
+        try self.emitStdMacroFragmentWithLiteralArgs(rule.import_path, macro_name, args.items, literal_args.items);
     }
 
     fn ensureRuleDeps(self: *Codegen, rule: StdSurfaceRule) !void {
@@ -1141,6 +1188,7 @@ pub const Codegen = struct {
             .closure_literal => |lit| try self.preloadNodeStdSurfaceDeps(lit.body),
             .call_expr => |call| {
                 if (isThreadSpawnCall(call)) try self.ensureStdDeps("sa_std/thread.sa", &.{"pthread_spawn"});
+                if (std.mem.eql(u8, call.func_name, "debug") and call.args.len == 1) try self.ensureDebugFormatDeps();
                 if (call.associated_target) |target_name| {
                     if (self.findStdSurfaceRule(.associated, target_name, call.func_name)) |rule| try self.ensureRuleDeps(rule);
                 } else if (call.args.len > 0) {
@@ -1360,6 +1408,7 @@ pub const Codegen = struct {
     }
 
     fn beginFunction(self: *Codegen) void {
+        self.in_function_body = true;
         self.current_reg_ids.clearRetainingCapacity();
         self.current_reg_seen.clearRetainingCapacity();
         self.released_regs.clearRetainingCapacity();
@@ -1371,6 +1420,12 @@ pub const Codegen = struct {
         self.refcell_borrow_values.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
         self.non_owning_regs.clearRetainingCapacity();
+    }
+
+    fn finishFunctionBody(self: *Codegen, sig_idx: usize) !void {
+        self.function_sigs.items[sig_idx].reg_ids = try self.finishFunctionRegs();
+        self.in_function_body = false;
+        try self.flushPendingStdDeps();
     }
 
     fn clearBorrowAddressTemps(self: *Codegen) void {
@@ -2003,7 +2058,85 @@ pub const Codegen = struct {
     fn remapModuleSymbol(self: *Codegen, symbols: []const []const u8, old_id: u32) !u32 {
         const idx: usize = @intCast(old_id);
         if (idx >= symbols.len) return Error.UnsupportedSabDirectFeature;
-        return try self.internStable(symbols[idx]);
+        const name = symbols[idx];
+        if (self.fragment_rename) |rename| {
+            if (try self.fragmentRenamedName(rename, name)) |renamed| {
+                return try self.internStable(renamed);
+            }
+        }
+        return try self.internStable(name);
+    }
+
+    /// When appending a decoded std-macro fragment, its internal SA temps
+    /// (`tmp_N` from the snippet flattener), hygiene locals (`__`-prefixed),
+    /// and labels (`L_`-prefixed) share a name namespace with the main
+    /// codegen's registers and with other fragments. Interning them by name
+    /// would alias distinct SA values (e.g. fragment `tmp_0` == main `tmp_0`),
+    /// producing UnknownRegister / UseAfterMove at verify time. This gives each
+    /// such fragment-internal name a globally-unique rewrite, while names that
+    /// were passed in as caller arguments (real main-codegen registers) keep
+    /// their identity so their references still resolve to the caller's values.
+    /// Returns null when the name is not fragment-internal (globals, consts,
+    /// extern callees, caller args) and should be interned as-is.
+    fn fragmentRenamedName(self: *Codegen, rename: *std.StringHashMap([]const u8), name: []const u8) !?[]const u8 {
+        if (self.fragment_rename_args) |args| {
+            for (args) |arg| {
+                if (std.mem.eql(u8, arg, name)) return null;
+            }
+        }
+        const is_internal = std.mem.startsWith(u8, name, "tmp_") or
+            std.mem.startsWith(u8, name, "__") or
+            std.mem.startsWith(u8, name, "L_");
+        if (!is_internal) return null;
+        if (rename.get(name)) |existing| return existing;
+        const unique = try std.fmt.allocPrint(self.allocator, "__frag{}_{s}", .{ self.fragment_rename_idx, name });
+        self.fragment_rename_idx += 1;
+        try rename.put(try self.allocator.dupe(u8, name), unique);
+        return unique;
+    }
+
+    /// Append a decoded fragment function body with per-fragment uniquification
+    /// of internal registers/labels active. See `fragmentRenamedName`.
+    fn appendRenamedFragmentBody(self: *Codegen, module: sab.Module, func_name: []const u8, args: []const []const u8) !void {
+        var rename = std.StringHashMap([]const u8).init(self.allocator);
+        defer {
+            var it = rename.iterator();
+            while (it.next()) |entry| self.allocator.free(entry.key_ptr.*);
+            rename.deinit();
+        }
+        const prev_rename = self.fragment_rename;
+        const prev_args = self.fragment_rename_args;
+        self.fragment_rename = &rename;
+        self.fragment_rename_args = args;
+        defer {
+            self.fragment_rename = prev_rename;
+            self.fragment_rename_args = prev_args;
+        }
+        try self.appendDecodedFunctionBody(module, func_name);
+    }
+
+    /// Append a decoded macro fragment that was flattened with
+    /// `__sla_macro_arg_N` placeholders instead of caller register names. This
+    /// keeps SCI's flatten/encode stage from treating caller temps as fragment
+    /// locals and renumbering them. During append we replace placeholders with
+    /// the real caller args, while still applying per-fragment hygiene to all
+    /// fragment-internal temps/labels.
+    fn appendRenamedTemplateFragmentBody(self: *Codegen, module: sab.Module, func_name: []const u8, args: []const []const u8) !void {
+        var rename = std.StringHashMap([]const u8).init(self.allocator);
+        defer {
+            var it = rename.iterator();
+            while (it.next()) |entry| self.allocator.free(entry.key_ptr.*);
+            rename.deinit();
+        }
+        const prev_rename = self.fragment_rename;
+        const prev_args = self.fragment_rename_args;
+        self.fragment_rename = &rename;
+        self.fragment_rename_args = args;
+        defer {
+            self.fragment_rename = prev_rename;
+            self.fragment_rename_args = prev_args;
+        }
+        try self.appendDecodedFragmentTemplateFunctionBody(module, func_name, args);
     }
 
     fn cloneOptionalText(self: *Codegen, text: ?[]const u8) !?[]const u8 {
@@ -2029,10 +2162,45 @@ pub const Codegen = struct {
             .symbol => |old_id| .{ .symbol = try self.remapModuleSymbol(symbols, old_id) },
             .label => |old_id| .{ .label = try self.remapModuleSymbol(symbols, old_id) },
             .func => |old_id| .{ .func = try self.remapModuleSymbol(symbols, old_id) },
-            .text => |text| .{ .text = try self.allocator.dupe(u8, text) },
+            .text => |text| .{ .text = try self.renameFragmentText(text) },
             .native_text => |text| .{ .native_text = try self.allocator.dupe(u8, text) },
             else => operand,
         };
+    }
+
+    /// Rewrite fragment-internal register/label tokens embedded in a call-body
+    /// `.text` operand using the active per-fragment rename map, so they match
+    /// the uniquified `.reg` definitions. Tokens split on SA operand
+    /// punctuation (`,` ` ` `&` `^` `(` `)`); caller registers (in
+    /// `fragment_rename_args`), immediates, and `@func` targets pass through.
+    fn renameFragmentText(self: *Codegen, text: []const u8) ![]const u8 {
+        const rename = self.fragment_rename orelse return try self.allocator.dupe(u8, text);
+        var out = std.ArrayList(u8).init(self.allocator);
+        errdefer out.deinit();
+        var token = std.ArrayList(u8).init(self.allocator);
+        defer token.deinit();
+        const flush = struct {
+            fn call(cg: *Codegen, r: *std.StringHashMap([]const u8), tok: *std.ArrayList(u8), o: *std.ArrayList(u8)) !void {
+                if (tok.items.len == 0) return;
+                if (try cg.fragmentRenamedName(r, tok.items)) |renamed| {
+                    try o.appendSlice(renamed);
+                } else {
+                    try o.appendSlice(tok.items);
+                }
+                tok.clearRetainingCapacity();
+            }
+        }.call;
+        for (text) |ch| {
+            const is_delim = ch == ',' or ch == ' ' or ch == '&' or ch == '^' or ch == '(' or ch == ')';
+            if (is_delim) {
+                try flush(self, rename, &token, &out);
+                try out.append(ch);
+            } else {
+                try token.append(ch);
+            }
+        }
+        try flush(self, rename, &token, &out);
+        return try out.toOwnedSlice();
     }
 
     fn stdMacroPlaceholder(self: *Codegen, index: usize) ![]const u8 {
@@ -2053,6 +2221,29 @@ pub const Codegen = struct {
             current = next;
         }
         return current;
+    }
+
+    fn replaceStdMacroPlaceholdersThenRename(self: *Codegen, text: []const u8, args: []const []const u8) ![]const u8 {
+        const replaced = try self.replaceStdMacroPlaceholders(text, args);
+        defer self.allocator.free(replaced);
+        return try self.renameFragmentText(replaced);
+    }
+
+    fn remapFragmentTemplateSymbol(self: *Codegen, symbols: []const []const u8, old_id: u32, args: []const []const u8) !u32 {
+        if (templateSymbolArgIndex(symbols, old_id)) |arg_idx| {
+            if (arg_idx >= args.len) return Error.UnsupportedSabDirectFeature;
+            return try self.internStable(args[arg_idx]);
+        }
+        const idx: usize = @intCast(old_id);
+        if (idx >= symbols.len) return Error.UnsupportedSabDirectFeature;
+        const replaced = try self.replaceStdMacroPlaceholders(symbols[idx], args);
+        defer self.allocator.free(replaced);
+        if (self.fragment_rename) |rename| {
+            if (try self.fragmentRenamedName(rename, replaced)) |renamed| {
+                return try self.internStable(renamed);
+            }
+        }
+        return try self.internStable(replaced);
     }
 
     fn remapTemplateSymbol(self: *Codegen, symbols: []const []const u8, old_id: u32, args: []const []const u8) !u32 {
@@ -2103,6 +2294,32 @@ pub const Codegen = struct {
         };
     }
 
+    fn remapFragmentTemplateOperand(self: *Codegen, symbols: []const []const u8, operand: inst.Operand, args: []const []const u8) !inst.Operand {
+        return switch (operand) {
+            .reg => |old_id| {
+                if (templateSymbolArgIndex(symbols, old_id)) |arg_idx| {
+                    if (arg_idx < args.len and isStdMacroTemplateIntegerArg(args[arg_idx])) {
+                        return try stdMacroTemplateIntegerOperand(args[arg_idx]);
+                    }
+                }
+                return .{ .reg = try self.remapFragmentTemplateSymbol(symbols, old_id, args) };
+            },
+            .symbol => |old_id| {
+                if (templateSymbolArgIndex(symbols, old_id)) |arg_idx| {
+                    if (arg_idx < args.len and isStdMacroTemplateIntegerArg(args[arg_idx])) {
+                        return try stdMacroTemplateIntegerOperand(args[arg_idx]);
+                    }
+                }
+                return .{ .symbol = try self.remapFragmentTemplateSymbol(symbols, old_id, args) };
+            },
+            .label => |old_id| .{ .label = try self.remapFragmentTemplateSymbol(symbols, old_id, args) },
+            .func => |old_id| .{ .func = try self.remapFragmentTemplateSymbol(symbols, old_id, args) },
+            .text => |text| .{ .text = try self.replaceStdMacroPlaceholdersThenRename(text, args) },
+            .native_text => |text| .{ .native_text = try self.replaceStdMacroPlaceholdersThenRename(text, args) },
+            else => operand,
+        };
+    }
+
     fn coerceTemplateValueOperand(self: *Codegen, operand: *inst.Operand) !void {
         if (operand.* != .text) return;
         const text = std.mem.trim(u8, operand.text, " \t\r\n");
@@ -2133,6 +2350,19 @@ pub const Codegen = struct {
         if (items.len == 0) return &.{};
         const out = try self.allocator.alloc([]const u8, items.len);
         for (items, 0..) |item, idx| out[idx] = try self.replaceStdMacroPlaceholders(item, args);
+        return out;
+    }
+
+    fn cloneFragmentTemplateTextList(self: *Codegen, items: []const []const u8, args: []const []const u8) ![]const []const u8 {
+        if (items.len == 0) return &.{};
+        const out = try self.allocator.alloc([]const u8, items.len);
+        errdefer self.allocator.free(out);
+        var initialized: usize = 0;
+        errdefer for (out[0..initialized]) |item| self.allocator.free(item);
+        for (items, 0..) |item, idx| {
+            out[idx] = try self.replaceStdMacroPlaceholdersThenRename(item, args);
+            initialized += 1;
+        }
         return out;
     }
 
@@ -2272,6 +2502,26 @@ pub const Codegen = struct {
         return out;
     }
 
+    fn cloneFragmentTemplateInstruction(self: *Codegen, symbols: []const []const u8, source: inst.Instruction, args: []const []const u8) !inst.Instruction {
+        var out = source;
+        out.package_identity = try self.cloneOptionalText(source.package_identity);
+        out.upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc);
+        out.raw_text = "";
+        out.atomic_expected_text = if (source.atomic_expected_text) |text| try self.replaceStdMacroPlaceholdersThenRename(text, args) else null;
+        out.atomic_new_text = if (source.atomic_new_text) |text| try self.replaceStdMacroPlaceholdersThenRename(text, args) else null;
+        out.native_reg_names = try self.cloneFragmentTemplateTextList(source.native_reg_names, args);
+        for (&out.operands) |*operand| operand.* = try self.remapFragmentTemplateOperand(symbols, operand.*, args);
+        try self.coerceTemplateInstructionOperands(&out);
+        if (out.kind == .panic_msg and out.operands[0] == .text) {
+            if (try self.structuredPanicMsgOperands(out.operands[0].text)) |ops| {
+                out.operands[0] = ops[0];
+                out.operands[1] = ops[1];
+                out.operands[2] = ops[2];
+            }
+        }
+        return out;
+    }
+
     fn structuredPanicMsgOperands(self: *Codegen, text: []const u8) !?[3]inst.Operand {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len < 2 or trimmed[0] != '(' or trimmed[trimmed.len - 1] != ')') return null;
@@ -2315,6 +2565,11 @@ pub const Codegen = struct {
             const cloned = try self.cloneModuleFunctionSig(module.symbols, fsig, entry_idx);
             try self.function_sigs.append(cloned);
             if (cloned.kind == .test_func) try self.test_sigs.append(cloned);
+
+            if (cloned.kind == .external) {
+                try self.appendDeclInst(cloned);
+                continue;
+            }
 
             const start: usize = fsig.entry_inst_idx;
             const end: usize = if (idx + 1 < module.function_sigs.len) module.function_sigs[idx + 1].entry_inst_idx else module.instructions.len;
@@ -2390,6 +2645,29 @@ pub const Codegen = struct {
         }
     }
 
+    fn appendDecodedFragmentTemplateFunctionBody(self: *Codegen, module: sab.Module, func_name: []const u8, args: []const []const u8) !void {
+        var start: ?usize = null;
+        var end: usize = module.instructions.len;
+        for (module.function_sigs, 0..) |fsig, idx| {
+            if (std.mem.eql(u8, fsig.name, func_name)) {
+                start = fsig.entry_inst_idx;
+                if (idx + 1 < module.function_sigs.len) end = module.function_sigs[idx + 1].entry_inst_idx;
+                break;
+            }
+        }
+        const body_start = start orelse return Error.UnsupportedSabDirectFeature;
+        var i = body_start;
+        while (i < end) : (i += 1) {
+            const source = module.instructions[i];
+            if (i == body_start and (source.kind == .func_decl or source.kind == .test_decl)) continue;
+            if (i == body_start + 1 and source.kind == .label) continue;
+            if (i + 1 == end and source.kind == .return_) continue;
+            const cloned = try self.cloneFragmentTemplateInstruction(module.symbols, source, args);
+            try self.recordInstructionRegs(cloned);
+            try self.instructions.append(cloned);
+        }
+    }
+
     fn cachedStdImportModule(self: *Codegen, import_path: []const u8) !*const sab.Module {
         if (self.std_import_module_ids.get(import_path)) |idx| return &self.std_import_modules.items[idx].module;
 
@@ -2423,13 +2701,51 @@ pub const Codegen = struct {
         var missing = std.ArrayList([]const u8).init(self.allocator);
         defer missing.deinit();
         for (deps) |dep| {
-            if (!self.included_imports.contains(dep)) try missing.append(dep);
+            if (!self.included_imports.contains(dep) and !self.pendingStdDepContains(dep)) try missing.append(dep);
         }
         if (missing.items.len == 0) return;
 
+        if (self.in_function_body) {
+            for (missing.items) |dep| {
+                try self.pending_std_deps.append(.{
+                    .import_path = try self.allocator.dupe(u8, import_path),
+                    .dep = try self.allocator.dupe(u8, dep),
+                });
+            }
+            return;
+        }
+
+        try self.appendStdDepsNow(import_path, missing.items);
+    }
+
+    fn pendingStdDepContains(self: *Codegen, dep: []const u8) bool {
+        for (self.pending_std_deps.items) |pending| {
+            if (std.mem.eql(u8, pending.dep, dep)) return true;
+        }
+        return false;
+    }
+
+    fn appendStdDepsNow(self: *Codegen, import_path: []const u8, deps: []const []const u8) !void {
+        if (deps.len == 0) return;
         const module = try self.cachedStdImportModule(import_path);
-        try self.appendDecodedModuleFiltered(module.*, missing.items);
-        for (missing.items) |dep| try self.included_imports.put(try self.allocator.dupe(u8, dep), {});
+        try self.appendDecodedModuleFiltered(module.*, deps);
+        for (deps) |dep| try self.included_imports.put(try self.allocator.dupe(u8, dep), {});
+    }
+
+    fn flushPendingStdDeps(self: *Codegen) !void {
+        if (self.pending_std_deps.items.len == 0) return;
+        var i: usize = 0;
+        while (i < self.pending_std_deps.items.len) : (i += 1) {
+            const pending = self.pending_std_deps.items[i];
+            if (!self.included_imports.contains(pending.dep)) {
+                try self.appendStdDepsNow(pending.import_path, &.{pending.dep});
+            }
+        }
+        for (self.pending_std_deps.items) |pending| {
+            self.allocator.free(pending.import_path);
+            self.allocator.free(pending.dep);
+        }
+        self.pending_std_deps.clearRetainingCapacity();
     }
 
     fn isStdMacroTemplateArgSafe(arg: []const u8) bool {
@@ -2567,6 +2883,17 @@ pub const Codegen = struct {
 
     fn emitCachedStdMacroFragment(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8) !bool {
         if (!stdMacroTemplateArgsSafe(args)) return false;
+        // FORMAT_* / STRFMT_* macros in string_format.sa use a `%tag` hygiene
+        // suffix to name per-expansion local temporaries. Those locals are both
+        // *defined* by structured instructions (remapped to fresh registers on
+        // inlining) and *referenced* inside call-body text operands (which the
+        // arg-placeholder cache only rewrites for `%argN`, not for remapped
+        // local names). Caching therefore freezes a stale local name in the
+        // text call body and desyncs it from the fresh structured register,
+        // producing UnknownRegister at verify time. The fresh-flatten path
+        // re-expands hygiene per call and stays consistent, so bypass the cache
+        // for this module.
+        if (std.mem.eql(u8, import_path, "sa_std/string_format.sa")) return false;
         const template = try self.cachedStdMacroTemplate(import_path, macro_name, args.len);
         if (template.arg_count != args.len) return Error.UnsupportedSabDirectFeature;
         if (!try self.stdMacroTemplateSupportsArgs(template, args)) return false;
@@ -2576,22 +2903,51 @@ pub const Codegen = struct {
     }
 
     fn emitStdMacroFragment(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8) !void {
+        try self.emitStdMacroFragmentWithLiteralArgs(import_path, macro_name, args, &.{});
+    }
+
+    fn emitStdMacroFragmentWithLiteralArgs(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8, literal_args: []const bool) !void {
+        if (literal_args.len != 0 and literal_args.len != args.len) return Error.UnsupportedSabDirectFeature;
+        const has_literal_args = blk: {
+            for (literal_args) |is_literal| if (is_literal) break :blk true;
+            break :blk false;
+        };
+
+        if (has_literal_args) {
+            return try self.emitStdMacroFragmentFresh(import_path, macro_name, args, literal_args);
+        }
+
         const used_cached = self.emitCachedStdMacroFragment(import_path, macro_name, args) catch |err| switch (err) {
             error.UnsupportedType => false,
             else => return err,
         };
         if (used_cached) return;
 
+        try self.emitStdMacroFragmentFresh(import_path, macro_name, args, literal_args);
+    }
+
+    fn emitStdMacroFragmentFresh(self: *Codegen, import_path: []const u8, macro_name: []const u8, args: []const []const u8, literal_args: []const bool) !void {
         const func_name = try std.fmt.allocPrint(self.allocator, "__sla_macro_fragment_{}", .{self.macro_fragment_idx});
         self.macro_fragment_idx += 1;
 
         var source = std.ArrayList(u8).init(self.allocator);
         try source.writer().print("@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
         for (args, 0..) |arg, i| {
-            if (i == 0) {
-                try source.writer().print(" {s}", .{arg});
+            const use_literal = literal_args.len != 0 and literal_args[i];
+            if (use_literal) {
+                if (i == 0) {
+                    try source.writer().print(" {s}", .{arg});
+                } else {
+                    try source.writer().print(", {s}", .{arg});
+                }
             } else {
-                try source.writer().print(", {s}", .{arg});
+                const placeholder = try self.stdMacroPlaceholder(i);
+                defer self.allocator.free(placeholder);
+                if (i == 0) {
+                    try source.writer().print(" {s}", .{placeholder});
+                } else {
+                    try source.writer().print(", {s}", .{placeholder});
+                }
             }
         }
         try source.appendSlice("\n    return\n");
@@ -2603,7 +2959,7 @@ pub const Codegen = struct {
         var module = try sab.decodeModule(self.allocator, bytes);
         defer module.deinit(self.allocator);
         try self.appendDecodedModuleConstDecls(module);
-        try self.appendDecodedFunctionBody(module, func_name);
+        try self.appendRenamedTemplateFragmentBody(module, func_name, args);
     }
 
     fn emitBorrowSymbol(self: *Codegen, dst: u32, symbol_name: []const u8) !void {
@@ -2689,7 +3045,9 @@ pub const Codegen = struct {
 
         const param = try self.oneGeneratedParam("slot", .raw);
         try self.pushRawParamLocal("slot", param.id, .raw);
-        var fsig = try self.appendGeneratedFuncSig(entry.spawn_name, .ffi_wrapper, param.specs, param.ids, .i32, true);
+        const fsig = try self.appendGeneratedFuncSig(entry.spawn_name, .ffi_wrapper, param.specs, param.ids, .i32, true);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
         try self.appendDeclInst(fsig);
         try self.emitLabel("L_ENTRY");
 
@@ -2715,8 +3073,7 @@ pub const Codegen = struct {
         try self.emitRelease(param.id);
         try self.emitReturn(handle);
 
-        fsig.reg_ids = try self.finishFunctionRegs();
-        try self.function_sigs.append(fsig);
+        try self.finishFunctionBody(sig_idx);
     }
 
     fn emitEscapedWorker(self: *Codegen, entry: EscapedClosureEntry) !void {
@@ -2726,7 +3083,9 @@ pub const Codegen = struct {
 
         const param = try self.oneGeneratedParam("slot", .borrow);
         try self.pushRawParamLocal("slot", param.id, .borrow);
-        var fsig = try self.appendGeneratedFuncSig(entry.worker_name, .normal, param.specs, param.ids, .i32, false);
+        const fsig = try self.appendGeneratedFuncSig(entry.worker_name, .normal, param.specs, param.ids, .i32, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
         try self.appendDeclInst(fsig);
         try self.emitLabel("L_ENTRY");
 
@@ -2756,8 +3115,7 @@ pub const Codegen = struct {
             try self.emitReturn(zero);
         }
 
-        fsig.reg_ids = try self.finishFunctionRegs();
-        try self.function_sigs.append(fsig);
+        try self.finishFunctionBody(sig_idx);
     }
 
     fn emitEscapedClosureEntries(self: *Codegen) !void {
@@ -2845,7 +3203,9 @@ pub const Codegen = struct {
         defer self.popLocalsTo(old_locals);
         self.beginFunction();
         try self.collectBorrowedBindingsInBlock(f.body);
-        var fsig = try self.genFuncSig(name, .normal, f.params, f.ret_ty, false, false);
+        const fsig = try self.genFuncSig(name, .normal, f.params, f.ret_ty, false, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
         try self.appendDeclInst(fsig);
         try self.emitLabel("L_ENTRY");
         try self.materializeBorrowedParams(f.params);
@@ -2876,8 +3236,7 @@ pub const Codegen = struct {
             try self.releaseOpenLocals(null);
             try self.emitReturn(null);
         }
-        fsig.reg_ids = try self.finishFunctionRegs();
-        try self.function_sigs.append(fsig);
+        try self.finishFunctionBody(sig_idx);
     }
 
     fn genFuncDecl(self: *Codegen, f: *const ast.FuncDecl) !void {
@@ -3083,7 +3442,9 @@ pub const Codegen = struct {
         defer self.popLocalsTo(old_locals);
         self.beginFunction();
         try self.collectBorrowedBindingsInBlock(t.body);
-        var fsig = try self.genFuncSig(t.name, .test_func, &.{}, self.voidType(), t.is_ignored, t.should_panic);
+        const fsig = try self.genFuncSig(t.name, .test_func, &.{}, self.voidType(), t.is_ignored, t.should_panic);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
         try self.appendDeclInst(fsig);
         const label = try self.newLabel("L_TEST_ENTRY");
         try self.emitLabel(label);
@@ -3095,9 +3456,8 @@ pub const Codegen = struct {
             try self.releaseOpenLocals(null);
             try self.emitReturn(null);
         }
-        fsig.reg_ids = try self.finishFunctionRegs();
-        try self.function_sigs.append(fsig);
-        try self.test_sigs.append(fsig);
+        try self.finishFunctionBody(sig_idx);
+        try self.test_sigs.append(self.function_sigs.items[sig_idx]);
     }
 
     fn voidType(self: *Codegen) *ast.Type {
@@ -3173,6 +3533,16 @@ pub const Codegen = struct {
             try self.emitStore(dst, 0, src, try storagePrimType(let_ty));
             if (!self.isLocalReg(src)) try self.emitRelease(src);
             try self.pushStackLocal(name, dst, let_ty);
+            return;
+        }
+        // `let b = a` where `a` is an identifier of a copy-struct type must deep
+        // copy so `b` owns its own allocation, mirroring SA-text
+        // `genCopyValueInto`. A plain `assign` would alias the same pointer and
+        // both bindings would release the same allocation at scope end.
+        if (value_expr.* == .identifier and self.isLocalReg(src) and self.typeIsCopyStruct(let_ty)) {
+            const copied = try self.genCopyValue(src, let_ty);
+            try self.emitAssignReg(dst, copied);
+            try self.pushTypedLocal(name, dst, false, let_ty);
             return;
         }
         try self.emitAssignReg(dst, src);
@@ -3622,26 +3992,54 @@ pub const Codegen = struct {
     }
 
     fn genMacroStructLiteral(self: *Codegen, lit: ast.StructLiteral, ctx: *MacroExpansionContext) anyerror!u32 {
-        if (lit.update_expr != null) return Error.UnsupportedSabDirectFeature;
         const decl = self.structDeclForType(lit.ty) orelse return Error.UnsupportedSabDirectFeature;
         if (decl.is_opaque or decl.is_union) return Error.UnsupportedSabDirectFeature;
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));
 
-        for (decl.fields) |decl_field| {
-            var literal_value: ?*ast.Node = null;
-            for (lit.fields) |literal_field| {
-                if (std.mem.eql(u8, literal_field.name, decl_field.name)) {
-                    literal_value = literal_field.value;
-                    break;
-                }
+        const update_expr = lit.update_expr;
+        var update_reg: ?u32 = null;
+        if (update_expr) |expr| {
+            update_reg = try self.genMacroExpr(expr, ctx);
+        }
+        defer {
+            if (update_reg) |reg| {
+                self.releaseExprResultIfNeeded(update_expr.?, reg) catch {};
             }
-            const value = literal_value orelse return Error.UnsupportedSabDirectFeature;
-            const layout = try self.fieldLayout(lit.ty, decl_field.name);
-            const value_reg = try self.genMacroExpr(value, ctx);
-            try self.emitStore(dst, layout.offset, value_reg, layout.ty);
-            try self.releaseExprResultIfNeeded(value, value_reg);
+        }
+
+        for (decl.fields) |decl_field| {
+            const plan = lowering_rules.planStructLiteralField(decl, &lit, decl_field) orelse return Error.UnsupportedSabDirectFeature;
+            const layout = plan.layout;
+            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            switch (plan.source) {
+                .explicit => {
+                    const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
+                    // Mirror SA-text: copy-struct identifier fields are deep-copied
+                    // before storing, so dst does not alias the source local.
+                    if (value.* == .identifier and self.typeIsCopyStruct(plan.field_ty)) {
+                        const source_reg = try self.genMacroExpr(value, ctx);
+                        const copied = try self.genCopyValue(source_reg, plan.field_ty);
+                        try self.emitStore(dst, layout.offset, copied, prim);
+                        try self.emitRelease(copied);
+                    } else {
+                        const value_reg = try self.genMacroExpr(value, ctx);
+                        try self.emitStore(dst, layout.offset, value_reg, prim);
+                        try self.releaseExprResultIfNeeded(value, value_reg);
+                    }
+                },
+                .update => {
+                    // Pointer-backed fields cannot be safely shallow-copied through
+                    // the update path without a shared deep-copy/move plan.
+                    if (lowering_rules.structFieldIsPointerBacked(plan.field_ty)) return Error.UnsupportedSabDirectFeature;
+                    const src = update_reg orelse return Error.UnsupportedSabDirectFeature;
+                    const loaded = try self.intern(try self.newTmp());
+                    try self.emitLoad(loaded, src, layout.offset, prim);
+                    try self.emitStore(dst, layout.offset, loaded, prim);
+                    if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                },
+            }
         }
 
         return dst;
@@ -4369,10 +4767,12 @@ pub const Codegen = struct {
             },
             .field_expr => |field| try self.genField(field),
             .struct_literal => |lit| try self.genStructLiteral(lit),
+            .enum_literal => |lit| try self.genEnumLiteral(lit),
             .tuple_literal => |lit| try self.genTupleLiteral(lit),
             .array_literal => |lit| try self.genArrayLiteral(expr, lit),
             .repeat_array_literal => |lit| try self.genRepeatArrayLiteral(expr, lit),
             .index_expr => |idx| try self.genIndex(idx),
+            .match_expr => |mat| try self.genMatch(expr, &mat),
             .if_expr => |ife| try self.genIf(expr, ife),
             .cast_expr => |cast| try self.genCast(cast),
             .borrow_expr => |borrow| try self.genBorrow(borrow),
@@ -4411,6 +4811,17 @@ pub const Codegen = struct {
     }
 
     fn genBinary(self: *Codegen, bin: ast.BinaryExpr) anyerror!u32 {
+        // `<=>` produces an `Ordering` struct value. Numeric and same-struct
+        // field-wise comparison are lowered here through the shared spaceship
+        // classification, mirroring the SA-text `genSpaceshipExpr`.
+        if (bin.op == .spaceship) return try self.genSpaceship(bin);
+
+        // Derived `==`/`!=` and `<`/`<=`/`>`/`>=` on same-struct operands are
+        // lowered field-wise, mirroring SA-text `genStructEqualityExpr` /
+        // `genStructOrdExpr`. Returns null when operands are not same-struct so
+        // the primitive path below handles scalars.
+        if (try self.genStructComparison(bin)) |reg| return reg;
+
         // Struct-typed operands (e.g. an `@overload Vec2 { fn +(...) }`) must be
         // lowered field-wise, mirroring the SA-text emitter's
         // `genStructArithmeticExpr`. Without this, the generic path below emits a
@@ -4509,6 +4920,448 @@ pub const Codegen = struct {
         }
 
         return Error.UnsupportedSabDirectFeature;
+    }
+
+    /// Direct SAB lowering for the `<=>` spaceship operator. Produces an
+    /// `Ordering` struct value (`{ value: i64 }`, an 8-byte alloc holding the
+    /// raw ordering at offset 0). The raw ordering (-1 / 0 / 1) is computed with
+    /// structured comparison ops and branches, mirroring SA-text
+    /// `genSpaceshipExpr`. Numeric operands and same-struct field-wise
+    /// lexicographic comparison are supported; other shapes return
+    /// `UnsupportedSabDirectFeature`. Comparison/ABI facts come from the shared
+    /// `lowering_rules` layer so both emitters agree.
+    fn genSpaceship(self: *Codegen, bin: ast.BinaryExpr) anyerror!u32 {
+        const left_ty = self.tc.expr_types.get(bin.left) orelse return Error.MissingType;
+        const right_ty = self.tc.expr_types.get(bin.right) orelse return Error.MissingType;
+
+        const left_reg = try self.genExpr(bin.left);
+        const right_reg = try self.genExpr(bin.right);
+
+        const result = try self.intern(try self.newTmp());
+        // Ordering is a struct { value: i64 } — a single 8-byte word.
+        try self.emitAlloc(result, 8);
+
+        if (lowering_rules.isNumericType(left_ty) and lowering_rules.isNumericType(right_ty)) {
+            const raw = try self.genSpaceshipRawNumeric(left_reg, right_reg, left_ty);
+            try self.emitStore(result, 0, raw, .i64);
+            try self.emitRelease(raw);
+            try self.releaseExprResultIfNeeded(bin.left, left_reg);
+            try self.releaseExprResultIfNeeded(bin.right, right_reg);
+            return result;
+        }
+
+        // Same-struct field-wise lexicographic comparison.
+        const left_struct = self.structDeclForType(left_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const right_struct = self.structDeclForType(right_ty) orelse return Error.UnsupportedSabDirectFeature;
+        if (left_struct != right_struct or left_struct.is_opaque or left_struct.is_union) return Error.UnsupportedSabDirectFeature;
+
+        // Default to EQUAL; each field can overwrite and jump to done. Mirrors
+        // SA-text `genSpaceshipExpr`: per field, `less` -> store LESS + done,
+        // else `greater` -> store GREATER + done, else fall through to the next
+        // field. No value register survives the `done` merge (only `result`,
+        // which is a stable allocation), avoiding PhiStateConflict.
+        const eq_seed = try self.intern(try self.newTmp());
+        try self.emitAssignImm(eq_seed, lowering_rules.ordering_equal);
+        try self.emitStore(result, 0, eq_seed, .i64);
+        try self.emitRelease(eq_seed);
+
+        const done_label = try self.newLabel("L_SPACESHIP_STRUCT_DONE");
+        for (left_struct.fields) |field| {
+            const layout = lowering_rules.structFieldLayout(left_struct, field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            const is_float = lowering_rules.isFloatType(field.ty);
+            const lt_op: inst.OpKind = if (is_float) .fcmp_lt else if (lowering_rules.isUnsignedIntegerType(field.ty)) .ult else .slt;
+            const gt_op: inst.OpKind = if (is_float) .fcmp_gt else if (lowering_rules.isUnsignedIntegerType(field.ty)) .ugt else .sgt;
+
+            const less_label = try self.newLabel("L_SPACESHIP_STRUCT_LESS");
+            const check_gt_label = try self.newLabel("L_SPACESHIP_STRUCT_CHECK_GT");
+            const greater_label = try self.newLabel("L_SPACESHIP_STRUCT_GREATER");
+            const next_label = try self.newLabel("L_SPACESHIP_STRUCT_NEXT");
+
+            const lhs = try self.intern(try self.newTmp());
+            const rhs = try self.intern(try self.newTmp());
+            try self.emitLoad(lhs, left_reg, layout.offset, prim);
+            try self.emitLoad(rhs, right_reg, layout.offset, prim);
+            const less = try self.intern(try self.newTmp());
+            try self.emitOp(less, lt_op, .{ .reg = lhs }, .{ .reg = rhs });
+            try self.emitBranch(less, less_label, check_gt_label);
+
+            try self.emitLabel(less_label);
+            try self.emitBranchRelease(less);
+            const less_val = try self.intern(try self.newTmp());
+            try self.emitAssignImm(less_val, lowering_rules.ordering_less);
+            try self.emitStore(result, 0, less_val, .i64);
+            try self.emitRelease(less_val);
+            try self.emitJmp(done_label);
+
+            try self.emitLabel(check_gt_label);
+            try self.emitBranchRelease(less);
+            const greater = try self.intern(try self.newTmp());
+            try self.emitOp(greater, gt_op, .{ .reg = lhs }, .{ .reg = rhs });
+            try self.emitBranch(greater, greater_label, next_label);
+
+            try self.emitLabel(greater_label);
+            try self.emitBranchRelease(greater);
+            const greater_val = try self.intern(try self.newTmp());
+            try self.emitAssignImm(greater_val, lowering_rules.ordering_greater);
+            try self.emitStore(result, 0, greater_val, .i64);
+            try self.emitRelease(greater_val);
+            try self.emitJmp(done_label);
+
+            try self.emitLabel(next_label);
+            try self.emitBranchRelease(greater);
+        }
+        try self.emitJmp(done_label);
+        try self.emitLabel(done_label);
+        try self.releaseExprResultIfNeeded(bin.left, left_reg);
+        try self.releaseExprResultIfNeeded(bin.right, right_reg);
+        return result;
+    }
+
+    /// Compute the raw ordering value (-1 / 0 / 1) of two numeric registers
+    /// into a fresh register, using structured comparison ops and branches.
+    /// Signed/unsigned/float op selection comes from the shared type
+    /// predicates. Mirrors SA-text `genNumericSpaceshipRaw`.
+    fn genSpaceshipRawNumeric(self: *Codegen, left_reg: u32, right_reg: u32, ty: *const ast.Type) anyerror!u32 {
+        const raw_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(raw_slot, 8);
+
+        const is_float = lowering_rules.isFloatType(ty);
+        const lt_op: inst.OpKind = if (is_float) .fcmp_lt else if (lowering_rules.isUnsignedIntegerType(ty)) .ult else .slt;
+        const gt_op: inst.OpKind = if (is_float) .fcmp_gt else if (lowering_rules.isUnsignedIntegerType(ty)) .ugt else .sgt;
+
+        const less_label = try self.newLabel("L_SPACESHIP_LESS");
+        const check_gt_label = try self.newLabel("L_SPACESHIP_CHECK_GT");
+        const greater_label = try self.newLabel("L_SPACESHIP_GREATER");
+        const equal_label = try self.newLabel("L_SPACESHIP_EQUAL");
+        const done_label = try self.newLabel("L_SPACESHIP_DONE");
+
+        const less = try self.intern(try self.newTmp());
+        try self.emitOp(less, lt_op, .{ .reg = left_reg }, .{ .reg = right_reg });
+        try self.emitBranch(less, less_label, check_gt_label);
+
+        try self.emitLabel(less_label);
+        try self.emitBranchRelease(less);
+        const less_val = try self.intern(try self.newTmp());
+        try self.emitAssignImm(less_val, lowering_rules.ordering_less);
+        try self.emitStore(raw_slot, 0, less_val, .i64);
+        try self.emitRelease(less_val);
+        try self.emitJmp(done_label);
+
+        try self.emitLabel(check_gt_label);
+        try self.emitBranchRelease(less);
+        const greater = try self.intern(try self.newTmp());
+        try self.emitOp(greater, gt_op, .{ .reg = left_reg }, .{ .reg = right_reg });
+        try self.emitBranch(greater, greater_label, equal_label);
+
+        try self.emitLabel(greater_label);
+        try self.emitBranchRelease(greater);
+        const greater_val = try self.intern(try self.newTmp());
+        try self.emitAssignImm(greater_val, lowering_rules.ordering_greater);
+        try self.emitStore(raw_slot, 0, greater_val, .i64);
+        try self.emitRelease(greater_val);
+        try self.emitJmp(done_label);
+
+        try self.emitLabel(equal_label);
+        try self.emitBranchRelease(greater);
+        const equal_val = try self.intern(try self.newTmp());
+        try self.emitAssignImm(equal_val, lowering_rules.ordering_equal);
+        try self.emitStore(raw_slot, 0, equal_val, .i64);
+        try self.emitRelease(equal_val);
+        try self.emitJmp(done_label);
+
+        try self.emitLabel(done_label);
+        const raw = try self.intern(try self.newTmp());
+        try self.emitLoad(raw, raw_slot, 0, .i64);
+        return raw;
+    }
+
+    /// Field-wise derived comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`) on
+    /// same-struct operands, mirroring SA-text `genStructEqualityExpr` and
+    /// `genStructOrdExpr`. Uses only straight-line structured ops (no branches),
+    /// so no value register crosses a control-flow merge. Returns null when the
+    /// operands are not the same user struct (caller falls through to the
+    /// primitive path); `ord` comparisons require the `ord` derive.
+    fn genStructComparison(self: *Codegen, bin: ast.BinaryExpr) anyerror!?u32 {
+        const is_eq = bin.op == .eq or bin.op == .ne;
+        const is_ord = bin.op == .lt or bin.op == .le or bin.op == .gt or bin.op == .ge;
+        if (!is_eq and !is_ord) return null;
+
+        const left_ty = self.tc.expr_types.get(bin.left) orelse return null;
+        const right_ty = self.tc.expr_types.get(bin.right) orelse return null;
+        const left_struct = self.structDeclForType(left_ty) orelse return null;
+        const right_struct = self.structDeclForType(right_ty) orelse return null;
+        if (left_struct != right_struct or left_struct.is_opaque or left_struct.is_union) return null;
+        if (is_ord and !lowering_rules.structHasDerive(left_struct, "ord")) return null;
+
+        const left_reg = try self.genExpr(bin.left);
+        const right_reg = try self.genExpr(bin.right);
+
+        const cmp_op: inst.OpKind = switch (bin.op) {
+            .lt, .le => .slt,
+            .gt, .ge => .sgt,
+            else => .eq,
+        };
+
+        var acc: ?u32 = null; // eq: AND of field eqs; ord: OR of ordered terms
+        var eq_prefix: ?u32 = null; // ord: AND of leading-field eqs
+
+        for (left_struct.fields) |field| {
+            const layout = lowering_rules.structFieldLayout(left_struct, field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            const lhs = try self.intern(try self.newTmp());
+            const rhs = try self.intern(try self.newTmp());
+            try self.emitLoad(lhs, left_reg, layout.offset, prim);
+            try self.emitLoad(rhs, right_reg, layout.offset, prim);
+
+            if (is_eq) {
+                const eq_reg = try self.intern(try self.newTmp());
+                try self.emitOp(eq_reg, .eq, .{ .reg = lhs }, .{ .reg = rhs });
+                if (acc) |prev| {
+                    const next = try self.intern(try self.newTmp());
+                    try self.emitOp(next, .@"and", .{ .reg = prev }, .{ .reg = eq_reg });
+                    acc = next;
+                } else {
+                    acc = eq_reg;
+                }
+            } else {
+                const cmp = try self.intern(try self.newTmp());
+                try self.emitOp(cmp, cmp_op, .{ .reg = lhs }, .{ .reg = rhs });
+                const eq_reg = try self.intern(try self.newTmp());
+                try self.emitOp(eq_reg, .eq, .{ .reg = lhs }, .{ .reg = rhs });
+
+                // term = (leading fields equal) AND (this field ordered)
+                const term = if (eq_prefix) |prefix| blk: {
+                    const t = try self.intern(try self.newTmp());
+                    try self.emitOp(t, .@"and", .{ .reg = prefix }, .{ .reg = cmp });
+                    break :blk t;
+                } else cmp;
+
+                acc = if (acc) |prev| blk: {
+                    const next = try self.intern(try self.newTmp());
+                    try self.emitOp(next, .@"or", .{ .reg = prev }, .{ .reg = term });
+                    break :blk next;
+                } else term;
+
+                eq_prefix = if (eq_prefix) |prefix| blk: {
+                    const next = try self.intern(try self.newTmp());
+                    try self.emitOp(next, .@"and", .{ .reg = prefix }, .{ .reg = eq_reg });
+                    break :blk next;
+                } else eq_reg;
+            }
+        }
+
+        const result = try self.intern(try self.newTmp());
+        if (is_eq) {
+            if (acc) |eq_all| {
+                if (bin.op == .eq) {
+                    try self.emitOp(result, .@"or", .{ .reg = eq_all }, .{ .imm_i64 = 0 });
+                } else {
+                    try self.emitOp(result, .ne, .{ .reg = eq_all }, .{ .imm_i64 = 1 });
+                }
+            } else {
+                try self.emitAssignImm(result, if (bin.op == .eq) 1 else 0);
+            }
+        } else {
+            if (acc) |ordered| {
+                if (bin.op == .le or bin.op == .ge) {
+                    const eq_all = eq_prefix orelse return Error.UnsupportedSabDirectFeature;
+                    try self.emitOp(result, .@"or", .{ .reg = ordered }, .{ .reg = eq_all });
+                } else {
+                    try self.emitOp(result, .@"or", .{ .reg = ordered }, .{ .imm_i64 = 0 });
+                }
+            } else {
+                try self.emitAssignImm(result, if (bin.op == .le or bin.op == .ge) 1 else 0);
+            }
+        }
+
+        try self.releaseExprResultIfNeeded(bin.left, left_reg);
+        try self.releaseExprResultIfNeeded(bin.right, right_reg);
+        return result;
+    }
+
+    /// Derived `hash(value)` for a struct or primitive, mirroring SA-text
+    /// `genHashValue`/`genHashCall`. FNV-1a style: seed with the 64-bit offset
+    /// basis, then for each field `xor` the field hash and `mul` by the prime.
+    /// Primitive fields hash to their own bit pattern (identity), matching
+    /// SA-text `primitiveHashBits`. Pure straight-line ops, so no register
+    /// crosses a control-flow merge.
+    fn genHashCall(self: *Codegen, call: ast.CallExpr) anyerror!u32 {
+        if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+        const ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
+        const value_reg = try self.genExpr(@constCast(call.args[0]));
+        const result = try self.genHashValue(value_reg, ty);
+        try self.releaseExprResultIfNeeded(call.args[0], value_reg);
+        return result;
+    }
+
+    fn genHashValue(self: *Codegen, value_reg: u32, ty: *const ast.Type) anyerror!u32 {
+        if (ty.* == .primitive) {
+            // primitiveHashBits is identity in SA-text; return the value itself.
+            // Copy into a fresh temp so callers can release uniformly.
+            const dst = try self.intern(try self.newTmp());
+            try self.emitOp(dst, .add, .{ .reg = value_reg }, .{ .imm_i64 = 0 });
+            return dst;
+        }
+        const decl = self.structDeclForType(ty) orelse return Error.UnsupportedSabDirectFeature;
+        if (!lowering_rules.structHasDerive(decl, "hash") or decl.is_opaque or decl.is_union) return Error.UnsupportedSabDirectFeature;
+
+        var hash_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(hash_reg, @bitCast(@as(u64, 1469598103934665603)));
+        for (decl.fields) |field| {
+            const layout = lowering_rules.structFieldLayout(decl, field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            const field_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(field_reg, value_reg, layout.offset, prim);
+            const field_hash = try self.genHashValue(field_reg, field.ty);
+            const mixed = try self.intern(try self.newTmp());
+            try self.emitOp(mixed, .xor, .{ .reg = hash_reg }, .{ .reg = field_hash });
+            const next = try self.intern(try self.newTmp());
+            try self.emitOp(next, .mul, .{ .reg = mixed }, .{ .imm_i64 = 1099511628211 });
+            if (!self.isLocalReg(field_reg)) try self.emitRelease(field_reg);
+            hash_reg = next;
+        }
+        return hash_reg;
+    }
+
+    /// FORMAT_PUSH_{suffix} selector for a primitive field type, mirroring
+    /// SA-text `formatMacroSuffix`.
+    fn debugFormatSuffix(ty: *const ast.Type) ?[]const u8 {
+        return switch (ty.*) {
+            .primitive => |p| switch (p) {
+                .i8, .i16, .i32, .i64, .isize, .integer => "I64",
+                .u8, .u16, .u32, .u64, .usize => "U64",
+                .f32, .f64, .float => "F64",
+                .boolean => "BOOL",
+                else => null,
+            },
+            else => null,
+        };
+    }
+
+    /// Push a constant byte string into the format buffer through the shared
+    /// `FORMAT_PUSH_BYTES` std macro. A fresh utf8 const holds the bytes; its
+    /// borrowed pointer plus static length feed the macro. Mirrors SA-text
+    /// `emitFormatPushConstBytes`.
+    fn emitFormatPushConstBytes(self: *Codegen, out_string: u32, bytes: []const u8) !void {
+        if (bytes.len == 0) return;
+        const label = try self.newStringConst();
+        try self.appendUtf8Const(label, bytes);
+        const ptr_reg = try self.intern(try self.newTmp());
+        try self.emitBorrowSymbol(ptr_reg, label);
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(len_reg, @intCast(escapedStringByteLen(bytes)));
+        const tag = try self.newFormatTag();
+        try self.emitStdMacroFragment("sa_std/string_format.sa", "FORMAT_PUSH_BYTES", &.{
+            tag,
+            self.symbols.items[out_string],
+            self.symbols.items[ptr_reg],
+            self.symbols.items[len_reg],
+        });
+        try self.emitRelease(len_reg);
+        try self.emitRelease(ptr_reg);
+    }
+
+    fn emitFormatPushPrimitiveValue(self: *Codegen, out_string: u32, value_reg: u32, suffix: []const u8) !void {
+        const buf = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(buf, 64);
+        const len_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(len_slot, 8);
+
+        const ok = try self.intern(try self.newTmp());
+        if (std.mem.eql(u8, suffix, "I64")) {
+            try self.emitCallBody(ok, try std.fmt.allocPrint(self.allocator, "@sa_fmt_i64_into({s}, 10, {s}, 64, &{s})", .{ self.symbols.items[value_reg], self.symbols.items[buf], self.symbols.items[len_slot] }));
+        } else if (std.mem.eql(u8, suffix, "U64")) {
+            try self.emitCallBody(ok, try std.fmt.allocPrint(self.allocator, "@sa_fmt_u64_into({s}, 10, {s}, 64, &{s})", .{ self.symbols.items[value_reg], self.symbols.items[buf], self.symbols.items[len_slot] }));
+        } else if (std.mem.eql(u8, suffix, "F64")) {
+            try self.emitCallBody(ok, try std.fmt.allocPrint(self.allocator, "@sa_fmt_f64_into({s}, 6, {s}, 64, &{s})", .{ self.symbols.items[value_reg], self.symbols.items[buf], self.symbols.items[len_slot] }));
+        } else if (std.mem.eql(u8, suffix, "BOOL")) {
+            try self.emitCallBody(ok, try std.fmt.allocPrint(self.allocator, "@sa_fmt_bool_into({s}, {s}, 64, &{s})", .{ self.symbols.items[value_reg], self.symbols.items[buf], self.symbols.items[len_slot] }));
+        } else {
+            return Error.UnsupportedSabDirectFeature;
+        }
+
+        const fmt_len = try self.intern(try self.newTmp());
+        try self.emitLoad(fmt_len, len_slot, 0, .u64);
+
+        const tag = try self.newFormatTag();
+        try self.emitStdMacroFragment("sa_std/string_format.sa", "FORMAT_PUSH_BYTES", &.{
+            tag,
+            self.symbols.items[out_string],
+            self.symbols.items[buf],
+            self.symbols.items[fmt_len],
+        });
+
+        try self.emitRelease(ok);
+        try self.emitRelease(fmt_len);
+        try self.markNonOwningReg(len_slot);
+        try self.emitRelease(len_slot);
+        try self.markNonOwningReg(buf);
+        try self.emitRelease(buf);
+    }
+
+    /// Append the debug representation of `value_reg` (of type `ty`) into the
+    /// format buffer `out_string`. Primitive fields push their formatted value;
+    /// derived-debug structs recurse `Name { field: value, ... }`. Layout and
+    /// field order are owned by the shared `lowering_rules` struct helpers, so
+    /// SA-text and SAB agree. Mirrors SA-text `genDebugValue`.
+    fn genDebugValue(self: *Codegen, out_string: u32, value_reg: u32, ty: *const ast.Type) anyerror!void {
+        if (ty.* == .primitive) {
+            const suffix = debugFormatSuffix(ty) orelse return Error.UnsupportedSabDirectFeature;
+            try self.emitFormatPushPrimitiveValue(out_string, value_reg, suffix);
+            return;
+        }
+        const decl = self.structDeclForType(ty) orelse return Error.UnsupportedSabDirectFeature;
+        if (!lowering_rules.structHasDerive(decl, "debug") or decl.is_opaque or decl.is_union) return Error.UnsupportedSabDirectFeature;
+        try self.emitFormatPushConstBytes(out_string, decl.name);
+        try self.emitFormatPushConstBytes(out_string, " { ");
+        for (decl.fields, 0..) |field, i| {
+            if (i > 0) try self.emitFormatPushConstBytes(out_string, ", ");
+            try self.emitFormatPushConstBytes(out_string, field.name);
+            try self.emitFormatPushConstBytes(out_string, ": ");
+            const layout = lowering_rules.structFieldLayout(decl, field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            const field_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(field_reg, value_reg, layout.offset, prim);
+            try self.genDebugValue(out_string, field_reg, field.ty);
+            if (!self.isLocalReg(field_reg)) try self.emitRelease(field_reg);
+        }
+        try self.emitFormatPushConstBytes(out_string, " }");
+    }
+
+    /// `debug(value)` builtin: build a String (Vec<u8>-backed format buffer)
+    /// holding the debug representation. Returns the owned buffer register.
+    /// Mirrors SA-text `genDebugCall`.
+    fn ensureDebugFormatDeps(self: *Codegen) !void {
+        try self.ensureStdDeps("sa_std/string_format.sa", &.{
+            "sa_vec_with_capacity",
+            "sa_vec_reserve",
+            "sa_vec_free",
+            "sa_mem_copy",
+            "sa_mem_set",
+            "sa_fmt_i64_into",
+            "sa_fmt_u64_into",
+            "sa_fmt_f64_into",
+            "sa_fmt_bool_into",
+        });
+    }
+
+    fn genDebugCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+        const ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
+        // The FORMAT_* macros call runtime helpers that must be declared before
+        // the emitted call sites. Preload the full set the debug path can reach.
+        try self.ensureDebugFormatDeps();
+        const out_string = try self.intern(try self.newTmp());
+        try self.recordReg(out_string);
+        try self.emitStdMacroFragment("sa_std/string_format.sa", "FORMAT_BEGIN", &.{
+            self.symbols.items[out_string],
+            "128",
+        });
+        const value_reg = try self.genExpr(@constCast(call.args[0]));
+        try self.genDebugValue(out_string, value_reg, ty);
+        try self.releaseExprResultIfNeeded(call.args[0], value_reg);
+        return out_string;
     }
 
     fn genCast(self: *Codegen, cast: ast.CastExpr) anyerror!u32 {
@@ -5352,6 +6205,12 @@ pub const Codegen = struct {
                 try self.pushStackAllocLocal(self.symbols.items[dst], dst);
                 return dst;
             }
+            if (std.mem.eql(u8, call.func_name, "hash") and call.args.len == 1) {
+                return try self.genHashCall(call);
+            }
+            if (std.mem.eql(u8, call.func_name, "debug") and call.args.len == 1) {
+                if (try self.genDebugCall(call)) |reg| return reg;
+            }
             if (self.closure_bindings.get(call.func_name)) |closure| return try self.genClosureCall(closure, call);
             if (self.tc.macros.get(call.func_name)) |macro_decl| {
                 try self.genUserMacroCall(macro_decl, call);
@@ -5642,7 +6501,12 @@ pub const Codegen = struct {
     }
 
     fn genFor(self: *Codegen, f: ast.ForStmt) anyerror!void {
-        const end_expr = f.end orelse return Error.UnsupportedSabDirectFeature;
+        // `for item in <iterable>` (no numeric range end) lowers through the
+        // iterable protocol (`iter_len`/`iter_at`), mirroring SA-text `genFor`.
+        const end_expr = f.end orelse {
+            const iterable_ty = self.tc.expr_types.get(f.start) orelse return Error.MissingType;
+            return try self.genForOverProtocol(f, iterable_ty);
+        };
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
         const loop_control = lowering_rules.planLoopControl(f.body);
@@ -5718,6 +6582,106 @@ pub const Codegen = struct {
 
         try self.emitLabel(exit_label);
         if (!self.isLocalReg(end_reg)) try self.emitRelease(end_reg);
+    }
+
+    /// `for item in <iterable>` over a user type implementing the iterable
+    /// protocol (`iter_len(&self) -> i64`, `iter_at(&self, i64) -> Item`),
+    /// mirroring SA-text `genForOverProtocol`. The receiver is borrowed for
+    /// each protocol call; the loop is a counted index from 0 to iter_len.
+    /// Item binding and body cleanup follow the same branch-scoping discipline
+    /// as the numeric `genFor`.
+    fn genForOverProtocol(self: *Codegen, f: ast.ForStmt, iterable_ty: *const ast.Type) anyerror!void {
+        const type_name = typeBaseName(iterable_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const mutable_ty = @constCast(iterable_ty);
+        _ = self.tc.methodForType(mutable_ty, "iter_len") orelse return Error.UnsupportedSabDirectFeature;
+        const at_method = self.tc.methodForType(mutable_ty, "iter_at") orelse return Error.UnsupportedSabDirectFeature;
+        const item_ty = at_method.ret_ty;
+        const len_sym = try self.loweredFuncSymbol(try self.mangleMethodName(type_name, "iter_len"));
+        const at_sym = try self.loweredFuncSymbol(try self.mangleMethodName(type_name, "iter_at"));
+
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
+        const loop_control = lowering_rules.planLoopControl(f.body);
+
+        // Receiver value, borrowed for each protocol call.
+        const recv_reg = try self.genExpr(f.start);
+
+        // len = receiver.iter_len()
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitCallBody(len_reg, try std.fmt.allocPrint(self.allocator, "@{s}(&{s})", .{ len_sym, self.symbols.items[recv_reg] }));
+
+        const counter_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(counter_slot, 8);
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(counter_slot, 0, zero, .i64);
+        try self.emitRelease(zero);
+
+        const head_label = try self.newLabel("L_FORP_HEAD");
+        const body_label = try self.newLabel("L_FORP_BODY");
+        const cont_label = try self.newLabel("L_FORP_CONTINUE");
+        const cond_false_label = try self.newLabel("L_FORP_COND_FALSE");
+        const break_cleanup_label = try self.newLabel("L_FORP_BREAK_CLEANUP");
+        const exit_label = try self.newLabel("L_FORP_EXIT");
+
+        try self.emitJmp(head_label);
+        try self.emitLabel(head_label);
+        const index_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(index_reg, counter_slot, 0, .i64);
+        const cond = try self.intern(try self.newTmp());
+        try self.emitOp(cond, .slt, .{ .reg = index_reg }, .{ .reg = len_reg });
+
+        var br = self.makeInst(.br);
+        br.operands[0] = .{ .reg = cond };
+        br.operands[1] = .{ .label = try self.intern(body_label) };
+        br.operands[2] = .{ .label = try self.intern(body_label) };
+        br.operands[3] = .{ .label = try self.intern(cond_false_label) };
+        try self.appendInst(br);
+
+        const body_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
+        try self.emitLabel(body_label);
+        try self.emitBranchRelease(cond);
+        // item = receiver.iter_at(index)
+        const item_reg = try self.intern(try self.newTmp());
+        try self.emitCallBody(item_reg, try std.fmt.allocPrint(self.allocator, "@{s}(&{s}, {s})", .{ at_sym, self.symbols.items[recv_reg], self.symbols.items[index_reg] }));
+        try self.pushTypedLocal(f.var_name, item_reg, false, item_ty);
+        try self.loop_continue_labels.append(cont_label);
+        try self.loop_break_labels.append(if (loop_control.has_break) break_cleanup_label else exit_label);
+        try self.genBlock(f.body);
+        _ = self.loop_continue_labels.pop();
+        _ = self.loop_break_labels.pop();
+        if (!self.lastIsTerminator()) {
+            try self.releaseLocalsFrom(body_locals_len, null);
+            try self.emitJmp(cont_label);
+        }
+
+        self.popLocalsTo(body_locals_len);
+        try self.restoreReleased(&pre_released);
+
+        try self.emitLabel(cont_label);
+        const next = try self.intern(try self.newTmp());
+        try self.emitOp(next, .add, .{ .reg = index_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(counter_slot, 0, next, .i64);
+        try self.emitRelease(next);
+        try self.emitBranchRelease(index_reg);
+        try self.emitJmp(head_label);
+
+        if (loop_control.has_break) {
+            try self.emitLabel(break_cleanup_label);
+            try self.emitBranchRelease(index_reg);
+            try self.emitJmp(exit_label);
+        }
+
+        try self.emitLabel(cond_false_label);
+        try self.emitBranchRelease(cond);
+        try self.emitBranchRelease(index_reg);
+        try self.emitJmp(exit_label);
+
+        try self.emitLabel(exit_label);
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
     }
 
     fn genStdSurfaceCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
@@ -5915,29 +6879,210 @@ pub const Codegen = struct {
     }
 
     fn genStructLiteral(self: *Codegen, lit: ast.StructLiteral) anyerror!u32 {
-        if (lit.update_expr != null) return Error.UnsupportedSabDirectFeature;
         const decl = self.structDeclForType(lit.ty) orelse return Error.UnsupportedSabDirectFeature;
         if (decl.is_opaque or decl.is_union) return Error.UnsupportedSabDirectFeature;
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));
 
-        for (decl.fields) |decl_field| {
-            var literal_value: ?*ast.Node = null;
-            for (lit.fields) |literal_field| {
-                if (std.mem.eql(u8, literal_field.name, decl_field.name)) {
-                    literal_value = literal_field.value;
-                    break;
-                }
+        const update_expr = lit.update_expr;
+        var update_reg: ?u32 = null;
+        if (update_expr) |expr| {
+            update_reg = try self.genExpr(expr);
+        }
+        defer {
+            if (update_reg) |reg| {
+                self.releaseExprResultIfNeeded(update_expr.?, reg) catch {};
             }
-            const value = literal_value orelse return Error.UnsupportedSabDirectFeature;
-            const layout = try self.fieldLayout(lit.ty, decl_field.name);
+        }
+
+        for (decl.fields) |decl_field| {
+            const plan = lowering_rules.planStructLiteralField(decl, &lit, decl_field) orelse return Error.UnsupportedSabDirectFeature;
+            const layout = plan.layout;
+            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            switch (plan.source) {
+                .explicit => {
+                    const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
+                    // Mirror SA-text: copy-struct identifier fields are deep-copied
+                    // before storing, so dst does not alias the source local.
+                    if (value.* == .identifier and self.typeIsCopyStruct(plan.field_ty)) {
+                        const source_reg = try self.genExpr(value);
+                        const copied = try self.genCopyValue(source_reg, plan.field_ty);
+                        try self.emitStore(dst, layout.offset, copied, prim);
+                        try self.emitRelease(copied);
+                    } else {
+                        const value_reg = try self.genExpr(value);
+                        try self.emitStore(dst, layout.offset, value_reg, prim);
+                        try self.releaseExprResultIfNeeded(value, value_reg);
+                    }
+                },
+                .update => {
+                    // Pointer-backed fields (heap aggregates, slices, boxes, nested
+                    // structs, arrays) cannot be safely shallow-copied through the
+                    // update path without a shared deep-copy/move plan. Fail
+                    // explicitly instead of emitting an aliasing load/store.
+                    if (lowering_rules.structFieldIsPointerBacked(plan.field_ty)) return Error.UnsupportedSabDirectFeature;
+                    const src = update_reg orelse return Error.UnsupportedSabDirectFeature;
+                    const loaded = try self.intern(try self.newTmp());
+                    try self.emitLoad(loaded, src, layout.offset, prim);
+                    try self.emitStore(dst, layout.offset, loaded, prim);
+                    // Release the loaded field only when the update source is a
+                    // temporary (mirrors SA-text callArgNeedsRelease(update_expr));
+                    // identifier-backed sources reuse the source by move.
+                    if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                },
+            }
+        }
+
+        return dst;
+    }
+
+    /// Direct SAB lowering for an enum literal (`Enum::Variant { fields }` or a
+    /// unit variant `Enum::Variant`). Layout is owned by the shared
+    /// `lowering_rules` enum helpers: the discriminant tag occupies the first
+    /// word (`i64` at offset 0) and payload fields follow at the shared
+    /// per-variant offsets. Mirrors SA-text `genEnumLiteralInto`.
+    fn genEnumLiteral(self: *Codegen, lit: ast.EnumLiteral) anyerror!u32 {
+        const decl = self.tc.enums.get(lit.enum_name) orelse return Error.UnsupportedSabDirectFeature;
+        const tag = lowering_rules.enumVariantIndex(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+        const variant = lowering_rules.enumVariant(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, lowering_rules.enumAbiSize(decl));
+
+        const tag_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(tag_reg, @intCast(tag));
+        try self.emitStore(dst, lowering_rules.enum_tag_offset, tag_reg, .i64);
+        try self.emitRelease(tag_reg);
+
+        for (variant.fields) |field| {
+            const value = lowering_rules.enumLiteralFieldValue(&lit, field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const layout = lowering_rules.enumFieldLayout(variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
             const value_reg = try self.genExpr(value);
-            try self.emitStore(dst, layout.offset, value_reg, layout.ty);
+            try self.emitStore(dst, layout.offset, value_reg, prim);
             try self.releaseExprResultIfNeeded(value, value_reg);
         }
 
         return dst;
+    }
+
+    /// Direct SAB lowering for `match` over a user-defined enum value. The tag
+    /// is loaded once per case into a fresh temp, compared against the shared
+    /// discriminant index, and the matching case jumps to its body where the
+    /// pattern bindings are loaded from the payload at the shared offsets.
+    /// Non-matching falls through to the next check; an exhausted ladder
+    /// panics. Enum tag/payload layout is owned by `lowering_rules`, so SA-text
+    /// and SAB agree byte-for-byte. `Option`/`Result` matches are not handled
+    /// here (they flow through their std-surface paths); this returns
+    /// `UnsupportedSabDirectFeature` for non-enum match values.
+    fn genMatch(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr) anyerror!u32 {
+        if (mat.cases.len == 0) return Error.UnsupportedSabDirectFeature;
+        const val_ty = self.tc.expr_types.get(mat.val) orelse return Error.MissingType;
+        if (val_ty.* != .user_defined) return Error.UnsupportedSabDirectFeature;
+        const decl = self.tc.enums.get(val_ty.user_defined.name) orelse return Error.UnsupportedSabDirectFeature;
+
+        const expr_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        const value_match = !isVoidType(expr_ty);
+
+        const val_reg = try self.genExpr(mat.val);
+        const val_is_local = self.isLocalReg(val_reg);
+
+        const result_slot = if (value_match) blk: {
+            const slot = try self.intern(try self.newTmp());
+            try self.emitAlloc(slot, typeSize(expr_ty));
+            break :blk slot;
+        } else null;
+
+        const merge_label = try self.newLabel("L_MATCH_MERGE");
+        const panic_label = try self.newLabel("L_MATCH_NO_MATCH");
+
+        // One check label per case plus the trailing no-match panic block.
+        var check_labels = std.ArrayList([]const u8).init(self.allocator);
+        defer check_labels.deinit();
+        for (mat.cases) |_| {
+            try check_labels.append(try self.newLabel("L_MATCH_CHECK"));
+        }
+
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
+        var any_fallthrough = false;
+
+        try self.emitJmp(check_labels.items[0]);
+
+        for (mat.cases, 0..) |case, i| {
+            try self.emitLabel(check_labels.items[i]);
+            const tag = lowering_rules.enumVariantIndex(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+            const variant = lowering_rules.enumVariant(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+            if (case.guard != null) return Error.UnsupportedSabDirectFeature;
+            if (case.pattern.bindings.len != variant.fields.len) return Error.UnsupportedSabDirectFeature;
+
+            const tag_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(tag_reg, val_reg, lowering_rules.enum_tag_offset, .i64);
+            const cond = try self.intern(try self.newTmp());
+            try self.emitOp(cond, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = @intCast(tag) });
+            try self.emitRelease(tag_reg);
+
+            const body_label = try self.newLabel("L_MATCH_CASE");
+            const next_label = if (i + 1 < mat.cases.len) check_labels.items[i + 1] else panic_label;
+            try self.emitBranch(cond, body_label, next_label);
+
+            try self.emitLabel(body_label);
+            try self.emitBranchRelease(cond);
+
+            // Load pattern bindings from the payload at shared offsets.
+            for (case.pattern.bindings, variant.fields) |binding, field| {
+                const layout = lowering_rules.enumFieldLayout(variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
+                const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+                const binding_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(binding_reg, val_reg, layout.offset, prim);
+                try self.pushTypedLocal(binding, binding_reg, false, field.ty);
+            }
+
+            if (value_match) {
+                const terminated = try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty);
+                if (!terminated) {
+                    try self.releaseLocalsFrom(branch_locals_len, null);
+                    try self.emitJmp(merge_label);
+                    any_fallthrough = true;
+                }
+            } else {
+                try self.genBlock(case.body);
+                if (!self.lastIsTerminator()) {
+                    try self.releaseLocalsFrom(branch_locals_len, null);
+                    try self.emitJmp(merge_label);
+                    any_fallthrough = true;
+                }
+            }
+
+            self.popLocalsTo(branch_locals_len);
+            try self.restoreReleased(&pre_released);
+        }
+
+        // Exhausted the ladder without a match: release the scrutinee and panic.
+        try self.emitLabel(panic_label);
+        if (!val_is_local) try self.emitBranchRelease(val_reg);
+        try self.emitPanicCode(1);
+
+        if (any_fallthrough) {
+            try self.emitLabel(merge_label);
+            if (!val_is_local) try self.emitRelease(val_reg);
+            if (result_slot) |slot| {
+                const result = try self.intern(try self.newTmp());
+                try self.emitLoad(result, slot, 0, try primType(expr_ty));
+                try self.emitRelease(slot);
+                return result;
+            }
+        } else if (!val_is_local) {
+            // No fallthrough path exists (every case terminates); the scrutinee
+            // is released on the panic path already, so nothing to do here.
+        }
+
+        const result = try self.intern(try self.newTmp());
+        try self.recordReg(result);
+        return result;
     }
 
     fn genCopyValue(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!u32 {

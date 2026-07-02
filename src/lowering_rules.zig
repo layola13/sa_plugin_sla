@@ -282,6 +282,12 @@ pub const StructLiteralFieldPlan = struct {
     name: []const u8,
     value: ?*ast.Node,
     layout: AbiFieldLayout,
+    field_ty: *const ast.Type,
+    /// Whether an `.update` field's loaded value should be released after
+    /// being stored. Mirrors SA-text's `callArgNeedsRelease(update_expr)`,
+    /// so identifier-backed sources are not released (move-by-reuse) while
+    /// temporary sources are released.
+    release_loaded: bool,
 };
 
 pub const SliceAbi = struct {
@@ -567,6 +573,147 @@ pub fn structFieldLayout(decl: *const ast.StructDecl, name: []const u8) ?AbiFiel
     return null;
 }
 
+/// Byte offset of an enum's payload region. The tag occupies the first 8
+/// bytes (`i64`), so every variant's fields start at offset 8. Shared by both
+/// emitters so SA-text and direct SAB agree on enum tag/payload layout.
+pub const enum_tag_offset: usize = 0;
+pub const enum_payload_offset: usize = 8;
+
+/// Index (discriminant tag) of an enum variant by name.
+pub fn enumVariantIndex(decl: *const ast.EnumDecl, name: []const u8) ?usize {
+    for (decl.variants, 0..) |variant, i| {
+        if (std.mem.eql(u8, variant.name, name)) return i;
+    }
+    return null;
+}
+
+/// The full enum variant record by name.
+pub fn enumVariant(decl: *const ast.EnumDecl, name: []const u8) ?ast.EnumVariant {
+    for (decl.variants) |variant| {
+        if (std.mem.eql(u8, variant.name, name)) return variant;
+    }
+    return null;
+}
+
+/// Layout of a named field inside an enum variant's payload. Payload fields are
+/// laid out starting at `enum_payload_offset`, using the same ABI size/align
+/// rules as struct/tuple aggregates.
+pub fn enumFieldLayout(variant: ast.EnumVariant, name: []const u8) ?AbiFieldLayout {
+    var offset: usize = enum_payload_offset;
+    for (variant.fields) |field| {
+        const size = abiTypeSize(field.ty);
+        offset = alignAggregateOffset(offset, size);
+        if (std.mem.eql(u8, field.name, name)) {
+            return .{ .offset = offset, .size = size, .ty = field.ty };
+        }
+        offset += size;
+    }
+    return null;
+}
+
+/// Total ABI size of an enum: the tag word plus the largest variant payload.
+pub fn enumAbiSize(decl: *const ast.EnumDecl) usize {
+    var max_payload: usize = 0;
+    for (decl.variants) |variant| {
+        var offset: usize = enum_payload_offset;
+        for (variant.fields) |field| {
+            const size = abiTypeSize(field.ty);
+            offset = alignAggregateOffset(offset, size);
+            offset += size;
+        }
+        max_payload = @max(max_payload, offset - enum_payload_offset);
+    }
+    return @max(enum_payload_offset + max_payload, enum_payload_offset);
+}
+
+/// The explicit value node for a named field in an enum literal, if present.
+pub fn enumLiteralFieldValue(lit: *const ast.EnumLiteral, name: []const u8) ?*ast.Node {
+    for (lit.fields) |field| {
+        if (std.mem.eql(u8, field.name, name)) return field.value;
+    }
+    return null;
+}
+
+/// `Ordering` discriminant values (`struct Ordering { value: i64 }`), shared so
+/// SA-text and direct SAB emit identical `<=>` results. These mirror the
+/// `CMP_ORDERING_*` constants in `sa_std/core/cmp.sa`.
+pub const ordering_less: i64 = -1;
+pub const ordering_equal: i64 = 0;
+pub const ordering_greater: i64 = 1;
+
+pub fn isFloatType(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .primitive => |p| switch (p) {
+            .f32, .f64, .float => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+pub fn isUnsignedIntegerType(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .primitive => |p| switch (p) {
+            .u8, .u16, .u32, .u64, .usize => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+pub fn isNumericType(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .primitive => |p| switch (p) {
+            .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize, .integer, .f32, .f64, .float => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+pub const SpaceshipOperandKind = enum {
+    /// Numeric primitives compared directly into an Ordering.
+    numeric,
+    /// Same-struct lexicographic comparison over derived-`ord` fields.
+    same_struct,
+};
+
+pub const SpaceshipPlan = struct {
+    kind: SpaceshipOperandKind,
+    /// For `.numeric`: whether the comparison is unsigned / float.
+    is_unsigned: bool = false,
+    is_float: bool = false,
+    /// For `.same_struct`: the struct declaration whose fields are compared.
+    struct_decl: ?*const ast.StructDecl = null,
+};
+
+/// Classify a `<=>` (spaceship) expression's operands into a shared plan so
+/// both emitters agree on numeric vs. struct-lexicographic comparison and on
+/// signedness/float selection. Returns null when the operand shape is not a
+/// supported spaceship form (numeric-vs-numeric or same-struct-vs-same-struct).
+pub fn planSpaceship(
+    left_ty: *const ast.Type,
+    right_ty: *const ast.Type,
+    left_struct: ?*const ast.StructDecl,
+    right_struct: ?*const ast.StructDecl,
+) ?SpaceshipPlan {
+    if (isNumericType(left_ty) and isNumericType(right_ty)) {
+        return .{
+            .kind = .numeric,
+            .is_unsigned = isUnsignedIntegerType(left_ty),
+            .is_float = isFloatType(left_ty),
+        };
+    }
+    if (left_struct) |ls| {
+        if (right_struct) |rs| {
+            if (ls == rs and !ls.is_opaque and !ls.is_union) {
+                return .{ .kind = .same_struct, .struct_decl = ls };
+            }
+        }
+    }
+    return null;
+}
+
 pub fn structLiteralExplicitValue(lit: *const ast.StructLiteral, name: []const u8) ?*ast.Node {
     for (lit.fields) |field| {
         if (std.mem.eql(u8, field.name, name)) return field.value;
@@ -577,12 +724,25 @@ pub fn structLiteralExplicitValue(lit: *const ast.StructLiteral, name: []const u
 pub fn planStructLiteralField(decl: *const ast.StructDecl, lit: *const ast.StructLiteral, field: ast.Field) ?StructLiteralFieldPlan {
     const layout = structFieldLayout(decl, field.name) orelse return null;
     if (structLiteralExplicitValue(lit, field.name)) |value| {
-        return .{ .source = .explicit, .name = field.name, .value = value, .layout = layout };
+        return .{ .source = .explicit, .name = field.name, .value = value, .layout = layout, .field_ty = field.ty, .release_loaded = false };
     }
-    if (lit.update_expr != null) {
-        return .{ .source = .update, .name = field.name, .value = null, .layout = layout };
+    if (lit.update_expr) |update_expr| {
+        return .{ .source = .update, .name = field.name, .value = null, .layout = layout, .field_ty = field.ty, .release_loaded = callArgNeedsRelease(update_expr) };
     }
     return null;
+}
+
+/// Whether a struct field type is pointer-backed (heap-allocated aggregate,
+/// slice, box, string buffer, nested struct, tuple, array). Such fields
+/// cannot be safely shallow-copied through an update (`..base`) path without
+/// a shared deep-copy/move plan, so direct SAB should fail explicitly rather
+/// than emit an aliasing load/store.
+pub fn structFieldIsPointerBacked(field_ty: *const ast.Type) bool {
+    return switch (field_ty.*) {
+        .primitive => |p| p == .void_type,
+        .pointer, .borrow, .fn_ptr, .user_defined, .tuple, .array => true,
+        else => true,
+    };
 }
 
 pub fn mangleMethodName(allocator: std.mem.Allocator, ty_name: []const u8, method_name: []const u8) ![]u8 {
@@ -1020,11 +1180,52 @@ test "shared struct literal update field plan" {
     try std.testing.expectEqual(StructLiteralFieldSource.explicit, x_plan.source);
     try std.testing.expect(x_plan.value.? == &x_value);
     try std.testing.expectEqual(@as(usize, 0), x_plan.layout.offset);
+    try std.testing.expect(x_plan.field_ty == &i32_ty);
+    try std.testing.expect(!x_plan.release_loaded);
 
     const y_plan = planStructLiteralField(&decl, &lit, fields[1]) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(StructLiteralFieldSource.update, y_plan.source);
     try std.testing.expect(y_plan.value == null);
     try std.testing.expectEqual(@as(usize, 4), y_plan.layout.offset);
+    try std.testing.expect(y_plan.field_ty == &i32_ty);
+    // identifier-backed update source is not released (move-by-reuse).
+    try std.testing.expect(!y_plan.release_loaded);
+    // i32 is a primitive scalar, not pointer-backed.
+    try std.testing.expect(!structFieldIsPointerBacked(&i32_ty));
+}
+
+test "shared enum tag/payload layout" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var i64_ty = ast.Type{ .primitive = .i64 };
+    const move_fields = [_]ast.Field{
+        .{ .name = "x", .ty = &i32_ty },
+        .{ .name = "y", .ty = &i64_ty },
+    };
+    const variants = [_]ast.EnumVariant{
+        .{ .name = "Quit", .fields = &.{} },
+        .{ .name = "Move", .fields = move_fields[0..] },
+    };
+    const decl = ast.EnumDecl{
+        .name = "Message",
+        .generics = &.{},
+        .variants = variants[0..],
+    };
+
+    // Discriminant tags are assigned by declaration order.
+    try std.testing.expectEqual(@as(usize, 0), enumVariantIndex(&decl, "Quit").?);
+    try std.testing.expectEqual(@as(usize, 1), enumVariantIndex(&decl, "Move").?);
+    try std.testing.expectEqual(@as(?usize, null), enumVariantIndex(&decl, "Nope"));
+
+    const move = enumVariant(&decl, "Move").?;
+    // Payload starts at offset 8 (after the i64 tag word). `x:i32` at 8,
+    // `y:i64` aligned to the next 8-byte boundary at 16.
+    const x_layout = enumFieldLayout(move, "x").?;
+    try std.testing.expectEqual(@as(usize, 8), x_layout.offset);
+    const y_layout = enumFieldLayout(move, "y").?;
+    try std.testing.expectEqual(@as(usize, 16), y_layout.offset);
+
+    // Total size = tag word + largest variant payload (Move: through y at 16+8=24).
+    try std.testing.expectEqual(@as(usize, 24), enumAbiSize(&decl));
 }
 
 test "shared dyn trait naming and method slots" {

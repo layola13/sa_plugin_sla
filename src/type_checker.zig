@@ -438,7 +438,7 @@ pub const TypeChecker = struct {
         }
     }
 
-    fn methodForType(self: *TypeChecker, ty: *ast.Type, method_name: []const u8) ?*ast.FuncDecl {
+    pub fn methodForType(self: *TypeChecker, ty: *ast.Type, method_name: []const u8) ?*ast.FuncDecl {
         const recv = unwrappedReceiverType(ty);
         if (recv.* != .user_defined) return null;
         var method_buf: [256]u8 = undefined;

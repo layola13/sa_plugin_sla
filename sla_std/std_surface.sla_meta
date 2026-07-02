@@ -25,6 +25,7 @@ method Arc as_ptr sa_std/core/arc.sa ARC_AS_PTR out,receiver
 function len Vec sa_std/vec.sa VEC_LEN out,receiver deps=sa_vec_len
 function len HashSet sa_std/hashset.sa SET_LEN out,receiver deps=sa_set_len
 function len BTreeSet sa_std/btree_set.sa BTREE_SET_LEN out,receiver deps=sa_btree_set_len,sa_btree_map_len
+function len String sa_std/string.sa STRING_BUF_LEN out,receiver deps=sa_vec_len
 method Vec push sa_std/vec.sa VEC_PUSH receiver,value,elem_size deps=sa_vec_push,sa_mem_copy
 method HashSet insert sa_std/hashset.sa SET_INSERT out,receiver,value deps=sa_set_insert,sa_map_put,map_hash_ptr_seed,map_table_probe,map_rehash,map_table_insert,sa_mem_set
 method HashSet contains sa_std/hashset.sa SET_CONTAINS out,receiver,value deps=sa_set_contains,sa_map_get,map_hash_ptr_seed,map_table_probe

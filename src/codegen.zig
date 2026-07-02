@@ -2527,31 +2527,21 @@ pub const Codegen = struct {
         return out_reg;
     }
 
+    // Enum tag/payload layout is owned by the shared `lowering_rules` layer so
+    // SA-text and direct SAB agree on discriminant index, payload offsets, and
+    // total size. These thin wrappers adapt the shared results to the SA-text
+    // `FieldLayout` shape (which carries a `ty_str` for the text emitter).
     fn enumVariantIndex(e: *const ast.EnumDecl, name: []const u8) ?usize {
-        for (e.variants, 0..) |variant, i| {
-            if (std.mem.eql(u8, variant.name, name)) return i;
-        }
-        return null;
+        return lowering_rules.enumVariantIndex(e, name);
     }
 
     fn enumVariant(e: *const ast.EnumDecl, name: []const u8) ?ast.EnumVariant {
-        for (e.variants) |variant| {
-            if (std.mem.eql(u8, variant.name, name)) return variant;
-        }
-        return null;
+        return lowering_rules.enumVariant(e, name);
     }
 
     fn enumFieldLayout(variant: ast.EnumVariant, name: []const u8) ?FieldLayout {
-        var offset: usize = 8;
-        for (variant.fields) |f| {
-            const size = typeSize(f.ty);
-            offset = alignOffset(offset, size);
-            if (std.mem.eql(u8, f.name, name)) {
-                return .{ .offset = offset, .ty_str = typeString(f.ty) };
-            }
-            offset += size;
-        }
-        return null;
+        const layout = lowering_rules.enumFieldLayout(variant, name) orelse return null;
+        return .{ .offset = layout.offset, .ty_str = typeString(layout.ty) };
     }
 
     fn genEnumPatternCheck(self: *Codegen, decl: *const ast.EnumDecl, pattern: ast.EnumPattern, value_reg: []const u8, branch_flag: []const u8) CodegenError!void {
@@ -2576,17 +2566,7 @@ pub const Codegen = struct {
     }
 
     fn enumSize(e: *const ast.EnumDecl) usize {
-        var max_payload: usize = 0;
-        for (e.variants) |variant| {
-            var offset: usize = 8;
-            for (variant.fields) |f| {
-                const size = typeSize(f.ty);
-                offset = alignOffset(offset, size);
-                offset += size;
-            }
-            max_payload = @max(max_payload, offset - 8);
-        }
-        return @max(8 + max_payload, 8);
+        return lowering_rules.enumAbiSize(e);
     }
 
     fn isVoidType(ty: *const ast.Type) bool {

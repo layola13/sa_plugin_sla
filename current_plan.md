@@ -56,9 +56,11 @@ The generic std-macro fragment naming problem is still a real SCI-boundary task:
 
 ## Next Active Slice
 
-- Target: Phase 9 final audit and commit for the 69/69 tracked direct SAB corpus.
-- Owner boundary: keep new semantics in shared rules/std metadata and do not stage unrelated generated `.test.sa` deletions or old review docs.
-- Expected verification before commit: `zig fmt`, `zig build --summary all`, `zig build test --summary all`, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, focused completed-slice guards, `/home/vscode/projects/sla_ecs/lib/parallel.sla`, full dev-mode no-fallback sweep 69/69, docs sync, and `git diff --check`.
+- Target: SCI fragment naming boundary convergence for std-macro fragment flatten/encode.
+- Owner boundary: implement the generic fix in `/home/vscode/projects/sci` flatten/encode where token structure, register remap, call-body text, and extern/export ordering are still authoritative. Keep `sa_plugin_sla` plugin-side changes limited to docs or genuinely structured lowering; do not add fixture-specific macro string rewrites in `src/sab_codegen.zig`.
+- Scope: preserve caller placeholder arguments without remapping, remap fragment-internal hygiene/register tokens consistently across structured operands and call-body text, and keep imported extern/export declarations available in verifier-safe order.
+- Expected verification before commit: SCI build/tests or focused flattener/SAB encode tests, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, focused plugin guards (`derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, `async_await`), `/home/vscode/projects/sla_ecs/lib/parallel.sla`, full dev-mode no-fallback sweep 69/69, disasm guard for illegal visible `@func(arg)` call targets, docs sync, and `git diff --check`.
+- Starting progress: 0% for SCI boundary convergence in this slice. Existing direct SAB tracked-corpus fallback removal remains 100% (69/69); broader Y/shared-lowering remains about 90% until the SCI boundary fix is verified.
 
 ## Dirty Worktree Caveat
 

@@ -4,12 +4,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] Next active slice is Phase 9 final audit/commit for the tracked direct SAB corpus.
+- [draft] Next active slice is SCI fragment naming boundary convergence.
   - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 69/69 passing; Y/shared-lowering is approximately 90%; direct SAB fallback-removal is 100% for the tracked unit corpus.
   - This worktree has completed `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, `vec_index_assign`, nested Vec field/index assignment, and the ready-future async/await subset; each focused fixture passed dev-mode direct SAB no-fallback and SA-text parity where applicable.
   - Remaining tracked no-fallback failures: none in `tests/test_unit_*.sla`.
   - Remaining broader hardening: generic SCI fragment naming, pointer-backed struct-update fields, and full async/Future state-machine support beyond the ready-future subset.
   - SCI boundary note: generic std-macro fragment naming still belongs in `sci` flatten/encode (placeholder args, embedded token remap, call-body text remap, extern/export ordering). Plugin-side `debug()` structured lowering is retained because it is a proper direct SAB structured path, not a fixture hack.
+  - Active slice target: inspect and fix `/home/vscode/projects/sci` flatten/encode so caller placeholder args remain opaque, fragment-internal hygiene/register tokens remap consistently across structured operands and call-body text, and extern/export declarations keep verifier-safe ordering. Starting progress: 0%; global Y/shared and fallback-removal percentages unchanged until verified through SCI and `sa_plugin_sla` dev-mode gates.
   - `tests/test_unit_vec_index_assign.sla`, `tests/test_unit_field_compare_and_nested_len.sla`, `tests/test_unit_derive_semantics.sla`, `tests/test_unit_generic_for_in_protocol.sla`, `tests/test_unit_struct_update.sla`, `tests/test_unit_sets.sla`, `tests/test_unit_rc_dyn_trait.sla`, `tests/test_unit_var_comprehensive.sla`, `tests/test_unit_enum_match.sla`, `tests/test_unit_spaceship_cmp.sla`, `tests/test_unit_for_in_protocol.sla`, assignment cleanup, `tests/test_unit_pkgjson_codegen.sla`, RefCell struct payload, trait static dispatch, and `/home/vscode/projects/sla_ecs/lib/parallel.sla` are completed regressions and must stay in later host gates.
   - Dev-mode rule for all active CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
   - Dirty worktree caveat: do not stage or restore unrelated generated `.test.sa` deletions or untracked docs while committing verified compiler slices; inspect `git status --short` first.

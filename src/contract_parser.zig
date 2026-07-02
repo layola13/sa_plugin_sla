@@ -11,6 +11,7 @@ pub const ExternalFunction = struct {
     name: []const u8,
     params: []const Param,
     ret_ty: []const u8,
+    return_fallible: bool = false,
 };
 
 pub const LayoutDefine = struct {
@@ -78,10 +79,15 @@ pub const ContractParser = struct {
         // Parse return type if there is a '->'
         while (index < line.len and (line[index] == ' ' or line[index] == '\t')) : (index += 1) {}
         var ret_ty: []const u8 = "void";
+        var return_fallible = false;
         if (index + 2 <= line.len and std.mem.eql(u8, line[index .. index + 2], "->")) {
             index += 2;
             while (index < line.len and (line[index] == ' ' or line[index] == '\t')) : (index += 1) {}
             ret_ty = std.mem.trim(u8, line[index..], " \t");
+            if (ret_ty.len > 0 and ret_ty[ret_ty.len - 1] == '!') {
+                return_fallible = true;
+                ret_ty = std.mem.trimRight(u8, ret_ty[0 .. ret_ty.len - 1], " \t");
+            }
         }
 
         // Parse parameters list
@@ -122,6 +128,7 @@ pub const ContractParser = struct {
             .name = name,
             .params = try params.toOwnedSlice(),
             .ret_ty = ret_ty,
+            .return_fallible = return_fallible,
         };
     }
 
@@ -180,6 +187,7 @@ test "parse .sai and .sal" {
         \\// Test interface
         \\@extern sa_node_plugin_os_cpus(&out_ptr: ptr, &out_len: ptr) -> u32
         \\@extern sa_node_plugin_free_buffer(ptr: ptr, len: u64) -> u32
+        \\@extern sa_time_sleep_ns(ns: u64) -> i32!
     ;
 
     const sal_content =
@@ -195,13 +203,16 @@ test "parse .sai and .sal" {
     var p = ContractParser.init(allocator);
 
     const functions = try p.parseSai(sai_content);
-    try std.testing.expectEqual(@as(usize, 2), functions.len);
+    try std.testing.expectEqual(@as(usize, 3), functions.len);
     try std.testing.expectEqualSlices(u8, "sa_node_plugin_os_cpus", functions[0].name);
     try std.testing.expectEqual(@as(usize, 2), functions[0].params.len);
     try std.testing.expect(functions[0].params[0].is_borrow);
     try std.testing.expectEqualSlices(u8, "out_ptr", functions[0].params[0].name);
     try std.testing.expectEqualSlices(u8, "ptr", functions[0].params[0].ty);
     try std.testing.expectEqualSlices(u8, "u32", functions[0].ret_ty);
+    try std.testing.expect(!functions[0].return_fallible);
+    try std.testing.expectEqualSlices(u8, "i32", functions[2].ret_ty);
+    try std.testing.expect(functions[2].return_fallible);
 
     const defines = try p.parseSal(sal_content);
     try std.testing.expectEqual(@as(usize, 3), defines.len);

@@ -4,13 +4,20 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] No active implementation draft is open after the formatted `println` direct-SAB completion.
-  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 73/73 passing; Y/shared-lowering is approximately 95%; direct SAB fallback-removal is 100% for the tracked unit corpus.
+- [draft] No active implementation draft is open after the async `block_on` ready-future direct-SAB completion.
+  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 74/74 passing; Y/shared-lowering is approximately 96%; direct SAB fallback-removal is 100% for the tracked unit corpus.
   - Remaining broader hardening: generic SCI fragment naming and full async/Future state-machine support beyond the ready-future/task-runtime subset.
-  - Completed regressions that must stay in host gates include `println_direct`, rosetta `75_async_bridge`/`134_join_all_futures`/`140_yield_now_suspend`, `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+  - Completed regressions that must stay in host gates include `async_block_on_direct`, rosetta `09_async_await`, `println_direct`, rosetta `75_async_bridge`/`134_join_all_futures`/`140_yield_now_suspend`, `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
   - Dev-mode rule for all active CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
 
 ## Completed Features
+
+- [done] Direct SAB now supports a ready-future `block_on` path with fallible std-time externs.
+  - Added the shared `lowering_rules.abiPassesAsPointer` ABI classifier and made `future<T>` pointer-backed for direct SAB signatures and storage, matching the ready-future representation already used by async returns and `.await`.
+  - `.sai` contract parsing now preserves fallible return markers separately from the primitive return type, and direct SAB contract extern signatures set SCI's `return_fallible` bit. This keeps `sa_time_sleep_ns(ns: u64) -> i32!` fallible in SAB instead of emitting a plain `i32` extern that breaks LLVM lowering.
+  - Added `tests/test_unit_async_block_on_direct.sla`, covering a `future<i32>` parameter, Box/Pin ready-polling macros, and std `thread::sleep(Duration::from_millis(0))` through the fallible time extern.
+  - Verified: `zig fmt --check src/contract_parser.zig src/lowering_rules.zig src/sab_codegen.zig`; `zig build --summary all`; `zig build test --summary all` (65/65); focused parser/lowering Zig tests; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; local and host direct-SAB no-fallback plus SA-text parity for `tests/test_unit_async_block_on_direct.sla` and rosetta `09_async_await`; host direct-SAB no-fallback for async rosetta guards `75`, `133`, `134`, `135`, `139`, and `140`; host no-fallback `/home/vscode/projects/sla_ecs/lib/parallel.sla`; local and host full no-fallback sweeps 74/74; disasm guard clean for the new fixture, rosetta `09`, and parallel with `sa_time_sleep_ns` preserved as `i32!`; `git diff --check`.
+  - Feature completion: async `block_on` ready-future direct SAB 100%; Y/shared-lowering approximately 95% -> 96%; direct SAB fallback-removal for tracked corpus remains 100%; no-fallback sweep 74/74; commit pending in this slice.
 
 - [done] Formatted `println` now lowers directly to structured SAB print/fmt calls.
   - Added shared `PrintlnArgPlan`/`PrintPrimitiveFormat` helpers in `src/lowering_rules.zig` so print argument classification (format string, string-like value, borrowed/boxed primitive, primitive, unsupported) is not an SAB-only decision. The existing SA-text helper predicates now delegate to the shared classifiers.

@@ -876,8 +876,7 @@ pub const Codegen = struct {
                 .boolean => .i1,
                 .void_type => .void,
             },
-            .pointer, .borrow, .fn_ptr, .user_defined, .tuple, .array => .ptr,
-            else => Error.UnsupportedSabDirectFeature,
+            else => if (lowering_rules.abiPassesAsPointer(ty)) .ptr else Error.UnsupportedSabDirectFeature,
         };
     }
 
@@ -3531,6 +3530,7 @@ pub const Codegen = struct {
             .kind = .external,
             .return_cap = null,
             .return_ty = abiPrimType(ext.ret_ty),
+            .return_fallible = ext.return_fallible,
             .entry_inst_idx = @intCast(entry_inst_idx),
             .is_ffi_wrapper = false,
             .param_ids = param_ids,

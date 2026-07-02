@@ -377,6 +377,13 @@ pub fn abiTypeSize(ty: *const ast.Type) usize {
     };
 }
 
+pub fn abiPassesAsPointer(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .pointer, .borrow, .fn_ptr, .user_defined, .tuple, .array, .future => true,
+        else => false,
+    };
+}
+
 pub fn alignAggregateOffset(offset: usize, size: usize) usize {
     if (size == 8) return (offset + 7) & ~@as(usize, 7);
     return offset;
@@ -1270,6 +1277,14 @@ test "shared ABI layout keeps fixed-array fields as pointer slots" {
     const elem = arrayElementLayout(bool_array_ty.array, 1) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(usize, 1), elem.offset);
     try std.testing.expectEqual(@as(usize, 1), elem.size);
+}
+
+test "shared ABI treats ready futures as pointer-backed values" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var future_ty = ast.Type{ .future = &i32_ty };
+
+    try std.testing.expectEqual(@as(usize, 8), abiTypeSize(&future_ty));
+    try std.testing.expect(abiPassesAsPointer(&future_ty));
 }
 
 test "shared struct literal update field plan" {

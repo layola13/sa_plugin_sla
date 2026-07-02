@@ -2546,11 +2546,46 @@ pub const Codegen = struct {
         }
     }
 
-    fn moduleHasDep(deps: []const []const u8, name: []const u8) bool {
-        for (deps) |dep| {
-            if (std.mem.eql(u8, dep, name)) return true;
+    fn moduleHasFunctionSig(module: sab.Module, name: []const u8) bool {
+        for (module.function_sigs) |fsig| {
+            if (std.mem.eql(u8, fsig.name, name)) return true;
         }
         return false;
+    }
+
+    fn moduleFunctionBodyEnd(module: sab.Module, sig_idx: usize) usize {
+        if (sig_idx + 1 < module.function_sigs.len) return module.function_sigs[sig_idx + 1].entry_inst_idx;
+        return module.instructions.len;
+    }
+
+    fn collectDecodedModuleDepClosure(self: *Codegen, module: sab.Module, deps: []const []const u8, selected: *std.StringHashMap(void)) !void {
+        if (deps.len == 0) {
+            for (module.function_sigs) |fsig| try selected.put(fsig.name, {});
+            return;
+        }
+
+        for (deps) |dep| try selected.put(dep, {});
+
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (module.function_sigs, 0..) |fsig, idx| {
+                if (!selected.contains(fsig.name)) continue;
+                if (fsig.kind == .external) continue;
+                const start: usize = @intCast(fsig.entry_inst_idx);
+                if (start >= module.instructions.len) continue;
+                const end = moduleFunctionBodyEnd(module, idx);
+                for (module.instructions[start..@min(end, module.instructions.len)]) |item| {
+                    const target = callTargetName(callInstructionBody(item) orelse continue) orelse continue;
+                    if (!moduleHasFunctionSig(module, target)) continue;
+                    if (selected.contains(target)) continue;
+                    try selected.put(target, {});
+                    changed = true;
+                }
+            }
+        }
+
+        _ = self;
     }
 
     fn appendDecodedModuleFiltered(self: *Codegen, module: sab.Module, deps: []const []const u8) !void {
@@ -2560,8 +2595,14 @@ pub const Codegen = struct {
             try self.const_decls.append(try self.cloneModuleConstDecl(decl));
         }
 
+        var selected = std.StringHashMap(void).init(self.allocator);
+        defer selected.deinit();
+        try self.collectDecodedModuleDepClosure(module, deps, &selected);
+
         for (module.function_sigs, 0..) |fsig, idx| {
-            if (deps.len != 0 and !moduleHasDep(deps, fsig.name)) continue;
+            if (!selected.contains(fsig.name)) continue;
+            if (self.included_imports.contains(fsig.name)) continue;
+            try self.included_imports.put(try self.allocator.dupe(u8, fsig.name), {});
             const entry_idx = self.instructions.items.len;
             const cloned = try self.cloneModuleFunctionSig(module.symbols, fsig, entry_idx);
             try self.function_sigs.append(cloned);
@@ -2730,7 +2771,11 @@ pub const Codegen = struct {
         if (deps.len == 0) return;
         const module = try self.cachedStdImportModule(import_path);
         try self.appendDecodedModuleFiltered(module.*, deps);
-        for (deps) |dep| try self.included_imports.put(try self.allocator.dupe(u8, dep), {});
+        for (deps) |dep| {
+            if (!self.included_imports.contains(dep)) {
+                try self.included_imports.put(try self.allocator.dupe(u8, dep), {});
+            }
+        }
     }
 
     fn flushPendingStdDeps(self: *Codegen) !void {
@@ -7398,4 +7443,76 @@ pub fn generate(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker, pro
     var cg = Codegen.init(allocator, tc);
     defer cg.deinit();
     return try cg.generate(program);
+}
+
+test "filtered decoded std deps include same-module direct-call closure" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const function_sigs = try allocator.alloc(sig.FunctionSig, 5);
+    function_sigs[0] = try sig.parseFunctionSig(allocator, "@top() -> void:", 0, 0);
+    function_sigs[1] = try sig.parseFunctionSig(allocator, "@ext() -> void:", 1, 3);
+    function_sigs[1].kind = .external;
+    function_sigs[2] = try sig.parseFunctionSig(allocator, "@helper() -> void:", 2, 4);
+    function_sigs[3] = try sig.parseFunctionSig(allocator, "@helper() -> void:", 3, 7);
+    function_sigs[4] = try sig.parseFunctionSig(allocator, "@unused() -> void:", 4, 10);
+
+    const instructions = try allocator.alloc(inst.Instruction, 12);
+    instructions[0] = inst.makeInstruction(.func_decl, 1, 1, null, "");
+    instructions[1] = inst.makeInstruction(.call, 2, 2, null, "");
+    instructions[1].operands[0] = .{ .text = "@helper()" };
+    instructions[2] = inst.makeInstruction(.return_, 3, 3, null, "");
+    instructions[3] = inst.makeInstruction(.extern_decl, 4, 4, null, "");
+    instructions[4] = inst.makeInstruction(.func_decl, 5, 5, null, "");
+    instructions[5] = inst.makeInstruction(.call, 6, 6, null, "");
+    instructions[5].operands[0] = .{ .text = "@ext()" };
+    instructions[6] = inst.makeInstruction(.return_, 7, 7, null, "");
+    instructions[7] = inst.makeInstruction(.func_decl, 8, 8, null, "");
+    instructions[8] = inst.makeInstruction(.call, 9, 9, null, "");
+    instructions[8].operands[0] = .{ .text = "@ext()" };
+    instructions[9] = inst.makeInstruction(.return_, 10, 10, null, "");
+    instructions[10] = inst.makeInstruction(.func_decl, 11, 11, null, "");
+    instructions[11] = inst.makeInstruction(.return_, 12, 12, null, "");
+
+    const module = sab.Module{
+        .symbols = &.{},
+        .function_sigs = function_sigs,
+        .const_decls = &.{},
+        .instructions = instructions,
+        .owned_text = &.{},
+    };
+
+    try cg.appendDecodedModuleFiltered(module, &.{"top"});
+
+    var saw_top = false;
+    var saw_helper = false;
+    var saw_unused = false;
+    var helper_count: usize = 0;
+    for (cg.function_sigs.items) |fsig| {
+        if (std.mem.eql(u8, fsig.name, "top")) saw_top = true;
+        if (std.mem.eql(u8, fsig.name, "helper")) {
+            saw_helper = true;
+            helper_count += 1;
+        }
+        if (std.mem.eql(u8, fsig.name, "unused")) saw_unused = true;
+    }
+    try std.testing.expect(saw_top);
+    try std.testing.expect(saw_helper);
+    try std.testing.expect(!saw_unused);
+    try std.testing.expectEqual(@as(usize, 3), cg.function_sigs.items.len);
+    try std.testing.expectEqualStrings("top", cg.function_sigs.items[0].name);
+    try std.testing.expectEqualStrings("ext", cg.function_sigs.items[1].name);
+    try std.testing.expectEqualStrings("helper", cg.function_sigs.items[2].name);
+    try std.testing.expectEqual(sig.FunctionKind.external, cg.function_sigs.items[1].kind);
+    try std.testing.expectEqual(@as(usize, 1), helper_count);
+    try std.testing.expect(cg.included_imports.contains("top"));
+    try std.testing.expect(cg.included_imports.contains("ext"));
+    try std.testing.expect(cg.included_imports.contains("helper"));
+    try std.testing.expect(!cg.included_imports.contains("unused"));
 }

@@ -14,7 +14,7 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
-- Latest committed baseline after this slice: filtered std-dep closure committed in `/home/vscode/projects/sa_plugins/sa_plugin_sla` as `0a750b0` (`Preserve filtered std dependency closure`); SCI embedded symbol-token/call-body remap committed in `/home/vscode/projects/sci` as `1beccde` (`Remap fragment embedded symbol text`).
+- Latest committed baseline after this slice: filtered std-dep closure committed in `/home/vscode/projects/sa_plugins/sa_plugin_sla` as `c26a2e2` (`Preserve filtered std dependency closure`); SCI embedded symbol-token/call-body remap committed in `/home/vscode/projects/sci` as `1beccde` (`Remap fragment embedded symbol text`).
 - Latest completed slices (verified with dev-mode SAB no-fallback + SA-text parity where applicable): `struct_update`, `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, `vec_index_assign`/nested Vec field assignment, and the ready-future async/await subset.
 - Current full dev-mode direct SAB no-fallback sweep: 69/69 passing.
 - Current global estimates: Y/shared-lowering about 92%; direct SAB fallback-removal is 100% for the tracked unit corpus, with corpus pass rate now 69/69.

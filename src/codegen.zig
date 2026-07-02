@@ -7608,20 +7608,27 @@ pub const Codegen = struct {
         if (lit.update_expr) |update_expr| {
             const update_reg = try self.genExpr(update_expr, hoisted_allocs);
             for (struct_decl.fields) |decl_field| {
-                var overridden = false;
-                for (lit.fields) |literal_field| {
-                    if (std.mem.eql(u8, literal_field.name, decl_field.name)) {
-                        overridden = true;
-                        break;
-                    }
-                }
-                if (overridden) continue;
-
+                const plan = lowering_rules.planStructLiteralField(struct_decl, lit, decl_field) orelse return CodegenError.CodegenError;
+                if (plan.source != .update) continue;
                 const layout = self.aggregateFieldLayout(lit.ty, decl_field.name) orelse return CodegenError.CodegenError;
+                const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
                 const loaded_reg = try self.newTmp();
                 self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ loaded_reg, update_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, loaded_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                if (callArgNeedsRelease(update_expr)) try self.emitRelease(loaded_reg);
+                switch (transfer) {
+                    .direct => {
+                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, loaded_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                        if (plan.release_loaded) try self.emitRelease(loaded_reg);
+                    },
+                    .deep_copy => {
+                        const copied = try self.newTmp();
+                        try self.genCopyValueInto(copied, loaded_reg, plan.field_ty);
+                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                        if (plan.release_loaded) try self.emitRelease(loaded_reg);
+                    },
+                    .move => {
+                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, loaded_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                    },
+                }
             }
             if (callArgNeedsRelease(update_expr)) try self.emitRelease(update_reg);
         }
@@ -7674,6 +7681,8 @@ pub const Codegen = struct {
             if (literal_value == null and lit.update_expr != null) continue;
             const value = literal_value orelse return CodegenError.CodegenError;
             const layout = self.aggregateFieldLayout(lit.ty, decl_field.name) orelse return CodegenError.CodegenError;
+            const plan = lowering_rules.planStructLiteralField(struct_decl, lit, decl_field) orelse return CodegenError.CodegenError;
+            const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
             if (manuallyDropInnerType(decl_field.ty) != null and value.* == .call_expr) {
                 const call = &value.call_expr;
                 if (call.associated_target != null and std.mem.eql(u8, call.associated_target.?, "ManuallyDrop") and std.mem.eql(u8, call.func_name, "new")) {
@@ -7687,10 +7696,10 @@ pub const Codegen = struct {
                     continue;
                 }
             }
-            if (value.* == .identifier and self.typeIsCopyStruct(decl_field.ty)) {
+            if (transfer == .deep_copy) {
                 const source_reg = try self.genExpr(value, hoisted_allocs);
                 const copied = try self.newTmp();
-                try self.genCopyValueInto(copied, source_reg, decl_field.ty);
+                try self.genCopyValueInto(copied, source_reg, plan.field_ty);
                 self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
             } else {
                 const val_reg = try self.genExpr(value, hoisted_allocs);

@@ -4356,31 +4356,43 @@ pub const Codegen = struct {
             const plan = lowering_rules.planStructLiteralField(decl, &lit, decl_field) orelse return Error.UnsupportedSabDirectFeature;
             const layout = plan.layout;
             const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
             switch (plan.source) {
                 .explicit => {
                     const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
-                    // Mirror SA-text: copy-struct identifier fields are deep-copied
-                    // before storing, so dst does not alias the source local.
-                    if (value.* == .identifier and self.typeIsCopyStruct(plan.field_ty)) {
-                        const source_reg = try self.genMacroExpr(value, ctx);
-                        const copied = try self.genCopyValue(source_reg, plan.field_ty);
-                        try self.emitStore(dst, layout.offset, copied, prim);
-                        try self.emitRelease(copied);
-                    } else {
-                        const value_reg = try self.genMacroExpr(value, ctx);
-                        try self.emitStore(dst, layout.offset, value_reg, prim);
-                        try self.releaseExprResultIfNeeded(value, value_reg);
+                    switch (transfer) {
+                        .deep_copy => {
+                            const source_reg = try self.genMacroExpr(value, ctx);
+                            const copied = try self.genCopyValue(source_reg, plan.field_ty);
+                            try self.emitStore(dst, layout.offset, copied, prim);
+                            try self.emitRelease(copied);
+                        },
+                        .direct, .move => {
+                            const value_reg = try self.genMacroExpr(value, ctx);
+                            try self.emitStore(dst, layout.offset, value_reg, prim);
+                            try self.releaseExprResultIfNeeded(value, value_reg);
+                        },
                     }
                 },
                 .update => {
-                    // Pointer-backed fields cannot be safely shallow-copied through
-                    // the update path without a shared deep-copy/move plan.
-                    if (lowering_rules.structFieldIsPointerBacked(plan.field_ty)) return Error.UnsupportedSabDirectFeature;
                     const src = update_reg orelse return Error.UnsupportedSabDirectFeature;
                     const loaded = try self.intern(try self.newTmp());
                     try self.emitLoad(loaded, src, layout.offset, prim);
-                    try self.emitStore(dst, layout.offset, loaded, prim);
-                    if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                    switch (transfer) {
+                        .direct => {
+                            try self.emitStore(dst, layout.offset, loaded, prim);
+                            if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                        },
+                        .deep_copy => {
+                            const copied = try self.genCopyValue(loaded, plan.field_ty);
+                            try self.emitStore(dst, layout.offset, copied, prim);
+                            try self.emitRelease(copied);
+                            if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                        },
+                        .move => {
+                            try self.emitStore(dst, layout.offset, loaded, prim);
+                        },
+                    }
                 },
             }
         }
@@ -7253,36 +7265,43 @@ pub const Codegen = struct {
             const plan = lowering_rules.planStructLiteralField(decl, &lit, decl_field) orelse return Error.UnsupportedSabDirectFeature;
             const layout = plan.layout;
             const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
             switch (plan.source) {
                 .explicit => {
                     const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
-                    // Mirror SA-text: copy-struct identifier fields are deep-copied
-                    // before storing, so dst does not alias the source local.
-                    if (value.* == .identifier and self.typeIsCopyStruct(plan.field_ty)) {
-                        const source_reg = try self.genExpr(value);
-                        const copied = try self.genCopyValue(source_reg, plan.field_ty);
-                        try self.emitStore(dst, layout.offset, copied, prim);
-                        try self.emitRelease(copied);
-                    } else {
-                        const value_reg = try self.genExpr(value);
-                        try self.emitStore(dst, layout.offset, value_reg, prim);
-                        try self.releaseExprResultIfNeeded(value, value_reg);
+                    switch (transfer) {
+                        .deep_copy => {
+                            const source_reg = try self.genExpr(value);
+                            const copied = try self.genCopyValue(source_reg, plan.field_ty);
+                            try self.emitStore(dst, layout.offset, copied, prim);
+                            try self.emitRelease(copied);
+                        },
+                        .direct, .move => {
+                            const value_reg = try self.genExpr(value);
+                            try self.emitStore(dst, layout.offset, value_reg, prim);
+                            try self.releaseExprResultIfNeeded(value, value_reg);
+                        },
                     }
                 },
                 .update => {
-                    // Pointer-backed fields (heap aggregates, slices, boxes, nested
-                    // structs, arrays) cannot be safely shallow-copied through the
-                    // update path without a shared deep-copy/move plan. Fail
-                    // explicitly instead of emitting an aliasing load/store.
-                    if (lowering_rules.structFieldIsPointerBacked(plan.field_ty)) return Error.UnsupportedSabDirectFeature;
                     const src = update_reg orelse return Error.UnsupportedSabDirectFeature;
                     const loaded = try self.intern(try self.newTmp());
                     try self.emitLoad(loaded, src, layout.offset, prim);
-                    try self.emitStore(dst, layout.offset, loaded, prim);
-                    // Release the loaded field only when the update source is a
-                    // temporary (mirrors SA-text callArgNeedsRelease(update_expr));
-                    // identifier-backed sources reuse the source by move.
-                    if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                    switch (transfer) {
+                        .direct => {
+                            try self.emitStore(dst, layout.offset, loaded, prim);
+                            if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                        },
+                        .deep_copy => {
+                            const copied = try self.genCopyValue(loaded, plan.field_ty);
+                            try self.emitStore(dst, layout.offset, copied, prim);
+                            try self.emitRelease(copied);
+                            if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                        },
+                        .move => {
+                            try self.emitStore(dst, layout.offset, loaded, prim);
+                        },
+                    }
                 },
             }
         }

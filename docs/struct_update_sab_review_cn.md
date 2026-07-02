@@ -7,6 +7,8 @@
 
 ## 当前状态
 
+2026-07-02 追加：后续 Phase 5 follow-up 已完成。`StructLiteralFieldTransfer` 已加入 `src/lowering_rules.zig`，SA-text 与 direct SAB 都消费同一个 direct/deep-copy/move 字段转移策略；direct SAB 已移除安全 pointer-backed update 字段的显式收窄。新增 `tests/test_unit_struct_update_pointer_backed.sla` 覆盖 `Vec<i32>` 未触及字段在 `..base` 下移动保留，dev-mode direct SAB no-fallback 与 SA-text parity 均通过；全量 host no-fallback sweep 为 72/72。下面原评估保留为历史背景。
+
 - `tests/test_unit_struct_update.sla` 在 dev 模式下已通过：
   - `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_struct_update.sla --test-backend sab --jobs 1 --trace-panic` → 2/2 passed。
   - `SA_PLUGIN_DEV=1 sa sla test tests/test_unit_struct_update.sla --test-backend sa --jobs 1 --trace-panic` → 2/2 passed。

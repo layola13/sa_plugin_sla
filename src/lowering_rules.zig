@@ -297,6 +297,12 @@ pub const StructLiteralFieldSource = enum {
     update,
 };
 
+pub const StructLiteralFieldTransfer = enum {
+    direct,
+    deep_copy,
+    move,
+};
+
 pub const StructLiteralFieldPlan = struct {
     source: StructLiteralFieldSource,
     name: []const u8,
@@ -765,6 +771,21 @@ pub fn structFieldIsPointerBacked(field_ty: *const ast.Type) bool {
     };
 }
 
+pub fn planStructLiteralFieldTransfer(plan: StructLiteralFieldPlan, field_is_copy_struct: bool) StructLiteralFieldTransfer {
+    return switch (plan.source) {
+        .explicit => blk: {
+            const value = plan.value orelse break :blk .direct;
+            if (value.* == .identifier and field_is_copy_struct) break :blk .deep_copy;
+            break :blk .direct;
+        },
+        .update => blk: {
+            if (!structFieldIsPointerBacked(plan.field_ty)) break :blk .direct;
+            if (field_is_copy_struct) break :blk .deep_copy;
+            break :blk .move;
+        },
+    };
+}
+
 pub fn mangleMethodName(allocator: std.mem.Allocator, ty_name: []const u8, method_name: []const u8) ![]u8 {
     return try std.fmt.allocPrint(allocator, "{s}_{s}", .{ ty_name, method_name });
 }
@@ -1212,6 +1233,24 @@ test "shared struct literal update field plan" {
     try std.testing.expect(!y_plan.release_loaded);
     // i32 is a primitive scalar, not pointer-backed.
     try std.testing.expect(!structFieldIsPointerBacked(&i32_ty));
+    try std.testing.expectEqual(StructLiteralFieldTransfer.direct, planStructLiteralFieldTransfer(y_plan, false));
+
+    var nested_ty = ast.Type{ .user_defined = .{ .name = "Nested", .generics = &.{} } };
+    const nested_fields = [_]ast.Field{.{ .name = "payload", .ty = &nested_ty }};
+    const nested_decl = ast.StructDecl{
+        .name = "HasNested",
+        .generics = &.{},
+        .fields = nested_fields[0..],
+    };
+    const nested_lit = ast.StructLiteral{
+        .ty = undefined,
+        .fields = &.{},
+        .update_expr = &base_value,
+    };
+    const nested_plan = planStructLiteralField(&nested_decl, &nested_lit, nested_fields[0]) orelse return error.TestExpectedEqual;
+    try std.testing.expect(structFieldIsPointerBacked(nested_plan.field_ty));
+    try std.testing.expectEqual(StructLiteralFieldTransfer.move, planStructLiteralFieldTransfer(nested_plan, false));
+    try std.testing.expectEqual(StructLiteralFieldTransfer.deep_copy, planStructLiteralFieldTransfer(nested_plan, true));
 }
 
 test "shared enum tag/payload layout" {

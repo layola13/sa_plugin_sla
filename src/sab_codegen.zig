@@ -7769,3 +7769,67 @@ test "filtered decoded std deps include same-module direct-call closure" {
     try std.testing.expect(cg.included_imports.contains("helper"));
     try std.testing.expect(!cg.included_imports.contains("unused"));
 }
+
+test "filtered decoded std deps emit exported helper bodies in original order" {
+    // Exported std helpers (e.g. `@export sa_map_put`) reached transitively
+    // from a selected dep must keep their full body, not degrade to a
+    // decl-only clone like external symbols, and must stay in the decoded
+    // module's original declaration order relative to the normal helper that
+    // calls them. This guards the extern/export ordering boundary for the
+    // filtered std-dep closure.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const function_sigs = try allocator.alloc(sig.FunctionSig, 3);
+    function_sigs[0] = try sig.parseFunctionSig(allocator, "@entry() -> void:", 0, 0);
+    function_sigs[1] = try sig.parseFunctionSig(allocator, "@exported_helper() -> void:", 1, 3);
+    function_sigs[1].kind = .exported;
+    function_sigs[2] = try sig.parseFunctionSig(allocator, "@normal_helper() -> void:", 2, 6);
+
+    const instructions = try allocator.alloc(inst.Instruction, 9);
+    // entry() { call @normal_helper() }
+    instructions[0] = inst.makeInstruction(.func_decl, 1, 1, null, "");
+    instructions[1] = inst.makeInstruction(.call, 2, 2, null, "");
+    instructions[1].operands[0] = .{ .text = "@normal_helper()" };
+    instructions[2] = inst.makeInstruction(.return_, 3, 3, null, "");
+    // exported_helper() { ret } — declared before normal_helper in the module
+    instructions[3] = inst.makeInstruction(.export_decl, 4, 4, null, "");
+    instructions[4] = inst.makeInstruction(.op, 5, 5, null, "");
+    instructions[5] = inst.makeInstruction(.return_, 6, 6, null, "");
+    // normal_helper() { call @exported_helper() }
+    instructions[6] = inst.makeInstruction(.func_decl, 7, 7, null, "");
+    instructions[7] = inst.makeInstruction(.call, 8, 8, null, "");
+    instructions[7].operands[0] = .{ .text = "@exported_helper()" };
+    instructions[8] = inst.makeInstruction(.return_, 9, 9, null, "");
+
+    const module = sab.Module{
+        .symbols = &.{},
+        .function_sigs = function_sigs,
+        .const_decls = &.{},
+        .instructions = instructions,
+        .owned_text = &.{},
+    };
+
+    try cg.appendDecodedModuleFiltered(module, &.{"entry"});
+
+    // All three are reachable: entry -> normal_helper -> exported_helper.
+    try std.testing.expectEqual(@as(usize, 3), cg.function_sigs.items.len);
+    // Original decoded declaration order is preserved (exported before normal).
+    try std.testing.expectEqualStrings("entry", cg.function_sigs.items[0].name);
+    try std.testing.expectEqualStrings("exported_helper", cg.function_sigs.items[1].name);
+    try std.testing.expectEqualStrings("normal_helper", cg.function_sigs.items[2].name);
+    // The exported helper keeps its kind, and its full body was cloned (not a
+    // decl-only stub): the module has 9 body instructions, so the filtered
+    // clone must reproduce all of them.
+    try std.testing.expectEqual(sig.FunctionKind.exported, cg.function_sigs.items[1].kind);
+    try std.testing.expectEqual(@as(usize, 9), cg.instructions.items.len);
+    // The exported helper's body add instruction survives at its cloned offset.
+    try std.testing.expectEqual(inst.InstKind.export_decl, cg.instructions.items[3].kind);
+    try std.testing.expectEqual(inst.InstKind.op, cg.instructions.items[4].kind);
+}

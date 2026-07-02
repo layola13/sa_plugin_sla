@@ -14,11 +14,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
-- Latest committed baseline after this slice: async ready-future direct SAB slice committed.
+- Latest committed baseline after this slice: SCI embedded symbol-token/call-body remap committed in `/home/vscode/projects/sci` as `1beccde` (`Remap fragment embedded symbol text`); latest `sa_plugin_sla` compiler-slice baseline remains the async ready-future direct SAB slice.
 - Latest completed slices (verified with dev-mode SAB no-fallback + SA-text parity where applicable): `struct_update`, `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, `vec_index_assign`/nested Vec field assignment, and the ready-future async/await subset.
 - Current full dev-mode direct SAB no-fallback sweep: 69/69 passing.
-- Current global estimates: Y/shared-lowering about 90%; direct SAB fallback-removal is 100% for the tracked unit corpus, with corpus pass rate now 69/69.
+- Current global estimates: Y/shared-lowering about 92%; direct SAB fallback-removal is 100% for the tracked unit corpus, with corpus pass rate now 69/69.
 - Current feature report: `async_await ready-future subset 100%; no-fallback sweep is 69/69; committed`.
+- Current SCI boundary sub-slice: embedded symbol-token/call-body remap is implemented in `/home/vscode/projects/sci/src/flattener.zig` and verified. This is a completed subfeature, not full SCI boundary closure; extern/export ordering hardening and plugin-side cleanup remain open.
 - Remaining tracked unit failures: none.
 
 ## Recently Completed Slices
@@ -31,6 +32,7 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 - `derive_semantics`: tracked derive fixture now passes; `debug()` emits structured direct SAB formatting calls plus `FORMAT_PUSH_BYTES` rather than nested text macro expansion.
 - `vec_index_assign` and nested Vec field/index assignment: std-surface macro fragment emission now treats `elem_ty` as a literal type token while keeping register args as placeholders, so `VEC_SET_TYPED` can flatten/encode without an invalid placeholder type.
 - `async_await`: tracked ready-future async subset now passes through shared async return/await plans; async functions return pointer ABI ready-state values and `.await` consumes `FUTURE_READY_STATE_INTO_INNER`.
+- `sci_embedded_token_remap`: SCI fragment cloning now remaps symbol tokens embedded in `.text`, `raw_text`, atomic text, and native text through the same source-symbol/remap/target-symbol table used by structured operands; `__sla_macro_arg_N` placeholders remain opaque, and string/comment text is left untouched.
 
 ## Verified Gates For Recent Slices
 
@@ -44,6 +46,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 - Focused dev-mode SAB no-fallback and SA-text parity passed for `tests/test_unit_vec_index_assign.sla` and `tests/test_unit_field_compare_and_nested_len.sla`.
 - Focused dev-mode SAB no-fallback and SA-text parity passed for `tests/test_unit_async_await.sla`.
 - Full dev-mode no-fallback sweep passed 69/69.
+- SCI focused tests passed: `zig test src/flattener.zig --test-filter "frontend cache clone remaps embedded call text tokens with operands"`, `zig test src/flattener.zig --test-filter "frontend cache clone remaps instruction symbols and owned metadata"`, `zig test src/flattener.zig --test-filter "frontend cache append fragment remaps and merges end to end"`, and `zig test src/sab.zig --test-filter "disasmModule separates call target from call args"`.
+- SCI `zig fmt --check src/flattener.zig` passed. SCI full `zig build test --summary all` was attempted but hit an environment/plugin-state failure in `plugin_host_smoke.test.runtime blocks privileged installed plugins outside dev mode` because a dev plugin is installed; no flattener failure was observed.
+- After the SCI remap change, `sa_plugin_sla` `zig build --summary all` passed, `zig build test --summary all` passed 62/62, `sa plugin install --dev .` passed, `SA_PLUGIN_DEV=1 sa sla help` passed, focused macro/fragment guards passed, `/home/vscode/projects/sla_ecs/lib/parallel.sla` passed, full dev-mode no-fallback sweep stayed 69/69, and the parallel SAB disasm illegal-call-target guard returned no matches.
 
 ## Remaining Tracked Unit Failures
 
@@ -56,11 +61,11 @@ The generic std-macro fragment naming problem is still a real SCI-boundary task:
 
 ## Next Active Slice
 
-- Target: SCI fragment naming boundary convergence for std-macro fragment flatten/encode.
+- Target: SCI extern/export declaration ordering hardening plus plugin-side fragment cleanup audit.
 - Owner boundary: implement the generic fix in `/home/vscode/projects/sci` flatten/encode where token structure, register remap, call-body text, and extern/export ordering are still authoritative. Keep `sa_plugin_sla` plugin-side changes limited to docs or genuinely structured lowering; do not add fixture-specific macro string rewrites in `src/sab_codegen.zig`.
-- Scope: preserve caller placeholder arguments without remapping, remap fragment-internal hygiene/register tokens consistently across structured operands and call-body text, and keep imported extern/export declarations available in verifier-safe order.
+- Scope: keep imported extern/export declarations available in verifier-safe order, then audit whether `sa_plugin_sla`'s fragment text-remap/placeholder code can become a thin consumer of SCI-owned behavior instead of a parallel implementation. Embedded token/call-body remap is already completed in SCI for `appendFlattenFragment`.
 - Expected verification before commit: SCI build/tests or focused flattener/SAB encode tests, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, focused plugin guards (`derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, `async_await`), `/home/vscode/projects/sla_ecs/lib/parallel.sla`, full dev-mode no-fallback sweep 69/69, disasm guard for illegal visible `@func(arg)` call targets, docs sync, and `git diff --check`.
-- Starting progress: 0% for SCI boundary convergence in this slice. Existing direct SAB tracked-corpus fallback removal remains 100% (69/69); broader Y/shared-lowering remains about 90% until the SCI boundary fix is verified.
+- Current progress: 25% for extern/export ordering and plugin cleanup audit. Owner path identified: SCI verifier consumes predecoded `function_sigs`, while `sa_plugin_sla` filtered std-dep injection (`appendDecodedModuleFiltered` / `appendStdDepsNow` / `flushPendingStdDeps`) controls when dependency declarations and bodies enter the SAB instruction stream. Completed subfeature: SCI embedded token/call-body remap 100%; broader SCI boundary convergence about 60%; existing direct SAB tracked-corpus fallback removal remains 100% (69/69); broader Y/shared-lowering is about 92%.
 
 ## Dirty Worktree Caveat
 

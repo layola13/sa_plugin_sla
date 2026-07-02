@@ -197,6 +197,7 @@ pub const Codegen = struct {
     escaped_closure_idx: usize = 0,
     in_function_body: bool = false,
     current_async_return: bool = false,
+    future_task_helpers_emitted: bool = false,
     // When appending a decoded std-macro fragment, fragment-internal temp/local
     // registers (named `tmp_N`, `__...` by the snippet flattener) share the
     // `tmp_N` namespace across independently-flattened fragments and with main
@@ -313,6 +314,9 @@ pub const Codegen = struct {
             self.traceUnsupported("std surface preload failed: {s}\n", .{@errorName(err)});
             return err;
         };
+        if (programUsesFutureTaskRuntime(program)) {
+            try self.emitFutureTaskHelpers();
+        }
         for (program.program.decls) |decl| {
             if (decl.* == .impl_decl and decl.impl_decl.trait_name != null) {
                 try self.emitTraitVTableDecl(&decl.impl_decl);
@@ -1134,6 +1138,140 @@ pub const Codegen = struct {
             std.mem.eql(u8, call.associated_target.?, "thread") and
             std.mem.eql(u8, call.func_name, "spawn") and
             call.args.len == 1;
+    }
+
+    fn isFutureTaskRuntimeCall(call: ast.CallExpr) bool {
+        const target = call.associated_target orelse return false;
+        return std.mem.eql(u8, target, "task") and
+            (std.mem.eql(u8, call.func_name, "new") or
+                std.mem.eql(u8, call.func_name, "poll") or
+                std.mem.eql(u8, call.func_name, "is_ready") or
+                std.mem.eql(u8, call.func_name, "result"));
+    }
+
+    fn nodeUsesFutureTaskRuntime(node: *const ast.Node) bool {
+        return switch (node.*) {
+            .func_decl => |f| blockUsesFutureTaskRuntime(f.body),
+            .test_decl => |t| blockUsesFutureTaskRuntime(t.body),
+            .let_stmt => |let| nodeUsesFutureTaskRuntime(let.value),
+            .let_destructure_stmt => |let| nodeUsesFutureTaskRuntime(let.value),
+            .let_else_stmt => |let| nodeUsesFutureTaskRuntime(let.value) or blockUsesFutureTaskRuntime(let.else_block),
+            .const_stmt => |c| nodeUsesFutureTaskRuntime(c.value),
+            .assign_stmt => |assign| nodeUsesFutureTaskRuntime(assign.target) or nodeUsesFutureTaskRuntime(assign.value),
+            .expr_stmt => |expr| nodeUsesFutureTaskRuntime(expr),
+            .return_stmt => |ret| if (ret.value) |value| nodeUsesFutureTaskRuntime(value) else false,
+            .block_stmt => |block| blockUsesFutureTaskRuntime(block.body),
+            .await_expr => |aw| nodeUsesFutureTaskRuntime(aw.expr),
+            .binary_expr => |bin| nodeUsesFutureTaskRuntime(bin.left) or nodeUsesFutureTaskRuntime(bin.right),
+            .borrow_expr => |borrow| nodeUsesFutureTaskRuntime(borrow.expr),
+            .move_expr => |move| nodeUsesFutureTaskRuntime(move.expr),
+            .deref_expr => |deref| nodeUsesFutureTaskRuntime(deref.expr),
+            .cast_expr => |cast| nodeUsesFutureTaskRuntime(cast.expr),
+            .field_expr => |field| nodeUsesFutureTaskRuntime(field.expr),
+            .try_expr => |try_expr| nodeUsesFutureTaskRuntime(try_expr.expr),
+            .unsafe_expr => |unsafe_expr| blockUsesFutureTaskRuntime(unsafe_expr.body),
+            .struct_literal => |lit| blk: {
+                for (lit.fields) |field| {
+                    if (nodeUsesFutureTaskRuntime(field.value)) break :blk true;
+                }
+                if (lit.update_expr) |update| {
+                    if (nodeUsesFutureTaskRuntime(update)) break :blk true;
+                }
+                break :blk false;
+            },
+            .tuple_literal => |lit| blk: {
+                for (lit.elements) |elem| {
+                    if (nodeUsesFutureTaskRuntime(elem)) break :blk true;
+                }
+                break :blk false;
+            },
+            .array_literal => |lit| blk: {
+                for (lit.elements) |elem| {
+                    if (nodeUsesFutureTaskRuntime(elem)) break :blk true;
+                }
+                break :blk false;
+            },
+            .enum_literal => |lit| blk: {
+                for (lit.fields) |field| {
+                    if (nodeUsesFutureTaskRuntime(field.value)) break :blk true;
+                }
+                break :blk false;
+            },
+            .repeat_array_literal => |lit| nodeUsesFutureTaskRuntime(lit.value),
+            .closure_literal => |lit| nodeUsesFutureTaskRuntime(lit.body),
+            .call_expr => |call| blk: {
+                if (isFutureTaskRuntimeCall(call)) break :blk true;
+                for (call.args) |arg| {
+                    if (nodeUsesFutureTaskRuntime(arg)) break :blk true;
+                }
+                break :blk false;
+            },
+            .index_expr => |idx| nodeUsesFutureTaskRuntime(idx.target) or nodeUsesFutureTaskRuntime(idx.index),
+            .slice_expr => |slc| nodeUsesFutureTaskRuntime(slc.target) or nodeUsesFutureTaskRuntime(slc.start) or nodeUsesFutureTaskRuntime(slc.end),
+            .if_expr => |ife| blk: {
+                if (nodeUsesFutureTaskRuntime(ife.cond)) break :blk true;
+                if (ife.let_chain) |chain| {
+                    for (chain) |cond| {
+                        if (nodeUsesFutureTaskRuntime(cond.value)) break :blk true;
+                    }
+                }
+                if (blockUsesFutureTaskRuntime(ife.then_block)) break :blk true;
+                if (ife.else_block) |else_block| {
+                    if (blockUsesFutureTaskRuntime(else_block)) break :blk true;
+                }
+                break :blk false;
+            },
+            .switch_expr => |sw| blk: {
+                if (nodeUsesFutureTaskRuntime(sw.val)) break :blk true;
+                for (sw.cases) |case| {
+                    if (nodeUsesFutureTaskRuntime(case.pattern)) break :blk true;
+                    if (blockUsesFutureTaskRuntime(case.body)) break :blk true;
+                }
+                break :blk false;
+            },
+            .match_expr => |mat| blk: {
+                if (nodeUsesFutureTaskRuntime(mat.val)) break :blk true;
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| {
+                        if (nodeUsesFutureTaskRuntime(guard)) break :blk true;
+                    }
+                    if (blockUsesFutureTaskRuntime(case.body)) break :blk true;
+                }
+                break :blk false;
+            },
+            .while_stmt => |w| nodeUsesFutureTaskRuntime(w.cond) or blockUsesFutureTaskRuntime(w.body),
+            .for_stmt => |f| nodeUsesFutureTaskRuntime(f.start) or
+                (if (f.end) |end| nodeUsesFutureTaskRuntime(end) else false) or
+                blockUsesFutureTaskRuntime(f.body),
+            .impl_decl => |impl| block: {
+                for (impl.methods) |method| {
+                    if (nodeUsesFutureTaskRuntime(method)) break :block true;
+                }
+                break :block false;
+            },
+            .overload_decl => |overload| block: {
+                for (overload.methods) |method| {
+                    if (nodeUsesFutureTaskRuntime(method)) break :block true;
+                }
+                break :block false;
+            },
+            else => false,
+        };
+    }
+
+    fn blockUsesFutureTaskRuntime(body: []const *ast.Node) bool {
+        for (body) |stmt| {
+            if (nodeUsesFutureTaskRuntime(stmt)) return true;
+        }
+        return false;
+    }
+
+    fn programUsesFutureTaskRuntime(program: *const ast.Node) bool {
+        if (program.* != .program) return false;
+        for (program.program.decls) |decl| {
+            if (nodeUsesFutureTaskRuntime(decl)) return true;
+        }
+        return false;
     }
 
     fn preloadNodeStdSurfaceDeps(self: *Codegen, node: *const ast.Node) anyerror!void {
@@ -3122,6 +3260,41 @@ pub const Codegen = struct {
         try self.finishFunctionBody(sig_idx);
     }
 
+    fn emitFutureTaskHelpers(self: *Codegen) !void {
+        if (self.future_task_helpers_emitted) return;
+        self.future_task_helpers_emitted = true;
+
+        try self.appendVTableConst("SLA_READY_FUTURE_VT", "sla_future_ready_poll");
+
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
+        self.beginFunction();
+
+        const names = [_][]const u8{ "data_slot", "ctx_slot", "out_poll_slot" };
+        const specs = try self.allocator.alloc(sig.ParamSpec, names.len);
+        const ids = try self.allocator.alloc(u32, names.len);
+        for (names, 0..) |name, i| {
+            ids[i] = try self.intern(name);
+            specs[i] = .{ .name = name, .ty = .ptr, .cap = .borrow };
+            try self.pushRawParamLocal(name, ids[i], .borrow);
+        }
+
+        const fsig = try self.appendGeneratedFuncSig("sla_future_ready_poll", .normal, specs, ids, .void, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
+        try self.appendDeclInst(fsig);
+        try self.emitLabel("L_ENTRY");
+
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_READY_SET_POLL_STATE", &.{
+            self.symbols.items[ids[2]],
+            self.symbols.items[ids[0]],
+        });
+        for (ids) |id| try self.emitRelease(id);
+        try self.emitReturn(null);
+
+        try self.finishFunctionBody(sig_idx);
+    }
+
     fn emitEscapedWorker(self: *Codegen, entry: EscapedClosureEntry) !void {
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
@@ -3635,6 +3808,85 @@ pub const Codegen = struct {
             self.symbols.items[value],
         });
         return future;
+    }
+
+    fn genFutureTaskCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        const target = call.associated_target orelse return null;
+        if (std.mem.eql(u8, target, "future") and std.mem.eql(u8, call.func_name, "ready")) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const value_reg = try self.genExpr(call.args[0]);
+            return try self.genReadyFuture(value_reg);
+        }
+        if (!std.mem.eql(u8, target, "task")) return null;
+
+        if (std.mem.eql(u8, call.func_name, "new")) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const state_reg = try self.genExpr(call.args[0]);
+            const vt_reg = try self.intern(try self.newTmp());
+            const future_obj = try self.intern(try self.newTmp());
+            const ctx = try self.intern(try self.newTmp());
+            const task = try self.intern(try self.newTmp());
+            try self.emitBorrowSymbol(vt_reg, "SLA_READY_FUTURE_VT");
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_NEW", &.{
+                self.symbols.items[future_obj],
+                self.symbols.items[state_reg],
+                self.symbols.items[vt_reg],
+            });
+            try self.emitAssignImm(ctx, 0);
+            try self.emitStdMacroFragment("sa_std/core/task.sa", "TASK_NEW", &.{
+                self.symbols.items[task],
+                self.symbols.items[future_obj],
+                self.symbols.items[ctx],
+            });
+            try self.emitRelease(vt_reg);
+            try self.emitRelease(ctx);
+            try self.emitRelease(future_obj);
+            return task;
+        }
+
+        if (std.mem.eql(u8, call.func_name, "poll")) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const task_reg = try self.genExpr(call.args[0]);
+            const poll_reg = try self.intern(try self.newTmp());
+            const tag_reg = try self.intern(try self.newTmp());
+            const ready_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/core/task.sa", "TASK_POLL", &.{
+                self.symbols.items[poll_reg],
+                self.symbols.items[task_reg],
+            });
+            try self.emitLoad(tag_reg, poll_reg, 0, .u64);
+            try self.emitOp(ready_reg, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = 1 });
+            try self.emitRelease(tag_reg);
+            try self.emitRelease(poll_reg);
+            if (!self.isLocalReg(task_reg)) try self.emitRelease(task_reg);
+            return ready_reg;
+        }
+
+        if (std.mem.eql(u8, call.func_name, "is_ready")) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const task_reg = try self.genExpr(call.args[0]);
+            const ready_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/core/task.sa", "TASK_IS_READY", &.{
+                self.symbols.items[ready_reg],
+                self.symbols.items[task_reg],
+            });
+            if (!self.isLocalReg(task_reg)) try self.emitRelease(task_reg);
+            return ready_reg;
+        }
+
+        if (std.mem.eql(u8, call.func_name, "result")) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const task_reg = try self.genExpr(call.args[0]);
+            const value_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/core/task.sa", "TASK_RESULT", &.{
+                self.symbols.items[value_reg],
+                self.symbols.items[task_reg],
+            });
+            if (!self.isLocalReg(task_reg)) try self.emitRelease(task_reg);
+            return value_reg;
+        }
+
+        return null;
     }
 
     fn genAwait(self: *Codegen, expr: *const ast.Node, aw: ast.AwaitExpr) !u32 {
@@ -6320,6 +6572,7 @@ pub const Codegen = struct {
             }
             if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| return try self.genImportedMacroCall(call, plan, null);
         }
+        if (try self.genFutureTaskCall(call)) |reg| return reg;
         if (isThreadSpawnCall(call)) return try self.genThreadSpawn(expr, call);
         if (try self.genJoinHandleJoin(expr, call)) |reg| return reg;
         if (try self.genDynMethodCall(expr, call)) |reg| return reg;

@@ -5178,6 +5178,17 @@ pub const Codegen = struct {
             .slice_expr => |slc| exprNeedsAsyncMacros(slc.target) or exprNeedsAsyncMacros(slc.start) or exprNeedsAsyncMacros(slc.end),
             .closure_literal => |lit| exprNeedsAsyncMacros(lit.body),
             .call_expr => |call| blk: {
+                if (call.associated_target) |target| {
+                    if ((std.mem.eql(u8, target, "future") and std.mem.eql(u8, call.func_name, "ready")) or
+                        (std.mem.eql(u8, target, "task") and
+                            (std.mem.eql(u8, call.func_name, "new") or
+                                std.mem.eql(u8, call.func_name, "poll") or
+                                std.mem.eql(u8, call.func_name, "is_ready") or
+                                std.mem.eql(u8, call.func_name, "result"))))
+                    {
+                        break :blk true;
+                    }
+                }
                 for (call.args) |arg| {
                     if (exprNeedsAsyncMacros(arg)) break :blk true;
                 }
@@ -5500,6 +5511,19 @@ pub const Codegen = struct {
         }
     }
 
+    fn emitFutureTaskHelpers(self: *Codegen) CodegenError!void {
+        self.out.writer().print(
+            \\@const SLA_READY_FUTURE_VT = vtable {{ poll = @sla_future_ready_poll }}
+            \\
+            \\@sla_future_ready_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
+            \\L_ENTRY:
+            \\    EXPAND FUTURE_READY_SET_POLL_STATE out_poll_slot, data_slot
+            \\    return
+            \\
+            \\
+        , .{}) catch return CodegenError.CodegenError;
+    }
+
     pub fn generate(self: *Codegen, program: *ast.Node) CodegenError![]const u8 {
         if (program.* != .program) return CodegenError.CodegenError;
         self.global_const_bindings.clearRetainingCapacity();
@@ -5578,6 +5602,7 @@ pub const Codegen = struct {
         }
         if (programNeedsAsyncMacros(program)) {
             self.out.writer().print("@import \"sa_std/core/future.sa\"\n", .{}) catch return CodegenError.CodegenError;
+            self.out.writer().print("@import \"sa_std/core/task.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
 
         if (self.programNeedsHashMapMacros(program)) {
@@ -5585,6 +5610,9 @@ pub const Codegen = struct {
         }
         if (self.programNeedsBTreeMapMacros(program)) {
             try self.emitBTreeMapMacros();
+        }
+        if (programNeedsAsyncMacros(program)) {
+            try self.emitFutureTaskHelpers();
         }
         try self.emitThreadSpawnHelpers();
 
@@ -9111,6 +9139,58 @@ pub const Codegen = struct {
                             if (!is_direct_slot) try self.emitRelease(ptr_reg);
                         } else if (callArgNeedsRelease(call.args[0])) try self.emitRelease(ptr_reg);
                         return reg;
+                    }
+                    if (std.mem.eql(u8, target, "future") and std.mem.eql(u8, call.func_name, "ready")) {
+                        if (call.args.len != 1) return CodegenError.CodegenError;
+                        const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                        const future_reg = try self.genReadyFutureI64(value_reg);
+                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                        return future_reg;
+                    }
+                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 1) return CodegenError.CodegenError;
+                        const state_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                        const vt_reg = try self.newTmp();
+                        const future_obj = try self.newTmp();
+                        const ctx = try self.newTmp();
+                        const task = try self.newTmp();
+                        self.out.writer().print("    {s} = &SLA_READY_FUTURE_VT\n", .{vt_reg}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND FUTURE_NEW {s}, {s}, {s}\n", .{ future_obj, state_reg, vt_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND TASK_NEW {s}, {s}, {s}\n", .{ task, future_obj, ctx }) catch return CodegenError.CodegenError;
+                        try self.emitRelease(vt_reg);
+                        try self.emitRelease(ctx);
+                        return task;
+                    }
+                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "poll")) {
+                        if (call.args.len != 1) return CodegenError.CodegenError;
+                        const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                        const poll_reg = try self.newTmp();
+                        const tag_reg = try self.newTmp();
+                        const ready_reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND TASK_POLL {s}, {s}\n", .{ poll_reg, task_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
+                        try self.emitRelease(tag_reg);
+                        try self.emitRelease(poll_reg);
+                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
+                        return ready_reg;
+                    }
+                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "is_ready")) {
+                        if (call.args.len != 1) return CodegenError.CodegenError;
+                        const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                        const ready_reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND TASK_IS_READY {s}, {s}\n", .{ ready_reg, task_reg }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
+                        return ready_reg;
+                    }
+                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "result")) {
+                        if (call.args.len != 1) return CodegenError.CodegenError;
+                        const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                        const value_reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND TASK_RESULT {s}, {s}\n", .{ value_reg, task_reg }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
+                        return value_reg;
                     }
                     if (std.mem.eql(u8, target, "mem") and std.mem.eql(u8, call.func_name, "forget")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;

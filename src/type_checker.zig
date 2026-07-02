@@ -912,6 +912,14 @@ pub const TypeChecker = struct {
         return ty;
     }
 
+    fn makeTaskType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Task", .generics = generics } };
+        return ty;
+    }
+
     fn makeSenderType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
         const generics = try self.allocator.alloc(*ast.Type, 1);
         generics[0] = inner;
@@ -939,6 +947,12 @@ pub const TypeChecker = struct {
     fn makeI32Type(self: *TypeChecker) TypeError!*ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .primitive = .i32 };
+        return ty;
+    }
+
+    fn makeBoolType(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .primitive = .boolean };
         return ty;
     }
 
@@ -1649,6 +1663,21 @@ pub const TypeChecker = struct {
                 .borrow => |b| curr = b,
                 .user_defined => |ud| {
                     if (std.mem.eql(u8, ud.name, "JoinHandle") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn taskInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Task") and ud.generics.len == 1) return ud.generics[0];
                     return null;
                 },
                 else => return null,
@@ -3442,6 +3471,31 @@ pub const TypeChecker = struct {
                         else
                             closure_ty.closure.ret;
                         return try self.makeJoinHandleType(ret_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "future") and std.mem.eql(u8, call.func_name, "ready")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const inner_ty = try self.checkExpr(call.args[0], scope);
+                        return try self.makeFutureType(inner_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "task") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const future_ty = try self.checkExpr(call.args[0], scope);
+                        const inner_ty = switch (future_ty.*) {
+                            .future => |inner| inner,
+                            else => return TypeError.TypeMismatch,
+                        };
+                        return try self.makeTaskType(inner_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "task") and (std.mem.eql(u8, call.func_name, "poll") or std.mem.eql(u8, call.func_name, "is_ready"))) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const task_ty = try self.checkExpr(call.args[0], scope);
+                        _ = taskInnerType(task_ty) orelse return TypeError.TypeMismatch;
+                        return try self.makeBoolType();
+                    }
+                    if (std.mem.eql(u8, target_name, "task") and std.mem.eql(u8, call.func_name, "result")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const task_ty = try self.checkExpr(call.args[0], scope);
+                        return taskInnerType(task_ty) orelse return TypeError.TypeMismatch;
                     }
                     if (std.mem.eql(u8, target_name, "Box") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;

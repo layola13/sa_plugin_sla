@@ -15,15 +15,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 - Latest committed baseline after this slice: ready Future/task runtime surface is committed in `/home/vscode/projects/sa_plugins/sa_plugin_sla`; SCI embedded symbol-token/call-body remap is committed in `/home/vscode/projects/sci` as `1beccde` (`Remap fragment embedded symbol text`).
-- Latest completed slices (verified with dev-mode SAB no-fallback + SA-text parity where applicable): scalar and pointer-backed `struct_update`, `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, `vec_index_assign`/nested Vec field assignment, the ready-future async/await subset, and the ready Future/task runtime surface.
-- Current full dev-mode direct SAB no-fallback sweep: 72/72 passing (added `tests/test_unit_struct_update_pointer_backed.sla`).
-- Current global estimates: Y/shared-lowering about 94%; direct SAB fallback-removal is 100% for the tracked unit corpus, with corpus pass rate now 72/72.
-- Current feature report: `pointer-backed struct-update fields 100%; no-fallback sweep is 72/72; committed in this slice`.
+- Latest completed slices (verified with dev-mode SAB no-fallback + SA-text parity where applicable): scalar and pointer-backed `struct_update`, formatted `println` direct SAB lowering, `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, `vec_index_assign`/nested Vec field assignment, the ready-future async/await subset, and the ready Future/task runtime surface.
+- Current full dev-mode direct SAB no-fallback sweep: 73/73 passing (added `tests/test_unit_println_direct.sla`).
+- Current global estimates: Y/shared-lowering about 95%; direct SAB fallback-removal is 100% for the tracked unit corpus, with corpus pass rate now 73/73.
+- Current feature report: `formatted println direct SAB lowering 100%; no-fallback sweep is 73/73; commit pending in this slice`.
 - Current SCI boundary sub-slice: embedded symbol-token/call-body remap is implemented in `/home/vscode/projects/sci/src/flattener.zig` and verified. Extern/export ordering is now closed as no-repro (stress probe + exported-helper ordering regression), and the plugin-side fragment cleanup audit concluded the plugin decode-time adapter is not a duplicate of SCI's flatten-time remap. Broader SCI boundary convergence is about 80%; full generic fragment naming remains a longer-term SCI task.
 - Remaining tracked unit failures: none.
 
 ## Recently Completed Slices
 
+- `println_direct`: direct SAB now treats `println` as compiler builtin print formatting instead of an ordinary static call, consuming shared `lowering_rules.planPrintlnArg` classification and emitting structured `sa_print_bytes`/`sa_fmt_*` calls. SA-text literal string `println` now uses a borrowed const label, matching the print extern contract.
 - `struct_update`: direct SAB and SA-text struct literals route explicit/update fields through shared `lowering_rules.planStructLiteralField` plus the shared field transfer policy; scalar update, copy-struct deep-copy, and pointer-backed field move/deep-copy paths are complete for the tracked fixtures.
 - `enum_match`: shared enum tag/payload layout lives in `src/lowering_rules.zig`; SAB `genEnumLiteral`/`genMatch` consume it.
 - `spaceship_cmp`: shared numeric/Ordering helpers feed SAB `genSpaceship`.
@@ -47,7 +48,8 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 - Focused dev-mode SAB no-fallback and SA-text parity passed for `tests/test_unit_vec_index_assign.sla` and `tests/test_unit_field_compare_and_nested_len.sla`.
 - Focused dev-mode SAB no-fallback and SA-text parity passed for `tests/test_unit_async_await.sla`.
 - Focused dev-mode SAB no-fallback and SA-text parity passed for `tests/test_unit_async_task_runtime.sla`.
-- Full dev-mode no-fallback sweep passed 72/72 after adding `tests/test_unit_struct_update_pointer_backed.sla`.
+- Full dev-mode no-fallback sweep passed 73/73 after adding `tests/test_unit_println_direct.sla`.
+- Formatted `println` slice passed: `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig src/codegen.zig`; `zig build --summary all`; `zig build test --summary all` (64/64); local and host SAB no-fallback plus SA-text parity for `tests/test_unit_println_direct.sla`; host SAB no-fallback for rosetta `75_async_bridge`, `134_join_all_futures`, and `140_yield_now_suspend`; host `/home/vscode/projects/sla_ecs/lib/parallel.sla`; local and host full no-fallback sweeps 73/73; disasm guard clean for the print fixture, the three rosetta demos, and parallel.
 - Filtered std-dep closure sub-slice passed: `appendDecodedModuleFiltered` now includes same-module direct-call dependencies in original decoded-module order and skips duplicate selected helper names. This keeps verifier-visible helper signatures/bodies coherent for std helpers such as HashSet/BTreeSet dependencies.
 - SCI focused tests passed: `zig test src/flattener.zig --test-filter "frontend cache clone remaps embedded call text tokens with operands"`, `zig test src/flattener.zig --test-filter "frontend cache clone remaps instruction symbols and owned metadata"`, `zig test src/flattener.zig --test-filter "frontend cache append fragment remaps and merges end to end"`, and `zig test src/sab.zig --test-filter "disasmModule separates call target from call args"`.
 - SCI `zig fmt --check src/flattener.zig` passed. SCI full `zig build test --summary all` was attempted but hit an environment/plugin-state failure in `plugin_host_smoke.test.runtime blocks privileged installed plugins outside dev mode` because a dev plugin is installed; no flattener failure was observed.
@@ -64,11 +66,11 @@ The generic std-macro fragment naming problem is still a real SCI-boundary task:
 
 ## Next Active Slice
 
-- Just completed: pointer-backed struct-update fields via shared `StructLiteralFieldTransfer` in `src/lowering_rules.zig`. SA-text and direct SAB both consume the same direct/deep-copy/move policy, and `tests/test_unit_struct_update_pointer_backed.sla` proves an untouched `Vec<i32>` field under `..base` survives direct SAB no-fallback and SA-text parity.
+- Just completed: formatted `println` direct SAB lowering via shared `PrintlnArgPlan` in `src/lowering_rules.zig`. Direct SAB now emits structured `sa_print_bytes`/`sa_fmt_*` calls for literal chunks, primitive arguments, and literal string arguments instead of the invalid `@sla__println` static-call target. `tests/test_unit_println_direct.sla` covers primitive, bool, and literal string formatting.
 - Next target candidates (pick per plan priority when resuming): full async/Future state-machine support beyond the ready-future/task-runtime subset, or generic SCI fragment naming if a concrete failing fixture reappears.
 - Owner boundary: keep future semantics in `src/lowering_rules.zig`, shared frontend/typecheck, `sla_std/std_surface.sla_meta`, or `sa_std`; do not add fixture-specific macro string rewrites in `src/sab_codegen.zig`.
 - Expected verification before the next commit remains: `zig fmt --check`, `zig build --summary all`, `zig build test --summary all`, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, focused plugin guards, `/home/vscode/projects/sla_ecs/lib/parallel.sla`, full dev-mode no-fallback sweep, disasm guard for illegal visible `@func(arg)` call targets, docs sync, and `git diff --check`.
-- Current progress: pointer-backed struct-update follow-up 100%. Verified with `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig src/codegen.zig`, `zig build --summary all`, `zig build test --summary all` (64/64), `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, focused host SAB no-fallback and SA-text parity for scalar and pointer-backed struct-update fixtures, host `/home/vscode/projects/sla_ecs/lib/parallel.sla`, full host no-fallback sweep 72/72, disasm guard clean for pointer-backed struct update / mixed collections / sets / parallel, and `git diff --check`. Broader Y/shared-lowering about 94%; direct SAB tracked-corpus fallback removal remains 100% (72/72).
+- Current progress: formatted `println` direct SAB lowering 100%. Verified with `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig src/codegen.zig`, `zig build --summary all`, `zig build test --summary all` (64/64), `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, focused local and host SAB no-fallback plus SA-text parity for `tests/test_unit_println_direct.sla`, host rosetta SAB no-fallback for `75_async_bridge`, `134_join_all_futures`, and `140_yield_now_suspend`, host `/home/vscode/projects/sla_ecs/lib/parallel.sla`, local and host full no-fallback sweeps 73/73, disasm guard clean for print/rosetta/parallel artifacts, and `git diff --check`. Broader Y/shared-lowering about 95%; direct SAB tracked-corpus fallback removal remains 100% (73/73).
 
 ## Dirty Worktree Caveat
 

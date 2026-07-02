@@ -4,13 +4,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] No active implementation draft is open after the pointer-backed struct-update completion.
-  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 72/72 passing; Y/shared-lowering is approximately 94%; direct SAB fallback-removal is 100% for the tracked unit corpus.
+- [draft] No active implementation draft is open after the formatted `println` direct-SAB completion.
+  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 73/73 passing; Y/shared-lowering is approximately 95%; direct SAB fallback-removal is 100% for the tracked unit corpus.
   - Remaining broader hardening: generic SCI fragment naming and full async/Future state-machine support beyond the ready-future/task-runtime subset.
-  - Completed regressions that must stay in host gates include `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+  - Completed regressions that must stay in host gates include `println_direct`, rosetta `75_async_bridge`/`134_join_all_futures`/`140_yield_now_suspend`, `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
   - Dev-mode rule for all active CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
 
 ## Completed Features
+
+- [done] Formatted `println` now lowers directly to structured SAB print/fmt calls.
+  - Added shared `PrintlnArgPlan`/`PrintPrimitiveFormat` helpers in `src/lowering_rules.zig` so print argument classification (format string, string-like value, borrowed/boxed primitive, primitive, unsupported) is not an SAB-only decision. The existing SA-text helper predicates now delegate to the shared classifiers.
+  - Direct SAB now intercepts compiler-builtin `println(...)` before static-call planning, preloads `sa_print_bytes` plus `sa_fmt_*`/buffer extern deps, streams literal format chunks to `sa_print_bytes`, formats primitive arguments through `sa_fmt_*`, and prints literal string arguments through UTF-8 const labels. This replaces the previous invalid `@sla__println(...)` call target.
+  - Fixed the SA-text literal string `println` branch to pass `&SLA_STR_N` to `sa_print_bytes` instead of a bare string literal, matching the extern capability contract.
+  - Added `tests/test_unit_println_direct.sla`, covering primitive, bool, and literal string formatted `println` calls.
+  - Verified: `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig src/codegen.zig`; `zig build --summary all`; `zig build test --summary all` (64/64); `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; local and host direct-SAB no-fallback plus SA-text parity for `tests/test_unit_println_direct.sla`; local and host direct-SAB no-fallback for rosetta `75_async_bridge`, `134_join_all_futures`, and `140_yield_now_suspend`; host no-fallback `/home/vscode/projects/sla_ecs/lib/parallel.sla`; local and host full no-fallback sweeps 73/73; disasm guard clean for the print fixture, the three rosetta demos, and parallel; `git diff --check`.
+  - Feature completion: formatted `println` direct SAB lowering 100%; Y/shared-lowering approximately 94% -> 95%; direct SAB fallback-removal for tracked corpus remains 100%; no-fallback sweep 73/73; commit pending in this slice.
 
 - [done] Pointer-backed struct-update fields now lower through a shared transfer policy.
   - Added `StructLiteralFieldTransfer` in `src/lowering_rules.zig` so struct literal fields classify as direct store, deep copy, or move from the shared `StructLiteralFieldPlan` plus the existing copy-struct fact. SA-text and direct SAB now consume that policy for explicit fields and `..base` update fields.

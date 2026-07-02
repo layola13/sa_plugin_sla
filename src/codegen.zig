@@ -1159,7 +1159,9 @@ pub const Codegen = struct {
             const arg_ty = self.tc.expr_types.get(arg);
             if (arg.* == .literal and arg.literal == .string_val) {
                 const s = arg.literal.string_val;
-                self.out.writer().print("    call @sa_print_bytes(\"{s}\", {})\n", .{ s, escapedStringByteLen(s) }) catch return CodegenError.CodegenError;
+                const label = try self.newStringConst();
+                self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, s }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    call @sa_print_bytes(&{s}, {})\n", .{ label, escapedStringByteLen(s) }) catch return CodegenError.CodegenError;
             } else {
                 if (arg_ty) |ty| {
                     if (isFormatStringType(ty)) {
@@ -1741,12 +1743,8 @@ pub const Codegen = struct {
         }
     }
 
-    fn borrowedPrimitiveType(ty: *const ast.Type) ?*ast.Type {
-        return switch (ty.*) {
-            .borrow => |inner| if (inner.* == .primitive) inner else null,
-            .pointer => |inner| if (inner.* == .primitive) inner else null,
-            else => null,
-        };
+    fn borrowedPrimitiveType(ty: *const ast.Type) ?*const ast.Type {
+        return lowering_rules.borrowedPrimitiveType(ty);
     }
 
     fn arrayType(ty: *ast.Type) ?ast.ArrayType {
@@ -1762,29 +1760,11 @@ pub const Codegen = struct {
     }
 
     fn isStringLikeType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .primitive => |p| return p == .void_type,
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .array => return true,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "String"),
-                else => return false,
-            }
-        }
+        return lowering_rules.isStringLikeType(ty);
     }
 
     fn isFormatStringType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "String"),
-                else => return false,
-            }
-        }
+        return lowering_rules.isFormatStringType(ty);
     }
 
     fn escapedStringByteLen(value: []const u8) usize {

@@ -500,6 +500,81 @@ pub fn smartPointerDerefIsDynBox(ty: *const ast.Type) bool {
     return dynTraitName(inner) != null;
 }
 
+pub const PrintPrimitiveFormat = enum {
+    signed_int,
+    unsigned_int,
+    float,
+    boolean,
+};
+
+pub const PrintlnArgPlan = union(enum) {
+    format_string,
+    string_like,
+    borrowed_primitive: *const ast.Type,
+    boxed_primitive: *const ast.Type,
+    primitive: PrintPrimitiveFormat,
+    unsupported,
+};
+
+pub fn borrowedPrimitiveType(ty: *const ast.Type) ?*const ast.Type {
+    return switch (ty.*) {
+        .borrow => |inner| if (inner.* == .primitive) inner else null,
+        .pointer => |inner| if (inner.* == .primitive) inner else null,
+        else => null,
+    };
+}
+
+pub fn isStringLikeType(ty: *const ast.Type) bool {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .primitive => |p| return p == .void_type,
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .array => return true,
+            .user_defined => |ud| return std.mem.eql(u8, ud.name, "String"),
+            else => return false,
+        }
+    }
+}
+
+pub fn isFormatStringType(ty: *const ast.Type) bool {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| return std.mem.eql(u8, ud.name, "String"),
+            else => return false,
+        }
+    }
+}
+
+pub fn printPrimitiveFormat(ty: *const ast.Type) ?PrintPrimitiveFormat {
+    return switch (ty.*) {
+        .primitive => |p| switch (p) {
+            .i8, .i16, .i32, .i64, .isize, .integer => .signed_int,
+            .u8, .u16, .u32, .u64, .usize => .unsigned_int,
+            .f32, .f64, .float => .float,
+            .boolean => .boolean,
+            else => null,
+        },
+        else => null,
+    };
+}
+
+pub fn planPrintlnArg(ty: ?*const ast.Type) PrintlnArgPlan {
+    const arg_ty = ty orelse return .unsupported;
+    if (isFormatStringType(arg_ty)) return .format_string;
+    if (isStringLikeType(arg_ty)) return .string_like;
+    if (borrowedPrimitiveType(arg_ty)) |inner| return .{ .borrowed_primitive = inner };
+    if (boxInnerType(arg_ty)) |inner| {
+        if (printPrimitiveFormat(inner) != null) return .{ .boxed_primitive = inner };
+    }
+    if (printPrimitiveFormat(arg_ty)) |format| return .{ .primitive = format };
+    return .unsupported;
+}
+
 /// Returns true when an associated-call rule (e.g. `Rc::clone`, `Arc::clone`)
 /// expects its `value` argument to be the underlying smart-pointer value rather
 /// than a `borrow` handle. The SA-text emitter treats `&rc1` as a transparent

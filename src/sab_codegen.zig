@@ -1327,6 +1327,7 @@ pub const Codegen = struct {
             .closure_literal => |lit| try self.preloadNodeStdSurfaceDeps(lit.body),
             .call_expr => |call| {
                 if (isThreadSpawnCall(call)) try self.ensureStdDeps("sa_std/thread.sa", &.{"pthread_spawn"});
+                if (std.mem.eql(u8, call.func_name, "println") and call.associated_target == null) try self.ensurePrintlnDeps();
                 if (std.mem.eql(u8, call.func_name, "debug") and call.args.len == 1) try self.ensureDebugFormatDeps();
                 if (call.associated_target) |target_name| {
                     if (self.findStdSurfaceRule(.associated, target_name, call.func_name)) |rule| try self.ensureRuleDeps(rule);
@@ -5710,6 +5711,136 @@ pub const Codegen = struct {
         });
     }
 
+    fn ensurePrintlnDeps(self: *Codegen) !void {
+        try self.ensureStdDeps("sa_std/io/print.sai", &.{"sa_print_bytes"});
+        try self.ensureStdDeps("sa_std/fmt.sai", &.{
+            "sa_fmt_i64",
+            "sa_fmt_u64",
+            "sa_fmt_f64",
+            "sa_fmt_bool",
+            "sa_fmt_buffer_data",
+            "sa_fmt_buffer_len",
+            "sa_fmt_buffer_free",
+        });
+    }
+
+    fn emitPrintBytes(self: *Codegen, ptr_name: []const u8, len_name: []const u8) !void {
+        try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_print_bytes(&{s}, {s})", .{ ptr_name, len_name }));
+    }
+
+    fn emitPrintConstBytes(self: *Codegen, bytes: []const u8) !void {
+        if (bytes.len == 0) return;
+        const label = try self.newStringConst();
+        try self.appendUtf8Const(label, bytes);
+        try self.emitPrintBytes(label, try std.fmt.allocPrint(self.allocator, "{}", .{escapedStringByteLen(bytes)}));
+    }
+
+    fn emitPrintSliceValue(self: *Codegen, slice_reg: u32) !void {
+        const ptr_reg = try self.intern(try self.newTmp());
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(ptr_reg, slice_reg, lowering_rules.SliceAbi.ptr_offset, .ptr);
+        try self.emitLoad(len_reg, slice_reg, lowering_rules.SliceAbi.len_offset, .u64);
+        try self.emitPrintBytes(self.symbols.items[ptr_reg], self.symbols.items[len_reg]);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(ptr_reg);
+    }
+
+    fn emitPrintPrimitiveValue(self: *Codegen, value_reg: u32, format: lowering_rules.PrintPrimitiveFormat) !void {
+        const fmt_buf = try self.intern(try self.newTmp());
+        switch (format) {
+            .signed_int => try self.emitCallBody(fmt_buf, try std.fmt.allocPrint(self.allocator, "@sa_fmt_i64({s}, 10)", .{self.symbols.items[value_reg]})),
+            .unsigned_int => try self.emitCallBody(fmt_buf, try std.fmt.allocPrint(self.allocator, "@sa_fmt_u64({s}, 10)", .{self.symbols.items[value_reg]})),
+            .float => try self.emitCallBody(fmt_buf, try std.fmt.allocPrint(self.allocator, "@sa_fmt_f64({s}, 10)", .{self.symbols.items[value_reg]})),
+            .boolean => try self.emitCallBody(fmt_buf, try std.fmt.allocPrint(self.allocator, "@sa_fmt_bool({s})", .{self.symbols.items[value_reg]})),
+        }
+
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitCallBody(data_reg, try std.fmt.allocPrint(self.allocator, "@sa_fmt_buffer_data({s})", .{self.symbols.items[fmt_buf]}));
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitCallBody(len_reg, try std.fmt.allocPrint(self.allocator, "@sa_fmt_buffer_len({s})", .{self.symbols.items[fmt_buf]}));
+        const print_ptr = try self.intern(try self.newTmp());
+        try self.emitAssignReg(print_ptr, data_reg);
+        try self.emitPrintBytes(self.symbols.items[print_ptr], self.symbols.items[len_reg]);
+        try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_fmt_buffer_free(^{s})", .{self.symbols.items[fmt_buf]}));
+        try self.emitRelease(print_ptr);
+        try self.emitRelease(len_reg);
+    }
+
+    fn emitPrintlnArg(self: *Codegen, arg: *const ast.Node) !void {
+        if (arg.* == .literal and arg.literal == .string_val) {
+            try self.emitPrintConstBytes(arg.literal.string_val);
+            return;
+        }
+
+        const arg_ty = self.tc.expr_types.get(arg);
+        switch (lowering_rules.planPrintlnArg(arg_ty)) {
+            .format_string => {
+                const owner_reg = try self.genExpr(@constCast(arg));
+                const slice_reg = try self.intern(try self.newTmp());
+                try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_AS_STR", &.{ self.symbols.items[slice_reg], self.symbols.items[owner_reg] });
+                try self.emitPrintSliceValue(slice_reg);
+                try self.emitRelease(slice_reg);
+                try self.releaseExprResultIfNeeded(arg, owner_reg);
+            },
+            .string_like => {
+                const slice_reg = try self.genExpr(@constCast(arg));
+                try self.emitPrintSliceValue(slice_reg);
+                try self.releaseExprResultIfNeeded(arg, slice_reg);
+            },
+            .borrowed_primitive => |inner_ty| {
+                const ptr_reg = try self.genExpr(@constCast(arg));
+                const value_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(value_reg, ptr_reg, 0, try storagePrimType(inner_ty));
+                const format = lowering_rules.printPrimitiveFormat(inner_ty) orelse return Error.UnsupportedSabDirectFeature;
+                try self.emitPrintPrimitiveValue(value_reg, format);
+                try self.emitRelease(value_reg);
+                try self.releaseExprResultIfNeeded(arg, ptr_reg);
+            },
+            .boxed_primitive => |inner_ty| {
+                const box_reg = try self.genExpr(@constCast(arg));
+                const value_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(value_reg, box_reg, 0, try storagePrimType(inner_ty));
+                const format = lowering_rules.printPrimitiveFormat(inner_ty) orelse return Error.UnsupportedSabDirectFeature;
+                try self.emitPrintPrimitiveValue(value_reg, format);
+                try self.emitRelease(value_reg);
+                try self.releaseExprResultIfNeeded(arg, box_reg);
+            },
+            .primitive => |format| {
+                const value_reg = try self.genExpr(@constCast(arg));
+                try self.emitPrintPrimitiveValue(value_reg, format);
+                try self.releaseExprResultIfNeeded(arg, value_reg);
+            },
+            .unsupported => return Error.UnsupportedSabDirectFeature,
+        }
+    }
+
+    fn genPrintlnCall(self: *Codegen, call: ast.CallExpr) !u32 {
+        if (call.associated_target != null) return Error.UnsupportedSabDirectFeature;
+        try self.ensurePrintlnDeps();
+        if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) {
+            try self.emitPrintConstBytes("\\n");
+        } else {
+            const fmt = call.args[0].literal.string_val;
+            var arg_idx: usize = 1;
+            var i: usize = 0;
+            while (i <= fmt.len) {
+                const start = i;
+                while (i < fmt.len and !(fmt[i] == '{' and i + 1 < fmt.len and fmt[i + 1] == '}')) : (i += 1) {}
+                if (i > start) try self.emitPrintConstBytes(fmt[start..i]);
+                if (i >= fmt.len) break;
+                if (arg_idx >= call.args.len) break;
+                try self.emitPrintlnArg(call.args[arg_idx]);
+                arg_idx += 1;
+                i += 2;
+            }
+            try self.emitPrintConstBytes("\\n");
+        }
+
+        const sentinel = try self.intern(try self.newTmp());
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
+    }
+
     fn genDebugCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
         const ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
@@ -6563,6 +6694,9 @@ pub const Codegen = struct {
             return try self.intern(try self.newTmp());
         }
         if (call.associated_target == null) {
+            if (std.mem.eql(u8, call.func_name, "println")) {
+                return try self.genPrintlnCall(call);
+            }
             if (std.mem.eql(u8, call.func_name, "stack_alloc")) {
                 const dst = try self.intern(try self.newTmp());
                 try self.emitStackAlloc(dst, try stackAllocSize(call));

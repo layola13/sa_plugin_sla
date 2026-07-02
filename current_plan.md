@@ -14,12 +14,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
-- Latest committed baseline before this slice: `6bcfb6d udpate`.
-- Latest completed slices (verified with dev-mode SAB no-fallback + SA-text parity where applicable): `struct_update`, `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, and `vec_index_assign`/nested Vec field assignment.
-- Current full dev-mode direct SAB no-fallback sweep: 68/69 passing.
-- Current global estimates: Y/shared-lowering about 87%; direct SAB fallback-removal about 98% by feature track, with corpus pass rate now 68/69.
-- Current feature report: `vec_index_assign 100%; nested Vec field/index assignment 100%; no-fallback sweep is 68/69; only async_await remains; commit pending`.
-- Remaining failure: `tests/test_unit_async_await.sla`.
+- Latest committed baseline after this slice: async ready-future direct SAB slice committed.
+- Latest completed slices (verified with dev-mode SAB no-fallback + SA-text parity where applicable): `struct_update`, `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, `vec_index_assign`/nested Vec field assignment, and the ready-future async/await subset.
+- Current full dev-mode direct SAB no-fallback sweep: 69/69 passing.
+- Current global estimates: Y/shared-lowering about 90%; direct SAB fallback-removal is 100% for the tracked unit corpus, with corpus pass rate now 69/69.
+- Current feature report: `async_await ready-future subset 100%; no-fallback sweep is 69/69; committed`.
+- Remaining tracked unit failures: none.
 
 ## Recently Completed Slices
 
@@ -30,6 +30,7 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 - `generic_for_in_protocol`: tracked generic protocol fixture now passes direct SAB no-fallback and SA-text parity.
 - `derive_semantics`: tracked derive fixture now passes; `debug()` emits structured direct SAB formatting calls plus `FORMAT_PUSH_BYTES` rather than nested text macro expansion.
 - `vec_index_assign` and nested Vec field/index assignment: std-surface macro fragment emission now treats `elem_ty` as a literal type token while keeping register args as placeholders, so `VEC_SET_TYPED` can flatten/encode without an invalid placeholder type.
+- `async_await`: tracked ready-future async subset now passes through shared async return/await plans; async functions return pointer ABI ready-state values and `.await` consumes `FUTURE_READY_STATE_INTO_INNER`.
 
 ## Verified Gates For Recent Slices
 
@@ -41,11 +42,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 - Focused dev-mode SAB no-fallback and SA-text parity passed for `tests/test_unit_struct_update.sla`, `tests/test_unit_enum_match.sla`, `tests/test_unit_spaceship_cmp.sla`, `tests/test_unit_for_in_protocol.sla`, `tests/test_unit_generic_for_in_protocol.sla`, and `tests/test_unit_derive_semantics.sla`.
 - Dev-mode no-fallback regression guards passed for `tests/test_unit_sets.sla` and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
 - Focused dev-mode SAB no-fallback and SA-text parity passed for `tests/test_unit_vec_index_assign.sla` and `tests/test_unit_field_compare_and_nested_len.sla`.
-- Full dev-mode no-fallback sweep passed 68/69.
+- Focused dev-mode SAB no-fallback and SA-text parity passed for `tests/test_unit_async_await.sla`.
+- Full dev-mode no-fallback sweep passed 69/69.
 
-## Remaining 68/69 Sweep Failure
+## Remaining Tracked Unit Failures
 
-- `tests/test_unit_async_await.sla` — not started; still the last Phase 8 async/Future state-machine gap.
+- None in `tests/test_unit_*.sla` under dev-mode direct SAB no-fallback.
+- Broader hardening remains: generic SCI fragment naming, pointer-backed struct-update fields, and full async/Future state-machine support beyond the ready-future subset.
 
 ### SCI Boundary Note
 
@@ -53,14 +56,13 @@ The generic std-macro fragment naming problem is still a real SCI-boundary task:
 
 ## Next Active Slice
 
-- Target: `tests/test_unit_async_await.sla` direct SAB no-fallback support.
-- Owner boundary: keep async/Future/task semantics in shared frontend/lowering rules and std-surface metadata. Do not add SAB-only fixture branches for the async test.
-- Expected verification: focused dev-mode no-fallback and SA-text parity for async, completed-slice guards (`vec_index_assign`, nested field/index assignment, `derive_semantics`, `generic_for_in_protocol`, `enum_match`, `spaceship_cmp`, `for_in_protocol`, `struct_update`, `sets`), `/home/vscode/projects/sla_ecs/lib/parallel.sla`, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, full sweep, docs sync, and `git diff --check`.
+- Target: Phase 9 final audit and commit for the 69/69 tracked direct SAB corpus.
+- Owner boundary: keep new semantics in shared rules/std metadata and do not stage unrelated generated `.test.sa` deletions or old review docs.
+- Expected verification before commit: `zig fmt`, `zig build --summary all`, `zig build test --summary all`, `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, focused completed-slice guards, `/home/vscode/projects/sla_ecs/lib/parallel.sla`, full dev-mode no-fallback sweep 69/69, docs sync, and `git diff --check`.
 
 ## Dirty Worktree Caveat
 
 Do not blindly restore, delete, stage, or commit unrelated/generated changes:
 
-- `README.md` is modified.
-- Generated `.test.sa` files are deleted: `tests/test_unit_enum_match.test.sa`, `tests/test_unit_for_in_protocol.test.sa`, `tests/test_unit_generic_for_in_protocol.test.sa`, and `tests/test_unit_spaceship_cmp.test.sa`.
+- Generated `.test.sa` files are deleted: `tests/test_unit_enum_match.test.sa`, `tests/test_unit_field_compare_and_nested_len.test.sa`, `tests/test_unit_for_in_protocol.test.sa`, `tests/test_unit_generic_for_in_protocol.test.sa`, `tests/test_unit_spaceship_cmp.test.sa`, and `tests/test_unit_vec_index_assign.test.sa`.
 - Untracked docs currently include `docs/struct_update_sab_review_cn.md`.

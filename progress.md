@@ -4,11 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] Next active slice is `tests/test_unit_async_await.sla` under Phase 8 shared async/Future/task lowering.
-  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 68/69 passing; Y/shared-lowering is approximately 87%; direct SAB fallback-removal is approximately 98% by feature track.
-  - This worktree has completed `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, `vec_index_assign`, and nested Vec field/index assignment; each focused fixture passed dev-mode direct SAB no-fallback and SA-text parity where applicable.
-  - Remaining no-fallback failure (tracked in `tasks.md`): `tests/test_unit_async_await.sla`.
-  - The next implementation target is async/await through shared Future/task/state-machine rules and std-surface metadata, not an SAB-only fixture branch.
+- [draft] Next active slice is Phase 9 final audit/commit for the tracked direct SAB corpus.
+  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 69/69 passing; Y/shared-lowering is approximately 90%; direct SAB fallback-removal is 100% for the tracked unit corpus.
+  - This worktree has completed `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, `vec_index_assign`, nested Vec field/index assignment, and the ready-future async/await subset; each focused fixture passed dev-mode direct SAB no-fallback and SA-text parity where applicable.
+  - Remaining tracked no-fallback failures: none in `tests/test_unit_*.sla`.
+  - Remaining broader hardening: generic SCI fragment naming, pointer-backed struct-update fields, and full async/Future state-machine support beyond the ready-future subset.
   - SCI boundary note: generic std-macro fragment naming still belongs in `sci` flatten/encode (placeholder args, embedded token remap, call-body text remap, extern/export ordering). Plugin-side `debug()` structured lowering is retained because it is a proper direct SAB structured path, not a fixture hack.
   - `tests/test_unit_vec_index_assign.sla`, `tests/test_unit_field_compare_and_nested_len.sla`, `tests/test_unit_derive_semantics.sla`, `tests/test_unit_generic_for_in_protocol.sla`, `tests/test_unit_struct_update.sla`, `tests/test_unit_sets.sla`, `tests/test_unit_rc_dyn_trait.sla`, `tests/test_unit_var_comprehensive.sla`, `tests/test_unit_enum_match.sla`, `tests/test_unit_spaceship_cmp.sla`, `tests/test_unit_for_in_protocol.sla`, assignment cleanup, `tests/test_unit_pkgjson_codegen.sla`, RefCell struct payload, trait static dispatch, and `/home/vscode/projects/sla_ecs/lib/parallel.sla` are completed regressions and must stay in later host gates.
   - Dev-mode rule for all active CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
@@ -16,20 +16,26 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Completed Features
 
+- [done] Ready-future async/await now lowers in direct SAB for the tracked fixture.
+  - Added shared async plans in `src/lowering_rules.zig`: async function returns use pointer ABI and return values are wrapped as ready future state; `.await` consumes a ready future state with `FUTURE_READY_STATE_INTO_INNER`. SA-text and SAB now both consult these plans for the supported subset.
+  - Direct SAB now wraps async `return` and tail/default returns through `FUTURE_READY_STATE_NEW`, lowers `.await`, and emits async function signatures with pointer return ABI. This is the ready-future subset used by `tests/test_unit_async_await.sla`, not the full executor/state-machine surface.
+  - Verified: dev-mode no-fallback SAB and SA-text parity for `tests/test_unit_async_await.sla` (2/2); `zig fmt --check src/sab_codegen.zig src/lowering_rules.zig src/codegen.zig`; `zig build --summary all`; `zig build test --summary all` (62/62); `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; completed-slice guards for Vec assignment, nested field/index assignment, derive, generic for-in, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`; full dev-mode no-fallback sweep 69/69.
+  - Feature completion: async ready-future subset 100%; Y/shared-lowering approximately 87% -> 90%; direct SAB fallback-removal for tracked corpus 98% -> 100%; committed.
+
 - [done] Vec index assignment and nested Vec field/index assignment now lower through the std-surface fragment path.
   - `VEC_SET_TYPED` needs its `elem_ty` argument in SA type position (`store ... as %elem_ty`). Direct SAB std-macro emission now marks std-surface `elem_ty` as a literal token during fresh fragment flattening while keeping register arguments (`receiver`, `index`, `value`) behind `__sla_macro_arg_N` placeholders. This preserves the existing anti-renumbering behavior for caller registers without feeding an invalid placeholder type to SCI.
-  - Verified: dev-mode no-fallback SAB and SA-text parity for `tests/test_unit_vec_index_assign.sla` (4/4) and `tests/test_unit_field_compare_and_nested_len.sla` (2/2); `zig fmt --check src/sab_codegen.zig`; `zig build --summary all`; `zig build test --summary all` (62/62); `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; no-fallback guards for `derive_semantics`, `generic_for_in_protocol`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`; full dev-mode no-fallback sweep 68/69 with only async/await remaining.
-  - Feature completion: Vec index/nested assignment 100%; Y/shared-lowering approximately 86% -> 87%; direct SAB fallback-removal approximately 96% -> 98%; commit pending.
+  - Verified: dev-mode no-fallback SAB and SA-text parity for `tests/test_unit_vec_index_assign.sla` (4/4) and `tests/test_unit_field_compare_and_nested_len.sla` (2/2); `zig fmt --check src/sab_codegen.zig`; `zig build --summary all`; `zig build test --summary all` (62/62); `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; no-fallback guards for `derive_semantics`, `generic_for_in_protocol`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`. This slice moved the sweep to 68/69; the later async ready-future slice moved it to 69/69.
+  - Feature completion: Vec index/nested assignment 100%; Y/shared-lowering approximately 86% -> 87%; direct SAB fallback-removal approximately 96% -> 98%; committed in `2756bf6`.
 
 - [done] Derive semantics now lower in direct SAB for the tracked fixture.
   - The completed path covers the derive `hash`/`debug` support required by `tests/test_unit_derive_semantics.sla`. `debug()` now emits structured direct SAB formatting calls (`sa_fmt_*_into` plus `FORMAT_PUSH_BYTES`) instead of relying on fragile nested FORMAT/STRFMT text macro expansion.
-  - Verified: dev-mode no-fallback SAB and SA-text parity for `tests/test_unit_derive_semantics.sla`; after the later Vec assignment fix, broader sweep is 68/69 with only async/await remaining.
-  - Feature completion: derive semantics 100%; Y/shared-lowering approximately 86%; direct SAB fallback-removal approximately 96%; commit pending with the verified batch.
+  - Verified: dev-mode no-fallback SAB and SA-text parity for `tests/test_unit_derive_semantics.sla`; after the later Vec assignment and async ready-future fixes, broader sweep is 69/69.
+  - Feature completion: derive semantics 100%; Y/shared-lowering approximately 86%; direct SAB fallback-removal approximately 96%; committed in `2756bf6`.
 
 - [done] Generic `for in` protocol fixture now passes direct SAB no-fallback.
   - The generic protocol path reuses the `genForOverProtocol` iter_len/iter_at lowering and the current std-deps/signature-order fixes; this does not close the broader SCI fragment naming task, which remains owned by the SCI boundary.
   - Verified: dev-mode no-fallback SAB and SA-text parity for `tests/test_unit_generic_for_in_protocol.sla`.
-  - Feature completion: generic for-in protocol 100%; after the later Vec assignment fix, no-fallback sweep is 68/69; commit pending with the verified batch.
+  - Feature completion: generic for-in protocol 100%; after the later Vec assignment and async ready-future fixes, no-fallback sweep is 69/69; committed in `2756bf6`.
 
 - [done] `for item in <iterable>` protocol iteration now lowers in direct SAB.
   - Added `genForOverProtocol` in `src/sab_codegen.zig`, mirroring SA-text: it resolves the shared `iter_len(&self) -> i64` / `iter_at(&self, i64) -> Item` protocol methods via the type checker (`methodForType`, now `pub`), then emits a counted index loop from 0 to `iter_len`, calling `iter_at(index)` per iteration and binding the item as a typed local (item type = `iter_at`'s `ret_ty`). Loop body cleanup and branch scoping follow the same discipline as the numeric `genFor`. The `f.end == null` case in `genFor` now dispatches to it instead of bailing with `UnsupportedSabDirectFeature`.

@@ -2576,6 +2576,12 @@ pub const Codegen = struct {
         };
     }
 
+    fn makeAbiPtrType(self: *Codegen) CodegenError!*const ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .primitive = .void_type };
+        return ty;
+    }
+
     fn emitArrayFillMacros(self: *Codegen) CodegenError!void {
         self.out.writer().print(
             \\
@@ -5853,7 +5859,8 @@ pub const Codegen = struct {
             const prefix: []const u8 = if (p.is_move) "^" else if (p.is_borrow) "&" else "";
             self.out.writer().print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
         }
-        const ret_type_str = if (f.is_async) "ptr" else abiReturnTypeString(f.ret_ty);
+        const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
+        const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
         if (isVoidType(f.ret_ty) and !f.is_async) {
             self.out.writer().print("):\n", .{}) catch return CodegenError.CodegenError;
         } else {
@@ -5905,7 +5912,7 @@ pub const Codegen = struct {
             }
             const tail_expr = f.body[f.body.len - 1].expr_stmt;
             var tail_reg = try self.genExpr(tail_expr, &hoisted_allocs);
-            if (f.is_async) {
+            if (async_return_plan.wrap_ready_future) {
                 tail_reg = try self.genReadyFutureI64(tail_reg);
             }
             self.out.writer().print("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
@@ -5913,7 +5920,7 @@ pub const Codegen = struct {
             try self.genBlock(f.body, &hoisted_allocs);
         }
 
-        if (f.is_async and !tail_expr_return and !blockTerminates(f.body)) {
+        if (async_return_plan.wrap_ready_future and !tail_expr_return and !blockTerminates(f.body)) {
             const zero = try self.newTmp();
             self.out.writer().print("    {s} = 0\n", .{zero}) catch return CodegenError.CodegenError;
             const future = try self.genReadyFutureI64(zero);
@@ -8939,6 +8946,9 @@ pub const Codegen = struct {
                 return "return_ty_sentinel";
             },
             .await_expr => |aw| {
+                const future_ty = self.tc.expr_types.get(aw.expr) orelse return CodegenError.CodegenError;
+                const plan = lowering_rules.planAwaitReadyFuture(future_ty);
+                if (!plan.ready_state_inner) return CodegenError.CodegenError;
                 const future_reg = try self.genExpr(aw.expr, hoisted_allocs);
                 const out_reg = try self.newTmp();
                 self.out.writer().print("    EXPAND FUTURE_READY_STATE_INTO_INNER {s}, {s}\n", .{ out_reg, future_reg }) catch return CodegenError.CodegenError;

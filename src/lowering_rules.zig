@@ -28,6 +28,15 @@ pub const StaticCallResultPlan = struct {
     returns_void: bool,
 };
 
+pub const AsyncReturnPlan = struct {
+    abi_ret_ty: *const ast.Type,
+    wrap_ready_future: bool,
+};
+
+pub const AwaitPlan = struct {
+    ready_state_inner: bool,
+};
+
 pub const ImportedMacroCallPlan = struct {
     macro_name: []const u8,
     import_path: ?[]const u8,
@@ -212,6 +221,17 @@ pub fn planStaticCallResult(tc: *type_checker.TypeChecker, call_plan: StaticCall
         return .{ .returns_void = !func.is_async and isVoidType(func.ret_ty) };
     }
     return .{ .returns_void = false };
+}
+
+pub fn planAsyncFunctionReturn(func: ast.FuncDecl, ptr_ty: *const ast.Type) AsyncReturnPlan {
+    return .{
+        .abi_ret_ty = if (func.is_async) ptr_ty else func.ret_ty,
+        .wrap_ready_future = func.is_async,
+    };
+}
+
+pub fn planAwaitReadyFuture(_: *const ast.Type) AwaitPlan {
+    return .{ .ready_state_inner = true };
 }
 
 pub fn importedMacroUsesExpressionOutput(macro: type_checker.ImportedMacro, arg_count: usize) bool {

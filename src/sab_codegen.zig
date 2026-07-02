@@ -196,6 +196,7 @@ pub const Codegen = struct {
     macro_call_idx: usize = 0,
     escaped_closure_idx: usize = 0,
     in_function_body: bool = false,
+    current_async_return: bool = false,
     // When appending a decoded std-macro fragment, fragment-internal temp/local
     // registers (named `tmp_N`, `__...` by the snippet flattener) share the
     // `tmp_N` namespace across independently-flattened fragments and with main
@@ -3127,7 +3128,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn genFuncSig(self: *Codegen, name: []const u8, kind: sig.FunctionKind, params: []const ast.Param, ret_ty: *ast.Type, ignored: bool, should_panic: bool) !sig.FunctionSig {
+    fn genFuncSig(self: *Codegen, name: []const u8, kind: sig.FunctionKind, params: []const ast.Param, ret_ty: *ast.Type, is_async: bool, ignored: bool, should_panic: bool) !sig.FunctionSig {
         const id: u32 = @intCast(self.function_sigs.items.len + self.test_sigs.items.len);
         const lowered = if (kind == .test_func)
             try std.fmt.allocPrint(self.allocator, "\"{s}\"", .{name})
@@ -3153,7 +3154,7 @@ pub const Codegen = struct {
             .params = specs,
             .kind = kind,
             .return_cap = null,
-            .return_ty = try primType(ret_ty),
+            .return_ty = if (is_async) .ptr else try primType(ret_ty),
             .entry_inst_idx = @intCast(self.instructions.items.len),
             .is_ffi_wrapper = false,
             .param_ids = param_ids,
@@ -3201,15 +3202,19 @@ pub const Codegen = struct {
     fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) !void {
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
+        const old_async_return = self.current_async_return;
+        self.current_async_return = f.is_async;
+        defer self.current_async_return = old_async_return;
         self.beginFunction();
         try self.collectBorrowedBindingsInBlock(f.body);
-        const fsig = try self.genFuncSig(name, .normal, f.params, f.ret_ty, false, false);
+        const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
+        const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
         const sig_idx = self.function_sigs.items.len;
         try self.function_sigs.append(fsig);
         try self.appendDeclInst(fsig);
         try self.emitLabel("L_ENTRY");
         try self.materializeBorrowedParams(f.params);
-        const ret_prim = try primType(f.ret_ty);
+        const ret_prim = try primType(async_plan.abi_ret_ty);
         if (ret_prim != .void and blockTailExpr(f.body) != null) {
             const tail = blockTailExpr(f.body).?;
             for (f.body[0 .. f.body.len - 1]) |stmt| {
@@ -3220,7 +3225,8 @@ pub const Codegen = struct {
                 if (self.lastIsTerminator()) break;
             }
             if (!self.lastIsTerminator()) {
-                const value = try self.genExpr(tail);
+                var value = try self.genExpr(tail);
+                if (async_plan.wrap_ready_future) value = try self.genReadyFuture(value);
                 if (!self.lastIsTerminator()) {
                     try self.releaseOpenLocals(value);
                     try self.emitReturn(value);
@@ -3232,7 +3238,13 @@ pub const Codegen = struct {
                 return err;
             };
         }
-        if (ret_prim == .void and !self.lastIsTerminator()) {
+        if (async_plan.wrap_ready_future and !self.lastIsTerminator()) {
+            const zero = try self.intern(try self.newTmp());
+            try self.emitAssignImm(zero, 0);
+            const future = try self.genReadyFuture(zero);
+            try self.releaseOpenLocals(future);
+            try self.emitReturn(future);
+        } else if (ret_prim == .void and !self.lastIsTerminator()) {
             try self.releaseOpenLocals(null);
             try self.emitReturn(null);
         }
@@ -3244,7 +3256,7 @@ pub const Codegen = struct {
     }
 
     fn genExternDecl(self: *Codegen, f: *const ast.FuncDecl) !void {
-        var fsig = try self.genFuncSig(f.name, .external, f.params, f.ret_ty, false, false);
+        var fsig = try self.genFuncSig(f.name, .external, f.params, f.ret_ty, false, false, false);
         try self.appendDeclInst(fsig);
         fsig.reg_ids = fsig.param_ids;
         try self.function_sigs.append(fsig);
@@ -3442,7 +3454,7 @@ pub const Codegen = struct {
         defer self.popLocalsTo(old_locals);
         self.beginFunction();
         try self.collectBorrowedBindingsInBlock(t.body);
-        const fsig = try self.genFuncSig(t.name, .test_func, &.{}, self.voidType(), t.is_ignored, t.should_panic);
+        const fsig = try self.genFuncSig(t.name, .test_func, &.{}, self.voidType(), false, t.is_ignored, t.should_panic);
         const sig_idx = self.function_sigs.items.len;
         try self.function_sigs.append(fsig);
         try self.appendDeclInst(fsig);
@@ -3570,6 +3582,32 @@ pub const Codegen = struct {
         try self.genLetFromValue(let.name, let.ty, let.value, src);
     }
 
+    fn genReadyFuture(self: *Codegen, value: u32) !u32 {
+        const future = try self.intern(try self.newTmp());
+        try self.recordReg(future);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_READY_STATE_NEW", &.{
+            self.symbols.items[future],
+            self.symbols.items[value],
+        });
+        return future;
+    }
+
+    fn genAwait(self: *Codegen, expr: *const ast.Node, aw: ast.AwaitExpr) !u32 {
+        const future_ty = self.tc.expr_types.get(aw.expr) orelse return Error.MissingType;
+        const plan = lowering_rules.planAwaitReadyFuture(future_ty);
+        if (!plan.ready_state_inner) return Error.UnsupportedSabDirectFeature;
+        _ = expr;
+        const future = try self.genExpr(aw.expr);
+        const out = try self.intern(try self.newTmp());
+        try self.recordReg(out);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_READY_STATE_INTO_INNER", &.{
+            self.symbols.items[out],
+            self.symbols.items[future],
+        });
+        if (!self.isLocalReg(future)) try self.emitRelease(future);
+        return out;
+    }
+
     fn assignToIdentifier(self: *Codegen, name: []const u8, value: u32) anyerror!void {
         if (self.stackLocal(name)) |slot| {
             const ty = slot.stack_ty orelse return Error.UnsupportedSabDirectFeature;
@@ -3673,6 +3711,14 @@ pub const Codegen = struct {
     fn makePrimitiveType(self: *Codegen, primitive: ast.Primitive) !*const ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .primitive = primitive };
+        return ty;
+    }
+
+    fn makePointerType(self: *Codegen) !*const ast.Type {
+        const inner = try self.allocator.create(ast.Type);
+        inner.* = .{ .primitive = .void_type };
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .pointer = inner };
         return ty;
     }
 
@@ -4562,7 +4608,15 @@ pub const Codegen = struct {
                 }
             },
             .return_stmt => |ret| {
-                const value = if (ret.value) |v| try self.genExpr(v) else null;
+                var value = if (ret.value) |v| try self.genExpr(v) else null;
+                if (self.current_async_return) {
+                    if (value == null) {
+                        const zero = try self.intern(try self.newTmp());
+                        try self.emitAssignImm(zero, 0);
+                        value = zero;
+                    }
+                    value = try self.genReadyFuture(value.?);
+                }
                 try self.releaseOpenLocals(value);
                 try self.emitReturn(value);
             },
@@ -4775,6 +4829,7 @@ pub const Codegen = struct {
             .match_expr => |mat| try self.genMatch(expr, &mat),
             .if_expr => |ife| try self.genIf(expr, ife),
             .cast_expr => |cast| try self.genCast(cast),
+            .await_expr => |aw| try self.genAwait(expr, aw),
             .borrow_expr => |borrow| try self.genBorrow(borrow),
             .move_expr => |move| try self.genMove(move),
             .deref_expr => |deref| try self.genDeref(expr, deref),

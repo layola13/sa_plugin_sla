@@ -49,6 +49,7 @@ pub const FutureReadiness = enum {
 pub const FutureRuntimeCallKind = enum {
     ready,
     pending,
+    defer_ready,
     join2,
     pair_left,
     pair_right,
@@ -487,6 +488,7 @@ pub fn planFutureRuntimeCall(call: ast.CallExpr) ?FutureRuntimeCallPlan {
         if (!std.mem.eql(u8, target, "future")) return null;
         if (std.mem.eql(u8, call.func_name, "ready")) return .{ .kind = .ready };
         if (std.mem.eql(u8, call.func_name, "pending")) return .{ .kind = .pending };
+        if (std.mem.eql(u8, call.func_name, "defer_ready")) return .{ .kind = .defer_ready };
         if (std.mem.eql(u8, call.func_name, "join2")) return .{ .kind = .join2 };
         if (std.mem.eql(u8, call.func_name, "pair_left")) return .{ .kind = .pair_left };
         if (std.mem.eql(u8, call.func_name, "pair_right")) return .{ .kind = .pair_right };
@@ -498,6 +500,7 @@ pub fn planFutureRuntimeCall(call: ast.CallExpr) ?FutureRuntimeCallPlan {
     }
     if (std.mem.eql(u8, call.func_name, "future__ready")) return .{ .kind = .ready };
     if (std.mem.eql(u8, call.func_name, "future__pending")) return .{ .kind = .pending };
+    if (std.mem.eql(u8, call.func_name, "future__defer_ready")) return .{ .kind = .defer_ready };
     if (std.mem.eql(u8, call.func_name, "future__join2")) return .{ .kind = .join2 };
     if (std.mem.eql(u8, call.func_name, "future__pair_left")) return .{ .kind = .pair_left };
     if (std.mem.eql(u8, call.func_name, "future__pair_right")) return .{ .kind = .pair_right };
@@ -1809,6 +1812,14 @@ test "shared future runtime call classification" {
 
     const flat_pending = ast.CallExpr{ .func_name = "future__pending", .generics = generics[0..], .args = &.{} };
     try std.testing.expectEqual(FutureRuntimeCallKind.pending, planFutureRuntimeCall(flat_pending).?.kind);
+
+    const defer_ready = ast.CallExpr{ .func_name = "defer_ready", .associated_target = "future", .generics = &.{}, .args = args[0..] };
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, planFutureRuntimeCall(defer_ready).?.kind);
+    var defer_ready_node = ast.Node{ .call_expr = defer_ready };
+    try std.testing.expectEqual(FutureReadiness.unknown, exprFutureReadiness(&defer_ready_node, null));
+
+    const flat_defer_ready = ast.CallExpr{ .func_name = "future__defer_ready", .generics = &.{}, .args = args[0..] };
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, planFutureRuntimeCall(flat_defer_ready).?.kind);
 
     const join_args = [_]*ast.Node{ &value_node, &value_node };
     const join2 = ast.CallExpr{ .func_name = "join2", .associated_target = "future", .generics = &.{}, .args = join_args[0..] };

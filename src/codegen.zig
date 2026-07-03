@@ -5517,12 +5517,40 @@ pub const Codegen = struct {
     fn emitFutureTaskHelpers(self: *Codegen) CodegenError!void {
         self.out.writer().print(
             \\@const SLA_READY_FUTURE_VT = vtable {{ poll = @sla_future_ready_poll }}
+            \\@const SLA_DEFER_READY_FUTURE_VT = vtable {{ poll = @sla_future_defer_ready_poll }}
             \\@const SLA_JOIN2_FUTURE_VT = vtable {{ poll = @sla_future_join2_poll }}
             \\@const SLA_SELECT2_FUTURE_VT = vtable {{ poll = @sla_future_select2_poll }}
             \\
             \\@sla_future_ready_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
             \\L_ENTRY:
             \\    EXPAND FUTURE_READY_SET_POLL_STATE out_poll_slot, data_slot
+            \\    return
+            \\
+            \\@sla_future_defer_ready_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
+            \\L_ENTRY:
+            \\    defer_ready_stage = load data_slot+0 as u64
+            \\    defer_ready_is_initial = eq defer_ready_stage, 0
+            \\    br defer_ready_is_initial -> L_DEFER_READY_PENDING, L_DEFER_READY_CHECK_READY
+            \\L_DEFER_READY_PENDING:
+            \\    store data_slot+0, 1 as u64
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    jmp L_DEFER_READY_DONE
+            \\L_DEFER_READY_CHECK_READY:
+            \\    defer_ready_is_ready = eq defer_ready_stage, 1
+            \\    br defer_ready_is_ready -> L_DEFER_READY_READY, L_DEFER_READY_EMPTY
+            \\L_DEFER_READY_READY:
+            \\    defer_ready_value = load data_slot+8 as u64
+            \\    store data_slot+0, 2 as u64
+            \\    EXPAND POLL_SET_READY out_poll_slot, defer_ready_value
+            \\    !defer_ready_value
+            \\    !defer_ready_is_ready
+            \\    jmp L_DEFER_READY_DONE
+            \\L_DEFER_READY_EMPTY:
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    !defer_ready_is_ready
+            \\L_DEFER_READY_DONE:
+            \\    !defer_ready_is_initial
+            \\    !defer_ready_stage
             \\    return
             \\
             \\@sla_future_join2_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
@@ -6440,6 +6468,16 @@ pub const Codegen = struct {
         self.out.writer().print("    EXPAND FUTURE_PENDING_STATE_NEW {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
         self.future_state_vtables.put(future_reg, "SLA_READY_FUTURE_VT") catch return CodegenError.OutOfMemory;
         self.future_readiness.put(future_reg, .pending) catch return CodegenError.OutOfMemory;
+        return future_reg;
+    }
+
+    fn genDeferReadyFutureI64(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
+        const future_reg = try self.newTmp();
+        self.out.writer().print("    {s} = alloc 16\n", .{future_reg}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+0, 0 as u64\n", .{future_reg}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+8, {s} as u64\n", .{ future_reg, value_reg }) catch return CodegenError.CodegenError;
+        self.future_state_vtables.put(future_reg, "SLA_DEFER_READY_FUTURE_VT") catch return CodegenError.OutOfMemory;
+        try self.recordFutureReadiness(future_reg, .unknown);
         return future_reg;
     }
 
@@ -9476,6 +9514,13 @@ pub const Codegen = struct {
                             if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
                             return try self.genPendingFuture();
                         },
+                        .defer_ready => {
+                            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                            const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                            const future_reg = try self.genDeferReadyFutureI64(value_reg);
+                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                            return future_reg;
+                        },
                         .join2 => {
                             if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
                             const left_state = try self.genExpr(call.args[0], hoisted_allocs);
@@ -9561,6 +9606,13 @@ pub const Codegen = struct {
                             .pending => {
                                 if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
                                 return try self.genPendingFuture();
+                            },
+                            .defer_ready => {
+                                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                                const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const future_reg = try self.genDeferReadyFutureI64(value_reg);
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                                return future_reg;
                             },
                             .join2 => {
                                 if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;

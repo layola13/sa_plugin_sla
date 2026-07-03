@@ -3499,6 +3499,13 @@ pub const TypeChecker = struct {
                     return try self.makeFutureType(call.generics[0]);
                 }
 
+                if (std.mem.eql(u8, call.func_name, "future__defer_ready")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                    const inner_ty = try self.checkExpr(call.args[0], scope);
+                    return try self.makeFutureType(inner_ty);
+                }
+
                 if (std.mem.eql(u8, call.func_name, "future__join2")) {
                     return try self.checkFutureJoin2Call(call, scope);
                 }
@@ -3731,6 +3738,12 @@ pub const TypeChecker = struct {
                     }
                     if (std.mem.eql(u8, target_name, "future") and std.mem.eql(u8, call.func_name, "ready")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const inner_ty = try self.checkExpr(call.args[0], scope);
+                        return try self.makeFutureType(inner_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "future") and std.mem.eql(u8, call.func_name, "defer_ready")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);
                         return try self.makeFutureType(inner_ty);
                     }

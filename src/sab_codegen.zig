@@ -3343,6 +3343,7 @@ pub const Codegen = struct {
         self.future_task_helpers_emitted = true;
 
         try self.appendVTableConst("SLA_READY_FUTURE_VT", "sla_future_ready_poll");
+        try self.appendVTableConst("SLA_DEFER_READY_FUTURE_VT", "sla_future_defer_ready_poll");
         try self.appendVTableConst("SLA_JOIN2_FUTURE_VT", "sla_future_join2_poll");
         try self.appendVTableConst("SLA_SELECT2_FUTURE_VT", "sla_future_select2_poll");
 
@@ -3373,6 +3374,74 @@ pub const Codegen = struct {
         try self.emitReturn(null);
 
         try self.finishFunctionBody(sig_idx);
+
+        self.popLocalsTo(old_locals);
+        self.beginFunction();
+
+        const defer_specs = try self.allocator.alloc(sig.ParamSpec, names.len);
+        const defer_ids = try self.allocator.alloc(u32, names.len);
+        for (names, 0..) |name, i| {
+            defer_ids[i] = try self.intern(name);
+            defer_specs[i] = .{ .name = name, .ty = .ptr, .cap = .borrow };
+            try self.pushRawParamLocal(name, defer_ids[i], .borrow);
+        }
+
+        const defer_fsig = try self.appendGeneratedFuncSig("sla_future_defer_ready_poll", .normal, defer_specs, defer_ids, .void, false);
+        const defer_sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(defer_fsig);
+        try self.appendDeclInst(defer_fsig);
+        try self.emitLabel("L_ENTRY");
+
+        const defer_stage = try self.intern(try self.newTmp());
+        const defer_is_initial = try self.intern(try self.newTmp());
+        const defer_pending_label = try self.newLabel("L_DEFER_READY_PENDING");
+        const defer_check_ready_label = try self.newLabel("L_DEFER_READY_CHECK_READY");
+        const defer_ready_label = try self.newLabel("L_DEFER_READY_READY");
+        const defer_empty_label = try self.newLabel("L_DEFER_READY_EMPTY");
+        const defer_done_label = try self.newLabel("L_DEFER_READY_DONE");
+        try self.emitLoad(defer_stage, defer_ids[0], 0, .u64);
+        try self.emitOp(defer_is_initial, .eq, .{ .reg = defer_stage }, .{ .imm_i64 = 0 });
+        try self.emitBranch(defer_is_initial, defer_pending_label, defer_check_ready_label);
+
+        try self.emitLabel(defer_pending_label);
+        const defer_stage_one = try self.intern(try self.newTmp());
+        try self.emitAssignImm(defer_stage_one, 1);
+        try self.emitStore(defer_ids[0], 0, defer_stage_one, .u64);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[defer_ids[2]]});
+        try self.emitRelease(defer_stage_one);
+        try self.emitJmp(defer_done_label);
+
+        try self.emitLabel(defer_check_ready_label);
+        const defer_is_ready = try self.intern(try self.newTmp());
+        try self.emitOp(defer_is_ready, .eq, .{ .reg = defer_stage }, .{ .imm_i64 = 1 });
+        try self.emitBranch(defer_is_ready, defer_ready_label, defer_empty_label);
+
+        try self.emitLabel(defer_ready_label);
+        const defer_value = try self.intern(try self.newTmp());
+        const defer_stage_two = try self.intern(try self.newTmp());
+        try self.emitLoad(defer_value, defer_ids[0], 8, .u64);
+        try self.emitAssignImm(defer_stage_two, 2);
+        try self.emitStore(defer_ids[0], 0, defer_stage_two, .u64);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_READY", &.{
+            self.symbols.items[defer_ids[2]],
+            self.symbols.items[defer_value],
+        });
+        try self.emitRelease(defer_stage_two);
+        try self.emitRelease(defer_value);
+        try self.emitRelease(defer_is_ready);
+        try self.emitJmp(defer_done_label);
+
+        try self.emitLabel(defer_empty_label);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[defer_ids[2]]});
+        try self.emitRelease(defer_is_ready);
+
+        try self.emitLabel(defer_done_label);
+        try self.emitRelease(defer_is_initial);
+        try self.emitRelease(defer_stage);
+        for (defer_ids) |id| try self.emitRelease(id);
+        try self.emitReturn(null);
+
+        try self.finishFunctionBody(defer_sig_idx);
 
         self.popLocalsTo(old_locals);
         self.beginFunction();
@@ -3991,6 +4060,19 @@ pub const Codegen = struct {
         return future;
     }
 
+    fn genDeferReadyFuture(self: *Codegen, value: u32) !u32 {
+        const future = try self.intern(try self.newTmp());
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAlloc(future, 16);
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(future, 0, zero, .u64);
+        try self.emitStore(future, 8, value, .u64);
+        try self.emitRelease(zero);
+        try self.future_state_vtables.put(future, "SLA_DEFER_READY_FUTURE_VT");
+        try self.recordFutureReadiness(future, .unknown);
+        return future;
+    }
+
     fn futureVTableForState(self: *Codegen, state_reg: u32) []const u8 {
         if (self.future_state_vtables.get(state_reg)) |vt_name| return vt_name;
         return "SLA_READY_FUTURE_VT";
@@ -4189,6 +4271,11 @@ pub const Codegen = struct {
                 .pending => blk: {
                     if (call.args.len != 0 or call.generics.len != 1) return Error.UnsupportedSabDirectFeature;
                     break :blk try self.genPendingFuture();
+                },
+                .defer_ready => blk: {
+                    if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                    const value_reg = try self.genExpr(call.args[0]);
+                    break :blk try self.genDeferReadyFuture(value_reg);
                 },
                 .join2 => blk: {
                     if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;

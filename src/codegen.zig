@@ -86,6 +86,8 @@ pub const Codegen = struct {
     file_open_results: std.StringHashMap(FileResultHandle),
     metadata_bindings: std.StringHashMap(void),
     metadata_open_results: std.StringHashMap(MetadataResultHandle),
+    task_future_objects: std.StringHashMap([]const u8),
+    executor_task_counts: std.StringHashMap(usize),
     binding_aliases: std.StringHashMap(std.ArrayList([]const u8)),
     injected_address_bindings: std.StringHashMap([]const u8),
     loop_continue_labels: std.ArrayList([]const u8),
@@ -139,6 +141,8 @@ pub const Codegen = struct {
             .file_open_results = std.StringHashMap(FileResultHandle).init(allocator),
             .metadata_bindings = std.StringHashMap(void).init(allocator),
             .metadata_open_results = std.StringHashMap(MetadataResultHandle).init(allocator),
+            .task_future_objects = std.StringHashMap([]const u8).init(allocator),
+            .executor_task_counts = std.StringHashMap(usize).init(allocator),
             .binding_aliases = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
             .injected_address_bindings = injected_address_bindings,
             .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
@@ -194,6 +198,8 @@ pub const Codegen = struct {
         self.file_open_results.deinit();
         self.metadata_bindings.deinit();
         self.metadata_open_results.deinit();
+        self.task_future_objects.deinit();
+        self.executor_task_counts.deinit();
         self.clearBindingAliases();
         self.binding_aliases.deinit();
         self.injected_address_bindings.deinit();
@@ -595,6 +601,13 @@ pub const Codegen = struct {
             return;
         }
         self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+        if (self.task_future_objects.get(resolved_name)) |future_obj| {
+            _ = self.task_future_objects.remove(resolved_name);
+            if (!self.consumed_bindings.contains(future_obj)) {
+                self.out.writer().print("    !{s}\n", .{future_obj}) catch return CodegenError.CodegenError;
+                self.consumed_bindings.put(future_obj, {}) catch return CodegenError.OutOfMemory;
+            }
+        }
     }
 
     fn emitActiveRefCellBorrowReleases(self: *Codegen) CodegenError!void {
@@ -5161,6 +5174,7 @@ pub const Codegen = struct {
                 if (call.associated_target != null) {
                     if (lowering_rules.planFutureRuntimeCall(call) != null or
                         lowering_rules.planTaskRuntimeCall(call) != null or
+                        lowering_rules.planExecutorRuntimeCall(call) != null or
                         lowering_rules.planPollRuntimeCall(call) != null)
                     {
                         break :blk true;
@@ -5851,6 +5865,8 @@ pub const Codegen = struct {
         self.file_open_results.clearRetainingCapacity();
         self.metadata_bindings.clearRetainingCapacity();
         self.metadata_open_results.clearRetainingCapacity();
+        self.task_future_objects.clearRetainingCapacity();
+        self.executor_task_counts.clearRetainingCapacity();
         self.clearBindingAliases();
         self.clearHashMapKeySlots();
         try self.collectAddressableBindings(f.body);
@@ -5962,6 +5978,8 @@ pub const Codegen = struct {
         self.file_open_results.clearRetainingCapacity();
         self.metadata_bindings.clearRetainingCapacity();
         self.metadata_open_results.clearRetainingCapacity();
+        self.task_future_objects.clearRetainingCapacity();
+        self.executor_task_counts.clearRetainingCapacity();
         self.clearBindingAliases();
         self.clearHashMapKeySlots();
         try self.collectAddressableBindings(t.body);
@@ -6408,6 +6426,98 @@ pub const Codegen = struct {
                 break :blk value_reg;
             },
         };
+    }
+
+    fn genExecutorRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
+        const plan = lowering_rules.planExecutorRuntimeCall(call) orelse return null;
+        return switch (plan.kind) {
+            .new => blk: {
+                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                const tasks_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
+                if (tasks_ty.* != .array) return CodegenError.CodegenError;
+                const tasks_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                const len_reg = try self.newTmp();
+                const executor_reg = try self.newTmp();
+                try self.emitIntConst(len_reg, @as(i64, @intCast(tasks_ty.array.len)));
+                self.out.writer().print("    EXPAND EXECUTOR_NEW {s}, {s}, {s}\n", .{ executor_reg, tasks_reg, len_reg }) catch return CodegenError.CodegenError;
+                self.executor_task_counts.put(executor_reg, tasks_ty.array.len) catch return CodegenError.OutOfMemory;
+                try self.emitRelease(len_reg);
+                break :blk executor_reg;
+            },
+            .poll_one => blk: {
+                if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
+                const executor_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                const index_reg = try self.genExpr(call.args[1], hoisted_allocs);
+                const poll_reg = try self.newTmp();
+                const tag_reg = try self.newTmp();
+                const ready_reg = try self.newTmp();
+                self.out.writer().print("    EXPAND EXECUTOR_POLL_ONE {s}, {s}, {s}\n", .{ poll_reg, executor_reg, index_reg }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
+                try self.emitRelease(tag_reg);
+                try self.emitRelease(poll_reg);
+                if (callArgNeedsRelease(call.args[1])) try self.emitRelease(index_reg);
+                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);
+                break :blk ready_reg;
+            },
+            .poll_ready_count => blk: {
+                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                const executor_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                const task_count = self.executor_task_counts.get(self.resolveBindingName(executor_reg)) orelse blk_count: {
+                    if (call.args[0].* == .identifier) {
+                        if (self.executor_task_counts.get(self.resolveBindingName(call.args[0].identifier))) |count| break :blk_count count;
+                    }
+                    return CodegenError.CodegenError;
+                };
+                const count_reg = try self.genExecutorPollReadyCountUnrolled(executor_reg, task_count);
+                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);
+                break :blk count_reg;
+            },
+        };
+    }
+
+    fn genExecutorPollReadyCountUnrolled(self: *Codegen, executor_reg: []const u8, task_count: usize) CodegenError![]const u8 {
+        const tasks_reg = try self.newTmp();
+        const count_slot = try self.newTmp();
+
+        self.out.writer().print("    {s} = load {s}+Executor_tasks as ptr\n", .{ tasks_reg, executor_reg }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    {s} = stack_alloc 8\n", .{count_slot}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+0, 0 as u64\n", .{count_slot}) catch return CodegenError.CodegenError;
+
+        for (0..task_count) |task_index| {
+            const task_reg = try self.newTmp();
+            const poll_reg = try self.newTmp();
+            const tag_reg = try self.newTmp();
+            const ready_reg = try self.newTmp();
+            const ready_label = try self.newLabel("L_EXECUTOR_POLL_COUNT_READY");
+            const next_label = try self.newLabel("L_EXECUTOR_POLL_COUNT_NEXT");
+            self.out.writer().print("    {s} = load {s}+{} as ptr\n", .{ task_reg, tasks_reg, task_index * 8 }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    EXPAND TASK_POLL {s}, {s}\n", .{ poll_reg, task_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ready_reg, ready_label, next_label }) catch return CodegenError.CodegenError;
+
+            self.out.writer().print("{s}:\n", .{ready_label}) catch return CodegenError.CodegenError;
+            const count_reg = try self.newTmp();
+            const next_count_reg = try self.newTmp();
+            self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ count_reg, count_slot }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = add {s}, 1\n", .{ next_count_reg, count_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    store {s}+0, {s} as u64\n", .{ count_slot, next_count_reg }) catch return CodegenError.CodegenError;
+            try self.emitRelease(next_count_reg);
+            try self.emitRelease(count_reg);
+            self.out.writer().print("    jmp {s}\n\n", .{next_label}) catch return CodegenError.CodegenError;
+
+            self.out.writer().print("{s}:\n", .{next_label}) catch return CodegenError.CodegenError;
+            try self.emitRelease(ready_reg);
+            try self.emitRelease(tag_reg);
+            try self.emitRelease(poll_reg);
+            try self.emitRelease(task_reg);
+        }
+
+        const out_count_reg = try self.newTmp();
+        self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ out_count_reg, count_slot }) catch return CodegenError.CodegenError;
+        try self.emitRelease(tasks_reg);
+        return out_count_reg;
     }
 
     fn genFormatCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
@@ -6970,6 +7080,14 @@ pub const Codegen = struct {
                     self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
+                    if (self.task_future_objects.get(val_reg)) |future_obj| {
+                        self.task_future_objects.put(let.name, future_obj) catch return CodegenError.OutOfMemory;
+                        _ = self.task_future_objects.remove(val_reg);
+                    }
+                    if (self.executor_task_counts.get(val_reg)) |task_count| {
+                        self.executor_task_counts.put(let.name, task_count) catch return CodegenError.OutOfMemory;
+                        _ = self.executor_task_counts.remove(val_reg);
+                    }
                     if (self.stack_alloc_bindings.contains(val_reg)) {
                         self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     }
@@ -7208,6 +7326,14 @@ pub const Codegen = struct {
                     self.out.writer().print("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(c.value, hoisted_allocs);
+                    if (self.task_future_objects.get(val_reg)) |future_obj| {
+                        self.task_future_objects.put(c.name, future_obj) catch return CodegenError.OutOfMemory;
+                        _ = self.task_future_objects.remove(val_reg);
+                    }
+                    if (self.executor_task_counts.get(val_reg)) |task_count| {
+                        self.executor_task_counts.put(c.name, task_count) catch return CodegenError.OutOfMemory;
+                        _ = self.executor_task_counts.remove(val_reg);
+                    }
                     if (self.stack_alloc_bindings.contains(val_reg)) {
                         self.stack_alloc_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
                     }
@@ -9143,6 +9269,7 @@ pub const Codegen = struct {
                     return reg;
                 }
                 if (try self.genPollRuntimeCall(call, hoisted_allocs)) |poll_reg| return poll_reg;
+                if (try self.genExecutorRuntimeCall(call, hoisted_allocs)) |executor_reg| return executor_reg;
                 if (lowering_rules.planFutureRuntimeCall(call)) |future_plan| {
                     switch (future_plan.kind) {
                         .ready => {
@@ -9222,6 +9349,7 @@ pub const Codegen = struct {
                         self.out.writer().print("    EXPAND TASK_NEW {s}, {s}, {s}\n", .{ task, future_obj, ctx }) catch return CodegenError.CodegenError;
                         try self.emitRelease(vt_reg);
                         try self.emitRelease(ctx);
+                        self.task_future_objects.put(task, future_obj) catch return CodegenError.OutOfMemory;
                         return task;
                     }
                     if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "poll")) {

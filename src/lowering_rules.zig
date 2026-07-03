@@ -58,6 +58,16 @@ pub const TaskRuntimeCallPlan = struct {
     kind: TaskRuntimeCallKind,
 };
 
+pub const ExecutorRuntimeCallKind = enum {
+    new,
+    poll_one,
+    poll_ready_count,
+};
+
+pub const ExecutorRuntimeCallPlan = struct {
+    kind: ExecutorRuntimeCallKind,
+};
+
 pub const PollRuntimeCallKind = enum {
     ready,
     pending,
@@ -340,6 +350,15 @@ pub fn planTaskRuntimeCall(call: ast.CallExpr) ?TaskRuntimeCallPlan {
     if (std.mem.eql(u8, call.func_name, "is_ready")) return .{ .kind = .is_ready };
     if (std.mem.eql(u8, call.func_name, "result")) return .{ .kind = .result };
     if (std.mem.eql(u8, call.func_name, "state")) return .{ .kind = .state };
+    return null;
+}
+
+pub fn planExecutorRuntimeCall(call: ast.CallExpr) ?ExecutorRuntimeCallPlan {
+    const target = call.associated_target orelse return null;
+    if (!std.mem.eql(u8, target, "executor")) return null;
+    if (std.mem.eql(u8, call.func_name, "new")) return .{ .kind = .new };
+    if (std.mem.eql(u8, call.func_name, "poll_one")) return .{ .kind = .poll_one };
+    if (std.mem.eql(u8, call.func_name, "poll_ready_count")) return .{ .kind = .poll_ready_count };
     return null;
 }
 
@@ -1585,6 +1604,12 @@ test "shared future runtime call classification" {
 
     const state = ast.CallExpr{ .func_name = "state", .associated_target = "task", .generics = &.{}, .args = args[0..] };
     try std.testing.expectEqual(TaskRuntimeCallKind.state, planTaskRuntimeCall(state).?.kind);
+
+    const executor_new = ast.CallExpr{ .func_name = "new", .associated_target = "executor", .generics = &.{}, .args = args[0..] };
+    try std.testing.expectEqual(ExecutorRuntimeCallKind.new, planExecutorRuntimeCall(executor_new).?.kind);
+
+    const executor_poll_one = ast.CallExpr{ .func_name = "poll_one", .associated_target = "executor", .generics = &.{}, .args = args[0..] };
+    try std.testing.expectEqual(ExecutorRuntimeCallKind.poll_one, planExecutorRuntimeCall(executor_poll_one).?.kind);
 
     const poll_ready = ast.CallExpr{ .func_name = "ready", .associated_target = "poll", .generics = &.{}, .args = args[0..] };
     try std.testing.expectEqual(PollRuntimeCallKind.ready, planPollRuntimeCall(poll_ready).?.kind);

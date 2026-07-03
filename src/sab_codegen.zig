@@ -1169,7 +1169,8 @@ pub const Codegen = struct {
     }
 
     fn isFutureTaskRuntimeCall(call: ast.CallExpr) bool {
-        return lowering_rules.planTaskRuntimeCall(call) != null;
+        return lowering_rules.planTaskRuntimeCall(call) != null or
+            lowering_rules.planExecutorRuntimeCall(call) != null;
     }
 
     fn nodeUsesFutureTaskRuntime(node: *const ast.Node) bool {
@@ -3911,8 +3912,63 @@ pub const Codegen = struct {
         };
     }
 
+    fn genExecutorRuntimeCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        const plan = lowering_rules.planExecutorRuntimeCall(call) orelse return null;
+        return switch (plan.kind) {
+            .new => blk: {
+                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                const tasks_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
+                if (tasks_ty.* != .array) return Error.UnsupportedSabDirectFeature;
+                const tasks_reg = try self.genExpr(call.args[0]);
+                const len_reg = try self.intern(try self.newTmp());
+                const executor_reg = try self.intern(try self.newTmp());
+                try self.emitAssignImm(len_reg, @as(i64, @intCast(tasks_ty.array.len)));
+                try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_NEW", &.{
+                    self.symbols.items[executor_reg],
+                    self.symbols.items[tasks_reg],
+                    self.symbols.items[len_reg],
+                });
+                try self.emitRelease(len_reg);
+                break :blk executor_reg;
+            },
+            .poll_one => blk: {
+                if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                const executor_reg = try self.genExpr(call.args[0]);
+                const index_reg = try self.genExpr(call.args[1]);
+                const poll_reg = try self.intern(try self.newTmp());
+                const tag_reg = try self.intern(try self.newTmp());
+                const ready_reg = try self.intern(try self.newTmp());
+                try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_POLL_ONE", &.{
+                    self.symbols.items[poll_reg],
+                    self.symbols.items[executor_reg],
+                    self.symbols.items[index_reg],
+                });
+                try self.emitLoad(tag_reg, poll_reg, 0, .u64);
+                try self.emitOp(ready_reg, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = 1 });
+                try self.emitRelease(tag_reg);
+                try self.emitRelease(poll_reg);
+                if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+                if (!self.isLocalReg(executor_reg)) try self.emitRelease(executor_reg);
+                break :blk ready_reg;
+            },
+            .poll_ready_count => blk: {
+                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                const executor_reg = try self.genExpr(call.args[0]);
+                const count_reg = try self.intern(try self.newTmp());
+                try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_POLL_READY_COUNT", &.{
+                    self.symbols.items[count_reg],
+                    self.symbols.items[executor_reg],
+                });
+                if (!self.isLocalReg(executor_reg)) try self.emitRelease(executor_reg);
+                break :blk count_reg;
+            },
+        };
+    }
+
     fn genFutureTaskCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (try self.genPollRuntimeCall(call)) |poll_reg| return poll_reg;
+
+        if (try self.genExecutorRuntimeCall(call)) |executor_reg| return executor_reg;
 
         if (lowering_rules.planFutureRuntimeCall(call)) |future_plan| {
             return switch (future_plan.kind) {
@@ -3953,6 +4009,7 @@ pub const Codegen = struct {
             try self.emitRelease(vt_reg);
             try self.emitRelease(ctx);
             try self.emitRelease(future_obj);
+            if (!self.isLocalReg(state_reg)) try self.emitRelease(state_reg);
             return task;
         }
 

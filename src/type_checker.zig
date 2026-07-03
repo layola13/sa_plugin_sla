@@ -924,6 +924,14 @@ pub const TypeChecker = struct {
         return ty;
     }
 
+    fn makeExecutorType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Executor", .generics = generics } };
+        return ty;
+    }
+
     fn makePollType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
         const generics = try self.allocator.alloc(*ast.Type, 1);
         generics[0] = inner;
@@ -1690,6 +1698,21 @@ pub const TypeChecker = struct {
                 .borrow => |b| curr = b,
                 .user_defined => |ud| {
                     if (std.mem.eql(u8, ud.name, "Task") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn executorInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Executor") and ud.generics.len == 1) return ud.generics[0];
                     return null;
                 },
                 else => return null,
@@ -3599,6 +3622,30 @@ pub const TypeChecker = struct {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const task_ty = try self.checkExpr(call.args[0], scope);
                         _ = taskInnerType(task_ty) orelse return TypeError.TypeMismatch;
+                        return try self.makeU64Type();
+                    }
+                    if (std.mem.eql(u8, target_name, "executor") and std.mem.eql(u8, call.func_name, "new")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                        const tasks_ty = try self.checkExpr(call.args[0], scope);
+                        if (tasks_ty.* != .array) return TypeError.TypeMismatch;
+                        const inner_ty = taskInnerType(tasks_ty.array.elem) orelse return TypeError.TypeMismatch;
+                        return try self.makeExecutorType(inner_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "executor") and std.mem.eql(u8, call.func_name, "poll_one")) {
+                        if (call.args.len != 2) return TypeError.InvalidArgsCount;
+                        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                        const executor_ty = try self.checkExpr(call.args[0], scope);
+                        _ = executorInnerType(executor_ty) orelse return TypeError.TypeMismatch;
+                        const index_ty = try self.checkExpr(call.args[1], scope);
+                        if (!isNumericType(index_ty)) return TypeError.TypeMismatch;
+                        return try self.makeBoolType();
+                    }
+                    if (std.mem.eql(u8, target_name, "executor") and std.mem.eql(u8, call.func_name, "poll_ready_count")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                        const executor_ty = try self.checkExpr(call.args[0], scope);
+                        _ = executorInnerType(executor_ty) orelse return TypeError.TypeMismatch;
                         return try self.makeU64Type();
                     }
                     if (std.mem.eql(u8, target_name, "Box") and std.mem.eql(u8, call.func_name, "new")) {

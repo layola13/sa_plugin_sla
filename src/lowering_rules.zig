@@ -379,6 +379,12 @@ const AsyncContinuationAddend = struct {
     captured_addend_name: ?[]const u8 = null,
 };
 
+const AsyncContinuationPostReturnAddend = struct {
+    immediate: i64 = 0,
+    has_immediate: bool = false,
+    has_post_binding: bool = false,
+};
+
 fn collectAsyncContinuationAddend(expr: *const ast.Node, binding_name: []const u8, capture_name: ?[]const u8, addend: *AsyncContinuationAddend) bool {
     switch (expr.*) {
         .identifier => |name| {
@@ -418,6 +424,35 @@ fn asyncContinuationAddend(expr: *const ast.Node, binding_name: []const u8, capt
     return addend;
 }
 
+fn collectAsyncContinuationPostReturnAddend(expr: *const ast.Node, post_binding_name: []const u8, addend: *AsyncContinuationPostReturnAddend) bool {
+    switch (expr.*) {
+        .identifier => |name| {
+            if (!std.mem.eql(u8, name, post_binding_name) or addend.has_post_binding) return false;
+            addend.has_post_binding = true;
+            return true;
+        },
+        .literal => |lit| {
+            if (lit != .int_val or addend.has_immediate) return false;
+            addend.immediate = lit.int_val;
+            addend.has_immediate = true;
+            return true;
+        },
+        .binary_expr => |bin| {
+            if (bin.op != .add) return false;
+            return collectAsyncContinuationPostReturnAddend(bin.left, post_binding_name, addend) and
+                collectAsyncContinuationPostReturnAddend(bin.right, post_binding_name, addend);
+        },
+        else => return false,
+    }
+}
+
+fn asyncContinuationPostReturnAddend(expr: *const ast.Node, post_binding_name: []const u8) ?AsyncContinuationPostReturnAddend {
+    var addend = AsyncContinuationPostReturnAddend{};
+    if (!collectAsyncContinuationPostReturnAddend(expr, post_binding_name, &addend)) return null;
+    if (!addend.has_post_binding) return null;
+    return addend;
+}
+
 fn asyncContinuationReturnExpr(stmt: *const ast.Node) ?*const ast.Node {
     return switch (stmt.*) {
         .return_stmt => |ret| ret.value,
@@ -436,9 +471,13 @@ fn asyncContinuationResult(await_binding_name: []const u8, capture_name: ?[]cons
     if (post_stmt) |stmt| {
         if (stmt.* != .let_stmt) return null;
         const let_stmt = stmt.let_stmt;
-        if (ret_expr.* != .identifier or !std.mem.eql(u8, ret_expr.identifier, let_stmt.name)) return null;
         const addend = asyncContinuationAddend(let_stmt.value, await_binding_name, capture_name) orelse return null;
-        return .{ .post_binding_name = let_stmt.name, .addend = addend.immediate, .captured_addend_name = addend.captured_addend_name };
+        if (ret_expr.* == .identifier and std.mem.eql(u8, ret_expr.identifier, let_stmt.name)) {
+            return .{ .post_binding_name = let_stmt.name, .addend = addend.immediate, .captured_addend_name = addend.captured_addend_name };
+        }
+        const return_addend = asyncContinuationPostReturnAddend(ret_expr, let_stmt.name) orelse return null;
+        if (addend.has_immediate and return_addend.has_immediate) return null;
+        return .{ .post_binding_name = let_stmt.name, .addend = addend.immediate + return_addend.immediate, .captured_addend_name = addend.captured_addend_name };
     }
 
     const addend = asyncContinuationAddend(ret_expr, await_binding_name, capture_name) orelse return null;
@@ -2207,6 +2246,44 @@ test "shared async single await continuation plan is defer-ready only" {
     try std.testing.expect(captured_local_immediate_plan.captured_addend_expr == &bump_literal);
     try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, captured_local_immediate_plan.awaited_kind);
     try std.testing.expectEqual(@as(i64, 1), captured_local_immediate_plan.addend);
+
+    var captured_post_result_ident = ast.Node{ .identifier = "result" };
+    var captured_post_value_ident = ast.Node{ .identifier = "value" };
+    var captured_post_bump_ident = ast.Node{ .identifier = "bump" };
+    var captured_post_result_expr = ast.Node{ .binary_expr = .{ .left = &captured_post_value_ident, .op = .add, .right = &captured_post_bump_ident } };
+    var captured_post_result_let = ast.Node{ .let_stmt = .{ .name = "result", .ty = null, .value = &captured_post_result_expr } };
+    var captured_post_immediate_literal = ast.Node{ .literal = .{ .int_val = 1 } };
+    var captured_post_return_expr = ast.Node{ .binary_expr = .{ .left = &captured_post_result_ident, .op = .add, .right = &captured_post_immediate_literal } };
+    var captured_post_return = ast.Node{ .return_stmt = .{ .value = &captured_post_return_expr } };
+    const captured_post_body = [_]*ast.Node{ &bump_let, &captured_let_node, &captured_post_result_let, &captured_post_return };
+    const captured_post_func = ast.FuncDecl{ .name = "await_defer_captured_post_return_addend", .generics = &.{}, .params = &.{}, .ret_ty = &i32_ty, .body = captured_post_body[0..], .is_inline = false, .is_async = true };
+
+    const captured_post_plan = planAsyncSingleAwaitContinuation(&captured_post_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", captured_post_plan.binding_name);
+    try std.testing.expectEqualStrings("result", captured_post_plan.post_binding_name.?);
+    try std.testing.expectEqualStrings("bump", captured_post_plan.captured_addend_name.?);
+    try std.testing.expect(captured_post_plan.captured_addend_expr == &bump_literal);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, captured_post_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 1), captured_post_plan.addend);
+
+    var captured_local_post_result_ident = ast.Node{ .identifier = "result" };
+    var captured_local_post_value_ident = ast.Node{ .identifier = "ready_value" };
+    var captured_local_post_bump_ident = ast.Node{ .identifier = "bump" };
+    var captured_local_post_result_expr = ast.Node{ .binary_expr = .{ .left = &captured_local_post_value_ident, .op = .add, .right = &captured_local_post_bump_ident } };
+    var captured_local_post_result_let = ast.Node{ .let_stmt = .{ .name = "result", .ty = null, .value = &captured_local_post_result_expr } };
+    var captured_local_post_immediate_literal = ast.Node{ .literal = .{ .int_val = 1 } };
+    var captured_local_post_return_expr = ast.Node{ .binary_expr = .{ .left = &captured_local_post_result_ident, .op = .add, .right = &captured_local_post_immediate_literal } };
+    var captured_local_post_return = ast.Node{ .return_stmt = .{ .value = &captured_local_post_return_expr } };
+    const captured_local_post_body = [_]*ast.Node{ &bump_let, &captured_local_state_let, &captured_local_await_let, &captured_local_post_result_let, &captured_local_post_return };
+    const captured_local_post_func = ast.FuncDecl{ .name = "await_local_defer_captured_post_return_addend", .generics = &.{}, .params = &.{}, .ret_ty = &i32_ty, .body = captured_local_post_body[0..], .is_inline = false, .is_async = true };
+
+    const captured_local_post_plan = planAsyncSingleAwaitContinuation(&captured_local_post_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("ready_value", captured_local_post_plan.binding_name);
+    try std.testing.expectEqualStrings("result", captured_local_post_plan.post_binding_name.?);
+    try std.testing.expectEqualStrings("bump", captured_local_post_plan.captured_addend_name.?);
+    try std.testing.expect(captured_local_post_plan.captured_addend_expr == &bump_literal);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, captured_local_post_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 1), captured_local_post_plan.addend);
 }
 
 test "shared async single await continuation plan recognizes parsed captured addend" {
@@ -2226,11 +2303,24 @@ test "shared async single await continuation plan recognizes parsed captured add
         \\    let value = delayed.await;
         \\    return 1 + bump + value;
         \\}
+        \\async fn await_defer_ready_with_post_return_addend() -> i32 {
+        \\    let bump = 1;
+        \\    let value = future::defer_ready(40).await;
+        \\    let result = value + bump;
+        \\    return result + 1;
+        \\}
+        \\async fn await_local_defer_ready_with_post_return_addend() -> i32 {
+        \\    let bump = 1;
+        \\    let delayed = future::defer_ready(40);
+        \\    let value = delayed.await;
+        \\    let result = value + bump;
+        \\    return result + 1;
+        \\}
     ;
     var p = parser.Parser.init(arena.allocator(), source);
     const program = try p.parseProgram();
     try std.testing.expect(program.* == .program);
-    try std.testing.expectEqual(@as(usize, 2), program.program.decls.len);
+    try std.testing.expectEqual(@as(usize, 4), program.program.decls.len);
 
     const direct_func = &program.program.decls[0].func_decl;
     const direct_plan = planAsyncSingleAwaitContinuation(direct_func) orelse return error.TestExpectedEqual;
@@ -2247,6 +2337,24 @@ test "shared async single await continuation plan recognizes parsed captured add
     try std.testing.expect(local_plan.captured_addend_expr != null);
     try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_plan.awaited_kind);
     try std.testing.expectEqual(@as(i64, 1), local_plan.addend);
+
+    const post_return_func = &program.program.decls[2].func_decl;
+    const post_return_plan = planAsyncSingleAwaitContinuation(post_return_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", post_return_plan.binding_name);
+    try std.testing.expectEqualStrings("result", post_return_plan.post_binding_name.?);
+    try std.testing.expectEqualStrings("bump", post_return_plan.captured_addend_name.?);
+    try std.testing.expect(post_return_plan.captured_addend_expr != null);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, post_return_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 1), post_return_plan.addend);
+
+    const local_post_return_func = &program.program.decls[3].func_decl;
+    const local_post_return_plan = planAsyncSingleAwaitContinuation(local_post_return_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", local_post_return_plan.binding_name);
+    try std.testing.expectEqualStrings("result", local_post_return_plan.post_binding_name.?);
+    try std.testing.expectEqualStrings("bump", local_post_return_plan.captured_addend_name.?);
+    try std.testing.expect(local_post_return_plan.captured_addend_expr != null);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_post_return_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 1), local_post_return_plan.addend);
 }
 
 test "shared result generic inner types" {

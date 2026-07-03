@@ -14,11 +14,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
-- Latest committed baseline after this slice: ready Future/task runtime surface is committed in `/home/vscode/projects/sa_plugins/sa_plugin_sla`; SCI embedded symbol-token/call-body remap is committed in `/home/vscode/projects/sci` as `1beccde` (`Remap fragment embedded symbol text`).
+- Latest committed baseline after this slice: async while-let future queue and pending-future task polling are committed in `/home/vscode/projects/sa_plugins/sa_plugin_sla` as `bc1c29b` (`Extend async Future task runtime coverage`); SCI embedded symbol-token/call-body remap is committed in `/home/vscode/projects/sci` as `1beccde` (`Remap fragment embedded symbol text`).
 - Latest completed slices (verified with dev-mode SAB no-fallback + SA-text parity where applicable): scalar and pointer-backed `struct_update`, formatted `println` direct SAB lowering, `enum_match`, `spaceship_cmp`, `for_in_protocol`, `generic_for_in_protocol`, `derive_semantics`, `vec_index_assign`/nested Vec field assignment, the ready-future async/await subset, the ready Future/task runtime surface, direct `block_on` over ready futures with fallible std-time externs, direct `while let Some(task) = queue.pop()` over a `Vec<future<T>>` queue, and pending-future task polling through `future::pending::<T>()`.
 - Current full dev-mode direct SAB no-fallback sweep: 76/76 passing (added `tests/test_unit_async_pending_task_runtime.sla`).
 - Current global estimates: Y/shared-lowering about 98%; direct SAB fallback-removal is 100% for the tracked unit corpus, with corpus pass rate now 76/76.
-- Current feature report: `async pending future task poll direct SAB 100%; no-fallback sweep is 76/76; commit pending in this slice`.
+- Current feature report: `async pending future task poll direct SAB 100%; no-fallback sweep is 76/76; committed as bc1c29b`.
 - Current SCI boundary sub-slice: embedded symbol-token/call-body remap is implemented in `/home/vscode/projects/sci/src/flattener.zig` and verified. Extern/export ordering is now closed as no-repro (stress probe + exported-helper ordering regression), and the plugin-side fragment cleanup audit concluded the plugin decode-time adapter is not a duplicate of SCI's flatten-time remap. Broader SCI boundary convergence is about 80%; full generic fragment naming remains a longer-term SCI task.
 - Remaining tracked unit failures: none.
 

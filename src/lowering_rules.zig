@@ -473,7 +473,7 @@ pub fn planAwaitFutureWithReadiness(expr: *const ast.Node, future_ty: *const ast
     const inner = futureInnerType(future_ty);
     return .{
         .ready_state_inner = true,
-        .pending_return_if_async = exprIsStaticallyPendingFuture(expr),
+        .pending_return_if_async = exprFutureReadiness(expr, readiness_by_name) == .pending,
         .poll_once_if_statically_ready = exprNeedsPollOnceForReadyAwait(expr, readiness_by_name),
         .ready_pending_state_return_if_async = if (async_return_ty) |ret_ty|
             if (inner) |inner_ty| typesEquivalent(inner_ty, ret_ty) else false
@@ -1833,6 +1833,11 @@ test "shared future runtime call classification" {
     var local_join = ast.Node{ .call_expr = .{ .func_name = "join2", .associated_target = "future", .generics = &.{}, .args = local_join_args[0..] } };
     const local_join_await_plan = planAwaitFutureWithReadiness(&local_join, &pair_future_ty, null, &readiness);
     try std.testing.expect(local_join_await_plan.poll_once_if_statically_ready);
+
+    try readiness.put("right", .pending);
+    const local_pending_join_await_plan = planAwaitFutureWithReadiness(&local_join, &pair_future_ty, null, &readiness);
+    try std.testing.expect(local_pending_join_await_plan.pending_return_if_async);
+    try std.testing.expect(!local_pending_join_await_plan.poll_once_if_statically_ready);
 
     var pending_node = ast.Node{ .call_expr = pending };
     const pending_await_plan = planAwaitFuture(&pending_node, &i32_ty, null);

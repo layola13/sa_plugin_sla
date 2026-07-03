@@ -58,6 +58,18 @@ pub const TaskRuntimeCallPlan = struct {
     kind: TaskRuntimeCallKind,
 };
 
+pub const PollRuntimeCallKind = enum {
+    ready,
+    pending,
+    is_ready,
+    is_pending,
+    value,
+};
+
+pub const PollRuntimeCallPlan = struct {
+    kind: PollRuntimeCallKind,
+};
+
 pub const ImportedMacroCallPlan = struct {
     macro_name: []const u8,
     import_path: ?[]const u8,
@@ -328,6 +340,24 @@ pub fn planTaskRuntimeCall(call: ast.CallExpr) ?TaskRuntimeCallPlan {
     if (std.mem.eql(u8, call.func_name, "is_ready")) return .{ .kind = .is_ready };
     if (std.mem.eql(u8, call.func_name, "result")) return .{ .kind = .result };
     if (std.mem.eql(u8, call.func_name, "state")) return .{ .kind = .state };
+    return null;
+}
+
+pub fn planPollRuntimeCall(call: ast.CallExpr) ?PollRuntimeCallPlan {
+    if (call.associated_target) |target| {
+        if (!std.mem.eql(u8, target, "poll")) return null;
+        if (std.mem.eql(u8, call.func_name, "ready")) return .{ .kind = .ready };
+        if (std.mem.eql(u8, call.func_name, "pending")) return .{ .kind = .pending };
+        if (std.mem.eql(u8, call.func_name, "is_ready")) return .{ .kind = .is_ready };
+        if (std.mem.eql(u8, call.func_name, "is_pending")) return .{ .kind = .is_pending };
+        if (std.mem.eql(u8, call.func_name, "value")) return .{ .kind = .value };
+        return null;
+    }
+    if (std.mem.eql(u8, call.func_name, "poll__ready")) return .{ .kind = .ready };
+    if (std.mem.eql(u8, call.func_name, "poll__pending")) return .{ .kind = .pending };
+    if (std.mem.eql(u8, call.func_name, "poll__is_ready")) return .{ .kind = .is_ready };
+    if (std.mem.eql(u8, call.func_name, "poll__is_pending")) return .{ .kind = .is_pending };
+    if (std.mem.eql(u8, call.func_name, "poll__value")) return .{ .kind = .value };
     return null;
 }
 
@@ -1555,6 +1585,18 @@ test "shared future runtime call classification" {
 
     const state = ast.CallExpr{ .func_name = "state", .associated_target = "task", .generics = &.{}, .args = args[0..] };
     try std.testing.expectEqual(TaskRuntimeCallKind.state, planTaskRuntimeCall(state).?.kind);
+
+    const poll_ready = ast.CallExpr{ .func_name = "ready", .associated_target = "poll", .generics = &.{}, .args = args[0..] };
+    try std.testing.expectEqual(PollRuntimeCallKind.ready, planPollRuntimeCall(poll_ready).?.kind);
+
+    const poll_pending = ast.CallExpr{ .func_name = "pending", .associated_target = "poll", .generics = generics[0..], .args = &.{} };
+    try std.testing.expectEqual(PollRuntimeCallKind.pending, planPollRuntimeCall(poll_pending).?.kind);
+
+    const flat_poll_pending = ast.CallExpr{ .func_name = "poll__pending", .generics = generics[0..], .args = &.{} };
+    try std.testing.expectEqual(PollRuntimeCallKind.pending, planPollRuntimeCall(flat_poll_pending).?.kind);
+
+    const poll_value = ast.CallExpr{ .func_name = "value", .associated_target = "poll", .generics = &.{}, .args = args[0..] };
+    try std.testing.expectEqual(PollRuntimeCallKind.value, planPollRuntimeCall(poll_value).?.kind);
 }
 
 test "shared result generic inner types" {

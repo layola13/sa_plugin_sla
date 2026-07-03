@@ -5159,7 +5159,10 @@ pub const Codegen = struct {
             .closure_literal => |lit| exprNeedsAsyncMacros(lit.body),
             .call_expr => |call| blk: {
                 if (call.associated_target != null) {
-                    if (lowering_rules.planFutureRuntimeCall(call) != null or lowering_rules.planTaskRuntimeCall(call) != null) {
+                    if (lowering_rules.planFutureRuntimeCall(call) != null or
+                        lowering_rules.planTaskRuntimeCall(call) != null or
+                        lowering_rules.planPollRuntimeCall(call) != null)
+                    {
                         break :blk true;
                     }
                 }
@@ -6359,6 +6362,52 @@ pub const Codegen = struct {
         const future_reg = try self.newTmp();
         self.out.writer().print("    EXPAND FUTURE_PENDING_STATE_NEW {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
         return future_reg;
+    }
+
+    fn genReadyPoll(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
+        const poll_reg = try self.newTmp();
+        self.out.writer().print("    EXPAND POLL_READY {s}, {s}\n", .{ poll_reg, value_reg }) catch return CodegenError.CodegenError;
+        return poll_reg;
+    }
+
+    fn genPendingPoll(self: *Codegen) CodegenError![]const u8 {
+        const poll_reg = try self.newTmp();
+        self.out.writer().print("    EXPAND POLL_PENDING {s}\n", .{poll_reg}) catch return CodegenError.CodegenError;
+        return poll_reg;
+    }
+
+    fn genPollRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
+        const plan = lowering_rules.planPollRuntimeCall(call) orelse return null;
+        return switch (plan.kind) {
+            .ready => blk: {
+                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                const poll_reg = try self.genReadyPoll(value_reg);
+                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                break :blk poll_reg;
+            },
+            .pending => blk: {
+                if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
+                break :blk try self.genPendingPoll();
+            },
+            .is_ready, .is_pending => blk: {
+                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                const poll_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                const out_reg = try self.newTmp();
+                const macro_name = if (plan.kind == .is_ready) "POLL_IS_READY" else "POLL_IS_PENDING";
+                self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, out_reg, poll_reg }) catch return CodegenError.CodegenError;
+                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(poll_reg);
+                break :blk out_reg;
+            },
+            .value => blk: {
+                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                const poll_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                const value_reg = try self.newTmp();
+                self.out.writer().print("    EXPAND POLL_VALUE {s}, {s}\n", .{ value_reg, poll_reg }) catch return CodegenError.CodegenError;
+                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(poll_reg);
+                break :blk value_reg;
+            },
+        };
     }
 
     fn genFormatCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
@@ -9093,6 +9142,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    EXPAND PTR_NULL {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     return reg;
                 }
+                if (try self.genPollRuntimeCall(call, hoisted_allocs)) |poll_reg| return poll_reg;
                 if (lowering_rules.planFutureRuntimeCall(call)) |future_plan| {
                     switch (future_plan.kind) {
                         .ready => {

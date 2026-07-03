@@ -558,6 +558,10 @@ pub const TypeChecker = struct {
         return isNumericType(ty) or isPrimitiveType(ty, .boolean);
     }
 
+    fn isPollScalarValueType(ty: *const ast.Type) bool {
+        return isNumericType(ty);
+    }
+
     fn isRawPtrAliasType(ty: *const ast.Type) bool {
         return switch (ty.*) {
             .primitive => |p| p == .void_type,
@@ -917,6 +921,14 @@ pub const TypeChecker = struct {
         generics[0] = inner;
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .user_defined = .{ .name = "Task", .generics = generics } };
+        return ty;
+    }
+
+    fn makePollType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 1);
+        generics[0] = inner;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "Poll", .generics = generics } };
         return ty;
     }
 
@@ -1678,6 +1690,21 @@ pub const TypeChecker = struct {
                 .borrow => |b| curr = b,
                 .user_defined => |ud| {
                     if (std.mem.eql(u8, ud.name, "Task") and ud.generics.len == 1) return ud.generics[0];
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn pollInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "Poll") and ud.generics.len == 1) return ud.generics[0];
                     return null;
                 },
                 else => return null,
@@ -3308,6 +3335,38 @@ pub const TypeChecker = struct {
                     return try self.makeFutureType(call.generics[0]);
                 }
 
+                if (std.mem.eql(u8, call.func_name, "poll__ready")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                    const inner_ty = try self.checkExpr(call.args[0], scope);
+                    if (!isPollScalarValueType(inner_ty)) return TypeError.TypeMismatch;
+                    return try self.makePollType(inner_ty);
+                }
+
+                if (std.mem.eql(u8, call.func_name, "poll__pending")) {
+                    if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                    if (call.generics.len != 1) return TypeError.InvalidArgsCount;
+                    if (!isPollScalarValueType(call.generics[0])) return TypeError.TypeMismatch;
+                    return try self.makePollType(call.generics[0]);
+                }
+
+                if (std.mem.eql(u8, call.func_name, "poll__is_ready") or std.mem.eql(u8, call.func_name, "poll__is_pending")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                    const poll_ty = try self.checkExpr(call.args[0], scope);
+                    _ = pollInnerType(poll_ty) orelse return TypeError.TypeMismatch;
+                    return try self.makeBoolType();
+                }
+
+                if (std.mem.eql(u8, call.func_name, "poll__value")) {
+                    if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                    if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                    const poll_ty = try self.checkExpr(call.args[0], scope);
+                    const inner_ty = pollInnerType(poll_ty) orelse return TypeError.TypeMismatch;
+                    if (!isPollScalarValueType(inner_ty)) return TypeError.TypeMismatch;
+                    return inner_ty;
+                }
+
                 if (std.mem.eql(u8, call.func_name, "RAW_WAKER_NEW")) {
                     if (call.args.len != 2) return TypeError.InvalidArgsCount;
                     const data_ty = try self.checkExpr(call.args[0], scope);
@@ -3487,6 +3546,34 @@ pub const TypeChecker = struct {
                         if (call.args.len != 0) return TypeError.InvalidArgsCount;
                         if (call.generics.len != 1) return TypeError.InvalidArgsCount;
                         return try self.makeFutureType(call.generics[0]);
+                    }
+                    if (std.mem.eql(u8, target_name, "poll") and std.mem.eql(u8, call.func_name, "ready")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                        const inner_ty = try self.checkExpr(call.args[0], scope);
+                        if (!isPollScalarValueType(inner_ty)) return TypeError.TypeMismatch;
+                        return try self.makePollType(inner_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "poll") and std.mem.eql(u8, call.func_name, "pending")) {
+                        if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                        if (call.generics.len != 1) return TypeError.InvalidArgsCount;
+                        if (!isPollScalarValueType(call.generics[0])) return TypeError.TypeMismatch;
+                        return try self.makePollType(call.generics[0]);
+                    }
+                    if (std.mem.eql(u8, target_name, "poll") and (std.mem.eql(u8, call.func_name, "is_ready") or std.mem.eql(u8, call.func_name, "is_pending"))) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                        const poll_ty = try self.checkExpr(call.args[0], scope);
+                        _ = pollInnerType(poll_ty) orelse return TypeError.TypeMismatch;
+                        return try self.makeBoolType();
+                    }
+                    if (std.mem.eql(u8, target_name, "poll") and std.mem.eql(u8, call.func_name, "value")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+                        const poll_ty = try self.checkExpr(call.args[0], scope);
+                        const inner_ty = pollInnerType(poll_ty) orelse return TypeError.TypeMismatch;
+                        if (!isPollScalarValueType(inner_ty)) return TypeError.TypeMismatch;
+                        return inner_ty;
                     }
                     if (std.mem.eql(u8, target_name, "task") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;

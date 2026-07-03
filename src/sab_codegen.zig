@@ -198,6 +198,7 @@ pub const Codegen = struct {
     escaped_closure_idx: usize = 0,
     in_function_body: bool = false,
     current_async_return: bool = false,
+    current_async_return_ty: ?*const ast.Type = null,
     future_task_helpers_emitted: bool = false,
     // When appending a decoded std-macro fragment, fragment-internal temp/local
     // registers (named `tmp_N`, `__...` by the snippet flattener) share the
@@ -3544,8 +3545,11 @@ pub const Codegen = struct {
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
         const old_async_return = self.current_async_return;
+        const old_async_return_ty = self.current_async_return_ty;
         self.current_async_return = f.is_async;
+        self.current_async_return_ty = if (f.is_async) f.ret_ty else null;
         defer self.current_async_return = old_async_return;
+        defer self.current_async_return_ty = old_async_return_ty;
         self.beginFunction();
         try self.collectBorrowedBindingsInBlock(f.body);
         const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
@@ -4265,12 +4269,41 @@ pub const Codegen = struct {
 
     fn genAwait(self: *Codegen, expr: *const ast.Node, aw: ast.AwaitExpr) !u32 {
         const future_ty = self.tc.expr_types.get(aw.expr) orelse return Error.MissingType;
-        const plan = lowering_rules.planAwaitFuture(aw.expr, future_ty);
+        const plan = lowering_rules.planAwaitFuture(aw.expr, future_ty, self.current_async_return_ty);
         _ = expr;
         const future = try self.genExpr(aw.expr);
         if (self.current_async_return and plan.pending_return_if_async) {
+            try self.releaseOpenLocals(future);
             try self.emitReturn(future);
             return future;
+        }
+        if (self.current_async_return and plan.ready_pending_state_return_if_async) {
+            const state = try self.intern(try self.newTmp());
+            const zero = try self.intern(try self.newTmp());
+            const is_pending = try self.intern(try self.newTmp());
+            const pending_label = try self.newLabel("L_AWAIT_PENDING");
+            const ready_label = try self.newLabel("L_AWAIT_READY");
+            try self.emitLoad(state, future, 0, .u64);
+            try self.emitAssignImm(zero, 0);
+            try self.emitOp(is_pending, .eq, .{ .reg = state }, .{ .reg = zero });
+            try self.emitBranch(is_pending, pending_label, ready_label);
+
+            try self.emitLabel(pending_label);
+            try self.releaseOpenLocals(future);
+            try self.emitReturn(future);
+
+            try self.emitLabel(ready_label);
+            try self.emitBranchRelease(is_pending);
+            try self.emitBranchRelease(zero);
+            try self.emitBranchRelease(state);
+            const out = try self.intern(try self.newTmp());
+            try self.recordReg(out);
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_READY_STATE_INTO_INNER", &.{
+                self.symbols.items[out],
+                self.symbols.items[future],
+            });
+            if (!self.isLocalReg(future)) try self.emitRelease(future);
+            return out;
         }
         if (!plan.ready_state_inner) return Error.UnsupportedSabDirectFeature;
         const out = try self.intern(try self.newTmp());

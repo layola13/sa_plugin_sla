@@ -36,6 +36,7 @@ pub const AsyncReturnPlan = struct {
 pub const AwaitPlan = struct {
     ready_state_inner: bool,
     pending_return_if_async: bool = false,
+    ready_pending_state_return_if_async: bool = false,
 };
 
 pub const FutureRuntimeCallKind = enum {
@@ -351,10 +352,74 @@ pub fn exprIsStaticallyPendingFuture(expr: *const ast.Node) bool {
     return plan.kind == .pending;
 }
 
-pub fn planAwaitFuture(expr: *const ast.Node, _: *const ast.Type) AwaitPlan {
+pub fn futureInnerType(ty: *const ast.Type) ?*ast.Type {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .future => |inner| return inner,
+            else => return null,
+        }
+    }
+}
+
+pub fn typesEquivalent(a: *const ast.Type, b: *const ast.Type) bool {
+    if (a.* == .infer or b.* == .infer) return true;
+    if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
+    return switch (a.*) {
+        .infer => true,
+        .primitive => |pa| pa == b.primitive,
+        .pointer => |pa| typesEquivalent(pa, b.pointer),
+        .borrow => |ba| typesEquivalent(ba, b.borrow),
+        .array => |aa| aa.len == b.array.len and typesEquivalent(aa.elem, b.array.elem),
+        .tuple => |ta| blk: {
+            if (ta.elems.len != b.tuple.elems.len) break :blk false;
+            for (ta.elems, b.tuple.elems) |ea, eb| {
+                if (!typesEquivalent(ea, eb)) break :blk false;
+            }
+            break :blk true;
+        },
+        .future => |fa| typesEquivalent(fa, b.future),
+        .closure => |ca| blk: {
+            if (ca.params.len != b.closure.params.len) break :blk false;
+            for (ca.params, b.closure.params) |pa, pb| {
+                if (!typesEquivalent(pa, pb)) break :blk false;
+            }
+            break :blk typesEquivalent(ca.ret, b.closure.ret);
+        },
+        .fn_ptr => |fa| blk: {
+            if (fa.abi == null) {
+                if (b.fn_ptr.abi != null) break :blk false;
+            } else if (b.fn_ptr.abi == null or !std.mem.eql(u8, fa.abi.?, b.fn_ptr.abi.?)) {
+                break :blk false;
+            }
+            if (fa.params.len != b.fn_ptr.params.len) break :blk false;
+            for (fa.params, b.fn_ptr.params) |pa, pb| {
+                if (!typesEquivalent(pa, pb)) break :blk false;
+            }
+            break :blk typesEquivalent(fa.ret, b.fn_ptr.ret);
+        },
+        .user_defined => |ua| blk: {
+            if (!std.mem.eql(u8, ua.name, b.user_defined.name)) break :blk false;
+            if (ua.generics.len != b.user_defined.generics.len) break :blk false;
+            for (ua.generics, b.user_defined.generics) |ga, gb| {
+                if (!typesEquivalent(ga, gb)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
+
+pub fn planAwaitFuture(expr: *const ast.Node, future_ty: *const ast.Type, async_return_ty: ?*const ast.Type) AwaitPlan {
+    const inner = futureInnerType(future_ty);
     return .{
         .ready_state_inner = true,
         .pending_return_if_async = exprIsStaticallyPendingFuture(expr),
+        .ready_pending_state_return_if_async = if (async_return_ty) |ret_ty|
+            if (inner) |inner_ty| typesEquivalent(inner_ty, ret_ty) else false
+        else
+            false,
     };
 }
 
@@ -1691,7 +1756,7 @@ test "shared future runtime call classification" {
     try std.testing.expectEqual(FutureRuntimeCallKind.join2, planFutureRuntimeCall(join2).?.kind);
 
     var pending_node = ast.Node{ .call_expr = pending };
-    const pending_await_plan = planAwaitFuture(&pending_node, &i32_ty);
+    const pending_await_plan = planAwaitFuture(&pending_node, &i32_ty, null);
     try std.testing.expect(pending_await_plan.ready_state_inner);
     try std.testing.expect(pending_await_plan.pending_return_if_async);
 

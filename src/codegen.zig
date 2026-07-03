@@ -94,6 +94,7 @@ pub const Codegen = struct {
     loop_continue_labels: std.ArrayList([]const u8),
     loop_break_labels: std.ArrayList([]const u8),
     current_async: bool,
+    current_async_return_ty: ?*const ast.Type,
     async_pending_return_emitted: bool,
     thread_helper_idx: usize,
 
@@ -151,6 +152,7 @@ pub const Codegen = struct {
             .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
             .loop_break_labels = std.ArrayList([]const u8).init(allocator),
             .current_async = false,
+            .current_async_return_ty = null,
             .async_pending_return_emitted = false,
             .thread_helper_idx = 0,
         };
@@ -5874,10 +5876,13 @@ pub const Codegen = struct {
 
     fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) CodegenError!void {
         const prev_async = self.current_async;
+        const prev_async_return_ty = self.current_async_return_ty;
         const prev_async_pending_return = self.async_pending_return_emitted;
         self.current_async = f.is_async;
+        self.current_async_return_ty = if (f.is_async) f.ret_ty else null;
         self.async_pending_return_emitted = false;
         defer self.current_async = prev_async;
+        defer self.current_async_return_ty = prev_async_return_ty;
         defer self.async_pending_return_emitted = prev_async_pending_return;
         self.addressable_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
@@ -9256,11 +9261,29 @@ pub const Codegen = struct {
             .await_expr => |aw| {
                 const future_ty = self.tc.expr_types.get(aw.expr) orelse return CodegenError.CodegenError;
                 const future_reg = try self.genExpr(aw.expr, hoisted_allocs);
-                const plan = lowering_rules.planAwaitFuture(aw.expr, future_ty);
+                const plan = lowering_rules.planAwaitFuture(aw.expr, future_ty, self.current_async_return_ty);
                 if (self.current_async and plan.pending_return_if_async) {
                     self.out.writer().print("    return {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
                     self.async_pending_return_emitted = true;
                     return future_reg;
+                }
+                if (self.current_async and plan.ready_pending_state_return_if_async) {
+                    const state_reg = try self.newTmp();
+                    const pending_reg = try self.newTmp();
+                    const ready_label = try self.newLabel("L_AWAIT_READY");
+                    const pending_label = try self.newLabel("L_AWAIT_PENDING");
+                    self.out.writer().print("    {s} = load {s}+ReadyFuture_state as u64\n", .{ state_reg, future_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = eq {s}, 0\n", .{ pending_reg, state_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ pending_reg, pending_label, ready_label }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("{s}:\n", .{pending_label}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    return {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("{s}:\n", .{ready_label}) catch return CodegenError.CodegenError;
+                    try self.emitRelease(state_reg);
+                    try self.emitRelease(pending_reg);
+                    const out_reg = try self.newTmp();
+                    self.out.writer().print("    EXPAND FUTURE_READY_STATE_INTO_INNER {s}, {s}\n", .{ out_reg, future_reg }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(future_reg);
+                    return out_reg;
                 }
                 if (!plan.ready_state_inner) return CodegenError.CodegenError;
                 const out_reg = try self.newTmp();

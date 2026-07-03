@@ -40,6 +40,13 @@ pub const AwaitPlan = struct {
     poll_once_if_statically_ready: bool = false,
 };
 
+pub const AsyncSingleAwaitContinuationPlan = struct {
+    binding_name: []const u8,
+    await_expr: *const ast.Node,
+    awaited_kind: FutureRuntimeCallKind,
+    addend: i64 = 0,
+};
+
 pub const FutureReadiness = enum {
     unknown,
     ready,
@@ -351,6 +358,46 @@ pub fn planAsyncFunctionReturn(func: ast.FuncDecl, ptr_ty: *const ast.Type) Asyn
     return .{
         .abi_ret_ty = if (func.is_async) ptr_ty else func.ret_ty,
         .wrap_ready_future = func.is_async,
+    };
+}
+
+fn asyncContinuationAddend(expr: *const ast.Node, binding_name: []const u8) ?i64 {
+    switch (expr.*) {
+        .identifier => |name| return if (std.mem.eql(u8, name, binding_name)) 0 else null,
+        .binary_expr => |bin| {
+            if (bin.op != .add) return null;
+            if (bin.left.* == .identifier and std.mem.eql(u8, bin.left.identifier, binding_name) and bin.right.* == .literal and bin.right.literal == .int_val) {
+                return bin.right.literal.int_val;
+            }
+            if (bin.right.* == .identifier and std.mem.eql(u8, bin.right.identifier, binding_name) and bin.left.* == .literal and bin.left.literal == .int_val) {
+                return bin.left.literal.int_val;
+            }
+            return null;
+        },
+        else => return null,
+    }
+}
+
+pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleAwaitContinuationPlan {
+    if (!func.is_async or func.body.len != 2) return null;
+    if (func.body[0].* != .let_stmt) return null;
+    const let_stmt = func.body[0].let_stmt;
+    if (let_stmt.value.* != .await_expr) return null;
+    if (let_stmt.value.await_expr.expr.* != .call_expr) return null;
+    const awaited_call = planFutureRuntimeCall(let_stmt.value.await_expr.expr.call_expr) orelse return null;
+    if (awaited_call.kind != .defer_ready) return null;
+
+    const ret_expr = switch (func.body[1].*) {
+        .return_stmt => |ret| ret.value orelse return null,
+        .expr_stmt => |expr| expr,
+        else => return null,
+    };
+    const addend = asyncContinuationAddend(ret_expr, let_stmt.name) orelse return null;
+    return .{
+        .binding_name = let_stmt.name,
+        .await_expr = let_stmt.value.await_expr.expr,
+        .awaited_kind = awaited_call.kind,
+        .addend = addend,
     };
 }
 
@@ -1884,6 +1931,30 @@ test "shared future runtime call classification" {
 
     const poll_value = ast.CallExpr{ .func_name = "value", .associated_target = "poll", .generics = &.{}, .args = args[0..] };
     try std.testing.expectEqual(PollRuntimeCallKind.value, planPollRuntimeCall(poll_value).?.kind);
+}
+
+test "shared async single await continuation plan is defer-ready only" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var value_node = ast.Node{ .literal = .{ .int_val = 41 } };
+    const args = [_]*ast.Node{&value_node};
+    var defer_call = ast.Node{ .call_expr = .{ .func_name = "defer_ready", .associated_target = "future", .generics = &.{}, .args = args[0..] } };
+    var await_node = ast.Node{ .await_expr = .{ .expr = &defer_call } };
+    var let_node = ast.Node{ .let_stmt = .{ .name = "value", .ty = null, .value = &await_node } };
+    var ident_node = ast.Node{ .identifier = "value" };
+    var addend_node = ast.Node{ .literal = .{ .int_val = 1 } };
+    var return_expr = ast.Node{ .binary_expr = .{ .left = &ident_node, .op = .add, .right = &addend_node } };
+    var return_node = ast.Node{ .return_stmt = .{ .value = &return_expr } };
+    const body = [_]*ast.Node{ &let_node, &return_node };
+    const func = ast.FuncDecl{ .name = "await_defer", .generics = &.{}, .params = &.{}, .ret_ty = &i32_ty, .body = body[0..], .is_inline = false, .is_async = true };
+
+    const plan = planAsyncSingleAwaitContinuation(&func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", plan.binding_name);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 1), plan.addend);
+
+    var ready_call = ast.Node{ .call_expr = .{ .func_name = "ready", .associated_target = "future", .generics = &.{}, .args = args[0..] } };
+    await_node.await_expr.expr = &ready_call;
+    try std.testing.expect(planAsyncSingleAwaitContinuation(&func) == null);
 }
 
 test "shared result generic inner types" {

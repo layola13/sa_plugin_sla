@@ -3640,6 +3640,36 @@ pub const Codegen = struct {
         }
     }
 
+    fn genAsyncSingleAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncSingleAwaitContinuationPlan) !void {
+        try self.emitAsyncSingleAwaitPollHelper(name, plan);
+
+        self.beginFunction();
+        try self.collectBorrowedBindingsInBlock(f.body);
+        const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
+        const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
+        try self.appendDeclInst(fsig);
+        try self.emitLabel("L_ENTRY");
+        try self.materializeBorrowedParams(f.params);
+
+        const inner_state = try self.genExpr(@constCast(plan.await_expr));
+        const async_state = try self.intern(try self.newTmp());
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAlloc(async_state, 16);
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(async_state, 0, zero, .u64);
+        try self.emitStore(async_state, 8, inner_state, .ptr);
+        try self.emitRelease(zero);
+        try self.emitRelease(inner_state);
+        try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
+        try self.recordFutureReadiness(async_state, .unknown);
+        try self.releaseOpenLocals(async_state);
+        try self.emitReturn(async_state);
+
+        try self.finishFunctionBody(sig_idx);
+    }
+
     fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) !void {
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
@@ -3649,6 +3679,9 @@ pub const Codegen = struct {
         self.current_async_return_ty = if (f.is_async) f.ret_ty else null;
         defer self.current_async_return = old_async_return;
         defer self.current_async_return_ty = old_async_return_ty;
+        if (lowering_rules.planAsyncSingleAwaitContinuation(f)) |plan| {
+            return try self.genAsyncSingleAwaitFuncDeclNamed(name, f, plan);
+        }
         self.beginFunction();
         try self.collectBorrowedBindingsInBlock(f.body);
         const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
@@ -4126,6 +4159,120 @@ pub const Codegen = struct {
         try self.emitRelease(left_future);
         try self.emitRelease(right_future);
         return select_state;
+    }
+
+    fn asyncSingleAwaitVTableName(self: *Codegen, name: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_VT", .{name});
+    }
+
+    fn asyncSingleAwaitPollName(self: *Codegen, name: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.allocator, "sla_async_{s}_poll", .{name});
+    }
+
+    fn emitAsyncSingleAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncSingleAwaitContinuationPlan) !void {
+        const vt_name = try self.asyncSingleAwaitVTableName(name);
+        const poll_name = try self.asyncSingleAwaitPollName(name);
+        try self.appendVTableConst(vt_name, poll_name);
+
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
+        self.beginFunction();
+
+        const names = [_][]const u8{ "data_slot", "ctx_slot", "out_poll_slot" };
+        const specs = try self.allocator.alloc(sig.ParamSpec, names.len);
+        const ids = try self.allocator.alloc(u32, names.len);
+        for (names, 0..) |param_name, i| {
+            ids[i] = try self.intern(param_name);
+            specs[i] = .{ .name = param_name, .ty = .ptr, .cap = .borrow };
+            try self.pushRawParamLocal(param_name, ids[i], .borrow);
+        }
+
+        const fsig = try self.appendGeneratedFuncSig(poll_name, .normal, specs, ids, .void, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
+        try self.appendDeclInst(fsig);
+        try self.emitLabel("L_ENTRY");
+
+        const stage = try self.intern(try self.newTmp());
+        const done = try self.intern(try self.newTmp());
+        const empty_label = try self.newLabel("L_ASYNC_SINGLE_AWAIT_EMPTY");
+        const poll_label = try self.newLabel("L_ASYNC_SINGLE_AWAIT_POLL");
+        const ready_label = try self.newLabel("L_ASYNC_SINGLE_AWAIT_READY");
+        const pending_label = try self.newLabel("L_ASYNC_SINGLE_AWAIT_PENDING");
+        const clean_label = try self.newLabel("L_ASYNC_SINGLE_AWAIT_CLEAN");
+        const done_label = try self.newLabel("L_ASYNC_SINGLE_AWAIT_DONE");
+        try self.emitLoad(stage, ids[0], 0, .u64);
+        try self.emitOp(done, .eq, .{ .reg = stage }, .{ .imm_i64 = 1 });
+        try self.emitBranch(done, empty_label, poll_label);
+
+        try self.emitLabel(empty_label);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitJmp(done_label);
+
+        try self.emitLabel(poll_label);
+        const inner_state = try self.intern(try self.newTmp());
+        const inner_stage = try self.intern(try self.newTmp());
+        const inner_initial = try self.intern(try self.newTmp());
+        const check_ready_label = try self.newLabel("L_ASYNC_SINGLE_AWAIT_CHECK_READY");
+        const empty_after_done_label = try self.newLabel("L_ASYNC_SINGLE_AWAIT_EMPTY_AFTER_DONE");
+        try self.emitLoad(inner_state, ids[0], 8, .ptr);
+        try self.emitLoad(inner_stage, inner_state, 0, .u64);
+        try self.emitOp(inner_initial, .eq, .{ .reg = inner_stage }, .{ .imm_i64 = 0 });
+        try self.emitBranch(inner_initial, pending_label, check_ready_label);
+
+        try self.emitLabel(pending_label);
+        const inner_stage_one = try self.intern(try self.newTmp());
+        try self.emitAssignImm(inner_stage_one, 1);
+        try self.emitStore(inner_state, 0, inner_stage_one, .u64);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitRelease(inner_stage_one);
+        try self.emitJmp(clean_label);
+
+        try self.emitLabel(check_ready_label);
+        const inner_ready = try self.intern(try self.newTmp());
+        try self.emitOp(inner_ready, .eq, .{ .reg = inner_stage }, .{ .imm_i64 = 1 });
+        try self.emitBranch(inner_ready, ready_label, empty_after_done_label);
+
+        try self.emitLabel(empty_after_done_label);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitRelease(inner_ready);
+        try self.emitJmp(clean_label);
+
+        try self.emitLabel(ready_label);
+        const value = try self.intern(try self.newTmp());
+        const result = if (plan.addend == 0) value else try self.intern(try self.newTmp());
+        const stage_one = try self.intern(try self.newTmp());
+        const inner_stage_two = try self.intern(try self.newTmp());
+        try self.emitLoad(value, inner_state, 8, .u64);
+        if (plan.addend != 0) {
+            try self.emitOp(result, .add, .{ .reg = value }, .{ .imm_i64 = plan.addend });
+        }
+        try self.emitAssignImm(inner_stage_two, 2);
+        try self.emitStore(inner_state, 0, inner_stage_two, .u64);
+        try self.emitAssignImm(stage_one, 1);
+        try self.emitStore(ids[0], 0, stage_one, .u64);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_READY", &.{
+            self.symbols.items[ids[2]],
+            self.symbols.items[result],
+        });
+        try self.emitRelease(inner_stage_two);
+        try self.emitRelease(stage_one);
+        if (plan.addend != 0) try self.emitRelease(result);
+        try self.emitRelease(value);
+        try self.emitRelease(inner_ready);
+
+        try self.emitLabel(clean_label);
+        try self.emitRelease(inner_initial);
+        try self.emitRelease(inner_stage);
+        try self.emitRelease(inner_state);
+
+        try self.emitLabel(done_label);
+        try self.emitRelease(done);
+        try self.emitRelease(stage);
+        for (ids) |id| try self.emitRelease(id);
+        try self.emitReturn(null);
+
+        try self.finishFunctionBody(sig_idx);
     }
 
     fn genReadyPoll(self: *Codegen, value: u32) !u32 {
@@ -7405,6 +7552,12 @@ pub const Codegen = struct {
         try text.append(')');
         const dst = try self.emitPlannedCallBody(lowering_rules.planStaticCallResult(self.tc, call_plan, expr_ty), try text.toOwnedSlice());
         try self.releaseNonLocalTemps(release_regs.items);
+        if (maybe_func) |func| {
+            if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {
+                try self.future_state_vtables.put(dst, try self.asyncSingleAwaitVTableName(call_plan.target_symbol));
+                try self.recordFutureReadiness(dst, .unknown);
+            }
+        }
         return dst;
     }
 

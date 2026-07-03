@@ -5945,6 +5945,10 @@ pub const Codegen = struct {
         self.clearHashMapKeySlots();
         try self.collectAddressableBindings(f.body);
 
+        if (lowering_rules.planAsyncSingleAwaitContinuation(f)) |plan| {
+            return try self.genAsyncSingleAwaitFuncDeclNamed(name, f, plan);
+        }
+
         // Emit function signature
         const lowered_name = try self.loweredFuncSymbol(name);
         defer self.allocator.free(lowered_name);
@@ -6544,6 +6548,104 @@ pub const Codegen = struct {
         try self.emitRelease(left_future);
         try self.emitRelease(right_future);
         return select_state;
+    }
+
+    fn asyncSingleAwaitVTableName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_VT", .{name}) catch return CodegenError.OutOfMemory;
+    }
+
+    fn asyncSingleAwaitPollName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "sla_async_{s}_poll", .{name}) catch return CodegenError.OutOfMemory;
+    }
+
+    fn emitAsyncSingleAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncSingleAwaitContinuationPlan) CodegenError!void {
+        const vt_name = try self.asyncSingleAwaitVTableName(name);
+        const poll_name = try self.asyncSingleAwaitPollName(name);
+        self.out.writer().print(
+            \\@const {s} = vtable {{ poll = @{s} }}
+            \\@{s}(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
+            \\L_ENTRY:
+            \\    async_stage = load data_slot+0 as u64
+            \\    async_done = eq async_stage, 1
+            \\    br async_done -> L_ASYNC_SINGLE_AWAIT_EMPTY, L_ASYNC_SINGLE_AWAIT_POLL
+            \\L_ASYNC_SINGLE_AWAIT_EMPTY:
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    jmp L_ASYNC_SINGLE_AWAIT_DONE
+            \\L_ASYNC_SINGLE_AWAIT_POLL:
+            \\    async_inner_state = load data_slot+8 as ptr
+            \\    async_inner_stage = load async_inner_state+0 as u64
+            \\    async_inner_initial = eq async_inner_stage, 0
+            \\    br async_inner_initial -> L_ASYNC_SINGLE_AWAIT_PENDING, L_ASYNC_SINGLE_AWAIT_CHECK_READY
+            \\L_ASYNC_SINGLE_AWAIT_PENDING:
+            \\    store async_inner_state+0, 1 as u64
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    jmp L_ASYNC_SINGLE_AWAIT_CLEAN
+            \\L_ASYNC_SINGLE_AWAIT_CHECK_READY:
+            \\    async_inner_ready = eq async_inner_stage, 1
+            \\    br async_inner_ready -> L_ASYNC_SINGLE_AWAIT_READY, L_ASYNC_SINGLE_AWAIT_INNER_EMPTY
+            \\L_ASYNC_SINGLE_AWAIT_INNER_EMPTY:
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    !async_inner_ready
+            \\    jmp L_ASYNC_SINGLE_AWAIT_CLEAN
+            \\L_ASYNC_SINGLE_AWAIT_READY:
+            \\    {s} = load async_inner_state+8 as u64
+            \\
+        , .{ vt_name, poll_name, poll_name, plan.binding_name }) catch return CodegenError.CodegenError;
+        const result_reg = if (plan.addend == 0) plan.binding_name else blk: {
+            self.out.writer().print("    async_result = add {s}, {}\n", .{ plan.binding_name, plan.addend }) catch return CodegenError.CodegenError;
+            break :blk "async_result";
+        };
+        self.out.writer().print(
+            \\    store async_inner_state+0, 2 as u64
+            \\    store data_slot+0, 1 as u64
+            \\    EXPAND POLL_SET_READY out_poll_slot, {s}
+            \\
+        , .{result_reg}) catch return CodegenError.CodegenError;
+        if (plan.addend != 0) {
+            self.out.writer().print("    !async_result\n", .{}) catch return CodegenError.CodegenError;
+        }
+        self.out.writer().print(
+            \\    !{s}
+            \\    !async_inner_ready
+            \\L_ASYNC_SINGLE_AWAIT_CLEAN:
+            \\    !async_inner_initial
+            \\    !async_inner_stage
+            \\    !async_inner_state
+            \\L_ASYNC_SINGLE_AWAIT_DONE:
+            \\    !async_done
+            \\    !async_stage
+            \\    return
+            \\
+        , .{plan.binding_name}) catch return CodegenError.CodegenError;
+    }
+
+    fn genAsyncSingleAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncSingleAwaitContinuationPlan) CodegenError!void {
+        try self.emitAsyncSingleAwaitPollHelper(name, plan);
+
+        const lowered_name = try self.loweredFuncSymbol(name);
+        defer self.allocator.free(lowered_name);
+        self.out.writer().print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        for (f.params, 0..) |p, i| {
+            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            const prefix: []const u8 = if (p.is_move) "^" else if (p.is_borrow) "&" else "";
+            self.out.writer().print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+        }
+        const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
+        const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
+        self.out.writer().print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
+        self.out.writer().print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+
+        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        defer hoisted_allocs.deinit();
+        try self.collectHoistedAllocs(f.body, &hoisted_allocs);
+        const inner_state = try self.genExpr(@constCast(plan.await_expr), &hoisted_allocs);
+        const async_state = try self.newTmp();
+        self.out.writer().print("    {s} = alloc 16\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ async_state, inner_state }) catch return CodegenError.CodegenError;
+        try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
+        try self.recordFutureReadiness(async_state, .unknown);
+        self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
     }
 
     fn genReadyPoll(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
@@ -11326,6 +11428,12 @@ pub const Codegen = struct {
                     for (arg_release_regs.items) |release_reg| {
                         if (release_reg) |arg_reg| {
                             if (!std.mem.eql(u8, call.func_name, "sum")) try self.emitRelease(arg_reg);
+                        }
+                    }
+                    if (maybe_func) |func| {
+                        if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {
+                            try self.future_state_vtables.put(reg, try self.asyncSingleAwaitVTableName(call.func_name));
+                            try self.recordFutureReadiness(reg, .unknown);
                         }
                     }
                     return reg;

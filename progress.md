@@ -4,13 +4,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] No active implementation draft is open after the `future::select2` runtime completion.
-  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 81/81 passing; Y/shared-lowering is approximately 98%; direct SAB fallback-removal is 100% for the tracked unit corpus.
-  - Remaining broader hardening: generic SCI fragment naming and full async/Future state-machine support beyond the ready/pending/join2/select2 Future/Poll/fixed-array executor task-runtime subset.
-  - Completed regressions that must stay in host gates include `async_select2_runtime`, `async_join2_runtime`, `async_executor_runtime`, `async_poll_runtime`, `async_task_state_runtime`, `async_pending_task_runtime`, `async_while_let_future_queue_direct`, rosetta `136_executor_task_queue`, `async_block_on_direct`, rosetta `09_async_await`, `println_direct`, rosetta `75_async_bridge`/`134_join_all_futures`/`140_yield_now_suspend`, `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+- [draft] No active implementation draft is open after the dynamic executor Vec task-buffer completion.
+  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 82/82 passing; Y/shared-lowering is approximately 98%; direct SAB fallback-removal is 100% for the tracked unit corpus.
+  - Remaining broader hardening: generic SCI fragment naming and full async/Future state-machine support beyond the ready/pending/join2/select2 Future/Poll/executor task-runtime subset.
+  - Completed regressions that must stay in host gates include `async_executor_vec_runtime`, `async_select2_runtime`, `async_join2_runtime`, `async_executor_runtime`, `async_poll_runtime`, `async_task_state_runtime`, `async_pending_task_runtime`, `async_while_let_future_queue_direct`, rosetta `136_executor_task_queue`, `async_block_on_direct`, rosetta `09_async_await`, `println_direct`, rosetta `75_async_bridge`/`134_join_all_futures`/`140_yield_now_suspend`, `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
   - Dev-mode rule for all active CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
 
 ## Completed Features
+
+- [done] Direct SAB and SA-text now support dynamic `Vec<Task<T>>` executor task buffers.
+  - Added shared `ExecutorTaskBufferPlan` classification in `src/lowering_rules.zig` for fixed-array and Vec-backed contiguous task buffers.
+  - Type checking now accepts `executor::new([Task<T>; N])` and `executor::new(Vec<Task<T>>)` and returns the corresponding `Executor<T>`.
+  - SA-text and direct SAB both derive Vec-backed executor inputs with `VEC_AS_PTR` and `VEC_LEN` before `EXECUTOR_NEW`; fixed arrays keep the existing known-length path, and SA-text uses runtime `EXECUTOR_POLL_READY_COUNT` for dynamic buffers.
+  - Added `tests/test_unit_async_executor_vec_runtime.sla`, covering ready-count, single-index polling, and pending-count behavior over Vec-backed task buffers.
+  - Verified: `zig fmt --check src/lowering_rules.zig src/type_checker.zig src/codegen.zig src/sab_codegen.zig`; `zig test src/lowering_rules.zig --test-filter "shared executor task buffer classification"`; `zig build --summary all`; `zig build test --summary all` (69/69); local SA backend and direct-SAB no-fallback for the new fixture; local full no-fallback sweep 82/82; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host direct-SAB no-fallback and SA-text parity for the Vec executor fixture; host SA-text parity for the fixed-array executor fixture; host no-fallback guard batch for Vec executor, fixed-array executor, select2, join2, task runtime, pending task polling, scalar Poll runtime, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`; host full no-fallback sweep 82/82; disasm guard clean for the Vec executor fixture and parallel; `git diff --check`.
+  - Feature completion: dynamic executor Vec task buffers direct SAB/SA-text 100%; Y/shared-lowering remains approximately 98%; direct SAB fallback-removal for tracked corpus remains 100%; no-fallback sweep 82/82; committed in `59eb7f4`.
 
 - [done] Direct SAB and SA-text now support narrow `future::select2` task-runtime polling.
   - Added shared `FutureRuntimeCallPlan` classification in `src/lowering_rules.zig` for `future::select2`, `future::either_side`, `future::either_left`, and `future::either_right`.

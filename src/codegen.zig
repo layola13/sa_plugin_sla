@@ -6597,13 +6597,23 @@ pub const Codegen = struct {
         } else null;
         const result_reg = if (plan.resultBindingName()) |binding_name| blk: {
             if (captured_addend_reg) |addend_reg| {
-                self.out.writer().print("    {s} = add {s}, {s}\n", .{ binding_name, plan.binding_name, addend_reg }) catch return CodegenError.CodegenError;
+                if (plan.addend != 0) {
+                    self.out.writer().print("    async_captured_sum = add {s}, {s}\n", .{ plan.binding_name, addend_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = add async_captured_sum, {}\n", .{ binding_name, plan.addend }) catch return CodegenError.CodegenError;
+                } else {
+                    self.out.writer().print("    {s} = add {s}, {s}\n", .{ binding_name, plan.binding_name, addend_reg }) catch return CodegenError.CodegenError;
+                }
             } else {
                 self.out.writer().print("    {s} = add {s}, {}\n", .{ binding_name, plan.binding_name, plan.addend }) catch return CodegenError.CodegenError;
             }
             break :blk binding_name;
         } else if (captured_addend_reg) |addend_reg| blk: {
-            self.out.writer().print("    async_result = add {s}, {s}\n", .{ plan.binding_name, addend_reg }) catch return CodegenError.CodegenError;
+            if (plan.addend != 0) {
+                self.out.writer().print("    async_captured_sum = add {s}, {s}\n", .{ plan.binding_name, addend_reg }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    async_result = add async_captured_sum, {}\n", .{plan.addend}) catch return CodegenError.CodegenError;
+            } else {
+                self.out.writer().print("    async_result = add {s}, {s}\n", .{ plan.binding_name, addend_reg }) catch return CodegenError.CodegenError;
+            }
             break :blk "async_result";
         } else if (plan.addend == 0) plan.binding_name else blk: {
             self.out.writer().print("    async_result = add {s}, {}\n", .{ plan.binding_name, plan.addend }) catch return CodegenError.CodegenError;
@@ -6617,6 +6627,9 @@ pub const Codegen = struct {
         , .{result_reg}) catch return CodegenError.CodegenError;
         if (!std.mem.eql(u8, result_reg, plan.binding_name)) {
             self.out.writer().print("    !{s}\n", .{result_reg}) catch return CodegenError.CodegenError;
+        }
+        if (captured_addend_reg != null and plan.addend != 0) {
+            self.out.writer().print("    !async_captured_sum\n", .{}) catch return CodegenError.CodegenError;
         }
         if (captured_addend_reg) |addend_reg| {
             self.out.writer().print("    !{s}\n", .{addend_reg}) catch return CodegenError.CodegenError;

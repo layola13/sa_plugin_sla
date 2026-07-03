@@ -4247,12 +4247,18 @@ pub const Codegen = struct {
         const value = try self.intern(try self.newTmp());
         const result = if (plan.resultBindingName()) |binding_name| try self.intern(binding_name) else if (plan.hasCapturedAddend()) try self.intern(try self.newTmp()) else if (plan.addend == 0) value else try self.intern(try self.newTmp());
         const captured_addend = if (plan.hasCapturedAddend()) try self.intern(try self.newTmp()) else null;
+        const captured_sum = if (plan.hasCapturedAddend() and plan.addend != 0) try self.intern(try self.newTmp()) else null;
         const stage_one = try self.intern(try self.newTmp());
         const inner_stage_two = try self.intern(try self.newTmp());
         try self.emitLoad(value, inner_state, 8, .u64);
         if (captured_addend) |addend_reg| {
             try self.emitLoad(addend_reg, ids[0], 16, .u64);
-            try self.emitOp(result, .add, .{ .reg = value }, .{ .reg = addend_reg });
+            if (captured_sum) |sum_reg| {
+                try self.emitOp(sum_reg, .add, .{ .reg = value }, .{ .reg = addend_reg });
+                try self.emitOp(result, .add, .{ .reg = sum_reg }, .{ .imm_i64 = plan.addend });
+            } else {
+                try self.emitOp(result, .add, .{ .reg = value }, .{ .reg = addend_reg });
+            }
         } else if (plan.resultBindingName() != null and plan.addend == 0) {
             try self.emitAssignReg(result, value);
         } else if (plan.addend != 0) {
@@ -4269,6 +4275,7 @@ pub const Codegen = struct {
         try self.emitRelease(inner_stage_two);
         try self.emitRelease(stage_one);
         if (result != value) try self.emitRelease(result);
+        if (captured_sum) |sum_reg| try self.emitRelease(sum_reg);
         if (captured_addend) |addend_reg| try self.emitRelease(addend_reg);
         try self.emitRelease(value);
         try self.emitRelease(inner_ready);

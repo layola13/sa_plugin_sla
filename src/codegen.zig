@@ -94,6 +94,7 @@ pub const Codegen = struct {
     loop_continue_labels: std.ArrayList([]const u8),
     loop_break_labels: std.ArrayList([]const u8),
     current_async: bool,
+    async_pending_return_emitted: bool,
     thread_helper_idx: usize,
 
     pub fn init(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker) Codegen {
@@ -150,6 +151,7 @@ pub const Codegen = struct {
             .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
             .loop_break_labels = std.ArrayList([]const u8).init(allocator),
             .current_async = false,
+            .async_pending_return_emitted = false,
             .thread_helper_idx = 0,
         };
     }
@@ -5872,8 +5874,11 @@ pub const Codegen = struct {
 
     fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) CodegenError!void {
         const prev_async = self.current_async;
+        const prev_async_pending_return = self.async_pending_return_emitted;
         self.current_async = f.is_async;
+        self.async_pending_return_emitted = false;
         defer self.current_async = prev_async;
+        defer self.async_pending_return_emitted = prev_async_pending_return;
         self.addressable_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
@@ -5961,18 +5966,25 @@ pub const Codegen = struct {
         if (tail_expr_return) {
             for (f.body[0 .. f.body.len - 1]) |stmt| {
                 try self.genStmt(stmt, &hoisted_allocs);
+                if (self.async_pending_return_emitted) break;
             }
-            const tail_expr = f.body[f.body.len - 1].expr_stmt;
-            var tail_reg = try self.genExpr(tail_expr, &hoisted_allocs);
-            if (async_return_plan.wrap_ready_future) {
-                tail_reg = try self.genReadyFutureI64(tail_reg);
+            if (!self.async_pending_return_emitted) {
+                const tail_expr = f.body[f.body.len - 1].expr_stmt;
+                var tail_reg = try self.genExpr(tail_expr, &hoisted_allocs);
+                if (!self.async_pending_return_emitted) {
+                    if (async_return_plan.wrap_ready_future) {
+                        tail_reg = try self.genReadyFutureI64(tail_reg);
+                    }
+                    self.out.writer().print("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
+                }
             }
-            self.out.writer().print("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
         } else {
             try self.genBlock(f.body, &hoisted_allocs);
         }
 
-        if (async_return_plan.wrap_ready_future and !tail_expr_return and !blockTerminates(f.body)) {
+        if (self.async_pending_return_emitted) {
+            // The generated pending await returned from this async function.
+        } else if (async_return_plan.wrap_ready_future and !tail_expr_return and !blockTerminates(f.body)) {
             const zero = try self.newTmp();
             self.out.writer().print("    {s} = 0\n", .{zero}) catch return CodegenError.CodegenError;
             const future = try self.genReadyFutureI64(zero);
@@ -6300,6 +6312,7 @@ pub const Codegen = struct {
     fn genBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
         for (block) |stmt| {
             try self.genStmt(stmt, hoisted_allocs);
+            if (self.async_pending_return_emitted) break;
         }
     }
 
@@ -6313,6 +6326,7 @@ pub const Codegen = struct {
                 try scoped_var_aliases.append(stmt.var_stmt.name);
             }
             try self.genStmt(stmt, hoisted_allocs);
+            if (self.async_pending_return_emitted) break;
         }
 
         var i = scoped_var_aliases.items.len;
@@ -7073,6 +7087,7 @@ pub const Codegen = struct {
                 const let_ty = if (let.ty) |explicit| explicit else self.tc.expr_types.get(let.value) orelse return CodegenError.CodegenError;
                 if (std.mem.eql(u8, let.name, "_")) {
                     const discard_reg = try self.genExpr(let.value, hoisted_allocs);
+                    if (self.async_pending_return_emitted) return;
                     if (callArgNeedsRelease(let.value)) try self.emitRelease(discard_reg);
                     return;
                 }
@@ -7132,6 +7147,7 @@ pub const Codegen = struct {
                     }
                 } else if (self.bindingNeedsAddressableStorage(let.name, let_ty)) {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
+                    if (self.async_pending_return_emitted) return;
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
                     self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
@@ -7169,6 +7185,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
+                    if (self.async_pending_return_emitted) return;
                     if (self.task_future_objects.get(val_reg)) |future_obj| {
                         self.task_future_objects.put(let.name, future_obj) catch return CodegenError.OutOfMemory;
                         _ = self.task_future_objects.remove(val_reg);
@@ -7530,6 +7547,7 @@ pub const Codegen = struct {
                 var val_reg: ?[]const u8 = null;
                 if (ret.value) |v| {
                     val_reg = try self.genExpr(v, hoisted_allocs);
+                    if (self.async_pending_return_emitted) return;
                 }
                 if (self.current_async) {
                     if (val_reg == null) {
@@ -7827,6 +7845,7 @@ pub const Codegen = struct {
                     _ = try self.genExpr(expr, hoisted_allocs);
                 } else {
                     const value_reg = try self.genExpr(expr, hoisted_allocs);
+                    if (self.async_pending_return_emitted) return;
                     try self.emitRelease(value_reg);
                 }
             },
@@ -9236,9 +9255,14 @@ pub const Codegen = struct {
             },
             .await_expr => |aw| {
                 const future_ty = self.tc.expr_types.get(aw.expr) orelse return CodegenError.CodegenError;
-                const plan = lowering_rules.planAwaitReadyFuture(future_ty);
-                if (!plan.ready_state_inner) return CodegenError.CodegenError;
                 const future_reg = try self.genExpr(aw.expr, hoisted_allocs);
+                const plan = lowering_rules.planAwaitFuture(aw.expr, future_ty);
+                if (self.current_async and plan.pending_return_if_async) {
+                    self.out.writer().print("    return {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
+                    self.async_pending_return_emitted = true;
+                    return future_reg;
+                }
+                if (!plan.ready_state_inner) return CodegenError.CodegenError;
                 const out_reg = try self.newTmp();
                 self.out.writer().print("    EXPAND FUTURE_READY_STATE_INTO_INNER {s}, {s}\n", .{ out_reg, future_reg }) catch return CodegenError.CodegenError;
                 try self.emitRelease(future_reg);

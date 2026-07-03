@@ -3918,6 +3918,7 @@ pub const Codegen = struct {
             return;
         }
         const src = try self.genExpr(let.value);
+        if (self.lastIsTerminator()) return;
         if (std.mem.eql(u8, let.name, "_")) {
             if (!self.isLocalReg(src)) try self.emitRelease(src);
             return;
@@ -4264,10 +4265,14 @@ pub const Codegen = struct {
 
     fn genAwait(self: *Codegen, expr: *const ast.Node, aw: ast.AwaitExpr) !u32 {
         const future_ty = self.tc.expr_types.get(aw.expr) orelse return Error.MissingType;
-        const plan = lowering_rules.planAwaitReadyFuture(future_ty);
-        if (!plan.ready_state_inner) return Error.UnsupportedSabDirectFeature;
+        const plan = lowering_rules.planAwaitFuture(aw.expr, future_ty);
         _ = expr;
         const future = try self.genExpr(aw.expr);
+        if (self.current_async_return and plan.pending_return_if_async) {
+            try self.emitReturn(future);
+            return future;
+        }
+        if (!plan.ready_state_inner) return Error.UnsupportedSabDirectFeature;
         const out = try self.intern(try self.newTmp());
         try self.recordReg(out);
         try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_READY_STATE_INTO_INNER", &.{
@@ -5291,6 +5296,7 @@ pub const Codegen = struct {
             },
             .return_stmt => |ret| {
                 var value = if (ret.value) |v| try self.genExpr(v) else null;
+                if (self.lastIsTerminator()) return;
                 if (self.current_async_return) {
                     if (value == null) {
                         const zero = try self.intern(try self.newTmp());

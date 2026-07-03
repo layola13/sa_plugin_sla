@@ -35,6 +35,7 @@ pub const AsyncReturnPlan = struct {
 
 pub const AwaitPlan = struct {
     ready_state_inner: bool,
+    pending_return_if_async: bool = false,
 };
 
 pub const FutureRuntimeCallKind = enum {
@@ -344,8 +345,17 @@ pub fn planAsyncFunctionReturn(func: ast.FuncDecl, ptr_ty: *const ast.Type) Asyn
     };
 }
 
-pub fn planAwaitReadyFuture(_: *const ast.Type) AwaitPlan {
-    return .{ .ready_state_inner = true };
+pub fn exprIsStaticallyPendingFuture(expr: *const ast.Node) bool {
+    if (expr.* != .call_expr) return false;
+    const plan = planFutureRuntimeCall(expr.call_expr) orelse return false;
+    return plan.kind == .pending;
+}
+
+pub fn planAwaitFuture(expr: *const ast.Node, _: *const ast.Type) AwaitPlan {
+    return .{
+        .ready_state_inner = true,
+        .pending_return_if_async = exprIsStaticallyPendingFuture(expr),
+    };
 }
 
 pub fn planFutureRuntimeCall(call: ast.CallExpr) ?FutureRuntimeCallPlan {
@@ -1679,6 +1689,11 @@ test "shared future runtime call classification" {
     const join_args = [_]*ast.Node{ &value_node, &value_node };
     const join2 = ast.CallExpr{ .func_name = "join2", .associated_target = "future", .generics = &.{}, .args = join_args[0..] };
     try std.testing.expectEqual(FutureRuntimeCallKind.join2, planFutureRuntimeCall(join2).?.kind);
+
+    var pending_node = ast.Node{ .call_expr = pending };
+    const pending_await_plan = planAwaitFuture(&pending_node, &i32_ty);
+    try std.testing.expect(pending_await_plan.ready_state_inner);
+    try std.testing.expect(pending_await_plan.pending_return_if_async);
 
     const pair_left = ast.CallExpr{ .func_name = "pair_left", .associated_target = "future", .generics = &.{}, .args = args[0..] };
     try std.testing.expectEqual(FutureRuntimeCallKind.pair_left, planFutureRuntimeCall(pair_left).?.kind);

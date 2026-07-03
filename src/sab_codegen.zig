@@ -1169,12 +1169,7 @@ pub const Codegen = struct {
     }
 
     fn isFutureTaskRuntimeCall(call: ast.CallExpr) bool {
-        const target = call.associated_target orelse return false;
-        return std.mem.eql(u8, target, "task") and
-            (std.mem.eql(u8, call.func_name, "new") or
-                std.mem.eql(u8, call.func_name, "poll") or
-                std.mem.eql(u8, call.func_name, "is_ready") or
-                std.mem.eql(u8, call.func_name, "result"));
+        return lowering_rules.planTaskRuntimeCall(call) != null;
     }
 
     fn nodeUsesFutureTaskRuntime(node: *const ast.Node) bool {
@@ -3942,6 +3937,18 @@ pub const Codegen = struct {
             });
             if (!self.isLocalReg(task_reg)) try self.emitRelease(task_reg);
             return value_reg;
+        }
+
+        if (std.mem.eql(u8, call.func_name, "state")) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const task_reg = try self.genExpr(call.args[0]);
+            const state_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/core/task.sa", "TASK_STATE", &.{
+                self.symbols.items[state_reg],
+                self.symbols.items[task_reg],
+            });
+            if (!self.isLocalReg(task_reg)) try self.emitRelease(task_reg);
+            return state_reg;
         }
 
         return null;

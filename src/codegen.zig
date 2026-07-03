@@ -5158,14 +5158,8 @@ pub const Codegen = struct {
             .slice_expr => |slc| exprNeedsAsyncMacros(slc.target) or exprNeedsAsyncMacros(slc.start) or exprNeedsAsyncMacros(slc.end),
             .closure_literal => |lit| exprNeedsAsyncMacros(lit.body),
             .call_expr => |call| blk: {
-                if (call.associated_target) |target| {
-                    if ((std.mem.eql(u8, target, "future") and std.mem.eql(u8, call.func_name, "ready")) or
-                        (std.mem.eql(u8, target, "task") and
-                            (std.mem.eql(u8, call.func_name, "new") or
-                                std.mem.eql(u8, call.func_name, "poll") or
-                                std.mem.eql(u8, call.func_name, "is_ready") or
-                                std.mem.eql(u8, call.func_name, "result"))))
-                    {
+                if (call.associated_target != null) {
+                    if (lowering_rules.planFutureRuntimeCall(call) != null or lowering_rules.planTaskRuntimeCall(call) != null) {
                         break :blk true;
                     }
                 }
@@ -9209,6 +9203,14 @@ pub const Codegen = struct {
                         self.out.writer().print("    EXPAND TASK_RESULT {s}, {s}\n", .{ value_reg, task_reg }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
                         return value_reg;
+                    }
+                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "state")) {
+                        if (call.args.len != 1) return CodegenError.CodegenError;
+                        const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                        const state_reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND TASK_STATE {s}, {s}\n", .{ state_reg, task_reg }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
+                        return state_reg;
                     }
                     if (std.mem.eql(u8, target, "mem") and std.mem.eql(u8, call.func_name, "forget")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;

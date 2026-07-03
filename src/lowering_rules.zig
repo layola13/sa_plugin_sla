@@ -46,6 +46,18 @@ pub const FutureRuntimeCallPlan = struct {
     kind: FutureRuntimeCallKind,
 };
 
+pub const TaskRuntimeCallKind = enum {
+    new,
+    poll,
+    is_ready,
+    result,
+    state,
+};
+
+pub const TaskRuntimeCallPlan = struct {
+    kind: TaskRuntimeCallKind,
+};
+
 pub const ImportedMacroCallPlan = struct {
     macro_name: []const u8,
     import_path: ?[]const u8,
@@ -305,6 +317,17 @@ pub fn planFutureRuntimeCall(call: ast.CallExpr) ?FutureRuntimeCallPlan {
     }
     if (std.mem.eql(u8, call.func_name, "future__ready")) return .{ .kind = .ready };
     if (std.mem.eql(u8, call.func_name, "future__pending")) return .{ .kind = .pending };
+    return null;
+}
+
+pub fn planTaskRuntimeCall(call: ast.CallExpr) ?TaskRuntimeCallPlan {
+    const target = call.associated_target orelse return null;
+    if (!std.mem.eql(u8, target, "task")) return null;
+    if (std.mem.eql(u8, call.func_name, "new")) return .{ .kind = .new };
+    if (std.mem.eql(u8, call.func_name, "poll")) return .{ .kind = .poll };
+    if (std.mem.eql(u8, call.func_name, "is_ready")) return .{ .kind = .is_ready };
+    if (std.mem.eql(u8, call.func_name, "result")) return .{ .kind = .result };
+    if (std.mem.eql(u8, call.func_name, "state")) return .{ .kind = .state };
     return null;
 }
 
@@ -1529,6 +1552,9 @@ test "shared future runtime call classification" {
 
     const flat_pending = ast.CallExpr{ .func_name = "future__pending", .generics = generics[0..], .args = &.{} };
     try std.testing.expectEqual(FutureRuntimeCallKind.pending, planFutureRuntimeCall(flat_pending).?.kind);
+
+    const state = ast.CallExpr{ .func_name = "state", .associated_target = "task", .generics = &.{}, .args = args[0..] };
+    try std.testing.expectEqual(TaskRuntimeCallKind.state, planTaskRuntimeCall(state).?.kind);
 }
 
 test "shared result generic inner types" {

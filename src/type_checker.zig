@@ -3508,6 +3508,12 @@ pub const TypeChecker = struct {
                         const task_ty = try self.checkExpr(call.args[0], scope);
                         return taskInnerType(task_ty) orelse return TypeError.TypeMismatch;
                     }
+                    if (std.mem.eql(u8, target_name, "task") and std.mem.eql(u8, call.func_name, "state")) {
+                        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                        const task_ty = try self.checkExpr(call.args[0], scope);
+                        _ = taskInnerType(task_ty) orelse return TypeError.TypeMismatch;
+                        return try self.makeU64Type();
+                    }
                     if (std.mem.eql(u8, target_name, "Box") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);

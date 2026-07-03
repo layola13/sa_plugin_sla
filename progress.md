@@ -4,13 +4,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] No active implementation draft is open after the async pending-future task-poll direct-SAB completion.
-  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 76/76 passing; Y/shared-lowering is approximately 98%; direct SAB fallback-removal is 100% for the tracked unit corpus.
+- [draft] No active implementation draft is open after the async task-state runtime direct-SAB completion.
+  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 77/77 passing; Y/shared-lowering is approximately 98%; direct SAB fallback-removal is 100% for the tracked unit corpus.
   - Remaining broader hardening: generic SCI fragment naming and full async/Future state-machine support beyond the ready/pending Future task-runtime subset.
-  - Completed regressions that must stay in host gates include `async_pending_task_runtime`, `async_while_let_future_queue_direct`, rosetta `136_executor_task_queue`, `async_block_on_direct`, rosetta `09_async_await`, `println_direct`, rosetta `75_async_bridge`/`134_join_all_futures`/`140_yield_now_suspend`, `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+  - Completed regressions that must stay in host gates include `async_task_state_runtime`, `async_pending_task_runtime`, `async_while_let_future_queue_direct`, rosetta `136_executor_task_queue`, `async_block_on_direct`, rosetta `09_async_await`, `println_direct`, rosetta `75_async_bridge`/`134_join_all_futures`/`140_yield_now_suspend`, `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
   - Dev-mode rule for all active CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
 
 ## Completed Features
+
+- [done] Direct SAB now supports `task::state(task)` runtime state inspection.
+  - Added shared `TaskRuntimeCallPlan` classification in `src/lowering_rules.zig` for `task::new`, `task::poll`, `task::is_ready`, `task::result`, and `task::state`, so both emitters use the same task runtime surface list.
+  - Type checking now accepts `task::state(task)` only for `Task<T>` arguments and returns `u64`, matching the `TASK_STATE` macro surface.
+  - SA-text emits `EXPAND TASK_STATE out, task`; direct SAB emits the `sa_std/core/task.sa` `TASK_STATE` macro fragment through the shared task runtime call plan.
+  - Added `tests/test_unit_async_task_state_runtime.sla`, covering a ready task whose state changes after `task::poll` and a pending task whose state remains not-ready after polling.
+  - Verified: `zig fmt --check src/lowering_rules.zig src/type_checker.zig src/codegen.zig src/sab_codegen.zig`; `zig build --summary all`; `zig build test --summary all` (68/68); local SA backend and direct-SAB no-fallback for the new fixture; local async SAB guard batch for task-state, pending task polling, ready task polling, async await, block_on, while-let queue, rosetta `09`, and rosetta `136`; local full no-fallback sweep 77/77; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host direct-SAB no-fallback and SA-text parity for the new fixture; host no-fallback `/home/vscode/projects/sla_ecs/lib/parallel.sla`; host full no-fallback sweep 77/77; disasm guard clean for the task-state fixture and parallel.
+  - Feature completion: async task-state runtime direct SAB 100%; Y/shared-lowering remains approximately 98%; direct SAB fallback-removal for tracked corpus remains 100%; no-fallback sweep 77/77; commit pending.
 
 - [done] Direct SAB now supports `future::pending::<T>()` through task polling.
   - Added shared `FutureRuntimeCallPlan` classification in `src/lowering_rules.zig` for `future::ready` and `future::pending`, including the flattened `future__pending` spelling produced by turbofish syntax.

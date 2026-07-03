@@ -6507,14 +6507,27 @@ pub const Codegen = struct {
             .new => blk: {
                 if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
                 const tasks_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
-                if (tasks_ty.* != .array) return CodegenError.CodegenError;
-                const tasks_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                const tasks_plan = lowering_rules.executorTaskBufferPlan(tasks_ty) orelse return CodegenError.CodegenError;
+                const tasks_owner_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                var tasks_ptr_reg: []const u8 = tasks_owner_reg;
+                var release_tasks_ptr = false;
                 const len_reg = try self.newTmp();
                 const executor_reg = try self.newTmp();
-                try self.emitIntConst(len_reg, @as(i64, @intCast(tasks_ty.array.len)));
-                self.out.writer().print("    EXPAND EXECUTOR_NEW {s}, {s}, {s}\n", .{ executor_reg, tasks_reg, len_reg }) catch return CodegenError.CodegenError;
-                self.executor_task_counts.put(executor_reg, tasks_ty.array.len) catch return CodegenError.OutOfMemory;
+                switch (tasks_plan.kind) {
+                    .fixed_array => {
+                        try self.emitIntConst(len_reg, @as(i64, @intCast(tasks_plan.fixed_len.?)));
+                        self.executor_task_counts.put(executor_reg, tasks_plan.fixed_len.?) catch return CodegenError.OutOfMemory;
+                    },
+                    .vec => {
+                        tasks_ptr_reg = try self.newTmp();
+                        release_tasks_ptr = true;
+                        self.out.writer().print("    EXPAND VEC_AS_PTR {s}, {s}\n", .{ tasks_ptr_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND VEC_LEN {s}, {s}\n", .{ len_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
+                    },
+                }
+                self.out.writer().print("    EXPAND EXECUTOR_NEW {s}, {s}, {s}\n", .{ executor_reg, tasks_ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                 try self.emitRelease(len_reg);
+                if (release_tasks_ptr) try self.emitRelease(tasks_ptr_reg);
                 break :blk executor_reg;
             },
             .poll_one => blk: {
@@ -6540,7 +6553,10 @@ pub const Codegen = struct {
                     if (call.args[0].* == .identifier) {
                         if (self.executor_task_counts.get(self.resolveBindingName(call.args[0].identifier))) |count| break :blk_count count;
                     }
-                    return CodegenError.CodegenError;
+                    const count_reg = try self.newTmp();
+                    self.out.writer().print("    EXPAND EXECUTOR_POLL_READY_COUNT {s}, {s}\n", .{ count_reg, executor_reg }) catch return CodegenError.CodegenError;
+                    if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);
+                    break :blk count_reg;
                 };
                 const count_reg = try self.genExecutorPollReadyCountUnrolled(executor_reg, task_count);
                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);

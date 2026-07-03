@@ -1723,6 +1723,21 @@ pub const TypeChecker = struct {
         }
     }
 
+    fn executorTaskBufferInnerType(ty: *const ast.Type) ?*ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .array => |arr| return taskInnerType(arr.elem),
+                else => {
+                    const elem_ty = vecElementType(curr) orelse return null;
+                    return taskInnerType(elem_ty);
+                },
+            }
+        }
+    }
+
     fn futureInnerType(ty: *const ast.Type) ?*ast.Type {
         var curr = ty;
         while (true) {
@@ -3803,8 +3818,7 @@ pub const TypeChecker = struct {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         if (call.generics.len != 0) return TypeError.InvalidArgsCount;
                         const tasks_ty = try self.checkExpr(call.args[0], scope);
-                        if (tasks_ty.* != .array) return TypeError.TypeMismatch;
-                        const inner_ty = taskInnerType(tasks_ty.array.elem) orelse return TypeError.TypeMismatch;
+                        const inner_ty = executorTaskBufferInnerType(tasks_ty) orelse return TypeError.TypeMismatch;
                         return try self.makeExecutorType(inner_ty);
                     }
                     if (std.mem.eql(u8, target_name, "executor") and std.mem.eql(u8, call.func_name, "poll_one")) {

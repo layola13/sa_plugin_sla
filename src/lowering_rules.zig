@@ -75,6 +75,17 @@ pub const ExecutorRuntimeCallPlan = struct {
     kind: ExecutorRuntimeCallKind,
 };
 
+pub const ExecutorTaskBufferKind = enum {
+    fixed_array,
+    vec,
+};
+
+pub const ExecutorTaskBufferPlan = struct {
+    kind: ExecutorTaskBufferKind,
+    inner: *ast.Type,
+    fixed_len: ?usize = null,
+};
+
 pub const PollRuntimeCallKind = enum {
     ready,
     pending,
@@ -658,6 +669,29 @@ fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
 
 pub fn vecElementType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Vec");
+}
+
+pub fn taskInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Task");
+}
+
+pub fn executorTaskBufferPlan(ty: *const ast.Type) ?ExecutorTaskBufferPlan {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .array => |arr| {
+                const inner = taskInnerType(arr.elem) orelse return null;
+                return .{ .kind = .fixed_array, .inner = inner, .fixed_len = arr.len };
+            },
+            else => {
+                const elem = vecElementType(curr) orelse return null;
+                const inner = taskInnerType(elem) orelse return null;
+                return .{ .kind = .vec, .inner = inner };
+            },
+        }
+    }
 }
 
 pub fn vecElementSlotSize(ty: *const ast.Type) usize {
@@ -1607,6 +1641,25 @@ test "shared while let pattern classification" {
     const enum_plan = planWhileLetPattern(message, true).?;
     try std.testing.expectEqual(WhileLetPatternKind.enum_variant, enum_plan.kind);
     try std.testing.expect(enum_plan.success_on_true);
+}
+
+test "shared executor task buffer classification" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    const task_generics = [_]*ast.Type{&i32_ty};
+    var task_ty = ast.Type{ .user_defined = .{ .name = "Task", .generics = task_generics[0..] } };
+
+    var array_ty = ast.Type{ .array = .{ .elem = &task_ty, .len = 3 } };
+    const array_plan = executorTaskBufferPlan(&array_ty).?;
+    try std.testing.expectEqual(ExecutorTaskBufferKind.fixed_array, array_plan.kind);
+    try std.testing.expectEqual(@as(?usize, 3), array_plan.fixed_len);
+    try std.testing.expect(array_plan.inner == &i32_ty);
+
+    const vec_generics = [_]*ast.Type{&task_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = vec_generics[0..] } };
+    const vec_plan = executorTaskBufferPlan(&vec_ty).?;
+    try std.testing.expectEqual(ExecutorTaskBufferKind.vec, vec_plan.kind);
+    try std.testing.expectEqual(@as(?usize, null), vec_plan.fixed_len);
+    try std.testing.expect(vec_plan.inner == &i32_ty);
 }
 
 test "shared future runtime call classification" {

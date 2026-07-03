@@ -4060,17 +4060,35 @@ pub const Codegen = struct {
             .new => blk: {
                 if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
                 const tasks_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
-                if (tasks_ty.* != .array) return Error.UnsupportedSabDirectFeature;
-                const tasks_reg = try self.genExpr(call.args[0]);
+                const tasks_plan = lowering_rules.executorTaskBufferPlan(tasks_ty) orelse return Error.UnsupportedSabDirectFeature;
+                const tasks_owner_reg = try self.genExpr(call.args[0]);
+                var tasks_ptr_reg: u32 = tasks_owner_reg;
+                var release_tasks_ptr = false;
                 const len_reg = try self.intern(try self.newTmp());
                 const executor_reg = try self.intern(try self.newTmp());
-                try self.emitAssignImm(len_reg, @as(i64, @intCast(tasks_ty.array.len)));
+                switch (tasks_plan.kind) {
+                    .fixed_array => try self.emitAssignImm(len_reg, @as(i64, @intCast(tasks_plan.fixed_len.?))),
+                    .vec => {
+                        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
+                        tasks_ptr_reg = try self.intern(try self.newTmp());
+                        release_tasks_ptr = true;
+                        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
+                            self.symbols.items[tasks_ptr_reg],
+                            self.symbols.items[tasks_owner_reg],
+                        });
+                        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
+                            self.symbols.items[len_reg],
+                            self.symbols.items[tasks_owner_reg],
+                        });
+                    },
+                }
                 try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_NEW", &.{
                     self.symbols.items[executor_reg],
-                    self.symbols.items[tasks_reg],
+                    self.symbols.items[tasks_ptr_reg],
                     self.symbols.items[len_reg],
                 });
                 try self.emitRelease(len_reg);
+                if (release_tasks_ptr) try self.emitRelease(tasks_ptr_reg);
                 break :blk executor_reg;
             },
             .poll_one => blk: {

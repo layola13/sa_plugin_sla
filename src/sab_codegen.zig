@@ -4277,6 +4277,27 @@ pub const Codegen = struct {
             try self.emitReturn(future);
             return future;
         }
+        if (plan.poll_once_if_statically_ready) {
+            const future_obj = try self.genFutureObjectForState(future);
+            const ctx = try self.intern(try self.newTmp());
+            const poll = try self.intern(try self.newTmp());
+            const out = try self.intern(try self.newTmp());
+            try self.recordReg(out);
+            try self.emitAssignImm(ctx, 0);
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_POLL", &.{
+                self.symbols.items[poll],
+                self.symbols.items[future_obj],
+                self.symbols.items[ctx],
+            });
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_VALUE", &.{
+                self.symbols.items[out],
+                self.symbols.items[poll],
+            });
+            try self.emitRelease(poll);
+            try self.emitRelease(ctx);
+            try self.emitRelease(future_obj);
+            return out;
+        }
         if (self.current_async_return and plan.ready_pending_state_return_if_async) {
             const state = try self.intern(try self.newTmp());
             const zero = try self.intern(try self.newTmp());

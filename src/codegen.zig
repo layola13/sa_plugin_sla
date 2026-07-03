@@ -9267,6 +9267,19 @@ pub const Codegen = struct {
                     self.async_pending_return_emitted = true;
                     return future_reg;
                 }
+                if (plan.poll_once_if_statically_ready) {
+                    const future_obj = try self.genFutureObjectForState(future_reg);
+                    const ctx = try self.newTmp();
+                    const poll_reg = try self.newTmp();
+                    const out_reg = try self.newTmp();
+                    self.out.writer().print("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    EXPAND FUTURE_POLL {s}, {s}, {s}\n", .{ poll_reg, future_obj, ctx }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    EXPAND POLL_VALUE {s}, {s}\n", .{ out_reg, poll_reg }) catch return CodegenError.CodegenError;
+                    try self.emitRelease(poll_reg);
+                    try self.emitRelease(ctx);
+                    try self.emitRelease(future_obj);
+                    return out_reg;
+                }
                 if (self.current_async and plan.ready_pending_state_return_if_async) {
                     const state_reg = try self.newTmp();
                     const pending_reg = try self.newTmp();

@@ -4,13 +4,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- [draft] No active implementation draft is open after the `future::join2` runtime completion.
-  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 80/80 passing; Y/shared-lowering is approximately 98%; direct SAB fallback-removal is 100% for the tracked unit corpus.
-  - Remaining broader hardening: generic SCI fragment naming and full async/Future state-machine support beyond the ready/pending/join2 Future/Poll/fixed-array executor task-runtime subset.
-  - Completed regressions that must stay in host gates include `async_join2_runtime`, `async_executor_runtime`, `async_poll_runtime`, `async_task_state_runtime`, `async_pending_task_runtime`, `async_while_let_future_queue_direct`, rosetta `136_executor_task_queue`, `async_block_on_direct`, rosetta `09_async_await`, `println_direct`, rosetta `75_async_bridge`/`134_join_all_futures`/`140_yield_now_suspend`, `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
+- [draft] No active implementation draft is open after the `future::select2` runtime completion.
+  - Current verified baseline: full dev-mode direct-SAB no-fallback sweep is 81/81 passing; Y/shared-lowering is approximately 98%; direct SAB fallback-removal is 100% for the tracked unit corpus.
+  - Remaining broader hardening: generic SCI fragment naming and full async/Future state-machine support beyond the ready/pending/join2/select2 Future/Poll/fixed-array executor task-runtime subset.
+  - Completed regressions that must stay in host gates include `async_select2_runtime`, `async_join2_runtime`, `async_executor_runtime`, `async_poll_runtime`, `async_task_state_runtime`, `async_pending_task_runtime`, `async_while_let_future_queue_direct`, rosetta `136_executor_task_queue`, `async_block_on_direct`, rosetta `09_async_await`, `println_direct`, rosetta `75_async_bridge`/`134_join_all_futures`/`140_yield_now_suspend`, `derive_semantics`, `generic_for_in_protocol`, `vec_index_assign`, nested Vec field/index assignment, `async_await`, `async_task_runtime`, `sets`, `enum_match`, `spaceship_cmp`, scalar and pointer-backed `struct_update`, `mixed_collections_order`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`.
   - Dev-mode rule for all active CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
 
 ## Completed Features
+
+- [done] Direct SAB and SA-text now support narrow `future::select2` task-runtime polling.
+  - Added shared `FutureRuntimeCallPlan` classification in `src/lowering_rules.zig` for `future::select2`, `future::either_side`, `future::either_left`, and `future::either_right`.
+  - Type checking now accepts scalar `future<T>` inputs to `future::select2(left, right)`, returns `future<FutureEither<T, U>>`, and exposes scalar either-side/value accessors for the pointer returned by `task::result(task)`.
+  - SA-text and direct SAB now record future-state vtable metadata so ready/pending states keep the ready helper, join states use `SLA_JOIN2_FUTURE_VT`, and select states use `SLA_SELECT2_FUTURE_VT`; the generated select poll helper copies the std macro's temporary `Poll` into the vtable out slot.
+  - Added `tests/test_unit_async_select2_runtime.sla`, covering left-ready/right-pending, left-pending/right-ready, and both-pending behavior.
+  - Verified: `zig fmt --check src/lowering_rules.zig src/type_checker.zig src/codegen.zig src/sab_codegen.zig`; `zig build --summary all`; `zig build test --summary all` (68/68); local SA backend and direct-SAB no-fallback for the new fixture; local async SAB guards for join2, task runtime, pending task polling, scalar Poll runtime, fixed-array executor runtime, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`; local full no-fallback sweep 81/81; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host direct-SAB no-fallback and SA-text parity for the new fixture; host no-fallback join2/task/pending/executor guards and `/home/vscode/projects/sla_ecs/lib/parallel.sla`; host full no-fallback sweep 81/81; disasm guard clean for the select2 fixture and parallel; `git diff --check`.
+  - Feature completion: `future::select2` runtime direct SAB/SA-text 100%; Y/shared-lowering remains approximately 98%; direct SAB fallback-removal for tracked corpus remains 100%; no-fallback sweep 81/81; committed in `e68eda5`.
 
 - [done] Direct SAB and SA-text now support narrow `future::join2` task-runtime polling.
   - Added shared `FutureRuntimeCallPlan` classification in `src/lowering_rules.zig` for `future::join2`, `future::pair_left`, and `future::pair_right`.

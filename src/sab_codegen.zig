@@ -179,6 +179,8 @@ pub const Codegen = struct {
     borrow_address_temps: std.AutoHashMap(u32, []const u32),
     non_owning_regs: std.AutoHashMap(u32, void),
     future_state_vtables: std.AutoHashMap(u32, []const u8),
+    future_readiness: std.AutoHashMap(u32, lowering_rules.FutureReadiness),
+    future_readiness_by_name: std.StringHashMap(lowering_rules.FutureReadiness),
     global_scalar_consts: std.StringHashMap(*const ast.Node),
     sa_std_root: ?[]const u8 = null,
     instructions: std.ArrayList(inst.Instruction),
@@ -234,6 +236,8 @@ pub const Codegen = struct {
             .borrow_address_temps = std.AutoHashMap(u32, []const u32).init(allocator),
             .non_owning_regs = std.AutoHashMap(u32, void).init(allocator),
             .future_state_vtables = std.AutoHashMap(u32, []const u8).init(allocator),
+            .future_readiness = std.AutoHashMap(u32, lowering_rules.FutureReadiness).init(allocator),
+            .future_readiness_by_name = std.StringHashMap(lowering_rules.FutureReadiness).init(allocator),
             .global_scalar_consts = std.StringHashMap(*const ast.Node).init(allocator),
             .instructions = std.ArrayList(inst.Instruction).init(allocator),
             .function_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
@@ -297,6 +301,8 @@ pub const Codegen = struct {
         self.borrow_address_temps.deinit();
         self.non_owning_regs.deinit();
         self.future_state_vtables.deinit();
+        self.future_readiness.deinit();
+        self.future_readiness_by_name.deinit();
         self.global_scalar_consts.deinit();
         if (self.sa_std_root) |root| self.allocator.free(root);
         self.instructions.deinit();
@@ -1599,6 +1605,8 @@ pub const Codegen = struct {
         self.clearBorrowAddressTemps();
         self.non_owning_regs.clearRetainingCapacity();
         self.future_state_vtables.clearRetainingCapacity();
+        self.future_readiness.clearRetainingCapacity();
+        self.future_readiness_by_name.clearRetainingCapacity();
     }
 
     fn finishFunctionBody(self: *Codegen, sig_idx: usize) !void {
@@ -2104,6 +2112,7 @@ pub const Codegen = struct {
             return;
         }
         _ = self.future_state_vtables.remove(reg);
+        _ = self.future_readiness.remove(reg);
         var item = self.makeInst(.release);
         item.operands[0] = .{ .reg = reg };
         try self.appendInst(item);
@@ -2123,6 +2132,27 @@ pub const Codegen = struct {
             try self.future_state_vtables.put(dst, vt_name);
             if (src != dst) _ = self.future_state_vtables.remove(src);
         }
+    }
+
+    fn futureReadinessForState(self: *Codegen, state_reg: u32) lowering_rules.FutureReadiness {
+        return self.future_readiness.get(state_reg) orelse .unknown;
+    }
+
+    fn recordFutureReadiness(self: *Codegen, state_reg: u32, readiness: lowering_rules.FutureReadiness) !void {
+        if (readiness == .unknown) {
+            _ = self.future_readiness.remove(state_reg);
+            return;
+        }
+        try self.future_readiness.put(state_reg, readiness);
+    }
+
+    fn transferFutureReadiness(self: *Codegen, src: u32, dst: u32) !void {
+        if (self.future_readiness.get(src)) |readiness| {
+            try self.recordFutureReadiness(dst, readiness);
+            if (src != dst) _ = self.future_readiness.remove(src);
+            return;
+        }
+        _ = self.future_readiness.remove(dst);
     }
 
     fn emitBranchRelease(self: *Codegen, reg: u32) !void {
@@ -3877,6 +3907,7 @@ pub const Codegen = struct {
 
     fn genLetFromValue(self: *Codegen, name: []const u8, explicit_ty: ?*const ast.Type, value_expr: *ast.Node, src: u32) anyerror!void {
         const dst = try self.intern(name);
+        _ = self.future_readiness_by_name.remove(name);
         if (value_expr.* == .borrow_expr) {
             try self.pushLocal(name, src, false);
             return;
@@ -3905,11 +3936,18 @@ pub const Codegen = struct {
         }
         try self.emitAssignReg(dst, src);
         try self.transferFutureStateVTable(src, dst);
+        try self.transferFutureReadiness(src, dst);
+        if (self.futureReadinessForState(dst) != .unknown) {
+            try self.future_readiness_by_name.put(name, self.futureReadinessForState(dst));
+        } else {
+            _ = self.future_readiness_by_name.remove(name);
+        }
         try self.pushTypedLocal(name, dst, false, let_ty);
     }
 
     fn genLet(self: *Codegen, let: ast.LetStmt) anyerror!void {
         const dst = try self.intern(let.name);
+        _ = self.future_readiness_by_name.remove(let.name);
         if (let.value.* == .call_expr and let.value.call_expr.associated_target == null and std.mem.eql(u8, let.value.call_expr.func_name, "stack_alloc")) {
             try self.emitStackAlloc(dst, try stackAllocSize(let.value.call_expr));
             try self.pushStackAllocLocal(let.name, dst);
@@ -3938,6 +3976,7 @@ pub const Codegen = struct {
             self.symbols.items[value],
         });
         try self.future_state_vtables.put(future, "SLA_READY_FUTURE_VT");
+        try self.recordFutureReadiness(future, .ready);
         return future;
     }
 
@@ -3948,6 +3987,7 @@ pub const Codegen = struct {
             self.symbols.items[future],
         });
         try self.future_state_vtables.put(future, "SLA_READY_FUTURE_VT");
+        try self.recordFutureReadiness(future, .pending);
         return future;
     }
 
@@ -3971,6 +4011,7 @@ pub const Codegen = struct {
     }
 
     fn genJoin2Future(self: *Codegen, left_state: u32, right_state: u32) !u32 {
+        const readiness = lowering_rules.join2Readiness(self.futureReadinessForState(left_state), self.futureReadinessForState(right_state));
         const left_future = try self.genFutureObjectForState(left_state);
         const right_future = try self.genFutureObjectForState(right_state);
         const join_state = try self.intern(try self.newTmp());
@@ -3981,12 +4022,14 @@ pub const Codegen = struct {
             self.symbols.items[right_future],
         });
         try self.future_state_vtables.put(join_state, "SLA_JOIN2_FUTURE_VT");
+        try self.recordFutureReadiness(join_state, readiness);
         try self.emitRelease(left_future);
         try self.emitRelease(right_future);
         return join_state;
     }
 
     fn genSelect2Future(self: *Codegen, left_state: u32, right_state: u32) !u32 {
+        const readiness = lowering_rules.select2Readiness(self.futureReadinessForState(left_state), self.futureReadinessForState(right_state));
         const left_future = try self.genFutureObjectForState(left_state);
         const right_future = try self.genFutureObjectForState(right_state);
         const select_state = try self.intern(try self.newTmp());
@@ -3997,6 +4040,7 @@ pub const Codegen = struct {
             self.symbols.items[right_future],
         });
         try self.future_state_vtables.put(select_state, "SLA_SELECT2_FUTURE_VT");
+        try self.recordFutureReadiness(select_state, readiness);
         try self.emitRelease(left_future);
         try self.emitRelease(right_future);
         return select_state;
@@ -4269,7 +4313,7 @@ pub const Codegen = struct {
 
     fn genAwait(self: *Codegen, expr: *const ast.Node, aw: ast.AwaitExpr) !u32 {
         const future_ty = self.tc.expr_types.get(aw.expr) orelse return Error.MissingType;
-        const plan = lowering_rules.planAwaitFuture(aw.expr, future_ty, self.current_async_return_ty);
+        const plan = lowering_rules.planAwaitFutureWithReadiness(aw.expr, future_ty, self.current_async_return_ty, &self.future_readiness_by_name);
         _ = expr;
         const future = try self.genExpr(aw.expr);
         if (self.current_async_return and plan.pending_return_if_async) {

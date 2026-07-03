@@ -40,6 +40,12 @@ pub const AwaitPlan = struct {
     poll_once_if_statically_ready: bool = false,
 };
 
+pub const FutureReadiness = enum {
+    unknown,
+    ready,
+    pending,
+};
+
 pub const FutureRuntimeCallKind = enum {
     ready,
     pending,
@@ -348,29 +354,54 @@ pub fn planAsyncFunctionReturn(func: ast.FuncDecl, ptr_ty: *const ast.Type) Asyn
 }
 
 pub fn exprIsStaticallyPendingFuture(expr: *const ast.Node) bool {
-    if (expr.* != .call_expr) return false;
-    const plan = planFutureRuntimeCall(expr.call_expr) orelse return false;
-    return plan.kind == .pending;
+    return exprFutureReadiness(expr, null) == .pending;
 }
 
 pub fn exprIsStaticallyReadyFuture(expr: *const ast.Node) bool {
-    if (expr.* != .call_expr) return false;
+    return exprFutureReadiness(expr, null) == .ready;
+}
+
+pub fn join2Readiness(left: FutureReadiness, right: FutureReadiness) FutureReadiness {
+    if (left == .ready and right == .ready) return .ready;
+    if (left == .pending or right == .pending) return .pending;
+    return .unknown;
+}
+
+pub fn select2Readiness(left: FutureReadiness, right: FutureReadiness) FutureReadiness {
+    if (left == .ready or right == .ready) return .ready;
+    if (left == .pending and right == .pending) return .pending;
+    return .unknown;
+}
+
+pub fn exprFutureReadiness(expr: *const ast.Node, readiness_by_name: ?*const std.StringHashMap(FutureReadiness)) FutureReadiness {
+    if (expr.* == .identifier) {
+        if (readiness_by_name) |map| return map.get(expr.identifier) orelse .unknown;
+        return .unknown;
+    }
+    if (expr.* != .call_expr) return .unknown;
     const call = expr.call_expr;
-    const plan = planFutureRuntimeCall(call) orelse return false;
+    const plan = planFutureRuntimeCall(call) orelse return .unknown;
     return switch (plan.kind) {
-        .ready => true,
-        .join2 => call.args.len == 2 and exprIsStaticallyReadyFuture(call.args[0]) and exprIsStaticallyReadyFuture(call.args[1]),
-        .select2 => call.args.len == 2 and (exprIsStaticallyReadyFuture(call.args[0]) or exprIsStaticallyReadyFuture(call.args[1])),
-        else => false,
+        .ready => .ready,
+        .pending => .pending,
+        .join2 => if (call.args.len == 2)
+            join2Readiness(exprFutureReadiness(call.args[0], readiness_by_name), exprFutureReadiness(call.args[1], readiness_by_name))
+        else
+            .unknown,
+        .select2 => if (call.args.len == 2)
+            select2Readiness(exprFutureReadiness(call.args[0], readiness_by_name), exprFutureReadiness(call.args[1], readiness_by_name))
+        else
+            .unknown,
+        else => .unknown,
     };
 }
 
-pub fn exprNeedsPollOnceForReadyAwait(expr: *const ast.Node) bool {
+pub fn exprNeedsPollOnceForReadyAwait(expr: *const ast.Node, readiness_by_name: ?*const std.StringHashMap(FutureReadiness)) bool {
     if (expr.* != .call_expr) return false;
     const call = expr.call_expr;
     const plan = planFutureRuntimeCall(call) orelse return false;
     return switch (plan.kind) {
-        .join2, .select2 => exprIsStaticallyReadyFuture(expr),
+        .join2, .select2 => exprFutureReadiness(expr, readiness_by_name) == .ready,
         else => false,
     };
 }
@@ -435,11 +466,15 @@ pub fn typesEquivalent(a: *const ast.Type, b: *const ast.Type) bool {
 }
 
 pub fn planAwaitFuture(expr: *const ast.Node, future_ty: *const ast.Type, async_return_ty: ?*const ast.Type) AwaitPlan {
+    return planAwaitFutureWithReadiness(expr, future_ty, async_return_ty, null);
+}
+
+pub fn planAwaitFutureWithReadiness(expr: *const ast.Node, future_ty: *const ast.Type, async_return_ty: ?*const ast.Type, readiness_by_name: ?*const std.StringHashMap(FutureReadiness)) AwaitPlan {
     const inner = futureInnerType(future_ty);
     return .{
         .ready_state_inner = true,
         .pending_return_if_async = exprIsStaticallyPendingFuture(expr),
-        .poll_once_if_statically_ready = exprNeedsPollOnceForReadyAwait(expr),
+        .poll_once_if_statically_ready = exprNeedsPollOnceForReadyAwait(expr, readiness_by_name),
         .ready_pending_state_return_if_async = if (async_return_ty) |ret_ty|
             if (inner) |inner_ty| typesEquivalent(inner_ty, ret_ty) else false
         else
@@ -1787,6 +1822,17 @@ test "shared future runtime call classification" {
     var pair_future_ty = ast.Type{ .future = &pair_ty };
     const ready_join_await_plan = planAwaitFuture(&ready_join, &pair_future_ty, null);
     try std.testing.expect(ready_join_await_plan.poll_once_if_statically_ready);
+
+    var readiness = std.StringHashMap(FutureReadiness).init(std.testing.allocator);
+    defer readiness.deinit();
+    try readiness.put("left", .ready);
+    try readiness.put("right", .ready);
+    var left_ident = ast.Node{ .identifier = "left" };
+    var right_ident = ast.Node{ .identifier = "right" };
+    const local_join_args = [_]*ast.Node{ &left_ident, &right_ident };
+    var local_join = ast.Node{ .call_expr = .{ .func_name = "join2", .associated_target = "future", .generics = &.{}, .args = local_join_args[0..] } };
+    const local_join_await_plan = planAwaitFutureWithReadiness(&local_join, &pair_future_ty, null, &readiness);
+    try std.testing.expect(local_join_await_plan.poll_once_if_statically_ready);
 
     var pending_node = ast.Node{ .call_expr = pending };
     const pending_await_plan = planAwaitFuture(&pending_node, &i32_ty, null);

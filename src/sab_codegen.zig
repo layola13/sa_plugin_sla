@@ -3653,13 +3653,18 @@ pub const Codegen = struct {
         try self.emitLabel("L_ENTRY");
         try self.materializeBorrowedParams(f.params);
 
+        const captured_addend = if (plan.captured_addend_expr) |expr| try self.genExpr(@constCast(expr)) else null;
         const inner_state = try self.genExpr(@constCast(plan.await_expr));
         const async_state = try self.intern(try self.newTmp());
         const zero = try self.intern(try self.newTmp());
-        try self.emitAlloc(async_state, 16);
+        try self.emitAlloc(async_state, if (plan.hasCapturedAddend()) 24 else 16);
         try self.emitAssignImm(zero, 0);
         try self.emitStore(async_state, 0, zero, .u64);
         try self.emitStore(async_state, 8, inner_state, .ptr);
+        if (captured_addend) |addend_reg| {
+            try self.emitStore(async_state, 16, addend_reg, .u64);
+            try self.emitRelease(addend_reg);
+        }
         try self.emitRelease(zero);
         try self.emitRelease(inner_state);
         try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
@@ -4240,11 +4245,15 @@ pub const Codegen = struct {
 
         try self.emitLabel(ready_label);
         const value = try self.intern(try self.newTmp());
-        const result = if (plan.resultBindingName()) |binding_name| try self.intern(binding_name) else if (plan.addend == 0) value else try self.intern(try self.newTmp());
+        const result = if (plan.resultBindingName()) |binding_name| try self.intern(binding_name) else if (plan.hasCapturedAddend()) try self.intern(try self.newTmp()) else if (plan.addend == 0) value else try self.intern(try self.newTmp());
+        const captured_addend = if (plan.hasCapturedAddend()) try self.intern(try self.newTmp()) else null;
         const stage_one = try self.intern(try self.newTmp());
         const inner_stage_two = try self.intern(try self.newTmp());
         try self.emitLoad(value, inner_state, 8, .u64);
-        if (plan.resultBindingName() != null and plan.addend == 0) {
+        if (captured_addend) |addend_reg| {
+            try self.emitLoad(addend_reg, ids[0], 16, .u64);
+            try self.emitOp(result, .add, .{ .reg = value }, .{ .reg = addend_reg });
+        } else if (plan.resultBindingName() != null and plan.addend == 0) {
             try self.emitAssignReg(result, value);
         } else if (plan.addend != 0) {
             try self.emitOp(result, .add, .{ .reg = value }, .{ .imm_i64 = plan.addend });
@@ -4260,6 +4269,7 @@ pub const Codegen = struct {
         try self.emitRelease(inner_stage_two);
         try self.emitRelease(stage_one);
         if (result != value) try self.emitRelease(result);
+        if (captured_addend) |addend_reg| try self.emitRelease(addend_reg);
         try self.emitRelease(value);
         try self.emitRelease(inner_ready);
 

@@ -6591,9 +6591,20 @@ pub const Codegen = struct {
             \\    {s} = load async_inner_state+8 as u64
             \\
         , .{ vt_name, poll_name, poll_name, plan.binding_name }) catch return CodegenError.CodegenError;
+        const captured_addend_reg = if (plan.hasCapturedAddend()) blk: {
+            self.out.writer().print("    async_captured_addend = load data_slot+16 as u64\n", .{}) catch return CodegenError.CodegenError;
+            break :blk "async_captured_addend";
+        } else null;
         const result_reg = if (plan.resultBindingName()) |binding_name| blk: {
-            self.out.writer().print("    {s} = add {s}, {}\n", .{ binding_name, plan.binding_name, plan.addend }) catch return CodegenError.CodegenError;
+            if (captured_addend_reg) |addend_reg| {
+                self.out.writer().print("    {s} = add {s}, {s}\n", .{ binding_name, plan.binding_name, addend_reg }) catch return CodegenError.CodegenError;
+            } else {
+                self.out.writer().print("    {s} = add {s}, {}\n", .{ binding_name, plan.binding_name, plan.addend }) catch return CodegenError.CodegenError;
+            }
             break :blk binding_name;
+        } else if (captured_addend_reg) |addend_reg| blk: {
+            self.out.writer().print("    async_result = add {s}, {s}\n", .{ plan.binding_name, addend_reg }) catch return CodegenError.CodegenError;
+            break :blk "async_result";
         } else if (plan.addend == 0) plan.binding_name else blk: {
             self.out.writer().print("    async_result = add {s}, {}\n", .{ plan.binding_name, plan.addend }) catch return CodegenError.CodegenError;
             break :blk "async_result";
@@ -6606,6 +6617,9 @@ pub const Codegen = struct {
         , .{result_reg}) catch return CodegenError.CodegenError;
         if (!std.mem.eql(u8, result_reg, plan.binding_name)) {
             self.out.writer().print("    !{s}\n", .{result_reg}) catch return CodegenError.CodegenError;
+        }
+        if (captured_addend_reg) |addend_reg| {
+            self.out.writer().print("    !{s}\n", .{addend_reg}) catch return CodegenError.CodegenError;
         }
         self.out.writer().print(
             \\    !{s}
@@ -6641,11 +6655,17 @@ pub const Codegen = struct {
         var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
+        const captured_addend = if (plan.captured_addend_expr) |expr| try self.genExpr(@constCast(expr), &hoisted_allocs) else null;
         const inner_state = try self.genExpr(@constCast(plan.await_expr), &hoisted_allocs);
         const async_state = try self.newTmp();
-        self.out.writer().print("    {s} = alloc 16\n", .{async_state}) catch return CodegenError.CodegenError;
+        const async_state_size: usize = if (plan.hasCapturedAddend()) 24 else 16;
+        self.out.writer().print("    {s} = alloc {}\n", .{ async_state, async_state_size }) catch return CodegenError.CodegenError;
         self.out.writer().print("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
         self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ async_state, inner_state }) catch return CodegenError.CodegenError;
+        if (captured_addend) |addend_reg| {
+            self.out.writer().print("    store {s}+16, {s} as u64\n", .{ async_state, addend_reg }) catch return CodegenError.CodegenError;
+            try self.emitRelease(addend_reg);
+        }
         try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;

@@ -43,12 +43,18 @@ pub const AwaitPlan = struct {
 pub const AsyncSingleAwaitContinuationPlan = struct {
     binding_name: []const u8,
     post_binding_name: ?[]const u8 = null,
+    captured_addend_name: ?[]const u8 = null,
+    captured_addend_expr: ?*const ast.Node = null,
     await_expr: *const ast.Node,
     awaited_kind: FutureRuntimeCallKind,
     addend: i64 = 0,
 
     pub fn resultBindingName(self: AsyncSingleAwaitContinuationPlan) ?[]const u8 {
         return self.post_binding_name;
+    }
+
+    pub fn hasCapturedAddend(self: AsyncSingleAwaitContinuationPlan) bool {
+        return self.captured_addend_expr != null;
     }
 };
 
@@ -366,16 +372,29 @@ pub fn planAsyncFunctionReturn(func: ast.FuncDecl, ptr_ty: *const ast.Type) Asyn
     };
 }
 
-fn asyncContinuationAddend(expr: *const ast.Node, binding_name: []const u8) ?i64 {
+const AsyncContinuationAddend = struct {
+    immediate: i64 = 0,
+    captured_addend_name: ?[]const u8 = null,
+};
+
+fn asyncContinuationAddend(expr: *const ast.Node, binding_name: []const u8, capture_name: ?[]const u8) ?AsyncContinuationAddend {
     switch (expr.*) {
-        .identifier => |name| return if (std.mem.eql(u8, name, binding_name)) 0 else null,
+        .identifier => |name| return if (std.mem.eql(u8, name, binding_name)) .{} else null,
         .binary_expr => |bin| {
             if (bin.op != .add) return null;
             if (bin.left.* == .identifier and std.mem.eql(u8, bin.left.identifier, binding_name) and bin.right.* == .literal and bin.right.literal == .int_val) {
-                return bin.right.literal.int_val;
+                return .{ .immediate = bin.right.literal.int_val };
             }
             if (bin.right.* == .identifier and std.mem.eql(u8, bin.right.identifier, binding_name) and bin.left.* == .literal and bin.left.literal == .int_val) {
-                return bin.left.literal.int_val;
+                return .{ .immediate = bin.left.literal.int_val };
+            }
+            if (capture_name) |captured| {
+                if (bin.left.* == .identifier and std.mem.eql(u8, bin.left.identifier, binding_name) and bin.right.* == .identifier and std.mem.eql(u8, bin.right.identifier, captured)) {
+                    return .{ .captured_addend_name = captured };
+                }
+                if (bin.right.* == .identifier and std.mem.eql(u8, bin.right.identifier, binding_name) and bin.left.* == .identifier and std.mem.eql(u8, bin.left.identifier, captured)) {
+                    return .{ .captured_addend_name = captured };
+                }
             }
             return null;
         },
@@ -394,19 +413,29 @@ fn asyncContinuationReturnExpr(stmt: *const ast.Node) ?*const ast.Node {
 const AsyncContinuationResult = struct {
     post_binding_name: ?[]const u8 = null,
     addend: i64 = 0,
+    captured_addend_name: ?[]const u8 = null,
 };
 
-fn asyncContinuationResult(await_binding_name: []const u8, post_stmt: ?*const ast.Node, ret_expr: *const ast.Node) ?AsyncContinuationResult {
+fn asyncContinuationResult(await_binding_name: []const u8, capture_name: ?[]const u8, post_stmt: ?*const ast.Node, ret_expr: *const ast.Node) ?AsyncContinuationResult {
     if (post_stmt) |stmt| {
         if (stmt.* != .let_stmt) return null;
         const let_stmt = stmt.let_stmt;
         if (ret_expr.* != .identifier or !std.mem.eql(u8, ret_expr.identifier, let_stmt.name)) return null;
-        const addend = asyncContinuationAddend(let_stmt.value, await_binding_name) orelse return null;
-        return .{ .post_binding_name = let_stmt.name, .addend = addend };
+        const addend = asyncContinuationAddend(let_stmt.value, await_binding_name, capture_name) orelse return null;
+        return .{ .post_binding_name = let_stmt.name, .addend = addend.immediate, .captured_addend_name = addend.captured_addend_name };
     }
 
-    const addend = asyncContinuationAddend(ret_expr, await_binding_name) orelse return null;
-    return .{ .addend = addend };
+    const addend = asyncContinuationAddend(ret_expr, await_binding_name, capture_name) orelse return null;
+    return .{ .addend = addend.immediate, .captured_addend_name = addend.captured_addend_name };
+}
+
+fn stmtIsPreboundAwaitState(stmt: *const ast.Node, next_stmt: *const ast.Node) bool {
+    if (stmt.* != .let_stmt or next_stmt.* != .let_stmt) return false;
+    const state_let = stmt.let_stmt;
+    const await_let = next_stmt.let_stmt;
+    if (state_let.value.* != .call_expr or await_let.value.* != .await_expr) return false;
+    const awaited_expr = await_let.value.await_expr.expr;
+    return awaited_expr.* == .identifier and std.mem.eql(u8, awaited_expr.identifier, state_let.name);
 }
 
 pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleAwaitContinuationPlan {
@@ -417,52 +446,74 @@ pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleA
         state_expr: *const ast.Node,
         ret_expr: *const ast.Node,
         post_stmt: ?*const ast.Node = null,
+        captured_addend_name: ?[]const u8 = null,
+        captured_addend_expr: ?*const ast.Node = null,
     };
 
-    const shape: ContinuationShape = switch (func.body.len) {
-        2 => blk: {
-            if (func.body[0].* != .let_stmt) return null;
-            const let_stmt = func.body[0].let_stmt;
-            if (let_stmt.value.* != .await_expr) return null;
-            const ret_expr = asyncContinuationReturnExpr(func.body[1]) orelse return null;
-            break :blk .{ .binding_name = let_stmt.name, .state_expr = let_stmt.value.await_expr.expr, .ret_expr = ret_expr };
-        },
-        3 => blk: {
-            if (func.body[0].* != .let_stmt or func.body[1].* != .let_stmt) return null;
-            const first_let = func.body[0].let_stmt;
-            const second_let = func.body[1].let_stmt;
-            const ret_expr = asyncContinuationReturnExpr(func.body[2]) orelse return null;
-            if (first_let.value.* == .await_expr) {
-                break :blk .{ .binding_name = first_let.name, .state_expr = first_let.value.await_expr.expr, .ret_expr = ret_expr, .post_stmt = func.body[1] };
-            }
-            if (first_let.value.* != .call_expr) return null;
-            if (second_let.value.* != .await_expr) return null;
-            const awaited_expr = second_let.value.await_expr.expr;
-            if (awaited_expr.* != .identifier or !std.mem.eql(u8, awaited_expr.identifier, first_let.name)) return null;
-            break :blk .{ .binding_name = second_let.name, .state_expr = first_let.value, .ret_expr = ret_expr };
-        },
-        4 => blk: {
-            if (func.body[0].* != .let_stmt or func.body[1].* != .let_stmt or func.body[2].* != .let_stmt) return null;
-            const state_let = func.body[0].let_stmt;
-            const await_let = func.body[1].let_stmt;
-            if (state_let.value.* != .call_expr) return null;
-            if (await_let.value.* != .await_expr) return null;
-            const awaited_expr = await_let.value.await_expr.expr;
-            if (awaited_expr.* != .identifier or !std.mem.eql(u8, awaited_expr.identifier, state_let.name)) return null;
-            const ret_expr = asyncContinuationReturnExpr(func.body[3]) orelse return null;
-            break :blk .{ .binding_name = await_let.name, .state_expr = state_let.value, .ret_expr = ret_expr, .post_stmt = func.body[2] };
-        },
-        else => return null,
+    var idx: usize = 0;
+    var captured_addend_name: ?[]const u8 = null;
+    var captured_addend_expr: ?*const ast.Node = null;
+    if (func.body.len >= 3 and func.body[0].* == .let_stmt) {
+        const first_let = func.body[0].let_stmt;
+        const first_is_direct_await = first_let.value.* == .await_expr;
+        const first_is_prebound_state = func.body.len >= 2 and stmtIsPreboundAwaitState(func.body[0], func.body[1]);
+        if (!first_is_direct_await and !first_is_prebound_state) {
+            captured_addend_name = first_let.name;
+            captured_addend_expr = first_let.value;
+            idx = 1;
+        }
+    }
+
+    if (idx >= func.body.len or func.body[idx].* != .let_stmt) return null;
+    const first_await_let = func.body[idx].let_stmt;
+
+    var binding_name: []const u8 = undefined;
+    var state_expr: *const ast.Node = undefined;
+    if (first_await_let.value.* == .await_expr) {
+        binding_name = first_await_let.name;
+        state_expr = first_await_let.value.await_expr.expr;
+        idx += 1;
+    } else {
+        if (idx + 1 >= func.body.len or !stmtIsPreboundAwaitState(func.body[idx], func.body[idx + 1])) return null;
+        const state_let = func.body[idx].let_stmt;
+        const await_let = func.body[idx + 1].let_stmt;
+        binding_name = await_let.name;
+        state_expr = state_let.value;
+        idx += 2;
+    }
+
+    var post_stmt: ?*const ast.Node = null;
+    if (idx + 1 < func.body.len) {
+        post_stmt = func.body[idx];
+        idx += 1;
+    }
+
+    if (idx >= func.body.len) return null;
+    const ret_expr = asyncContinuationReturnExpr(func.body[idx]) orelse return null;
+    idx += 1;
+    if (idx != func.body.len) return null;
+
+    const shape = ContinuationShape{
+        .binding_name = binding_name,
+        .state_expr = state_expr,
+        .ret_expr = ret_expr,
+        .post_stmt = post_stmt,
+        .captured_addend_name = captured_addend_name,
+        .captured_addend_expr = captured_addend_expr,
     };
 
     if (shape.state_expr.* != .call_expr) return null;
     const awaited_call = planFutureRuntimeCall(shape.state_expr.call_expr) orelse return null;
     if (awaited_call.kind != .defer_ready) return null;
 
-    const result = asyncContinuationResult(shape.binding_name, shape.post_stmt, shape.ret_expr) orelse return null;
+    const result = asyncContinuationResult(shape.binding_name, shape.captured_addend_name, shape.post_stmt, shape.ret_expr) orelse return null;
+    const plan_captured_expr = if (result.captured_addend_name) |_| shape.captured_addend_expr orelse return null else null;
+    if (shape.captured_addend_name != null and result.captured_addend_name == null) return null;
     return .{
         .binding_name = shape.binding_name,
         .post_binding_name = result.post_binding_name,
+        .captured_addend_name = result.captured_addend_name,
+        .captured_addend_expr = plan_captured_expr,
         .await_expr = shape.state_expr,
         .awaited_kind = awaited_call.kind,
         .addend = result.addend,
@@ -2068,6 +2119,86 @@ test "shared async single await continuation plan is defer-ready only" {
     try std.testing.expect(local_post_plan.await_expr == &local_defer_call);
     try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_post_plan.awaited_kind);
     try std.testing.expectEqual(@as(i64, 1), local_post_plan.addend);
+
+    var captured_value_node = ast.Node{ .literal = .{ .int_val = 40 } };
+    const captured_args = [_]*ast.Node{&captured_value_node};
+    var captured_defer_call = ast.Node{ .call_expr = .{ .func_name = "defer_ready", .associated_target = "future", .generics = &.{}, .args = captured_args[0..] } };
+    var captured_await_node = ast.Node{ .await_expr = .{ .expr = &captured_defer_call } };
+    var captured_let_node = ast.Node{ .let_stmt = .{ .name = "value", .ty = null, .value = &captured_await_node } };
+    var bump_literal = ast.Node{ .literal = .{ .int_val = 2 } };
+    var bump_let = ast.Node{ .let_stmt = .{ .name = "bump", .ty = null, .value = &bump_literal } };
+    var captured_value_ident = ast.Node{ .identifier = "value" };
+    var bump_ident = ast.Node{ .identifier = "bump" };
+    var captured_return_expr = ast.Node{ .binary_expr = .{ .left = &captured_value_ident, .op = .add, .right = &bump_ident } };
+    var captured_return = ast.Node{ .return_stmt = .{ .value = &captured_return_expr } };
+    const captured_body = [_]*ast.Node{ &bump_let, &captured_let_node, &captured_return };
+    const captured_func = ast.FuncDecl{ .name = "await_defer_captured", .generics = &.{}, .params = &.{}, .ret_ty = &i32_ty, .body = captured_body[0..], .is_inline = false, .is_async = true };
+
+    const captured_plan = planAsyncSingleAwaitContinuation(&captured_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", captured_plan.binding_name);
+    try std.testing.expectEqualStrings("bump", captured_plan.captured_addend_name.?);
+    try std.testing.expect(captured_plan.captured_addend_expr == &bump_literal);
+    try std.testing.expect(captured_plan.await_expr == &captured_defer_call);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, captured_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 0), captured_plan.addend);
+
+    var captured_local_defer_call = ast.Node{ .call_expr = .{ .func_name = "defer_ready", .associated_target = "future", .generics = &.{}, .args = captured_args[0..] } };
+    var captured_local_state_let = ast.Node{ .let_stmt = .{ .name = "delayed", .ty = null, .value = &captured_local_defer_call } };
+    var captured_delayed_ident = ast.Node{ .identifier = "delayed" };
+    var captured_local_await = ast.Node{ .await_expr = .{ .expr = &captured_delayed_ident } };
+    var captured_local_await_let = ast.Node{ .let_stmt = .{ .name = "ready_value", .ty = null, .value = &captured_local_await } };
+    var captured_ready_value_ident = ast.Node{ .identifier = "ready_value" };
+    var bump_ident_left = ast.Node{ .identifier = "bump" };
+    var captured_local_return_expr = ast.Node{ .binary_expr = .{ .left = &bump_ident_left, .op = .add, .right = &captured_ready_value_ident } };
+    var captured_local_return = ast.Node{ .return_stmt = .{ .value = &captured_local_return_expr } };
+    const captured_local_body = [_]*ast.Node{ &bump_let, &captured_local_state_let, &captured_local_await_let, &captured_local_return };
+    const captured_local_func = ast.FuncDecl{ .name = "await_local_defer_captured", .generics = &.{}, .params = &.{}, .ret_ty = &i32_ty, .body = captured_local_body[0..], .is_inline = false, .is_async = true };
+
+    const captured_local_plan = planAsyncSingleAwaitContinuation(&captured_local_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("ready_value", captured_local_plan.binding_name);
+    try std.testing.expectEqualStrings("bump", captured_local_plan.captured_addend_name.?);
+    try std.testing.expect(captured_local_plan.captured_addend_expr == &bump_literal);
+    try std.testing.expect(captured_local_plan.await_expr == &captured_local_defer_call);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, captured_local_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 0), captured_local_plan.addend);
+}
+
+test "shared async single await continuation plan recognizes parsed captured addend" {
+    const parser = @import("parser.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\async fn await_defer_ready_with_capture() -> i32 {
+        \\    let bump = 2;
+        \\    let value = future::defer_ready(40).await;
+        \\    return value + bump;
+        \\}
+        \\async fn await_local_defer_ready_with_capture() -> i32 {
+        \\    let bump = 3;
+        \\    let delayed = future::defer_ready(39);
+        \\    let value = delayed.await;
+        \\    return bump + value;
+        \\}
+    ;
+    var p = parser.Parser.init(arena.allocator(), source);
+    const program = try p.parseProgram();
+    try std.testing.expect(program.* == .program);
+    try std.testing.expectEqual(@as(usize, 2), program.program.decls.len);
+
+    const direct_func = &program.program.decls[0].func_decl;
+    const direct_plan = planAsyncSingleAwaitContinuation(direct_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", direct_plan.binding_name);
+    try std.testing.expectEqualStrings("bump", direct_plan.captured_addend_name.?);
+    try std.testing.expect(direct_plan.captured_addend_expr != null);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, direct_plan.awaited_kind);
+
+    const local_func = &program.program.decls[1].func_decl;
+    const local_plan = planAsyncSingleAwaitContinuation(local_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", local_plan.binding_name);
+    try std.testing.expectEqualStrings("bump", local_plan.captured_addend_name.?);
+    try std.testing.expect(local_plan.captured_addend_expr != null);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_plan.awaited_kind);
 }
 
 test "shared result generic inner types" {

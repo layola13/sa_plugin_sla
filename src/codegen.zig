@@ -6361,6 +6361,12 @@ pub const Codegen = struct {
         return future_reg;
     }
 
+    fn genPendingFuture(self: *Codegen) CodegenError![]const u8 {
+        const future_reg = try self.newTmp();
+        self.out.writer().print("    EXPAND FUTURE_PENDING_STATE_NEW {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
+        return future_reg;
+    }
+
     fn genFormatCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
         if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) return CodegenError.CodegenError;
         const fmt = call.args[0].literal.string_val;
@@ -9093,6 +9099,21 @@ pub const Codegen = struct {
                     self.out.writer().print("    EXPAND PTR_NULL {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     return reg;
                 }
+                if (lowering_rules.planFutureRuntimeCall(call)) |future_plan| {
+                    switch (future_plan.kind) {
+                        .ready => {
+                            if (call.args.len != 1) return CodegenError.CodegenError;
+                            const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                            const future_reg = try self.genReadyFutureI64(value_reg);
+                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                            return future_reg;
+                        },
+                        .pending => {
+                            if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
+                            return try self.genPendingFuture();
+                        },
+                    }
+                }
                 if (std.mem.eql(u8, call.func_name, "std__ptr__read_volatile") or std.mem.eql(u8, call.func_name, "ptr__read_volatile")) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const ptr_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -9129,12 +9150,20 @@ pub const Codegen = struct {
                         } else if (callArgNeedsRelease(call.args[0])) try self.emitRelease(ptr_reg);
                         return reg;
                     }
-                    if (std.mem.eql(u8, target, "future") and std.mem.eql(u8, call.func_name, "ready")) {
-                        if (call.args.len != 1) return CodegenError.CodegenError;
-                        const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                        const future_reg = try self.genReadyFutureI64(value_reg);
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
-                        return future_reg;
+                    if (lowering_rules.planFutureRuntimeCall(call)) |future_plan| {
+                        switch (future_plan.kind) {
+                            .ready => {
+                                if (call.args.len != 1) return CodegenError.CodegenError;
+                                const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const future_reg = try self.genReadyFutureI64(value_reg);
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+                                return future_reg;
+                            },
+                            .pending => {
+                                if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
+                                return try self.genPendingFuture();
+                            },
+                        }
                     }
                     if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;

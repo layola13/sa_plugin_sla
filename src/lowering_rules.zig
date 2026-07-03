@@ -37,6 +37,15 @@ pub const AwaitPlan = struct {
     ready_state_inner: bool,
 };
 
+pub const FutureRuntimeCallKind = enum {
+    ready,
+    pending,
+};
+
+pub const FutureRuntimeCallPlan = struct {
+    kind: FutureRuntimeCallKind,
+};
+
 pub const ImportedMacroCallPlan = struct {
     macro_name: []const u8,
     import_path: ?[]const u8,
@@ -59,6 +68,27 @@ pub const ImportedMacroCallPlan = struct {
 pub const LoopControlPlan = struct {
     has_break: bool,
     has_continue: bool,
+};
+
+pub const WhileLetPatternKind = enum {
+    enum_variant,
+    option_some,
+    option_none,
+    result_ok,
+    result_err,
+};
+
+pub const WhileLetPatternPlan = struct {
+    kind: WhileLetPatternKind,
+    success_on_true: bool,
+    binding_count: usize,
+
+    pub fn bindsPayload(self: WhileLetPatternPlan) bool {
+        return switch (self.kind) {
+            .enum_variant, .option_some, .result_ok, .result_err => self.binding_count != 0,
+            .option_none => false,
+        };
+    }
 };
 
 pub const DynCoercionKind = enum {
@@ -102,6 +132,38 @@ pub fn planLoopControl(body: []const *ast.Node) LoopControlPlan {
         .has_break = blockContainsCurrentLoopBreak(body),
         .has_continue = blockContainsCurrentLoopContinue(body),
     };
+}
+
+pub fn planWhileLetPattern(pattern: ast.EnumPattern, has_user_enum_decl: bool) ?WhileLetPatternPlan {
+    if (has_user_enum_decl) {
+        return .{
+            .kind = .enum_variant,
+            .success_on_true = true,
+            .binding_count = pattern.bindings.len,
+        };
+    }
+
+    if (std.mem.eql(u8, pattern.enum_name, "Result") or std.mem.eql(u8, pattern.variant_name, "Ok") or std.mem.eql(u8, pattern.variant_name, "Err")) {
+        if (std.mem.eql(u8, pattern.variant_name, "Ok")) {
+            return .{ .kind = .result_ok, .success_on_true = true, .binding_count = pattern.bindings.len };
+        }
+        if (std.mem.eql(u8, pattern.variant_name, "Err")) {
+            return .{ .kind = .result_err, .success_on_true = false, .binding_count = pattern.bindings.len };
+        }
+        return null;
+    }
+
+    if (std.mem.eql(u8, pattern.enum_name, "Option") or std.mem.eql(u8, pattern.variant_name, "Some") or std.mem.eql(u8, pattern.variant_name, "None")) {
+        if (std.mem.eql(u8, pattern.variant_name, "Some")) {
+            return .{ .kind = .option_some, .success_on_true = true, .binding_count = pattern.bindings.len };
+        }
+        if (std.mem.eql(u8, pattern.variant_name, "None")) {
+            return .{ .kind = .option_none, .success_on_true = false, .binding_count = pattern.bindings.len };
+        }
+        return null;
+    }
+
+    return null;
 }
 
 pub fn blockTerminates(block: []const *ast.Node) bool {
@@ -232,6 +294,18 @@ pub fn planAsyncFunctionReturn(func: ast.FuncDecl, ptr_ty: *const ast.Type) Asyn
 
 pub fn planAwaitReadyFuture(_: *const ast.Type) AwaitPlan {
     return .{ .ready_state_inner = true };
+}
+
+pub fn planFutureRuntimeCall(call: ast.CallExpr) ?FutureRuntimeCallPlan {
+    if (call.associated_target) |target| {
+        if (!std.mem.eql(u8, target, "future")) return null;
+        if (std.mem.eql(u8, call.func_name, "ready")) return .{ .kind = .ready };
+        if (std.mem.eql(u8, call.func_name, "pending")) return .{ .kind = .pending };
+        return null;
+    }
+    if (std.mem.eql(u8, call.func_name, "future__ready")) return .{ .kind = .ready };
+    if (std.mem.eql(u8, call.func_name, "future__pending")) return .{ .kind = .pending };
+    return null;
 }
 
 pub fn importedMacroUsesExpressionOutput(macro: type_checker.ImportedMacro, arg_count: usize) bool {
@@ -444,6 +518,36 @@ pub fn optionInnerType(ty: *const ast.Type) ?*ast.Type {
     }
 }
 
+pub fn resultOkType(ty: *const ast.Type) ?*ast.Type {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, "Result") and ud.generics.len == 2) return ud.generics[0];
+                return null;
+            },
+            else => return null,
+        }
+    }
+}
+
+pub fn resultErrType(ty: *const ast.Type) ?*ast.Type {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, "Result") and ud.generics.len == 2) return ud.generics[1];
+                return null;
+            },
+            else => return null,
+        }
+    }
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     var curr = ty;
     while (true) {
@@ -457,6 +561,14 @@ fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
             else => return null,
         }
     }
+}
+
+pub fn vecElementType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Vec");
+}
+
+pub fn vecElementSlotSize(ty: *const ast.Type) usize {
+    return @max(abiTypeSize(ty), 8);
 }
 
 pub fn boxInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -1375,6 +1487,62 @@ test "shared enum tag/payload layout" {
 
     // Total size = tag word + largest variant payload (Move: through y at 16+8=24).
     try std.testing.expectEqual(@as(usize, 24), enumAbiSize(&decl));
+}
+
+test "shared while let pattern classification" {
+    const some_bindings = [_][]const u8{"value"};
+    const some = ast.EnumPattern{ .enum_name = "Option", .variant_name = "Some", .bindings = some_bindings[0..] };
+    const some_plan = planWhileLetPattern(some, false).?;
+    try std.testing.expectEqual(WhileLetPatternKind.option_some, some_plan.kind);
+    try std.testing.expect(some_plan.success_on_true);
+    try std.testing.expect(some_plan.bindsPayload());
+
+    const none = ast.EnumPattern{ .enum_name = "Option", .variant_name = "None", .bindings = &.{} };
+    const none_plan = planWhileLetPattern(none, false).?;
+    try std.testing.expectEqual(WhileLetPatternKind.option_none, none_plan.kind);
+    try std.testing.expect(!none_plan.success_on_true);
+    try std.testing.expect(!none_plan.bindsPayload());
+
+    const err_bindings = [_][]const u8{"err"};
+    const err = ast.EnumPattern{ .enum_name = "Result", .variant_name = "Err", .bindings = err_bindings[0..] };
+    const err_plan = planWhileLetPattern(err, false).?;
+    try std.testing.expectEqual(WhileLetPatternKind.result_err, err_plan.kind);
+    try std.testing.expect(!err_plan.success_on_true);
+    try std.testing.expect(err_plan.bindsPayload());
+
+    const message = ast.EnumPattern{ .enum_name = "Message", .variant_name = "Move", .bindings = &.{} };
+    const enum_plan = planWhileLetPattern(message, true).?;
+    try std.testing.expectEqual(WhileLetPatternKind.enum_variant, enum_plan.kind);
+    try std.testing.expect(enum_plan.success_on_true);
+}
+
+test "shared future runtime call classification" {
+    var value_node = ast.Node{ .literal = .{ .int_val = 1 } };
+    const args = [_]*ast.Node{&value_node};
+    const ready = ast.CallExpr{ .func_name = "ready", .associated_target = "future", .generics = &.{}, .args = args[0..] };
+    try std.testing.expectEqual(FutureRuntimeCallKind.ready, planFutureRuntimeCall(ready).?.kind);
+
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    const generics = [_]*ast.Type{&i32_ty};
+    const pending = ast.CallExpr{ .func_name = "pending", .associated_target = "future", .generics = generics[0..], .args = &.{} };
+    try std.testing.expectEqual(FutureRuntimeCallKind.pending, planFutureRuntimeCall(pending).?.kind);
+
+    const flat_pending = ast.CallExpr{ .func_name = "future__pending", .generics = generics[0..], .args = &.{} };
+    try std.testing.expectEqual(FutureRuntimeCallKind.pending, planFutureRuntimeCall(flat_pending).?.kind);
+}
+
+test "shared result generic inner types" {
+    var ok_ty = ast.Type{ .primitive = .i32 };
+    var err_ty = ast.Type{ .primitive = .i64 };
+    const generics = [_]*ast.Type{ &ok_ty, &err_ty };
+    var result_ty = ast.Type{ .user_defined = .{ .name = "Result", .generics = generics[0..] } };
+    const vec_generics = [_]*ast.Type{&ok_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = vec_generics[0..] } };
+
+    try std.testing.expect(resultOkType(&result_ty) == &ok_ty);
+    try std.testing.expect(resultErrType(&result_ty) == &err_ty);
+    try std.testing.expect(vecElementType(&vec_ty) == &ok_ty);
+    try std.testing.expectEqual(@as(usize, 8), vecElementSlotSize(&ok_ty));
 }
 
 test "shared dyn trait naming and method slots" {

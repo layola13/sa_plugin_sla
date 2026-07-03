@@ -3302,6 +3302,12 @@ pub const TypeChecker = struct {
                     return try self.makePointerType(call.generics[0]);
                 }
 
+                if (std.mem.eql(u8, call.func_name, "future__pending")) {
+                    if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                    if (call.generics.len != 1) return TypeError.InvalidArgsCount;
+                    return try self.makeFutureType(call.generics[0]);
+                }
+
                 if (std.mem.eql(u8, call.func_name, "RAW_WAKER_NEW")) {
                     if (call.args.len != 2) return TypeError.InvalidArgsCount;
                     const data_ty = try self.checkExpr(call.args[0], scope);
@@ -3476,6 +3482,11 @@ pub const TypeChecker = struct {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);
                         return try self.makeFutureType(inner_ty);
+                    }
+                    if (std.mem.eql(u8, target_name, "future") and std.mem.eql(u8, call.func_name, "pending")) {
+                        if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                        if (call.generics.len != 1) return TypeError.InvalidArgsCount;
+                        return try self.makeFutureType(call.generics[0]);
                     }
                     if (std.mem.eql(u8, target_name, "task") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;

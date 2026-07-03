@@ -40,6 +40,9 @@ pub const AwaitPlan = struct {
 pub const FutureRuntimeCallKind = enum {
     ready,
     pending,
+    join2,
+    pair_left,
+    pair_right,
 };
 
 pub const FutureRuntimeCallPlan = struct {
@@ -335,10 +338,16 @@ pub fn planFutureRuntimeCall(call: ast.CallExpr) ?FutureRuntimeCallPlan {
         if (!std.mem.eql(u8, target, "future")) return null;
         if (std.mem.eql(u8, call.func_name, "ready")) return .{ .kind = .ready };
         if (std.mem.eql(u8, call.func_name, "pending")) return .{ .kind = .pending };
+        if (std.mem.eql(u8, call.func_name, "join2")) return .{ .kind = .join2 };
+        if (std.mem.eql(u8, call.func_name, "pair_left")) return .{ .kind = .pair_left };
+        if (std.mem.eql(u8, call.func_name, "pair_right")) return .{ .kind = .pair_right };
         return null;
     }
     if (std.mem.eql(u8, call.func_name, "future__ready")) return .{ .kind = .ready };
     if (std.mem.eql(u8, call.func_name, "future__pending")) return .{ .kind = .pending };
+    if (std.mem.eql(u8, call.func_name, "future__join2")) return .{ .kind = .join2 };
+    if (std.mem.eql(u8, call.func_name, "future__pair_left")) return .{ .kind = .pair_left };
+    if (std.mem.eql(u8, call.func_name, "future__pair_right")) return .{ .kind = .pair_right };
     return null;
 }
 
@@ -1601,6 +1610,13 @@ test "shared future runtime call classification" {
 
     const flat_pending = ast.CallExpr{ .func_name = "future__pending", .generics = generics[0..], .args = &.{} };
     try std.testing.expectEqual(FutureRuntimeCallKind.pending, planFutureRuntimeCall(flat_pending).?.kind);
+
+    const join_args = [_]*ast.Node{ &value_node, &value_node };
+    const join2 = ast.CallExpr{ .func_name = "join2", .associated_target = "future", .generics = &.{}, .args = join_args[0..] };
+    try std.testing.expectEqual(FutureRuntimeCallKind.join2, planFutureRuntimeCall(join2).?.kind);
+
+    const pair_left = ast.CallExpr{ .func_name = "pair_left", .associated_target = "future", .generics = &.{}, .args = args[0..] };
+    try std.testing.expectEqual(FutureRuntimeCallKind.pair_left, planFutureRuntimeCall(pair_left).?.kind);
 
     const state = ast.CallExpr{ .func_name = "state", .associated_target = "task", .generics = &.{}, .args = args[0..] };
     try std.testing.expectEqual(TaskRuntimeCallKind.state, planTaskRuntimeCall(state).?.kind);

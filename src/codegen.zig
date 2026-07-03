@@ -87,6 +87,7 @@ pub const Codegen = struct {
     metadata_bindings: std.StringHashMap(void),
     metadata_open_results: std.StringHashMap(MetadataResultHandle),
     task_future_objects: std.StringHashMap([]const u8),
+    future_state_vtables: std.StringHashMap([]const u8),
     executor_task_counts: std.StringHashMap(usize),
     binding_aliases: std.StringHashMap(std.ArrayList([]const u8)),
     injected_address_bindings: std.StringHashMap([]const u8),
@@ -142,6 +143,7 @@ pub const Codegen = struct {
             .metadata_bindings = std.StringHashMap(void).init(allocator),
             .metadata_open_results = std.StringHashMap(MetadataResultHandle).init(allocator),
             .task_future_objects = std.StringHashMap([]const u8).init(allocator),
+            .future_state_vtables = std.StringHashMap([]const u8).init(allocator),
             .executor_task_counts = std.StringHashMap(usize).init(allocator),
             .binding_aliases = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
             .injected_address_bindings = injected_address_bindings,
@@ -199,6 +201,7 @@ pub const Codegen = struct {
         self.metadata_bindings.deinit();
         self.metadata_open_results.deinit();
         self.task_future_objects.deinit();
+        self.future_state_vtables.deinit();
         self.executor_task_counts.deinit();
         self.clearBindingAliases();
         self.binding_aliases.deinit();
@@ -601,6 +604,7 @@ pub const Codegen = struct {
             return;
         }
         self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+        _ = self.future_state_vtables.remove(resolved_name);
         if (self.task_future_objects.get(resolved_name)) |future_obj| {
             _ = self.task_future_objects.remove(resolved_name);
             if (!self.consumed_bindings.contains(future_obj)) {
@@ -5505,10 +5509,23 @@ pub const Codegen = struct {
     fn emitFutureTaskHelpers(self: *Codegen) CodegenError!void {
         self.out.writer().print(
             \\@const SLA_READY_FUTURE_VT = vtable {{ poll = @sla_future_ready_poll }}
+            \\@const SLA_JOIN2_FUTURE_VT = vtable {{ poll = @sla_future_join2_poll }}
             \\
             \\@sla_future_ready_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
             \\L_ENTRY:
             \\    EXPAND FUTURE_READY_SET_POLL_STATE out_poll_slot, data_slot
+            \\    return
+            \\
+            \\@sla_future_join2_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
+            \\L_ENTRY:
+            \\    EXPAND FUTURE_JOIN2_STATE_POLL join2_poll_tmp, data_slot, ctx_slot
+            \\    join2_poll_tag = load join2_poll_tmp+Poll_tag as u64
+            \\    join2_poll_value = load join2_poll_tmp+Poll_value as u64
+            \\    store out_poll_slot+Poll_tag, join2_poll_tag as u64
+            \\    store out_poll_slot+Poll_value, join2_poll_value as u64
+            \\    !join2_poll_value
+            \\    !join2_poll_tag
+            \\    !join2_poll_tmp
             \\    return
             \\
             \\
@@ -5866,6 +5883,7 @@ pub const Codegen = struct {
         self.metadata_bindings.clearRetainingCapacity();
         self.metadata_open_results.clearRetainingCapacity();
         self.task_future_objects.clearRetainingCapacity();
+        self.future_state_vtables.clearRetainingCapacity();
         self.executor_task_counts.clearRetainingCapacity();
         self.clearBindingAliases();
         self.clearHashMapKeySlots();
@@ -5979,6 +5997,7 @@ pub const Codegen = struct {
         self.metadata_bindings.clearRetainingCapacity();
         self.metadata_open_results.clearRetainingCapacity();
         self.task_future_objects.clearRetainingCapacity();
+        self.future_state_vtables.clearRetainingCapacity();
         self.executor_task_counts.clearRetainingCapacity();
         self.clearBindingAliases();
         self.clearHashMapKeySlots();
@@ -6373,13 +6392,43 @@ pub const Codegen = struct {
     fn genReadyFutureI64(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
         const future_reg = try self.newTmp();
         self.out.writer().print("    EXPAND FUTURE_READY_STATE_NEW {s}, {s}\n", .{ future_reg, value_reg }) catch return CodegenError.CodegenError;
+        self.future_state_vtables.put(future_reg, "SLA_READY_FUTURE_VT") catch return CodegenError.OutOfMemory;
         return future_reg;
     }
 
     fn genPendingFuture(self: *Codegen) CodegenError![]const u8 {
         const future_reg = try self.newTmp();
         self.out.writer().print("    EXPAND FUTURE_PENDING_STATE_NEW {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
+        self.future_state_vtables.put(future_reg, "SLA_READY_FUTURE_VT") catch return CodegenError.OutOfMemory;
         return future_reg;
+    }
+
+    fn futureVTableForState(self: *Codegen, state_reg: []const u8) []const u8 {
+        const resolved = self.resolveBindingName(state_reg);
+        if (self.future_state_vtables.get(resolved)) |vt| return vt;
+        if (self.future_state_vtables.get(state_reg)) |vt| return vt;
+        return "SLA_READY_FUTURE_VT";
+    }
+
+    fn genFutureObjectForState(self: *Codegen, state_reg: []const u8) CodegenError![]const u8 {
+        const vt_reg = try self.newTmp();
+        const future_obj = try self.newTmp();
+        const vt_name = self.futureVTableForState(state_reg);
+        self.out.writer().print("    {s} = &{s}\n", .{ vt_reg, vt_name }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    EXPAND FUTURE_NEW {s}, {s}, {s}\n", .{ future_obj, state_reg, vt_reg }) catch return CodegenError.CodegenError;
+        try self.emitRelease(vt_reg);
+        return future_obj;
+    }
+
+    fn genJoin2Future(self: *Codegen, left_state: []const u8, right_state: []const u8) CodegenError![]const u8 {
+        const left_future = try self.genFutureObjectForState(left_state);
+        const right_future = try self.genFutureObjectForState(right_state);
+        const join_state = try self.newTmp();
+        self.out.writer().print("    EXPAND FUTURE_JOIN2_STATE_NEW {s}, {s}, {s}\n", .{ join_state, left_future, right_future }) catch return CodegenError.CodegenError;
+        self.future_state_vtables.put(join_state, "SLA_JOIN2_FUTURE_VT") catch return CodegenError.OutOfMemory;
+        try self.emitRelease(left_future);
+        try self.emitRelease(right_future);
+        return join_state;
     }
 
     fn genReadyPoll(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
@@ -7084,6 +7133,10 @@ pub const Codegen = struct {
                         self.task_future_objects.put(let.name, future_obj) catch return CodegenError.OutOfMemory;
                         _ = self.task_future_objects.remove(val_reg);
                     }
+                    if (self.future_state_vtables.get(val_reg)) |vt_name| {
+                        self.future_state_vtables.put(let.name, vt_name) catch return CodegenError.OutOfMemory;
+                        _ = self.future_state_vtables.remove(val_reg);
+                    }
                     if (self.executor_task_counts.get(val_reg)) |task_count| {
                         self.executor_task_counts.put(let.name, task_count) catch return CodegenError.OutOfMemory;
                         _ = self.executor_task_counts.remove(val_reg);
@@ -7329,6 +7382,10 @@ pub const Codegen = struct {
                     if (self.task_future_objects.get(val_reg)) |future_obj| {
                         self.task_future_objects.put(c.name, future_obj) catch return CodegenError.OutOfMemory;
                         _ = self.task_future_objects.remove(val_reg);
+                    }
+                    if (self.future_state_vtables.get(val_reg)) |vt_name| {
+                        self.future_state_vtables.put(c.name, vt_name) catch return CodegenError.OutOfMemory;
+                        _ = self.future_state_vtables.remove(val_reg);
                     }
                     if (self.executor_task_counts.get(val_reg)) |task_count| {
                         self.executor_task_counts.put(c.name, task_count) catch return CodegenError.OutOfMemory;
@@ -9283,6 +9340,21 @@ pub const Codegen = struct {
                             if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
                             return try self.genPendingFuture();
                         },
+                        .join2 => {
+                            if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
+                            const left_state = try self.genExpr(call.args[0], hoisted_allocs);
+                            const right_state = try self.genExpr(call.args[1], hoisted_allocs);
+                            return try self.genJoin2Future(left_state, right_state);
+                        },
+                        .pair_left, .pair_right => {
+                            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                            const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                            const value_reg = try self.newTmp();
+                            const macro_name = if (future_plan.kind == .pair_left) "FUTURE_PAIR_LEFT" else "FUTURE_PAIR_RIGHT";
+                            self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
+                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
+                            return value_reg;
+                        },
                     }
                 }
                 if (std.mem.eql(u8, call.func_name, "std__ptr__read_volatile") or std.mem.eql(u8, call.func_name, "ptr__read_volatile")) {
@@ -9334,20 +9406,31 @@ pub const Codegen = struct {
                                 if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
                                 return try self.genPendingFuture();
                             },
+                            .join2 => {
+                                if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
+                                const left_state = try self.genExpr(call.args[0], hoisted_allocs);
+                                const right_state = try self.genExpr(call.args[1], hoisted_allocs);
+                                return try self.genJoin2Future(left_state, right_state);
+                            },
+                            .pair_left, .pair_right => {
+                                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                                const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const value_reg = try self.newTmp();
+                                const macro_name = if (future_plan.kind == .pair_left) "FUTURE_PAIR_LEFT" else "FUTURE_PAIR_RIGHT";
+                                self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
+                                return value_reg;
+                            },
                         }
                     }
                     if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const state_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                        const vt_reg = try self.newTmp();
-                        const future_obj = try self.newTmp();
                         const ctx = try self.newTmp();
                         const task = try self.newTmp();
-                        self.out.writer().print("    {s} = &SLA_READY_FUTURE_VT\n", .{vt_reg}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND FUTURE_NEW {s}, {s}, {s}\n", .{ future_obj, state_reg, vt_reg }) catch return CodegenError.CodegenError;
+                        const future_obj = try self.genFutureObjectForState(state_reg);
                         self.out.writer().print("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
                         self.out.writer().print("    EXPAND TASK_NEW {s}, {s}, {s}\n", .{ task, future_obj, ctx }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(vt_reg);
                         try self.emitRelease(ctx);
                         self.task_future_objects.put(task, future_obj) catch return CodegenError.OutOfMemory;
                         return task;

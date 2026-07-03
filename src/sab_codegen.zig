@@ -178,6 +178,7 @@ pub const Codegen = struct {
     refcell_borrow_values: std.AutoHashMap(u32, RefCellBorrowValue),
     borrow_address_temps: std.AutoHashMap(u32, []const u32),
     non_owning_regs: std.AutoHashMap(u32, void),
+    future_state_vtables: std.AutoHashMap(u32, []const u8),
     global_scalar_consts: std.StringHashMap(*const ast.Node),
     sa_std_root: ?[]const u8 = null,
     instructions: std.ArrayList(inst.Instruction),
@@ -231,6 +232,7 @@ pub const Codegen = struct {
             .refcell_borrow_values = std.AutoHashMap(u32, RefCellBorrowValue).init(allocator),
             .borrow_address_temps = std.AutoHashMap(u32, []const u32).init(allocator),
             .non_owning_regs = std.AutoHashMap(u32, void).init(allocator),
+            .future_state_vtables = std.AutoHashMap(u32, []const u8).init(allocator),
             .global_scalar_consts = std.StringHashMap(*const ast.Node).init(allocator),
             .instructions = std.ArrayList(inst.Instruction).init(allocator),
             .function_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
@@ -293,6 +295,7 @@ pub const Codegen = struct {
         self.clearBorrowAddressTemps();
         self.borrow_address_temps.deinit();
         self.non_owning_regs.deinit();
+        self.future_state_vtables.deinit();
         self.global_scalar_consts.deinit();
         if (self.sa_std_root) |root| self.allocator.free(root);
         self.instructions.deinit();
@@ -1594,6 +1597,7 @@ pub const Codegen = struct {
         self.refcell_borrow_values.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
         self.non_owning_regs.clearRetainingCapacity();
+        self.future_state_vtables.clearRetainingCapacity();
     }
 
     fn finishFunctionBody(self: *Codegen, sig_idx: usize) !void {
@@ -2098,6 +2102,7 @@ pub const Codegen = struct {
             try self.released_regs.put(reg, {});
             return;
         }
+        _ = self.future_state_vtables.remove(reg);
         var item = self.makeInst(.release);
         item.operands[0] = .{ .reg = reg };
         try self.appendInst(item);
@@ -2110,6 +2115,13 @@ pub const Codegen = struct {
 
     fn markConsumed(self: *Codegen, reg: u32) !void {
         try self.released_regs.put(reg, {});
+    }
+
+    fn transferFutureStateVTable(self: *Codegen, src: u32, dst: u32) !void {
+        if (self.future_state_vtables.get(src)) |vt_name| {
+            try self.future_state_vtables.put(dst, vt_name);
+            if (src != dst) _ = self.future_state_vtables.remove(src);
+        }
     }
 
     fn emitBranchRelease(self: *Codegen, reg: u32) !void {
@@ -3300,6 +3312,7 @@ pub const Codegen = struct {
         self.future_task_helpers_emitted = true;
 
         try self.appendVTableConst("SLA_READY_FUTURE_VT", "sla_future_ready_poll");
+        try self.appendVTableConst("SLA_JOIN2_FUTURE_VT", "sla_future_join2_poll");
 
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
@@ -3328,6 +3341,43 @@ pub const Codegen = struct {
         try self.emitReturn(null);
 
         try self.finishFunctionBody(sig_idx);
+
+        self.popLocalsTo(old_locals);
+        self.beginFunction();
+
+        const join_specs = try self.allocator.alloc(sig.ParamSpec, names.len);
+        const join_ids = try self.allocator.alloc(u32, names.len);
+        for (names, 0..) |name, i| {
+            join_ids[i] = try self.intern(name);
+            join_specs[i] = .{ .name = name, .ty = .ptr, .cap = .borrow };
+            try self.pushRawParamLocal(name, join_ids[i], .borrow);
+        }
+
+        const join_fsig = try self.appendGeneratedFuncSig("sla_future_join2_poll", .normal, join_specs, join_ids, .void, false);
+        const join_sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(join_fsig);
+        try self.appendDeclInst(join_fsig);
+        try self.emitLabel("L_ENTRY");
+
+        const join_poll = try self.intern(try self.newTmp());
+        const join_tag = try self.intern(try self.newTmp());
+        const join_value = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_JOIN2_STATE_POLL", &.{
+            self.symbols.items[join_poll],
+            self.symbols.items[join_ids[0]],
+            self.symbols.items[join_ids[1]],
+        });
+        try self.emitLoad(join_tag, join_poll, 0, .u64);
+        try self.emitLoad(join_value, join_poll, 8, .u64);
+        try self.emitStore(join_ids[2], 0, join_tag, .u64);
+        try self.emitStore(join_ids[2], 8, join_value, .u64);
+        try self.emitRelease(join_value);
+        try self.emitRelease(join_tag);
+        try self.emitRelease(join_poll);
+        for (join_ids) |id| try self.emitRelease(id);
+        try self.emitReturn(null);
+
+        try self.finishFunctionBody(join_sig_idx);
     }
 
     fn emitEscapedWorker(self: *Codegen, entry: EscapedClosureEntry) !void {
@@ -3812,6 +3862,7 @@ pub const Codegen = struct {
             return;
         }
         try self.emitAssignReg(dst, src);
+        try self.transferFutureStateVTable(src, dst);
         try self.pushTypedLocal(name, dst, false, let_ty);
     }
 
@@ -3843,6 +3894,7 @@ pub const Codegen = struct {
             self.symbols.items[future],
             self.symbols.items[value],
         });
+        try self.future_state_vtables.put(future, "SLA_READY_FUTURE_VT");
         return future;
     }
 
@@ -3852,7 +3904,43 @@ pub const Codegen = struct {
         try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_PENDING_STATE_NEW", &.{
             self.symbols.items[future],
         });
+        try self.future_state_vtables.put(future, "SLA_READY_FUTURE_VT");
         return future;
+    }
+
+    fn futureVTableForState(self: *Codegen, state_reg: u32) []const u8 {
+        if (self.future_state_vtables.get(state_reg)) |vt_name| return vt_name;
+        return "SLA_READY_FUTURE_VT";
+    }
+
+    fn genFutureObjectForState(self: *Codegen, state_reg: u32) !u32 {
+        const vt_reg = try self.intern(try self.newTmp());
+        const future_obj = try self.intern(try self.newTmp());
+        try self.emitBorrowSymbol(vt_reg, self.futureVTableForState(state_reg));
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_NEW", &.{
+            self.symbols.items[future_obj],
+            self.symbols.items[state_reg],
+            self.symbols.items[vt_reg],
+        });
+        try self.emitRelease(vt_reg);
+        if (!self.isLocalReg(state_reg)) try self.emitRelease(state_reg);
+        return future_obj;
+    }
+
+    fn genJoin2Future(self: *Codegen, left_state: u32, right_state: u32) !u32 {
+        const left_future = try self.genFutureObjectForState(left_state);
+        const right_future = try self.genFutureObjectForState(right_state);
+        const join_state = try self.intern(try self.newTmp());
+        try self.recordReg(join_state);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_JOIN2_STATE_NEW", &.{
+            self.symbols.items[join_state],
+            self.symbols.items[left_future],
+            self.symbols.items[right_future],
+        });
+        try self.future_state_vtables.put(join_state, "SLA_JOIN2_FUTURE_VT");
+        try self.emitRelease(left_future);
+        try self.emitRelease(right_future);
+        return join_state;
     }
 
     fn genReadyPoll(self: *Codegen, value: u32) !u32 {
@@ -3981,6 +4069,24 @@ pub const Codegen = struct {
                     if (call.args.len != 0 or call.generics.len != 1) return Error.UnsupportedSabDirectFeature;
                     break :blk try self.genPendingFuture();
                 },
+                .join2 => blk: {
+                    if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                    const left_state = try self.genExpr(call.args[0]);
+                    const right_state = try self.genExpr(call.args[1]);
+                    break :blk try self.genJoin2Future(left_state, right_state);
+                },
+                .pair_left, .pair_right => blk: {
+                    if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                    const pair_reg = try self.genExpr(call.args[0]);
+                    const value_reg = try self.intern(try self.newTmp());
+                    const macro_name = if (future_plan.kind == .pair_left) "FUTURE_PAIR_LEFT" else "FUTURE_PAIR_RIGHT";
+                    try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
+                        self.symbols.items[value_reg],
+                        self.symbols.items[pair_reg],
+                    });
+                    try self.releaseExprResultIfNeeded(call.args[0], pair_reg);
+                    break :blk value_reg;
+                },
             };
         }
 
@@ -3990,26 +4096,17 @@ pub const Codegen = struct {
         if (std.mem.eql(u8, call.func_name, "new")) {
             if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
             const state_reg = try self.genExpr(call.args[0]);
-            const vt_reg = try self.intern(try self.newTmp());
-            const future_obj = try self.intern(try self.newTmp());
             const ctx = try self.intern(try self.newTmp());
             const task = try self.intern(try self.newTmp());
-            try self.emitBorrowSymbol(vt_reg, "SLA_READY_FUTURE_VT");
-            try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_NEW", &.{
-                self.symbols.items[future_obj],
-                self.symbols.items[state_reg],
-                self.symbols.items[vt_reg],
-            });
+            const future_obj = try self.genFutureObjectForState(state_reg);
             try self.emitAssignImm(ctx, 0);
             try self.emitStdMacroFragment("sa_std/core/task.sa", "TASK_NEW", &.{
                 self.symbols.items[task],
                 self.symbols.items[future_obj],
                 self.symbols.items[ctx],
             });
-            try self.emitRelease(vt_reg);
             try self.emitRelease(ctx);
             try self.emitRelease(future_obj);
-            if (!self.isLocalReg(state_reg)) try self.emitRelease(state_reg);
             return task;
         }
 

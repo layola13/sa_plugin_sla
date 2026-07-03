@@ -5510,6 +5510,7 @@ pub const Codegen = struct {
         self.out.writer().print(
             \\@const SLA_READY_FUTURE_VT = vtable {{ poll = @sla_future_ready_poll }}
             \\@const SLA_JOIN2_FUTURE_VT = vtable {{ poll = @sla_future_join2_poll }}
+            \\@const SLA_SELECT2_FUTURE_VT = vtable {{ poll = @sla_future_select2_poll }}
             \\
             \\@sla_future_ready_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
             \\L_ENTRY:
@@ -5526,6 +5527,18 @@ pub const Codegen = struct {
             \\    !join2_poll_value
             \\    !join2_poll_tag
             \\    !join2_poll_tmp
+            \\    return
+            \\
+            \\@sla_future_select2_poll(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
+            \\L_ENTRY:
+            \\    EXPAND FUTURE_SELECT2_STATE_POLL select2_poll_tmp, data_slot, ctx_slot
+            \\    select2_poll_tag = load select2_poll_tmp+Poll_tag as u64
+            \\    select2_poll_value = load select2_poll_tmp+Poll_value as u64
+            \\    store out_poll_slot+Poll_tag, select2_poll_tag as u64
+            \\    store out_poll_slot+Poll_value, select2_poll_value as u64
+            \\    !select2_poll_value
+            \\    !select2_poll_tag
+            \\    !select2_poll_tmp
             \\    return
             \\
             \\
@@ -6429,6 +6442,17 @@ pub const Codegen = struct {
         try self.emitRelease(left_future);
         try self.emitRelease(right_future);
         return join_state;
+    }
+
+    fn genSelect2Future(self: *Codegen, left_state: []const u8, right_state: []const u8) CodegenError![]const u8 {
+        const left_future = try self.genFutureObjectForState(left_state);
+        const right_future = try self.genFutureObjectForState(right_state);
+        const select_state = try self.newTmp();
+        self.out.writer().print("    EXPAND FUTURE_SELECT2_STATE_NEW {s}, {s}, {s}\n", .{ select_state, left_future, right_future }) catch return CodegenError.CodegenError;
+        self.future_state_vtables.put(select_state, "SLA_SELECT2_FUTURE_VT") catch return CodegenError.OutOfMemory;
+        try self.emitRelease(left_future);
+        try self.emitRelease(right_future);
+        return select_state;
     }
 
     fn genReadyPoll(self: *Codegen, value_reg: []const u8) CodegenError![]const u8 {
@@ -9346,6 +9370,12 @@ pub const Codegen = struct {
                             const right_state = try self.genExpr(call.args[1], hoisted_allocs);
                             return try self.genJoin2Future(left_state, right_state);
                         },
+                        .select2 => {
+                            if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
+                            const left_state = try self.genExpr(call.args[0], hoisted_allocs);
+                            const right_state = try self.genExpr(call.args[1], hoisted_allocs);
+                            return try self.genSelect2Future(left_state, right_state);
+                        },
                         .pair_left, .pair_right => {
                             if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
                             const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -9353,6 +9383,20 @@ pub const Codegen = struct {
                             const macro_name = if (future_plan.kind == .pair_left) "FUTURE_PAIR_LEFT" else "FUTURE_PAIR_RIGHT";
                             self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
+                            return value_reg;
+                        },
+                        .either_side, .either_left, .either_right => {
+                            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                            const either_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                            const value_reg = try self.newTmp();
+                            const macro_name = switch (future_plan.kind) {
+                                .either_side => "FUTURE_EITHER_SIDE",
+                                .either_left => "FUTURE_EITHER_LEFT_VALUE",
+                                .either_right => "FUTURE_EITHER_RIGHT_VALUE",
+                                else => unreachable,
+                            };
+                            self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, either_reg }) catch return CodegenError.CodegenError;
+                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(either_reg);
                             return value_reg;
                         },
                     }
@@ -9412,6 +9456,12 @@ pub const Codegen = struct {
                                 const right_state = try self.genExpr(call.args[1], hoisted_allocs);
                                 return try self.genJoin2Future(left_state, right_state);
                             },
+                            .select2 => {
+                                if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
+                                const left_state = try self.genExpr(call.args[0], hoisted_allocs);
+                                const right_state = try self.genExpr(call.args[1], hoisted_allocs);
+                                return try self.genSelect2Future(left_state, right_state);
+                            },
                             .pair_left, .pair_right => {
                                 if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
                                 const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -9419,6 +9469,20 @@ pub const Codegen = struct {
                                 const macro_name = if (future_plan.kind == .pair_left) "FUTURE_PAIR_LEFT" else "FUTURE_PAIR_RIGHT";
                                 self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
+                                return value_reg;
+                            },
+                            .either_side, .either_left, .either_right => {
+                                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+                                const either_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                const value_reg = try self.newTmp();
+                                const macro_name = switch (future_plan.kind) {
+                                    .either_side => "FUTURE_EITHER_SIDE",
+                                    .either_left => "FUTURE_EITHER_LEFT_VALUE",
+                                    .either_right => "FUTURE_EITHER_RIGHT_VALUE",
+                                    else => unreachable,
+                                };
+                                self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, either_reg }) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(either_reg);
                                 return value_reg;
                             },
                         }

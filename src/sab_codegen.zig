@@ -3313,6 +3313,7 @@ pub const Codegen = struct {
 
         try self.appendVTableConst("SLA_READY_FUTURE_VT", "sla_future_ready_poll");
         try self.appendVTableConst("SLA_JOIN2_FUTURE_VT", "sla_future_join2_poll");
+        try self.appendVTableConst("SLA_SELECT2_FUTURE_VT", "sla_future_select2_poll");
 
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
@@ -3378,6 +3379,43 @@ pub const Codegen = struct {
         try self.emitReturn(null);
 
         try self.finishFunctionBody(join_sig_idx);
+
+        self.popLocalsTo(old_locals);
+        self.beginFunction();
+
+        const select_specs = try self.allocator.alloc(sig.ParamSpec, names.len);
+        const select_ids = try self.allocator.alloc(u32, names.len);
+        for (names, 0..) |name, i| {
+            select_ids[i] = try self.intern(name);
+            select_specs[i] = .{ .name = name, .ty = .ptr, .cap = .borrow };
+            try self.pushRawParamLocal(name, select_ids[i], .borrow);
+        }
+
+        const select_fsig = try self.appendGeneratedFuncSig("sla_future_select2_poll", .normal, select_specs, select_ids, .void, false);
+        const select_sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(select_fsig);
+        try self.appendDeclInst(select_fsig);
+        try self.emitLabel("L_ENTRY");
+
+        const select_poll = try self.intern(try self.newTmp());
+        const select_tag = try self.intern(try self.newTmp());
+        const select_value = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_SELECT2_STATE_POLL", &.{
+            self.symbols.items[select_poll],
+            self.symbols.items[select_ids[0]],
+            self.symbols.items[select_ids[1]],
+        });
+        try self.emitLoad(select_tag, select_poll, 0, .u64);
+        try self.emitLoad(select_value, select_poll, 8, .u64);
+        try self.emitStore(select_ids[2], 0, select_tag, .u64);
+        try self.emitStore(select_ids[2], 8, select_value, .u64);
+        try self.emitRelease(select_value);
+        try self.emitRelease(select_tag);
+        try self.emitRelease(select_poll);
+        for (select_ids) |id| try self.emitRelease(id);
+        try self.emitReturn(null);
+
+        try self.finishFunctionBody(select_sig_idx);
     }
 
     fn emitEscapedWorker(self: *Codegen, entry: EscapedClosureEntry) !void {
@@ -3943,6 +3981,22 @@ pub const Codegen = struct {
         return join_state;
     }
 
+    fn genSelect2Future(self: *Codegen, left_state: u32, right_state: u32) !u32 {
+        const left_future = try self.genFutureObjectForState(left_state);
+        const right_future = try self.genFutureObjectForState(right_state);
+        const select_state = try self.intern(try self.newTmp());
+        try self.recordReg(select_state);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_SELECT2_STATE_NEW", &.{
+            self.symbols.items[select_state],
+            self.symbols.items[left_future],
+            self.symbols.items[right_future],
+        });
+        try self.future_state_vtables.put(select_state, "SLA_SELECT2_FUTURE_VT");
+        try self.emitRelease(left_future);
+        try self.emitRelease(right_future);
+        return select_state;
+    }
+
     fn genReadyPoll(self: *Codegen, value: u32) !u32 {
         const poll = try self.intern(try self.newTmp());
         try self.recordReg(poll);
@@ -4075,6 +4129,12 @@ pub const Codegen = struct {
                     const right_state = try self.genExpr(call.args[1]);
                     break :blk try self.genJoin2Future(left_state, right_state);
                 },
+                .select2 => blk: {
+                    if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                    const left_state = try self.genExpr(call.args[0]);
+                    const right_state = try self.genExpr(call.args[1]);
+                    break :blk try self.genSelect2Future(left_state, right_state);
+                },
                 .pair_left, .pair_right => blk: {
                     if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
                     const pair_reg = try self.genExpr(call.args[0]);
@@ -4085,6 +4145,23 @@ pub const Codegen = struct {
                         self.symbols.items[pair_reg],
                     });
                     try self.releaseExprResultIfNeeded(call.args[0], pair_reg);
+                    break :blk value_reg;
+                },
+                .either_side, .either_left, .either_right => blk: {
+                    if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                    const either_reg = try self.genExpr(call.args[0]);
+                    const value_reg = try self.intern(try self.newTmp());
+                    const macro_name = switch (future_plan.kind) {
+                        .either_side => "FUTURE_EITHER_SIDE",
+                        .either_left => "FUTURE_EITHER_LEFT_VALUE",
+                        .either_right => "FUTURE_EITHER_RIGHT_VALUE",
+                        else => unreachable,
+                    };
+                    try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
+                        self.symbols.items[value_reg],
+                        self.symbols.items[either_reg],
+                    });
+                    try self.releaseExprResultIfNeeded(call.args[0], either_reg);
                     break :blk value_reg;
                 },
             };

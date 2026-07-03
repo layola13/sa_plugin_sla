@@ -874,6 +874,15 @@ pub const TypeChecker = struct {
         return ty;
     }
 
+    fn makeFutureEitherType(self: *TypeChecker, left: *ast.Type, right: *ast.Type) TypeError!*ast.Type {
+        const generics = try self.allocator.alloc(*ast.Type, 2);
+        generics[0] = left;
+        generics[1] = right;
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .user_defined = .{ .name = "FutureEither", .generics = generics } };
+        return ty;
+    }
+
     fn makeBorrowType(self: *TypeChecker, inner: *ast.Type) TypeError!*ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .borrow = inner };
@@ -1766,6 +1775,58 @@ pub const TypeChecker = struct {
         const pair_ty = try self.checkExpr(call.args[0], scope);
         const pair = futurePairInnerTypes(pair_ty) orelse return TypeError.TypeMismatch;
         const out_ty = if (want_left) pair.left else pair.right;
+        if (!isPollScalarValueType(out_ty)) return TypeError.TypeMismatch;
+        return out_ty;
+    }
+
+    const FutureEitherInnerTypes = struct {
+        left: *ast.Type,
+        right: *ast.Type,
+    };
+
+    fn futureEitherInnerTypes(ty: *const ast.Type) ?FutureEitherInnerTypes {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                .user_defined => |ud| {
+                    if (std.mem.eql(u8, ud.name, "FutureEither") and ud.generics.len == 2) {
+                        return .{ .left = ud.generics[0], .right = ud.generics[1] };
+                    }
+                    return null;
+                },
+                else => return null,
+            }
+        }
+    }
+
+    fn checkFutureSelect2Call(self: *TypeChecker, call: ast.CallExpr, scope: *Scope) TypeError!*ast.Type {
+        if (call.args.len != 2) return TypeError.InvalidArgsCount;
+        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+        const left_ty = try self.checkExpr(call.args[0], scope);
+        const right_ty = try self.checkExpr(call.args[1], scope);
+        const left_inner = futureInnerType(left_ty) orelse return TypeError.TypeMismatch;
+        const right_inner = futureInnerType(right_ty) orelse return TypeError.TypeMismatch;
+        if (!isPollScalarValueType(left_inner) or !isPollScalarValueType(right_inner)) return TypeError.TypeMismatch;
+        const either_ty = try self.makeFutureEitherType(left_inner, right_inner);
+        return try self.makeFutureType(either_ty);
+    }
+
+    fn checkFutureEitherSideCall(self: *TypeChecker, call: ast.CallExpr, scope: *Scope) TypeError!*ast.Type {
+        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+        const either_ty = try self.checkExpr(call.args[0], scope);
+        _ = futureEitherInnerTypes(either_ty) orelse return TypeError.TypeMismatch;
+        return try self.makeU64Type();
+    }
+
+    fn checkFutureEitherAccessorCall(self: *TypeChecker, call: ast.CallExpr, scope: *Scope, want_left: bool) TypeError!*ast.Type {
+        if (call.args.len != 1) return TypeError.InvalidArgsCount;
+        if (call.generics.len != 0) return TypeError.InvalidArgsCount;
+        const either_ty = try self.checkExpr(call.args[0], scope);
+        const either = futureEitherInnerTypes(either_ty) orelse return TypeError.TypeMismatch;
+        const out_ty = if (want_left) either.left else either.right;
         if (!isPollScalarValueType(out_ty)) return TypeError.TypeMismatch;
         return out_ty;
     }
@@ -3435,6 +3496,22 @@ pub const TypeChecker = struct {
                     return try self.checkFuturePairAccessorCall(call, scope, false);
                 }
 
+                if (std.mem.eql(u8, call.func_name, "future__select2")) {
+                    return try self.checkFutureSelect2Call(call, scope);
+                }
+
+                if (std.mem.eql(u8, call.func_name, "future__either_side")) {
+                    return try self.checkFutureEitherSideCall(call, scope);
+                }
+
+                if (std.mem.eql(u8, call.func_name, "future__either_left")) {
+                    return try self.checkFutureEitherAccessorCall(call, scope, true);
+                }
+
+                if (std.mem.eql(u8, call.func_name, "future__either_right")) {
+                    return try self.checkFutureEitherAccessorCall(call, scope, false);
+                }
+
                 if (std.mem.eql(u8, call.func_name, "poll__ready")) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     if (call.generics.len != 0) return TypeError.InvalidArgsCount;
@@ -3655,6 +3732,18 @@ pub const TypeChecker = struct {
                     }
                     if (std.mem.eql(u8, target_name, "future") and std.mem.eql(u8, call.func_name, "pair_right")) {
                         return try self.checkFuturePairAccessorCall(call, scope, false);
+                    }
+                    if (std.mem.eql(u8, target_name, "future") and std.mem.eql(u8, call.func_name, "select2")) {
+                        return try self.checkFutureSelect2Call(call, scope);
+                    }
+                    if (std.mem.eql(u8, target_name, "future") and std.mem.eql(u8, call.func_name, "either_side")) {
+                        return try self.checkFutureEitherSideCall(call, scope);
+                    }
+                    if (std.mem.eql(u8, target_name, "future") and std.mem.eql(u8, call.func_name, "either_left")) {
+                        return try self.checkFutureEitherAccessorCall(call, scope, true);
+                    }
+                    if (std.mem.eql(u8, target_name, "future") and std.mem.eql(u8, call.func_name, "either_right")) {
+                        return try self.checkFutureEitherAccessorCall(call, scope, false);
                     }
                     if (std.mem.eql(u8, target_name, "poll") and std.mem.eql(u8, call.func_name, "ready")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;

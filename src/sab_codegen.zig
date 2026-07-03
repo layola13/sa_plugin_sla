@@ -4240,11 +4240,13 @@ pub const Codegen = struct {
 
         try self.emitLabel(ready_label);
         const value = try self.intern(try self.newTmp());
-        const result = if (plan.addend == 0) value else try self.intern(try self.newTmp());
+        const result = if (plan.resultBindingName()) |binding_name| try self.intern(binding_name) else if (plan.addend == 0) value else try self.intern(try self.newTmp());
         const stage_one = try self.intern(try self.newTmp());
         const inner_stage_two = try self.intern(try self.newTmp());
         try self.emitLoad(value, inner_state, 8, .u64);
-        if (plan.addend != 0) {
+        if (plan.resultBindingName() != null and plan.addend == 0) {
+            try self.emitAssignReg(result, value);
+        } else if (plan.addend != 0) {
             try self.emitOp(result, .add, .{ .reg = value }, .{ .imm_i64 = plan.addend });
         }
         try self.emitAssignImm(inner_stage_two, 2);
@@ -4257,7 +4259,7 @@ pub const Codegen = struct {
         });
         try self.emitRelease(inner_stage_two);
         try self.emitRelease(stage_one);
-        if (plan.addend != 0) try self.emitRelease(result);
+        if (result != value) try self.emitRelease(result);
         try self.emitRelease(value);
         try self.emitRelease(inner_ready);
 

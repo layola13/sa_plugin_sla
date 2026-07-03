@@ -6591,7 +6591,10 @@ pub const Codegen = struct {
             \\    {s} = load async_inner_state+8 as u64
             \\
         , .{ vt_name, poll_name, poll_name, plan.binding_name }) catch return CodegenError.CodegenError;
-        const result_reg = if (plan.addend == 0) plan.binding_name else blk: {
+        const result_reg = if (plan.resultBindingName()) |binding_name| blk: {
+            self.out.writer().print("    {s} = add {s}, {}\n", .{ binding_name, plan.binding_name, plan.addend }) catch return CodegenError.CodegenError;
+            break :blk binding_name;
+        } else if (plan.addend == 0) plan.binding_name else blk: {
             self.out.writer().print("    async_result = add {s}, {}\n", .{ plan.binding_name, plan.addend }) catch return CodegenError.CodegenError;
             break :blk "async_result";
         };
@@ -6601,8 +6604,8 @@ pub const Codegen = struct {
             \\    EXPAND POLL_SET_READY out_poll_slot, {s}
             \\
         , .{result_reg}) catch return CodegenError.CodegenError;
-        if (plan.addend != 0) {
-            self.out.writer().print("    !async_result\n", .{}) catch return CodegenError.CodegenError;
+        if (!std.mem.eql(u8, result_reg, plan.binding_name)) {
+            self.out.writer().print("    !{s}\n", .{result_reg}) catch return CodegenError.CodegenError;
         }
         self.out.writer().print(
             \\    !{s}

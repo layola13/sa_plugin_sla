@@ -42,9 +42,14 @@ pub const AwaitPlan = struct {
 
 pub const AsyncSingleAwaitContinuationPlan = struct {
     binding_name: []const u8,
+    post_binding_name: ?[]const u8 = null,
     await_expr: *const ast.Node,
     awaited_kind: FutureRuntimeCallKind,
     addend: i64 = 0,
+
+    pub fn resultBindingName(self: AsyncSingleAwaitContinuationPlan) ?[]const u8 {
+        return self.post_binding_name;
+    }
 };
 
 pub const FutureReadiness = enum {
@@ -378,6 +383,32 @@ fn asyncContinuationAddend(expr: *const ast.Node, binding_name: []const u8) ?i64
     }
 }
 
+fn asyncContinuationReturnExpr(stmt: *const ast.Node) ?*const ast.Node {
+    return switch (stmt.*) {
+        .return_stmt => |ret| ret.value,
+        .expr_stmt => |expr| expr,
+        else => null,
+    };
+}
+
+const AsyncContinuationResult = struct {
+    post_binding_name: ?[]const u8 = null,
+    addend: i64 = 0,
+};
+
+fn asyncContinuationResult(await_binding_name: []const u8, post_stmt: ?*const ast.Node, ret_expr: *const ast.Node) ?AsyncContinuationResult {
+    if (post_stmt) |stmt| {
+        if (stmt.* != .let_stmt) return null;
+        const let_stmt = stmt.let_stmt;
+        if (ret_expr.* != .identifier or !std.mem.eql(u8, ret_expr.identifier, let_stmt.name)) return null;
+        const addend = asyncContinuationAddend(let_stmt.value, await_binding_name) orelse return null;
+        return .{ .post_binding_name = let_stmt.name, .addend = addend };
+    }
+
+    const addend = asyncContinuationAddend(ret_expr, await_binding_name) orelse return null;
+    return .{ .addend = addend };
+}
+
 pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleAwaitContinuationPlan {
     if (!func.is_async) return null;
 
@@ -385,6 +416,7 @@ pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleA
         binding_name: []const u8,
         state_expr: *const ast.Node,
         ret_expr: *const ast.Node,
+        post_stmt: ?*const ast.Node = null,
     };
 
     const shape: ContinuationShape = switch (func.body.len) {
@@ -392,27 +424,33 @@ pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleA
             if (func.body[0].* != .let_stmt) return null;
             const let_stmt = func.body[0].let_stmt;
             if (let_stmt.value.* != .await_expr) return null;
-            const ret_expr = switch (func.body[1].*) {
-                .return_stmt => |ret| ret.value orelse return null,
-                .expr_stmt => |expr| expr,
-                else => return null,
-            };
+            const ret_expr = asyncContinuationReturnExpr(func.body[1]) orelse return null;
             break :blk .{ .binding_name = let_stmt.name, .state_expr = let_stmt.value.await_expr.expr, .ret_expr = ret_expr };
         },
         3 => blk: {
             if (func.body[0].* != .let_stmt or func.body[1].* != .let_stmt) return null;
+            const first_let = func.body[0].let_stmt;
+            const second_let = func.body[1].let_stmt;
+            const ret_expr = asyncContinuationReturnExpr(func.body[2]) orelse return null;
+            if (first_let.value.* == .await_expr) {
+                break :blk .{ .binding_name = first_let.name, .state_expr = first_let.value.await_expr.expr, .ret_expr = ret_expr, .post_stmt = func.body[1] };
+            }
+            if (first_let.value.* != .call_expr) return null;
+            if (second_let.value.* != .await_expr) return null;
+            const awaited_expr = second_let.value.await_expr.expr;
+            if (awaited_expr.* != .identifier or !std.mem.eql(u8, awaited_expr.identifier, first_let.name)) return null;
+            break :blk .{ .binding_name = second_let.name, .state_expr = first_let.value, .ret_expr = ret_expr };
+        },
+        4 => blk: {
+            if (func.body[0].* != .let_stmt or func.body[1].* != .let_stmt or func.body[2].* != .let_stmt) return null;
             const state_let = func.body[0].let_stmt;
             const await_let = func.body[1].let_stmt;
             if (state_let.value.* != .call_expr) return null;
             if (await_let.value.* != .await_expr) return null;
             const awaited_expr = await_let.value.await_expr.expr;
             if (awaited_expr.* != .identifier or !std.mem.eql(u8, awaited_expr.identifier, state_let.name)) return null;
-            const ret_expr = switch (func.body[2].*) {
-                .return_stmt => |ret| ret.value orelse return null,
-                .expr_stmt => |expr| expr,
-                else => return null,
-            };
-            break :blk .{ .binding_name = await_let.name, .state_expr = state_let.value, .ret_expr = ret_expr };
+            const ret_expr = asyncContinuationReturnExpr(func.body[3]) orelse return null;
+            break :blk .{ .binding_name = await_let.name, .state_expr = state_let.value, .ret_expr = ret_expr, .post_stmt = func.body[2] };
         },
         else => return null,
     };
@@ -421,12 +459,13 @@ pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleA
     const awaited_call = planFutureRuntimeCall(shape.state_expr.call_expr) orelse return null;
     if (awaited_call.kind != .defer_ready) return null;
 
-    const addend = asyncContinuationAddend(shape.ret_expr, shape.binding_name) orelse return null;
+    const result = asyncContinuationResult(shape.binding_name, shape.post_stmt, shape.ret_expr) orelse return null;
     return .{
         .binding_name = shape.binding_name,
+        .post_binding_name = result.post_binding_name,
         .await_expr = shape.state_expr,
         .awaited_kind = awaited_call.kind,
-        .addend = addend,
+        .addend = result.addend,
     };
 }
 
@@ -1981,6 +2020,20 @@ test "shared async single await continuation plan is defer-ready only" {
     try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, plan.awaited_kind);
     try std.testing.expectEqual(@as(i64, 1), plan.addend);
 
+    var result_ident = ast.Node{ .identifier = "result" };
+    var post_result_expr = ast.Node{ .binary_expr = .{ .left = &ident_node, .op = .add, .right = &addend_node } };
+    var post_result_let = ast.Node{ .let_stmt = .{ .name = "result", .ty = null, .value = &post_result_expr } };
+    var post_return = ast.Node{ .return_stmt = .{ .value = &result_ident } };
+    const post_body = [_]*ast.Node{ &let_node, &post_result_let, &post_return };
+    const post_func = ast.FuncDecl{ .name = "await_defer_post_bind", .generics = &.{}, .params = &.{}, .ret_ty = &i32_ty, .body = post_body[0..], .is_inline = false, .is_async = true };
+
+    const post_plan = planAsyncSingleAwaitContinuation(&post_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", post_plan.binding_name);
+    try std.testing.expectEqualStrings("result", post_plan.post_binding_name.?);
+    try std.testing.expect(post_plan.await_expr == &defer_call);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, post_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 1), post_plan.addend);
+
     var ready_call = ast.Node{ .call_expr = .{ .func_name = "ready", .associated_target = "future", .generics = &.{}, .args = args[0..] } };
     await_node.await_expr.expr = &ready_call;
     try std.testing.expect(planAsyncSingleAwaitContinuation(&func) == null);
@@ -2001,6 +2054,20 @@ test "shared async single await continuation plan is defer-ready only" {
     try std.testing.expect(local_plan.await_expr == &local_defer_call);
     try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_plan.awaited_kind);
     try std.testing.expectEqual(@as(i64, 1), local_plan.addend);
+
+    var local_result_ident = ast.Node{ .identifier = "local_result" };
+    var local_result_expr = ast.Node{ .binary_expr = .{ .left = &ready_value_ident, .op = .add, .right = &addend_node } };
+    var local_result_let = ast.Node{ .let_stmt = .{ .name = "local_result", .ty = null, .value = &local_result_expr } };
+    var local_post_return = ast.Node{ .return_stmt = .{ .value = &local_result_ident } };
+    const local_post_body = [_]*ast.Node{ &local_state_let, &local_await_let, &local_result_let, &local_post_return };
+    const local_post_func = ast.FuncDecl{ .name = "await_local_defer_post_bind", .generics = &.{}, .params = &.{}, .ret_ty = &i32_ty, .body = local_post_body[0..], .is_inline = false, .is_async = true };
+
+    const local_post_plan = planAsyncSingleAwaitContinuation(&local_post_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("ready_value", local_post_plan.binding_name);
+    try std.testing.expectEqualStrings("local_result", local_post_plan.post_binding_name.?);
+    try std.testing.expect(local_post_plan.await_expr == &local_defer_call);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_post_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 1), local_post_plan.addend);
 }
 
 test "shared result generic inner types" {

@@ -7321,8 +7321,11 @@ pub const Codegen = struct {
     }
 
     fn genSmartPointerGet(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?u32 {
-        const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return null;
-        if (smart.kind == .box and lowering_rules.smartPointerDerefIsDynBox(source_ty)) return source;
+        switch (lowering_rules.planSmartPointerGetAction(source_ty)) {
+            .unsupported => return null,
+            .dyn_box_identity => return source,
+            .get_value => {},
+        }
         const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);
@@ -7337,8 +7340,10 @@ pub const Codegen = struct {
     }
 
     fn genSmartPointerValueSlot(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?u32 {
-        const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return null;
-        if (!lowering_rules.smartPointerDerefNeedsValueSlot(smart.inner)) return null;
+        switch (lowering_rules.planSmartPointerValueSlotAction(source_ty)) {
+            .unsupported => return null,
+            .as_ptr_slot => {},
+        }
         const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);
@@ -7352,10 +7357,10 @@ pub const Codegen = struct {
     }
 
     fn genSmartPointerAddressSource(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?AddressSource {
-        const smart = lowering_rules.smartPointerDerefType(source_ty) orelse return null;
-        if (smart.kind == .box and lowering_rules.smartPointerDerefIsDynBox(source_ty)) {
-            return .{ .reg = source };
-        }
+        const action = lowering_rules.planSmartPointerAddressAction(source_ty);
+        if (action == .unsupported) return null;
+        if (action == .dyn_box_identity) return .{ .reg = source };
+
         const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);
@@ -7367,7 +7372,7 @@ pub const Codegen = struct {
 
         const slot = try self.intern(try self.newTmp());
         try self.emitStdSurfaceMethod(source_ty, "as_ptr", slot, receiver);
-        if (lowering_rules.smartPointerDerefLoadsPointerBackedValue(smart.inner)) {
+        if (action == .as_ptr_take_pointer_backed_value) {
             const value = try self.intern(try self.newTmp());
             try self.emitTake(value, slot, 0, .ptr);
             try release_regs.append(slot);

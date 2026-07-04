@@ -1761,6 +1761,43 @@ pub fn smartPointerDerefIsDynBox(ty: *const ast.Type) bool {
     return dynTraitName(inner) != null;
 }
 
+pub const SmartPointerAddressAction = enum {
+    unsupported,
+    dyn_box_identity,
+    as_ptr_slot,
+    as_ptr_take_pointer_backed_value,
+};
+
+pub const SmartPointerValueSlotAction = enum {
+    unsupported,
+    as_ptr_slot,
+};
+
+pub const SmartPointerGetAction = enum {
+    unsupported,
+    dyn_box_identity,
+    get_value,
+};
+
+pub fn planSmartPointerAddressAction(source_ty: *const ast.Type) SmartPointerAddressAction {
+    const smart = smartPointerDerefType(source_ty) orelse return .unsupported;
+    if (smart.kind == .box and smartPointerDerefIsDynBox(source_ty)) return .dyn_box_identity;
+    if (smartPointerDerefLoadsPointerBackedValue(smart.inner)) return .as_ptr_take_pointer_backed_value;
+    return .as_ptr_slot;
+}
+
+pub fn planSmartPointerValueSlotAction(source_ty: *const ast.Type) SmartPointerValueSlotAction {
+    const smart = smartPointerDerefType(source_ty) orelse return .unsupported;
+    if (smartPointerDerefNeedsValueSlot(smart.inner)) return .as_ptr_slot;
+    return .unsupported;
+}
+
+pub fn planSmartPointerGetAction(source_ty: *const ast.Type) SmartPointerGetAction {
+    const smart = smartPointerDerefType(source_ty) orelse return .unsupported;
+    if (smart.kind == .box and smartPointerDerefIsDynBox(source_ty)) return .dyn_box_identity;
+    return .get_value;
+}
+
 pub const PrintPrimitiveFormat = enum {
     signed_int,
     unsigned_int,
@@ -3442,11 +3479,20 @@ test "shared dyn trait naming and method slots" {
 
 test "shared dyn coercion and receiver plans" {
     var concrete_ty = ast.Type{ .user_defined = .{ .name = "Sprite", .generics = &.{} } };
+    var i32_ty = ast.Type{ .primitive = .i32 };
     var dyn_ty = ast.Type{ .user_defined = .{ .name = "__dyn_Draw", .generics = &.{} } };
+    const box_i32_generics = [_]*ast.Type{&i32_ty};
+    const box_concrete_generics = [_]*ast.Type{&concrete_ty};
+    var box_i32_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = box_i32_generics[0..] } };
+    const box_box_i32_generics = [_]*ast.Type{&box_i32_ty};
+    var box_concrete_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = box_concrete_generics[0..] } };
+    var box_box_i32_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = box_box_i32_generics[0..] } };
     const rc_generics = [_]*ast.Type{&dyn_ty};
     const box_generics = [_]*ast.Type{&dyn_ty};
+    const rc_box_generics = [_]*ast.Type{&box_i32_ty};
     var rc_dyn_ty = ast.Type{ .user_defined = .{ .name = "Rc", .generics = rc_generics[0..] } };
     var box_dyn_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = box_generics[0..] } };
+    var rc_box_ty = ast.Type{ .user_defined = .{ .name = "Rc", .generics = rc_box_generics[0..] } };
     var borrowed_dyn_ty = ast.Type{ .borrow = &dyn_ty };
 
     const rc_plan = planDynDispatchReceiver(&rc_dyn_ty) orelse return error.TestExpectedEqual;
@@ -3458,6 +3504,16 @@ test "shared dyn coercion and receiver plans" {
     try std.testing.expect(smartPointerDerefIsDynBox(&box_dyn_ty));
     try std.testing.expect(!smartPointerDerefIsDynBox(&rc_dyn_ty));
     try std.testing.expect(planDynDispatchReceiver(&concrete_ty) == null);
+    try std.testing.expectEqual(SmartPointerAddressAction.dyn_box_identity, planSmartPointerAddressAction(&box_dyn_ty));
+    try std.testing.expectEqual(SmartPointerAddressAction.as_ptr_slot, planSmartPointerAddressAction(&box_i32_ty));
+    try std.testing.expectEqual(SmartPointerAddressAction.as_ptr_take_pointer_backed_value, planSmartPointerAddressAction(&box_concrete_ty));
+    try std.testing.expectEqual(SmartPointerAddressAction.as_ptr_slot, planSmartPointerAddressAction(&rc_box_ty));
+    try std.testing.expectEqual(SmartPointerAddressAction.unsupported, planSmartPointerAddressAction(&concrete_ty));
+    try std.testing.expectEqual(SmartPointerValueSlotAction.as_ptr_slot, planSmartPointerValueSlotAction(&box_box_i32_ty));
+    try std.testing.expectEqual(SmartPointerValueSlotAction.unsupported, planSmartPointerValueSlotAction(&box_i32_ty));
+    try std.testing.expectEqual(SmartPointerGetAction.dyn_box_identity, planSmartPointerGetAction(&box_dyn_ty));
+    try std.testing.expectEqual(SmartPointerGetAction.get_value, planSmartPointerGetAction(&box_i32_ty));
+    try std.testing.expectEqual(SmartPointerGetAction.unsupported, planSmartPointerGetAction(&concrete_ty));
 
     var rc_expr = ast.Node{ .identifier = "make_rc" };
     var box_expr = ast.Node{ .identifier = "make_box" };

@@ -3653,16 +3653,22 @@ pub const Codegen = struct {
         try self.emitLabel("L_ENTRY");
         try self.materializeBorrowedParams(f.params);
 
-        const captured_addend = if (plan.captured_addend_expr) |expr| try self.genExpr(@constCast(expr)) else null;
+        var captured_addends: [2]?u32 = .{ null, null };
+        for (0..plan.capture_count) |capture_idx| {
+            const capture = plan.captures[capture_idx] orelse return Error.UnsupportedSabDirectFeature;
+            captured_addends[capture_idx] = try self.genExpr(@constCast(capture.expr));
+        }
         const inner_state = try self.genExpr(@constCast(plan.await_expr));
         const async_state = try self.intern(try self.newTmp());
         const zero = try self.intern(try self.newTmp());
-        try self.emitAlloc(async_state, if (plan.hasCapturedAddend()) 24 else 16);
+        try self.emitAlloc(async_state, plan.asyncStateSize());
         try self.emitAssignImm(zero, 0);
         try self.emitStore(async_state, 0, zero, .u64);
         try self.emitStore(async_state, 8, inner_state, .ptr);
-        if (captured_addend) |addend_reg| {
-            try self.emitStore(async_state, 16, addend_reg, .u64);
+        for (0..plan.capture_count) |capture_idx| {
+            const capture = plan.captures[capture_idx] orelse return Error.UnsupportedSabDirectFeature;
+            const addend_reg = captured_addends[capture_idx] orelse return Error.UnsupportedSabDirectFeature;
+            try self.emitStore(async_state, capture.offset, addend_reg, .u64);
             try self.emitRelease(addend_reg);
         }
         try self.emitRelease(zero);
@@ -4186,13 +4192,16 @@ pub const Codegen = struct {
         };
     }
 
-    fn emitAsyncContinuationScalarValue(self: *Codegen, scalar: lowering_rules.AsyncContinuationScalarPlan, result: u32, awaited: u32, captured: ?u32) !void {
+    fn emitAsyncContinuationScalarValue(self: *Codegen, scalar: lowering_rules.AsyncContinuationScalarPlan, result: u32, awaited: u32, captured: [2]?u32) !void {
         var current: ?u32 = null;
         var awaited_abs: ?u32 = null;
         var awaited_scaled: ?u32 = null;
         var captured_abs: ?u32 = null;
         var captured_scaled: ?u32 = null;
         var expr_sum: ?u32 = null;
+        var captured2_abs: ?u32 = null;
+        var captured2_scaled: ?u32 = null;
+        var expr_sum2: ?u32 = null;
 
         if (scalar.awaited_coeff != 0) {
             if (scalar.awaited_coeff == 1) {
@@ -4219,7 +4228,7 @@ pub const Codegen = struct {
         }
 
         if (scalar.captured_coeff != 0) {
-            const captured_reg = captured orelse return Error.UnsupportedSabDirectFeature;
+            const captured_reg = captured[0] orelse return Error.UnsupportedSabDirectFeature;
             var captured_term = captured_reg;
             const abs_coeff = if (scalar.captured_coeff < 0) -scalar.captured_coeff else scalar.captured_coeff;
             if (abs_coeff != 1) {
@@ -4229,19 +4238,48 @@ pub const Codegen = struct {
                 captured_abs = abs_reg;
             }
             if (current) |cur| {
-                const sum_dest = if (scalar.immediate == 0) result else try self.intern(try self.newTmp());
+                const sum_dest = if (scalar.captured2_coeff == 0 and scalar.immediate == 0) result else try self.intern(try self.newTmp());
                 if (scalar.captured_coeff < 0) {
                     try self.emitOp(sum_dest, .sub, .{ .reg = cur }, .{ .reg = captured_term });
                 } else {
                     try self.emitOp(sum_dest, .add, .{ .reg = cur }, .{ .reg = captured_term });
                 }
                 current = sum_dest;
-                if (scalar.immediate != 0) expr_sum = sum_dest;
+                if (scalar.captured2_coeff != 0 or scalar.immediate != 0) expr_sum = sum_dest;
             } else if (scalar.captured_coeff < 0) {
                 const scaled = try self.intern(try self.newTmp());
                 try self.emitOp(scaled, .sub, .{ .imm_i64 = 0 }, .{ .reg = captured_term });
                 current = scaled;
                 captured_scaled = scaled;
+            } else {
+                current = captured_term;
+            }
+        }
+
+        if (scalar.captured2_coeff != 0) {
+            const captured_reg = captured[1] orelse return Error.UnsupportedSabDirectFeature;
+            var captured_term = captured_reg;
+            const abs_coeff = if (scalar.captured2_coeff < 0) -scalar.captured2_coeff else scalar.captured2_coeff;
+            if (abs_coeff != 1) {
+                const abs_reg = try self.intern(try self.newTmp());
+                try self.emitOp(abs_reg, .mul, .{ .reg = captured_reg }, .{ .imm_i64 = abs_coeff });
+                captured_term = abs_reg;
+                captured2_abs = abs_reg;
+            }
+            if (current) |cur| {
+                const sum_dest = if (scalar.immediate == 0) result else try self.intern(try self.newTmp());
+                if (scalar.captured2_coeff < 0) {
+                    try self.emitOp(sum_dest, .sub, .{ .reg = cur }, .{ .reg = captured_term });
+                } else {
+                    try self.emitOp(sum_dest, .add, .{ .reg = cur }, .{ .reg = captured_term });
+                }
+                current = sum_dest;
+                if (scalar.immediate != 0) expr_sum2 = sum_dest;
+            } else if (scalar.captured2_coeff < 0) {
+                const scaled = try self.intern(try self.newTmp());
+                try self.emitOp(scaled, .sub, .{ .imm_i64 = 0 }, .{ .reg = captured_term });
+                current = scaled;
+                captured2_scaled = scaled;
             } else {
                 current = captured_term;
             }
@@ -4270,6 +4308,9 @@ pub const Codegen = struct {
         }
 
         if (expr_sum) |reg| try self.emitRelease(reg);
+        if (expr_sum2) |reg| try self.emitRelease(reg);
+        if (captured2_scaled) |reg| try self.emitRelease(reg);
+        if (captured2_abs) |reg| try self.emitRelease(reg);
         if (captured_scaled) |reg| try self.emitRelease(reg);
         if (captured_abs) |reg| try self.emitRelease(reg);
         if (awaited_scaled) |reg| try self.emitRelease(reg);
@@ -4349,12 +4390,15 @@ pub const Codegen = struct {
         const value = try self.intern(try self.newTmp());
         const scalar = plan.scalar;
         const result = if (plan.branch != null) try self.intern(try self.newTmp()) else if (plan.resultBindingName()) |binding_name| try self.intern(binding_name) else if (scalar.isIdentity()) value else try self.intern(try self.newTmp());
-        const captured_addend = if (plan.hasCapturedAddend()) try self.intern(try self.newTmp()) else null;
+        var captured_addends: [2]?u32 = .{ null, null };
         const stage_one = try self.intern(try self.newTmp());
         const inner_stage_two = try self.intern(try self.newTmp());
         try self.emitLoad(value, inner_state, 8, .u64);
-        if (captured_addend) |addend_reg| {
-            try self.emitLoad(addend_reg, ids[0], 16, .u64);
+        for (0..plan.capture_count) |capture_idx| {
+            const capture = plan.captures[capture_idx] orelse return Error.UnsupportedSabDirectFeature;
+            const addend_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(addend_reg, ids[0], capture.offset, .u64);
+            captured_addends[capture_idx] = addend_reg;
         }
         var branch_cond: ?u32 = null;
         if (plan.branch) |branch| {
@@ -4365,15 +4409,15 @@ pub const Codegen = struct {
             try self.emitOp(cond, try asyncContinuationConditionOp(branch.condition_op), .{ .reg = value }, .{ .imm_i64 = branch.threshold });
             try self.emitBranch(cond, then_label, else_label);
             try self.emitLabel(then_label);
-            try self.emitAsyncContinuationScalarValue(branch.then_scalar, result, value, captured_addend);
+            try self.emitAsyncContinuationScalarValue(branch.then_scalar, result, value, captured_addends);
             try self.emitJmp(branch_done_label);
             try self.emitLabel(else_label);
-            try self.emitAsyncContinuationScalarValue(branch.else_scalar, result, value, captured_addend);
+            try self.emitAsyncContinuationScalarValue(branch.else_scalar, result, value, captured_addends);
             try self.emitJmp(branch_done_label);
             try self.emitLabel(branch_done_label);
             branch_cond = cond;
         } else {
-            try self.emitAsyncContinuationScalarValue(scalar, result, value, captured_addend);
+            try self.emitAsyncContinuationScalarValue(scalar, result, value, captured_addends);
         }
         try self.emitAssignImm(inner_stage_two, 2);
         try self.emitStore(inner_state, 0, inner_stage_two, .u64);
@@ -4387,7 +4431,9 @@ pub const Codegen = struct {
         try self.emitRelease(stage_one);
         if (result != value) try self.emitRelease(result);
         if (branch_cond) |cond| try self.emitRelease(cond);
-        if (captured_addend) |addend_reg| try self.emitRelease(addend_reg);
+        for (captured_addends) |maybe_addend_reg| {
+            if (maybe_addend_reg) |addend_reg| try self.emitRelease(addend_reg);
+        }
         try self.emitRelease(value);
         try self.emitRelease(inner_ready);
 

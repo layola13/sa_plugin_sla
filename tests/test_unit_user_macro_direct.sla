@@ -1,3 +1,5 @@
+@import "sa_std/core/box.sa"
+
 macro add_one_macro(var_ref) {
     let temp = 1;
     var_ref = var_ref + temp;
@@ -76,6 +78,13 @@ macro borrow_address_macro(out, point, values, ptr) {
     }
 }
 
+macro borrow_smart_address_macro(out, boxed, nested_box) {
+    {
+        out = direct_macro_read_i64(&*boxed);
+        out = out + direct_macro_read_i64(&**nested_box);
+    }
+}
+
 fn macro_hygiene_direct(value: i64) -> i64 {
     let temp = value;
     add_one_macro(temp);
@@ -127,6 +136,14 @@ fn macro_address_direct() -> i64 {
     total
 }
 
+fn macro_smart_address_direct() -> i64 {
+    let boxed: Box<i64> = Box::new(19i64);
+    let nested_box: Box<Box<i64>> = Box::new(Box::new(23i64));
+    let total = 0i64;
+    borrow_smart_address_macro(total, boxed, nested_box);
+    total
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -134,4 +151,5 @@ fn macro_address_direct() -> i64 {
     if macro_aggregate_direct(3) != 12 { panic(31806); };
     if macro_nested_call_direct(7) != 10 { panic(31807); };
     if macro_address_direct() != 33 { panic(31808); };
+    if macro_smart_address_direct() != 42 { panic(31809); };
 }

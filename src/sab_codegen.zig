@@ -5382,7 +5382,7 @@ pub const Codegen = struct {
                 break :blk switch (source_ty.*) {
                     .borrow => |inner| inner,
                     .pointer => |inner| inner,
-                    else => null,
+                    else => if (lowering_rules.smartPointerDerefType(source_ty)) |smart| smart.inner else null,
                 };
             },
             .cast_expr => |cast| cast.ty,
@@ -5563,7 +5563,11 @@ pub const Codegen = struct {
                 break :blk try self.genMacroIndexAddress(expr.index_expr, ctx);
             },
             .value_temp => blk: {
-                if (expr.* == .deref_expr) break :blk .{ .reg = try self.genMacroExpr(expr.deref_expr.expr, ctx) };
+                if (expr.* == .deref_expr) {
+                    const source_ty = deref_source_ty orelse return Error.MissingType;
+                    const source = try self.genMacroExpr(expr.deref_expr.expr, ctx);
+                    break :blk try self.genDerefAddressFallback(source_ty, source);
+                }
                 break :blk .{ .reg = try self.genMacroExpr(expr, ctx) };
             },
         };
@@ -5579,7 +5583,12 @@ pub const Codegen = struct {
 
     fn genMacroDeref(self: *Codegen, expr: *const ast.Node, deref: ast.DerefExpr, ctx: *MacroExpansionContext) anyerror!u32 {
         const deref_ty = (try self.macroExprType(expr, ctx)) orelse return Error.MissingType;
+        const source_ty = (try self.macroExprType(deref.expr, ctx)) orelse return Error.MissingType;
         const source = try self.genMacroExpr(deref.expr, ctx);
+        if (try self.genSmartPointerGet(source_ty, source)) |value| {
+            if (value != source and !self.isLocalReg(source)) try self.emitRelease(source);
+            return value;
+        }
         const dst = try self.intern(try self.newTmp());
         try self.emitLoad(dst, source, 0, try primType(deref_ty));
         if (!self.isLocalReg(source)) try self.emitRelease(source);
@@ -7388,6 +7397,19 @@ pub const Codegen = struct {
         return .{ .reg = slot, .release_regs = try self.ownedReleaseRegs(release_regs.items) };
     }
 
+    fn genDerefAddressFallback(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!AddressSource {
+        if (try self.genSmartPointerAddressSource(source_ty, source)) |address| return address;
+        if (try self.genSmartPointerValueSlot(source_ty, source)) |slot| {
+            if (!self.isLocalReg(source)) try self.emitRelease(source);
+            return .{ .reg = slot };
+        }
+        if (try self.genSmartPointerGet(source_ty, source)) |value| {
+            if (value != source and !self.isLocalReg(source)) try self.emitRelease(source);
+            return .{ .reg = value };
+        }
+        return .{ .reg = source };
+    }
+
     fn genAddressOf(self: *Codegen, expr: *ast.Node) anyerror!AddressSource {
         var deref_source_ty: ?*const ast.Type = null;
         var index_target_ty: ?*const ast.Type = null;
@@ -7424,16 +7446,7 @@ pub const Codegen = struct {
                 const deref = expr.deref_expr;
                 const source_ty = deref_source_ty orelse return Error.MissingType;
                 const source = try self.genExpr(deref.expr);
-                if (try self.genSmartPointerAddressSource(source_ty, source)) |address| break :blk address;
-                if (try self.genSmartPointerValueSlot(source_ty, source)) |slot| {
-                    if (!self.isLocalReg(source)) try self.emitRelease(source);
-                    break :blk .{ .reg = slot };
-                }
-                if (try self.genSmartPointerGet(source_ty, source)) |value| {
-                    if (!self.isLocalReg(source)) try self.emitRelease(source);
-                    break :blk .{ .reg = value };
-                }
-                break :blk .{ .reg = source };
+                break :blk try self.genDerefAddressFallback(source_ty, source);
             },
         };
     }

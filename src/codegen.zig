@@ -7393,9 +7393,20 @@ pub const Codegen = struct {
                 try self.genCopyValueInto(copied, source_reg, target_param.ty);
                 break :blk .{ .reg = copied, .release_after_call = materialization.release_after_call };
             },
-            .value => .{
-                .reg = try self.genCallArg(arg, hoisted_allocs),
-                .release_after_call = materialization.release_after_call,
+            .value => blk: {
+                if (arg.* == .borrow_expr and arg.borrow_expr.expr.* == .identifier and self.addressable_bindings.contains(arg.borrow_expr.expr.identifier)) {
+                    const addr_reg = try self.genExpr(arg, hoisted_allocs);
+                    const call_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{addr_reg}) catch return CodegenError.OutOfMemory;
+                    break :blk .{
+                        .reg = call_arg,
+                        .release_after_call = false,
+                        .release_reg = if (materialization.release_after_call) addr_reg else null,
+                    };
+                }
+                break :blk .{
+                    .reg = try self.genCallArg(arg, hoisted_allocs),
+                    .release_after_call = materialization.release_after_call,
+                };
             },
         };
     }
@@ -8534,7 +8545,8 @@ pub const Codegen = struct {
                         if (plan.release_loaded) try self.emitRelease(loaded_reg);
                     },
                     .move => {
-                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, loaded_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                        const move_reg = if (std.mem.startsWith(u8, loaded_reg, "^")) loaded_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{loaded_reg});
+                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
                     },
                 }
             }
@@ -8604,15 +8616,24 @@ pub const Codegen = struct {
                     continue;
                 }
             }
-            if (transfer == .deep_copy) {
-                const source_reg = try self.genExpr(value, hoisted_allocs);
-                const copied = try self.newTmp();
-                try self.genCopyValueInto(copied, source_reg, plan.field_ty);
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
-            } else {
-                const val_reg = try self.genExpr(value, hoisted_allocs);
-                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                if (callArgNeedsRelease(value)) try self.emitRelease(val_reg);
+            switch (transfer) {
+                .deep_copy => {
+                    const source_reg = try self.genExpr(value, hoisted_allocs);
+                    const copied = try self.newTmp();
+                    try self.genCopyValueInto(copied, source_reg, plan.field_ty);
+                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                    if (callArgNeedsRelease(value)) try self.emitRelease(source_reg);
+                },
+                .direct => {
+                    const val_reg = try self.genExpr(value, hoisted_allocs);
+                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                    if (callArgNeedsRelease(value)) try self.emitRelease(val_reg);
+                },
+                .move => {
+                    const val_reg = try self.genExpr(value, hoisted_allocs);
+                    const move_reg = if (std.mem.startsWith(u8, val_reg, "^")) val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg});
+                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                },
             }
         }
     }
@@ -9713,7 +9734,24 @@ pub const Codegen = struct {
             },
             .borrow_expr => |borrow| {
                 if (borrow.expr.* == .identifier and self.addressable_bindings.contains(borrow.expr.identifier)) {
-                    return borrow.expr.identifier;
+                    const addr = try self.newTmp();
+                    self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, borrow.expr.identifier }) catch return CodegenError.CodegenError;
+                    return addr;
+                }
+                if (borrow.expr.* == .deref_expr) {
+                    const source_ty = self.tc.expr_types.get(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError;
+                    switch (source_ty.*) {
+                        .borrow, .pointer => {
+                            const source = try self.genExpr(borrow.expr.deref_expr.expr, hoisted_allocs);
+                            const addr = try self.newTmp();
+                            self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
+                            if (exprResultNeedsRelease(borrow.expr.deref_expr.expr)) {
+                                self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
+                            }
+                            return addr;
+                        },
+                        else => {},
+                    }
                 }
                 if (borrow.expr.* == .field_expr) {
                     const projection = try self.genFieldAddress(&borrow.expr.field_expr, hoisted_allocs);

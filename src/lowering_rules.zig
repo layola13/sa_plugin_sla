@@ -2061,8 +2061,9 @@ pub fn structFieldIsPointerBacked(field_ty: *const ast.Type) bool {
 pub fn planStructLiteralFieldTransfer(plan: StructLiteralFieldPlan, field_is_copy_struct: bool) StructLiteralFieldTransfer {
     return switch (plan.source) {
         .explicit => blk: {
-            const value = plan.value orelse break :blk .direct;
-            if (value.* == .identifier and field_is_copy_struct) break :blk .deep_copy;
+            _ = plan.value orelse break :blk .direct;
+            if (field_is_copy_struct) break :blk .deep_copy;
+            if (structFieldIsPointerBacked(plan.field_ty)) break :blk .move;
             break :blk .direct;
         },
         .update => blk: {
@@ -2249,9 +2250,9 @@ pub fn shouldAutoBorrowResolvedArg(
 }
 
 pub fn shouldAutoBorrowReceiverArg(param: ast.Param, arg: *const ast.Node, arg_ty: *const ast.Type) bool {
-    if (!param.is_borrow) return false;
+    if (!param.is_borrow or arg.* == .borrow_expr) return false;
     if (arg_ty.* == .borrow) return true;
-    return arg.* != .borrow_expr;
+    return true;
 }
 
 pub fn shouldAutoBorrowStatementReceiverArg(param: ast.Param, arg: *const ast.Node, arg_ty: *const ast.Type) bool {
@@ -2392,6 +2393,7 @@ test "shared lowering rules classify call materialization decisions" {
 
     try std.testing.expect(shouldAutoBorrowReceiverArg(borrow_param, &value, &i64_ty));
     try std.testing.expect(shouldAutoBorrowReceiverArg(borrow_param, &value, &borrow_i64_ty));
+    try std.testing.expect(!shouldAutoBorrowReceiverArg(borrow_param, &borrowed_value, &borrow_i64_ty));
     try std.testing.expect(!shouldAutoBorrowReceiverArg(plain_param, &value, &i64_ty));
     try std.testing.expect(shouldAutoBorrowStatementReceiverArg(borrow_param, &value, &i64_ty));
     try std.testing.expect(!shouldAutoBorrowStatementReceiverArg(borrow_param, &value, &borrow_i64_ty));
@@ -2431,6 +2433,14 @@ test "shared lowering rules classify call materialization decisions" {
         .receiver_style_auto_borrow = true,
     });
     try std.testing.expectEqual(CallArgMaterializationKind.auto_borrow, receiver_style_plan.kind);
+
+    const explicit_borrow_receiver_style_plan = planCallArgMaterialization(&borrowed_value, .{
+        .param = borrow_param,
+        .arg_ty = &borrow_i64_ty,
+        .receiver_style_auto_borrow = true,
+    });
+    try std.testing.expectEqual(CallArgMaterializationKind.value, explicit_borrow_receiver_style_plan.kind);
+    try std.testing.expect(explicit_borrow_receiver_style_plan.release_after_call);
 
     const statement_receiver_plan = planCallArgMaterialization(&value, .{
         .param = borrow_param,
@@ -2546,6 +2556,27 @@ test "shared struct literal update field plan" {
     try std.testing.expect(structFieldIsPointerBacked(nested_plan.field_ty));
     try std.testing.expectEqual(StructLiteralFieldTransfer.move, planStructLiteralFieldTransfer(nested_plan, false));
     try std.testing.expectEqual(StructLiteralFieldTransfer.deep_copy, planStructLiteralFieldTransfer(nested_plan, true));
+
+    var nested_identifier = ast.Node{ .identifier = "existing_nested" };
+    const nested_identifier_fields = [_]ast.StructLiteralField{.{ .name = "payload", .value = &nested_identifier }};
+    const nested_identifier_lit = ast.StructLiteral{
+        .ty = undefined,
+        .fields = nested_identifier_fields[0..],
+        .update_expr = null,
+    };
+    const explicit_nested_identifier_plan = planStructLiteralField(&nested_decl, &nested_identifier_lit, nested_fields[0]) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(StructLiteralFieldTransfer.deep_copy, planStructLiteralFieldTransfer(explicit_nested_identifier_plan, true));
+
+    const nested_temp_lit = ast.StructLiteral{ .ty = undefined, .fields = &.{}, .update_expr = null };
+    var nested_temp = ast.Node{ .struct_literal = nested_temp_lit };
+    const nested_temp_fields = [_]ast.StructLiteralField{.{ .name = "payload", .value = &nested_temp }};
+    const nested_temp_outer_lit = ast.StructLiteral{
+        .ty = undefined,
+        .fields = nested_temp_fields[0..],
+        .update_expr = null,
+    };
+    const explicit_nested_temp_plan = planStructLiteralField(&nested_decl, &nested_temp_outer_lit, nested_fields[0]) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(StructLiteralFieldTransfer.deep_copy, planStructLiteralFieldTransfer(explicit_nested_temp_plan, true));
 }
 
 test "shared enum tag/payload layout" {

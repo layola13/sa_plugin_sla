@@ -31,6 +31,7 @@ pub const StaticCallResultPlan = struct {
 pub const AddressOfShape = enum {
     identifier,
     deref_borrow_or_pointer,
+    deref_smart_pointer,
     field,
     index,
     value_temp,
@@ -291,7 +292,7 @@ pub const ImportedMacroCallPlan = struct {
         if (!self.callArgNeedsAddressableSlot(call_arg_index)) return .pass_value;
         return switch (address_shape) {
             .identifier => if (has_existing_addressable_symbol) .reuse_existing_addressable else .materialize_stack_slot,
-            .deref_borrow_or_pointer, .field, .index => .materialize_address_expression_stack_slot,
+            .deref_borrow_or_pointer, .deref_smart_pointer, .field, .index => .materialize_address_expression_stack_slot,
             .value_temp => .materialize_stack_slot,
         };
     }
@@ -2294,7 +2295,9 @@ pub fn planAddressOf(expr: *const ast.Node, input: AddressOfInput) AddressOfPlan
         .identifier => .identifier,
         .deref_expr => blk: {
             const source_ty = input.deref_source_ty orelse break :blk .value_temp;
-            break :blk if (plainBorrowOrPointerAddressSource(source_ty)) .deref_borrow_or_pointer else .value_temp;
+            if (plainBorrowOrPointerAddressSource(source_ty)) break :blk .deref_borrow_or_pointer;
+            if (smartPointerDerefType(source_ty) != null) break :blk .deref_smart_pointer;
+            break :blk .value_temp;
         },
         .field_expr => .field,
         .index_expr => if (input.index_target_ty) |target_ty| if (ordinaryIndexAddressTargetType(target_ty) != null) .index else .value_temp else .value_temp,
@@ -2514,8 +2517,9 @@ test "shared lowering rules classify address-of shapes" {
     try std.testing.expectEqual(AddressOfShape.deref_borrow_or_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_i32_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.deref_borrow_or_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_i32_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &box_ty }).shape);
-    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_box_i32_ty }).shape);
-    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_box_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.deref_smart_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &box_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.deref_smart_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_box_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.deref_smart_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_box_i32_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_refcell_i32_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.field, planAddressOf(&field_value, .{}).shape);
     try std.testing.expectEqual(AddressOfShape.index, planAddressOf(&index_value, .{ .index_target_ty = &array_i32_ty }).shape);
@@ -2596,6 +2600,7 @@ test "shared imported macro address-expression args materialize stack slots" {
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_address_expression_stack_slot, plan.planAddressExpressionArgAction(1, .field, false));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_address_expression_stack_slot, plan.planAddressExpressionArgAction(1, .index, false));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_address_expression_stack_slot, plan.planAddressExpressionArgAction(1, .deref_borrow_or_pointer, false));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_address_expression_stack_slot, plan.planAddressExpressionArgAction(1, .deref_smart_pointer, false));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_stack_slot, plan.planAddressExpressionArgAction(1, .value_temp, false));
 }
 

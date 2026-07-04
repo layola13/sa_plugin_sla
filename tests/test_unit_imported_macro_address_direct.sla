@@ -1,4 +1,5 @@
 @import "import_fixtures/imported_borrow_helpers.sa"
+@import "sa_std/core/box.sa"
 
 struct ImportedMacroAddressPoint { left: i64, right: i64 }
 
@@ -27,6 +28,12 @@ fn imported_macro_deref_address() -> i64 {
     SLA_IMPORTED_READ_I64(*ptr)
 }
 
+fn imported_macro_smart_deref_address() -> i64 {
+    let boxed: Box<i64> = Box::new(19i64);
+    let nested_box: Box<Box<i64>> = Box::new(Box::new(23i64));
+    SLA_IMPORTED_READ_I64(*boxed) + SLA_IMPORTED_READ_I64(**nested_box)
+}
+
 @test "imported macro borrowed field address"() {
     if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
     if imported_macro_field_address() != 11 { panic(31901); };
@@ -40,4 +47,9 @@ fn imported_macro_deref_address() -> i64 {
 @test "imported macro borrowed deref address"() {
     if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
     if imported_macro_deref_address() != 19 { panic(31903); };
+}
+
+@test "imported macro borrowed smart-pointer deref address"() {
+    if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
+    if imported_macro_smart_deref_address() != 42 { panic(31904); };
 }

@@ -7601,6 +7601,7 @@ pub const Codegen = struct {
                 if (exprResultNeedsRelease(arg.deref_expr.expr)) try self.emitRelease(source);
                 break :blk loaded;
             },
+            .deref_smart_pointer => try self.genExpr(arg, hoisted_allocs),
             else => return CodegenError.CodegenError,
         };
 
@@ -9927,6 +9928,7 @@ pub const Codegen = struct {
                         try self.rememberIndexAddressSource(address);
                         return address.ptr;
                     },
+                    .deref_smart_pointer => {},
                     .value_temp => {},
                 }
                 const inner = try self.genExpr(borrow.expr, hoisted_allocs);

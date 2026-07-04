@@ -5627,6 +5627,11 @@ pub const Codegen = struct {
                 break :blk try self.genMacroIdentifierAddress(expr.identifier, ctx);
             },
             .deref_borrow_or_pointer => .{ .reg = try self.genMacroExpr(expr.deref_expr.expr, ctx) },
+            .deref_smart_pointer => blk: {
+                const source_ty = deref_source_ty orelse return Error.MissingType;
+                const source = try self.genMacroExpr(expr.deref_expr.expr, ctx);
+                break :blk try self.genDerefAddressFallback(source_ty, source);
+            },
             .field => blk: {
                 if (expr.* != .field_expr) return Error.UnsupportedSabDirectFeature;
                 break :blk try self.genMacroFieldAddress(expr.field_expr, ctx);
@@ -7516,6 +7521,11 @@ pub const Codegen = struct {
             .deref_borrow_or_pointer => blk: {
                 const source = try self.genExpr(expr.deref_expr.expr);
                 break :blk .{ .reg = source };
+            },
+            .deref_smart_pointer => blk: {
+                const source_ty = deref_source_ty orelse return Error.MissingType;
+                const source = try self.genExpr(expr.deref_expr.expr);
+                break :blk try self.genDerefAddressFallback(source_ty, source);
             },
             .field => blk: {
                 if (expr.* != .field_expr) return Error.UnsupportedSabDirectFeature;

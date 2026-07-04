@@ -3730,6 +3730,36 @@ pub const Codegen = struct {
         try self.finishFunctionBody(sig_idx);
     }
 
+    fn genAsyncJoin2AwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncJoin2AwaitContinuationPlan) !void {
+        try self.emitAsyncJoin2AwaitPollHelper(name, plan);
+
+        self.beginFunction();
+        try self.collectBorrowedBindingsInBlock(f.body);
+        const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
+        const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
+        try self.appendDeclInst(fsig);
+        try self.emitLabel("L_ENTRY");
+        try self.materializeBorrowedParams(f.params);
+
+        const join_state = try self.genExpr(@constCast(plan.await_expr));
+        const async_state = try self.intern(try self.newTmp());
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAlloc(async_state, plan.asyncStateSize());
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(async_state, 0, zero, .u64);
+        try self.emitStore(async_state, 8, join_state, .ptr);
+        try self.emitRelease(zero);
+        try self.emitRelease(join_state);
+        try self.future_state_vtables.put(async_state, try self.asyncJoin2AwaitVTableName(name));
+        try self.recordFutureReadiness(async_state, .unknown);
+        try self.releaseOpenLocals(async_state);
+        try self.emitReturn(async_state);
+
+        try self.finishFunctionBody(sig_idx);
+    }
+
     fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) !void {
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
@@ -3739,6 +3769,9 @@ pub const Codegen = struct {
         self.current_async_return_ty = if (f.is_async) f.ret_ty else null;
         defer self.current_async_return = old_async_return;
         defer self.current_async_return_ty = old_async_return_ty;
+        if (lowering_rules.planAsyncJoin2AwaitContinuation(f)) |plan| {
+            return try self.genAsyncJoin2AwaitFuncDeclNamed(name, f, plan);
+        }
         if (lowering_rules.planAsyncTwoAwaitContinuation(f)) |plan| {
             return try self.genAsyncTwoAwaitFuncDeclNamed(name, f, plan);
         }
@@ -4240,6 +4273,14 @@ pub const Codegen = struct {
         return try std.fmt.allocPrint(self.allocator, "sla_async_{s}_two_await_poll", .{name});
     }
 
+    fn asyncJoin2AwaitVTableName(self: *Codegen, name: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_JOIN2_AWAIT_VT", .{name});
+    }
+
+    fn asyncJoin2AwaitPollName(self: *Codegen, name: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.allocator, "sla_async_{s}_join2_await_poll", .{name});
+    }
+
     fn asyncContinuationConditionOp(op: ast.BinaryOp) !inst.OpKind {
         return switch (op) {
             .eq => .eq,
@@ -4702,6 +4743,126 @@ pub const Codegen = struct {
         try self.emitRelease(second_initial);
         try self.emitRelease(second_stage);
         try self.emitRelease(second_state);
+
+        try self.emitLabel(done_label);
+        try self.emitRelease(done);
+        try self.emitRelease(stage);
+        for (ids) |id| try self.emitRelease(id);
+        try self.emitReturn(null);
+
+        try self.finishFunctionBody(sig_idx);
+    }
+
+    fn emitAsyncJoin2AwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncJoin2AwaitContinuationPlan) !void {
+        const vt_name = try self.asyncJoin2AwaitVTableName(name);
+        const poll_name = try self.asyncJoin2AwaitPollName(name);
+        try self.appendVTableConst(vt_name, poll_name);
+
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
+        self.beginFunction();
+
+        const names = [_][]const u8{ "data_slot", "ctx_slot", "out_poll_slot" };
+        const specs = try self.allocator.alloc(sig.ParamSpec, names.len);
+        const ids = try self.allocator.alloc(u32, names.len);
+        for (names, 0..) |param_name, i| {
+            ids[i] = try self.intern(param_name);
+            specs[i] = .{ .name = param_name, .ty = .ptr, .cap = .borrow };
+            try self.pushRawParamLocal(param_name, ids[i], .borrow);
+        }
+
+        const fsig = try self.appendGeneratedFuncSig(poll_name, .normal, specs, ids, .void, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
+        try self.appendDeclInst(fsig);
+        try self.emitLabel("L_ENTRY");
+
+        const stage = try self.intern(try self.newTmp());
+        const done = try self.intern(try self.newTmp());
+        const empty_label = try self.newLabel("L_ASYNC_JOIN2_AWAIT_EMPTY");
+        const poll_label = try self.newLabel("L_ASYNC_JOIN2_AWAIT_POLL");
+        const ready_label = try self.newLabel("L_ASYNC_JOIN2_AWAIT_READY");
+        const pending_label = try self.newLabel("L_ASYNC_JOIN2_AWAIT_PENDING");
+        const clean_label = try self.newLabel("L_ASYNC_JOIN2_AWAIT_CLEAN");
+        const done_label = try self.newLabel("L_ASYNC_JOIN2_AWAIT_DONE");
+        try self.emitLoad(stage, ids[0], 0, .u64);
+        try self.emitOp(done, .eq, .{ .reg = stage }, .{ .imm_i64 = 1 });
+        try self.emitBranch(done, empty_label, poll_label);
+
+        try self.emitLabel(empty_label);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitJmp(done_label);
+
+        try self.emitLabel(poll_label);
+        const join_state = try self.intern(try self.newTmp());
+        const join_vt = try self.intern(try self.newTmp());
+        const join_future = try self.intern(try self.newTmp());
+        const join_ctx = try self.intern(try self.newTmp());
+        const join_poll = try self.intern(try self.newTmp());
+        const join_ready = try self.intern(try self.newTmp());
+        try self.emitLoad(join_state, ids[0], 8, .ptr);
+        try self.emitBorrowSymbol(join_vt, "SLA_JOIN2_FUTURE_VT");
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_NEW", &.{
+            self.symbols.items[join_future],
+            self.symbols.items[join_state],
+            self.symbols.items[join_vt],
+        });
+        try self.emitAssignImm(join_ctx, 0);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_POLL", &.{
+            self.symbols.items[join_poll],
+            self.symbols.items[join_future],
+            self.symbols.items[join_ctx],
+        });
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_IS_READY", &.{
+            self.symbols.items[join_ready],
+            self.symbols.items[join_poll],
+        });
+        try self.emitBranch(join_ready, ready_label, pending_label);
+
+        try self.emitLabel(pending_label);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitJmp(clean_label);
+
+        try self.emitLabel(ready_label);
+        const pair = try self.intern(plan.binding_name);
+        const pair_left = try self.intern(try self.newTmp());
+        const pair_right = try self.intern(try self.newTmp());
+        const result = try self.intern(try self.newTmp());
+        const stage_done = try self.intern(try self.newTmp());
+        try self.emitLoad(pair, join_poll, 8, .ptr);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_PAIR_LEFT", &.{
+            self.symbols.items[pair_left],
+            self.symbols.items[pair],
+        });
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "FUTURE_PAIR_RIGHT", &.{
+            self.symbols.items[pair_right],
+            self.symbols.items[pair],
+        });
+        const scalar = lowering_rules.AsyncContinuationScalarPlan{
+            .awaited_coeff = plan.scalar.right_coeff,
+            .captured_coeff = plan.scalar.left_coeff,
+            .immediate = plan.scalar.immediate,
+        };
+        try self.emitAsyncContinuationScalarValue(scalar, result, pair_right, .{ pair_left, null });
+        try self.emitAssignImm(stage_done, 1);
+        try self.emitStore(ids[0], 0, stage_done, .u64);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_READY", &.{
+            self.symbols.items[ids[2]],
+            self.symbols.items[result],
+        });
+        try self.emitRelease(stage_done);
+        try self.emitRelease(result);
+        try self.emitRelease(pair_right);
+        try self.emitRelease(pair_left);
+        try self.emitRelease(pair);
+
+        try self.emitLabel(clean_label);
+        try self.emitRelease(join_ready);
+        try self.emitRelease(join_poll);
+        try self.emitRelease(join_ctx);
+        try self.emitRelease(join_future);
+        try self.emitRelease(join_vt);
+        try self.emitRelease(join_state);
 
         try self.emitLabel(done_label);
         try self.emitRelease(done);
@@ -7990,7 +8151,10 @@ pub const Codegen = struct {
         const dst = try self.emitPlannedCallBody(lowering_rules.planStaticCallResult(self.tc, call_plan, expr_ty), try text.toOwnedSlice());
         try self.releaseNonLocalTemps(release_regs.items);
         if (maybe_func) |func| {
-            if (lowering_rules.planAsyncTwoAwaitContinuation(func) != null) {
+            if (lowering_rules.planAsyncJoin2AwaitContinuation(func) != null) {
+                try self.future_state_vtables.put(dst, try self.asyncJoin2AwaitVTableName(call_plan.target_symbol));
+                try self.recordFutureReadiness(dst, .unknown);
+            } else if (lowering_rules.planAsyncTwoAwaitContinuation(func) != null) {
                 try self.future_state_vtables.put(dst, try self.asyncTwoAwaitVTableName(call_plan.target_symbol));
                 try self.recordFutureReadiness(dst, .unknown);
             } else if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {

@@ -119,6 +119,23 @@ pub const AsyncTwoAwaitContinuationPlan = struct {
     }
 };
 
+pub const AsyncPairResultScalarPlan = struct {
+    left_coeff: i64 = 1,
+    right_coeff: i64 = 1,
+    immediate: i64 = 0,
+};
+
+pub const AsyncJoin2AwaitContinuationPlan = struct {
+    binding_name: []const u8,
+    await_expr: *const ast.Node,
+    awaited_kind: FutureRuntimeCallKind,
+    scalar: AsyncPairResultScalarPlan = .{},
+
+    pub fn asyncStateSize(_: AsyncJoin2AwaitContinuationPlan) usize {
+        return 16;
+    }
+};
+
 pub const FutureReadiness = enum {
     unknown,
     ready,
@@ -917,6 +934,132 @@ fn asyncTwoAwaitScalarExpr(expr: *const ast.Node, first_name: []const u8, second
         .first_coeff = addend.first_coeff,
         .second_coeff = addend.second_coeff,
         .immediate = addend.immediate,
+    };
+}
+
+const AsyncPairResultAddend = struct {
+    has_left: bool = false,
+    has_right: bool = false,
+    left_coeff: i64 = 0,
+    right_coeff: i64 = 0,
+    immediate: i64 = 0,
+};
+
+fn scaleAsyncPairResultAddend(addend: *AsyncPairResultAddend, factor: i64) bool {
+    addend.left_coeff = std.math.mul(i64, addend.left_coeff, factor) catch return false;
+    addend.right_coeff = std.math.mul(i64, addend.right_coeff, factor) catch return false;
+    addend.immediate = std.math.mul(i64, addend.immediate, factor) catch return false;
+    return true;
+}
+
+fn addAsyncPairResultAddend(target: *AsyncPairResultAddend, addend: AsyncPairResultAddend) bool {
+    if (addend.has_left) target.has_left = true;
+    if (addend.has_right) target.has_right = true;
+    target.left_coeff = std.math.add(i64, target.left_coeff, addend.left_coeff) catch return false;
+    target.right_coeff = std.math.add(i64, target.right_coeff, addend.right_coeff) catch return false;
+    target.immediate = std.math.add(i64, target.immediate, addend.immediate) catch return false;
+    return true;
+}
+
+fn pairAccessorKind(expr: *const ast.Node, binding_name: []const u8) ?FutureRuntimeCallKind {
+    if (expr.* != .call_expr) return null;
+    const call = expr.call_expr;
+    const plan = planFutureRuntimeCall(call) orelse return null;
+    if (!(plan.kind == .pair_left or plan.kind == .pair_right)) return null;
+    if (call.args.len != 1 or call.generics.len != 0) return null;
+    const arg = call.args[0];
+    if (arg.* != .identifier or !std.mem.eql(u8, arg.identifier, binding_name)) return null;
+    return plan.kind;
+}
+
+fn collectAsyncPairResultAddend(expr: *const ast.Node, binding_name: []const u8, addend: *AsyncPairResultAddend) bool {
+    if (pairAccessorKind(expr, binding_name)) |kind| {
+        switch (kind) {
+            .pair_left => {
+                addend.has_left = true;
+                addend.left_coeff = std.math.add(i64, addend.left_coeff, 1) catch return false;
+            },
+            .pair_right => {
+                addend.has_right = true;
+                addend.right_coeff = std.math.add(i64, addend.right_coeff, 1) catch return false;
+            },
+            else => unreachable,
+        }
+        return true;
+    }
+    switch (expr.*) {
+        .literal => |lit| {
+            if (lit != .int_val) return false;
+            addend.immediate = std.math.add(i64, addend.immediate, lit.int_val) catch return false;
+            return true;
+        },
+        .binary_expr => |bin| {
+            if (bin.op == .mul) {
+                const left_lit = intLiteral(bin.left);
+                const right_lit = intLiteral(bin.right);
+                if (left_lit != null and right_lit != null) return false;
+                const factor = left_lit orelse right_lit orelse return false;
+                const expr_side = if (left_lit != null) bin.right else bin.left;
+                var nested = AsyncPairResultAddend{};
+                if (!collectAsyncPairResultAddend(expr_side, binding_name, &nested)) return false;
+                if (!scaleAsyncPairResultAddend(&nested, factor)) return false;
+                return addAsyncPairResultAddend(addend, nested);
+            }
+            if (!(bin.op == .add or bin.op == .sub)) return false;
+            var left = AsyncPairResultAddend{};
+            var right = AsyncPairResultAddend{};
+            if (!collectAsyncPairResultAddend(bin.left, binding_name, &left)) return false;
+            if (!collectAsyncPairResultAddend(bin.right, binding_name, &right)) return false;
+            if (bin.op == .sub and !scaleAsyncPairResultAddend(&right, -1)) return false;
+            return addAsyncPairResultAddend(addend, left) and addAsyncPairResultAddend(addend, right);
+        },
+        else => return false,
+    }
+}
+
+fn asyncPairResultScalarExpr(expr: *const ast.Node, binding_name: []const u8) ?AsyncPairResultScalarPlan {
+    var addend = AsyncPairResultAddend{};
+    if (!collectAsyncPairResultAddend(expr, binding_name, &addend)) return null;
+    if (!addend.has_left or !addend.has_right) return null;
+    if (addend.left_coeff == 0 or addend.right_coeff == 0) return null;
+    return .{
+        .left_coeff = addend.left_coeff,
+        .right_coeff = addend.right_coeff,
+        .immediate = addend.immediate,
+    };
+}
+
+fn join2HasLaterReadyInput(call: ast.CallExpr) bool {
+    if (call.args.len != 2) return false;
+    var has_defer_ready = false;
+    var has_ready = false;
+    for (call.args) |arg| {
+        if (arg.* != .call_expr) return false;
+        const plan = planFutureRuntimeCall(arg.call_expr) orelse return false;
+        switch (plan.kind) {
+            .defer_ready => has_defer_ready = true,
+            .ready => has_ready = true,
+            else => return false,
+        }
+    }
+    return has_defer_ready and has_ready;
+}
+
+pub fn planAsyncJoin2AwaitContinuation(func: *const ast.FuncDecl) ?AsyncJoin2AwaitContinuationPlan {
+    if (!func.is_async) return null;
+    const awaited = asyncAwaitBindingAt(func, 0) orelse return null;
+    if (awaited.next_idx + 1 != func.body.len) return null;
+    const ret_expr = asyncContinuationReturnExpr(func.body[awaited.next_idx]) orelse return null;
+    if (awaited.state_expr.* != .call_expr) return null;
+    const awaited_call = planFutureRuntimeCall(awaited.state_expr.call_expr) orelse return null;
+    if (awaited_call.kind != .join2) return null;
+    if (!join2HasLaterReadyInput(awaited.state_expr.call_expr)) return null;
+    const scalar = asyncPairResultScalarExpr(ret_expr, awaited.binding_name) orelse return null;
+    return .{
+        .binding_name = awaited.binding_name,
+        .await_expr = awaited.state_expr,
+        .awaited_kind = awaited_call.kind,
+        .scalar = scalar,
     };
 }
 
@@ -3061,6 +3204,50 @@ test "shared async two await continuation plan recognizes defer-ready sequence" 
     try std.testing.expectEqual(@as(i64, 0), local_plan.scalar.immediate);
 
     try std.testing.expect(planAsyncTwoAwaitContinuation(&program.program.decls[2].func_decl) == null);
+}
+
+test "shared async join2 await continuation plan recognizes later-ready composite" {
+    const parser = @import("parser.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\async fn await_join2_defer_ready_value() -> i32 {
+        \\    let pair = future::join2(future::defer_ready(20), future::ready(22)).await;
+        \\    return future::pair_left(pair) + future::pair_right(pair);
+        \\}
+        \\async fn await_local_join2_defer_ready_value() -> i32 {
+        \\    let joined = future::join2(future::ready(20), future::defer_ready(22));
+        \\    let pair = joined.await;
+        \\    return future::pair_left(pair) + future::pair_right(pair);
+        \\}
+        \\async fn await_join2_pending_value() -> i32 {
+        \\    let pair = future::join2(future::ready(20), future::pending::<i32>()).await;
+        \\    return future::pair_left(pair) + future::pair_right(pair);
+        \\}
+    ;
+    var p = parser.Parser.init(arena.allocator(), source);
+    const program = try p.parseProgram();
+    try std.testing.expect(program.* == .program);
+    try std.testing.expectEqual(@as(usize, 3), program.program.decls.len);
+
+    const direct_plan = planAsyncJoin2AwaitContinuation(&program.program.decls[0].func_decl) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("pair", direct_plan.binding_name);
+    try std.testing.expectEqual(FutureRuntimeCallKind.join2, direct_plan.awaited_kind);
+    try std.testing.expectEqual(@as(usize, 16), direct_plan.asyncStateSize());
+    try std.testing.expectEqual(@as(i64, 1), direct_plan.scalar.left_coeff);
+    try std.testing.expectEqual(@as(i64, 1), direct_plan.scalar.right_coeff);
+    try std.testing.expectEqual(@as(i64, 0), direct_plan.scalar.immediate);
+
+    const local_plan = planAsyncJoin2AwaitContinuation(&program.program.decls[1].func_decl) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("pair", local_plan.binding_name);
+    try std.testing.expectEqual(FutureRuntimeCallKind.join2, local_plan.awaited_kind);
+    try std.testing.expectEqual(@as(usize, 16), local_plan.asyncStateSize());
+    try std.testing.expectEqual(@as(i64, 1), local_plan.scalar.left_coeff);
+    try std.testing.expectEqual(@as(i64, 1), local_plan.scalar.right_coeff);
+    try std.testing.expectEqual(@as(i64, 0), local_plan.scalar.immediate);
+
+    try std.testing.expect(planAsyncJoin2AwaitContinuation(&program.program.decls[2].func_decl) == null);
 }
 
 test "shared result generic inner types" {

@@ -526,6 +526,23 @@ fn composePostReturnScalar(binding: AsyncContinuationAddend, ret: AsyncContinuat
     return scalar;
 }
 
+fn composeContinuationScalar(base: AsyncContinuationScalarPlan, expr: AsyncContinuationAddend) ?AsyncContinuationScalarPlan {
+    const awaited_coeff = std.math.mul(i64, base.awaited_coeff, expr.awaited_coeff) catch return null;
+    const base_captured = std.math.mul(i64, base.captured_coeff, expr.awaited_coeff) catch return null;
+    const captured_coeff = std.math.add(i64, base_captured, expr.captured_coeff) catch return null;
+    const base_immediate = std.math.mul(i64, base.immediate, expr.awaited_coeff) catch return null;
+    const immediate = std.math.add(i64, base_immediate, expr.immediate) catch return null;
+    return .{
+        .awaited_coeff = awaited_coeff,
+        .captured_coeff = captured_coeff,
+        .immediate = immediate,
+    };
+}
+
+fn captureNameForScalar(captured_name: ?[]const u8, scalar: AsyncContinuationScalarPlan) ?[]const u8 {
+    return if (scalar.captured_coeff != 0) captured_name else null;
+}
+
 fn continuationBlockTailExpr(block: []const *ast.Node) ?*const ast.Node {
     if (block.len != 1) return null;
     const stmt = block[0];
@@ -575,17 +592,33 @@ fn asyncContinuationBranch(expr: *const ast.Node, binding_name: []const u8, capt
     };
 }
 
-fn asyncContinuationResult(await_binding_name: []const u8, capture_name: ?[]const u8, post_stmt: ?*const ast.Node, ret_expr: *const ast.Node) ?AsyncContinuationResult {
-    if (post_stmt) |stmt| {
-        if (stmt.* != .let_stmt) return null;
-        const let_stmt = stmt.let_stmt;
-        const addend = asyncContinuationAddend(let_stmt.value, await_binding_name, capture_name) orelse return null;
-        if (ret_expr.* == .identifier and std.mem.eql(u8, ret_expr.identifier, let_stmt.name)) {
-            return .{ .post_binding_name = let_stmt.name, .addend = addend.immediate, .captured_addend_name = addend.captured_addend_name, .scalar = scalarPlanFromAddend(addend) };
+fn asyncContinuationResult(await_binding_name: []const u8, capture_name: ?[]const u8, post_stmts: []const *ast.Node, ret_expr: *const ast.Node) ?AsyncContinuationResult {
+    if (post_stmts.len != 0) {
+        if (post_stmts.len > 2) return null;
+        var current_name = await_binding_name;
+        var current_scalar = AsyncContinuationScalarPlan{};
+        var current_capture_name: ?[]const u8 = null;
+        var post_binding_name: ?[]const u8 = null;
+        for (post_stmts) |stmt| {
+            if (stmt.* != .let_stmt) return null;
+            const let_stmt = stmt.let_stmt;
+            const addend = asyncContinuationScalarExpr(let_stmt.value, current_name, capture_name) orelse return null;
+            if (!addend.has_await_binding or addend.awaited_coeff == 0) return null;
+            current_scalar = composeContinuationScalar(current_scalar, addend) orelse return null;
+            if (addend.captured_addend_name) |captured| current_capture_name = captured;
+            current_name = let_stmt.name;
+            post_binding_name = let_stmt.name;
         }
-        const return_addend = asyncContinuationAddend(ret_expr, let_stmt.name, null) orelse return null;
-        const scalar = composePostReturnScalar(addend, return_addend) orelse return null;
-        return .{ .post_binding_name = let_stmt.name, .addend = scalar.immediate, .captured_addend_name = addend.captured_addend_name, .scalar = scalar };
+
+        if (ret_expr.* == .identifier and std.mem.eql(u8, ret_expr.identifier, current_name)) {
+            const captured = captureNameForScalar(current_capture_name, current_scalar);
+            return .{ .post_binding_name = post_binding_name, .addend = current_scalar.immediate, .captured_addend_name = captured, .scalar = current_scalar };
+        }
+        const return_addend = asyncContinuationScalarExpr(ret_expr, current_name, null) orelse return null;
+        if (!return_addend.has_await_binding or return_addend.awaited_coeff == 0) return null;
+        const scalar = composeContinuationScalar(current_scalar, return_addend) orelse return null;
+        const captured = captureNameForScalar(current_capture_name, scalar);
+        return .{ .post_binding_name = post_binding_name, .addend = scalar.immediate, .captured_addend_name = captured, .scalar = scalar };
     }
 
     if (asyncContinuationBranch(ret_expr, await_binding_name, capture_name)) |branch| return branch;
@@ -610,7 +643,7 @@ pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleA
         binding_name: []const u8,
         state_expr: *const ast.Node,
         ret_expr: *const ast.Node,
-        post_stmt: ?*const ast.Node = null,
+        post_stmts: []const *ast.Node = &.{},
         captured_addend_name: ?[]const u8 = null,
         captured_addend_expr: ?*const ast.Node = null,
     };
@@ -647,22 +680,15 @@ pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleA
         idx += 2;
     }
 
-    var post_stmt: ?*const ast.Node = null;
-    if (idx + 1 < func.body.len) {
-        post_stmt = func.body[idx];
-        idx += 1;
-    }
-
     if (idx >= func.body.len) return null;
-    const ret_expr = asyncContinuationReturnExpr(func.body[idx]) orelse return null;
-    idx += 1;
-    if (idx != func.body.len) return null;
+    const post_stmts = func.body[idx .. func.body.len - 1];
+    const ret_expr = asyncContinuationReturnExpr(func.body[func.body.len - 1]) orelse return null;
 
     const shape = ContinuationShape{
         .binding_name = binding_name,
         .state_expr = state_expr,
         .ret_expr = ret_expr,
-        .post_stmt = post_stmt,
+        .post_stmts = post_stmts,
         .captured_addend_name = captured_addend_name,
         .captured_addend_expr = captured_addend_expr,
     };
@@ -671,7 +697,7 @@ pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleA
     const awaited_call = planFutureRuntimeCall(shape.state_expr.call_expr) orelse return null;
     if (awaited_call.kind != .defer_ready) return null;
 
-    const result = asyncContinuationResult(shape.binding_name, shape.captured_addend_name, shape.post_stmt, shape.ret_expr) orelse return null;
+    const result = asyncContinuationResult(shape.binding_name, shape.captured_addend_name, shape.post_stmts, shape.ret_expr) orelse return null;
     const plan_captured_expr = if (result.captured_addend_name) |_| shape.captured_addend_expr orelse return null else null;
     if (shape.captured_addend_name != null and result.captured_addend_name == null) return null;
     return .{
@@ -2450,11 +2476,26 @@ test "shared async single await continuation plan recognizes parsed captured add
         \\    let value = delayed.await;
         \\    return if value > 0 { value + bump } else { bump };
         \\}
+        \\async fn await_defer_ready_two_post_bindings() -> i32 {
+        \\    let bump = 1;
+        \\    let value = future::defer_ready(40).await;
+        \\    let result = value + bump;
+        \\    let final = result + 1;
+        \\    return final;
+        \\}
+        \\async fn await_local_defer_ready_two_post_bindings() -> i32 {
+        \\    let bump = 1;
+        \\    let delayed = future::defer_ready(40);
+        \\    let value = delayed.await;
+        \\    let result = value + bump;
+        \\    let final = result + 1;
+        \\    return final;
+        \\}
     ;
     var p = parser.Parser.init(arena.allocator(), source);
     const program = try p.parseProgram();
     try std.testing.expect(program.* == .program);
-    try std.testing.expectEqual(@as(usize, 8), program.program.decls.len);
+    try std.testing.expectEqual(@as(usize, 10), program.program.decls.len);
 
     const direct_func = &program.program.decls[0].func_decl;
     const direct_plan = planAsyncSingleAwaitContinuation(direct_func) orelse return error.TestExpectedEqual;
@@ -2541,6 +2582,28 @@ test "shared async single await continuation plan recognizes parsed captured add
     try std.testing.expectEqual(@as(i64, 0), local_branch.else_scalar.awaited_coeff);
     try std.testing.expectEqual(@as(i64, 1), local_branch.else_scalar.captured_coeff);
     try std.testing.expectEqual(@as(i64, 0), local_branch.else_scalar.immediate);
+
+    const two_post_func = &program.program.decls[8].func_decl;
+    const two_post_plan = planAsyncSingleAwaitContinuation(two_post_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", two_post_plan.binding_name);
+    try std.testing.expectEqualStrings("final", two_post_plan.post_binding_name.?);
+    try std.testing.expectEqualStrings("bump", two_post_plan.captured_addend_name.?);
+    try std.testing.expect(two_post_plan.captured_addend_expr != null);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, two_post_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 1), two_post_plan.scalar.awaited_coeff);
+    try std.testing.expectEqual(@as(i64, 1), two_post_plan.scalar.captured_coeff);
+    try std.testing.expectEqual(@as(i64, 1), two_post_plan.scalar.immediate);
+
+    const local_two_post_func = &program.program.decls[9].func_decl;
+    const local_two_post_plan = planAsyncSingleAwaitContinuation(local_two_post_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", local_two_post_plan.binding_name);
+    try std.testing.expectEqualStrings("final", local_two_post_plan.post_binding_name.?);
+    try std.testing.expectEqualStrings("bump", local_two_post_plan.captured_addend_name.?);
+    try std.testing.expect(local_two_post_plan.captured_addend_expr != null);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_two_post_plan.awaited_kind);
+    try std.testing.expectEqual(@as(i64, 1), local_two_post_plan.scalar.awaited_coeff);
+    try std.testing.expectEqual(@as(i64, 1), local_two_post_plan.scalar.captured_coeff);
+    try std.testing.expectEqual(@as(i64, 1), local_two_post_plan.scalar.immediate);
 }
 
 test "shared result generic inner types" {

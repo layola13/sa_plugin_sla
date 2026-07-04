@@ -6711,13 +6711,31 @@ pub const Codegen = struct {
             \\
         , .{ vt_name, poll_name, poll_name, plan.binding_name }) catch return CodegenError.CodegenError;
         var captured_addend_regs: [2]?[]const u8 = .{ null, null };
+        var captured_storage_regs: [2]?[]const u8 = .{ null, null };
+        const scalar = plan.scalar;
         for (0..plan.capture_count) |capture_idx| {
             const capture = plan.captures[capture_idx] orelse return CodegenError.CodegenError;
             const reg_name: []const u8 = if (capture_idx == 0) "async_captured_addend" else "async_captured_addend2";
-            self.out.writer().print("    {s} = load data_slot+{} as u64\n", .{ reg_name, capture.offset }) catch return CodegenError.CodegenError;
-            captured_addend_regs[capture_idx] = reg_name;
+            switch (capture.storage) {
+                .scalar => {
+                    self.out.writer().print("    {s} = load data_slot+{} as u64\n", .{ reg_name, capture.offset }) catch return CodegenError.CodegenError;
+                    captured_addend_regs[capture_idx] = reg_name;
+                },
+                .copy_struct => {
+                    if (plan.branch != null) return CodegenError.CodegenError;
+                    const field_name = if (capture_idx == 0) scalar.captured_field_name else scalar.captured2_field_name;
+                    const field = field_name orelse return CodegenError.CodegenError;
+                    const capture_ty = self.tc.expr_types.get(capture.expr) orelse return CodegenError.CodegenError;
+                    if (!self.typeIsCopyStruct(capture_ty)) return CodegenError.CodegenError;
+                    const layout = self.aggregateFieldLayout(capture_ty, field) orelse return CodegenError.CodegenError;
+                    const ptr_reg: []const u8 = if (capture_idx == 0) "async_captured_struct" else "async_captured_struct2";
+                    self.out.writer().print("    {s} = load data_slot+{} as ptr\n", .{ ptr_reg, capture.offset }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg_name, ptr_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                    captured_addend_regs[capture_idx] = reg_name;
+                    captured_storage_regs[capture_idx] = ptr_reg;
+                },
+            }
         }
-        const scalar = plan.scalar;
         const result_reg = if (plan.branch != null) "async_result" else plan.resultBindingName() orelse if (scalar.isIdentity()) plan.binding_name else "async_result";
         if (plan.branch) |branch| {
             const condition_op = binaryOpName(branch.condition_op, false);
@@ -6757,6 +6775,11 @@ pub const Codegen = struct {
                 self.out.writer().print("    !{s}\n", .{addend_reg}) catch return CodegenError.CodegenError;
             }
         }
+        for (captured_storage_regs) |maybe_storage_reg| {
+            if (maybe_storage_reg) |storage_reg| {
+                self.out.writer().print("    !{s}\n", .{storage_reg}) catch return CodegenError.CodegenError;
+            }
+        }
         self.out.writer().print(
             \\    !{s}
             \\    !async_inner_ready
@@ -6794,7 +6817,20 @@ pub const Codegen = struct {
         var captured_addends: [2]?[]const u8 = .{ null, null };
         for (0..plan.capture_count) |capture_idx| {
             const capture = plan.captures[capture_idx] orelse return CodegenError.CodegenError;
-            captured_addends[capture_idx] = try self.genExpr(@constCast(capture.expr), &hoisted_allocs);
+            const capture_reg = try self.genExpr(@constCast(capture.expr), &hoisted_allocs);
+            captured_addends[capture_idx] = switch (capture.storage) {
+                .scalar => capture_reg,
+                .copy_struct => blk: {
+                    const capture_ty = self.tc.expr_types.get(capture.expr) orelse return CodegenError.CodegenError;
+                    if (!self.typeIsCopyStruct(capture_ty)) return CodegenError.CodegenError;
+                    if (capture.expr.* == .identifier) {
+                        const copied = try self.newTmp();
+                        try self.genCopyValueInto(copied, capture_reg, capture_ty);
+                        break :blk copied;
+                    }
+                    break :blk capture_reg;
+                },
+            };
         }
         const inner_state = try self.genExpr(@constCast(plan.await_expr), &hoisted_allocs);
         const async_state = try self.newTmp();
@@ -6804,8 +6840,12 @@ pub const Codegen = struct {
         for (0..plan.capture_count) |capture_idx| {
             const capture = plan.captures[capture_idx] orelse return CodegenError.CodegenError;
             const addend_reg = captured_addends[capture_idx] orelse return CodegenError.CodegenError;
-            self.out.writer().print("    store {s}+{}, {s} as u64\n", .{ async_state, capture.offset, addend_reg }) catch return CodegenError.CodegenError;
-            try self.emitRelease(addend_reg);
+            const store_ty: []const u8 = switch (capture.storage) {
+                .scalar => "u64",
+                .copy_struct => "ptr",
+            };
+            self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ async_state, capture.offset, addend_reg, store_ty }) catch return CodegenError.CodegenError;
+            if (capture.storage == .scalar) try self.emitRelease(addend_reg);
         }
         try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);

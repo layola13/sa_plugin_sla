@@ -4,9 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- No active uncounted implementation slice after Phase 8C. Dev-mode rule for all future CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
+- No active uncounted implementation slice after Phase 8D. Dev-mode rule for all future CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
 
 ## Completed Features
+
+- [done] Direct SAB and SA-text now support a copy-struct pre-await capture in the narrow defer-ready async await resumption shape.
+  - Extended shared `AsyncSingleAwaitContinuationPlan` capture metadata with `AsyncContinuationCaptureStorage`, so copy-struct captures are represented as owned pointer slots in the async state rather than scalar `u64` slots. `AsyncContinuationScalarPlan` now carries captured field names for scalar field addends such as `bump.amount`.
+  - SA-text and direct SAB both consume the shared capture storage/field metadata: async constructors store copy-struct captures as `ptr`, poll helpers load the owned struct pointer from the shared offset, load the planned scalar field, and feed that value into the existing scalar continuation computation. Pointer-backed non-copy captures remain unsupported until a later shared ownership/drop policy exists.
+  - Added `tests/test_unit_async_defer_ready_copy_struct_capture_state_machine.sla`, covering first-pending, not-ready state, second-ready, ready state, and result `42` for direct-call and prebound-local variants.
+  - Verified: `sa version` (`0.0.3.3`); `zig fmt src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`; `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`; `zig test src/lowering_rules.zig --test-filter "async single await continuation"` (2/2); `zig build --summary all`; `zig build test --summary all` (71/71); local SA-text and direct-SAB no-fallback for the new fixture; local full no-fallback sweep 99/99; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host SA-text and direct-SAB no-fallback for the new fixture; host full no-fallback sweep 99/99; host `/home/vscode/projects/sla_ecs/lib/parallel.sla`; disasm guard clean for the new fixture and parallel.
+  - Feature completion: copy-struct defer-ready async await resumption direct SAB/SA-text 100%; Y/shared-lowering remains approximately 98%; direct SAB fallback-removal for tracked corpus remains 100%; no-fallback sweep 99/99. Vec/Box/Rc captures, broader branch/tail trees, and multi-await state machines remain open in `tasks.md` Phase 8E-8G.
 
 - [done] Direct SAB and SA-text now support two scalar pre-await captures in the narrow defer-ready async await resumption shape.
   - Extended shared `AsyncSingleAwaitContinuationPlan` classification in `src/lowering_rules.zig` with explicit capture layout metadata. The supported Phase 8C sub-slice covers direct-call and prebound-local `future::defer_ready(...).await` functions that capture `let a = 1; let b = 2;` before the await and resume with `return value + a + b;`.

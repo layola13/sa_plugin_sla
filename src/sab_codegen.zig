@@ -3656,7 +3656,19 @@ pub const Codegen = struct {
         var captured_addends: [2]?u32 = .{ null, null };
         for (0..plan.capture_count) |capture_idx| {
             const capture = plan.captures[capture_idx] orelse return Error.UnsupportedSabDirectFeature;
-            captured_addends[capture_idx] = try self.genExpr(@constCast(capture.expr));
+            const capture_reg = try self.genExpr(@constCast(capture.expr));
+            captured_addends[capture_idx] = switch (capture.storage) {
+                .scalar => capture_reg,
+                .copy_struct => blk: {
+                    const capture_ty = self.tc.expr_types.get(capture.expr) orelse return Error.MissingType;
+                    if (!self.typeIsCopyStruct(capture_ty)) return Error.UnsupportedSabDirectFeature;
+                    if (capture.expr.* == .identifier) {
+                        const copied = try self.genCopyValue(capture_reg, capture_ty);
+                        break :blk copied;
+                    }
+                    break :blk capture_reg;
+                },
+            };
         }
         const inner_state = try self.genExpr(@constCast(plan.await_expr));
         const async_state = try self.intern(try self.newTmp());
@@ -3668,8 +3680,11 @@ pub const Codegen = struct {
         for (0..plan.capture_count) |capture_idx| {
             const capture = plan.captures[capture_idx] orelse return Error.UnsupportedSabDirectFeature;
             const addend_reg = captured_addends[capture_idx] orelse return Error.UnsupportedSabDirectFeature;
-            try self.emitStore(async_state, capture.offset, addend_reg, .u64);
-            try self.emitRelease(addend_reg);
+            try self.emitStore(async_state, capture.offset, addend_reg, switch (capture.storage) {
+                .scalar => .u64,
+                .copy_struct => .ptr,
+            });
+            if (capture.storage == .scalar) try self.emitRelease(addend_reg);
         }
         try self.emitRelease(zero);
         try self.emitRelease(inner_state);
@@ -4391,14 +4406,32 @@ pub const Codegen = struct {
         const scalar = plan.scalar;
         const result = if (plan.branch != null) try self.intern(try self.newTmp()) else if (plan.resultBindingName()) |binding_name| try self.intern(binding_name) else if (scalar.isIdentity()) value else try self.intern(try self.newTmp());
         var captured_addends: [2]?u32 = .{ null, null };
+        var captured_storage: [2]?u32 = .{ null, null };
         const stage_one = try self.intern(try self.newTmp());
         const inner_stage_two = try self.intern(try self.newTmp());
         try self.emitLoad(value, inner_state, 8, .u64);
         for (0..plan.capture_count) |capture_idx| {
             const capture = plan.captures[capture_idx] orelse return Error.UnsupportedSabDirectFeature;
             const addend_reg = try self.intern(try self.newTmp());
-            try self.emitLoad(addend_reg, ids[0], capture.offset, .u64);
-            captured_addends[capture_idx] = addend_reg;
+            switch (capture.storage) {
+                .scalar => {
+                    try self.emitLoad(addend_reg, ids[0], capture.offset, .u64);
+                    captured_addends[capture_idx] = addend_reg;
+                },
+                .copy_struct => {
+                    if (plan.branch != null) return Error.UnsupportedSabDirectFeature;
+                    const field_name = if (capture_idx == 0) scalar.captured_field_name else scalar.captured2_field_name;
+                    const field = field_name orelse return Error.UnsupportedSabDirectFeature;
+                    const capture_ty = self.tc.expr_types.get(capture.expr) orelse return Error.MissingType;
+                    if (!self.typeIsCopyStruct(capture_ty)) return Error.UnsupportedSabDirectFeature;
+                    const layout = try self.fieldLayout(capture_ty, field);
+                    const ptr_reg = try self.intern(try self.newTmp());
+                    try self.emitLoad(ptr_reg, ids[0], capture.offset, .ptr);
+                    try self.emitLoad(addend_reg, ptr_reg, layout.offset, layout.ty);
+                    captured_addends[capture_idx] = addend_reg;
+                    captured_storage[capture_idx] = ptr_reg;
+                },
+            }
         }
         var branch_cond: ?u32 = null;
         if (plan.branch) |branch| {
@@ -4433,6 +4466,9 @@ pub const Codegen = struct {
         if (branch_cond) |cond| try self.emitRelease(cond);
         for (captured_addends) |maybe_addend_reg| {
             if (maybe_addend_reg) |addend_reg| try self.emitRelease(addend_reg);
+        }
+        for (captured_storage) |maybe_storage_reg| {
+            if (maybe_storage_reg) |storage_reg| try self.emitRelease(storage_reg);
         }
         try self.emitRelease(value);
         try self.emitRelease(inner_ready);

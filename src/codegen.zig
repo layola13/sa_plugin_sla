@@ -5945,6 +5945,9 @@ pub const Codegen = struct {
         self.clearHashMapKeySlots();
         try self.collectAddressableBindings(f.body);
 
+        if (lowering_rules.planAsyncTwoAwaitContinuation(f)) |plan| {
+            return try self.genAsyncTwoAwaitFuncDeclNamed(name, f, plan);
+        }
         if (lowering_rules.planAsyncSingleAwaitContinuation(f)) |plan| {
             return try self.genAsyncSingleAwaitFuncDeclNamed(name, f, plan);
         }
@@ -6558,6 +6561,14 @@ pub const Codegen = struct {
         return std.fmt.allocPrint(self.allocator, "sla_async_{s}_poll", .{name}) catch return CodegenError.OutOfMemory;
     }
 
+    fn asyncTwoAwaitVTableName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_TWO_AWAIT_VT", .{name}) catch return CodegenError.OutOfMemory;
+    }
+
+    fn asyncTwoAwaitPollName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "sla_async_{s}_two_await_poll", .{name}) catch return CodegenError.OutOfMemory;
+    }
+
     fn emitAsyncContinuationScalarValue(self: *Codegen, scalar: lowering_rules.AsyncContinuationScalarPlan, result_reg: []const u8, awaited_reg: []const u8, captured_regs: [2]?[]const u8, prefix: []const u8) CodegenError!void {
         const awaited_abs = std.fmt.allocPrint(self.allocator, "{s}_awaited_abs", .{prefix}) catch return CodegenError.OutOfMemory;
         defer self.allocator.free(awaited_abs);
@@ -6795,6 +6806,102 @@ pub const Codegen = struct {
         , .{plan.binding_name}) catch return CodegenError.CodegenError;
     }
 
+    fn emitAsyncTwoAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncTwoAwaitContinuationPlan) CodegenError!void {
+        const vt_name = try self.asyncTwoAwaitVTableName(name);
+        const poll_name = try self.asyncTwoAwaitPollName(name);
+        self.out.writer().print(
+            \\@const {s} = vtable {{ poll = @{s} }}
+            \\@{s}(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
+            \\L_ENTRY:
+            \\    async_stage = load data_slot+0 as u64
+            \\    async_poll_first = eq async_stage, 0
+            \\    async_done = eq async_stage, 2
+            \\    br async_done -> L_ASYNC_TWO_AWAIT_EMPTY, L_ASYNC_TWO_AWAIT_DISPATCH
+            \\L_ASYNC_TWO_AWAIT_EMPTY:
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    jmp L_ASYNC_TWO_AWAIT_DONE
+            \\L_ASYNC_TWO_AWAIT_DISPATCH:
+            \\    br async_poll_first -> L_ASYNC_TWO_AWAIT_FIRST, L_ASYNC_TWO_AWAIT_SECOND
+            \\L_ASYNC_TWO_AWAIT_FIRST:
+            \\    async_first_state = load data_slot+8 as ptr
+            \\    async_first_stage = load async_first_state+0 as u64
+            \\    async_first_initial = eq async_first_stage, 0
+            \\    br async_first_initial -> L_ASYNC_TWO_AWAIT_FIRST_PENDING, L_ASYNC_TWO_AWAIT_FIRST_CHECK_READY
+            \\L_ASYNC_TWO_AWAIT_FIRST_PENDING:
+            \\    store async_first_state+0, 1 as u64
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    jmp L_ASYNC_TWO_AWAIT_FIRST_CLEAN
+            \\L_ASYNC_TWO_AWAIT_FIRST_CHECK_READY:
+            \\    async_first_ready = eq async_first_stage, 1
+            \\    br async_first_ready -> L_ASYNC_TWO_AWAIT_FIRST_READY, L_ASYNC_TWO_AWAIT_FIRST_EMPTY
+            \\L_ASYNC_TWO_AWAIT_FIRST_EMPTY:
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    !async_first_ready
+            \\    jmp L_ASYNC_TWO_AWAIT_FIRST_CLEAN
+            \\L_ASYNC_TWO_AWAIT_FIRST_READY:
+            \\    {s} = load async_first_state+8 as u64
+            \\    store data_slot+24, {s} as u64
+            \\    store async_first_state+0, 2 as u64
+            \\    store data_slot+0, 1 as u64
+            \\    !{s}
+            \\    !async_first_ready
+            \\    !async_first_initial
+            \\    !async_first_stage
+            \\    !async_first_state
+            \\    jmp L_ASYNC_TWO_AWAIT_SECOND
+            \\L_ASYNC_TWO_AWAIT_FIRST_CLEAN:
+            \\    !async_first_initial
+            \\    !async_first_stage
+            \\    !async_first_state
+            \\    jmp L_ASYNC_TWO_AWAIT_DONE
+            \\L_ASYNC_TWO_AWAIT_SECOND:
+            \\    async_second_state = load data_slot+16 as ptr
+            \\    async_second_stage = load async_second_state+0 as u64
+            \\    async_second_initial = eq async_second_stage, 0
+            \\    br async_second_initial -> L_ASYNC_TWO_AWAIT_SECOND_PENDING, L_ASYNC_TWO_AWAIT_SECOND_CHECK_READY
+            \\L_ASYNC_TWO_AWAIT_SECOND_PENDING:
+            \\    store async_second_state+0, 1 as u64
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    jmp L_ASYNC_TWO_AWAIT_SECOND_CLEAN
+            \\L_ASYNC_TWO_AWAIT_SECOND_CHECK_READY:
+            \\    async_second_ready = eq async_second_stage, 1
+            \\    br async_second_ready -> L_ASYNC_TWO_AWAIT_SECOND_READY, L_ASYNC_TWO_AWAIT_SECOND_EMPTY
+            \\L_ASYNC_TWO_AWAIT_SECOND_EMPTY:
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    !async_second_ready
+            \\    jmp L_ASYNC_TWO_AWAIT_SECOND_CLEAN
+            \\L_ASYNC_TWO_AWAIT_SECOND_READY:
+            \\    {s} = load data_slot+24 as u64
+            \\    {s} = load async_second_state+8 as u64
+            \\
+        , .{ vt_name, poll_name, poll_name, plan.first_binding_name, plan.first_binding_name, plan.first_binding_name, plan.first_binding_name, plan.second_binding_name }) catch return CodegenError.CodegenError;
+        const scalar = lowering_rules.AsyncContinuationScalarPlan{
+            .awaited_coeff = plan.scalar.second_coeff,
+            .captured_coeff = plan.scalar.first_coeff,
+            .immediate = plan.scalar.immediate,
+        };
+        try self.emitAsyncContinuationScalarValue(scalar, "async_two_result", plan.second_binding_name, .{ plan.first_binding_name, null }, "async_two");
+        self.out.writer().print(
+            \\    store async_second_state+0, 2 as u64
+            \\    store data_slot+0, 2 as u64
+            \\    EXPAND POLL_SET_READY out_poll_slot, async_two_result
+            \\    !async_two_result
+            \\    !{s}
+            \\    !{s}
+            \\    !async_second_ready
+            \\L_ASYNC_TWO_AWAIT_SECOND_CLEAN:
+            \\    !async_second_initial
+            \\    !async_second_stage
+            \\    !async_second_state
+            \\L_ASYNC_TWO_AWAIT_DONE:
+            \\    !async_poll_first
+            \\    !async_done
+            \\    !async_stage
+            \\    return
+            \\
+        , .{ plan.second_binding_name, plan.first_binding_name }) catch return CodegenError.CodegenError;
+    }
+
     fn genAsyncSingleAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncSingleAwaitContinuationPlan) CodegenError!void {
         try self.emitAsyncSingleAwaitPollHelper(name, plan);
 
@@ -6848,6 +6955,38 @@ pub const Codegen = struct {
             if (capture.storage == .scalar) try self.emitRelease(addend_reg);
         }
         try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
+        try self.recordFutureReadiness(async_state, .unknown);
+        self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
+    }
+
+    fn genAsyncTwoAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncTwoAwaitContinuationPlan) CodegenError!void {
+        try self.emitAsyncTwoAwaitPollHelper(name, plan);
+
+        const lowered_name = try self.loweredFuncSymbol(name);
+        defer self.allocator.free(lowered_name);
+        self.out.writer().print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        for (f.params, 0..) |p, i| {
+            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            const prefix: []const u8 = if (p.is_move) "^" else if (p.is_borrow) "&" else "";
+            self.out.writer().print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+        }
+        const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
+        const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
+        self.out.writer().print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
+        self.out.writer().print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+
+        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        defer hoisted_allocs.deinit();
+        try self.collectHoistedAllocs(f.body, &hoisted_allocs);
+        const first_state = try self.genExpr(@constCast(plan.first_await_expr), &hoisted_allocs);
+        const second_state = try self.genExpr(@constCast(plan.second_await_expr), &hoisted_allocs);
+        const async_state = try self.newTmp();
+        self.out.writer().print("    {s} = alloc {}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ async_state, first_state }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+16, {s} as ptr\n", .{ async_state, second_state }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+24, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        try self.future_state_vtables.put(async_state, try self.asyncTwoAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
     }
@@ -11635,7 +11774,10 @@ pub const Codegen = struct {
                         }
                     }
                     if (maybe_func) |func| {
-                        if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {
+                        if (lowering_rules.planAsyncTwoAwaitContinuation(func) != null) {
+                            try self.future_state_vtables.put(reg, try self.asyncTwoAwaitVTableName(call.func_name));
+                            try self.recordFutureReadiness(reg, .unknown);
+                        } else if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {
                             try self.future_state_vtables.put(reg, try self.asyncSingleAwaitVTableName(call.func_name));
                             try self.recordFutureReadiness(reg, .unknown);
                         }

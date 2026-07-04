@@ -3696,6 +3696,40 @@ pub const Codegen = struct {
         try self.finishFunctionBody(sig_idx);
     }
 
+    fn genAsyncTwoAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncTwoAwaitContinuationPlan) !void {
+        try self.emitAsyncTwoAwaitPollHelper(name, plan);
+
+        self.beginFunction();
+        try self.collectBorrowedBindingsInBlock(f.body);
+        const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
+        const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
+        try self.appendDeclInst(fsig);
+        try self.emitLabel("L_ENTRY");
+        try self.materializeBorrowedParams(f.params);
+
+        const first_state = try self.genExpr(@constCast(plan.first_await_expr));
+        const second_state = try self.genExpr(@constCast(plan.second_await_expr));
+        const async_state = try self.intern(try self.newTmp());
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAlloc(async_state, plan.asyncStateSize());
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(async_state, 0, zero, .u64);
+        try self.emitStore(async_state, 8, first_state, .ptr);
+        try self.emitStore(async_state, 16, second_state, .ptr);
+        try self.emitStore(async_state, 24, zero, .u64);
+        try self.emitRelease(zero);
+        try self.emitRelease(second_state);
+        try self.emitRelease(first_state);
+        try self.future_state_vtables.put(async_state, try self.asyncTwoAwaitVTableName(name));
+        try self.recordFutureReadiness(async_state, .unknown);
+        try self.releaseOpenLocals(async_state);
+        try self.emitReturn(async_state);
+
+        try self.finishFunctionBody(sig_idx);
+    }
+
     fn genFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl) !void {
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
@@ -3705,6 +3739,9 @@ pub const Codegen = struct {
         self.current_async_return_ty = if (f.is_async) f.ret_ty else null;
         defer self.current_async_return = old_async_return;
         defer self.current_async_return_ty = old_async_return_ty;
+        if (lowering_rules.planAsyncTwoAwaitContinuation(f)) |plan| {
+            return try self.genAsyncTwoAwaitFuncDeclNamed(name, f, plan);
+        }
         if (lowering_rules.planAsyncSingleAwaitContinuation(f)) |plan| {
             return try self.genAsyncSingleAwaitFuncDeclNamed(name, f, plan);
         }
@@ -4195,6 +4232,14 @@ pub const Codegen = struct {
         return try std.fmt.allocPrint(self.allocator, "sla_async_{s}_poll", .{name});
     }
 
+    fn asyncTwoAwaitVTableName(self: *Codegen, name: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_TWO_AWAIT_VT", .{name});
+    }
+
+    fn asyncTwoAwaitPollName(self: *Codegen, name: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.allocator, "sla_async_{s}_two_await_poll", .{name});
+    }
+
     fn asyncContinuationConditionOp(op: ast.BinaryOp) !inst.OpKind {
         return switch (op) {
             .eq => .eq,
@@ -4477,6 +4522,186 @@ pub const Codegen = struct {
         try self.emitRelease(inner_initial);
         try self.emitRelease(inner_stage);
         try self.emitRelease(inner_state);
+
+        try self.emitLabel(done_label);
+        try self.emitRelease(done);
+        try self.emitRelease(stage);
+        for (ids) |id| try self.emitRelease(id);
+        try self.emitReturn(null);
+
+        try self.finishFunctionBody(sig_idx);
+    }
+
+    fn emitAsyncTwoAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncTwoAwaitContinuationPlan) !void {
+        const vt_name = try self.asyncTwoAwaitVTableName(name);
+        const poll_name = try self.asyncTwoAwaitPollName(name);
+        try self.appendVTableConst(vt_name, poll_name);
+
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
+        self.beginFunction();
+
+        const names = [_][]const u8{ "data_slot", "ctx_slot", "out_poll_slot" };
+        const specs = try self.allocator.alloc(sig.ParamSpec, names.len);
+        const ids = try self.allocator.alloc(u32, names.len);
+        for (names, 0..) |param_name, i| {
+            ids[i] = try self.intern(param_name);
+            specs[i] = .{ .name = param_name, .ty = .ptr, .cap = .borrow };
+            try self.pushRawParamLocal(param_name, ids[i], .borrow);
+        }
+
+        const fsig = try self.appendGeneratedFuncSig(poll_name, .normal, specs, ids, .void, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
+        try self.appendDeclInst(fsig);
+        try self.emitLabel("L_ENTRY");
+
+        const stage = try self.intern(try self.newTmp());
+        const done = try self.intern(try self.newTmp());
+        const empty_label = try self.newLabel("L_ASYNC_TWO_AWAIT_EMPTY");
+        const dispatch_label = try self.newLabel("L_ASYNC_TWO_AWAIT_DISPATCH");
+        const first_label = try self.newLabel("L_ASYNC_TWO_AWAIT_FIRST");
+        const second_dispatch_label = try self.newLabel("L_ASYNC_TWO_AWAIT_SECOND_DISPATCH");
+        const second_label = try self.newLabel("L_ASYNC_TWO_AWAIT_SECOND");
+        const done_label = try self.newLabel("L_ASYNC_TWO_AWAIT_DONE");
+        try self.emitLoad(stage, ids[0], 0, .u64);
+        try self.emitOp(done, .eq, .{ .reg = stage }, .{ .imm_i64 = 2 });
+        try self.emitBranch(done, empty_label, dispatch_label);
+
+        try self.emitLabel(empty_label);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitJmp(done_label);
+
+        try self.emitLabel(dispatch_label);
+        const poll_first = try self.intern(try self.newTmp());
+        try self.emitOp(poll_first, .eq, .{ .reg = stage }, .{ .imm_i64 = 0 });
+        try self.emitBranch(poll_first, first_label, second_dispatch_label);
+
+        try self.emitLabel(second_dispatch_label);
+        try self.emitJmp(second_label);
+
+        try self.emitLabel(first_label);
+        const first_state = try self.intern(try self.newTmp());
+        const first_stage = try self.intern(try self.newTmp());
+        const first_initial = try self.intern(try self.newTmp());
+        const first_pending_label = try self.newLabel("L_ASYNC_TWO_AWAIT_FIRST_PENDING");
+        const first_check_label = try self.newLabel("L_ASYNC_TWO_AWAIT_FIRST_CHECK_READY");
+        const first_ready_label = try self.newLabel("L_ASYNC_TWO_AWAIT_FIRST_READY");
+        const first_empty_label = try self.newLabel("L_ASYNC_TWO_AWAIT_FIRST_EMPTY");
+        const first_clean_label = try self.newLabel("L_ASYNC_TWO_AWAIT_FIRST_CLEAN");
+        try self.emitLoad(first_state, ids[0], 8, .ptr);
+        try self.emitLoad(first_stage, first_state, 0, .u64);
+        try self.emitOp(first_initial, .eq, .{ .reg = first_stage }, .{ .imm_i64 = 0 });
+        try self.emitBranch(first_initial, first_pending_label, first_check_label);
+
+        try self.emitLabel(first_pending_label);
+        const first_stage_one = try self.intern(try self.newTmp());
+        try self.emitAssignImm(first_stage_one, 1);
+        try self.emitStore(first_state, 0, first_stage_one, .u64);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitRelease(first_stage_one);
+        try self.emitJmp(first_clean_label);
+
+        try self.emitLabel(first_check_label);
+        const first_ready = try self.intern(try self.newTmp());
+        try self.emitOp(first_ready, .eq, .{ .reg = first_stage }, .{ .imm_i64 = 1 });
+        try self.emitBranch(first_ready, first_ready_label, first_empty_label);
+
+        try self.emitLabel(first_empty_label);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitRelease(first_ready);
+        try self.emitJmp(first_clean_label);
+
+        try self.emitLabel(first_ready_label);
+        const first_value = try self.intern(try self.newTmp());
+        const first_stage_two = try self.intern(try self.newTmp());
+        const outer_stage_one = try self.intern(try self.newTmp());
+        try self.emitLoad(first_value, first_state, 8, .u64);
+        try self.emitStore(ids[0], 24, first_value, .u64);
+        try self.emitAssignImm(first_stage_two, 2);
+        try self.emitStore(first_state, 0, first_stage_two, .u64);
+        try self.emitAssignImm(outer_stage_one, 1);
+        try self.emitStore(ids[0], 0, outer_stage_one, .u64);
+        try self.emitRelease(outer_stage_one);
+        try self.emitRelease(first_stage_two);
+        try self.emitRelease(first_value);
+        try self.emitRelease(first_ready);
+        try self.emitRelease(first_initial);
+        try self.emitRelease(first_stage);
+        try self.emitRelease(first_state);
+        try self.emitJmp(second_label);
+
+        try self.emitLabel(first_clean_label);
+        try self.emitRelease(first_initial);
+        try self.emitRelease(first_stage);
+        try self.emitRelease(first_state);
+        try self.emitJmp(done_label);
+
+        try self.emitLabel(second_label);
+        const second_state = try self.intern(try self.newTmp());
+        const second_stage = try self.intern(try self.newTmp());
+        const second_initial = try self.intern(try self.newTmp());
+        const second_pending_label = try self.newLabel("L_ASYNC_TWO_AWAIT_SECOND_PENDING");
+        const second_check_label = try self.newLabel("L_ASYNC_TWO_AWAIT_SECOND_CHECK_READY");
+        const second_ready_label = try self.newLabel("L_ASYNC_TWO_AWAIT_SECOND_READY");
+        const second_empty_label = try self.newLabel("L_ASYNC_TWO_AWAIT_SECOND_EMPTY");
+        const second_clean_label = try self.newLabel("L_ASYNC_TWO_AWAIT_SECOND_CLEAN");
+        try self.emitLoad(second_state, ids[0], 16, .ptr);
+        try self.emitLoad(second_stage, second_state, 0, .u64);
+        try self.emitOp(second_initial, .eq, .{ .reg = second_stage }, .{ .imm_i64 = 0 });
+        try self.emitBranch(second_initial, second_pending_label, second_check_label);
+
+        try self.emitLabel(second_pending_label);
+        const second_stage_one = try self.intern(try self.newTmp());
+        try self.emitAssignImm(second_stage_one, 1);
+        try self.emitStore(second_state, 0, second_stage_one, .u64);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitRelease(second_stage_one);
+        try self.emitJmp(second_clean_label);
+
+        try self.emitLabel(second_check_label);
+        const second_ready = try self.intern(try self.newTmp());
+        try self.emitOp(second_ready, .eq, .{ .reg = second_stage }, .{ .imm_i64 = 1 });
+        try self.emitBranch(second_ready, second_ready_label, second_empty_label);
+
+        try self.emitLabel(second_empty_label);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitRelease(second_ready);
+        try self.emitJmp(second_clean_label);
+
+        try self.emitLabel(second_ready_label);
+        const saved_first = try self.intern(try self.newTmp());
+        const second_value = try self.intern(try self.newTmp());
+        const result = try self.intern(try self.newTmp());
+        const second_stage_two = try self.intern(try self.newTmp());
+        const outer_stage_two = try self.intern(try self.newTmp());
+        try self.emitLoad(saved_first, ids[0], 24, .u64);
+        try self.emitLoad(second_value, second_state, 8, .u64);
+        const scalar = lowering_rules.AsyncContinuationScalarPlan{
+            .awaited_coeff = plan.scalar.second_coeff,
+            .captured_coeff = plan.scalar.first_coeff,
+            .immediate = plan.scalar.immediate,
+        };
+        try self.emitAsyncContinuationScalarValue(scalar, result, second_value, .{ saved_first, null });
+        try self.emitAssignImm(second_stage_two, 2);
+        try self.emitStore(second_state, 0, second_stage_two, .u64);
+        try self.emitAssignImm(outer_stage_two, 2);
+        try self.emitStore(ids[0], 0, outer_stage_two, .u64);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_READY", &.{
+            self.symbols.items[ids[2]],
+            self.symbols.items[result],
+        });
+        try self.emitRelease(outer_stage_two);
+        try self.emitRelease(second_stage_two);
+        try self.emitRelease(result);
+        try self.emitRelease(second_value);
+        try self.emitRelease(saved_first);
+        try self.emitRelease(second_ready);
+
+        try self.emitLabel(second_clean_label);
+        try self.emitRelease(second_initial);
+        try self.emitRelease(second_stage);
+        try self.emitRelease(second_state);
 
         try self.emitLabel(done_label);
         try self.emitRelease(done);
@@ -7765,7 +7990,10 @@ pub const Codegen = struct {
         const dst = try self.emitPlannedCallBody(lowering_rules.planStaticCallResult(self.tc, call_plan, expr_ty), try text.toOwnedSlice());
         try self.releaseNonLocalTemps(release_regs.items);
         if (maybe_func) |func| {
-            if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {
+            if (lowering_rules.planAsyncTwoAwaitContinuation(func) != null) {
+                try self.future_state_vtables.put(dst, try self.asyncTwoAwaitVTableName(call_plan.target_symbol));
+                try self.recordFutureReadiness(dst, .unknown);
+            } else if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {
                 try self.future_state_vtables.put(dst, try self.asyncSingleAwaitVTableName(call_plan.target_symbol));
                 try self.recordFutureReadiness(dst, .unknown);
             }

@@ -99,6 +99,26 @@ pub const AsyncSingleAwaitContinuationPlan = struct {
     }
 };
 
+pub const AsyncTwoAwaitScalarPlan = struct {
+    first_coeff: i64 = 1,
+    second_coeff: i64 = 1,
+    immediate: i64 = 0,
+};
+
+pub const AsyncTwoAwaitContinuationPlan = struct {
+    first_binding_name: []const u8,
+    second_binding_name: []const u8,
+    first_await_expr: *const ast.Node,
+    second_await_expr: *const ast.Node,
+    first_awaited_kind: FutureRuntimeCallKind,
+    second_awaited_kind: FutureRuntimeCallKind,
+    scalar: AsyncTwoAwaitScalarPlan = .{},
+
+    pub fn asyncStateSize(_: AsyncTwoAwaitContinuationPlan) usize {
+        return 32;
+    }
+};
+
 pub const FutureReadiness = enum {
     unknown,
     ready,
@@ -792,6 +812,134 @@ fn stmtIsPreboundAwaitState(stmt: *const ast.Node, next_stmt: *const ast.Node) b
     if (state_let.value.* != .call_expr or await_let.value.* != .await_expr) return false;
     const awaited_expr = await_let.value.await_expr.expr;
     return awaited_expr.* == .identifier and std.mem.eql(u8, awaited_expr.identifier, state_let.name);
+}
+
+const AsyncAwaitBindingShape = struct {
+    binding_name: []const u8,
+    state_expr: *const ast.Node,
+    next_idx: usize,
+};
+
+fn asyncAwaitBindingAt(func: *const ast.FuncDecl, idx: usize) ?AsyncAwaitBindingShape {
+    if (idx >= func.body.len or func.body[idx].* != .let_stmt) return null;
+    const await_let = func.body[idx].let_stmt;
+    if (await_let.value.* == .await_expr) {
+        return .{
+            .binding_name = await_let.name,
+            .state_expr = await_let.value.await_expr.expr,
+            .next_idx = idx + 1,
+        };
+    }
+    if (idx + 1 >= func.body.len or !stmtIsPreboundAwaitState(func.body[idx], func.body[idx + 1])) return null;
+    const state_let = func.body[idx].let_stmt;
+    const bound_await_let = func.body[idx + 1].let_stmt;
+    return .{
+        .binding_name = bound_await_let.name,
+        .state_expr = state_let.value,
+        .next_idx = idx + 2,
+    };
+}
+
+const AsyncTwoAwaitAddend = struct {
+    has_first: bool = false,
+    has_second: bool = false,
+    first_coeff: i64 = 0,
+    second_coeff: i64 = 0,
+    immediate: i64 = 0,
+};
+
+fn scaleAsyncTwoAwaitAddend(addend: *AsyncTwoAwaitAddend, factor: i64) bool {
+    addend.first_coeff = std.math.mul(i64, addend.first_coeff, factor) catch return false;
+    addend.second_coeff = std.math.mul(i64, addend.second_coeff, factor) catch return false;
+    addend.immediate = std.math.mul(i64, addend.immediate, factor) catch return false;
+    return true;
+}
+
+fn addAsyncTwoAwaitAddend(target: *AsyncTwoAwaitAddend, addend: AsyncTwoAwaitAddend) bool {
+    if (addend.has_first) target.has_first = true;
+    if (addend.has_second) target.has_second = true;
+    target.first_coeff = std.math.add(i64, target.first_coeff, addend.first_coeff) catch return false;
+    target.second_coeff = std.math.add(i64, target.second_coeff, addend.second_coeff) catch return false;
+    target.immediate = std.math.add(i64, target.immediate, addend.immediate) catch return false;
+    return true;
+}
+
+fn collectAsyncTwoAwaitAddend(expr: *const ast.Node, first_name: []const u8, second_name: []const u8, addend: *AsyncTwoAwaitAddend) bool {
+    switch (expr.*) {
+        .identifier => |name| {
+            if (std.mem.eql(u8, name, first_name)) {
+                addend.has_first = true;
+                addend.first_coeff = std.math.add(i64, addend.first_coeff, 1) catch return false;
+                return true;
+            }
+            if (std.mem.eql(u8, name, second_name)) {
+                addend.has_second = true;
+                addend.second_coeff = std.math.add(i64, addend.second_coeff, 1) catch return false;
+                return true;
+            }
+            return false;
+        },
+        .literal => |lit| {
+            if (lit != .int_val) return false;
+            addend.immediate = std.math.add(i64, addend.immediate, lit.int_val) catch return false;
+            return true;
+        },
+        .binary_expr => |bin| {
+            if (bin.op == .mul) {
+                const left_lit = intLiteral(bin.left);
+                const right_lit = intLiteral(bin.right);
+                if (left_lit != null and right_lit != null) return false;
+                const factor = left_lit orelse right_lit orelse return false;
+                const expr_side = if (left_lit != null) bin.right else bin.left;
+                var nested = AsyncTwoAwaitAddend{};
+                if (!collectAsyncTwoAwaitAddend(expr_side, first_name, second_name, &nested)) return false;
+                if (!scaleAsyncTwoAwaitAddend(&nested, factor)) return false;
+                return addAsyncTwoAwaitAddend(addend, nested);
+            }
+            if (!(bin.op == .add or bin.op == .sub)) return false;
+            var left = AsyncTwoAwaitAddend{};
+            var right = AsyncTwoAwaitAddend{};
+            if (!collectAsyncTwoAwaitAddend(bin.left, first_name, second_name, &left)) return false;
+            if (!collectAsyncTwoAwaitAddend(bin.right, first_name, second_name, &right)) return false;
+            if (bin.op == .sub and !scaleAsyncTwoAwaitAddend(&right, -1)) return false;
+            return addAsyncTwoAwaitAddend(addend, left) and addAsyncTwoAwaitAddend(addend, right);
+        },
+        else => return false,
+    }
+}
+
+fn asyncTwoAwaitScalarExpr(expr: *const ast.Node, first_name: []const u8, second_name: []const u8) ?AsyncTwoAwaitScalarPlan {
+    var addend = AsyncTwoAwaitAddend{};
+    if (!collectAsyncTwoAwaitAddend(expr, first_name, second_name, &addend)) return null;
+    if (!addend.has_first or !addend.has_second) return null;
+    if (addend.first_coeff == 0 or addend.second_coeff == 0) return null;
+    return .{
+        .first_coeff = addend.first_coeff,
+        .second_coeff = addend.second_coeff,
+        .immediate = addend.immediate,
+    };
+}
+
+pub fn planAsyncTwoAwaitContinuation(func: *const ast.FuncDecl) ?AsyncTwoAwaitContinuationPlan {
+    if (!func.is_async) return null;
+    const first = asyncAwaitBindingAt(func, 0) orelse return null;
+    const second = asyncAwaitBindingAt(func, first.next_idx) orelse return null;
+    if (second.next_idx + 1 != func.body.len) return null;
+    const ret_expr = asyncContinuationReturnExpr(func.body[second.next_idx]) orelse return null;
+    if (first.state_expr.* != .call_expr or second.state_expr.* != .call_expr) return null;
+    const first_call = planFutureRuntimeCall(first.state_expr.call_expr) orelse return null;
+    const second_call = planFutureRuntimeCall(second.state_expr.call_expr) orelse return null;
+    if (first_call.kind != .defer_ready or second_call.kind != .defer_ready) return null;
+    const scalar = asyncTwoAwaitScalarExpr(ret_expr, first.binding_name, second.binding_name) orelse return null;
+    return .{
+        .first_binding_name = first.binding_name,
+        .second_binding_name = second.binding_name,
+        .first_await_expr = first.state_expr,
+        .second_await_expr = second.state_expr,
+        .first_awaited_kind = first_call.kind,
+        .second_awaited_kind = second_call.kind,
+        .scalar = scalar,
+    };
 }
 
 pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleAwaitContinuationPlan {
@@ -2861,6 +3009,58 @@ test "shared async single await continuation plan recognizes parsed captured add
     try std.testing.expectEqual(@as(i64, 1), local_copy_struct_plan.scalar.awaited_coeff);
     try std.testing.expectEqual(@as(i64, 1), local_copy_struct_plan.scalar.captured_coeff);
     try std.testing.expectEqual(@as(i64, 0), local_copy_struct_plan.scalar.immediate);
+}
+
+test "shared async two await continuation plan recognizes defer-ready sequence" {
+    const parser = @import("parser.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\async fn await_two_defer_ready_values() -> i32 {
+        \\    let a = future::defer_ready(20).await;
+        \\    let b = future::defer_ready(22).await;
+        \\    return a + b;
+        \\}
+        \\async fn await_local_two_defer_ready_values() -> i32 {
+        \\    let left = future::defer_ready(20);
+        \\    let a = left.await;
+        \\    let right = future::defer_ready(22);
+        \\    let b = right.await;
+        \\    return a + b;
+        \\}
+        \\async fn await_ready_then_defer_ready_values() -> i32 {
+        \\    let a = future::ready(20).await;
+        \\    let b = future::defer_ready(22).await;
+        \\    return a + b;
+        \\}
+    ;
+    var p = parser.Parser.init(arena.allocator(), source);
+    const program = try p.parseProgram();
+    try std.testing.expect(program.* == .program);
+    try std.testing.expectEqual(@as(usize, 3), program.program.decls.len);
+
+    const direct_plan = planAsyncTwoAwaitContinuation(&program.program.decls[0].func_decl) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("a", direct_plan.first_binding_name);
+    try std.testing.expectEqualStrings("b", direct_plan.second_binding_name);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, direct_plan.first_awaited_kind);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, direct_plan.second_awaited_kind);
+    try std.testing.expectEqual(@as(usize, 32), direct_plan.asyncStateSize());
+    try std.testing.expectEqual(@as(i64, 1), direct_plan.scalar.first_coeff);
+    try std.testing.expectEqual(@as(i64, 1), direct_plan.scalar.second_coeff);
+    try std.testing.expectEqual(@as(i64, 0), direct_plan.scalar.immediate);
+
+    const local_plan = planAsyncTwoAwaitContinuation(&program.program.decls[1].func_decl) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("a", local_plan.first_binding_name);
+    try std.testing.expectEqualStrings("b", local_plan.second_binding_name);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_plan.first_awaited_kind);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_plan.second_awaited_kind);
+    try std.testing.expectEqual(@as(usize, 32), local_plan.asyncStateSize());
+    try std.testing.expectEqual(@as(i64, 1), local_plan.scalar.first_coeff);
+    try std.testing.expectEqual(@as(i64, 1), local_plan.scalar.second_coeff);
+    try std.testing.expectEqual(@as(i64, 0), local_plan.scalar.immediate);
+
+    try std.testing.expect(planAsyncTwoAwaitContinuation(&program.program.decls[2].func_decl) == null);
 }
 
 test "shared result generic inner types" {

@@ -4,7 +4,8 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## In Progress / Not Yet Counted
 
-- No active uncounted implementation slice after Phase 8D. Dev-mode rule for all future CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
+- Completed Phase 8E: two sequential `future::defer_ready(...).await` continuations now pass direct SAB no-fallback and SA-text parity for direct-call and prebound-local async functions equivalent to `let a = future::defer_ready(20).await; let b = future::defer_ready(22).await; return a + b;`. Shared `AsyncTwoAwaitContinuationPlan` in `src/lowering_rules.zig` defines stage 0 polling the first future, stage 1 polling the second future after preserving the first value at state offset 24, and stage 2 completed. Verified with focused lowering test, `zig build`, `zig build test` (72/72), local and host SA-text/direct-SAB parity for `tests/test_unit_async_defer_ready_two_await_state_machine.sla`, local and host full no-fallback sweeps 100/100, host `/home/vscode/projects/sla_ecs/lib/parallel.sla`, and disasm guards for the new fixture and parallel. Current counted baseline is 100/100.
+- Dev-mode rule for all future CLI reproduction/gates: after code changes run `sa plugin install --dev .`, then use `SA_PLUGIN_DEV=1 sa sla ...`. `./zig-out/bin/sla-local-cli` is secondary debugging evidence only and must not be reported as the primary gate.
 
 ## Completed Features
 

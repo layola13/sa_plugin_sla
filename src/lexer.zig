@@ -277,6 +277,9 @@ pub const Lexer = struct {
                         if (self.index + 1 < self.buffer.len and self.buffer[self.index + 1] == '.') {
                             break; // Range operator, stop parsing number
                         }
+                        if (self.index + 1 >= self.buffer.len or !std.ascii.isDigit(self.buffer[self.index + 1])) {
+                            break;
+                        }
                         is_float = true;
                     } else if (!std.ascii.isDigit(next_c)) {
                         break;

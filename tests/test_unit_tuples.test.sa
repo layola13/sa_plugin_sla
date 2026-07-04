@@ -8,6 +8,8 @@
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
 @const SLA_FNPTR_VT_tuple_value = vtable { call = @sla__tuple_value }
+@const SLA_FNPTR_VT_tuple_chain_value = vtable { call = @sla__tuple_chain_value }
+@const SLA_FNPTR_VT_borrowed_tuple_chain_value = vtable { call = @sla__borrowed_tuple_chain_value }
 @const SLA_FNPTR_VT_destructure_value = vtable { call = @sla__destructure_value }
 @sla__tuple_value() -> i64:
 L_ENTRY:
@@ -28,61 +30,138 @@ L_ENTRY:
     !pair
     return tmp_6
 
+@sla__tuple_chain_value() -> i64:
+L_ENTRY:
+    pair = alloc 16
+    tmp_7 = alloc 8
+    tmp_8 = 5
+    store tmp_7+0, tmp_8 as i64
+    !tmp_8
+    store pair+0, tmp_7 as ptr
+    tmp_9 = 1
+    store pair+8, tmp_9 as i64
+    tmp_10 = load pair+0 as ptr
+    tmp_11 = load tmp_10+0 as i64
+    !tmp_10
+    !pair
+    return tmp_11
+
+@sla__borrowed_tuple_chain_value() -> i64:
+L_ENTRY:
+    pair = alloc 16
+    tmp_12 = alloc 8
+    tmp_13 = 7
+    store tmp_12+0, tmp_13 as i64
+    !tmp_13
+    store pair+0, tmp_12 as ptr
+    tmp_14 = 1
+    store pair+8, tmp_14 as i64
+    tmp_15 = ptr_add pair, 0
+    tmp_16 = load tmp_15+0 as ptr
+    !tmp_15
+    tmp_17 = ptr_add tmp_16, 0
+    value = tmp_17
+    tmp_18 = load value+0 as i64
+    !pair
+    return tmp_18
+
 @sla__destructure_value() -> i64:
 L_ENTRY:
-    tmp_7 = alloc 16
-    tmp_8 = 2
-    store tmp_7+0, tmp_8 as i64
-    tmp_9 = 5
-    store tmp_7+8, tmp_9 as i64
-    x = load tmp_7+0 as i64
-    y = load tmp_7+8 as i64
-    !tmp_7
-    tmp_10 = add x, y
-    sum = tmp_10
+    tmp_19 = alloc 16
+    tmp_20 = 2
+    store tmp_19+0, tmp_20 as i64
+    tmp_21 = 5
+    store tmp_19+8, tmp_21 as i64
+    x = load tmp_19+0 as i64
+    y = load tmp_19+8 as i64
+    !tmp_19
+    tmp_22 = add x, y
+    sum = tmp_22
     !x
     !y
     return sum
 
 @test "tuple field access"():
 L_TEST_ENTRY_0:
-    tmp_11 = call @sla__tuple_value()
-    got = tmp_11
-    tmp_12 = 34
-    tmp_13 = ne got, tmp_12
-    !tmp_12
-    br tmp_13 -> L_THEN_1, L_ELSE_2
+    tmp_23 = call @sla__tuple_value()
+    got = tmp_23
+    tmp_24 = 34
+    tmp_25 = ne got, tmp_24
+    !tmp_24
+    br tmp_25 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_13
+    !tmp_25
     panic(1)
 
 L_ELSE_2:
-    !tmp_13
+    !tmp_25
     jmp L_MERGE_3
 
 L_MERGE_3:
     !got
     return
 
-@test "tuple destructuring"():
+@test "tuple field access chain"():
 L_TEST_ENTRY_4:
-    tmp_16 = call @sla__destructure_value()
-    got = tmp_16
-    tmp_17 = 7
-    tmp_18 = ne got, tmp_17
-    !tmp_17
-    br tmp_18 -> L_THEN_5, L_ELSE_6
+    tmp_28 = call @sla__tuple_chain_value()
+    got = tmp_28
+    tmp_29 = 5
+    tmp_30 = ne got, tmp_29
+    !tmp_29
+    br tmp_30 -> L_THEN_5, L_ELSE_6
 
 L_THEN_5:
-    !tmp_18
-    panic(2)
+    !tmp_30
+    panic(3)
 
 L_ELSE_6:
-    !tmp_18
+    !tmp_30
     jmp L_MERGE_7
 
 L_MERGE_7:
+    !got
+    return
+
+@test "borrowed tuple field access chain"():
+L_TEST_ENTRY_8:
+    tmp_33 = call @sla__borrowed_tuple_chain_value()
+    got = tmp_33
+    tmp_34 = 7
+    tmp_35 = ne got, tmp_34
+    !tmp_34
+    br tmp_35 -> L_THEN_9, L_ELSE_10
+
+L_THEN_9:
+    !tmp_35
+    panic(4)
+
+L_ELSE_10:
+    !tmp_35
+    jmp L_MERGE_11
+
+L_MERGE_11:
+    !got
+    return
+
+@test "tuple destructuring"():
+L_TEST_ENTRY_12:
+    tmp_38 = call @sla__destructure_value()
+    got = tmp_38
+    tmp_39 = 7
+    tmp_40 = ne got, tmp_39
+    !tmp_39
+    br tmp_40 -> L_THEN_13, L_ELSE_14
+
+L_THEN_13:
+    !tmp_40
+    panic(2)
+
+L_ELSE_14:
+    !tmp_40
+    jmp L_MERGE_15
+
+L_MERGE_15:
     !got
     return
 

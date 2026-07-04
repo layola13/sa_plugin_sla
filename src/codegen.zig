@@ -1431,6 +1431,11 @@ pub const Codegen = struct {
         ty_str: []const u8,
     };
 
+    const AddressProjection = struct {
+        ptr: []const u8,
+        source_temp: ?[]const u8 = null,
+    };
+
     fn typeSize(ty: *const ast.Type) usize {
         return lowering_rules.abiTypeSize(ty);
     }
@@ -8976,6 +8981,59 @@ pub const Codegen = struct {
         };
     }
 
+    fn fieldAddressLayout(self: *Codegen, target_ty: *const ast.Type, field_name: []const u8) CodegenError!FieldLayout {
+        var curr_ty = target_ty;
+        while (true) {
+            switch (curr_ty.*) {
+                .pointer => |p| curr_ty = p,
+                .borrow => |b| curr_ty = b,
+                else => break,
+            }
+        }
+        if (curr_ty.* == .tuple) {
+            const index = std.fmt.parseInt(usize, field_name, 10) catch return CodegenError.CodegenError;
+            return tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
+        }
+        if (curr_ty.* != .user_defined) return CodegenError.CodegenError;
+        return self.fieldLayoutForType(curr_ty, field_name) orelse return CodegenError.CodegenError;
+    }
+
+    fn rememberAddressProjectionSource(self: *Codegen, projection: AddressProjection) CodegenError!void {
+        if (projection.source_temp) |source_temp| {
+            self.borrow_source_temps.put(projection.ptr, source_temp) catch return CodegenError.OutOfMemory;
+        }
+    }
+
+    fn genFieldAddress(
+        self: *Codegen,
+        field: *const ast.FieldExpr,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!AddressProjection {
+        const expr_ty = self.tc.expr_types.get(field.expr) orelse return CodegenError.CodegenError;
+        const layout = try self.fieldAddressLayout(expr_ty, field.field_name);
+        const base = if (field.expr.* == .field_expr) blk: {
+            const nested = try self.genFieldAddress(&field.expr.field_expr, hoisted_allocs);
+            const nested_ty = self.tc.expr_types.get(field.expr) orelse return CodegenError.CodegenError;
+            if (std.mem.eql(u8, typeString(nested_ty), "ptr")) {
+                const loaded = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ loaded, nested.ptr }) catch return CodegenError.CodegenError;
+                try self.emitRelease(nested.ptr);
+                if (nested.source_temp) |source_temp| {
+                    self.borrow_source_temps.put(loaded, source_temp) catch return CodegenError.OutOfMemory;
+                }
+                break :blk loaded;
+            }
+            try self.rememberAddressProjectionSource(nested);
+            break :blk nested.ptr;
+        } else try self.genExpr(field.expr, hoisted_allocs);
+        const ptr = try self.newTmp();
+        self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ ptr, base, layout.offset }) catch return CodegenError.CodegenError;
+        return .{
+            .ptr = ptr,
+            .source_temp = if (field.expr.* == .field_expr or exprResultNeedsRelease(field.expr)) base else null,
+        };
+    }
+
     fn genIndexAssign(
         self: *Codegen,
         idx: *const ast.IndexExpr,
@@ -9648,6 +9706,11 @@ pub const Codegen = struct {
             .borrow_expr => |borrow| {
                 if (borrow.expr.* == .identifier and self.addressable_bindings.contains(borrow.expr.identifier)) {
                     return borrow.expr.identifier;
+                }
+                if (borrow.expr.* == .field_expr) {
+                    const projection = try self.genFieldAddress(&borrow.expr.field_expr, hoisted_allocs);
+                    try self.rememberAddressProjectionSource(projection);
+                    return projection.ptr;
                 }
                 const inner = try self.genExpr(borrow.expr, hoisted_allocs);
                 if (borrow.expr.* == .deref_expr) {

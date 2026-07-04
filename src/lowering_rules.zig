@@ -28,6 +28,31 @@ pub const StaticCallResultPlan = struct {
     returns_void: bool,
 };
 
+pub const AddressOfShape = enum {
+    identifier,
+    deref_borrow_or_pointer,
+    field,
+    index,
+    value_temp,
+};
+
+pub const AddressOfInput = struct {
+    deref_source_ty: ?*const ast.Type = null,
+    index_is_ordinary_addressable: bool = false,
+};
+
+pub const AddressOfPlan = struct {
+    shape: AddressOfShape,
+};
+
+fn plainBorrowOrPointerAddressSource(ty: *const ast.Type) bool {
+    switch (ty.*) {
+        .borrow, .pointer => {},
+        else => return false,
+    }
+    return smartPointerType(ty) == null;
+}
+
 pub const AsyncReturnPlan = struct {
     abi_ret_ty: *const ast.Type,
     wrap_ready_future: bool,
@@ -2156,6 +2181,19 @@ pub fn resolveStaticCallSymbol(tc: *type_checker.TypeChecker, expr: *const ast.N
     return plan.target_symbol;
 }
 
+pub fn planAddressOf(expr: *const ast.Node, input: AddressOfInput) AddressOfPlan {
+    return .{ .shape = switch (expr.*) {
+        .identifier => .identifier,
+        .deref_expr => blk: {
+            const source_ty = input.deref_source_ty orelse break :blk .value_temp;
+            break :blk if (plainBorrowOrPointerAddressSource(source_ty)) .deref_borrow_or_pointer else .value_temp;
+        },
+        .field_expr => .field,
+        .index_expr => if (input.index_is_ordinary_addressable) .index else .value_temp,
+        else => .value_temp,
+    } };
+}
+
 pub fn callArgPrefix(arg: *const ast.Node) ?u8 {
     return switch (arg.*) {
         .borrow_expr => '&',
@@ -2320,6 +2358,38 @@ test "shared lowering rules normalize derives and call argument prefixes" {
     const moved_ident = prefixedIdentifierCallArg(&moved) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(u8, '^'), moved_ident.prefix);
     try std.testing.expectEqualSlices(u8, "value", moved_ident.name);
+}
+
+test "shared lowering rules classify address-of shapes" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var borrow_i32_ty = ast.Type{ .borrow = &i32_ty };
+    var pointer_i32_ty = ast.Type{ .pointer = &i32_ty };
+    var box_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = &.{} } };
+    const box_generics = [_]*ast.Type{&i32_ty};
+    var box_i32_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = box_generics[0..] } };
+    var borrow_box_i32_ty = ast.Type{ .borrow = &box_i32_ty };
+    var pointer_box_i32_ty = ast.Type{ .pointer = &box_i32_ty };
+    const refcell_generics = [_]*ast.Type{&i32_ty};
+    var refcell_i32_ty = ast.Type{ .user_defined = .{ .name = "RefCell", .generics = refcell_generics[0..] } };
+    var borrow_refcell_i32_ty = ast.Type{ .borrow = &refcell_i32_ty };
+
+    var value = ast.Node{ .identifier = "value" };
+    var deref_value = ast.Node{ .deref_expr = .{ .expr = &value } };
+    var field_value = ast.Node{ .field_expr = .{ .expr = &value, .field_name = "field" } };
+    var zero = ast.Node{ .literal = .{ .int_val = 0 } };
+    var index_value = ast.Node{ .index_expr = .{ .target = &value, .index = &zero } };
+
+    try std.testing.expectEqual(AddressOfShape.identifier, planAddressOf(&value, .{}).shape);
+    try std.testing.expectEqual(AddressOfShape.deref_borrow_or_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.deref_borrow_or_pointer, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &box_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_box_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_box_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_refcell_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.field, planAddressOf(&field_value, .{}).shape);
+    try std.testing.expectEqual(AddressOfShape.index, planAddressOf(&index_value, .{ .index_is_ordinary_addressable = true }).shape);
+    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&index_value, .{ .index_is_ordinary_addressable = false }).shape);
+    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&zero, .{}).shape);
 }
 
 test "shared loop control plan detects only current loop jumps" {

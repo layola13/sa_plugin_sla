@@ -1436,6 +1436,14 @@ pub const Codegen = struct {
         source_temp: ?[]const u8 = null,
     };
 
+    const IndexAddress = struct {
+        ptr: []const u8,
+        elem_ty: *ast.Type,
+        base_tmp: ?[]const u8,
+        base_reg: []const u8,
+        release_base_reg: bool,
+    };
+
     fn typeSize(ty: *const ast.Type) usize {
         return lowering_rules.abiTypeSize(ty);
     }
@@ -8961,7 +8969,7 @@ pub const Codegen = struct {
         self: *Codegen,
         idx: *const ast.IndexExpr,
         hoisted_allocs: *const std.ArrayList([]const u8),
-    ) CodegenError!struct { ptr: []const u8, elem_ty: *ast.Type, base_tmp: ?[]const u8, base_reg: []const u8, release_base_reg: bool } {
+    ) CodegenError!IndexAddress {
         const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
 
         if (sliceElementType(target_ty)) |elem_ty| {
@@ -9030,6 +9038,14 @@ pub const Codegen = struct {
     fn rememberAddressProjectionSource(self: *Codegen, projection: AddressProjection) CodegenError!void {
         if (projection.source_temp) |source_temp| {
             self.borrow_source_temps.put(projection.ptr, source_temp) catch return CodegenError.OutOfMemory;
+        }
+    }
+
+    fn rememberIndexAddressSource(self: *Codegen, address: IndexAddress) CodegenError!void {
+        if (address.base_tmp) |base_tmp| {
+            self.borrow_source_temps.put(address.ptr, base_tmp) catch return CodegenError.OutOfMemory;
+        } else if (address.release_base_reg) {
+            self.borrow_source_temps.put(address.ptr, address.base_reg) catch return CodegenError.OutOfMemory;
         }
     }
 
@@ -9733,30 +9749,48 @@ pub const Codegen = struct {
                 return reg;
             },
             .borrow_expr => |borrow| {
-                if (borrow.expr.* == .identifier and self.addressable_bindings.contains(borrow.expr.identifier)) {
-                    const addr = try self.newTmp();
-                    self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, borrow.expr.identifier }) catch return CodegenError.CodegenError;
-                    return addr;
+                var deref_source_ty: ?*const ast.Type = null;
+                var index_is_ordinary_addressable = false;
+                switch (borrow.expr.*) {
+                    .deref_expr => deref_source_ty = self.tc.expr_types.get(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError,
+                    .index_expr => |idx| {
+                        const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
+                        index_is_ordinary_addressable = arrayType(target_ty) != null or sliceElementType(target_ty) != null;
+                    },
+                    else => {},
                 }
-                if (borrow.expr.* == .deref_expr) {
-                    const source_ty = self.tc.expr_types.get(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError;
-                    switch (source_ty.*) {
-                        .borrow, .pointer => {
-                            const source = try self.genExpr(borrow.expr.deref_expr.expr, hoisted_allocs);
+                const address_plan = lowering_rules.planAddressOf(borrow.expr, .{
+                    .deref_source_ty = deref_source_ty,
+                    .index_is_ordinary_addressable = index_is_ordinary_addressable,
+                });
+                switch (address_plan.shape) {
+                    .identifier => {
+                        if (borrow.expr.* == .identifier and self.addressable_bindings.contains(borrow.expr.identifier)) {
                             const addr = try self.newTmp();
-                            self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
-                            if (exprResultNeedsRelease(borrow.expr.deref_expr.expr)) {
-                                self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
-                            }
+                            self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, borrow.expr.identifier }) catch return CodegenError.CodegenError;
                             return addr;
-                        },
-                        else => {},
-                    }
-                }
-                if (borrow.expr.* == .field_expr) {
-                    const projection = try self.genFieldAddress(&borrow.expr.field_expr, hoisted_allocs);
-                    try self.rememberAddressProjectionSource(projection);
-                    return projection.ptr;
+                        }
+                    },
+                    .deref_borrow_or_pointer => {
+                        const source = try self.genExpr(borrow.expr.deref_expr.expr, hoisted_allocs);
+                        const addr = try self.newTmp();
+                        self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
+                        if (exprResultNeedsRelease(borrow.expr.deref_expr.expr)) {
+                            self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
+                        }
+                        return addr;
+                    },
+                    .field => {
+                        const projection = try self.genFieldAddress(&borrow.expr.field_expr, hoisted_allocs);
+                        try self.rememberAddressProjectionSource(projection);
+                        return projection.ptr;
+                    },
+                    .index => {
+                        const address = try self.genIndexAddress(&borrow.expr.index_expr, hoisted_allocs);
+                        try self.rememberIndexAddressSource(address);
+                        return address.ptr;
+                    },
+                    .value_temp => {},
                 }
                 const inner = try self.genExpr(borrow.expr, hoisted_allocs);
                 if (borrow.expr.* == .deref_expr) {

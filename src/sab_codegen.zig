@@ -7324,13 +7324,39 @@ pub const Codegen = struct {
     }
 
     fn genAddressOf(self: *Codegen, expr: *ast.Node) anyerror!AddressSource {
-        return switch (expr.*) {
-            .identifier => |name| blk: {
+        var deref_source_ty: ?*const ast.Type = null;
+        var index_is_ordinary_addressable = false;
+        switch (expr.*) {
+            .deref_expr => |deref| deref_source_ty = self.tc.expr_types.get(deref.expr) orelse return Error.MissingType,
+            .index_expr => index_is_ordinary_addressable = true,
+            else => {},
+        }
+        const address_plan = lowering_rules.planAddressOf(expr, .{
+            .deref_source_ty = deref_source_ty,
+            .index_is_ordinary_addressable = index_is_ordinary_addressable,
+        });
+        return switch (address_plan.shape) {
+            .identifier => blk: {
+                const name = if (expr.* == .identifier) expr.identifier else return Error.UnsupportedSabDirectFeature;
                 if (self.stackLocal(name)) |slot| break :blk .{ .reg = slot.reg };
                 break :blk .{ .reg = try self.genExpr(expr) };
             },
-            .deref_expr => |deref| blk: {
-                const source_ty = self.tc.expr_types.get(deref.expr) orelse return Error.MissingType;
+            .deref_borrow_or_pointer => blk: {
+                const source = try self.genExpr(expr.deref_expr.expr);
+                break :blk .{ .reg = source };
+            },
+            .field => blk: {
+                if (expr.* != .field_expr) return Error.UnsupportedSabDirectFeature;
+                break :blk try self.genFieldAddress(expr.field_expr);
+            },
+            .index => blk: {
+                if (expr.* != .index_expr) return Error.UnsupportedSabDirectFeature;
+                break :blk try self.genIndexAddress(expr.index_expr);
+            },
+            .value_temp => blk: {
+                if (expr.* != .deref_expr) break :blk .{ .reg = try self.genExpr(expr) };
+                const deref = expr.deref_expr;
+                const source_ty = deref_source_ty orelse return Error.MissingType;
                 const source = try self.genExpr(deref.expr);
                 if (try self.genSmartPointerAddressSource(source_ty, source)) |address| break :blk address;
                 if (try self.genSmartPointerValueSlot(source_ty, source)) |slot| {
@@ -7343,9 +7369,6 @@ pub const Codegen = struct {
                 }
                 break :blk .{ .reg = source };
             },
-            .field_expr => |field| try self.genFieldAddress(field),
-            .index_expr => |idx| try self.genIndexAddress(idx),
-            else => .{ .reg = try self.genExpr(expr) },
         };
     }
 

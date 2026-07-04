@@ -4245,24 +4245,69 @@ pub const Codegen = struct {
 
         try self.emitLabel(ready_label);
         const value = try self.intern(try self.newTmp());
-        const result = if (plan.resultBindingName()) |binding_name| try self.intern(binding_name) else if (plan.hasCapturedAddend()) try self.intern(try self.newTmp()) else if (plan.addend == 0) value else try self.intern(try self.newTmp());
+        const scalar = plan.scalar;
+        const result = if (plan.resultBindingName()) |binding_name| try self.intern(binding_name) else if (scalar.isIdentity()) value else try self.intern(try self.newTmp());
         const captured_addend = if (plan.hasCapturedAddend()) try self.intern(try self.newTmp()) else null;
-        const captured_sum = if (plan.hasCapturedAddend() and plan.addend != 0) try self.intern(try self.newTmp()) else null;
         const stage_one = try self.intern(try self.newTmp());
         const inner_stage_two = try self.intern(try self.newTmp());
         try self.emitLoad(value, inner_state, 8, .u64);
+        var current = value;
+        var awaited_abs: ?u32 = null;
+        var awaited_scaled: ?u32 = null;
+        if (scalar.awaited_coeff != 1) {
+            if (scalar.awaited_coeff == -1) {
+                const scaled = try self.intern(try self.newTmp());
+                try self.emitOp(scaled, .sub, .{ .imm_i64 = 0 }, .{ .reg = value });
+                current = scaled;
+                awaited_scaled = scaled;
+            } else {
+                const abs_coeff = if (scalar.awaited_coeff < 0) -scalar.awaited_coeff else scalar.awaited_coeff;
+                const abs_reg = try self.intern(try self.newTmp());
+                try self.emitOp(abs_reg, .mul, .{ .reg = value }, .{ .imm_i64 = abs_coeff });
+                awaited_abs = abs_reg;
+                if (scalar.awaited_coeff < 0) {
+                    const scaled = try self.intern(try self.newTmp());
+                    try self.emitOp(scaled, .sub, .{ .imm_i64 = 0 }, .{ .reg = abs_reg });
+                    current = scaled;
+                    awaited_scaled = scaled;
+                } else {
+                    current = abs_reg;
+                }
+            }
+        }
+        var captured_scaled: ?u32 = null;
+        var expr_sum: ?u32 = null;
         if (captured_addend) |addend_reg| {
             try self.emitLoad(addend_reg, ids[0], 16, .u64);
-            if (captured_sum) |sum_reg| {
-                try self.emitOp(sum_reg, .add, .{ .reg = value }, .{ .reg = addend_reg });
-                try self.emitOp(result, .add, .{ .reg = sum_reg }, .{ .imm_i64 = plan.addend });
-            } else {
-                try self.emitOp(result, .add, .{ .reg = value }, .{ .reg = addend_reg });
+            if (scalar.captured_coeff != 0) {
+                const abs_coeff = if (scalar.captured_coeff < 0) -scalar.captured_coeff else scalar.captured_coeff;
+                const captured_term = if (abs_coeff == 1) addend_reg else blk: {
+                    const scaled = try self.intern(try self.newTmp());
+                    try self.emitOp(scaled, .mul, .{ .reg = addend_reg }, .{ .imm_i64 = abs_coeff });
+                    captured_scaled = scaled;
+                    break :blk scaled;
+                };
+                const sum_dest = if (scalar.immediate == 0) result else try self.intern(try self.newTmp());
+                if (scalar.captured_coeff < 0) {
+                    try self.emitOp(sum_dest, .sub, .{ .reg = current }, .{ .reg = captured_term });
+                } else {
+                    try self.emitOp(sum_dest, .add, .{ .reg = current }, .{ .reg = captured_term });
+                }
+                current = sum_dest;
+                if (scalar.immediate != 0) expr_sum = sum_dest;
             }
-        } else if (plan.resultBindingName() != null and plan.addend == 0) {
-            try self.emitAssignReg(result, value);
-        } else if (plan.addend != 0) {
-            try self.emitOp(result, .add, .{ .reg = value }, .{ .imm_i64 = plan.addend });
+        }
+        if (scalar.immediate != 0) {
+            const abs_imm = if (scalar.immediate < 0) -scalar.immediate else scalar.immediate;
+            if (scalar.immediate < 0) {
+                try self.emitOp(result, .sub, .{ .reg = current }, .{ .imm_i64 = abs_imm });
+            } else {
+                try self.emitOp(result, .add, .{ .reg = current }, .{ .imm_i64 = abs_imm });
+            }
+            current = result;
+        }
+        if (current != result) {
+            try self.emitAssignReg(result, current);
         }
         try self.emitAssignImm(inner_stage_two, 2);
         try self.emitStore(inner_state, 0, inner_stage_two, .u64);
@@ -4275,7 +4320,10 @@ pub const Codegen = struct {
         try self.emitRelease(inner_stage_two);
         try self.emitRelease(stage_one);
         if (result != value) try self.emitRelease(result);
-        if (captured_sum) |sum_reg| try self.emitRelease(sum_reg);
+        if (expr_sum) |sum_reg| try self.emitRelease(sum_reg);
+        if (captured_scaled) |scaled_reg| try self.emitRelease(scaled_reg);
+        if (awaited_scaled) |scaled_reg| try self.emitRelease(scaled_reg);
+        if (awaited_abs) |abs_reg| try self.emitRelease(abs_reg);
         if (captured_addend) |addend_reg| try self.emitRelease(addend_reg);
         try self.emitRelease(value);
         try self.emitRelease(inner_ready);

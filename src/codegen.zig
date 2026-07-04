@@ -1070,8 +1070,22 @@ pub const Codegen = struct {
                 if (isVoidType(func.ret_ty)) {
                     var arg_regs = std.ArrayList([]const u8).init(self.allocator);
                     defer arg_regs.deinit();
-                    for (call.args) |arg| {
-                        arg_regs.append(try self.genCallArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    defer arg_release_regs.deinit();
+                    for (call.args, 0..) |arg, i| {
+                        if (i < func.params.len) {
+                            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                                .param = func.params[i],
+                                .arg_index = i,
+                                .statement_receiver_auto_borrow = i == 0,
+                            });
+                            arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
+                            arg_release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
+                            continue;
+                        }
+                        const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
+                        arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
+                        arg_release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
                     }
                     const lowered_method = try self.loweredFuncSymbol(method_key);
                     defer self.allocator.free(lowered_method);
@@ -1081,8 +1095,8 @@ pub const Codegen = struct {
                         self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
                     }
                     self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
-                    for (call.args, arg_regs.items) |arg, arg_reg| {
-                        if (callArgNeedsRelease(arg)) try self.emitRelease(arg_reg);
+                    for (arg_release_regs.items) |release_reg| {
+                        if (release_reg) |arg_reg| try self.emitRelease(arg_reg);
                     }
                     return;
                 }
@@ -1145,7 +1159,19 @@ pub const Codegen = struct {
         defer arg_regs.deinit();
         var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
         defer arg_release_regs.deinit();
-        for (call.args) |arg| {
+        const maybe_func = self.tc.funcs.get(call.func_name);
+        for (call.args, 0..) |arg, i| {
+            if (maybe_func) |func| {
+                if (i < func.params.len) {
+                    const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                        .param = func.params[i],
+                        .arg_index = i,
+                    });
+                    arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
+                    arg_release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
+                    continue;
+                }
+            }
             const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
             arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
             arg_release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
@@ -7408,6 +7434,12 @@ pub const Codegen = struct {
                 break :blk .{ .reg = copied, .release_after_call = materialization.release_after_call };
             },
             .value => blk: {
+                if (param) |target_param| {
+                    if (lowering_rules.callArgUsesRawPointerStringLiteralValue(arg, target_param)) {
+                        const ptr_reg = try self.genRawPointerStringLiteralArg(arg.literal.string_val);
+                        break :blk .{ .reg = ptr_reg, .release_after_call = true };
+                    }
+                }
                 if (arg.* == .borrow_expr and arg.borrow_expr.expr.* == .identifier and self.addressable_bindings.contains(arg.borrow_expr.expr.identifier)) {
                     const addr_reg = try self.genExpr(arg, hoisted_allocs);
                     const call_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{addr_reg}) catch return CodegenError.OutOfMemory;
@@ -7507,16 +7539,71 @@ pub const Codegen = struct {
         return reg;
     }
 
+    fn importedMacroExistingAddressableSymbol(self: *Codegen, arg: *const ast.Node) ?[]const u8 {
+        if (arg.* != .identifier) return null;
+        const resolved_name = self.resolveBindingName(arg.identifier);
+        if (self.stack_alloc_bindings.contains(resolved_name)) return resolved_name;
+        return null;
+    }
+
+    fn importedMacroArgAddressShape(self: *Codegen, arg: *const ast.Node) CodegenError!lowering_rules.AddressOfShape {
+        var deref_source_ty: ?*const ast.Type = null;
+        var index_target_ty: ?*const ast.Type = null;
+        switch (arg.*) {
+            .deref_expr => deref_source_ty = self.tc.expr_types.get(arg.deref_expr.expr) orelse return CodegenError.CodegenError,
+            .index_expr => |idx| index_target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError,
+            else => {},
+        }
+        return lowering_rules.planAddressOf(arg, .{
+            .deref_source_ty = deref_source_ty,
+            .index_target_ty = index_target_ty,
+        }).shape;
+    }
+
+    fn genImportedMacroMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+        const value_reg = try self.genExpr(arg, hoisted_allocs);
+        const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+        const slot = try self.newTmp();
+        self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
+        self.out.writer().print("    {s} = stack_alloc {}\n", .{ slot, typeSize(arg_ty) }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ slot, value_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+        if (callArgNeedsRelease(arg)) try self.emitRelease(value_reg);
+        return .{ .reg = slot, .release_after_call = false };
+    }
+
+    fn genImportedMacroArg(
+        self: *Codegen,
+        plan: lowering_rules.ImportedMacroCallPlan,
+        call_arg_index: usize,
+        arg: *ast.Node,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!LoweredCallArg {
+        const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+        if (plan.callArgNeedsAddressableSlot(call_arg_index) and lowering_rules.importedMacroArgUsesRawPointerValue(arg, arg_ty)) {
+            return .{ .reg = try self.genExpr(arg, hoisted_allocs), .release_after_call = callArgNeedsRelease(arg) };
+        }
+        const existing_symbol = self.importedMacroExistingAddressableSymbol(arg);
+        const address_shape: lowering_rules.AddressOfShape = if (plan.callArgNeedsAddressableSlot(call_arg_index))
+            try self.importedMacroArgAddressShape(arg)
+        else
+            .value_temp;
+        switch (plan.planAddressExpressionArgAction(call_arg_index, address_shape, existing_symbol != null)) {
+            .pass_value => return .{ .reg = try self.genExpr(arg, hoisted_allocs), .release_after_call = callArgNeedsRelease(arg) },
+            .reuse_existing_addressable => return .{ .reg = existing_symbol.?, .release_after_call = false },
+            .materialize_stack_slot, .materialize_address_expression_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, hoisted_allocs),
+        }
+    }
+
     fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
         const reg = if (plan.expression_output) try self.newTmp() else "return_ty_sentinel";
         var arg_regs = std.ArrayList([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        for (call.args) |arg| {
-            // Imported std macros want the lowered expression register form.
-            // The by-reference call shorthand like `&name` is only valid for
-            // normal function ABI lowering, not for raw macro expansion.
-            const arg_reg = try self.genExpr(arg, hoisted_allocs);
-            try arg_regs.append(arg_reg);
+        var release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        defer release_regs.deinit();
+        for (call.args, 0..) |arg, i| {
+            const lowered_arg = try self.genImportedMacroArg(plan, i, arg, hoisted_allocs);
+            try arg_regs.append(lowered_arg.reg);
+            release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
         }
 
         self.out.writer().print("    EXPAND {s}", .{plan.macro_name}) catch return CodegenError.CodegenError;
@@ -7532,8 +7619,8 @@ pub const Codegen = struct {
         }
         self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
 
-        for (call.args, arg_regs.items) |arg, arg_reg| {
-            if (callArgNeedsRelease(arg)) try self.emitRelease(arg_reg);
+        for (release_regs.items) |release_reg| {
+            if (release_reg) |arg_reg| try self.emitRelease(arg_reg);
         }
 
         return reg;
@@ -7582,6 +7669,14 @@ pub const Codegen = struct {
         self.string_buf_bindings.put(string_reg, {}) catch return CodegenError.OutOfMemory;
         self.out.writer().print("    EXPAND STRING_BUF_FROM_UTF8_UNCHECKED {s}, {s}\n", .{ string_reg, bytes_reg }) catch return CodegenError.CodegenError;
         return string_reg;
+    }
+
+    fn genRawPointerStringLiteralArg(self: *Codegen, value: []const u8) CodegenError![]const u8 {
+        const label = try self.newStringConst();
+        self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
+        const ptr_reg = try self.newTmp();
+        self.out.writer().print("    {s} = &{s}\n", .{ ptr_reg, label }) catch return CodegenError.CodegenError;
+        return ptr_reg;
     }
 
     fn callArgNeedsRelease(arg: *const ast.Node) bool {

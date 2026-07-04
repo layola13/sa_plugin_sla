@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const contract_parser = @import("contract_parser.zig");
 const type_checker = @import("type_checker.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const sci_bridge = @import("sci_bridge");
@@ -18,6 +19,7 @@ pub const Error = error{
     UnsupportedSabDirectFeature,
     MissingType,
     OutOfMemory,
+    InvalidStringLiteral,
 };
 
 const Local = struct {
@@ -579,20 +581,73 @@ pub const Codegen = struct {
         return name;
     }
 
-    fn escapedStringByteLen(value: []const u8) usize {
-        var len: usize = 0;
-        var i: usize = 0;
-        while (i < value.len) : (i += 1) {
-            if (value[i] == '\\' and i + 1 < value.len) i += 1;
-            len += 1;
-        }
-        return len;
+    fn parseHexDigitPair(text: []const u8) !u8 {
+        if (text.len != 2) return Error.InvalidStringLiteral;
+        const hi = std.fmt.charToDigit(text[0], 16) catch return Error.InvalidStringLiteral;
+        const lo = std.fmt.charToDigit(text[1], 16) catch return Error.InvalidStringLiteral;
+        return @as(u8, @intCast((hi << 4) | lo));
     }
 
-    fn appendUtf8Const(self: *Codegen, name: []const u8, value: []const u8) !void {
+    fn decodeStringLiteralBytes(self: *Codegen, value: []const u8) ![]u8 {
+        var out = std.ArrayList(u8).init(self.allocator);
+        errdefer out.deinit();
+
+        var i: usize = 0;
+        while (i < value.len) {
+            const c = value[i];
+            if (c != '\\') {
+                try out.append(c);
+                i += 1;
+                continue;
+            }
+            if (i + 1 >= value.len) return Error.InvalidStringLiteral;
+            switch (value[i + 1]) {
+                '\\' => try out.append('\\'),
+                '"' => try out.append('"'),
+                'n' => try out.append('\n'),
+                'r' => try out.append('\r'),
+                't' => try out.append('\t'),
+                '0' => try out.append(0),
+                'x' => {
+                    if (i + 3 >= value.len) return Error.InvalidStringLiteral;
+                    try out.append(try parseHexDigitPair(value[i + 2 .. i + 4]));
+                    i += 4;
+                    continue;
+                },
+                else => return Error.InvalidStringLiteral,
+            }
+            i += 2;
+        }
+        return out.toOwnedSlice();
+    }
+
+    fn escapedUtf8LiteralBytes(self: *Codegen, bytes: []const u8) ![]u8 {
+        var out = std.ArrayList(u8).init(self.allocator);
+        errdefer out.deinit();
+
+        for (bytes) |b| switch (b) {
+            '\\' => try out.appendSlice("\\\\"),
+            '"' => try out.appendSlice("\\\""),
+            '\n' => try out.appendSlice("\\n"),
+            '\r' => try out.appendSlice("\\r"),
+            '\t' => try out.appendSlice("\\t"),
+            0 => try out.appendSlice("\\0"),
+            else => if (std.ascii.isPrint(b)) {
+                try out.append(b);
+            } else {
+                try out.writer().print("\\x{X:0>2}", .{b});
+            },
+        };
+
+        return out.toOwnedSlice();
+    }
+
+    fn appendUtf8Const(self: *Codegen, name: []const u8, bytes: []const u8) !void {
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
-        const literal_text = try std.fmt.allocPrint(self.allocator, "utf8:\"{s}\"", .{value});
+        const escaped = try self.escapedUtf8LiteralBytes(bytes);
+        defer self.allocator.free(escaped);
+        const literal_text = try std.fmt.allocPrint(self.allocator, "utf8:\"{s}\"", .{escaped});
         errdefer self.allocator.free(literal_text);
         const raw_text = try std.fmt.allocPrint(self.allocator, "@const {s} = {s}", .{ name, literal_text });
         errdefer self.allocator.free(raw_text);
@@ -605,7 +660,7 @@ pub const Codegen = struct {
             .literal_text = literal_text,
             .value = .{ .utf8 = .{
                 .kind = .utf8,
-                .bytes = try self.allocator.dupe(u8, value),
+                .bytes = try self.allocator.dupe(u8, bytes),
             } },
         });
         _ = try self.intern(name);
@@ -1760,7 +1815,7 @@ pub const Codegen = struct {
             return;
         }
         const value = try self.intern(try self.newTmp());
-        try self.emitLoad(value, local.reg, 0, try primType(ty));
+        try self.emitLoad(value, local.reg, 0, try storagePrimType(ty));
         try self.emitRelease(value);
         try self.markConsumed(local.reg);
     }
@@ -3291,6 +3346,24 @@ pub const Codegen = struct {
         };
     }
 
+    fn returnCapForType(ty: *const ast.Type) ?inst.CapPrefix {
+        return switch (ty.*) {
+            .borrow => .borrow,
+            else => null,
+        };
+    }
+
+    fn abiReturnCap(raw: []const u8) ?inst.CapPrefix {
+        const name = std.mem.trim(u8, raw, " \t\r");
+        if (name.len == 0) return null;
+        return switch (name[0]) {
+            '&' => .borrow,
+            '^' => .move,
+            '*' => .raw,
+            else => null,
+        };
+    }
+
     fn oneGeneratedParam(self: *Codegen, name: []const u8, cap: inst.CapPrefix) !struct { specs: []const sig.ParamSpec, ids: []const u32, id: u32 } {
         const param_id = try self.intern(name);
         const specs = try self.allocator.alloc(sig.ParamSpec, 1);
@@ -3594,7 +3667,7 @@ pub const Codegen = struct {
             .name = lowered,
             .params = specs,
             .kind = kind,
-            .return_cap = null,
+            .return_cap = returnCapForType(ret_ty),
             .return_ty = if (is_async) .ptr else try primType(ret_ty),
             .entry_inst_idx = @intCast(self.instructions.items.len),
             .is_ffi_wrapper = false,
@@ -3837,7 +3910,7 @@ pub const Codegen = struct {
 
     fn abiPrimType(raw: []const u8) sig.PrimType {
         var name = std.mem.trim(u8, raw, " \t\r");
-        if (name.len > 0 and (name[0] == '&' or name[0] == '^')) name = std.mem.trim(u8, name[1..], " \t\r");
+        if (name.len > 0 and (name[0] == '&' or name[0] == '^' or name[0] == '*')) name = std.mem.trim(u8, name[1..], " \t\r");
         if (std.mem.endsWith(u8, name, "!")) name = std.mem.trim(u8, name[0 .. name.len - 1], " \t\r");
         if (std.mem.eql(u8, name, "ptr")) return .ptr;
         if (std.mem.eql(u8, name, "bool")) return .i1;
@@ -3883,7 +3956,7 @@ pub const Codegen = struct {
             .name = lowered,
             .params = specs,
             .kind = .external,
-            .return_cap = null,
+            .return_cap = abiReturnCap(ext.ret_ty),
             .return_ty = abiPrimType(ext.ret_ty),
             .return_fallible = ext.return_fallible,
             .entry_inst_idx = @intCast(entry_inst_idx),
@@ -6436,7 +6509,7 @@ pub const Codegen = struct {
                 if (self.stackLocal(name)) |slot| {
                     const ty = slot.stack_ty orelse return Error.UnsupportedSabDirectFeature;
                     const dst = try self.intern(try self.newTmp());
-                    try self.emitLoad(dst, slot.reg, 0, try primType(ty));
+                    try self.emitLoad(dst, slot.reg, 0, try storagePrimType(ty));
                     break :blk dst;
                 }
                 if (self.exprHasFnPtrType(expr) and self.tc.funcs.contains(name)) {
@@ -6504,10 +6577,12 @@ pub const Codegen = struct {
 
     fn genStringLiteral(self: *Codegen, value: []const u8) anyerror!u32 {
         const label = try self.newStringConst();
-        try self.appendUtf8Const(label, value);
+        const bytes = try self.decodeStringLiteralBytes(value);
+        defer self.allocator.free(bytes);
+        try self.appendUtf8Const(label, bytes);
 
         const len_reg = try self.intern(try self.newTmp());
-        try self.emitAssignImm(len_reg, @intCast(escapedStringByteLen(value)));
+        try self.emitAssignImm(len_reg, @intCast(bytes.len));
 
         const slice_reg = try self.intern(try self.newTmp());
         try self.emitStackAlloc(slice_reg, lowering_rules.SliceAbi.size);
@@ -6516,6 +6591,14 @@ pub const Codegen = struct {
         try self.emitStdMacroFragment("sa_std/core/slice.sa", "SLICE_NEW", &.{ self.symbols.items[slice_reg], data_arg, self.symbols.items[len_reg] });
         try self.emitRelease(len_reg);
         return slice_reg;
+    }
+
+    fn genRawPointerStringLiteralArg(self: *Codegen, value: []const u8) anyerror!u32 {
+        const slice_reg = try self.genStringLiteral(value);
+        const ptr_reg = try self.intern(try self.newTmp());
+        try self.recordReg(ptr_reg);
+        try self.emitLoad(ptr_reg, slice_reg, 0, .ptr);
+        return ptr_reg;
     }
 
     fn genBinary(self: *Codegen, bin: ast.BinaryExpr) anyerror!u32 {
@@ -6958,7 +7041,7 @@ pub const Codegen = struct {
         const ptr_reg = try self.intern(try self.newTmp());
         try self.emitBorrowSymbol(ptr_reg, label);
         const len_reg = try self.intern(try self.newTmp());
-        try self.emitAssignImm(len_reg, @intCast(escapedStringByteLen(bytes)));
+        try self.emitAssignImm(len_reg, @intCast(bytes.len));
         const tag = try self.newFormatTag();
         try self.emitStdMacroFragment("sa_std/string_format.sa", "FORMAT_PUSH_BYTES", &.{
             tag,
@@ -7071,11 +7154,13 @@ pub const Codegen = struct {
         try self.emitCallBody(null, try std.fmt.allocPrint(self.allocator, "@sa_print_bytes(&{s}, {s})", .{ ptr_name, len_name }));
     }
 
-    fn emitPrintConstBytes(self: *Codegen, bytes: []const u8) !void {
+    fn emitPrintConstBytes(self: *Codegen, bytes_text: []const u8) !void {
+        const bytes = try self.decodeStringLiteralBytes(bytes_text);
+        defer self.allocator.free(bytes);
         if (bytes.len == 0) return;
         const label = try self.newStringConst();
         try self.appendUtf8Const(label, bytes);
-        try self.emitPrintBytes(label, try std.fmt.allocPrint(self.allocator, "{}", .{escapedStringByteLen(bytes)}));
+        try self.emitPrintBytes(label, try std.fmt.allocPrint(self.allocator, "{}", .{bytes.len}));
     }
 
     fn emitPrintSliceValue(self: *Codegen, slice_reg: u32) !void {
@@ -8156,6 +8241,10 @@ pub const Codegen = struct {
     }
 
     fn genImportedMacroArg(self: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
+        const arg_ty = (try self.importedMacroArgType(arg, ctx)) orelse return Error.MissingType;
+        if (plan.callArgNeedsAddressableSlot(call_arg_index) and lowering_rules.importedMacroArgUsesRawPointerValue(arg, arg_ty)) {
+            return self.genImportedMacroValueArg(arg, ctx);
+        }
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg, ctx);
         const address_shape: lowering_rules.AddressOfShape = if (plan.callArgNeedsAddressableSlot(call_arg_index)) try self.importedMacroArgAddressShape(arg, ctx) else .value_temp;
         switch (plan.planAddressExpressionArgAction(call_arg_index, address_shape, existing_symbol != null)) {
@@ -8327,6 +8416,13 @@ pub const Codegen = struct {
         arg_index: usize,
         auto_borrow_receiver: bool,
     ) anyerror!SabLoweredCallArg {
+        if (param) |target_param| {
+            if (lowering_rules.callArgUsesRawPointerStringLiteralValue(arg, target_param)) {
+                const arg_reg = try self.genRawPointerStringLiteralArg(arg.literal.string_val);
+                return .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
+            }
+        }
+
         const materialization = lowering_rules.planCallArgMaterialization(arg, .{
             .param = param,
             .arg_ty = self.tc.expr_types.get(arg),
@@ -8385,6 +8481,13 @@ pub const Codegen = struct {
         arg_index: usize,
         auto_borrow_receiver: bool,
     ) anyerror!SabLoweredCallArg {
+        if (param) |target_param| {
+            if (lowering_rules.callArgUsesRawPointerStringLiteralValue(effective_arg, target_param)) {
+                const arg_reg = try self.genRawPointerStringLiteralArg(effective_arg.literal.string_val);
+                return .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
+            }
+        }
+
         const materialization = lowering_rules.planCallArgMaterialization(effective_arg, .{
             .param = param,
             .arg_ty = self.tc.expr_types.get(effective_arg),
@@ -9634,4 +9737,60 @@ test "filtered decoded std deps emit exported helper bodies in original order" {
     // The exported helper's body add instruction survives at its cloned offset.
     try std.testing.expectEqual(inst.InstKind.export_decl, cg.instructions.items[3].kind);
     try std.testing.expectEqual(inst.InstKind.op, cg.instructions.items[4].kind);
+}
+
+test "direct sab normal sig preserves borrow return cap" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const inner = try allocator.create(ast.Type);
+    inner.* = .{ .primitive = .void_type };
+    const borrow_ret = try allocator.create(ast.Type);
+    borrow_ret.* = .{ .borrow = inner };
+
+    const fsig = try cg.genFuncSig("borrowed_view", .normal, &.{}, borrow_ret, false, false, false);
+    try std.testing.expectEqual(inst.CapPrefix.borrow, fsig.return_cap.?);
+    try std.testing.expectEqual(sig.PrimType.ptr, fsig.return_ty);
+}
+
+test "direct sab contract extern sig preserves return caps" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    try tc.extern_funcs.put("sa_move_ptr", contract_parser.ExternalFunction{
+        .name = "sa_move_ptr",
+        .params = &.{},
+        .ret_ty = "^ptr",
+    });
+    try tc.extern_funcs.put("sa_borrow_ptr", contract_parser.ExternalFunction{
+        .name = "sa_borrow_ptr",
+        .params = &.{},
+        .ret_ty = "&ptr",
+    });
+    try tc.extern_funcs.put("sa_raw_ptr", contract_parser.ExternalFunction{
+        .name = "sa_raw_ptr",
+        .params = &.{},
+        .ret_ty = "*ptr",
+    });
+
+    const move_sig = try cg.makeContractExternSig("sa_move_ptr", 0);
+    const borrow_sig = try cg.makeContractExternSig("sa_borrow_ptr", 1);
+    const raw_sig = try cg.makeContractExternSig("sa_raw_ptr", 2);
+
+    try std.testing.expectEqual(inst.CapPrefix.move, move_sig.return_cap.?);
+    try std.testing.expectEqual(inst.CapPrefix.borrow, borrow_sig.return_cap.?);
+    try std.testing.expectEqual(inst.CapPrefix.raw, raw_sig.return_cap.?);
+    try std.testing.expectEqual(sig.PrimType.ptr, raw_sig.return_ty);
 }

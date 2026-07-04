@@ -10,7 +10,6 @@ struct ImportedJsonEntry {
 
 struct ImportedJsonKey {
     ptr: ptr,
-    len: int,
 }
 
 fn imported_json_struct(data: ptr, data_len: int) -> ImportedJsonEntry {
@@ -21,15 +20,15 @@ fn imported_json_struct(data: ptr, data_len: int) -> ImportedJsonEntry {
 
 fn imported_json_struct_field_key(data: ptr, data_len: int) -> int {
     let root = JSON_PARSE(data, data_len);
-    let key = ImportedJsonKey { ptr: STR_PTR("types"), len: STR_LEN("types") };
-    let t = SLA_JSON_OBJECT_GET(root, key.ptr, key.len);
+    let key = ImportedJsonKey { ptr: STR_PTR("types") };
+    let t = SLA_JSON_OBJECT_GET(root, key.ptr, STR_LEN("types"));
     return JSON_KIND(t);
 }
 
 @test "imported json struct direct sab"() {
     let entry = imported_json_struct("{\"types\":\"x\"}", 13);
     if entry.present != true { panic(39041); };
-    if entry.entry_len < 0 { panic(39042); };
+    if entry.entry_len != 1 { panic(39042); };
 }
 
 @test "imported json struct field key direct sab"() {

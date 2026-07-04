@@ -1602,6 +1602,28 @@ pub fn abiPassesAsPointer(ty: *const ast.Type) bool {
     };
 }
 
+/// Current SA macro borrow lowering expects raw pointer-like values to stay in
+/// value registers. Materializing them into stack slots turns `&%arg` inside a
+/// macro fragment into a pointer-to-pointer ABI mismatch for std/runtime calls
+/// such as `sa_json_parse` and `sa_json_object_get`.
+pub fn importedMacroBorrowUsesRawPointerValue(arg_ty: *const ast.Type) bool {
+    return switch (arg_ty.*) {
+        .primitive => |p| p == .void_type,
+        .pointer, .borrow => true,
+        else => false,
+    };
+}
+
+pub fn importedMacroArgUsesRawPointerValue(arg: *const ast.Node, arg_ty: *const ast.Type) bool {
+    if (importedMacroBorrowUsesRawPointerValue(arg_ty)) return true;
+    return switch (arg.*) {
+        .call_expr => |call| std.mem.endsWith(u8, call.func_name, "_PTR") or
+            std.mem.endsWith(u8, call.func_name, "_AS_PTR") or
+            std.mem.eql(u8, call.func_name, "as_ptr"),
+        else => false,
+    };
+}
+
 pub fn alignAggregateOffset(offset: usize, size: usize) usize {
     if (size == 8) return (offset + 7) & ~@as(usize, 7);
     return offset;
@@ -2384,6 +2406,20 @@ pub fn shouldAutoBorrowStatementReceiverArg(param: ast.Param, arg: *const ast.No
     return arg_ty.* != .borrow;
 }
 
+fn rawPointerValueType(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .primitive => |p| p == .void_type,
+        .pointer => true,
+        else => false,
+    };
+}
+
+pub fn callArgUsesRawPointerStringLiteralValue(arg: *const ast.Node, param: ast.Param) bool {
+    if (param.is_borrow or param.is_move) return false;
+    if (arg.* != .literal or arg.literal != .string_val) return false;
+    return rawPointerValueType(param.ty);
+}
+
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
     if (input.array_to_slice_borrow) {
         return .{ .kind = .array_to_slice_borrow, .release_after_call = callArgNeedsRelease(arg) };
@@ -2498,6 +2534,22 @@ test "shared lowering rules classify address-of shapes" {
     try std.testing.expect(ordinaryIndexAddressTargetType(&vec_i32_ty) == null);
 }
 
+test "shared lowering rules keep string literals as raw pointers for ptr params" {
+    var string_arg = ast.Node{ .literal = .{ .string_val = "types" } };
+    var ptr_ty = ast.Type{ .primitive = .void_type };
+    var borrow_ptr_ty = ast.Type{ .primitive = .void_type };
+
+    try std.testing.expect(callArgUsesRawPointerStringLiteralValue(&string_arg, .{
+        .name = "data",
+        .ty = &ptr_ty,
+    }));
+    try std.testing.expect(!callArgUsesRawPointerStringLiteralValue(&string_arg, .{
+        .name = "data",
+        .ty = &borrow_ptr_ty,
+        .is_borrow = true,
+    }));
+}
+
 test "shared imported macro call plan classifies addressable arg actions" {
     const plan = ImportedMacroCallPlan{
         .macro_name = "SLA_HELPER",
@@ -2545,6 +2597,32 @@ test "shared imported macro address-expression args materialize stack slots" {
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_address_expression_stack_slot, plan.planAddressExpressionArgAction(1, .index, false));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_address_expression_stack_slot, plan.planAddressExpressionArgAction(1, .deref_borrow_or_pointer, false));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_stack_slot, plan.planAddressExpressionArgAction(1, .value_temp, false));
+}
+
+test "shared imported macro borrowed ptr args stay raw values" {
+    var ptr_ty = ast.Type{ .primitive = .void_type };
+    var ptr_ptr_ty = ast.Type{ .pointer = &ptr_ty };
+    var borrow_ptr_ty = ast.Type{ .borrow = &ptr_ty };
+    var int_ty = ast.Type{ .primitive = .i64 };
+    try std.testing.expect(importedMacroBorrowUsesRawPointerValue(&ptr_ty));
+    try std.testing.expect(importedMacroBorrowUsesRawPointerValue(&ptr_ptr_ty));
+    try std.testing.expect(importedMacroBorrowUsesRawPointerValue(&borrow_ptr_ty));
+    try std.testing.expect(!importedMacroBorrowUsesRawPointerValue(&int_ty));
+
+    var ptr_call = ast.Node{ .call_expr = .{
+        .func_name = "STR_PTR",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    } };
+    var non_ptr_call = ast.Node{ .call_expr = .{
+        .func_name = "STR_LEN",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    } };
+    try std.testing.expect(importedMacroArgUsesRawPointerValue(&ptr_call, &int_ty));
+    try std.testing.expect(!importedMacroArgUsesRawPointerValue(&non_ptr_call, &int_ty));
 }
 
 test "shared loop control plan detects only current loop jumps" {

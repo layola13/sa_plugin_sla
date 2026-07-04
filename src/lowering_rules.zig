@@ -38,7 +38,7 @@ pub const AddressOfShape = enum {
 
 pub const AddressOfInput = struct {
     deref_source_ty: ?*const ast.Type = null,
-    index_is_ordinary_addressable: bool = false,
+    index_target_ty: ?*const ast.Type = null,
 };
 
 pub const AddressOfPlan = struct {
@@ -51,6 +51,30 @@ fn plainBorrowOrPointerAddressSource(ty: *const ast.Type) bool {
         else => return false,
     }
     return smartPointerType(ty) == null;
+}
+
+pub fn peelBorrowPointerType(ty: *const ast.Type) *const ast.Type {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .borrow => |b| curr = b,
+            .pointer => |p| curr = p,
+            else => return curr,
+        }
+    }
+}
+
+pub fn ordinaryIndexAddressTargetType(ty: *const ast.Type) ?*const ast.Type {
+    const target = peelBorrowPointerType(ty);
+    return switch (target.*) {
+        .array => target,
+        .user_defined => |ud| if (std.mem.eql(u8, ud.name, "Slice") and ud.generics.len == 1) target else null,
+        else => null,
+    };
+}
+
+pub fn ordinaryIndexAddressable(ty: *const ast.Type) bool {
+    return ordinaryIndexAddressTargetType(ty) != null;
 }
 
 pub const AsyncReturnPlan = struct {
@@ -2189,7 +2213,7 @@ pub fn planAddressOf(expr: *const ast.Node, input: AddressOfInput) AddressOfPlan
             break :blk if (plainBorrowOrPointerAddressSource(source_ty)) .deref_borrow_or_pointer else .value_temp;
         },
         .field_expr => .field,
-        .index_expr => if (input.index_is_ordinary_addressable) .index else .value_temp,
+        .index_expr => if (input.index_target_ty) |target_ty| if (ordinaryIndexAddressTargetType(target_ty) != null) .index else .value_temp else .value_temp,
         else => .value_temp,
     } };
 }
@@ -2372,6 +2396,15 @@ test "shared lowering rules classify address-of shapes" {
     const refcell_generics = [_]*ast.Type{&i32_ty};
     var refcell_i32_ty = ast.Type{ .user_defined = .{ .name = "RefCell", .generics = refcell_generics[0..] } };
     var borrow_refcell_i32_ty = ast.Type{ .borrow = &refcell_i32_ty };
+    var array_i32_ty = ast.Type{ .array = .{ .elem = &i32_ty, .len = 3 } };
+    var borrow_array_i32_ty = ast.Type{ .borrow = &array_i32_ty };
+    var pointer_array_i32_ty = ast.Type{ .pointer = &array_i32_ty };
+    const slice_generics = [_]*ast.Type{&i32_ty};
+    var slice_i32_ty = ast.Type{ .user_defined = .{ .name = "Slice", .generics = slice_generics[0..] } };
+    var borrow_slice_i32_ty = ast.Type{ .borrow = &slice_i32_ty };
+    var pointer_slice_i32_ty = ast.Type{ .pointer = &slice_i32_ty };
+    const vec_generics = [_]*ast.Type{&i32_ty};
+    var vec_i32_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = vec_generics[0..] } };
 
     var value = ast.Node{ .identifier = "value" };
     var deref_value = ast.Node{ .deref_expr = .{ .expr = &value } };
@@ -2387,9 +2420,20 @@ test "shared lowering rules classify address-of shapes" {
     try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &pointer_box_i32_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&deref_value, .{ .deref_source_ty = &borrow_refcell_i32_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.field, planAddressOf(&field_value, .{}).shape);
-    try std.testing.expectEqual(AddressOfShape.index, planAddressOf(&index_value, .{ .index_is_ordinary_addressable = true }).shape);
-    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&index_value, .{ .index_is_ordinary_addressable = false }).shape);
+    try std.testing.expectEqual(AddressOfShape.index, planAddressOf(&index_value, .{ .index_target_ty = &array_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.index, planAddressOf(&index_value, .{ .index_target_ty = &borrow_array_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.index, planAddressOf(&index_value, .{ .index_target_ty = &pointer_array_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.index, planAddressOf(&index_value, .{ .index_target_ty = &slice_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.index, planAddressOf(&index_value, .{ .index_target_ty = &borrow_slice_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.index, planAddressOf(&index_value, .{ .index_target_ty = &pointer_slice_i32_ty }).shape);
+    try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&index_value, .{ .index_target_ty = &vec_i32_ty }).shape);
     try std.testing.expectEqual(AddressOfShape.value_temp, planAddressOf(&zero, .{}).shape);
+
+    try std.testing.expectEqual(&array_i32_ty, ordinaryIndexAddressTargetType(&array_i32_ty).?);
+    try std.testing.expectEqual(&array_i32_ty, ordinaryIndexAddressTargetType(&borrow_array_i32_ty).?);
+    try std.testing.expectEqual(&array_i32_ty, ordinaryIndexAddressTargetType(&pointer_array_i32_ty).?);
+    try std.testing.expectEqual(&slice_i32_ty, ordinaryIndexAddressTargetType(&borrow_slice_i32_ty).?);
+    try std.testing.expect(ordinaryIndexAddressTargetType(&vec_i32_ty) == null);
 }
 
 test "shared loop control plan detects only current loop jumps" {

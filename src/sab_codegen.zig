@@ -5501,19 +5501,20 @@ pub const Codegen = struct {
 
     fn genMacroIndexAddress(self: *Codegen, idx: ast.IndexExpr, ctx: *MacroExpansionContext) anyerror!AddressSource {
         const target_ty = (try self.macroExprType(idx.target, ctx)) orelse return Error.MissingType;
-        if (target_ty.* != .array) return Error.UnsupportedSabDirectFeature;
+        const addressable_target_ty = lowering_rules.ordinaryIndexAddressTargetType(target_ty) orelse return Error.UnsupportedSabDirectFeature;
+        if (addressable_target_ty.* != .array) return Error.UnsupportedSabDirectFeature;
         const target_reg = try self.genMacroExpr(idx.target, ctx);
         if (idx.index.* == .literal and idx.index.literal == .int_val) {
             const raw_index = idx.index.literal.int_val;
             if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
-            const layout = arrayElementLayout(target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
+            const layout = arrayElementLayout(addressable_target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
             var source = try self.addressWithOffset(target_reg, layout.offset);
             if (layout.offset != 0 and !self.isLocalReg(target_reg)) source.release_regs = try self.singleReleaseReg(target_reg);
             return source;
         }
 
         const index_reg = try self.genMacroExpr(idx.index, ctx);
-        const elem_ptr = try self.genArrayElementPtr(target_ty.array, target_reg, index_reg);
+        const elem_ptr = try self.genArrayElementPtr(addressable_target_ty.array, target_reg, index_reg);
         if (elem_ptr.offset) |offset| try self.emitRelease(offset);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
         return .{
@@ -5537,18 +5538,15 @@ pub const Codegen = struct {
 
     fn genMacroAddressOf(self: *Codegen, expr: *ast.Node, ctx: *MacroExpansionContext) anyerror!AddressSource {
         var deref_source_ty: ?*const ast.Type = null;
-        var index_is_ordinary_addressable = false;
+        var index_target_ty: ?*const ast.Type = null;
         switch (expr.*) {
             .deref_expr => |deref| deref_source_ty = (try self.macroExprType(deref.expr, ctx)) orelse return Error.MissingType,
-            .index_expr => |idx| {
-                const target_ty = (try self.macroExprType(idx.target, ctx)) orelse return Error.MissingType;
-                index_is_ordinary_addressable = target_ty.* == .array;
-            },
+            .index_expr => |idx| index_target_ty = (try self.macroExprType(idx.target, ctx)) orelse return Error.MissingType,
             else => {},
         }
         const address_plan = lowering_rules.planAddressOf(expr, .{
             .deref_source_ty = deref_source_ty,
-            .index_is_ordinary_addressable = index_is_ordinary_addressable,
+            .index_target_ty = index_target_ty,
         });
         return switch (address_plan.shape) {
             .identifier => blk: {
@@ -7249,15 +7247,41 @@ pub const Codegen = struct {
 
     fn genIndexAddress(self: *Codegen, idx: ast.IndexExpr) anyerror!AddressSource {
         const target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType;
-        var addressable_target_ty = target_ty;
-        while (true) {
-            switch (addressable_target_ty.*) {
-                .pointer => |p| addressable_target_ty = p,
-                .borrow => |b| addressable_target_ty = b,
-                else => break,
+        const addressable_target_ty = lowering_rules.ordinaryIndexAddressTargetType(target_ty);
+        if (addressable_target_ty == null or addressable_target_ty.?.* != .array) {
+            if (addressable_target_ty) |ordinary_target_ty| {
+                if (ordinary_target_ty.* == .user_defined and std.mem.eql(u8, ordinary_target_ty.user_defined.name, "Slice")) {
+                    const elem_ty = ordinary_target_ty.user_defined.generics[0];
+                    const target_reg = try self.genExpr(idx.target);
+                    const base_ptr = try self.intern(try self.newTmp());
+                    try self.emitLoad(base_ptr, target_reg, lowering_rules.SliceAbi.ptr_offset, .ptr);
+
+                    if (idx.index.* == .literal and idx.index.literal == .int_val) {
+                        const raw_index = idx.index.literal.int_val;
+                        if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
+                        var source = try self.addressWithOffset(base_ptr, typeSize(elem_ty) * @as(usize, @intCast(raw_index)));
+                        var release_regs = std.ArrayList(u32).init(self.allocator);
+                        defer release_regs.deinit();
+                        if (source.reg != base_ptr and !self.isLocalReg(base_ptr)) try release_regs.append(base_ptr);
+                        if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
+                        source.release_regs = try self.ownedReleaseRegs(release_regs.items);
+                        return source;
+                    }
+
+                    const index_reg = try self.genExpr(idx.index);
+                    const offset = try self.intern(try self.newTmp());
+                    try self.emitOp(offset, .mul, .{ .reg = index_reg }, .{ .imm_i64 = @intCast(typeSize(elem_ty)) });
+                    const elem_ptr = try self.intern(try self.newTmp());
+                    try self.emitPtrAdd(elem_ptr, base_ptr, .{ .reg = offset });
+                    try self.emitRelease(offset);
+                    if (!self.isLocalReg(base_ptr)) try self.emitRelease(base_ptr);
+                    if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+                    return .{
+                        .reg = elem_ptr,
+                        .release_regs = if (!self.isLocalReg(target_reg)) try self.singleReleaseReg(target_reg) else &.{},
+                    };
+                }
             }
-        }
-        if (addressable_target_ty.* != .array) {
             const elem_ty = firstGenericArg(target_ty) orelse return Error.UnsupportedSabDirectFeature;
             if (lowering_rules.smartPointerType(elem_ty) == null) return Error.UnsupportedSabDirectFeature;
             const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
@@ -7280,14 +7304,14 @@ pub const Codegen = struct {
         if (idx.index.* == .literal and idx.index.literal == .int_val) {
             const raw_index = idx.index.literal.int_val;
             if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
-            const layout = arrayElementLayout(addressable_target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
+            const layout = arrayElementLayout(addressable_target_ty.?.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
             var source = try self.addressWithOffset(target_reg, layout.offset);
             if (layout.offset != 0 and !self.isLocalReg(target_reg)) source.release_regs = try self.singleReleaseReg(target_reg);
             return source;
         }
 
         const index_reg = try self.genExpr(idx.index);
-        const elem_ptr = try self.genArrayElementPtr(addressable_target_ty.array, target_reg, index_reg);
+        const elem_ptr = try self.genArrayElementPtr(addressable_target_ty.?.array, target_reg, index_reg);
         if (elem_ptr.offset) |offset| try self.emitRelease(offset);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
         return .{
@@ -7361,15 +7385,15 @@ pub const Codegen = struct {
 
     fn genAddressOf(self: *Codegen, expr: *ast.Node) anyerror!AddressSource {
         var deref_source_ty: ?*const ast.Type = null;
-        var index_is_ordinary_addressable = false;
+        var index_target_ty: ?*const ast.Type = null;
         switch (expr.*) {
             .deref_expr => |deref| deref_source_ty = self.tc.expr_types.get(deref.expr) orelse return Error.MissingType,
-            .index_expr => index_is_ordinary_addressable = true,
+            .index_expr => |idx| index_target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType,
             else => {},
         }
         const address_plan = lowering_rules.planAddressOf(expr, .{
             .deref_source_ty = deref_source_ty,
-            .index_is_ordinary_addressable = index_is_ordinary_addressable,
+            .index_target_ty = index_target_ty,
         });
         return switch (address_plan.shape) {
             .identifier => blk: {
@@ -7390,6 +7414,7 @@ pub const Codegen = struct {
                 break :blk try self.genIndexAddress(expr.index_expr);
             },
             .value_temp => blk: {
+                if (expr.* == .index_expr) break :blk try self.genIndexAddress(expr.index_expr);
                 if (expr.* != .deref_expr) break :blk .{ .reg = try self.genExpr(expr) };
                 const deref = expr.deref_expr;
                 const source_ty = deref_source_ty orelse return Error.MissingType;

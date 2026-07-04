@@ -9756,26 +9756,15 @@ pub const Codegen = struct {
             },
             .borrow_expr => |borrow| {
                 var deref_source_ty: ?*const ast.Type = null;
-                var index_is_ordinary_addressable = false;
+                var index_target_ty: ?*const ast.Type = null;
                 switch (borrow.expr.*) {
                     .deref_expr => deref_source_ty = self.tc.expr_types.get(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError,
-                    .index_expr => |idx| {
-                        const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
-                        var addressable_target_ty = target_ty;
-                        while (true) {
-                            switch (addressable_target_ty.*) {
-                                .pointer => |p| addressable_target_ty = p,
-                                .borrow => |b| addressable_target_ty = b,
-                                else => break,
-                            }
-                        }
-                        index_is_ordinary_addressable = arrayType(addressable_target_ty) != null or sliceElementType(addressable_target_ty) != null;
-                    },
+                    .index_expr => |idx| index_target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError,
                     else => {},
                 }
                 const address_plan = lowering_rules.planAddressOf(borrow.expr, .{
                     .deref_source_ty = deref_source_ty,
-                    .index_is_ordinary_addressable = index_is_ordinary_addressable,
+                    .index_target_ty = index_target_ty,
                 });
                 switch (address_plan.shape) {
                     .identifier => {
@@ -12164,9 +12153,14 @@ pub const Codegen = struct {
 
                 // Assume macro expansion call in Sla
                 const reg = try self.newTmp();
-                self.out.writer().print("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
+                var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                defer arg_regs.deinit();
                 for (call.args) |arg| {
                     const arg_reg = try self.genExpr(arg, hoisted_allocs);
+                    try arg_regs.append(arg_reg);
+                }
+                self.out.writer().print("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
+                for (arg_regs.items) |arg_reg| {
                     self.out.writer().print(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
                 }
                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;

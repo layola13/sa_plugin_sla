@@ -50,6 +50,13 @@ pub const AsyncContinuationScalarPlan = struct {
     }
 };
 
+pub const AsyncContinuationBranchPlan = struct {
+    condition_op: ast.BinaryOp,
+    threshold: i64,
+    then_scalar: AsyncContinuationScalarPlan,
+    else_scalar: AsyncContinuationScalarPlan,
+};
+
 pub const AsyncSingleAwaitContinuationPlan = struct {
     binding_name: []const u8,
     post_binding_name: ?[]const u8 = null,
@@ -59,6 +66,7 @@ pub const AsyncSingleAwaitContinuationPlan = struct {
     awaited_kind: FutureRuntimeCallKind,
     addend: i64 = 0,
     scalar: AsyncContinuationScalarPlan = .{},
+    branch: ?AsyncContinuationBranchPlan = null,
 
     pub fn resultBindingName(self: AsyncSingleAwaitContinuationPlan) ?[]const u8 {
         return self.post_binding_name;
@@ -477,6 +485,13 @@ fn asyncContinuationAddend(expr: *const ast.Node, binding_name: []const u8, capt
     return addend;
 }
 
+fn asyncContinuationScalarExpr(expr: *const ast.Node, binding_name: []const u8, capture_name: ?[]const u8) ?AsyncContinuationAddend {
+    var addend = AsyncContinuationAddend{};
+    if (!collectAsyncContinuationAddend(expr, binding_name, capture_name, &addend)) return null;
+    if (addend.captured_addend_name == null and addend.captured_coeff != 0) return null;
+    return addend;
+}
+
 fn asyncContinuationReturnExpr(stmt: *const ast.Node) ?*const ast.Node {
     return switch (stmt.*) {
         .return_stmt => |ret| ret.value,
@@ -490,6 +505,7 @@ const AsyncContinuationResult = struct {
     addend: i64 = 0,
     captured_addend_name: ?[]const u8 = null,
     scalar: AsyncContinuationScalarPlan = .{},
+    branch: ?AsyncContinuationBranchPlan = null,
 };
 
 fn scalarPlanFromAddend(addend: AsyncContinuationAddend) AsyncContinuationScalarPlan {
@@ -510,6 +526,55 @@ fn composePostReturnScalar(binding: AsyncContinuationAddend, ret: AsyncContinuat
     return scalar;
 }
 
+fn continuationBlockTailExpr(block: []const *ast.Node) ?*const ast.Node {
+    if (block.len != 1) return null;
+    const stmt = block[0];
+    if (stmt.* != .expr_stmt) return null;
+    return stmt.expr_stmt;
+}
+
+fn branchConditionPlan(cond: *const ast.Node, binding_name: []const u8) ?struct { op: ast.BinaryOp, threshold: i64 } {
+    if (cond.* != .binary_expr) return null;
+    const bin = cond.binary_expr;
+    if (!(bin.op == .gt or bin.op == .ge or bin.op == .lt or bin.op == .le or bin.op == .eq or bin.op == .ne)) return null;
+    if (bin.left.* != .identifier or !std.mem.eql(u8, bin.left.identifier, binding_name)) return null;
+    const threshold = intLiteral(bin.right) orelse return null;
+    return .{ .op = bin.op, .threshold = threshold };
+}
+
+fn mergeBranchCaptureName(left: ?[]const u8, right: ?[]const u8) ?[]const u8 {
+    if (left) |l| {
+        if (right) |r| {
+            if (!std.mem.eql(u8, l, r)) return null;
+        }
+        return l;
+    }
+    return right;
+}
+
+fn asyncContinuationBranch(expr: *const ast.Node, binding_name: []const u8, capture_name: ?[]const u8) ?AsyncContinuationResult {
+    if (expr.* != .if_expr) return null;
+    const ife = expr.if_expr;
+    if (ife.let_chain != null) return null;
+    const else_block = ife.else_block orelse return null;
+    const cond = branchConditionPlan(ife.cond, binding_name) orelse return null;
+    const then_expr = continuationBlockTailExpr(ife.then_block) orelse return null;
+    const else_expr = continuationBlockTailExpr(else_block) orelse return null;
+    const then_addend = asyncContinuationScalarExpr(then_expr, binding_name, capture_name) orelse return null;
+    const else_addend = asyncContinuationScalarExpr(else_expr, binding_name, capture_name) orelse return null;
+    const captured = mergeBranchCaptureName(then_addend.captured_addend_name, else_addend.captured_addend_name);
+    if ((then_addend.captured_addend_name != null or else_addend.captured_addend_name != null) and captured == null) return null;
+    return .{
+        .captured_addend_name = captured,
+        .branch = .{
+            .condition_op = cond.op,
+            .threshold = cond.threshold,
+            .then_scalar = scalarPlanFromAddend(then_addend),
+            .else_scalar = scalarPlanFromAddend(else_addend),
+        },
+    };
+}
+
 fn asyncContinuationResult(await_binding_name: []const u8, capture_name: ?[]const u8, post_stmt: ?*const ast.Node, ret_expr: *const ast.Node) ?AsyncContinuationResult {
     if (post_stmt) |stmt| {
         if (stmt.* != .let_stmt) return null;
@@ -522,6 +587,8 @@ fn asyncContinuationResult(await_binding_name: []const u8, capture_name: ?[]cons
         const scalar = composePostReturnScalar(addend, return_addend) orelse return null;
         return .{ .post_binding_name = let_stmt.name, .addend = scalar.immediate, .captured_addend_name = addend.captured_addend_name, .scalar = scalar };
     }
+
+    if (asyncContinuationBranch(ret_expr, await_binding_name, capture_name)) |branch| return branch;
 
     const addend = asyncContinuationAddend(ret_expr, await_binding_name, capture_name) orelse return null;
     return .{ .addend = addend.immediate, .captured_addend_name = addend.captured_addend_name, .scalar = scalarPlanFromAddend(addend) };
@@ -616,6 +683,7 @@ pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleA
         .awaited_kind = awaited_call.kind,
         .addend = result.addend,
         .scalar = result.scalar,
+        .branch = result.branch,
     };
 }
 
@@ -2371,11 +2439,22 @@ test "shared async single await continuation plan recognizes parsed captured add
         \\    let value = delayed.await;
         \\    return (value + bump) * 2;
         \\}
+        \\async fn await_defer_ready_branchy_capture() -> i32 {
+        \\    let bump = 2;
+        \\    let value = future::defer_ready(40).await;
+        \\    return if value > 0 { value + bump } else { bump };
+        \\}
+        \\async fn await_local_defer_ready_branchy_capture() -> i32 {
+        \\    let bump = 2;
+        \\    let delayed = future::defer_ready(40);
+        \\    let value = delayed.await;
+        \\    return if value > 0 { value + bump } else { bump };
+        \\}
     ;
     var p = parser.Parser.init(arena.allocator(), source);
     const program = try p.parseProgram();
     try std.testing.expect(program.* == .program);
-    try std.testing.expectEqual(@as(usize, 6), program.program.decls.len);
+    try std.testing.expectEqual(@as(usize, 8), program.program.decls.len);
 
     const direct_func = &program.program.decls[0].func_decl;
     const direct_plan = planAsyncSingleAwaitContinuation(direct_func) orelse return error.TestExpectedEqual;
@@ -2430,6 +2509,38 @@ test "shared async single await continuation plan recognizes parsed captured add
     try std.testing.expectEqual(@as(i64, 2), scaled_plan.scalar.awaited_coeff);
     try std.testing.expectEqual(@as(i64, 2), scaled_plan.scalar.captured_coeff);
     try std.testing.expectEqual(@as(i64, 0), scaled_plan.scalar.immediate);
+
+    const branch_func = &program.program.decls[6].func_decl;
+    const branch_plan = planAsyncSingleAwaitContinuation(branch_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", branch_plan.binding_name);
+    try std.testing.expectEqualStrings("bump", branch_plan.captured_addend_name.?);
+    try std.testing.expect(branch_plan.captured_addend_expr != null);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, branch_plan.awaited_kind);
+    const branch = branch_plan.branch orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(ast.BinaryOp.gt, branch.condition_op);
+    try std.testing.expectEqual(@as(i64, 0), branch.threshold);
+    try std.testing.expectEqual(@as(i64, 1), branch.then_scalar.awaited_coeff);
+    try std.testing.expectEqual(@as(i64, 1), branch.then_scalar.captured_coeff);
+    try std.testing.expectEqual(@as(i64, 0), branch.then_scalar.immediate);
+    try std.testing.expectEqual(@as(i64, 0), branch.else_scalar.awaited_coeff);
+    try std.testing.expectEqual(@as(i64, 1), branch.else_scalar.captured_coeff);
+    try std.testing.expectEqual(@as(i64, 0), branch.else_scalar.immediate);
+
+    const local_branch_func = &program.program.decls[7].func_decl;
+    const local_branch_plan = planAsyncSingleAwaitContinuation(local_branch_func) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("value", local_branch_plan.binding_name);
+    try std.testing.expectEqualStrings("bump", local_branch_plan.captured_addend_name.?);
+    try std.testing.expect(local_branch_plan.captured_addend_expr != null);
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, local_branch_plan.awaited_kind);
+    const local_branch = local_branch_plan.branch orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(ast.BinaryOp.gt, local_branch.condition_op);
+    try std.testing.expectEqual(@as(i64, 0), local_branch.threshold);
+    try std.testing.expectEqual(@as(i64, 1), local_branch.then_scalar.awaited_coeff);
+    try std.testing.expectEqual(@as(i64, 1), local_branch.then_scalar.captured_coeff);
+    try std.testing.expectEqual(@as(i64, 0), local_branch.then_scalar.immediate);
+    try std.testing.expectEqual(@as(i64, 0), local_branch.else_scalar.awaited_coeff);
+    try std.testing.expectEqual(@as(i64, 1), local_branch.else_scalar.captured_coeff);
+    try std.testing.expectEqual(@as(i64, 0), local_branch.else_scalar.immediate);
 }
 
 test "shared result generic inner types" {

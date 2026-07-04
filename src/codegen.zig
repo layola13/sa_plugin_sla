@@ -6558,6 +6558,89 @@ pub const Codegen = struct {
         return std.fmt.allocPrint(self.allocator, "sla_async_{s}_poll", .{name}) catch return CodegenError.OutOfMemory;
     }
 
+    fn emitAsyncContinuationScalarValue(self: *Codegen, scalar: lowering_rules.AsyncContinuationScalarPlan, result_reg: []const u8, awaited_reg: []const u8, captured_reg: ?[]const u8, prefix: []const u8) CodegenError!void {
+        const awaited_abs = std.fmt.allocPrint(self.allocator, "{s}_awaited_abs", .{prefix}) catch return CodegenError.OutOfMemory;
+        defer self.allocator.free(awaited_abs);
+        const awaited_scaled = std.fmt.allocPrint(self.allocator, "{s}_awaited_scaled", .{prefix}) catch return CodegenError.OutOfMemory;
+        defer self.allocator.free(awaited_scaled);
+        const captured_abs = std.fmt.allocPrint(self.allocator, "{s}_captured_abs", .{prefix}) catch return CodegenError.OutOfMemory;
+        defer self.allocator.free(captured_abs);
+        const captured_scaled = std.fmt.allocPrint(self.allocator, "{s}_captured_scaled", .{prefix}) catch return CodegenError.OutOfMemory;
+        defer self.allocator.free(captured_scaled);
+        const expr_sum = std.fmt.allocPrint(self.allocator, "{s}_expr_sum", .{prefix}) catch return CodegenError.OutOfMemory;
+        defer self.allocator.free(expr_sum);
+
+        var current_reg: ?[]const u8 = null;
+        var release_awaited_abs = false;
+        var release_awaited_scaled = false;
+        var release_captured_abs = false;
+        var release_captured_scaled = false;
+        var release_expr_sum = false;
+
+        if (scalar.awaited_coeff != 0) {
+            if (scalar.awaited_coeff == 1) {
+                current_reg = awaited_reg;
+            } else if (scalar.awaited_coeff == -1) {
+                self.out.writer().print("    {s} = sub 0, {s}\n", .{ awaited_scaled, awaited_reg }) catch return CodegenError.CodegenError;
+                current_reg = awaited_scaled;
+                release_awaited_scaled = true;
+            } else {
+                const abs_coeff = if (scalar.awaited_coeff < 0) -scalar.awaited_coeff else scalar.awaited_coeff;
+                self.out.writer().print("    {s} = mul {s}, {}\n", .{ awaited_abs, awaited_reg, abs_coeff }) catch return CodegenError.CodegenError;
+                release_awaited_abs = true;
+                if (scalar.awaited_coeff < 0) {
+                    self.out.writer().print("    {s} = sub 0, {s}\n", .{ awaited_scaled, awaited_abs }) catch return CodegenError.CodegenError;
+                    current_reg = awaited_scaled;
+                    release_awaited_scaled = true;
+                } else {
+                    current_reg = awaited_abs;
+                }
+            }
+        }
+
+        if (scalar.captured_coeff != 0) {
+            const addend_reg = captured_reg orelse return CodegenError.CodegenError;
+            var captured_term: []const u8 = addend_reg;
+            const abs_coeff = if (scalar.captured_coeff < 0) -scalar.captured_coeff else scalar.captured_coeff;
+            if (abs_coeff != 1) {
+                self.out.writer().print("    {s} = mul {s}, {}\n", .{ captured_abs, addend_reg, abs_coeff }) catch return CodegenError.CodegenError;
+                captured_term = captured_abs;
+                release_captured_abs = true;
+            }
+            if (current_reg) |current| {
+                const sum_dest = if (scalar.immediate == 0) result_reg else expr_sum;
+                const op: []const u8 = if (scalar.captured_coeff < 0) "sub" else "add";
+                self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ sum_dest, op, current, captured_term }) catch return CodegenError.CodegenError;
+                current_reg = sum_dest;
+                release_expr_sum = scalar.immediate != 0;
+            } else if (scalar.captured_coeff < 0) {
+                self.out.writer().print("    {s} = sub 0, {s}\n", .{ captured_scaled, captured_term }) catch return CodegenError.CodegenError;
+                current_reg = captured_scaled;
+                release_captured_scaled = true;
+            } else {
+                current_reg = captured_term;
+            }
+        }
+
+        if (scalar.immediate != 0) {
+            const current = current_reg orelse "0";
+            const imm_abs = if (scalar.immediate < 0) -scalar.immediate else scalar.immediate;
+            const op: []const u8 = if (scalar.immediate < 0) "sub" else "add";
+            self.out.writer().print("    {s} = {s} {s}, {}\n", .{ result_reg, op, current, imm_abs }) catch return CodegenError.CodegenError;
+            current_reg = result_reg;
+        }
+
+        const current = current_reg orelse "0";
+        if (!std.mem.eql(u8, current, result_reg)) {
+            self.out.writer().print("    {s} = add {s}, 0\n", .{ result_reg, current }) catch return CodegenError.CodegenError;
+        }
+        if (release_expr_sum) self.out.writer().print("    !{s}\n", .{expr_sum}) catch return CodegenError.CodegenError;
+        if (release_captured_scaled) self.out.writer().print("    !{s}\n", .{captured_scaled}) catch return CodegenError.CodegenError;
+        if (release_captured_abs) self.out.writer().print("    !{s}\n", .{captured_abs}) catch return CodegenError.CodegenError;
+        if (release_awaited_scaled) self.out.writer().print("    !{s}\n", .{awaited_scaled}) catch return CodegenError.CodegenError;
+        if (release_awaited_abs) self.out.writer().print("    !{s}\n", .{awaited_abs}) catch return CodegenError.CodegenError;
+    }
+
     fn emitAsyncSingleAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncSingleAwaitContinuationPlan) CodegenError!void {
         const vt_name = try self.asyncSingleAwaitVTableName(name);
         const poll_name = try self.asyncSingleAwaitPollName(name);
@@ -6591,58 +6674,34 @@ pub const Codegen = struct {
             \\    {s} = load async_inner_state+8 as u64
             \\
         , .{ vt_name, poll_name, poll_name, plan.binding_name }) catch return CodegenError.CodegenError;
-        const captured_addend_reg = if (plan.hasCapturedAddend()) blk: {
+        const captured_addend_reg: ?[]const u8 = if (plan.hasCapturedAddend()) blk: {
             self.out.writer().print("    async_captured_addend = load data_slot+16 as u64\n", .{}) catch return CodegenError.CodegenError;
             break :blk "async_captured_addend";
         } else null;
         const scalar = plan.scalar;
-        const result_reg = plan.resultBindingName() orelse if (scalar.isIdentity()) plan.binding_name else "async_result";
-        var current_reg: []const u8 = plan.binding_name;
-        var release_awaited_abs = false;
-        var release_awaited_scaled = false;
-        if (scalar.awaited_coeff != 1) {
-            if (scalar.awaited_coeff == -1) {
-                self.out.writer().print("    async_awaited_scaled = sub 0, {s}\n", .{plan.binding_name}) catch return CodegenError.CodegenError;
-                current_reg = "async_awaited_scaled";
-                release_awaited_scaled = true;
-            } else {
-                const awaited_abs = if (scalar.awaited_coeff < 0) -scalar.awaited_coeff else scalar.awaited_coeff;
-                self.out.writer().print("    async_awaited_abs = mul {s}, {}\n", .{ plan.binding_name, awaited_abs }) catch return CodegenError.CodegenError;
-                release_awaited_abs = true;
-                if (scalar.awaited_coeff < 0) {
-                    self.out.writer().print("    async_awaited_scaled = sub 0, async_awaited_abs\n", .{}) catch return CodegenError.CodegenError;
-                    current_reg = "async_awaited_scaled";
-                    release_awaited_scaled = true;
-                } else {
-                    current_reg = "async_awaited_abs";
-                }
-            }
-        }
-        var release_captured_scaled = false;
-        var release_expr_sum = false;
-        if (captured_addend_reg) |addend_reg| {
-            if (scalar.captured_coeff != 0) {
-                const captured_abs = if (scalar.captured_coeff < 0) -scalar.captured_coeff else scalar.captured_coeff;
-                const captured_term = if (captured_abs == 1) addend_reg else blk: {
-                    self.out.writer().print("    async_captured_scaled = mul {s}, {}\n", .{ addend_reg, captured_abs }) catch return CodegenError.CodegenError;
-                    release_captured_scaled = true;
-                    break :blk "async_captured_scaled";
-                };
-                const sum_dest = if (scalar.immediate == 0) result_reg else "async_expr_sum";
-                const op: []const u8 = if (scalar.captured_coeff < 0) "sub" else "add";
-                self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ sum_dest, op, current_reg, captured_term }) catch return CodegenError.CodegenError;
-                current_reg = sum_dest;
-                release_expr_sum = scalar.immediate != 0;
-            }
-        }
-        if (scalar.immediate != 0) {
-            const imm_abs = if (scalar.immediate < 0) -scalar.immediate else scalar.immediate;
-            const op: []const u8 = if (scalar.immediate < 0) "sub" else "add";
-            self.out.writer().print("    {s} = {s} {s}, {}\n", .{ result_reg, op, current_reg, imm_abs }) catch return CodegenError.CodegenError;
-            current_reg = result_reg;
-        }
-        if (!std.mem.eql(u8, current_reg, result_reg)) {
-            self.out.writer().print("    {s} = add {s}, 0\n", .{ result_reg, current_reg }) catch return CodegenError.CodegenError;
+        const result_reg = if (plan.branch != null) "async_result" else plan.resultBindingName() orelse if (scalar.isIdentity()) plan.binding_name else "async_result";
+        if (plan.branch) |branch| {
+            const condition_op = binaryOpName(branch.condition_op, false);
+            self.out.writer().print(
+                \\    async_branch_cond = {s} {s}, {}
+                \\    br async_branch_cond -> L_ASYNC_SINGLE_AWAIT_BRANCH_THEN, L_ASYNC_SINGLE_AWAIT_BRANCH_ELSE
+                \\L_ASYNC_SINGLE_AWAIT_BRANCH_THEN:
+                \\
+            , .{ condition_op, plan.binding_name, branch.threshold }) catch return CodegenError.CodegenError;
+            try self.emitAsyncContinuationScalarValue(branch.then_scalar, result_reg, plan.binding_name, captured_addend_reg, "async_then");
+            self.out.writer().print(
+                \\    jmp L_ASYNC_SINGLE_AWAIT_BRANCH_DONE
+                \\L_ASYNC_SINGLE_AWAIT_BRANCH_ELSE:
+                \\
+            , .{}) catch return CodegenError.CodegenError;
+            try self.emitAsyncContinuationScalarValue(branch.else_scalar, result_reg, plan.binding_name, captured_addend_reg, "async_else");
+            self.out.writer().print(
+                \\    jmp L_ASYNC_SINGLE_AWAIT_BRANCH_DONE
+                \\L_ASYNC_SINGLE_AWAIT_BRANCH_DONE:
+                \\
+            , .{}) catch return CodegenError.CodegenError;
+        } else {
+            try self.emitAsyncContinuationScalarValue(scalar, result_reg, plan.binding_name, captured_addend_reg, "async");
         }
         self.out.writer().print(
             \\    store async_inner_state+0, 2 as u64
@@ -6653,10 +6712,7 @@ pub const Codegen = struct {
         if (!std.mem.eql(u8, result_reg, plan.binding_name)) {
             self.out.writer().print("    !{s}\n", .{result_reg}) catch return CodegenError.CodegenError;
         }
-        if (release_expr_sum) self.out.writer().print("    !async_expr_sum\n", .{}) catch return CodegenError.CodegenError;
-        if (release_captured_scaled) self.out.writer().print("    !async_captured_scaled\n", .{}) catch return CodegenError.CodegenError;
-        if (release_awaited_scaled) self.out.writer().print("    !async_awaited_scaled\n", .{}) catch return CodegenError.CodegenError;
-        if (release_awaited_abs) self.out.writer().print("    !async_awaited_abs\n", .{}) catch return CodegenError.CodegenError;
+        if (plan.branch != null) self.out.writer().print("    !async_branch_cond\n", .{}) catch return CodegenError.CodegenError;
         if (captured_addend_reg) |addend_reg| {
             self.out.writer().print("    !{s}\n", .{addend_reg}) catch return CodegenError.CodegenError;
         }

@@ -253,6 +253,12 @@ pub const PollRuntimeCallPlan = struct {
     kind: PollRuntimeCallKind,
 };
 
+pub const ImportedMacroAddressableArgAction = enum {
+    pass_value,
+    reuse_existing_addressable,
+    materialize_stack_slot,
+};
+
 pub const ImportedMacroCallPlan = struct {
     macro_name: []const u8,
     import_path: ?[]const u8,
@@ -269,6 +275,11 @@ pub const ImportedMacroCallPlan = struct {
         const macro_idx = self.macroParamIndexForCallArg(call_arg_index);
         if (macro_idx >= 64) return false;
         return (self.borrowed_arg_mask & (@as(u64, 1) << @intCast(macro_idx))) != 0;
+    }
+
+    pub fn planAddressableArgAction(self: ImportedMacroCallPlan, call_arg_index: usize, has_existing_addressable_symbol: bool) ImportedMacroAddressableArgAction {
+        if (!self.callArgNeedsAddressableSlot(call_arg_index)) return .pass_value;
+        return if (has_existing_addressable_symbol) .reuse_existing_addressable else .materialize_stack_slot;
     }
 };
 
@@ -2471,6 +2482,36 @@ test "shared lowering rules classify address-of shapes" {
     try std.testing.expectEqual(&array_i32_ty, ordinaryIndexAddressTargetType(&pointer_array_i32_ty).?);
     try std.testing.expectEqual(&slice_i32_ty, ordinaryIndexAddressTargetType(&borrow_slice_i32_ty).?);
     try std.testing.expect(ordinaryIndexAddressTargetType(&vec_i32_ty) == null);
+}
+
+test "shared imported macro call plan classifies addressable arg actions" {
+    const plan = ImportedMacroCallPlan{
+        .macro_name = "SLA_HELPER",
+        .import_path = "helpers.sa",
+        .arity = 2,
+        .leading_outputs = 0,
+        .borrowed_arg_mask = @as(u64, 1) << 1,
+        .expression_output = false,
+    };
+
+    try std.testing.expect(!plan.callArgNeedsAddressableSlot(0));
+    try std.testing.expect(plan.callArgNeedsAddressableSlot(1));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.pass_value, plan.planAddressableArgAction(0, false));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.reuse_existing_addressable, plan.planAddressableArgAction(1, true));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_stack_slot, plan.planAddressableArgAction(1, false));
+
+    const expression_output_plan = ImportedMacroCallPlan{
+        .macro_name = "SLA_EXPR_HELPER",
+        .import_path = "helpers.sa",
+        .arity = 2,
+        .leading_outputs = 1,
+        .borrowed_arg_mask = @as(u64, 1) << 1,
+        .expression_output = true,
+    };
+
+    try std.testing.expect(expression_output_plan.callArgNeedsAddressableSlot(0));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.reuse_existing_addressable, expression_output_plan.planAddressableArgAction(0, true));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_stack_slot, expression_output_plan.planAddressableArgAction(0, false));
 }
 
 test "shared loop control plan detects only current loop jumps" {

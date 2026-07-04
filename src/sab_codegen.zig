@@ -8111,28 +8111,31 @@ pub const Codegen = struct {
         };
     }
 
-    fn genImportedMacroAddressableArg(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
-        if (self.importedMacroExistingAddressableSymbol(arg, ctx)) |symbol| {
-            return .{ .operand = symbol, .release_reg = null };
+    fn genImportedMacroArg(self: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
+        const existing_symbol = self.importedMacroExistingAddressableSymbol(arg, ctx);
+        switch (plan.planAddressableArgAction(call_arg_index, existing_symbol != null)) {
+            .pass_value => return self.genImportedMacroValueArg(arg, ctx),
+            .reuse_existing_addressable => return .{ .operand = existing_symbol.?, .release_reg = null },
+            .materialize_stack_slot => {
+                const value_reg = (if (ctx) |macro_ctx| self.genMacroExpr(@constCast(arg), macro_ctx) else self.genExpr(@constCast(arg))) catch |err| {
+                    self.traceUnsupported("imported macro addressable value {s} failed: {s}\n", .{ @tagName(arg.*), @errorName(err) });
+                    return err;
+                };
+                const arg_ty = ((try self.importedMacroArgType(arg, ctx)) orelse {
+                    self.traceUnsupported("imported macro addressable type {s} missing\n", .{@tagName(arg.*)});
+                    return Error.MissingType;
+                });
+                const slot = try self.intern(try self.newTmp());
+                try self.emitStackAlloc(slot, typeSize(arg_ty));
+                const store_ty = addressableSlotPrimType(arg_ty) catch |err| {
+                    self.traceUnsupported("imported macro addressable storage type {s} failed: {s}\n", .{ @tagName(arg_ty.*), @errorName(err) });
+                    return err;
+                };
+                try self.emitStore(slot, 0, value_reg, store_ty);
+                try self.releaseExprResultIfNeeded(arg, value_reg);
+                return .{ .operand = self.symbols.items[slot], .release_reg = null };
+            },
         }
-
-        const value_reg = (if (ctx) |macro_ctx| self.genMacroExpr(@constCast(arg), macro_ctx) else self.genExpr(@constCast(arg))) catch |err| {
-            self.traceUnsupported("imported macro addressable value {s} failed: {s}\n", .{ @tagName(arg.*), @errorName(err) });
-            return err;
-        };
-        const arg_ty = ((try self.importedMacroArgType(arg, ctx)) orelse {
-            self.traceUnsupported("imported macro addressable type {s} missing\n", .{@tagName(arg.*)});
-            return Error.MissingType;
-        });
-        const slot = try self.intern(try self.newTmp());
-        try self.emitStackAlloc(slot, typeSize(arg_ty));
-        const store_ty = addressableSlotPrimType(arg_ty) catch |err| {
-            self.traceUnsupported("imported macro addressable storage type {s} failed: {s}\n", .{ @tagName(arg_ty.*), @errorName(err) });
-            return err;
-        };
-        try self.emitStore(slot, 0, value_reg, store_ty);
-        try self.releaseExprResultIfNeeded(arg, value_reg);
-        return .{ .operand = self.symbols.items[slot], .release_reg = null };
     }
 
     fn genImportedMacroCall(self: *Codegen, call: ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, ctx: ?*MacroExpansionContext) anyerror!u32 {
@@ -8150,10 +8153,7 @@ pub const Codegen = struct {
 
         if (dst) |reg| try arg_names.append(self.symbols.items[reg]);
         for (call.args, 0..) |arg, i| {
-            const lowered_arg = (if (plan.callArgNeedsAddressableSlot(i))
-                self.genImportedMacroAddressableArg(arg, ctx)
-            else
-                self.genImportedMacroValueArg(arg, ctx)) catch |err| {
+            const lowered_arg = self.genImportedMacroArg(plan, i, arg, ctx) catch |err| {
                 self.traceUnsupported("imported macro {s} arg {} failed: {s}\n", .{ plan.macro_name, i, @errorName(err) });
                 return err;
             };

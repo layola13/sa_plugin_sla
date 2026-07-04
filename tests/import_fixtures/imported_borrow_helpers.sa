@@ -1,0 +1,3 @@
+[MACRO] SLA_IMPORTED_READ_I64 %out, %value
+    %out = call @sla__imported_macro_read_i64(&%value)
+[END_MACRO]

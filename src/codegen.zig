@@ -7571,6 +7571,44 @@ pub const Codegen = struct {
         return .{ .reg = slot, .release_after_call = false };
     }
 
+    fn genImportedMacroAddressExpressionMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+        const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+        const slot = try self.newTmp();
+        self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
+        self.out.writer().print("    {s} = stack_alloc {}\n", .{ slot, typeSize(arg_ty) }) catch return CodegenError.CodegenError;
+
+        const value_reg = switch (try self.importedMacroArgAddressShape(arg)) {
+            .field => blk: {
+                const projection = try self.genFieldAddress(&arg.field_expr, hoisted_allocs);
+                try self.rememberAddressProjectionSource(projection);
+                const loaded = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ loaded, projection.ptr, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+                try self.emitRelease(projection.ptr);
+                break :blk loaded;
+            },
+            .index => blk: {
+                const address = try self.genIndexAddress(&arg.index_expr, hoisted_allocs);
+                try self.rememberIndexAddressSource(address);
+                const loaded = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ loaded, address.ptr, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+                try self.emitRelease(address.ptr);
+                break :blk loaded;
+            },
+            .deref_borrow_or_pointer => blk: {
+                const source = try self.genExpr(arg.deref_expr.expr, hoisted_allocs);
+                const loaded = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ loaded, source, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+                if (exprResultNeedsRelease(arg.deref_expr.expr)) try self.emitRelease(source);
+                break :blk loaded;
+            },
+            else => return CodegenError.CodegenError,
+        };
+
+        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ slot, value_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
+        if (callArgNeedsRelease(arg)) try self.emitRelease(value_reg);
+        return .{ .reg = slot, .release_after_call = false };
+    }
+
     fn genImportedMacroArg(
         self: *Codegen,
         plan: lowering_rules.ImportedMacroCallPlan,
@@ -7590,7 +7628,8 @@ pub const Codegen = struct {
         switch (plan.planAddressExpressionArgAction(call_arg_index, address_shape, existing_symbol != null)) {
             .pass_value => return .{ .reg = try self.genExpr(arg, hoisted_allocs), .release_after_call = callArgNeedsRelease(arg) },
             .reuse_existing_addressable => return .{ .reg = existing_symbol.?, .release_after_call = false },
-            .materialize_stack_slot, .materialize_address_expression_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, hoisted_allocs),
+            .materialize_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, hoisted_allocs),
+            .materialize_address_expression_stack_slot => return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, hoisted_allocs),
         }
     }
 

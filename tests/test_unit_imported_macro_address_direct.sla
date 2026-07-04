@@ -1,0 +1,43 @@
+@import "import_fixtures/imported_borrow_helpers.sa"
+
+struct ImportedMacroAddressPoint { left: i64, right: i64 }
+
+fn imported_macro_read_i64(value: &i64) -> i64 {
+    *value
+}
+
+fn imported_macro_read_i64_keepalive() -> i64 {
+    let value = 0;
+    imported_macro_read_i64(&value)
+}
+
+fn imported_macro_field_address() -> i64 {
+    let point = ImportedMacroAddressPoint { left: 11, right: 17 };
+    SLA_IMPORTED_READ_I64(point.left)
+}
+
+fn imported_macro_index_address() -> i64 {
+    let values: [i64; 3] = [3, 5, 7];
+    SLA_IMPORTED_READ_I64(values[1])
+}
+
+fn imported_macro_deref_address() -> i64 {
+    let tail = 19;
+    let ptr = &tail;
+    SLA_IMPORTED_READ_I64(*ptr)
+}
+
+@test "imported macro borrowed field address"() {
+    if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
+    if imported_macro_field_address() != 11 { panic(31901); };
+}
+
+@test "imported macro borrowed index address"() {
+    if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
+    if imported_macro_index_address() != 5 { panic(31902); };
+}
+
+@test "imported macro borrowed deref address"() {
+    if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
+    if imported_macro_deref_address() != 19 { panic(31903); };
+}

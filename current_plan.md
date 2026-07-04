@@ -113,11 +113,18 @@ The generic std-macro fragment naming problem is still a real SCI-boundary task:
 
 ## Next Active Slice
 
-- No implementation slice is active after the ordinary address-of classifier completion.
-- Recommended next Phase 1 slice: widen the shared projection/address plan beyond the ordinary classifier to smart-pointer address forms, `&**chain`, macro address lowering, and RefCell borrow/borrow_mut lifecycle. Keep the same Y boundary: shared frontend/lowering rules classify semantics; SA-text and direct SAB own only emission mechanics.
+- No implementation slice is active after the direct SAB user-macro address-of classifier completion.
+- Recommended next Phase 1 slice: continue widening the shared projection/address plan to smart-pointer address forms, `&**chain`, imported macro address lowering, and RefCell borrow/borrow_mut lifecycle. Separately, user-macro SA-text transpiler parity remains a Phase 2/text-emitter limitation and should not be confused with the direct SAB macro path that is now covered.
 - Current verified baseline: broader Y/shared-lowering about 98%; direct SAB tracked-corpus fallback removal 100%; local and host no-fallback unit sweeps 101/101.
 
 ## Latest Completed Slice
+
+- Phase 1 direct SAB user-macro address-of classifier wiring is complete. `genMacroAddressOf` now asks `lowering_rules.planAddressOf` to classify ordinary `&identifier`, `&*borrow_or_pointer`, `&field`, and `&index` forms, while retaining macro-specific hygiene resolution, argument remapping, address emission, and fallback behavior in `src/sab_codegen.zig`.
+- `tests/test_unit_user_macro_direct.sla` now covers macro-body `&point.left`, `&values[1]`, and ordinary `&*ptr` through a borrowed-value helper. `tests/test_unit_borrow_direct.sla` also covers `&values[index]` where `values` is `&[i32; 3]`, and both SA-text and direct SAB unwrap borrow/pointer array targets before ordinary index-address planning.
+- Verification: `sa version` (`0.0.3.3`); `zig fmt --check src/codegen.zig src/sab_codegen.zig`; focused shared address-of rule test; `zig build --summary all`; `zig build test --summary all` (74/74); local and host SA-text plus strict direct-SAB for `tests/test_unit_borrow_direct.sla`; local and host strict direct-SAB for `tests/test_unit_user_macro_direct.sla`; local and host no-fallback sweeps 101/101; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host `/home/vscode/projects/sla_ecs/lib/parallel.sla`; `git diff --check`.
+- User-macro SA-text parity is not counted for this fixture: the existing text macro transpiler still has broader expansion-format limitations, visible even in non-address user macro calls, and is separate from this direct SAB classifier path.
+
+## Previous Completed Slice
 
 - Phase 1 ordinary address-of classification scaffold is complete. `src/lowering_rules.zig` now exposes `AddressOfShape`/`AddressOfPlan` for `&identifier`, ordinary `&*borrow_or_pointer`, `&field`, `&index`, and value-temp fallback. SA-text `.borrow_expr` and direct SAB `genAddressOf` consume this shared classifier.
 - `tests/test_unit_borrow_direct.sla` now covers a fixed-array index borrow (`&values[index]`). SA-text computes the indexed element address and records the base source in `borrow_source_temps` when needed, so the borrowed address does not outlive a released base temporary.
@@ -126,4 +133,4 @@ The generic std-macro fragment naming problem is still a real SCI-boundary task:
 
 ## Dirty Worktree Caveat
 
-Current expected dirty items for this completed slice are `src/lowering_rules.zig`, `src/codegen.zig`, `src/sab_codegen.zig`, `tests/test_unit_borrow_direct.sla`, `tasks.md`, `progress.md`, and `current_plan.md`. Continue to inspect status before staging; do not restore, delete, stage, or commit unrelated/generated changes if they appear while working.
+Current expected dirty items for this completed slice are `src/codegen.zig`, `src/sab_codegen.zig`, `tests/test_unit_borrow_direct.sla`, `tests/test_unit_user_macro_direct.sla`, `tasks.md`, `progress.md`, and `current_plan.md`. Continue to inspect status before staging; do not restore, delete, stage, or commit unrelated/generated changes if they appear while working.

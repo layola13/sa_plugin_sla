@@ -1040,9 +1040,15 @@ pub const Codegen = struct {
             return;
         }
         if (self.tc.macros.contains(call.func_name)) {
-            self.out.writer().print("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
+            var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+            defer arg_regs.deinit();
             for (call.args) |arg| {
                 const arg_reg = try self.genExpr(arg, hoisted_allocs);
+                try arg_regs.append(arg_reg);
+            }
+
+            self.out.writer().print("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
+            for (arg_regs.items) |arg_reg| {
                 self.out.writer().print(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
             }
             self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
@@ -9755,7 +9761,15 @@ pub const Codegen = struct {
                     .deref_expr => deref_source_ty = self.tc.expr_types.get(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError,
                     .index_expr => |idx| {
                         const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
-                        index_is_ordinary_addressable = arrayType(target_ty) != null or sliceElementType(target_ty) != null;
+                        var addressable_target_ty = target_ty;
+                        while (true) {
+                            switch (addressable_target_ty.*) {
+                                .pointer => |p| addressable_target_ty = p,
+                                .borrow => |b| addressable_target_ty = b,
+                                else => break,
+                            }
+                        }
+                        index_is_ordinary_addressable = arrayType(addressable_target_ty) != null or sliceElementType(addressable_target_ty) != null;
                     },
                     else => {},
                 }

@@ -35,12 +35,18 @@ fn read_index_borrow(values: [i32; 3], index: int) -> i32 {
     *borrowed
 };
 
+fn read_borrowed_index_borrow(values: &[i32; 3], index: int) -> i32 {
+    let borrowed = &values[index];
+    *borrowed
+};
+
 @test "direct borrow deref"() {
     let value: i32 = 6;
     if read_twice(&value) != 12 { panic(30701); };
     if read_nested(8) != 8 { panic(30702); };
     let values = [4i32, 5i32, 6i32];
     if read_index_borrow(values, 1) != 5 { panic(30706); };
+    if read_borrowed_index_borrow(&values, 2) != 6 { panic(30707); };
 };
 
 @test "direct borrow precedence"() {

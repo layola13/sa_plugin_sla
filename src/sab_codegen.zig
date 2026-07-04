@@ -5522,24 +5522,52 @@ pub const Codegen = struct {
         };
     }
 
+    fn genMacroIdentifierAddress(self: *Codegen, name: []const u8, ctx: *MacroExpansionContext) anyerror!AddressSource {
+        if (macroIdentifierName(ctx, name)) |mapped| {
+            if (self.stackLocal(mapped)) |slot| return .{ .reg = slot.reg };
+            return .{ .reg = try self.genIdentifierByName(mapped) };
+        }
+        if (macroArgBinding(ctx, name)) |binding| {
+            if (binding.ctx) |arg_ctx| return try self.genMacroAddressOf(@constCast(binding.arg), arg_ctx);
+            return try self.genAddressOf(@constCast(binding.arg));
+        }
+        if (self.stackLocal(name)) |slot| return .{ .reg = slot.reg };
+        return .{ .reg = try self.genIdentifierByName(name) };
+    }
+
     fn genMacroAddressOf(self: *Codegen, expr: *ast.Node, ctx: *MacroExpansionContext) anyerror!AddressSource {
-        return switch (expr.*) {
-            .identifier => |name| blk: {
-                if (macroIdentifierName(ctx, name)) |mapped| {
-                    if (self.stackLocal(mapped)) |slot| break :blk .{ .reg = slot.reg };
-                    break :blk .{ .reg = try self.genIdentifierByName(mapped) };
-                }
-                if (macroArgBinding(ctx, name)) |binding| {
-                    if (binding.ctx) |arg_ctx| break :blk try self.genMacroAddressOf(@constCast(binding.arg), arg_ctx);
-                    break :blk try self.genAddressOf(@constCast(binding.arg));
-                }
-                if (self.stackLocal(name)) |slot| break :blk .{ .reg = slot.reg };
-                break :blk .{ .reg = try self.genIdentifierByName(name) };
+        var deref_source_ty: ?*const ast.Type = null;
+        var index_is_ordinary_addressable = false;
+        switch (expr.*) {
+            .deref_expr => |deref| deref_source_ty = (try self.macroExprType(deref.expr, ctx)) orelse return Error.MissingType,
+            .index_expr => |idx| {
+                const target_ty = (try self.macroExprType(idx.target, ctx)) orelse return Error.MissingType;
+                index_is_ordinary_addressable = target_ty.* == .array;
             },
-            .deref_expr => |deref| .{ .reg = try self.genMacroExpr(deref.expr, ctx) },
-            .field_expr => |field| try self.genMacroFieldAddress(field, ctx),
-            .index_expr => |idx| try self.genMacroIndexAddress(idx, ctx),
-            else => .{ .reg = try self.genMacroExpr(expr, ctx) },
+            else => {},
+        }
+        const address_plan = lowering_rules.planAddressOf(expr, .{
+            .deref_source_ty = deref_source_ty,
+            .index_is_ordinary_addressable = index_is_ordinary_addressable,
+        });
+        return switch (address_plan.shape) {
+            .identifier => blk: {
+                if (expr.* != .identifier) return Error.UnsupportedSabDirectFeature;
+                break :blk try self.genMacroIdentifierAddress(expr.identifier, ctx);
+            },
+            .deref_borrow_or_pointer => .{ .reg = try self.genMacroExpr(expr.deref_expr.expr, ctx) },
+            .field => blk: {
+                if (expr.* != .field_expr) return Error.UnsupportedSabDirectFeature;
+                break :blk try self.genMacroFieldAddress(expr.field_expr, ctx);
+            },
+            .index => blk: {
+                if (expr.* != .index_expr) return Error.UnsupportedSabDirectFeature;
+                break :blk try self.genMacroIndexAddress(expr.index_expr, ctx);
+            },
+            .value_temp => blk: {
+                if (expr.* == .deref_expr) break :blk .{ .reg = try self.genMacroExpr(expr.deref_expr.expr, ctx) };
+                break :blk .{ .reg = try self.genMacroExpr(expr, ctx) };
+            },
         };
     }
 
@@ -7221,7 +7249,15 @@ pub const Codegen = struct {
 
     fn genIndexAddress(self: *Codegen, idx: ast.IndexExpr) anyerror!AddressSource {
         const target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType;
-        if (target_ty.* != .array) {
+        var addressable_target_ty = target_ty;
+        while (true) {
+            switch (addressable_target_ty.*) {
+                .pointer => |p| addressable_target_ty = p,
+                .borrow => |b| addressable_target_ty = b,
+                else => break,
+            }
+        }
+        if (addressable_target_ty.* != .array) {
             const elem_ty = firstGenericArg(target_ty) orelse return Error.UnsupportedSabDirectFeature;
             if (lowering_rules.smartPointerType(elem_ty) == null) return Error.UnsupportedSabDirectFeature;
             const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
@@ -7244,14 +7280,14 @@ pub const Codegen = struct {
         if (idx.index.* == .literal and idx.index.literal == .int_val) {
             const raw_index = idx.index.literal.int_val;
             if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
-            const layout = arrayElementLayout(target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
+            const layout = arrayElementLayout(addressable_target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
             var source = try self.addressWithOffset(target_reg, layout.offset);
             if (layout.offset != 0 and !self.isLocalReg(target_reg)) source.release_regs = try self.singleReleaseReg(target_reg);
             return source;
         }
 
         const index_reg = try self.genExpr(idx.index);
-        const elem_ptr = try self.genArrayElementPtr(target_ty.array, target_reg, index_reg);
+        const elem_ptr = try self.genArrayElementPtr(addressable_target_ty.array, target_reg, index_reg);
         if (elem_ptr.offset) |offset| try self.emitRelease(offset);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
         return .{

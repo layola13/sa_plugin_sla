@@ -15,9 +15,14 @@ macro add_two_macro(var_ref) {
 }
 
 struct DirectMacroPoint { left: i64, right: i64 }
+struct DirectMacroBorrowPoint { left: i64, right: i64 }
 
 fn direct_macro_add(value: i64, delta: i64) -> i64 {
     value + delta
+}
+
+fn direct_macro_read_i64(value: &i64) -> i64 {
+    *value
 }
 
 macro scoped_shadow_macro(var_ref) {
@@ -63,6 +68,14 @@ macro wrapper_macro(var_ref, delta) {
     }
 }
 
+macro borrow_address_macro(out, point, values, ptr) {
+    {
+        out = direct_macro_read_i64(&point.left);
+        out = out + direct_macro_read_i64(&values[1]);
+        out = out + direct_macro_read_i64(&*ptr);
+    }
+}
+
 fn macro_hygiene_direct(value: i64) -> i64 {
     let temp = value;
     add_one_macro(temp);
@@ -104,10 +117,21 @@ fn macro_nested_call_direct(value: i64) -> i64 {
     item
 }
 
+fn macro_address_direct() -> i64 {
+    let point = DirectMacroBorrowPoint { left: 11, right: 17 };
+    let values: [i64; 3] = [3, 5, 7];
+    let tail = 17;
+    let ptr = &tail;
+    let total = 0;
+    borrow_address_macro(total, point, values, ptr);
+    total
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
     if macro_branch_direct(10, false, 4) != 6 { panic(31805); };
     if macro_aggregate_direct(3) != 12 { panic(31806); };
     if macro_nested_call_direct(7) != 10 { panic(31807); };
+    if macro_address_direct() != 33 { panic(31808); };
 }

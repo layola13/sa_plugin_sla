@@ -6012,6 +6012,14 @@ pub const Codegen = struct {
                 try self.emitRelease(raw_len);
                 try self.emitRelease(raw_param);
             }
+            if (!p.is_borrow and !p.is_move and self.bindingNeedsAddressableStorage(p.name, p.ty)) {
+                const raw_param = try self.newTmp();
+                self.out.writer().print("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
+                try self.emitRelease(raw_param);
+            }
         }
 
         // 2. Compile body statements

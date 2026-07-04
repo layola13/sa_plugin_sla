@@ -11,8 +11,17 @@ fn read_nested(value: i32) -> i32 {
 
 struct DirectBorrowPoint { pad: i32, value: i32 }
 
+struct DirectBorrowInner { value: i32 }
+
+struct DirectBorrowOuter { pad: i32, inner: DirectBorrowInner }
+
 fn read_field_borrow(item: DirectBorrowPoint) -> i32 {
     let borrowed = &item.value;
+    *borrowed
+};
+
+fn read_nested_field_borrow(item: DirectBorrowOuter) -> i32 {
+    let borrowed = &item.inner.value;
     *borrowed
 };
 
@@ -30,6 +39,8 @@ fn read_borrowed_deref(&value: i32) -> i32 {
 @test "direct borrow precedence"() {
     let item = DirectBorrowPoint { pad: 3, value: 9 };
     if read_field_borrow(item) != 9 { panic(30703); };
+    let outer = DirectBorrowOuter { pad: 1, inner: DirectBorrowInner { value: 13 } };
+    if read_nested_field_borrow(outer) != 13 { panic(30705); };
     let value: i32 = 10;
     if read_borrowed_deref(&value) != 10 { panic(30704); };
 };

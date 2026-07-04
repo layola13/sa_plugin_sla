@@ -8103,6 +8103,30 @@ pub const Codegen = struct {
         return try self.exprTypeOrFallback(arg);
     }
 
+    fn importedMacroArgAddressShape(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!lowering_rules.AddressOfShape {
+        if (ctx) |macro_ctx| {
+            if (arg.* == .identifier) {
+                const name = arg.identifier;
+                if (macroIdentifierName(macro_ctx, name) != null) return .identifier;
+                if (macroArgBinding(macro_ctx, name)) |binding| {
+                    return try self.importedMacroArgAddressShape(binding.arg, binding.ctx);
+                }
+            }
+        }
+
+        var deref_source_ty: ?*const ast.Type = null;
+        var index_target_ty: ?*const ast.Type = null;
+        switch (arg.*) {
+            .deref_expr => |deref| deref_source_ty = (try self.importedMacroArgType(deref.expr, ctx)) orelse return Error.MissingType,
+            .index_expr => |idx| index_target_ty = (try self.importedMacroArgType(idx.target, ctx)) orelse return Error.MissingType,
+            else => {},
+        }
+        return lowering_rules.planAddressOf(arg, .{
+            .deref_source_ty = deref_source_ty,
+            .index_target_ty = index_target_ty,
+        }).shape;
+    }
+
     fn genImportedMacroValueArg(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
         const arg_reg = if (ctx) |macro_ctx| try self.genMacroExpr(@constCast(arg), macro_ctx) else try self.genExpr(@constCast(arg));
         return .{
@@ -8111,30 +8135,33 @@ pub const Codegen = struct {
         };
     }
 
+    fn genImportedMacroMaterializedSlotArg(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
+        const value_reg = (if (ctx) |macro_ctx| self.genMacroExpr(@constCast(arg), macro_ctx) else self.genExpr(@constCast(arg))) catch |err| {
+            self.traceUnsupported("imported macro addressable value {s} failed: {s}\n", .{ @tagName(arg.*), @errorName(err) });
+            return err;
+        };
+        const arg_ty = ((try self.importedMacroArgType(arg, ctx)) orelse {
+            self.traceUnsupported("imported macro addressable type {s} missing\n", .{@tagName(arg.*)});
+            return Error.MissingType;
+        });
+        const slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(slot, typeSize(arg_ty));
+        const store_ty = addressableSlotPrimType(arg_ty) catch |err| {
+            self.traceUnsupported("imported macro addressable storage type {s} failed: {s}\n", .{ @tagName(arg_ty.*), @errorName(err) });
+            return err;
+        };
+        try self.emitStore(slot, 0, value_reg, store_ty);
+        try self.releaseExprResultIfNeeded(arg, value_reg);
+        return .{ .operand = self.symbols.items[slot], .release_reg = null };
+    }
+
     fn genImportedMacroArg(self: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg, ctx);
-        switch (plan.planAddressableArgAction(call_arg_index, existing_symbol != null)) {
+        const address_shape: lowering_rules.AddressOfShape = if (plan.callArgNeedsAddressableSlot(call_arg_index)) try self.importedMacroArgAddressShape(arg, ctx) else .value_temp;
+        switch (plan.planAddressExpressionArgAction(call_arg_index, address_shape, existing_symbol != null)) {
             .pass_value => return self.genImportedMacroValueArg(arg, ctx),
             .reuse_existing_addressable => return .{ .operand = existing_symbol.?, .release_reg = null },
-            .materialize_stack_slot => {
-                const value_reg = (if (ctx) |macro_ctx| self.genMacroExpr(@constCast(arg), macro_ctx) else self.genExpr(@constCast(arg))) catch |err| {
-                    self.traceUnsupported("imported macro addressable value {s} failed: {s}\n", .{ @tagName(arg.*), @errorName(err) });
-                    return err;
-                };
-                const arg_ty = ((try self.importedMacroArgType(arg, ctx)) orelse {
-                    self.traceUnsupported("imported macro addressable type {s} missing\n", .{@tagName(arg.*)});
-                    return Error.MissingType;
-                });
-                const slot = try self.intern(try self.newTmp());
-                try self.emitStackAlloc(slot, typeSize(arg_ty));
-                const store_ty = addressableSlotPrimType(arg_ty) catch |err| {
-                    self.traceUnsupported("imported macro addressable storage type {s} failed: {s}\n", .{ @tagName(arg_ty.*), @errorName(err) });
-                    return err;
-                };
-                try self.emitStore(slot, 0, value_reg, store_ty);
-                try self.releaseExprResultIfNeeded(arg, value_reg);
-                return .{ .operand = self.symbols.items[slot], .release_reg = null };
-            },
+            .materialize_stack_slot, .materialize_address_expression_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, ctx),
         }
     }
 

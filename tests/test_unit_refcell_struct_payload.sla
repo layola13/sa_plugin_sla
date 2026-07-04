@@ -1,3 +1,4 @@
+@import "sa_std/core/box.sa"
 @import "sa_std/core/refcell.sa"
 @import "sa_std/core/rc.sa"
 
@@ -14,6 +15,18 @@ fn refcell_payload_read(cell: &RefCell<RefCellPayload>) -> int {
 fn refcell_payload_write(cell: &RefCell<RefCellPayload>, value: int) -> void {
     let borrowed: &RefCellPayload = cell.borrow_mut();
     borrowed.value = value;
+}
+
+fn refcell_box_payload_read(cell: &RefCell<Box<RefCellPayload>>) -> int {
+    let borrowed: &Box<RefCellPayload> = cell.borrow();
+    let payload: &RefCellPayload = &*borrowed;
+    return payload.value;
+}
+
+fn refcell_box_payload_write(cell: &RefCell<Box<RefCellPayload>>, value: int) -> void {
+    let borrowed: &Box<RefCellPayload> = cell.borrow_mut();
+    let payload: &RefCellPayload = &*borrowed;
+    payload.value = value;
 }
 
 @test "refcell struct payload borrow"() {
@@ -38,5 +51,17 @@ fn refcell_payload_write(cell: &RefCell<RefCellPayload>, value: int) -> void {
     let borrowed2: &RefCell<RefCellPayload> = &*rc2;
     if refcell_payload_read(borrowed2) != 25 {
         panic(3);
+    };
+}
+
+@test "refcell boxed struct payload borrow"() {
+    let refcell = RefCell::new(Box::new(RefCellPayload { value: 40, flag: false }));
+    if refcell_box_payload_read(&refcell) != 40 {
+        panic(4);
+    };
+
+    refcell_box_payload_write(&refcell, 52);
+    if refcell_box_payload_read(&refcell) != 52 {
+        panic(5);
     };
 }

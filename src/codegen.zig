@@ -25,7 +25,7 @@ const ThreadCapture = struct {
 
 const RefCellBorrowHandle = struct {
     cell_reg: []const u8,
-    is_mut: bool,
+    kind: lowering_rules.RefCellBorrowKind,
 };
 
 const MutexGuardHandle = struct {
@@ -491,11 +491,7 @@ pub const Codegen = struct {
             return;
         }
         if (self.refcell_borrow_handles.get(resolved_name)) |handle| {
-            if (handle.is_mut) {
-                self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_MUT {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
-            } else {
-                self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_SHARED {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
-            }
+            self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
             _ = self.refcell_borrow_handles.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
@@ -571,11 +567,7 @@ pub const Codegen = struct {
         }
         for (handles_to_release.items) |handle_name| {
             if (self.refcell_borrow_handles.get(handle_name)) |handle| {
-                if (handle.is_mut) {
-                    self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_MUT {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
-                } else {
-                    self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_SHARED {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
-                }
+                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
                 _ = self.refcell_borrow_handles.remove(handle_name);
                 self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
             }
@@ -633,11 +625,7 @@ pub const Codegen = struct {
 
         for (handles_to_release.items) |handle_name| {
             if (self.refcell_borrow_handles.get(handle_name)) |handle| {
-                if (handle.is_mut) {
-                    self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_MUT {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
-                } else {
-                    self.out.writer().print("    EXPAND REFCELL_U64_RELEASE_SHARED {s}\n", .{handle.cell_reg}) catch return CodegenError.CodegenError;
-                }
+                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
                 _ = self.refcell_borrow_handles.remove(handle_name);
                 self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
             }
@@ -11578,7 +11566,6 @@ pub const Codegen = struct {
                             }
                         }
                         if (lowering_rules.planRefCellBorrowCall(call, ty)) |borrow_plan| {
-                            const inner_ty = borrow_plan.inner;
                             {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -11586,12 +11573,7 @@ pub const Codegen = struct {
                                 const borrow_slot_reg = try self.newTmp();
                                 const err_label = try self.newLabel("L_REFCELL_BORROW_PANIC");
                                 const end_label = try self.newLabel("L_REFCELL_BORROW_END");
-                                const is_mut = borrow_plan.isMutable();
-                                if (is_mut) {
-                                    self.out.writer().print("    EXPAND REFCELL_U64_TRY_BORROW_MUT {s}, {s}, {s}\n", .{ ok_reg, borrow_slot_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                } else {
-                                    self.out.writer().print("    EXPAND REFCELL_U64_TRY_BORROW {s}, {s}, {s}\n", .{ ok_reg, borrow_slot_reg, recv_reg }) catch return CodegenError.CodegenError;
-                                }
+                                self.out.writer().print("    EXPAND {s} {s}, {s}, {s}\n", .{ borrow_plan.tryBorrowMacroName(), ok_reg, borrow_slot_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, end_label, err_label }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
@@ -11599,13 +11581,16 @@ pub const Codegen = struct {
                                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                                const borrow_reg = if (refCellPayloadIsPointer(inner_ty)) blk: {
-                                    const payload_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ payload_reg, borrow_slot_reg }) catch return CodegenError.CodegenError;
-                                    try self.emitRelease(borrow_slot_reg);
-                                    break :blk payload_reg;
-                                } else borrow_slot_reg;
-                                self.refcell_borrow_handles.put(borrow_reg, .{ .cell_reg = recv_reg, .is_mut = is_mut }) catch return CodegenError.OutOfMemory;
+                                const borrow_reg = switch (borrow_plan.value_kind) {
+                                    .scalar_slot => borrow_slot_reg,
+                                    .pointer_payload, .smart_pointer_payload => blk: {
+                                        const payload_reg = try self.newTmp();
+                                        self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ payload_reg, borrow_slot_reg }) catch return CodegenError.CodegenError;
+                                        try self.emitRelease(borrow_slot_reg);
+                                        break :blk payload_reg;
+                                    },
+                                };
+                                self.refcell_borrow_handles.put(borrow_reg, .{ .cell_reg = recv_reg, .kind = borrow_plan.kind }) catch return CodegenError.OutOfMemory;
                                 return borrow_reg;
                             }
                         }

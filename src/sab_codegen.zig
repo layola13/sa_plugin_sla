@@ -34,7 +34,7 @@ const Local = struct {
 
 const RefCellBorrowValue = struct {
     cell_reg: u32,
-    is_mut: bool,
+    kind: lowering_rules.RefCellBorrowKind,
 };
 
 const LoopJumpKind = enum {
@@ -2152,7 +2152,7 @@ pub const Codegen = struct {
     }
 
     fn emitRefCellBorrowRelease(self: *Codegen, handle: RefCellBorrowValue) !void {
-        try self.emitStdMacroFragment("sa_std/core/refcell.sa", if (handle.is_mut) "REFCELL_U64_RELEASE_MUT" else "REFCELL_U64_RELEASE_SHARED", &.{
+        try self.emitStdMacroFragment("sa_std/core/refcell.sa", lowering_rules.refCellBorrowReleaseMacroName(handle.kind), &.{
             self.symbols.items[handle.cell_reg],
         });
     }
@@ -8151,7 +8151,7 @@ pub const Codegen = struct {
         const borrow_slot_reg = try self.intern(try self.newTmp());
         try self.recordReg(ok_reg);
         try self.recordReg(borrow_slot_reg);
-        try self.emitStdMacroFragment("sa_std/core/refcell.sa", if (plan.isMutable()) "REFCELL_U64_TRY_BORROW_MUT" else "REFCELL_U64_TRY_BORROW", &.{
+        try self.emitStdMacroFragment("sa_std/core/refcell.sa", plan.tryBorrowMacroName(), &.{
             self.symbols.items[ok_reg],
             self.symbols.items[borrow_slot_reg],
             self.symbols.items[recv_reg],
@@ -8167,13 +8167,16 @@ pub const Codegen = struct {
 
         try self.emitLabel(ok_label);
         try self.emitBranchRelease(ok_reg);
-        const borrow_reg = if (lowering_rules.smartPointerDerefType(plan.inner) != null) borrow_slot_reg else if (lowering_rules.refCellPayloadIsPointer(plan.inner)) blk: {
-            const payload_reg = try self.intern(try self.newTmp());
-            try self.emitTake(payload_reg, borrow_slot_reg, 0, .ptr);
-            try self.borrow_address_temps.put(payload_reg, try self.singleReleaseReg(borrow_slot_reg));
-            break :blk payload_reg;
-        } else borrow_slot_reg;
-        try self.refcell_borrow_values.put(borrow_reg, .{ .cell_reg = recv_reg, .is_mut = plan.isMutable() });
+        const borrow_reg = switch (plan.value_kind) {
+            .scalar_slot, .smart_pointer_payload => borrow_slot_reg,
+            .pointer_payload => blk: {
+                const payload_reg = try self.intern(try self.newTmp());
+                try self.emitTake(payload_reg, borrow_slot_reg, 0, .ptr);
+                try self.borrow_address_temps.put(payload_reg, try self.singleReleaseReg(borrow_slot_reg));
+                break :blk payload_reg;
+            },
+        };
+        try self.refcell_borrow_values.put(borrow_reg, .{ .cell_reg = recv_reg, .kind = plan.kind });
         return borrow_reg;
     }
 

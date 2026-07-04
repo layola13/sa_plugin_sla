@@ -1571,14 +1571,36 @@ pub const RefCellBorrowKind = enum {
     mutable,
 };
 
+pub const RefCellBorrowValueKind = enum {
+    scalar_slot,
+    pointer_payload,
+    smart_pointer_payload,
+};
+
 pub const RefCellBorrowPlan = struct {
     kind: RefCellBorrowKind,
     inner: *ast.Type,
+    value_kind: RefCellBorrowValueKind,
 
     pub fn isMutable(self: RefCellBorrowPlan) bool {
         return self.kind == .mutable;
     }
+
+    pub fn tryBorrowMacroName(self: RefCellBorrowPlan) []const u8 {
+        return if (self.isMutable()) "REFCELL_U64_TRY_BORROW_MUT" else "REFCELL_U64_TRY_BORROW";
+    }
+
+    pub fn releaseMacroName(self: RefCellBorrowPlan) []const u8 {
+        return refCellBorrowReleaseMacroName(self.kind);
+    }
 };
+
+pub fn refCellBorrowReleaseMacroName(kind: RefCellBorrowKind) []const u8 {
+    return switch (kind) {
+        .shared => "REFCELL_U64_RELEASE_SHARED",
+        .mutable => "REFCELL_U64_RELEASE_MUT",
+    };
+}
 
 pub fn abiTypeSize(ty: *const ast.Type) usize {
     return switch (ty.*) {
@@ -1948,11 +1970,18 @@ pub fn refCellPayloadIsPointer(ty: *const ast.Type) bool {
     };
 }
 
+pub fn planRefCellBorrowValueKind(inner: *const ast.Type) RefCellBorrowValueKind {
+    if (smartPointerDerefType(inner) != null) return .smart_pointer_payload;
+    if (refCellPayloadIsPointer(inner)) return .pointer_payload;
+    return .scalar_slot;
+}
+
 pub fn planRefCellBorrowCall(call: ast.CallExpr, receiver_ty: *const ast.Type) ?RefCellBorrowPlan {
     if (call.args.len != 1) return null;
     const inner = refCellInnerType(receiver_ty) orelse return null;
-    if (std.mem.eql(u8, call.func_name, "borrow")) return .{ .kind = .shared, .inner = inner };
-    if (std.mem.eql(u8, call.func_name, "borrow_mut")) return .{ .kind = .mutable, .inner = inner };
+    const value_kind = planRefCellBorrowValueKind(inner);
+    if (std.mem.eql(u8, call.func_name, "borrow")) return .{ .kind = .shared, .inner = inner, .value_kind = value_kind };
+    if (std.mem.eql(u8, call.func_name, "borrow_mut")) return .{ .kind = .mutable, .inner = inner, .value_kind = value_kind };
     return null;
 }
 
@@ -3632,6 +3661,38 @@ test "shared dyn trait naming and method slots" {
     const vt = try vtableName(std.testing.allocator, "Draw", "Sprite");
     defer std.testing.allocator.free(vt);
     try std.testing.expectEqualSlices(u8, "VT_Sprite_Draw", vt);
+}
+
+test "shared refcell borrow call plan tracks payload kind and release macro" {
+    var i64_ty = ast.Type{ .primitive = .i64 };
+    const box_generics = [_]*ast.Type{&i64_ty};
+    var box_i64_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = box_generics[0..] } };
+    var payload_ty = ast.Type{ .user_defined = .{ .name = "Payload", .generics = &.{} } };
+    const refcell_i64_generics = [_]*ast.Type{&i64_ty};
+    var refcell_i64_ty = ast.Type{ .user_defined = .{ .name = "RefCell", .generics = refcell_i64_generics[0..] } };
+    const refcell_box_generics = [_]*ast.Type{&box_i64_ty};
+    var refcell_box_ty = ast.Type{ .user_defined = .{ .name = "RefCell", .generics = refcell_box_generics[0..] } };
+    const refcell_payload_generics = [_]*ast.Type{&payload_ty};
+    var refcell_payload_ty = ast.Type{ .user_defined = .{ .name = "RefCell", .generics = refcell_payload_generics[0..] } };
+    var cell = ast.Node{ .identifier = "cell" };
+    const borrow_args = [_]*ast.Node{&cell};
+    const borrow_call = ast.CallExpr{ .func_name = "borrow", .associated_target = null, .generics = &.{}, .args = borrow_args[0..] };
+    const borrow_mut_call = ast.CallExpr{ .func_name = "borrow_mut", .associated_target = null, .generics = &.{}, .args = borrow_args[0..] };
+
+    const scalar_plan = planRefCellBorrowCall(borrow_call, &refcell_i64_ty).?;
+    try std.testing.expectEqual(RefCellBorrowKind.shared, scalar_plan.kind);
+    try std.testing.expectEqual(RefCellBorrowValueKind.scalar_slot, scalar_plan.value_kind);
+    try std.testing.expectEqualStrings("REFCELL_U64_TRY_BORROW", scalar_plan.tryBorrowMacroName());
+    try std.testing.expectEqualStrings("REFCELL_U64_RELEASE_SHARED", scalar_plan.releaseMacroName());
+
+    const smart_plan = planRefCellBorrowCall(borrow_call, &refcell_box_ty).?;
+    try std.testing.expectEqual(RefCellBorrowValueKind.smart_pointer_payload, smart_plan.value_kind);
+
+    const pointer_plan = planRefCellBorrowCall(borrow_mut_call, &refcell_payload_ty).?;
+    try std.testing.expectEqual(RefCellBorrowKind.mutable, pointer_plan.kind);
+    try std.testing.expectEqual(RefCellBorrowValueKind.pointer_payload, pointer_plan.value_kind);
+    try std.testing.expectEqualStrings("REFCELL_U64_TRY_BORROW_MUT", pointer_plan.tryBorrowMacroName());
+    try std.testing.expectEqualStrings("REFCELL_U64_RELEASE_MUT", pointer_plan.releaseMacroName());
 }
 
 test "shared dyn coercion and receiver plans" {

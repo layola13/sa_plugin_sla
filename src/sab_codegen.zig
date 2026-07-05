@@ -35,6 +35,12 @@ const Local = struct {
 const RefCellBorrowValue = struct {
     cell_reg: u32,
     kind: lowering_rules.RefCellBorrowKind,
+    release_regs: []const u32 = &.{},
+};
+
+const ResultSlotRefCellHandle = struct {
+    cell_slot: u32,
+    kind: lowering_rules.RefCellBorrowKind,
 };
 
 const LoopJumpKind = enum {
@@ -178,6 +184,8 @@ pub const Codegen = struct {
     std_macro_template_ids: std.StringHashMap(usize),
     escaped_closure_entries: std.AutoHashMap(*const ast.Node, EscapedClosureEntry),
     refcell_borrow_values: std.AutoHashMap(u32, RefCellBorrowValue),
+    result_slot_refcell_handles: std.AutoHashMap(u32, ResultSlotRefCellHandle),
+    result_slot_refcell_slots: std.AutoHashMap(u32, u32),
     borrow_address_temps: std.AutoHashMap(u32, []const u32),
     non_owning_regs: std.AutoHashMap(u32, void),
     future_state_vtables: std.AutoHashMap(u32, []const u8),
@@ -235,6 +243,8 @@ pub const Codegen = struct {
             .std_macro_template_ids = std.StringHashMap(usize).init(allocator),
             .escaped_closure_entries = std.AutoHashMap(*const ast.Node, EscapedClosureEntry).init(allocator),
             .refcell_borrow_values = std.AutoHashMap(u32, RefCellBorrowValue).init(allocator),
+            .result_slot_refcell_handles = std.AutoHashMap(u32, ResultSlotRefCellHandle).init(allocator),
+            .result_slot_refcell_slots = std.AutoHashMap(u32, u32).init(allocator),
             .borrow_address_temps = std.AutoHashMap(u32, []const u32).init(allocator),
             .non_owning_regs = std.AutoHashMap(u32, void).init(allocator),
             .future_state_vtables = std.AutoHashMap(u32, []const u8).init(allocator),
@@ -299,6 +309,8 @@ pub const Codegen = struct {
         }
         self.escaped_closure_entries.deinit();
         self.refcell_borrow_values.deinit();
+        self.result_slot_refcell_handles.deinit();
+        self.result_slot_refcell_slots.deinit();
         self.clearBorrowAddressTemps();
         self.borrow_address_temps.deinit();
         self.non_owning_regs.deinit();
@@ -1657,6 +1669,8 @@ pub const Codegen = struct {
         self.closure_param_regs.clearRetainingCapacity();
         self.borrowed_bindings.clearRetainingCapacity();
         self.refcell_borrow_values.clearRetainingCapacity();
+        self.result_slot_refcell_handles.clearRetainingCapacity();
+        self.result_slot_refcell_slots.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
         self.non_owning_regs.clearRetainingCapacity();
         self.future_state_vtables.clearRetainingCapacity();
@@ -1709,9 +1723,90 @@ pub const Codegen = struct {
             }
             try self.borrow_address_temps.put(dst, entry.value);
         }
-        if (self.non_owning_regs.contains(src)) {
+        if (self.non_owning_regs.fetchRemove(src)) |_| {
             try self.non_owning_regs.put(dst, {});
         }
+    }
+
+    fn transferResultSlotValueState(self: *Codegen, dst: u32, src: u32, consume_src: bool) !void {
+        if (dst == src) return;
+        try self.transferReleaseMetadata(dst, src);
+        try self.transferFutureStateVTable(src, dst);
+        try self.transferFutureReadiness(src, dst);
+        if (consume_src) try self.markConsumed(src);
+    }
+
+    fn resultSlotNeedsRefCellCompanion(target_ty: *const ast.Type) bool {
+        return target_ty.* == .borrow;
+    }
+
+    fn ensureResultSlotRefCellSlot(self: *Codegen, slot: u32) !u32 {
+        if (self.result_slot_refcell_slots.get(slot)) |existing| return existing;
+        const cell_slot = try self.intern(try self.newTmp());
+        try self.emitAlloc(cell_slot, 8);
+        try self.result_slot_refcell_slots.put(slot, cell_slot);
+        return cell_slot;
+    }
+
+    fn prepareResultSlotRefCellCompanion(self: *Codegen, slot: u32, target_ty: *const ast.Type) !void {
+        if (!resultSlotNeedsRefCellCompanion(target_ty)) return;
+        _ = try self.ensureResultSlotRefCellSlot(slot);
+    }
+
+    fn ensureResultSlotRefCellHandle(self: *Codegen, slot: u32, kind: lowering_rules.RefCellBorrowKind) !ResultSlotRefCellHandle {
+        if (self.result_slot_refcell_handles.get(slot)) |existing| {
+            const updated = ResultSlotRefCellHandle{ .cell_slot = existing.cell_slot, .kind = kind };
+            try self.result_slot_refcell_handles.put(slot, updated);
+            return updated;
+        }
+        const cell_slot = try self.ensureResultSlotRefCellSlot(slot);
+        const meta = ResultSlotRefCellHandle{ .cell_slot = cell_slot, .kind = kind };
+        try self.result_slot_refcell_handles.put(slot, meta);
+        return meta;
+    }
+
+    fn storeResultSlotTransferredValue(self: *Codegen, slot: u32, src: u32, target_ty: *const ast.Type) !void {
+        if (!lowering_rules.resultSlotStoreTransfersValue(target_ty)) {
+            if (!self.isLocalReg(src)) try self.emitRelease(src);
+            return;
+        }
+
+        if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
+            const meta = try self.ensureResultSlotRefCellHandle(slot, entry.value.kind);
+            try self.emitStore(meta.cell_slot, 0, entry.value.cell_reg, .ptr);
+            if (entry.value.release_regs.len != 0) {
+                try self.releaseNonLocalTemps(entry.value.release_regs);
+                self.allocator.free(entry.value.release_regs);
+            }
+            if (self.borrow_address_temps.fetchRemove(src)) |temps| {
+                try self.releaseNonLocalTemps(temps.value);
+                if (temps.value.len != 0) self.allocator.free(temps.value);
+            }
+            _ = self.non_owning_regs.fetchRemove(src);
+            try self.markConsumed(src);
+            return;
+        }
+
+        try self.transferResultSlotValueState(slot, src, true);
+    }
+
+    fn loadResultSlotTransferredValue(self: *Codegen, dst: u32, slot: u32, target_ty: *const ast.Type) !void {
+        if (lowering_rules.resultSlotStoreTransfersValue(target_ty)) {
+            if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
+                _ = self.result_slot_refcell_slots.fetchRemove(slot);
+                const cell_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(cell_reg, entry.value.cell_slot, 0, .ptr);
+                try self.refcell_borrow_values.put(dst, .{
+                    .cell_reg = cell_reg,
+                    .kind = entry.value.kind,
+                    .release_regs = try self.singleReleaseReg(cell_reg),
+                });
+                try self.emitRelease(entry.value.cell_slot);
+            } else if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
+                try self.emitRelease(entry.value);
+            }
+        }
+        try self.transferResultSlotValueState(dst, slot, false);
     }
 
     fn markNonOwningReg(self: *Codegen, reg: u32) !void {
@@ -2132,7 +2227,7 @@ pub const Codegen = struct {
         return false;
     }
 
-    fn releaseNonLocalTemps(self: *Codegen, regs: []const u32) !void {
+    fn releaseNonLocalTemps(self: *Codegen, regs: []const u32) anyerror!void {
         for (regs) |reg| {
             if (!self.isLocalReg(reg)) try self.emitRelease(reg);
         }
@@ -2155,6 +2250,8 @@ pub const Codegen = struct {
         try self.emitStdMacroFragment("sa_std/core/refcell.sa", lowering_rules.refCellBorrowReleaseMacroName(handle.kind), &.{
             self.symbols.items[handle.cell_reg],
         });
+        try self.releaseNonLocalTemps(handle.release_regs);
+        if (handle.release_regs.len != 0) self.allocator.free(handle.release_regs);
     }
 
     fn emitRelease(self: *Codegen, reg: u32) !void {
@@ -5949,7 +6046,7 @@ pub const Codegen = struct {
         }
         const value = try self.genMacroExpr(tail, ctx);
         try self.emitStore(target, 0, value, try primType(target_ty));
-        if (!self.isLocalReg(value)) try self.emitRelease(value);
+        try self.storeResultSlotTransferredValue(target, value, target_ty);
         return false;
     }
 
@@ -5963,6 +6060,7 @@ pub const Codegen = struct {
         const cond = try self.genMacroExpr(ife.cond, ctx);
         const result_slot = try self.intern(try self.newTmp());
         try self.emitAlloc(result_slot, typeSize(result_ty));
+        try self.prepareResultSlotRefCellCompanion(result_slot, result_ty);
         const then_label = try self.newLabel("L_THEN");
         const else_label = try self.newLabel("L_ELSE");
         const merge_label = try self.newLabel("L_MERGE");
@@ -5984,6 +6082,7 @@ pub const Codegen = struct {
             try self.emitLabel(merge_label);
             const result = try self.intern(try self.newTmp());
             try self.emitLoad(result, result_slot, 0, try primType(result_ty));
+            try self.loadResultSlotTransferredValue(result, result_slot, result_ty);
             try self.emitRelease(result_slot);
             return result;
         }
@@ -7956,6 +8055,7 @@ pub const Codegen = struct {
         const end_label = try self.newLabel("L_OPTION_AND_THEN_END");
         const result_slot = try self.intern(try self.newTmp());
         try self.emitStackAlloc(result_slot, 8);
+        try self.prepareResultSlotRefCellCompanion(result_slot, result_ty);
         try self.emitBranch(is_some, some_label, none_label);
 
         const branch_locals_len = self.locals.items.len;
@@ -7968,6 +8068,7 @@ pub const Codegen = struct {
         try self.emitStdOptionMethod(receiver_ty, "get", value_reg, receiver_reg);
         const chained_reg = try self.genInlineClosureUnary(closure, value_reg);
         try self.emitStore(result_slot, 0, chained_reg, .ptr);
+        try self.storeResultSlotTransferredValue(result_slot, chained_reg, result_ty);
         if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
         try self.emitJmp(end_label);
         var then_released = try self.released_regs.clone();
@@ -7981,6 +8082,7 @@ pub const Codegen = struct {
         const none_reg = try self.intern(try self.newTmp());
         try self.emitStdOptionConstructor(result_ty, "None", none_reg, null);
         try self.emitStore(result_slot, 0, none_reg, .ptr);
+        try self.storeResultSlotTransferredValue(result_slot, none_reg, result_ty);
         try self.emitJmp(end_label);
         var else_released = try self.released_regs.clone();
         defer else_released.deinit();
@@ -7991,6 +8093,7 @@ pub const Codegen = struct {
         try self.emitLabel(end_label);
         const result_reg = try self.intern(try self.newTmp());
         try self.emitLoad(result_reg, result_slot, 0, try primType(result_ty));
+        try self.loadResultSlotTransferredValue(result_reg, result_slot, result_ty);
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
         return result_reg;
     }
@@ -8006,6 +8109,7 @@ pub const Codegen = struct {
         const end_label = try self.newLabel("L_OPTION_UNWRAP_OR_ELSE_END");
         const result_slot = try self.intern(try self.newTmp());
         try self.emitStackAlloc(result_slot, typeSize(inner_ty));
+        try self.prepareResultSlotRefCellCompanion(result_slot, inner_ty);
         try self.emitBranch(is_some, some_label, none_label);
 
         const branch_locals_len = self.locals.items.len;
@@ -8017,7 +8121,7 @@ pub const Codegen = struct {
         const value_reg = try self.intern(try self.newTmp());
         try self.emitStdOptionMethod(receiver_ty, "get", value_reg, receiver_reg);
         try self.emitStore(result_slot, 0, value_reg, try primType(inner_ty));
-        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        try self.storeResultSlotTransferredValue(result_slot, value_reg, inner_ty);
         try self.emitJmp(end_label);
         var then_released = try self.released_regs.clone();
         defer then_released.deinit();
@@ -8029,7 +8133,7 @@ pub const Codegen = struct {
         try self.emitBranchRelease(is_some);
         const default_reg = try self.genInlineClosureNullary(closure);
         try self.emitStore(result_slot, 0, default_reg, try primType(inner_ty));
-        if (!self.isLocalReg(default_reg)) try self.emitRelease(default_reg);
+        try self.storeResultSlotTransferredValue(result_slot, default_reg, inner_ty);
         try self.emitJmp(end_label);
         var else_released = try self.released_regs.clone();
         defer else_released.deinit();
@@ -8040,6 +8144,7 @@ pub const Codegen = struct {
         try self.emitLabel(end_label);
         const result_reg = try self.intern(try self.newTmp());
         try self.emitLoad(result_reg, result_slot, 0, try primType(inner_ty));
+        try self.loadResultSlotTransferredValue(result_reg, result_slot, inner_ty);
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
         return result_reg;
     }
@@ -9292,6 +9397,7 @@ pub const Codegen = struct {
         const result_slot = if (value_match) blk: {
             const slot = try self.intern(try self.newTmp());
             try self.emitAlloc(slot, typeSize(expr_ty));
+            try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
             break :blk slot;
         } else null;
 
@@ -9373,6 +9479,7 @@ pub const Codegen = struct {
             if (result_slot) |slot| {
                 const result = try self.intern(try self.newTmp());
                 try self.emitLoad(result, slot, 0, try primType(expr_ty));
+                try self.loadResultSlotTransferredValue(result, slot, expr_ty);
                 try self.emitRelease(slot);
                 return result;
             }
@@ -9487,7 +9594,7 @@ pub const Codegen = struct {
         }
         const value = try self.genExpr(tail);
         try self.emitStore(target, 0, value, try primType(target_ty));
-        if (!self.isLocalReg(value)) try self.emitRelease(value);
+        try self.storeResultSlotTransferredValue(target, value, target_ty);
         return false;
     }
 
@@ -9496,6 +9603,7 @@ pub const Codegen = struct {
         const cond = try self.genExpr(ife.cond);
         const result_slot = try self.intern(try self.newTmp());
         try self.emitAlloc(result_slot, typeSize(result_ty));
+        try self.prepareResultSlotRefCellCompanion(result_slot, result_ty);
         const then_label = try self.newLabel("L_THEN");
         const else_label = try self.newLabel("L_ELSE");
         const merge_label = try self.newLabel("L_MERGE");
@@ -9541,6 +9649,7 @@ pub const Codegen = struct {
             try self.emitLabel(merge_label);
             const result = try self.intern(try self.newTmp());
             try self.emitLoad(result, result_slot, 0, try primType(result_ty));
+            try self.loadResultSlotTransferredValue(result, result_slot, result_ty);
             try self.emitRelease(result_slot);
             return result;
         }

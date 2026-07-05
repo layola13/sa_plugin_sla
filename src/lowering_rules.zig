@@ -2380,6 +2380,13 @@ pub fn exprResultNeedsRelease(expr: *const ast.Node) bool {
     };
 }
 
+/// Result slots used by `if`/`match`-style expression lowering must treat
+/// pointer-passing values as moves into the slot, not copy-and-release temps.
+/// The loaded merge result becomes the sole owner/borrow carrier.
+pub fn resultSlotStoreTransfersValue(ty: *const ast.Type) bool {
+    return abiPassesAsPointer(ty);
+}
+
 pub fn rootIdentifier(expr: *const ast.Node) ?[]const u8 {
     return switch (expr.*) {
         .identifier => |name| name,
@@ -2793,6 +2800,19 @@ test "shared lowering rules classify call materialization decisions" {
     const generated_plan = planCallArgMaterialization(&value, .{ .generated_fn_ptr_identifier = true });
     try std.testing.expectEqual(CallArgMaterializationKind.value, generated_plan.kind);
     try std.testing.expect(generated_plan.release_after_call);
+}
+
+test "shared lowering rules classify result-slot value transfer" {
+    var primitive_ty = ast.Type{ .primitive = .i32 };
+    var borrow_primitive_ty = ast.Type{ .borrow = &primitive_ty };
+    var user_ty = ast.Type{ .user_defined = .{ .name = "Payload", .generics = &.{} } };
+    var future_inner_ty = ast.Type{ .primitive = .i64 };
+    var future_ty = ast.Type{ .future = &future_inner_ty };
+
+    try std.testing.expect(!resultSlotStoreTransfersValue(&primitive_ty));
+    try std.testing.expect(resultSlotStoreTransfersValue(&borrow_primitive_ty));
+    try std.testing.expect(resultSlotStoreTransfersValue(&user_ty));
+    try std.testing.expect(resultSlotStoreTransfersValue(&future_ty));
 }
 
 test "shared ABI layout keeps fixed-array fields as pointer slots" {

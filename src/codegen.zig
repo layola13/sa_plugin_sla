@@ -26,6 +26,12 @@ const ThreadCapture = struct {
 const RefCellBorrowHandle = struct {
     cell_reg: []const u8,
     kind: lowering_rules.RefCellBorrowKind,
+    cell_release_temp: ?[]const u8 = null,
+};
+
+const ResultSlotRefCellHandle = struct {
+    cell_slot: []const u8,
+    kind: lowering_rules.RefCellBorrowKind,
 };
 
 const MutexGuardHandle = struct {
@@ -78,6 +84,8 @@ pub const Codegen = struct {
     btree_set_bindings: std.StringHashMap(void),
     borrow_source_temps: std.StringHashMap([]const u8),
     refcell_borrow_handles: std.StringHashMap(RefCellBorrowHandle),
+    result_slot_refcell_handles: std.StringHashMap(ResultSlotRefCellHandle),
+    result_slot_refcell_slots: std.StringHashMap([]const u8),
     mutex_guard_handles: std.StringHashMap(MutexGuardHandle),
     mutex_lock_results: std.StringHashMap(MutexGuardHandle),
     rwlock_guard_handles: std.StringHashMap(RwLockGuardHandle),
@@ -137,6 +145,8 @@ pub const Codegen = struct {
             .btree_set_bindings = std.StringHashMap(void).init(allocator),
             .borrow_source_temps = std.StringHashMap([]const u8).init(allocator),
             .refcell_borrow_handles = std.StringHashMap(RefCellBorrowHandle).init(allocator),
+            .result_slot_refcell_handles = std.StringHashMap(ResultSlotRefCellHandle).init(allocator),
+            .result_slot_refcell_slots = std.StringHashMap([]const u8).init(allocator),
             .mutex_guard_handles = std.StringHashMap(MutexGuardHandle).init(allocator),
             .mutex_lock_results = std.StringHashMap(MutexGuardHandle).init(allocator),
             .rwlock_guard_handles = std.StringHashMap(RwLockGuardHandle).init(allocator),
@@ -198,6 +208,8 @@ pub const Codegen = struct {
         self.btree_set_bindings.deinit();
         self.borrow_source_temps.deinit();
         self.refcell_borrow_handles.deinit();
+        self.result_slot_refcell_handles.deinit();
+        self.result_slot_refcell_slots.deinit();
         self.mutex_guard_handles.deinit();
         self.mutex_lock_results.deinit();
         self.rwlock_guard_handles.deinit();
@@ -491,10 +503,13 @@ pub const Codegen = struct {
             return;
         }
         if (self.refcell_borrow_handles.get(resolved_name)) |handle| {
-            self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
             _ = self.refcell_borrow_handles.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+            self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
             self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            if (handle.cell_release_temp) |temp| {
+                if (!std.mem.eql(u8, temp, resolved_name)) try self.emitRelease(temp);
+            }
             return;
         }
         if (self.mutex_guard_handles.get(resolved_name)) |handle| {
@@ -567,9 +582,12 @@ pub const Codegen = struct {
         }
         for (handles_to_release.items) |handle_name| {
             if (self.refcell_borrow_handles.get(handle_name)) |handle| {
-                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
                 _ = self.refcell_borrow_handles.remove(handle_name);
                 self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
+                if (handle.cell_release_temp) |temp| {
+                    if (!std.mem.eql(u8, temp, handle_name)) try self.emitRelease(temp);
+                }
             }
         }
         if (std.mem.startsWith(u8, resolved_name, "&")) return;
@@ -625,11 +643,160 @@ pub const Codegen = struct {
 
         for (handles_to_release.items) |handle_name| {
             if (self.refcell_borrow_handles.get(handle_name)) |handle| {
-                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
                 _ = self.refcell_borrow_handles.remove(handle_name);
                 self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
+                if (handle.cell_release_temp) |temp| {
+                    if (!std.mem.eql(u8, temp, handle_name)) try self.emitRelease(temp);
+                }
             }
         }
+    }
+
+    fn markConsumedBinding(self: *Codegen, name: []const u8) CodegenError!void {
+        self.consumed_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+    }
+
+    fn transferResultSlotValueState(self: *Codegen, dst: []const u8, src: []const u8, mark_consumed: bool) CodegenError!void {
+        if (std.mem.eql(u8, dst, src)) return;
+
+        if (self.task_future_objects.get(src)) |future_obj| {
+            self.task_future_objects.put(dst, future_obj) catch return CodegenError.OutOfMemory;
+            _ = self.task_future_objects.remove(src);
+        }
+        if (self.future_state_vtables.get(src)) |vt_name| {
+            self.future_state_vtables.put(dst, vt_name) catch return CodegenError.OutOfMemory;
+            _ = self.future_state_vtables.remove(src);
+        }
+        if (self.future_readiness.get(src)) |state| {
+            self.future_readiness.put(dst, state) catch return CodegenError.OutOfMemory;
+            _ = self.future_readiness.remove(src);
+        }
+        if (self.executor_task_counts.get(src)) |task_count| {
+            self.executor_task_counts.put(dst, task_count) catch return CodegenError.OutOfMemory;
+            _ = self.executor_task_counts.remove(src);
+        }
+        if (self.mpsc_sender_bindings.contains(src)) {
+            self.mpsc_sender_bindings.put(dst, {}) catch return CodegenError.OutOfMemory;
+            if (self.mpsc_sender_channels.get(src)) |chan| {
+                self.mpsc_sender_channels.put(dst, chan) catch return CodegenError.OutOfMemory;
+            }
+            _ = self.mpsc_sender_bindings.remove(src);
+            _ = self.mpsc_sender_channels.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+        if (self.borrow_source_temps.get(src)) |source_temp| {
+            self.borrow_source_temps.put(dst, source_temp) catch return CodegenError.OutOfMemory;
+            _ = self.borrow_source_temps.remove(src);
+        }
+        if (self.refcell_borrow_handles.get(src)) |handle| {
+            self.refcell_borrow_handles.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.refcell_borrow_handles.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+        if (self.mutex_guard_handles.get(src)) |handle| {
+            self.mutex_guard_handles.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.mutex_guard_handles.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+        if (self.mutex_lock_results.get(src)) |handle| {
+            self.mutex_lock_results.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.mutex_lock_results.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+        if (self.rwlock_guard_handles.get(src)) |handle| {
+            self.rwlock_guard_handles.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.rwlock_guard_handles.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+        if (self.rwlock_lock_results.get(src)) |handle| {
+            self.rwlock_lock_results.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.rwlock_lock_results.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+        if (self.file_bindings.contains(src)) {
+            self.file_bindings.put(dst, {}) catch return CodegenError.OutOfMemory;
+            _ = self.file_bindings.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+        if (self.file_open_results.get(src)) |handle| {
+            self.file_open_results.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.file_open_results.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+        if (self.metadata_bindings.contains(src)) {
+            self.metadata_bindings.put(dst, {}) catch return CodegenError.OutOfMemory;
+            _ = self.metadata_bindings.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+        if (self.metadata_open_results.get(src)) |handle| {
+            self.metadata_open_results.put(dst, handle) catch return CodegenError.OutOfMemory;
+            _ = self.metadata_open_results.remove(src);
+            if (mark_consumed) try self.markConsumedBinding(src);
+        }
+    }
+
+    fn ensureResultSlotRefCellHandle(self: *Codegen, slot: []const u8, kind: lowering_rules.RefCellBorrowKind) CodegenError!ResultSlotRefCellHandle {
+        if (self.result_slot_refcell_handles.get(slot)) |existing| {
+            const updated = ResultSlotRefCellHandle{ .cell_slot = existing.cell_slot, .kind = kind };
+            self.result_slot_refcell_handles.put(slot, updated) catch return CodegenError.OutOfMemory;
+            return updated;
+        }
+        const cell_slot = try self.ensureResultSlotRefCellSlot(slot);
+        const meta = ResultSlotRefCellHandle{ .cell_slot = cell_slot, .kind = kind };
+        self.result_slot_refcell_handles.put(slot, meta) catch return CodegenError.OutOfMemory;
+        return meta;
+    }
+
+    fn resultSlotNeedsRefCellCompanion(target_ty: *const ast.Type) bool {
+        return target_ty.* == .borrow;
+    }
+
+    fn ensureResultSlotRefCellSlot(self: *Codegen, slot: []const u8) CodegenError![]const u8 {
+        if (self.result_slot_refcell_slots.get(slot)) |existing| return existing;
+        const cell_slot = try self.newTmp();
+        self.out.writer().print("    {s} = alloc 8\n", .{cell_slot}) catch return CodegenError.CodegenError;
+        self.result_slot_refcell_slots.put(slot, cell_slot) catch return CodegenError.OutOfMemory;
+        return cell_slot;
+    }
+
+    fn prepareResultSlotRefCellCompanion(self: *Codegen, slot: []const u8, target_ty: *const ast.Type) CodegenError!void {
+        if (!resultSlotNeedsRefCellCompanion(target_ty)) return;
+        _ = try self.ensureResultSlotRefCellSlot(slot);
+    }
+
+    fn storeResultSlotTransferredValueState(self: *Codegen, slot: []const u8, src: []const u8, target_ty: *const ast.Type) CodegenError!void {
+        if (lowering_rules.resultSlotStoreTransfersValue(target_ty)) {
+            if (self.refcell_borrow_handles.get(src)) |handle| {
+                const meta = try self.ensureResultSlotRefCellHandle(slot, handle.kind);
+                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ meta.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
+                _ = self.refcell_borrow_handles.remove(src);
+                try self.markConsumedBinding(src);
+                if (handle.cell_release_temp) |temp| {
+                    if (!std.mem.eql(u8, temp, src)) try self.emitRelease(temp);
+                }
+            }
+        }
+        try self.transferResultSlotValueState(slot, src, true);
+    }
+
+    fn loadResultSlotTransferredValueState(self: *Codegen, dst: []const u8, slot: []const u8, target_ty: *const ast.Type) CodegenError!void {
+        if (lowering_rules.resultSlotStoreTransfersValue(target_ty)) {
+            if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
+                _ = self.result_slot_refcell_slots.fetchRemove(slot);
+                const cell_reg = try self.newTmp();
+                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.value.cell_slot }) catch return CodegenError.CodegenError;
+                self.refcell_borrow_handles.put(dst, .{
+                    .cell_reg = cell_reg,
+                    .kind = entry.value.kind,
+                    .cell_release_temp = cell_reg,
+                }) catch return CodegenError.OutOfMemory;
+                try self.emitRelease(entry.value.cell_slot);
+            } else if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
+                try self.emitRelease(entry.value);
+            }
+        }
+        try self.transferResultSlotValueState(dst, slot, false);
     }
 
     fn releaseTemporaryHandleRegister(self: *Codegen, handle_reg: []const u8) CodegenError!void {
@@ -5962,6 +6129,8 @@ pub const Codegen = struct {
         self.btree_set_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
+        self.result_slot_refcell_handles.clearRetainingCapacity();
+        self.result_slot_refcell_slots.clearRetainingCapacity();
         self.mutex_guard_handles.clearRetainingCapacity();
         self.mutex_lock_results.clearRetainingCapacity();
         self.rwlock_guard_handles.clearRetainingCapacity();
@@ -6102,6 +6271,8 @@ pub const Codegen = struct {
         self.btree_set_bindings.clearRetainingCapacity();
         self.borrow_source_temps.clearRetainingCapacity();
         self.refcell_borrow_handles.clearRetainingCapacity();
+        self.result_slot_refcell_handles.clearRetainingCapacity();
+        self.result_slot_refcell_slots.clearRetainingCapacity();
         self.mutex_guard_handles.clearRetainingCapacity();
         self.mutex_lock_results.clearRetainingCapacity();
         self.rwlock_guard_handles.clearRetainingCapacity();
@@ -6480,6 +6651,7 @@ pub const Codegen = struct {
         const value_expr = last.expr_stmt;
         const value_reg = try self.genExpr(value_expr, hoisted_allocs);
         const value_ty = self.tc.expr_types.get(value_expr) orelse return CodegenError.CodegenError;
+        const transfer_value = lowering_rules.resultSlotStoreTransfersValue(target_ty);
 
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
             const copied = try self.newTmp();
@@ -6493,7 +6665,9 @@ pub const Codegen = struct {
         } else {
             self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_ptr, value_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
         }
-        if (callArgNeedsRelease(value_expr)) {
+        if (transfer_value) {
+            try self.storeResultSlotTransferredValueState(target_ptr, value_reg, target_ty);
+        } else if (callArgNeedsRelease(value_expr)) {
             try self.emitRelease(value_reg);
         }
 
@@ -8882,6 +9056,7 @@ pub const Codegen = struct {
         const result_slot = if (value_match) blk: {
             const slot = try self.newTmp();
             self.out.writer().print("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
+            try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
             break :blk slot;
         } else null;
 
@@ -8974,6 +9149,7 @@ pub const Codegen = struct {
         if (result_slot) |slot| {
             const reg = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+            if (lowering_rules.resultSlotStoreTransfersValue(expr_ty)) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
             try self.emitRelease(slot);
             return reg;
         }
@@ -8986,6 +9162,7 @@ pub const Codegen = struct {
         const result_slot = if (value_match) blk: {
             const slot = try self.newTmp();
             self.out.writer().print("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
+            try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
             break :blk slot;
         } else null;
 
@@ -9088,6 +9265,7 @@ pub const Codegen = struct {
         if (result_slot) |slot| {
             const reg = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+            if (lowering_rules.resultSlotStoreTransfersValue(expr_ty)) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
             try self.emitRelease(slot);
             return reg;
         }
@@ -9884,6 +10062,12 @@ pub const Codegen = struct {
                     .deref_expr => deref_source_ty = self.tc.expr_types.get(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError,
                     .index_expr => |idx| index_target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError,
                     else => {},
+                }
+                if (borrow.expr.* == .field_expr) {
+                    const field_ty = self.tc.expr_types.get(borrow.expr) orelse return CodegenError.CodegenError;
+                    if (lowering_rules.smartPointerDerefType(field_ty) != null) {
+                        return try self.genExpr(borrow.expr, hoisted_allocs);
+                    }
                 }
                 const address_plan = lowering_rules.planAddressOf(borrow.expr, .{
                     .deref_source_ty = deref_source_ty,
@@ -11249,6 +11433,7 @@ pub const Codegen = struct {
                                 const end_label = try self.newLabel("L_OPTION_AND_THEN_END");
                                 const result_slot = try self.newTmp();
                                 self.out.writer().print("    {s} = stack_alloc 8\n", .{result_slot}) catch return CodegenError.CodegenError;
+                                try self.prepareResultSlotRefCellCompanion(result_slot, ty);
                                 self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
 
                                 self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
@@ -11257,6 +11442,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 const chained_reg = try self.genInlineClosureUnary(&call.args[1].closure_literal, value_reg, hoisted_allocs);
                                 self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ result_slot, chained_reg }) catch return CodegenError.CodegenError;
+                                try self.storeResultSlotTransferredValueState(result_slot, chained_reg, ty);
                                 try self.emitRelease(value_reg);
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
@@ -11265,11 +11451,13 @@ pub const Codegen = struct {
                                 const none_reg = try self.newTmp();
                                 self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{none_reg}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ result_slot, none_reg }) catch return CodegenError.CodegenError;
+                                try self.storeResultSlotTransferredValueState(result_slot, none_reg, ty);
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 const result_reg = try self.newTmp();
                                 self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ result_reg, result_slot }) catch return CodegenError.CodegenError;
+                                try self.loadResultSlotTransferredValueState(result_reg, result_slot, ty);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
                             }
@@ -11302,6 +11490,7 @@ pub const Codegen = struct {
                                 const result_slot = try self.newTmp();
                                 const inner_ty = optionInnerType(ty) orelse return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = stack_alloc 8\n", .{result_slot}) catch return CodegenError.CodegenError;
+                                try self.prepareResultSlotRefCellCompanion(result_slot, inner_ty);
                                 self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_some, some_label, none_label }) catch return CodegenError.CodegenError;
 
                                 self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
@@ -11309,19 +11498,28 @@ pub const Codegen = struct {
                                 const value_reg = try self.newTmp();
                                 self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, value_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                try self.emitRelease(value_reg);
+                                if (lowering_rules.resultSlotStoreTransfersValue(inner_ty)) {
+                                    try self.storeResultSlotTransferredValueState(result_slot, value_reg, inner_ty);
+                                } else {
+                                    try self.emitRelease(value_reg);
+                                }
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
                                 self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                                 const default_reg = try self.genInlineClosureNullary(&call.args[1].closure_literal, hoisted_allocs);
                                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, default_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                try self.emitRelease(default_reg);
+                                if (lowering_rules.resultSlotStoreTransfersValue(inner_ty)) {
+                                    try self.storeResultSlotTransferredValueState(result_slot, default_reg, inner_ty);
+                                } else {
+                                    try self.emitRelease(default_reg);
+                                }
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 const reg = try self.newTmp();
                                 self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, result_slot, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                if (lowering_rules.resultSlotStoreTransfersValue(inner_ty)) try self.loadResultSlotTransferredValueState(reg, result_slot, inner_ty);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -12294,6 +12492,7 @@ pub const Codegen = struct {
                     const result_slot = if (value_if) try self.newTmp() else null;
                     if (result_slot) |slot| {
                         self.out.writer().print("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
+                        try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
                     }
 
                     const then_label = try self.newLabel("L_IF_LET_THEN");
@@ -12412,6 +12611,7 @@ pub const Codegen = struct {
                     if (result_slot) |slot| {
                         const reg = try self.newTmp();
                         self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                        if (lowering_rules.resultSlotStoreTransfersValue(expr_ty)) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
                         try self.emitRelease(slot);
                         return reg;
                     }
@@ -12424,6 +12624,7 @@ pub const Codegen = struct {
                 const result_slot = if (value_if) try self.newTmp() else null;
                 if (result_slot) |slot| {
                     self.out.writer().print("    {s} = alloc {}\n", .{ slot, typeSize(expr_ty) }) catch return CodegenError.CodegenError;
+                    try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
                 }
                 const then_label = try self.newLabel("L_THEN");
                 const else_label = try self.newLabel("L_ELSE");
@@ -12541,6 +12742,7 @@ pub const Codegen = struct {
                 if (result_slot) |slot| {
                     const reg = try self.newTmp();
                     self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                    if (lowering_rules.resultSlotStoreTransfersValue(expr_ty)) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
                     try self.emitRelease(slot);
                     return reg;
                 }

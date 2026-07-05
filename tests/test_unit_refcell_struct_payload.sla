@@ -1,6 +1,7 @@
 @import "sa_std/core/box.sa"
 @import "sa_std/core/refcell.sa"
 @import "sa_std/core/rc.sa"
+@import "import_fixtures/imported_refcell_helpers.sa"
 
 struct RefCellPayload {
     value: int,
@@ -27,6 +28,52 @@ fn refcell_box_payload_write(cell: &RefCell<Box<RefCellPayload>>, value: int) ->
     let borrowed: &Box<RefCellPayload> = cell.borrow_mut();
     let payload: &RefCellPayload = &*borrowed;
     payload.value = value;
+}
+
+fn refcell_payload_borrow_count(cell: &RefCell<RefCellPayload>) -> i64 {
+    SLA_REFCELL_BORROW_COUNT(cell)
+}
+
+fn refcell_if_expr_shared_borrow_count(flag: bool) -> i64 {
+    let left = RefCell::new(RefCellPayload { value: 71, flag: false });
+    let right = RefCell::new(RefCellPayload { value: 83, flag: true });
+    let picked: &RefCellPayload = if flag {
+        left.borrow()
+    } else {
+        right.borrow()
+    };
+    if picked.value == 0 {
+        panic(12);
+    };
+    if flag {
+        return refcell_payload_borrow_count(&left);
+    };
+    return refcell_payload_borrow_count(&right);
+}
+
+fn refcell_if_expr_mut_borrow_count(flag: bool) -> i64 {
+    let left = RefCell::new(RefCellPayload { value: 19, flag: false });
+    let right = RefCell::new(RefCellPayload { value: 23, flag: true });
+    let picked: &RefCellPayload = if flag {
+        left.borrow_mut()
+    } else {
+        right.borrow_mut()
+    };
+    picked.value = picked.value + 1;
+    if flag {
+        return refcell_payload_borrow_count(&left);
+    };
+    return refcell_payload_borrow_count(&right);
+}
+
+fn refcell_if_expr_box_value(flag: bool) -> int {
+    let picked: Box<RefCellPayload> = if flag {
+        Box::new(RefCellPayload { value: 33, flag: false })
+    } else {
+        Box::new(RefCellPayload { value: 44, flag: true })
+    };
+    let payload: &RefCellPayload = &*picked;
+    return payload.value;
 }
 
 @test "refcell struct payload borrow"() {
@@ -63,5 +110,32 @@ fn refcell_box_payload_write(cell: &RefCell<Box<RefCellPayload>>, value: int) ->
     refcell_box_payload_write(&refcell, 52);
     if refcell_box_payload_read(&refcell) != 52 {
         panic(5);
+    };
+}
+
+@test "refcell if-expression borrow preserves active borrow count"() {
+    if refcell_if_expr_shared_borrow_count(true) != 1 {
+        panic(6);
+    };
+    if refcell_if_expr_shared_borrow_count(false) != 1 {
+        panic(7);
+    };
+}
+
+@test "refcell if-expression borrow_mut preserves active borrow count"() {
+    if refcell_if_expr_mut_borrow_count(true) != -1 {
+        panic(8);
+    };
+    if refcell_if_expr_mut_borrow_count(false) != -1 {
+        panic(9);
+    };
+}
+
+@test "pointer-backed if-expression result keeps ownership"() {
+    if refcell_if_expr_box_value(true) != 33 {
+        panic(10);
+    };
+    if refcell_if_expr_box_value(false) != 44 {
+        panic(11);
     };
 }

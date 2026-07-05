@@ -9287,16 +9287,18 @@ pub const Codegen = struct {
     }
 
     fn rememberAddressProjectionSource(self: *Codegen, projection: AddressProjection) CodegenError!void {
-        if (projection.source_temp) |source_temp| {
+        const plan = lowering_rules.planBorrowAddressTemps(projection.source_temp != null, false);
+        if (plan.track_primary_temp) {
+            const source_temp = projection.source_temp orelse return CodegenError.CodegenError;
             self.borrow_source_temps.put(projection.ptr, source_temp) catch return CodegenError.OutOfMemory;
         }
     }
 
     fn rememberIndexAddressSource(self: *Codegen, address: IndexAddress) CodegenError!void {
-        if (address.base_tmp) |base_tmp| {
-            self.borrow_source_temps.put(address.ptr, base_tmp) catch return CodegenError.OutOfMemory;
-        } else if (address.release_base_reg) {
-            self.borrow_source_temps.put(address.ptr, address.base_reg) catch return CodegenError.OutOfMemory;
+        const source_temp = address.base_tmp orelse if (address.release_base_reg) address.base_reg else null;
+        const plan = lowering_rules.planBorrowAddressTemps(source_temp != null, false);
+        if (plan.track_primary_temp) {
+            self.borrow_source_temps.put(address.ptr, source_temp orelse return CodegenError.CodegenError) catch return CodegenError.OutOfMemory;
         }
     }
 
@@ -10031,7 +10033,8 @@ pub const Codegen = struct {
                         const source = try self.genExpr(borrow.expr.deref_expr.expr, hoisted_allocs);
                         const addr = try self.newTmp();
                         self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
-                        if (exprResultNeedsRelease(borrow.expr.deref_expr.expr)) {
+                        const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(borrow.expr.deref_expr.expr), false);
+                        if (temp_plan.track_primary_temp) {
                             self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
                         }
                         return addr;

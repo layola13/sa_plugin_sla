@@ -1810,11 +1810,12 @@ pub const Codegen = struct {
     }
 
     fn rememberBorrowAddressTemps(self: *Codegen, borrow_reg: u32, source: AddressSource) !void {
+        const plan = lowering_rules.planBorrowAddressTemps(!self.isLocalReg(source.reg), source.release_regs.len != 0);
+        if (!plan.remember) return;
         var regs = std.ArrayList(u32).init(self.allocator);
         defer regs.deinit();
-        if (!self.isLocalReg(source.reg)) try regs.append(source.reg);
-        try regs.appendSlice(source.release_regs);
-        if (regs.items.len == 0) return;
+        if (plan.track_primary_temp) try regs.append(source.reg);
+        if (plan.track_extra_temps) try regs.appendSlice(source.release_regs);
         try self.borrow_address_temps.put(borrow_reg, try regs.toOwnedSlice());
     }
 
@@ -8413,7 +8414,8 @@ pub const Codegen = struct {
             .take_pointer_payload => blk: {
                 const payload_reg = try self.intern(try self.newTmp());
                 try self.emitTake(payload_reg, borrow_slot_reg, 0, .ptr);
-                if (result_plan.track_borrow_slot_release_temp) {
+                const temp_plan = lowering_rules.planBorrowAddressTemps(result_plan.track_borrow_slot_release_temp, false);
+                if (temp_plan.track_primary_temp) {
                     try self.borrow_address_temps.put(payload_reg, try self.singleReleaseReg(borrow_slot_reg));
                 }
                 break :blk payload_reg;

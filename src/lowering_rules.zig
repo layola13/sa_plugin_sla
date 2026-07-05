@@ -1669,6 +1669,12 @@ pub const RefCellBorrowHandleRegistrationPlan = struct {
     track_receiver_owner_temp: bool,
 };
 
+pub const BorrowAddressTempPlan = struct {
+    track_primary_temp: bool,
+    track_extra_temps: bool,
+    remember: bool,
+};
+
 pub const ResultSlotTransferPlan = struct {
     transfers_value: bool,
     needs_refcell_companion: bool,
@@ -1792,6 +1798,14 @@ pub fn planRefCellBorrowRuntimeGuard(_: RefCellBorrowPlan) RefCellBorrowRuntimeG
 pub fn planRefCellBorrowHandleRegistration(_: RefCellBorrowPlan) RefCellBorrowHandleRegistrationPlan {
     return .{
         .track_receiver_owner_temp = false,
+    };
+}
+
+pub fn planBorrowAddressTemps(has_primary_temp: bool, has_extra_temps: bool) BorrowAddressTempPlan {
+    return .{
+        .track_primary_temp = has_primary_temp,
+        .track_extra_temps = has_extra_temps,
+        .remember = has_primary_temp or has_extra_temps,
     };
 }
 
@@ -4124,6 +4138,26 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
 
     const scalar_handle_registration = planRefCellBorrowHandleRegistration(scalar_plan);
     try std.testing.expect(!scalar_handle_registration.track_receiver_owner_temp);
+
+    const no_borrow_temp = planBorrowAddressTemps(false, false);
+    try std.testing.expect(!no_borrow_temp.track_primary_temp);
+    try std.testing.expect(!no_borrow_temp.track_extra_temps);
+    try std.testing.expect(!no_borrow_temp.remember);
+
+    const primary_borrow_temp = planBorrowAddressTemps(true, false);
+    try std.testing.expect(primary_borrow_temp.track_primary_temp);
+    try std.testing.expect(!primary_borrow_temp.track_extra_temps);
+    try std.testing.expect(primary_borrow_temp.remember);
+
+    const extra_borrow_temps = planBorrowAddressTemps(false, true);
+    try std.testing.expect(!extra_borrow_temps.track_primary_temp);
+    try std.testing.expect(extra_borrow_temps.track_extra_temps);
+    try std.testing.expect(extra_borrow_temps.remember);
+
+    const full_borrow_temps = planBorrowAddressTemps(true, true);
+    try std.testing.expect(full_borrow_temps.track_primary_temp);
+    try std.testing.expect(full_borrow_temps.track_extra_temps);
+    try std.testing.expect(full_borrow_temps.remember);
 
     const smart_plan = planRefCellBorrowCall(borrow_call, &refcell_box_ty).?;
     try std.testing.expectEqual(RefCellBorrowValueKind.smart_pointer_payload, smart_plan.value_kind);

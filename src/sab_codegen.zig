@@ -4288,9 +4288,12 @@ pub const Codegen = struct {
             return;
         }
         const let_ty = if (explicit_ty) |ty| ty else (try self.exprTypeOrFallback(value_expr)) orelse return Error.MissingType;
-        if (self.refcell_borrow_values.contains(src)) {
-            try self.pushTypedLocal(name, src, false, let_ty);
-            return;
+        switch (lowering_rules.planRefCellHandleBinding(self.refcell_borrow_values.contains(src))) {
+            .bind_borrow_handle => {
+                try self.pushTypedLocal(name, src, false, let_ty);
+                return;
+            },
+            .ordinary_binding => {},
         }
         if (self.borrowedBindingNeedsStackStorage(name, let_ty)) {
             try self.emitStackAlloc(dst, typeSize(let_ty));

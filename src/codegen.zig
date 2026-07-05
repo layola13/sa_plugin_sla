@@ -8086,10 +8086,15 @@ pub const Codegen = struct {
                         _ = self.mpsc_sender_channels.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
-                    if (self.refcell_borrow_handles.get(val_reg)) |handle| {
-                        self.refcell_borrow_handles.put(let.name, handle) catch return CodegenError.OutOfMemory;
-                        _ = self.refcell_borrow_handles.remove(val_reg);
-                        self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
+                    const refcell_handle = self.refcell_borrow_handles.get(val_reg);
+                    switch (lowering_rules.planRefCellHandleBinding(refcell_handle != null)) {
+                        .bind_borrow_handle => {
+                            const handle = refcell_handle.?;
+                            self.refcell_borrow_handles.put(let.name, handle) catch return CodegenError.OutOfMemory;
+                            _ = self.refcell_borrow_handles.remove(val_reg);
+                            self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
+                        },
+                        .ordinary_binding => {},
                     }
                     if (self.mutex_guard_handles.get(val_reg)) |handle| {
                         self.mutex_guard_handles.put(let.name, handle) catch return CodegenError.OutOfMemory;

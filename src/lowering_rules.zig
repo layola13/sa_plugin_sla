@@ -1658,6 +1658,11 @@ pub const ResultSlotRefCellLoadAction = enum {
     release_empty_companion,
 };
 
+pub const RefCellHandleBindingAction = enum {
+    ordinary_binding,
+    bind_borrow_handle,
+};
+
 pub fn planResultSlotRefCellStore(transfer_plan: ResultSlotTransferPlan, source_has_refcell_handle: bool) ResultSlotRefCellStoreAction {
     if (transfer_plan.transfers_value and source_has_refcell_handle) return .store_borrow_handle_companion;
     return .transfer_value_state;
@@ -1672,6 +1677,10 @@ pub fn planResultSlotRefCellLoad(
     if (slot_has_refcell_handle) return .restore_borrow_handle_companion;
     if (slot_has_refcell_companion) return .release_empty_companion;
     return .transfer_value_state;
+}
+
+pub fn planRefCellHandleBinding(source_has_refcell_handle: bool) RefCellHandleBindingAction {
+    return if (source_has_refcell_handle) .bind_borrow_handle else .ordinary_binding;
 }
 
 pub fn refCellBorrowReleaseMacroName(kind: RefCellBorrowKind) []const u8 {
@@ -3977,6 +3986,9 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expectEqual(RefCellBorrowValueKind.pointer_payload, pointer_plan.value_kind);
     try std.testing.expectEqualStrings("REFCELL_U64_TRY_BORROW_MUT", pointer_plan.tryBorrowMacroName());
     try std.testing.expectEqualStrings("REFCELL_U64_RELEASE_MUT", pointer_plan.releaseMacroName());
+
+    try std.testing.expectEqual(RefCellHandleBindingAction.ordinary_binding, planRefCellHandleBinding(false));
+    try std.testing.expectEqual(RefCellHandleBindingAction.bind_borrow_handle, planRefCellHandleBinding(true));
 }
 
 test "shared refcell runtime scanner detects constructor and receiver calls" {

@@ -7778,16 +7778,15 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
         const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
-        if (plan.callArgNeedsAddressableSlot(call_arg_index) and lowering_rules.importedMacroArgUsesRawPointerValue(arg, arg_ty)) {
-            return .{ .reg = try self.genExpr(arg, hoisted_allocs), .release_after_call = callArgNeedsRelease(arg) };
-        }
+        if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| switch (action) {
+            .pass_value, .pass_raw_pointer_value => return .{ .reg = try self.genExpr(arg, hoisted_allocs), .release_after_call = callArgNeedsRelease(arg) },
+            else => unreachable,
+        };
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg);
-        const address_shape: lowering_rules.AddressOfShape = if (plan.callArgNeedsAddressableSlot(call_arg_index))
-            try self.importedMacroArgAddressShape(arg)
-        else
-            .value_temp;
-        switch (plan.planAddressExpressionArgAction(call_arg_index, address_shape, existing_symbol != null)) {
+        const address_shape = try self.importedMacroArgAddressShape(arg);
+        switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null)) {
             .pass_value => return .{ .reg = try self.genExpr(arg, hoisted_allocs), .release_after_call = callArgNeedsRelease(arg) },
+            .pass_raw_pointer_value => unreachable,
             .reuse_existing_addressable => return .{ .reg = existing_symbol.?, .release_after_call = false },
             .materialize_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, hoisted_allocs),
             .materialize_address_expression_stack_slot => return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, hoisted_allocs),

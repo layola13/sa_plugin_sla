@@ -8386,13 +8386,15 @@ pub const Codegen = struct {
 
     fn genImportedMacroArg(self: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
         const arg_ty = (try self.importedMacroArgType(arg, ctx)) orelse return Error.MissingType;
-        if (plan.callArgNeedsAddressableSlot(call_arg_index) and lowering_rules.importedMacroArgUsesRawPointerValue(arg, arg_ty)) {
-            return self.genImportedMacroValueArg(arg, ctx);
-        }
+        if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| switch (action) {
+            .pass_value, .pass_raw_pointer_value => return self.genImportedMacroValueArg(arg, ctx),
+            else => unreachable,
+        };
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg, ctx);
-        const address_shape: lowering_rules.AddressOfShape = if (plan.callArgNeedsAddressableSlot(call_arg_index)) try self.importedMacroArgAddressShape(arg, ctx) else .value_temp;
-        switch (plan.planAddressExpressionArgAction(call_arg_index, address_shape, existing_symbol != null)) {
+        const address_shape = try self.importedMacroArgAddressShape(arg, ctx);
+        switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null)) {
             .pass_value => return self.genImportedMacroValueArg(arg, ctx),
+            .pass_raw_pointer_value => unreachable,
             .reuse_existing_addressable => return .{ .operand = existing_symbol.?, .release_reg = null },
             .materialize_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, ctx),
             .materialize_address_expression_stack_slot => return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, ctx),

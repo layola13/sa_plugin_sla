@@ -11716,14 +11716,15 @@ pub const Codegen = struct {
                                 const borrow_slot_reg = try self.newTmp();
                                 const err_label = try self.newLabel("L_REFCELL_BORROW_PANIC");
                                 const end_label = try self.newLabel("L_REFCELL_BORROW_END");
+                                const guard_plan = lowering_rules.planRefCellBorrowRuntimeGuard(borrow_plan);
                                 self.out.writer().print("    EXPAND {s} {s}, {s}, {s}\n", .{ borrow_plan.tryBorrowMacroName(), ok_reg, borrow_slot_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, end_label, err_label }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    panic(107)\n", .{}) catch return CodegenError.CodegenError;
+                                if (guard_plan.release_status_on_conflict) self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    panic({})\n", .{guard_plan.conflict_panic_code}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
+                                if (guard_plan.release_status_on_success) self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
                                 const borrow_result_plan = lowering_rules.planRefCellBorrowResult(.sa_text, borrow_plan.value_kind);
                                 const borrow_reg = switch (borrow_result_plan.action) {
                                     .use_borrow_slot => borrow_slot_reg,

@@ -8396,14 +8396,15 @@ pub const Codegen = struct {
 
         const ok_label = try self.newLabel("L_REFCELL_BORROW_OK");
         const err_label = try self.newLabel("L_REFCELL_BORROW_PANIC");
+        const guard_plan = lowering_rules.planRefCellBorrowRuntimeGuard(plan);
         try self.emitBranch(ok_reg, ok_label, err_label);
 
         try self.emitLabel(err_label);
-        try self.emitBranchRelease(ok_reg);
-        try self.emitPanicCode(107);
+        if (guard_plan.release_status_on_conflict) try self.emitBranchRelease(ok_reg);
+        try self.emitPanicCode(guard_plan.conflict_panic_code);
 
         try self.emitLabel(ok_label);
-        try self.emitBranchRelease(ok_reg);
+        if (guard_plan.release_status_on_success) try self.emitBranchRelease(ok_reg);
         const result_plan = lowering_rules.planRefCellBorrowResult(.direct_sab, plan.value_kind);
         const borrow_reg = switch (result_plan.action) {
             .use_borrow_slot => borrow_slot_reg,

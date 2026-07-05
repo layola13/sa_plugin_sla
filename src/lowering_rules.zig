@@ -1659,6 +1659,12 @@ pub const RefCellBorrowResultPlan = struct {
     track_borrow_slot_release_temp: bool,
 };
 
+pub const RefCellBorrowRuntimeGuardPlan = struct {
+    release_status_on_conflict: bool,
+    conflict_panic_code: i64,
+    release_status_on_success: bool,
+};
+
 pub const ResultSlotTransferPlan = struct {
     transfers_value: bool,
     needs_refcell_companion: bool,
@@ -1763,6 +1769,14 @@ pub fn planRefCellBorrowResult(target: RefCellBorrowResultTarget, value_kind: Re
                 .track_borrow_slot_release_temp = true,
             },
         },
+    };
+}
+
+pub fn planRefCellBorrowRuntimeGuard(_: RefCellBorrowPlan) RefCellBorrowRuntimeGuardPlan {
+    return .{
+        .release_status_on_conflict = true,
+        .conflict_panic_code = 107,
+        .release_status_on_success = true,
     };
 }
 
@@ -4080,6 +4094,11 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expectEqual(RefCellBorrowValueKind.scalar_slot, scalar_plan.value_kind);
     try std.testing.expectEqualStrings("REFCELL_U64_TRY_BORROW", scalar_plan.tryBorrowMacroName());
     try std.testing.expectEqualStrings("REFCELL_U64_RELEASE_SHARED", scalar_plan.releaseMacroName());
+
+    const scalar_guard = planRefCellBorrowRuntimeGuard(scalar_plan);
+    try std.testing.expect(scalar_guard.release_status_on_conflict);
+    try std.testing.expectEqual(@as(i64, 107), scalar_guard.conflict_panic_code);
+    try std.testing.expect(scalar_guard.release_status_on_success);
 
     const smart_plan = planRefCellBorrowCall(borrow_call, &refcell_box_ty).?;
     try std.testing.expectEqual(RefCellBorrowValueKind.smart_pointer_payload, smart_plan.value_kind);

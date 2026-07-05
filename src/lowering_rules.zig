@@ -2037,6 +2037,100 @@ pub fn planRefCellBorrowCall(call: ast.CallExpr, receiver_ty: *const ast.Type) ?
     return null;
 }
 
+pub fn exprNeedsRefCellRuntime(tc: *type_checker.TypeChecker, expr: *const ast.Node) bool {
+    if (tc.expr_types.get(expr)) |ty| {
+        if (refCellInnerType(ty) != null) return true;
+    }
+    return switch (expr.*) {
+        .call_expr => |call| blk: {
+            if (call.associated_target) |target| {
+                if (std.mem.eql(u8, target, "RefCell")) break :blk true;
+            }
+            if (call.args.len > 0) {
+                if (tc.expr_types.get(call.args[0])) |recv_ty| {
+                    if (refCellInnerType(recv_ty) != null) break :blk true;
+                }
+            }
+            for (call.args) |arg| if (exprNeedsRefCellRuntime(tc, arg)) break :blk true;
+            break :blk false;
+        },
+        .binary_expr => |bin| exprNeedsRefCellRuntime(tc, bin.left) or exprNeedsRefCellRuntime(tc, bin.right),
+        .borrow_expr => |borrow| exprNeedsRefCellRuntime(tc, borrow.expr),
+        .move_expr => |move| exprNeedsRefCellRuntime(tc, move.expr),
+        .deref_expr => |deref| exprNeedsRefCellRuntime(tc, deref.expr),
+        .field_expr => |field| exprNeedsRefCellRuntime(tc, field.expr),
+        .index_expr => |idx| exprNeedsRefCellRuntime(tc, idx.target) or exprNeedsRefCellRuntime(tc, idx.index),
+        .slice_expr => |slc| exprNeedsRefCellRuntime(tc, slc.target) or exprNeedsRefCellRuntime(tc, slc.start) or exprNeedsRefCellRuntime(tc, slc.end),
+        .closure_literal => |lit| exprNeedsRefCellRuntime(tc, lit.body),
+        .await_expr => |aw| exprNeedsRefCellRuntime(tc, aw.expr),
+        .try_expr => |trye| exprNeedsRefCellRuntime(tc, trye.expr),
+        .struct_literal => |lit| blk: {
+            for (lit.fields) |field| if (exprNeedsRefCellRuntime(tc, field.value)) break :blk true;
+            break :blk false;
+        },
+        .enum_literal => |lit| blk: {
+            for (lit.fields) |field| if (exprNeedsRefCellRuntime(tc, field.value)) break :blk true;
+            break :blk false;
+        },
+        .tuple_literal => |lit| blk: {
+            for (lit.elements) |elem| if (exprNeedsRefCellRuntime(tc, elem)) break :blk true;
+            break :blk false;
+        },
+        .array_literal => |lit| blk: {
+            for (lit.elements) |elem| if (exprNeedsRefCellRuntime(tc, elem)) break :blk true;
+            break :blk false;
+        },
+        .if_expr => |ife| exprNeedsRefCellRuntime(tc, ife.cond) or blockNeedsRefCellRuntime(tc, ife.then_block) or if (ife.else_block) |eb| blockNeedsRefCellRuntime(tc, eb) else false,
+        .switch_expr => |swe| blk: {
+            if (exprNeedsRefCellRuntime(tc, swe.val)) break :blk true;
+            for (swe.cases) |case| if (exprNeedsRefCellRuntime(tc, case.pattern) or blockNeedsRefCellRuntime(tc, case.body)) break :blk true;
+            break :blk false;
+        },
+        .match_expr => |mat| blk: {
+            if (exprNeedsRefCellRuntime(tc, mat.val)) break :blk true;
+            for (mat.cases) |case| {
+                if (case.guard) |guard| if (exprNeedsRefCellRuntime(tc, guard)) break :blk true;
+                if (blockNeedsRefCellRuntime(tc, case.body)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+pub fn blockNeedsRefCellRuntime(tc: *type_checker.TypeChecker, block: []const *ast.Node) bool {
+    for (block) |stmt| {
+        switch (stmt.*) {
+            .let_stmt => |let| if (exprNeedsRefCellRuntime(tc, let.value)) return true,
+            .let_else_stmt => |let| if (exprNeedsRefCellRuntime(tc, let.value) or blockNeedsRefCellRuntime(tc, let.else_block)) return true,
+            .let_destructure_stmt => |let| if (exprNeedsRefCellRuntime(tc, let.value)) return true,
+            .const_stmt => |c| if (exprNeedsRefCellRuntime(tc, c.value)) return true,
+            .assign_stmt => |assign| if (exprNeedsRefCellRuntime(tc, assign.target) or exprNeedsRefCellRuntime(tc, assign.value)) return true,
+            .expr_stmt => |expr| if (exprNeedsRefCellRuntime(tc, expr)) return true,
+            .return_stmt => |ret| if (ret.value) |value| if (exprNeedsRefCellRuntime(tc, value)) return true,
+            .for_stmt => |f| if (exprNeedsRefCellRuntime(tc, f.start) or (if (f.end) |end_expr| exprNeedsRefCellRuntime(tc, end_expr) else false) or blockNeedsRefCellRuntime(tc, f.body)) return true,
+            .while_stmt => |w| if (exprNeedsRefCellRuntime(tc, w.cond) or blockNeedsRefCellRuntime(tc, w.body)) return true,
+            .block_stmt => |blk| if (blockNeedsRefCellRuntime(tc, blk.body)) return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+pub fn programNeedsRefCellRuntime(tc: *type_checker.TypeChecker, program: *const ast.Node) bool {
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .func_decl => |f| if (blockNeedsRefCellRuntime(tc, f.body)) return true,
+            .impl_decl => |i| for (i.methods) |method| {
+                if (method.* == .func_decl and blockNeedsRefCellRuntime(tc, method.func_decl.body)) return true;
+            },
+            .test_decl => |t| if (blockNeedsRefCellRuntime(tc, t.body)) return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
 fn closureLiteralArity(expr: *const ast.Node) ?usize {
     return switch (expr.*) {
         .closure_literal => |lit| lit.params.len,
@@ -3844,6 +3938,35 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expectEqual(RefCellBorrowValueKind.pointer_payload, pointer_plan.value_kind);
     try std.testing.expectEqualStrings("REFCELL_U64_TRY_BORROW_MUT", pointer_plan.tryBorrowMacroName());
     try std.testing.expectEqualStrings("REFCELL_U64_RELEASE_MUT", pointer_plan.releaseMacroName());
+}
+
+test "shared refcell runtime scanner detects constructor and receiver calls" {
+    var tc = type_checker.TypeChecker.init(std.testing.allocator);
+    defer tc.deinit();
+
+    var i64_ty = ast.Type{ .primitive = .i64 };
+    const refcell_generics = [_]*ast.Type{&i64_ty};
+    var refcell_i64_ty = ast.Type{ .user_defined = .{ .name = "RefCell", .generics = refcell_generics[0..] } };
+
+    var value = ast.Node{ .identifier = "value" };
+    const new_args = [_]*ast.Node{&value};
+    var new_call = ast.Node{ .call_expr = .{ .func_name = "new", .associated_target = "RefCell", .generics = &.{}, .args = new_args[0..] } };
+    var new_stmt = ast.Node{ .expr_stmt = &new_call };
+    const new_body = [_]*ast.Node{&new_stmt};
+    var new_test = ast.Node{ .test_decl = .{ .name = "refcell new", .is_ignored = false, .should_panic = false, .body = new_body[0..] } };
+    const new_decls = [_]*ast.Node{&new_test};
+    var new_program = ast.Node{ .program = .{ .decls = new_decls[0..] } };
+
+    try std.testing.expect(programNeedsRefCellRuntime(&tc, &new_program));
+
+    var cell = ast.Node{ .identifier = "cell" };
+    try tc.expr_types.put(&cell, &refcell_i64_ty);
+    const borrow_args = [_]*ast.Node{&cell};
+    var borrow_call = ast.Node{ .call_expr = .{ .func_name = "borrow", .associated_target = null, .generics = &.{}, .args = borrow_args[0..] } };
+    try std.testing.expect(exprNeedsRefCellRuntime(&tc, &borrow_call));
+
+    var plain_call = ast.Node{ .call_expr = .{ .func_name = "noop", .associated_target = null, .generics = &.{}, .args = &.{} } };
+    try std.testing.expect(!exprNeedsRefCellRuntime(&tc, &plain_call));
 }
 
 test "shared dyn coercion and receiver plans" {

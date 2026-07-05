@@ -5255,99 +5255,6 @@ pub const Codegen = struct {
         return false;
     }
 
-    fn exprNeedsRefCellMacros(self: *Codegen, expr: *const ast.Node) bool {
-        if (self.tc.expr_types.get(expr)) |ty| {
-            if (refCellInnerType(ty) != null) return true;
-        }
-        return switch (expr.*) {
-            .call_expr => |call| blk: {
-                if (call.associated_target) |target| {
-                    if (std.mem.eql(u8, target, "RefCell")) break :blk true;
-                }
-                if (call.args.len > 0) {
-                    const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
-                    if (recv_ty != null and refCellInnerType(recv_ty.?) != null) break :blk true;
-                }
-                for (call.args) |arg| if (self.exprNeedsRefCellMacros(arg)) break :blk true;
-                break :blk false;
-            },
-            .binary_expr => |bin| self.exprNeedsRefCellMacros(bin.left) or self.exprNeedsRefCellMacros(bin.right),
-            .borrow_expr => |borrow| self.exprNeedsRefCellMacros(borrow.expr),
-            .move_expr => |move| self.exprNeedsRefCellMacros(move.expr),
-            .deref_expr => |deref| self.exprNeedsRefCellMacros(deref.expr),
-            .field_expr => |field| self.exprNeedsRefCellMacros(field.expr),
-            .index_expr => |idx| self.exprNeedsRefCellMacros(idx.target) or self.exprNeedsRefCellMacros(idx.index),
-            .slice_expr => |slc| self.exprNeedsRefCellMacros(slc.target) or self.exprNeedsRefCellMacros(slc.start) or self.exprNeedsRefCellMacros(slc.end),
-            .closure_literal => |lit| self.exprNeedsRefCellMacros(lit.body),
-            .await_expr => |aw| self.exprNeedsRefCellMacros(aw.expr),
-            .try_expr => |trye| self.exprNeedsRefCellMacros(trye.expr),
-            .struct_literal => |lit| blk: {
-                for (lit.fields) |field| if (self.exprNeedsRefCellMacros(field.value)) break :blk true;
-                break :blk false;
-            },
-            .enum_literal => |lit| blk: {
-                for (lit.fields) |field| if (self.exprNeedsRefCellMacros(field.value)) break :blk true;
-                break :blk false;
-            },
-            .tuple_literal => |lit| blk: {
-                for (lit.elements) |elem| if (self.exprNeedsRefCellMacros(elem)) break :blk true;
-                break :blk false;
-            },
-            .array_literal => |lit| blk: {
-                for (lit.elements) |elem| if (self.exprNeedsRefCellMacros(elem)) break :blk true;
-                break :blk false;
-            },
-            .if_expr => |ife| self.exprNeedsRefCellMacros(ife.cond) or self.blockNeedsRefCellMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsRefCellMacros(eb) else false,
-            .switch_expr => |swe| blk: {
-                if (self.exprNeedsRefCellMacros(swe.val)) break :blk true;
-                for (swe.cases) |case| if (self.exprNeedsRefCellMacros(case.pattern) or self.blockNeedsRefCellMacros(case.body)) break :blk true;
-                break :blk false;
-            },
-            .match_expr => |mat| blk: {
-                if (self.exprNeedsRefCellMacros(mat.val)) break :blk true;
-                for (mat.cases) |case| {
-                    if (case.guard) |guard| if (self.exprNeedsRefCellMacros(guard)) break :blk true;
-                    if (self.blockNeedsRefCellMacros(case.body)) break :blk true;
-                }
-                break :blk false;
-            },
-            else => false,
-        };
-    }
-
-    fn blockNeedsRefCellMacros(self: *Codegen, block: []const *ast.Node) bool {
-        for (block) |stmt| {
-            switch (stmt.*) {
-                .let_stmt => |let| if (self.exprNeedsRefCellMacros(let.value)) return true,
-                .let_else_stmt => |let| if (self.exprNeedsRefCellMacros(let.value) or self.blockNeedsRefCellMacros(let.else_block)) return true,
-                .let_destructure_stmt => |let| if (self.exprNeedsRefCellMacros(let.value)) return true,
-                .const_stmt => |c| if (self.exprNeedsRefCellMacros(c.value)) return true,
-                .assign_stmt => |assign| if (self.exprNeedsRefCellMacros(assign.target) or self.exprNeedsRefCellMacros(assign.value)) return true,
-                .expr_stmt => |expr| if (self.exprNeedsRefCellMacros(expr)) return true,
-                .return_stmt => |ret| if (ret.value) |v| if (self.exprNeedsRefCellMacros(v)) return true,
-                .for_stmt => |f| if (self.exprNeedsRefCellMacros(f.start) or (if (f.end) |end_expr| self.exprNeedsRefCellMacros(end_expr) else false) or self.blockNeedsRefCellMacros(f.body)) return true,
-                .while_stmt => |w| if (self.exprNeedsRefCellMacros(w.cond) or self.blockNeedsRefCellMacros(w.body)) return true,
-                .block_stmt => |blk| if (self.blockNeedsRefCellMacros(blk.body)) return true,
-                else => {},
-            }
-        }
-        return false;
-    }
-
-    fn programNeedsRefCellMacros(self: *Codegen, program: *const ast.Node) bool {
-        for (program.program.decls) |decl| {
-            switch (decl.*) {
-                .func_decl => |f| if (self.blockNeedsRefCellMacros(f.body)) return true,
-                .impl_decl => |i| for (i.methods) |method| {
-                    if (method.* == .func_decl and self.blockNeedsRefCellMacros(method.func_decl.body)) return true;
-                },
-                .test_decl => |t| if (self.blockNeedsRefCellMacros(t.body)) return true,
-                else => {},
-            }
-        }
-        return false;
-    }
-
     fn exprNeedsAsyncMacros(expr: *const ast.Node) bool {
         return switch (expr.*) {
             .await_expr => true,
@@ -5843,7 +5750,7 @@ pub const Codegen = struct {
         if (self.programNeedsCellMacros(program)) {
             self.out.writer().print("@import \"sa_std/core/cell.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
-        if (self.programNeedsRefCellMacros(program)) {
+        if (lowering_rules.programNeedsRefCellRuntime(self.tc, program)) {
             self.out.writer().print("@import \"sa_std/core/refcell.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
         if (programNeedsBoxMacros(program)) {

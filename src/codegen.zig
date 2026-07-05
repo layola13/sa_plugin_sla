@@ -1736,6 +1736,11 @@ pub const Codegen = struct {
                 try self.collectAddressableBindingsInExpr(bin.right);
             },
             .call_expr => |call| {
+                if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
+                    for (call.args, 0..) |arg, i| {
+                        if (plan.addressableIdentifierArgName(i, arg)) |name| self.addressable_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+                    }
+                }
                 for (call.args) |arg| {
                     try self.collectAddressableBindingsInExpr(arg);
                 }

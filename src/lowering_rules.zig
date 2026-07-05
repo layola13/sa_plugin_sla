@@ -291,6 +291,12 @@ pub const ImportedMacroCallPlan = struct {
         return (self.borrowed_arg_mask & (@as(u64, 1) << @intCast(macro_idx))) != 0;
     }
 
+    pub fn addressableIdentifierArgName(self: ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node) ?[]const u8 {
+        if (!self.callArgNeedsAddressableSlot(call_arg_index)) return null;
+        if (arg.* != .identifier) return null;
+        return arg.identifier;
+    }
+
     pub fn planAddressableArgAction(self: ImportedMacroCallPlan, call_arg_index: usize, has_existing_addressable_symbol: bool) ImportedMacroAddressableArgAction {
         return self.planAddressExpressionArgAction(call_arg_index, .identifier, has_existing_addressable_symbol);
     }
@@ -2666,6 +2672,12 @@ test "shared imported macro call plan classifies addressable arg actions" {
 
     try std.testing.expect(!plan.callArgNeedsAddressableSlot(0));
     try std.testing.expect(plan.callArgNeedsAddressableSlot(1));
+    var value_ident = ast.Node{ .identifier = "value" };
+    var other_ident = ast.Node{ .identifier = "other" };
+    var value_field = ast.Node{ .field_expr = .{ .expr = &value_ident, .field_name = "field" } };
+    try std.testing.expect(plan.addressableIdentifierArgName(0, &value_ident) == null);
+    try std.testing.expectEqualStrings("value", plan.addressableIdentifierArgName(1, &value_ident).?);
+    try std.testing.expect(plan.addressableIdentifierArgName(1, &value_field) == null);
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.pass_value, plan.planAddressableArgAction(0, false));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.reuse_existing_addressable, plan.planAddressableArgAction(1, true));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_stack_slot, plan.planAddressableArgAction(1, false));
@@ -2680,6 +2692,7 @@ test "shared imported macro call plan classifies addressable arg actions" {
     };
 
     try std.testing.expect(expression_output_plan.callArgNeedsAddressableSlot(0));
+    try std.testing.expectEqualStrings("other", expression_output_plan.addressableIdentifierArgName(0, &other_ident).?);
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.reuse_existing_addressable, expression_output_plan.planAddressableArgAction(0, true));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_stack_slot, expression_output_plan.planAddressableArgAction(0, false));
 }

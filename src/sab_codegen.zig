@@ -1831,8 +1831,7 @@ pub const Codegen = struct {
             .call_expr => |call| {
                 if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
                     for (call.args, 0..) |arg, i| {
-                        if (!plan.callArgNeedsAddressableSlot(i)) continue;
-                        if (arg.* == .identifier) try self.borrowed_bindings.put(arg.identifier, {});
+                        if (plan.addressableIdentifierArgName(i, arg)) |name| try self.borrowed_bindings.put(name, {});
                     }
                 }
                 for (call.args) |arg| try self.collectBorrowedBindingsInNode(arg);

@@ -1828,11 +1828,14 @@ pub const Codegen = struct {
             },
             .transfer_value_state => {},
         }
-        if (self.borrow_address_temps.fetchRemove(src)) |entry| {
-            if (self.borrow_address_temps.fetchRemove(dst)) |old| {
-                if (old.value.len != 0) self.allocator.free(old.value);
-            }
-            try self.borrow_address_temps.put(dst, entry.value);
+        switch (lowering_rules.planBorrowAddressTempTransfer(self.borrow_address_temps.contains(src))) {
+            .move_borrow_address_temps => if (self.borrow_address_temps.fetchRemove(src)) |entry| {
+                if (self.borrow_address_temps.fetchRemove(dst)) |old| {
+                    if (old.value.len != 0) self.allocator.free(old.value);
+                }
+                try self.borrow_address_temps.put(dst, entry.value);
+            },
+            .transfer_value_state => {},
         }
         if (self.non_owning_regs.fetchRemove(src)) |_| {
             try self.non_owning_regs.put(dst, {});

@@ -1675,6 +1675,11 @@ pub const BorrowAddressTempPlan = struct {
     remember: bool,
 };
 
+pub const BorrowAddressTempTransferAction = enum {
+    transfer_value_state,
+    move_borrow_address_temps,
+};
+
 pub const ResultSlotTransferPlan = struct {
     transfers_value: bool,
     needs_refcell_companion: bool,
@@ -1807,6 +1812,10 @@ pub fn planBorrowAddressTemps(has_primary_temp: bool, has_extra_temps: bool) Bor
         .track_extra_temps = has_extra_temps,
         .remember = has_primary_temp or has_extra_temps,
     };
+}
+
+pub fn planBorrowAddressTempTransfer(source_has_borrow_address_temps: bool) BorrowAddressTempTransferAction {
+    return if (source_has_borrow_address_temps) .move_borrow_address_temps else .transfer_value_state;
 }
 
 pub fn planRefCellCompanionStoreCleanup(
@@ -4158,6 +4167,9 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expect(full_borrow_temps.track_primary_temp);
     try std.testing.expect(full_borrow_temps.track_extra_temps);
     try std.testing.expect(full_borrow_temps.remember);
+
+    try std.testing.expectEqual(BorrowAddressTempTransferAction.transfer_value_state, planBorrowAddressTempTransfer(false));
+    try std.testing.expectEqual(BorrowAddressTempTransferAction.move_borrow_address_temps, planBorrowAddressTempTransfer(true));
 
     const smart_plan = planRefCellBorrowCall(borrow_call, &refcell_box_ty).?;
     try std.testing.expectEqual(RefCellBorrowValueKind.smart_pointer_payload, smart_plan.value_kind);

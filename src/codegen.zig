@@ -763,8 +763,10 @@ pub const Codegen = struct {
 
     fn storeResultSlotTransferredValueState(self: *Codegen, slot: []const u8, src: []const u8, target_ty: *const ast.Type) CodegenError!void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
-        if (plan.transfers_value) {
-            if (self.refcell_borrow_handles.get(src)) |handle| {
+        const refcell_handle = self.refcell_borrow_handles.get(src);
+        switch (lowering_rules.planResultSlotRefCellStore(plan, refcell_handle != null)) {
+            .store_borrow_handle_companion => {
+                const handle = refcell_handle.?;
                 const meta = try self.ensureResultSlotRefCellHandle(slot, handle.kind);
                 self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ meta.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
                 _ = self.refcell_borrow_handles.remove(src);
@@ -772,7 +774,8 @@ pub const Codegen = struct {
                 if (handle.cell_release_temp) |temp| {
                     if (!std.mem.eql(u8, temp, src)) try self.emitRelease(temp);
                 }
-            }
+            },
+            .transfer_value_state => {},
         }
         try self.transferResultSlotValueState(slot, src, true);
     }

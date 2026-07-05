@@ -1768,20 +1768,25 @@ pub const Codegen = struct {
             return;
         }
 
-        if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
-            const meta = try self.ensureResultSlotRefCellHandle(slot, entry.value.kind);
-            try self.emitStore(meta.cell_slot, 0, entry.value.cell_reg, .ptr);
-            if (entry.value.release_regs.len != 0) {
-                try self.releaseNonLocalTemps(entry.value.release_regs);
-                self.allocator.free(entry.value.release_regs);
-            }
-            if (self.borrow_address_temps.fetchRemove(src)) |temps| {
-                try self.releaseNonLocalTemps(temps.value);
-                if (temps.value.len != 0) self.allocator.free(temps.value);
-            }
-            _ = self.non_owning_regs.fetchRemove(src);
-            try self.markConsumed(src);
-            return;
+        switch (lowering_rules.planResultSlotRefCellStore(plan, self.refcell_borrow_values.contains(src))) {
+            .store_borrow_handle_companion => {
+                if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
+                    const meta = try self.ensureResultSlotRefCellHandle(slot, entry.value.kind);
+                    try self.emitStore(meta.cell_slot, 0, entry.value.cell_reg, .ptr);
+                    if (entry.value.release_regs.len != 0) {
+                        try self.releaseNonLocalTemps(entry.value.release_regs);
+                        self.allocator.free(entry.value.release_regs);
+                    }
+                    if (self.borrow_address_temps.fetchRemove(src)) |temps| {
+                        try self.releaseNonLocalTemps(temps.value);
+                        if (temps.value.len != 0) self.allocator.free(temps.value);
+                    }
+                    _ = self.non_owning_regs.fetchRemove(src);
+                    try self.markConsumed(src);
+                    return;
+                }
+            },
+            .transfer_value_state => {},
         }
 
         try self.transferResultSlotValueState(slot, src, true);

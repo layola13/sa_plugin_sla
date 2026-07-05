@@ -1647,6 +1647,16 @@ pub const ResultSlotTransferPlan = struct {
     needs_refcell_companion: bool,
 };
 
+pub const ResultSlotRefCellStoreAction = enum {
+    transfer_value_state,
+    store_borrow_handle_companion,
+};
+
+pub fn planResultSlotRefCellStore(transfer_plan: ResultSlotTransferPlan, source_has_refcell_handle: bool) ResultSlotRefCellStoreAction {
+    if (transfer_plan.transfers_value and source_has_refcell_handle) return .store_borrow_handle_companion;
+    return .transfer_value_state;
+}
+
 pub fn refCellBorrowReleaseMacroName(kind: RefCellBorrowKind) []const u8 {
     return switch (kind) {
         .shared => "REFCELL_U64_RELEASE_SHARED",
@@ -3026,14 +3036,19 @@ test "shared lowering rules classify result-slot value transfer" {
     const primitive_plan = planResultSlotTransfer(&primitive_ty);
     try std.testing.expect(!primitive_plan.transfers_value);
     try std.testing.expect(!primitive_plan.needs_refcell_companion);
+    try std.testing.expectEqual(ResultSlotRefCellStoreAction.transfer_value_state, planResultSlotRefCellStore(primitive_plan, false));
+    try std.testing.expectEqual(ResultSlotRefCellStoreAction.transfer_value_state, planResultSlotRefCellStore(primitive_plan, true));
 
     const borrow_plan = planResultSlotTransfer(&borrow_primitive_ty);
     try std.testing.expect(borrow_plan.transfers_value);
     try std.testing.expect(borrow_plan.needs_refcell_companion);
+    try std.testing.expectEqual(ResultSlotRefCellStoreAction.transfer_value_state, planResultSlotRefCellStore(borrow_plan, false));
+    try std.testing.expectEqual(ResultSlotRefCellStoreAction.store_borrow_handle_companion, planResultSlotRefCellStore(borrow_plan, true));
 
     const user_plan = planResultSlotTransfer(&user_ty);
     try std.testing.expect(user_plan.transfers_value);
     try std.testing.expect(!user_plan.needs_refcell_companion);
+    try std.testing.expectEqual(ResultSlotRefCellStoreAction.store_borrow_handle_companion, planResultSlotRefCellStore(user_plan, true));
 
     const future_plan = planResultSlotTransfer(&future_ty);
     try std.testing.expect(future_plan.transfers_value);

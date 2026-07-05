@@ -1818,7 +1818,7 @@ pub const Codegen = struct {
     fn collectBorrowedBindingsInNode(self: *Codegen, node: *const ast.Node) anyerror!void {
         switch (node.*) {
             .borrow_expr => |borrow| {
-                if (borrow.expr.* == .identifier) try self.borrowed_bindings.put(borrow.expr.identifier, {});
+                if (lowering_rules.borrowedIdentifierName(node)) |name| try self.borrowed_bindings.put(name, {});
                 try self.collectBorrowedBindingsInNode(borrow.expr);
             },
             .move_expr => |move| try self.collectBorrowedBindingsInNode(move.expr),

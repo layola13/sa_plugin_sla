@@ -2366,6 +2366,13 @@ pub fn prefixedIdentifierCallArg(arg: *const ast.Node) ?PrefixedIdentifierArg {
     return .{ .prefix = prefix, .name = inner.identifier };
 }
 
+pub fn borrowedIdentifierName(expr: *const ast.Node) ?[]const u8 {
+    if (expr.* != .borrow_expr) return null;
+    const inner = expr.borrow_expr.expr;
+    if (inner.* != .identifier) return null;
+    return inner.identifier;
+}
+
 pub fn callArgNeedsRelease(arg: *const ast.Node) bool {
     return switch (arg.*) {
         .literal => |lit| lit != .string_val,
@@ -2733,6 +2740,7 @@ test "shared lowering rules classify call materialization decisions" {
     var field = ast.Node{ .field_expr = .{ .expr = &value, .field_name = "field" } };
     var borrowed_value = ast.Node{ .borrow_expr = .{ .expr = &value } };
     var borrowed_field = ast.Node{ .borrow_expr = .{ .expr = &field } };
+    var moved_value = ast.Node{ .move_expr = .{ .expr = &value } };
     var cast_ty = ast.Type{ .primitive = .i64 };
     var cast_value = ast.Node{ .cast_expr = .{ .expr = &value, .ty = &cast_ty } };
 
@@ -2744,6 +2752,11 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(!exprResultNeedsRelease(&value));
     try std.testing.expect(exprResultNeedsRelease(&field));
     try std.testing.expect(exprResultNeedsRelease(&borrowed_value));
+
+    try std.testing.expectEqualStrings("value", borrowedIdentifierName(&borrowed_value).?);
+    try std.testing.expect(borrowedIdentifierName(&borrowed_field) == null);
+    try std.testing.expect(borrowedIdentifierName(&value) == null);
+    try std.testing.expect(borrowedIdentifierName(&moved_value) == null);
 
     var boxed_ty = ast.Type{ .user_defined = .{ .name = "Boxed", .generics = &.{} } };
     var primitive_ty = ast.Type{ .primitive = .i32 };

@@ -1726,9 +1726,7 @@ pub const Codegen = struct {
     fn collectAddressableBindingsInExpr(self: *Codegen, expr: *const ast.Node) CodegenError!void {
         switch (expr.*) {
             .borrow_expr => |borrow| {
-                if (borrow.expr.* == .identifier) {
-                    self.addressable_bindings.put(borrow.expr.identifier, {}) catch return CodegenError.OutOfMemory;
-                }
+                if (lowering_rules.borrowedIdentifierName(expr)) |name| self.addressable_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
                 try self.collectAddressableBindingsInExpr(borrow.expr);
             },
             .move_expr => |move| try self.collectAddressableBindingsInExpr(move.expr),
@@ -7600,14 +7598,16 @@ pub const Codegen = struct {
                         break :blk .{ .reg = ptr_reg, .release_after_call = true };
                     }
                 }
-                if (arg.* == .borrow_expr and arg.borrow_expr.expr.* == .identifier and self.addressable_bindings.contains(arg.borrow_expr.expr.identifier)) {
-                    const addr_reg = try self.genExpr(arg, hoisted_allocs);
-                    const call_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{addr_reg}) catch return CodegenError.OutOfMemory;
-                    break :blk .{
-                        .reg = call_arg,
-                        .release_after_call = false,
-                        .release_reg = if (materialization.release_after_call) addr_reg else null,
-                    };
+                if (lowering_rules.borrowedIdentifierName(arg)) |borrowed_name| {
+                    if (self.addressable_bindings.contains(borrowed_name)) {
+                        const addr_reg = try self.genExpr(arg, hoisted_allocs);
+                        const call_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{addr_reg}) catch return CodegenError.OutOfMemory;
+                        break :blk .{
+                            .reg = call_arg,
+                            .release_after_call = false,
+                            .release_reg = if (materialization.release_after_call) addr_reg else null,
+                        };
+                    }
                 }
                 break :blk .{
                     .reg = try self.genCallArg(arg, hoisted_allocs),
@@ -10073,10 +10073,12 @@ pub const Codegen = struct {
                 });
                 switch (address_plan.shape) {
                     .identifier => {
-                        if (borrow.expr.* == .identifier and self.addressable_bindings.contains(borrow.expr.identifier)) {
-                            const addr = try self.newTmp();
-                            self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, borrow.expr.identifier }) catch return CodegenError.CodegenError;
-                            return addr;
+                        if (lowering_rules.borrowedIdentifierName(expr)) |borrowed_name| {
+                            if (self.addressable_bindings.contains(borrowed_name)) {
+                                const addr = try self.newTmp();
+                                self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, borrowed_name }) catch return CodegenError.CodegenError;
+                                return addr;
+                            }
                         }
                     },
                     .deref_borrow_or_pointer => {

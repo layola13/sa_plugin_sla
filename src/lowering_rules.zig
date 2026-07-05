@@ -256,6 +256,7 @@ pub const PollRuntimeCallPlan = struct {
 
 pub const ImportedMacroAddressableArgAction = enum {
     pass_value,
+    pass_address_expression,
     reuse_existing_addressable,
     materialize_stack_slot,
     materialize_address_expression_stack_slot,
@@ -264,6 +265,7 @@ pub const ImportedMacroAddressableArgAction = enum {
 pub const ImportedMacroArgLoweringAction = enum {
     pass_value,
     pass_raw_pointer_value,
+    pass_address_expression,
     reuse_existing_addressable,
     materialize_stack_slot,
     materialize_address_expression_stack_slot,
@@ -279,6 +281,7 @@ pub const ImportedMacroCallPlan = struct {
     arity: usize,
     leading_outputs: usize,
     borrowed_arg_mask: u64,
+    address_slot_arg_mask: u64,
     expression_output: bool,
 
     pub fn macroParamIndexForCallArg(self: ImportedMacroCallPlan, call_arg_index: usize) usize {
@@ -288,7 +291,14 @@ pub const ImportedMacroCallPlan = struct {
     pub fn callArgNeedsAddressableSlot(self: ImportedMacroCallPlan, call_arg_index: usize) bool {
         const macro_idx = self.macroParamIndexForCallArg(call_arg_index);
         if (macro_idx >= 64) return false;
-        return (self.borrowed_arg_mask & (@as(u64, 1) << @intCast(macro_idx))) != 0;
+        const bit = @as(u64, 1) << @intCast(macro_idx);
+        return (self.borrowed_arg_mask & bit) != 0 or (self.address_slot_arg_mask & bit) != 0;
+    }
+
+    pub fn callArgNeedsDirectAddressSlot(self: ImportedMacroCallPlan, call_arg_index: usize) bool {
+        const macro_idx = self.macroParamIndexForCallArg(call_arg_index);
+        if (macro_idx >= 64) return false;
+        return (self.address_slot_arg_mask & (@as(u64, 1) << @intCast(macro_idx))) != 0;
     }
 
     pub fn addressableIdentifierArgName(self: ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node) ?[]const u8 {
@@ -308,6 +318,13 @@ pub const ImportedMacroCallPlan = struct {
         has_existing_addressable_symbol: bool,
     ) ImportedMacroAddressableArgAction {
         if (!self.callArgNeedsAddressableSlot(call_arg_index)) return .pass_value;
+        if (self.callArgNeedsDirectAddressSlot(call_arg_index)) {
+            return switch (address_shape) {
+                .identifier => if (has_existing_addressable_symbol) .reuse_existing_addressable else .materialize_stack_slot,
+                .deref_borrow_or_pointer, .deref_smart_pointer, .field, .index => .pass_address_expression,
+                .value_temp => .pass_value,
+            };
+        }
         return switch (address_shape) {
             .identifier => if (has_existing_addressable_symbol) .reuse_existing_addressable else .materialize_stack_slot,
             .deref_borrow_or_pointer, .deref_smart_pointer, .field, .index => .materialize_address_expression_stack_slot,
@@ -322,6 +339,7 @@ pub const ImportedMacroCallPlan = struct {
         arg_ty: *const ast.Type,
     ) ?ImportedMacroArgLoweringAction {
         if (!self.callArgNeedsAddressableSlot(call_arg_index)) return .pass_value;
+        if (self.callArgNeedsDirectAddressSlot(call_arg_index) and arg.* == .identifier and (arg_ty.* == .infer or abiPassesAsPointer(arg_ty) or importedMacroBorrowUsesRawPointerValue(arg_ty))) return .pass_value;
         if (importedMacroArgUsesRawPointerValue(arg, arg_ty)) return .pass_raw_pointer_value;
         return null;
     }
@@ -334,6 +352,7 @@ pub const ImportedMacroCallPlan = struct {
     ) ImportedMacroArgLoweringAction {
         return switch (self.planAddressExpressionArgAction(call_arg_index, address_shape, has_existing_addressable_symbol)) {
             .pass_value => .pass_value,
+            .pass_address_expression => .pass_address_expression,
             .reuse_existing_addressable => .reuse_existing_addressable,
             .materialize_stack_slot => .materialize_stack_slot,
             .materialize_address_expression_stack_slot => .materialize_address_expression_stack_slot,
@@ -1515,6 +1534,7 @@ pub fn planImportedMacroCall(tc: *type_checker.TypeChecker, call: ast.CallExpr) 
         .arity = macro.arity,
         .leading_outputs = macro.leading_outputs,
         .borrowed_arg_mask = macro.borrowed_arg_mask,
+        .address_slot_arg_mask = macro.address_slot_arg_mask,
         .expression_output = expression_output,
     };
 }
@@ -2971,6 +2991,7 @@ test "shared imported macro call plan classifies addressable arg actions" {
         .arity = 2,
         .leading_outputs = 0,
         .borrowed_arg_mask = @as(u64, 1) << 1,
+        .address_slot_arg_mask = 0,
         .expression_output = false,
     };
 
@@ -2992,6 +3013,7 @@ test "shared imported macro call plan classifies addressable arg actions" {
         .arity = 2,
         .leading_outputs = 1,
         .borrowed_arg_mask = @as(u64, 1) << 1,
+        .address_slot_arg_mask = 0,
         .expression_output = true,
     };
 
@@ -3021,6 +3043,7 @@ test "shared imported macro address-expression args materialize stack slots" {
         .arity = 2,
         .leading_outputs = 0,
         .borrowed_arg_mask = @as(u64, 1) << 1,
+        .address_slot_arg_mask = 0,
         .expression_output = false,
     };
 
@@ -3035,11 +3058,35 @@ test "shared imported macro address-expression args materialize stack slots" {
 
     var ident = ast.Node{ .identifier = "value" };
     var int_ty = ast.Type{ .primitive = .i64 };
+    var infer_ty = ast.Type{ .infer = {} };
+    var aggregate_ty = ast.Type{ .user_defined = .{ .name = "Poll", .generics = &.{} } };
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, plan.planArgValueBypassAction(0, &ident, &int_ty).?);
     try std.testing.expect(plan.planArgValueBypassAction(1, &ident, &int_ty) == null);
+    try std.testing.expect(plan.planArgValueBypassAction(1, &ident, &infer_ty) == null);
+    try std.testing.expect(plan.planArgValueBypassAction(1, &ident, &aggregate_ty) == null);
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.reuse_existing_addressable, plan.planAddressableArgLoweringAction(1, .identifier, true));
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.materialize_stack_slot, plan.planAddressableArgLoweringAction(1, .identifier, false));
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.materialize_address_expression_stack_slot, plan.planAddressableArgLoweringAction(1, .field, false));
+
+    const address_slot_plan = ImportedMacroCallPlan{
+        .macro_name = "SLA_WRITE_HELPER",
+        .import_path = "helpers.sa",
+        .arity = 2,
+        .leading_outputs = 0,
+        .borrowed_arg_mask = 0,
+        .address_slot_arg_mask = @as(u64, 1) << 1,
+        .expression_output = false,
+    };
+    try std.testing.expect(address_slot_plan.callArgNeedsAddressableSlot(1));
+    try std.testing.expect(address_slot_plan.callArgNeedsDirectAddressSlot(1));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.pass_address_expression, address_slot_plan.planAddressExpressionArgAction(1, .field, false));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.pass_address_expression, address_slot_plan.planAddressExpressionArgAction(1, .index, false));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.pass_address_expression, address_slot_plan.planAddressExpressionArgAction(1, .deref_borrow_or_pointer, false));
+    try std.testing.expectEqual(ImportedMacroAddressableArgAction.pass_value, address_slot_plan.planAddressExpressionArgAction(1, .value_temp, false));
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_address_expression, address_slot_plan.planAddressableArgLoweringAction(1, .field, false));
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, address_slot_plan.planAddressableArgLoweringAction(1, .value_temp, false));
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, address_slot_plan.planArgValueBypassAction(1, &ident, &infer_ty).?);
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, address_slot_plan.planArgValueBypassAction(1, &ident, &aggregate_ty).?);
 }
 
 test "shared imported macro borrowed ptr args stay raw values" {
@@ -3073,6 +3120,7 @@ test "shared imported macro borrowed ptr args stay raw values" {
         .arity = 1,
         .leading_outputs = 0,
         .borrowed_arg_mask = 1,
+        .address_slot_arg_mask = 0,
         .expression_output = false,
     };
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_raw_pointer_value, borrowed_arg_plan.planArgValueBypassAction(0, &ptr_call, &int_ty).?);

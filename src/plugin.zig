@@ -430,7 +430,21 @@ fn markDirectBorrowedMacroParams(allocator: std.mem.Allocator, mask: *u64, param
     }
 }
 
-fn markExpandedBorrowedMacroParams(tc: *type_checker_mod.TypeChecker, mask: *u64, param_names: []const []const u8, line: []const u8) void {
+fn markDirectAddressSlotMacroParams(allocator: std.mem.Allocator, mask: *u64, param_names: []const []const u8, line: []const u8) !void {
+    for (param_names) |param| {
+        const needle = try std.fmt.allocPrint(allocator, "%{s}+", .{param});
+        defer allocator.free(needle);
+        if (std.mem.indexOf(u8, line, needle) != null) markBorrowedParam(mask, param_names, param);
+    }
+}
+
+fn markExpandedImportedMacroParamMasks(
+    tc: *type_checker_mod.TypeChecker,
+    borrowed_mask: *u64,
+    address_slot_mask: *u64,
+    param_names: []const []const u8,
+    line: []const u8,
+) void {
     if (!std.mem.startsWith(u8, line, "EXPAND")) return;
     var parts = std.mem.tokenizeAny(u8, line["EXPAND".len..], " \t,");
     const expanded_name = parts.next() orelse return;
@@ -439,10 +453,11 @@ fn markExpandedBorrowedMacroParams(tc: *type_checker_mod.TypeChecker, mask: *u64
     var arg_idx: usize = 0;
     while (parts.next()) |raw_arg| : (arg_idx += 1) {
         if (arg_idx >= 64) continue;
-        if ((expanded.borrowed_arg_mask & (@as(u64, 1) << @intCast(arg_idx))) == 0) continue;
         const trimmed = std.mem.trim(u8, raw_arg, " \t\r,");
         if (trimmed.len == 0 or trimmed[0] != '%') continue;
-        markBorrowedParam(mask, param_names, trimmed);
+        const arg_bit = @as(u64, 1) << @intCast(arg_idx);
+        if ((expanded.borrowed_arg_mask & arg_bit) != 0) markBorrowedParam(borrowed_mask, param_names, trimmed);
+        if ((expanded.address_slot_arg_mask & arg_bit) != 0) markBorrowedParam(address_slot_mask, param_names, trimmed);
     }
 }
 
@@ -475,15 +490,17 @@ fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allo
         }
 
         var borrowed_arg_mask: u64 = 0;
+        var address_slot_arg_mask: u64 = 0;
         while (lines.next()) |body_raw_line| {
             const body_line = std.mem.trim(u8, body_raw_line, " \t\r");
             if (std.mem.startsWith(u8, body_line, "[END_MACRO]")) break;
             try markDirectBorrowedMacroParams(allocator, &borrowed_arg_mask, param_names.items, body_line);
-            markExpandedBorrowedMacroParams(tc, &borrowed_arg_mask, param_names.items, body_line);
+            try markDirectAddressSlotMacroParams(allocator, &address_slot_arg_mask, param_names.items, body_line);
+            markExpandedImportedMacroParamMasks(tc, &borrowed_arg_mask, &address_slot_arg_mask, param_names.items, body_line);
         }
 
         const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
-        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask);
+        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask);
     }
 }
 

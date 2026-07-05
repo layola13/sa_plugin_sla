@@ -8537,7 +8537,20 @@ pub const Codegen = struct {
         try self.releaseExprResultIfNeeded(arg, loaded);
         if (!self.isLocalReg(source.reg)) try self.emitRelease(source.reg);
         for (source.release_regs) |release_reg| try self.emitRelease(release_reg);
+        if (source.release_regs.len != 0) self.allocator.free(source.release_regs);
         return .{ .operand = self.symbols.items[slot], .release_reg = null };
+    }
+
+    fn genImportedMacroAddressExpressionArg(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
+        const source = self.genImportedMacroAddressExpressionSource(arg, ctx) catch |err| {
+            self.traceUnsupported("imported macro direct address-expression source {s} failed: {s}\n", .{ @tagName(arg.*), @errorName(err) });
+            return err;
+        };
+        return .{
+            .operand = self.symbols.items[source.reg],
+            .release_reg = if (!self.isLocalReg(source.reg)) source.reg else null,
+            .release_regs = source.release_regs,
+        };
     }
 
     fn genImportedMacroArg(self: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
@@ -8551,6 +8564,7 @@ pub const Codegen = struct {
         switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null)) {
             .pass_value => return self.genImportedMacroValueArg(arg, ctx),
             .pass_raw_pointer_value => unreachable,
+            .pass_address_expression => return self.genImportedMacroAddressExpressionArg(arg, ctx),
             .reuse_existing_addressable => return .{ .operand = existing_symbol.?, .release_reg = null },
             .materialize_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, ctx),
             .materialize_address_expression_stack_slot => return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, ctx),
@@ -8578,6 +8592,10 @@ pub const Codegen = struct {
             };
             try arg_names.append(lowered_arg.operand);
             if (lowered_arg.release_reg) |reg| try release_regs.append(reg);
+            if (lowered_arg.release_regs.len != 0) {
+                try release_regs.appendSlice(lowered_arg.release_regs);
+                self.allocator.free(lowered_arg.release_regs);
+            }
         }
 
         self.emitStdMacroFragment(import_path, plan.macro_name, arg_names.items) catch |err| {
@@ -8701,6 +8719,7 @@ pub const Codegen = struct {
     const SabLoweredCallArg = struct {
         operand: []const u8,
         release_reg: ?u32,
+        release_regs: []const u32 = &.{},
     };
 
     fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {

@@ -34,6 +34,12 @@ fn imported_macro_smart_deref_address() -> i64 {
     SLA_IMPORTED_READ_I64(*boxed) + SLA_IMPORTED_READ_I64(**nested_box)
 }
 
+fn imported_macro_field_write_address() -> i64 {
+    let point = ImportedMacroAddressPoint { left: 11, right: 17 };
+    SLA_IMPORTED_WRITE_29_I64(point.left);
+    point.left
+}
+
 @test "imported macro borrowed field address"() {
     if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
     if imported_macro_field_address() != 11 { panic(31901); };
@@ -52,4 +58,8 @@ fn imported_macro_smart_deref_address() -> i64 {
 @test "imported macro borrowed smart-pointer deref address"() {
     if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
     if imported_macro_smart_deref_address() != 42 { panic(31904); };
+}
+
+@test "imported macro borrowed field write address"() {
+    if imported_macro_field_write_address() != 29 { panic(31905); };
 }

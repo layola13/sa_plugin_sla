@@ -7718,6 +7718,34 @@ pub const Codegen = struct {
         return .{ .reg = slot, .release_after_call = false };
     }
 
+    fn genImportedMacroAddressExpressionArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+        const address_reg = switch (try self.importedMacroArgAddressShape(arg)) {
+            .field => blk: {
+                const projection = try self.genFieldAddress(&arg.field_expr, hoisted_allocs);
+                try self.rememberAddressProjectionSource(projection);
+                break :blk projection.ptr;
+            },
+            .index => blk: {
+                const address = try self.genIndexAddress(&arg.index_expr, hoisted_allocs);
+                try self.rememberIndexAddressSource(address);
+                break :blk address.ptr;
+            },
+            .deref_borrow_or_pointer => blk: {
+                const source = try self.genExpr(arg.deref_expr.expr, hoisted_allocs);
+                const addr = try self.newTmp();
+                self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
+                const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(arg.deref_expr.expr), false);
+                if (temp_plan.track_primary_temp) {
+                    self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
+                }
+                break :blk addr;
+            },
+            .deref_smart_pointer => try self.genExpr(arg, hoisted_allocs),
+            else => return CodegenError.CodegenError,
+        };
+        return .{ .reg = address_reg, .release_after_call = false, .release_reg = address_reg };
+    }
+
     fn genImportedMacroArg(
         self: *Codegen,
         plan: lowering_rules.ImportedMacroCallPlan,
@@ -7735,6 +7763,7 @@ pub const Codegen = struct {
         switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null)) {
             .pass_value => return .{ .reg = try self.genExpr(arg, hoisted_allocs), .release_after_call = callArgNeedsRelease(arg) },
             .pass_raw_pointer_value => unreachable,
+            .pass_address_expression => return self.genImportedMacroAddressExpressionArg(arg, hoisted_allocs),
             .reuse_existing_addressable => return .{ .reg = existing_symbol.?, .release_after_call = false },
             .materialize_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, hoisted_allocs),
             .materialize_address_expression_stack_slot => return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, hoisted_allocs),

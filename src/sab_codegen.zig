@@ -1820,9 +1820,12 @@ pub const Codegen = struct {
 
     fn transferReleaseMetadata(self: *Codegen, dst: u32, src: u32) !void {
         if (dst == src) return;
-        if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
-            _ = self.refcell_borrow_values.remove(dst);
-            try self.refcell_borrow_values.put(dst, entry.value);
+        switch (lowering_rules.planRefCellHandleTransfer(self.refcell_borrow_values.contains(src))) {
+            .move_borrow_handle => if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
+                _ = self.refcell_borrow_values.remove(dst);
+                try self.refcell_borrow_values.put(dst, entry.value);
+            },
+            .transfer_value_state => {},
         }
         if (self.borrow_address_temps.fetchRemove(src)) |entry| {
             if (self.borrow_address_temps.fetchRemove(dst)) |old| {

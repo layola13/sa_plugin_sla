@@ -701,10 +701,13 @@ pub const Codegen = struct {
             self.borrow_source_temps.put(dst, source_temp) catch return CodegenError.OutOfMemory;
             _ = self.borrow_source_temps.remove(src);
         }
-        if (self.refcell_borrow_handles.get(src)) |handle| {
-            self.refcell_borrow_handles.put(dst, handle) catch return CodegenError.OutOfMemory;
-            _ = self.refcell_borrow_handles.remove(src);
-            if (mark_consumed) try self.markConsumedBinding(src);
+        switch (lowering_rules.planRefCellHandleTransfer(self.refcell_borrow_handles.contains(src))) {
+            .move_borrow_handle => if (self.refcell_borrow_handles.get(src)) |handle| {
+                self.refcell_borrow_handles.put(dst, handle) catch return CodegenError.OutOfMemory;
+                _ = self.refcell_borrow_handles.remove(src);
+                if (mark_consumed) try self.markConsumedBinding(src);
+            },
+            .transfer_value_state => {},
         }
         if (self.mutex_guard_handles.get(src)) |handle| {
             self.mutex_guard_handles.put(dst, handle) catch return CodegenError.OutOfMemory;

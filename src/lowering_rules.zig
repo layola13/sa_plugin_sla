@@ -1665,6 +1665,10 @@ pub const RefCellBorrowRuntimeGuardPlan = struct {
     release_status_on_success: bool,
 };
 
+pub const RefCellBorrowHandleRegistrationPlan = struct {
+    track_receiver_owner_temp: bool,
+};
+
 pub const ResultSlotTransferPlan = struct {
     transfers_value: bool,
     needs_refcell_companion: bool,
@@ -1782,6 +1786,12 @@ pub fn planRefCellBorrowRuntimeGuard(_: RefCellBorrowPlan) RefCellBorrowRuntimeG
         .release_status_on_conflict = true,
         .conflict_panic_code = 107,
         .release_status_on_success = true,
+    };
+}
+
+pub fn planRefCellBorrowHandleRegistration(_: RefCellBorrowPlan) RefCellBorrowHandleRegistrationPlan {
+    return .{
+        .track_receiver_owner_temp = false,
     };
 }
 
@@ -4111,6 +4121,9 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expect(scalar_guard.release_status_on_conflict);
     try std.testing.expectEqual(@as(i64, 107), scalar_guard.conflict_panic_code);
     try std.testing.expect(scalar_guard.release_status_on_success);
+
+    const scalar_handle_registration = planRefCellBorrowHandleRegistration(scalar_plan);
+    try std.testing.expect(!scalar_handle_registration.track_receiver_owner_temp);
 
     const smart_plan = planRefCellBorrowCall(borrow_call, &refcell_box_ty).?;
     try std.testing.expectEqual(RefCellBorrowValueKind.smart_pointer_payload, smart_plan.value_kind);

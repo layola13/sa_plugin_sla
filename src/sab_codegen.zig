@@ -8420,7 +8420,13 @@ pub const Codegen = struct {
             },
             .load_pointer_payload => return Error.UnsupportedSabDirectFeature,
         };
-        try self.refcell_borrow_values.put(borrow_reg, .{ .cell_reg = recv_reg, .kind = plan.kind });
+        const handle_plan = lowering_rules.planRefCellBorrowHandleRegistration(plan);
+        const release_regs = if (handle_plan.track_receiver_owner_temp) try self.singleReleaseReg(recv_reg) else &.{};
+        try self.refcell_borrow_values.put(borrow_reg, .{
+            .cell_reg = recv_reg,
+            .kind = plan.kind,
+            .release_regs = release_regs,
+        });
         return borrow_reg;
     }
 

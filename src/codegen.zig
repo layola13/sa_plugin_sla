@@ -11737,7 +11737,12 @@ pub const Codegen = struct {
                                     },
                                     .take_pointer_payload => return CodegenError.CodegenError,
                                 };
-                                self.refcell_borrow_handles.put(borrow_reg, .{ .cell_reg = recv_reg, .kind = borrow_plan.kind }) catch return CodegenError.OutOfMemory;
+                                const handle_plan = lowering_rules.planRefCellBorrowHandleRegistration(borrow_plan);
+                                self.refcell_borrow_handles.put(borrow_reg, .{
+                                    .cell_reg = recv_reg,
+                                    .kind = borrow_plan.kind,
+                                    .cell_release_temp = if (handle_plan.track_receiver_owner_temp) recv_reg else null,
+                                }) catch return CodegenError.OutOfMemory;
                                 return borrow_reg;
                             }
                         }

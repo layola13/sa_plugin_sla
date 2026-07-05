@@ -785,9 +785,14 @@ pub const Codegen = struct {
                 const meta = try self.ensureResultSlotRefCellHandle(slot, handle.kind);
                 self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ meta.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
                 _ = self.refcell_borrow_handles.remove(src);
-                try self.markConsumedBinding(src);
+                const cleanup_plan = lowering_rules.planRefCellCompanionStoreCleanup(
+                    if (handle.cell_release_temp) |temp| !std.mem.eql(u8, temp, src) else false,
+                    false,
+                    false,
+                );
+                if (cleanup_plan.consume_handle_value) try self.markConsumedBinding(src);
                 if (handle.cell_release_temp) |temp| {
-                    if (!std.mem.eql(u8, temp, src)) try self.emitRelease(temp);
+                    if (cleanup_plan.release_owner_temps) try self.emitRelease(temp);
                 }
             },
             .transfer_value_state => {},

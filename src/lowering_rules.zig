@@ -1674,6 +1674,13 @@ pub const RefCellHandleReleasePlan = struct {
     release_owner_temps: bool,
 };
 
+pub const RefCellCompanionStoreCleanupPlan = struct {
+    consume_handle_value: bool,
+    release_owner_temps: bool,
+    release_borrow_address_temps: bool,
+    clear_non_owning_metadata: bool,
+};
+
 pub const RefCellBranchStateMergeAction = enum {
     restore_pre,
     restore_then,
@@ -1710,6 +1717,19 @@ pub fn planRefCellHandleRelease(has_owner_temps: bool) RefCellHandleReleasePlan 
         .release_dynamic_borrow = true,
         .consume_handle_value = true,
         .release_owner_temps = has_owner_temps,
+    };
+}
+
+pub fn planRefCellCompanionStoreCleanup(
+    has_owner_temps: bool,
+    has_borrow_address_temps: bool,
+    has_non_owning_metadata: bool,
+) RefCellCompanionStoreCleanupPlan {
+    return .{
+        .consume_handle_value = true,
+        .release_owner_temps = has_owner_temps,
+        .release_borrow_address_temps = has_borrow_address_temps,
+        .clear_non_owning_metadata = has_non_owning_metadata,
     };
 }
 
@@ -4038,6 +4058,18 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expect(temp_release.release_dynamic_borrow);
     try std.testing.expect(temp_release.consume_handle_value);
     try std.testing.expect(temp_release.release_owner_temps);
+
+    const companion_plain = planRefCellCompanionStoreCleanup(false, false, false);
+    try std.testing.expect(companion_plain.consume_handle_value);
+    try std.testing.expect(!companion_plain.release_owner_temps);
+    try std.testing.expect(!companion_plain.release_borrow_address_temps);
+    try std.testing.expect(!companion_plain.clear_non_owning_metadata);
+
+    const companion_full = planRefCellCompanionStoreCleanup(true, true, true);
+    try std.testing.expect(companion_full.consume_handle_value);
+    try std.testing.expect(companion_full.release_owner_temps);
+    try std.testing.expect(companion_full.release_borrow_address_temps);
+    try std.testing.expect(companion_full.clear_non_owning_metadata);
 
     try std.testing.expectEqual(RefCellBranchStateMergeAction.keep_current, planRefCellBranchStateMerge(false, false));
     try std.testing.expectEqual(RefCellBranchStateMergeAction.restore_else, planRefCellBranchStateMerge(true, false));

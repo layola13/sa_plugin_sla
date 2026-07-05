@@ -1736,10 +1736,6 @@ pub const Codegen = struct {
         if (consume_src) try self.markConsumed(src);
     }
 
-    fn resultSlotNeedsRefCellCompanion(target_ty: *const ast.Type) bool {
-        return target_ty.* == .borrow;
-    }
-
     fn ensureResultSlotRefCellSlot(self: *Codegen, slot: u32) !u32 {
         if (self.result_slot_refcell_slots.get(slot)) |existing| return existing;
         const cell_slot = try self.intern(try self.newTmp());
@@ -1749,7 +1745,7 @@ pub const Codegen = struct {
     }
 
     fn prepareResultSlotRefCellCompanion(self: *Codegen, slot: u32, target_ty: *const ast.Type) !void {
-        if (!resultSlotNeedsRefCellCompanion(target_ty)) return;
+        if (!lowering_rules.planResultSlotTransfer(target_ty).needs_refcell_companion) return;
         _ = try self.ensureResultSlotRefCellSlot(slot);
     }
 
@@ -1766,7 +1762,8 @@ pub const Codegen = struct {
     }
 
     fn storeResultSlotTransferredValue(self: *Codegen, slot: u32, src: u32, target_ty: *const ast.Type) !void {
-        if (!lowering_rules.resultSlotStoreTransfersValue(target_ty)) {
+        const plan = lowering_rules.planResultSlotTransfer(target_ty);
+        if (!plan.transfers_value) {
             if (!self.isLocalReg(src)) try self.emitRelease(src);
             return;
         }
@@ -1791,7 +1788,8 @@ pub const Codegen = struct {
     }
 
     fn loadResultSlotTransferredValue(self: *Codegen, dst: u32, slot: u32, target_ty: *const ast.Type) !void {
-        if (lowering_rules.resultSlotStoreTransfersValue(target_ty)) {
+        const plan = lowering_rules.planResultSlotTransfer(target_ty);
+        if (plan.transfers_value) {
             if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
                 _ = self.result_slot_refcell_slots.fetchRemove(slot);
                 const cell_reg = try self.intern(try self.newTmp());

@@ -748,10 +748,6 @@ pub const Codegen = struct {
         return meta;
     }
 
-    fn resultSlotNeedsRefCellCompanion(target_ty: *const ast.Type) bool {
-        return target_ty.* == .borrow;
-    }
-
     fn ensureResultSlotRefCellSlot(self: *Codegen, slot: []const u8) CodegenError![]const u8 {
         if (self.result_slot_refcell_slots.get(slot)) |existing| return existing;
         const cell_slot = try self.newTmp();
@@ -761,12 +757,13 @@ pub const Codegen = struct {
     }
 
     fn prepareResultSlotRefCellCompanion(self: *Codegen, slot: []const u8, target_ty: *const ast.Type) CodegenError!void {
-        if (!resultSlotNeedsRefCellCompanion(target_ty)) return;
+        if (!lowering_rules.planResultSlotTransfer(target_ty).needs_refcell_companion) return;
         _ = try self.ensureResultSlotRefCellSlot(slot);
     }
 
     fn storeResultSlotTransferredValueState(self: *Codegen, slot: []const u8, src: []const u8, target_ty: *const ast.Type) CodegenError!void {
-        if (lowering_rules.resultSlotStoreTransfersValue(target_ty)) {
+        const plan = lowering_rules.planResultSlotTransfer(target_ty);
+        if (plan.transfers_value) {
             if (self.refcell_borrow_handles.get(src)) |handle| {
                 const meta = try self.ensureResultSlotRefCellHandle(slot, handle.kind);
                 self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ meta.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
@@ -781,7 +778,8 @@ pub const Codegen = struct {
     }
 
     fn loadResultSlotTransferredValueState(self: *Codegen, dst: []const u8, slot: []const u8, target_ty: *const ast.Type) CodegenError!void {
-        if (lowering_rules.resultSlotStoreTransfersValue(target_ty)) {
+        const plan = lowering_rules.planResultSlotTransfer(target_ty);
+        if (plan.transfers_value) {
             if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
                 _ = self.result_slot_refcell_slots.fetchRemove(slot);
                 const cell_reg = try self.newTmp();
@@ -6651,7 +6649,7 @@ pub const Codegen = struct {
         const value_expr = last.expr_stmt;
         const value_reg = try self.genExpr(value_expr, hoisted_allocs);
         const value_ty = self.tc.expr_types.get(value_expr) orelse return CodegenError.CodegenError;
-        const transfer_value = lowering_rules.resultSlotStoreTransfersValue(target_ty);
+        const transfer_value = lowering_rules.planResultSlotTransfer(target_ty).transfers_value;
 
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
             const copied = try self.newTmp();
@@ -9149,7 +9147,7 @@ pub const Codegen = struct {
         if (result_slot) |slot| {
             const reg = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
-            if (lowering_rules.resultSlotStoreTransfersValue(expr_ty)) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
+            if (lowering_rules.planResultSlotTransfer(expr_ty).transfers_value) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
             try self.emitRelease(slot);
             return reg;
         }
@@ -9265,7 +9263,7 @@ pub const Codegen = struct {
         if (result_slot) |slot| {
             const reg = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
-            if (lowering_rules.resultSlotStoreTransfersValue(expr_ty)) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
+            if (lowering_rules.planResultSlotTransfer(expr_ty).transfers_value) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
             try self.emitRelease(slot);
             return reg;
         }
@@ -11498,7 +11496,7 @@ pub const Codegen = struct {
                                 const value_reg = try self.newTmp();
                                 self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, value_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                if (lowering_rules.resultSlotStoreTransfersValue(inner_ty)) {
+                                if (lowering_rules.planResultSlotTransfer(inner_ty).transfers_value) {
                                     try self.storeResultSlotTransferredValueState(result_slot, value_reg, inner_ty);
                                 } else {
                                     try self.emitRelease(value_reg);
@@ -11509,7 +11507,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                                 const default_reg = try self.genInlineClosureNullary(&call.args[1].closure_literal, hoisted_allocs);
                                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, default_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                if (lowering_rules.resultSlotStoreTransfersValue(inner_ty)) {
+                                if (lowering_rules.planResultSlotTransfer(inner_ty).transfers_value) {
                                     try self.storeResultSlotTransferredValueState(result_slot, default_reg, inner_ty);
                                 } else {
                                     try self.emitRelease(default_reg);
@@ -11519,7 +11517,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 const reg = try self.newTmp();
                                 self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, result_slot, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                if (lowering_rules.resultSlotStoreTransfersValue(inner_ty)) try self.loadResultSlotTransferredValueState(reg, result_slot, inner_ty);
+                                if (lowering_rules.planResultSlotTransfer(inner_ty).transfers_value) try self.loadResultSlotTransferredValueState(reg, result_slot, inner_ty);
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
@@ -12611,7 +12609,7 @@ pub const Codegen = struct {
                     if (result_slot) |slot| {
                         const reg = try self.newTmp();
                         self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
-                        if (lowering_rules.resultSlotStoreTransfersValue(expr_ty)) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
+                        if (lowering_rules.planResultSlotTransfer(expr_ty).transfers_value) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
                         try self.emitRelease(slot);
                         return reg;
                     }
@@ -12742,7 +12740,7 @@ pub const Codegen = struct {
                 if (result_slot) |slot| {
                     const reg = try self.newTmp();
                     self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
-                    if (lowering_rules.resultSlotStoreTransfersValue(expr_ty)) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
+                    if (lowering_rules.planResultSlotTransfer(expr_ty).transfers_value) try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
                     try self.emitRelease(slot);
                     return reg;
                 }

@@ -1595,6 +1595,11 @@ pub const RefCellBorrowPlan = struct {
     }
 };
 
+pub const ResultSlotTransferPlan = struct {
+    transfers_value: bool,
+    needs_refcell_companion: bool,
+};
+
 pub fn refCellBorrowReleaseMacroName(kind: RefCellBorrowKind) []const u8 {
     return switch (kind) {
         .shared => "REFCELL_U64_RELEASE_SHARED",
@@ -2387,6 +2392,17 @@ pub fn resultSlotStoreTransfersValue(ty: *const ast.Type) bool {
     return abiPassesAsPointer(ty);
 }
 
+pub fn resultSlotNeedsRefCellCompanion(ty: *const ast.Type) bool {
+    return ty.* == .borrow;
+}
+
+pub fn planResultSlotTransfer(ty: *const ast.Type) ResultSlotTransferPlan {
+    return .{
+        .transfers_value = resultSlotStoreTransfersValue(ty),
+        .needs_refcell_companion = resultSlotNeedsRefCellCompanion(ty),
+    };
+}
+
 pub fn rootIdentifier(expr: *const ast.Node) ?[]const u8 {
     return switch (expr.*) {
         .identifier => |name| name,
@@ -2813,6 +2829,22 @@ test "shared lowering rules classify result-slot value transfer" {
     try std.testing.expect(resultSlotStoreTransfersValue(&borrow_primitive_ty));
     try std.testing.expect(resultSlotStoreTransfersValue(&user_ty));
     try std.testing.expect(resultSlotStoreTransfersValue(&future_ty));
+
+    const primitive_plan = planResultSlotTransfer(&primitive_ty);
+    try std.testing.expect(!primitive_plan.transfers_value);
+    try std.testing.expect(!primitive_plan.needs_refcell_companion);
+
+    const borrow_plan = planResultSlotTransfer(&borrow_primitive_ty);
+    try std.testing.expect(borrow_plan.transfers_value);
+    try std.testing.expect(borrow_plan.needs_refcell_companion);
+
+    const user_plan = planResultSlotTransfer(&user_ty);
+    try std.testing.expect(user_plan.transfers_value);
+    try std.testing.expect(!user_plan.needs_refcell_companion);
+
+    const future_plan = planResultSlotTransfer(&future_ty);
+    try std.testing.expect(future_plan.transfers_value);
+    try std.testing.expect(!future_plan.needs_refcell_companion);
 }
 
 test "shared ABI layout keeps fixed-array fields as pointer slots" {

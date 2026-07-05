@@ -1794,8 +1794,12 @@ pub const Codegen = struct {
 
     fn loadResultSlotTransferredValue(self: *Codegen, dst: u32, slot: u32, target_ty: *const ast.Type) !void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
-        if (plan.transfers_value) {
-            if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
+        switch (lowering_rules.planResultSlotRefCellLoad(
+            plan,
+            self.result_slot_refcell_handles.contains(slot),
+            self.result_slot_refcell_slots.contains(slot),
+        )) {
+            .restore_borrow_handle_companion => if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
                 _ = self.result_slot_refcell_slots.fetchRemove(slot);
                 const cell_reg = try self.intern(try self.newTmp());
                 try self.emitLoad(cell_reg, entry.value.cell_slot, 0, .ptr);
@@ -1805,9 +1809,11 @@ pub const Codegen = struct {
                     .release_regs = try self.singleReleaseReg(cell_reg),
                 });
                 try self.emitRelease(entry.value.cell_slot);
-            } else if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
+            },
+            .release_empty_companion => if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
                 try self.emitRelease(entry.value);
-            }
+            },
+            .transfer_value_state => {},
         }
         try self.transferResultSlotValueState(dst, slot, false);
     }

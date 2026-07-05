@@ -1652,8 +1652,25 @@ pub const ResultSlotRefCellStoreAction = enum {
     store_borrow_handle_companion,
 };
 
+pub const ResultSlotRefCellLoadAction = enum {
+    transfer_value_state,
+    restore_borrow_handle_companion,
+    release_empty_companion,
+};
+
 pub fn planResultSlotRefCellStore(transfer_plan: ResultSlotTransferPlan, source_has_refcell_handle: bool) ResultSlotRefCellStoreAction {
     if (transfer_plan.transfers_value and source_has_refcell_handle) return .store_borrow_handle_companion;
+    return .transfer_value_state;
+}
+
+pub fn planResultSlotRefCellLoad(
+    transfer_plan: ResultSlotTransferPlan,
+    slot_has_refcell_handle: bool,
+    slot_has_refcell_companion: bool,
+) ResultSlotRefCellLoadAction {
+    if (!transfer_plan.transfers_value) return .transfer_value_state;
+    if (slot_has_refcell_handle) return .restore_borrow_handle_companion;
+    if (slot_has_refcell_companion) return .release_empty_companion;
     return .transfer_value_state;
 }
 
@@ -3038,17 +3055,24 @@ test "shared lowering rules classify result-slot value transfer" {
     try std.testing.expect(!primitive_plan.needs_refcell_companion);
     try std.testing.expectEqual(ResultSlotRefCellStoreAction.transfer_value_state, planResultSlotRefCellStore(primitive_plan, false));
     try std.testing.expectEqual(ResultSlotRefCellStoreAction.transfer_value_state, planResultSlotRefCellStore(primitive_plan, true));
+    try std.testing.expectEqual(ResultSlotRefCellLoadAction.transfer_value_state, planResultSlotRefCellLoad(primitive_plan, false, false));
+    try std.testing.expectEqual(ResultSlotRefCellLoadAction.transfer_value_state, planResultSlotRefCellLoad(primitive_plan, true, true));
 
     const borrow_plan = planResultSlotTransfer(&borrow_primitive_ty);
     try std.testing.expect(borrow_plan.transfers_value);
     try std.testing.expect(borrow_plan.needs_refcell_companion);
     try std.testing.expectEqual(ResultSlotRefCellStoreAction.transfer_value_state, planResultSlotRefCellStore(borrow_plan, false));
     try std.testing.expectEqual(ResultSlotRefCellStoreAction.store_borrow_handle_companion, planResultSlotRefCellStore(borrow_plan, true));
+    try std.testing.expectEqual(ResultSlotRefCellLoadAction.transfer_value_state, planResultSlotRefCellLoad(borrow_plan, false, false));
+    try std.testing.expectEqual(ResultSlotRefCellLoadAction.release_empty_companion, planResultSlotRefCellLoad(borrow_plan, false, true));
+    try std.testing.expectEqual(ResultSlotRefCellLoadAction.restore_borrow_handle_companion, planResultSlotRefCellLoad(borrow_plan, true, false));
+    try std.testing.expectEqual(ResultSlotRefCellLoadAction.restore_borrow_handle_companion, planResultSlotRefCellLoad(borrow_plan, true, true));
 
     const user_plan = planResultSlotTransfer(&user_ty);
     try std.testing.expect(user_plan.transfers_value);
     try std.testing.expect(!user_plan.needs_refcell_companion);
     try std.testing.expectEqual(ResultSlotRefCellStoreAction.store_borrow_handle_companion, planResultSlotRefCellStore(user_plan, true));
+    try std.testing.expectEqual(ResultSlotRefCellLoadAction.release_empty_companion, planResultSlotRefCellLoad(user_plan, false, true));
 
     const future_plan = planResultSlotTransfer(&future_ty);
     try std.testing.expect(future_plan.transfers_value);

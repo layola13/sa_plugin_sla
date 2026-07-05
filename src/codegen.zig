@@ -782,8 +782,12 @@ pub const Codegen = struct {
 
     fn loadResultSlotTransferredValueState(self: *Codegen, dst: []const u8, slot: []const u8, target_ty: *const ast.Type) CodegenError!void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
-        if (plan.transfers_value) {
-            if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
+        switch (lowering_rules.planResultSlotRefCellLoad(
+            plan,
+            self.result_slot_refcell_handles.contains(slot),
+            self.result_slot_refcell_slots.contains(slot),
+        )) {
+            .restore_borrow_handle_companion => if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
                 _ = self.result_slot_refcell_slots.fetchRemove(slot);
                 const cell_reg = try self.newTmp();
                 self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.value.cell_slot }) catch return CodegenError.CodegenError;
@@ -793,9 +797,11 @@ pub const Codegen = struct {
                     .cell_release_temp = cell_reg,
                 }) catch return CodegenError.OutOfMemory;
                 try self.emitRelease(entry.value.cell_slot);
-            } else if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
+            },
+            .release_empty_companion => if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
                 try self.emitRelease(entry.value);
-            }
+            },
+            .transfer_value_state => {},
         }
         try self.transferResultSlotValueState(dst, slot, false);
     }

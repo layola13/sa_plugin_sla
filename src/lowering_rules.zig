@@ -1669,6 +1669,13 @@ pub const RefCellHandleReleasePlan = struct {
     release_owner_temps: bool,
 };
 
+pub const RefCellBranchStateMergeAction = enum {
+    restore_pre,
+    restore_then,
+    restore_else,
+    keep_current,
+};
+
 pub fn planResultSlotRefCellStore(transfer_plan: ResultSlotTransferPlan, source_has_refcell_handle: bool) ResultSlotRefCellStoreAction {
     if (transfer_plan.transfers_value and source_has_refcell_handle) return .store_borrow_handle_companion;
     return .transfer_value_state;
@@ -1695,6 +1702,13 @@ pub fn planRefCellHandleRelease(has_owner_temps: bool) RefCellHandleReleasePlan 
         .consume_handle_value = true,
         .release_owner_temps = has_owner_temps,
     };
+}
+
+pub fn planRefCellBranchStateMerge(then_terminated: bool, else_terminated: bool) RefCellBranchStateMergeAction {
+    if (then_terminated and else_terminated) return .restore_pre;
+    if (then_terminated) return .restore_else;
+    if (else_terminated) return .restore_then;
+    return .keep_current;
 }
 
 pub fn refCellBorrowReleaseMacroName(kind: RefCellBorrowKind) []const u8 {
@@ -4013,6 +4027,11 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expect(temp_release.release_dynamic_borrow);
     try std.testing.expect(temp_release.consume_handle_value);
     try std.testing.expect(temp_release.release_owner_temps);
+
+    try std.testing.expectEqual(RefCellBranchStateMergeAction.keep_current, planRefCellBranchStateMerge(false, false));
+    try std.testing.expectEqual(RefCellBranchStateMergeAction.restore_else, planRefCellBranchStateMerge(true, false));
+    try std.testing.expectEqual(RefCellBranchStateMergeAction.restore_then, planRefCellBranchStateMerge(false, true));
+    try std.testing.expectEqual(RefCellBranchStateMergeAction.restore_pre, planRefCellBranchStateMerge(true, true));
 }
 
 test "shared refcell runtime scanner detects constructor and receiver calls" {

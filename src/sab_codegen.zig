@@ -1791,16 +1791,11 @@ pub const Codegen = struct {
         pre_values: *const std.AutoHashMap(u32, RefCellBorrowValue),
         pre_temps: *const std.AutoHashMap(u32, []const u32),
     ) !void {
-        if (then_terminated and else_terminated) {
-            try self.restoreRefCellBranchState(pre_values, pre_temps);
-        } else if (then_terminated) {
-            try self.restoreRefCellBranchState(else_values, else_temps);
-        } else if (else_terminated) {
-            try self.restoreRefCellBranchState(then_values, then_temps);
-        } else {
-            // Both branches fall through. Keep the current post-else state here;
-            // this focused snapshot is only needed to undo metadata removals from
-            // terminated sibling branches.
+        switch (lowering_rules.planRefCellBranchStateMerge(then_terminated, else_terminated)) {
+            .restore_pre => try self.restoreRefCellBranchState(pre_values, pre_temps),
+            .restore_then => try self.restoreRefCellBranchState(then_values, then_temps),
+            .restore_else => try self.restoreRefCellBranchState(else_values, else_temps),
+            .keep_current => {},
         }
     }
 

@@ -8140,9 +8140,12 @@ pub const Codegen = struct {
                         _ = self.rwlock_lock_results.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
-                    if (self.borrow_source_temps.get(val_reg)) |source_temp| {
-                        self.borrow_source_temps.put(let.name, source_temp) catch return CodegenError.OutOfMemory;
-                        _ = self.borrow_source_temps.remove(val_reg);
+                    switch (lowering_rules.planBorrowAddressTempTransfer(self.borrow_source_temps.contains(val_reg))) {
+                        .move_borrow_address_temps => if (self.borrow_source_temps.get(val_reg)) |source_temp| {
+                            self.borrow_source_temps.put(let.name, source_temp) catch return CodegenError.OutOfMemory;
+                            _ = self.borrow_source_temps.remove(val_reg);
+                        },
+                        .transfer_value_state => {},
                     }
                     if (self.file_bindings.contains(val_reg)) {
                         self.file_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;

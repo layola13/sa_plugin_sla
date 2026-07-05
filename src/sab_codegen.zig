@@ -2399,15 +2399,18 @@ pub const Codegen = struct {
             try self.released_regs.put(reg, {});
             return;
         }
+        const borrow_temp_release = lowering_rules.planBorrowAddressTempRelease(self.borrow_address_temps.contains(reg));
         _ = self.future_state_vtables.remove(reg);
         _ = self.future_readiness.remove(reg);
         var item = self.makeInst(.release);
         item.operands[0] = .{ .reg = reg };
         try self.appendInst(item);
         try self.released_regs.put(reg, {});
-        if (self.borrow_address_temps.fetchRemove(reg)) |entry| {
-            for (entry.value) |temp| try self.emitRelease(temp);
-            if (entry.value.len != 0) self.allocator.free(entry.value);
+        if (borrow_temp_release.release_source_temps) {
+            if (self.borrow_address_temps.fetchRemove(reg)) |entry| {
+                for (entry.value) |temp| try self.emitRelease(temp);
+                if (entry.value.len != 0) self.allocator.free(entry.value);
+            }
         }
     }
 

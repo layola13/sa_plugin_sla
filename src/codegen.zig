@@ -493,14 +493,17 @@ pub const Codegen = struct {
     fn emitRelease(self: *Codegen, name: []const u8) CodegenError!void {
         const resolved_name = self.resolveBindingName(name);
         if (std.mem.eql(u8, resolved_name, "return_ty_sentinel")) return;
-        if (self.borrow_source_temps.get(resolved_name)) |source_temp| {
-            _ = self.borrow_source_temps.remove(resolved_name);
-            if (!self.consumed_bindings.contains(resolved_name)) {
-                self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
-                self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+        const borrow_temp_release = lowering_rules.planBorrowAddressTempRelease(self.borrow_source_temps.contains(resolved_name));
+        if (borrow_temp_release.release_source_temps) {
+            if (self.borrow_source_temps.get(resolved_name)) |source_temp| {
+                _ = self.borrow_source_temps.remove(resolved_name);
+                if (borrow_temp_release.release_borrow_value and !self.consumed_bindings.contains(resolved_name)) {
+                    self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+                    self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+                }
+                try self.emitRelease(source_temp);
+                return;
             }
-            try self.emitRelease(source_temp);
-            return;
         }
         if (self.refcell_borrow_handles.get(resolved_name)) |handle| {
             _ = self.refcell_borrow_handles.remove(resolved_name);

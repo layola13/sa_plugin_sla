@@ -504,11 +504,15 @@ pub const Codegen = struct {
         }
         if (self.refcell_borrow_handles.get(resolved_name)) |handle| {
             _ = self.refcell_borrow_handles.remove(resolved_name);
-            self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
-            self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+            const has_owner_temp = if (handle.cell_release_temp) |temp| !std.mem.eql(u8, temp, resolved_name) else false;
+            const release_plan = lowering_rules.planRefCellHandleRelease(has_owner_temp);
+            if (release_plan.consume_handle_value) self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
+            if (release_plan.release_dynamic_borrow) {
+                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
+            }
+            if (release_plan.consume_handle_value) self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             if (handle.cell_release_temp) |temp| {
-                if (!std.mem.eql(u8, temp, resolved_name)) try self.emitRelease(temp);
+                if (release_plan.release_owner_temps) try self.emitRelease(temp);
             }
             return;
         }
@@ -583,10 +587,14 @@ pub const Codegen = struct {
         for (handles_to_release.items) |handle_name| {
             if (self.refcell_borrow_handles.get(handle_name)) |handle| {
                 _ = self.refcell_borrow_handles.remove(handle_name);
-                self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
-                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
+                const has_owner_temp = if (handle.cell_release_temp) |temp| !std.mem.eql(u8, temp, handle_name) else false;
+                const release_plan = lowering_rules.planRefCellHandleRelease(has_owner_temp);
+                if (release_plan.consume_handle_value) self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
+                if (release_plan.release_dynamic_borrow) {
+                    self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
+                }
                 if (handle.cell_release_temp) |temp| {
-                    if (!std.mem.eql(u8, temp, handle_name)) try self.emitRelease(temp);
+                    if (release_plan.release_owner_temps) try self.emitRelease(temp);
                 }
             }
         }
@@ -644,10 +652,14 @@ pub const Codegen = struct {
         for (handles_to_release.items) |handle_name| {
             if (self.refcell_borrow_handles.get(handle_name)) |handle| {
                 _ = self.refcell_borrow_handles.remove(handle_name);
-                self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
-                self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
+                const has_owner_temp = if (handle.cell_release_temp) |temp| !std.mem.eql(u8, temp, handle_name) else false;
+                const release_plan = lowering_rules.planRefCellHandleRelease(has_owner_temp);
+                if (release_plan.consume_handle_value) self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
+                if (release_plan.release_dynamic_borrow) {
+                    self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
+                }
                 if (handle.cell_release_temp) |temp| {
-                    if (!std.mem.eql(u8, temp, handle_name)) try self.emitRelease(temp);
+                    if (release_plan.release_owner_temps) try self.emitRelease(temp);
                 }
             }
         }

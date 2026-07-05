@@ -308,6 +308,7 @@ pub const Codegen = struct {
             if (entry.captures.len != 0) self.allocator.free(entry.captures);
         }
         self.escaped_closure_entries.deinit();
+        self.clearRefCellBorrowValues();
         self.refcell_borrow_values.deinit();
         self.result_slot_refcell_handles.deinit();
         self.result_slot_refcell_slots.deinit();
@@ -1668,7 +1669,7 @@ pub const Codegen = struct {
         self.closure_bindings.clearRetainingCapacity();
         self.closure_param_regs.clearRetainingCapacity();
         self.borrowed_bindings.clearRetainingCapacity();
-        self.refcell_borrow_values.clearRetainingCapacity();
+        self.clearRefCellBorrowValues();
         self.result_slot_refcell_handles.clearRetainingCapacity();
         self.result_slot_refcell_slots.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
@@ -1684,12 +1685,123 @@ pub const Codegen = struct {
         try self.flushPendingStdDeps();
     }
 
-    fn clearBorrowAddressTemps(self: *Codegen) void {
-        var iter = self.borrow_address_temps.valueIterator();
+    fn freeBorrowAddressTempSlices(self: *Codegen, map: *std.AutoHashMap(u32, []const u32)) void {
+        var iter = map.valueIterator();
         while (iter.next()) |regs| {
             if (regs.len != 0) self.allocator.free(regs.*);
         }
+    }
+
+    fn clearBorrowAddressTemps(self: *Codegen) void {
+        self.freeBorrowAddressTempSlices(&self.borrow_address_temps);
         self.borrow_address_temps.clearRetainingCapacity();
+    }
+
+    fn cloneBorrowAddressTemps(self: *Codegen) !std.AutoHashMap(u32, []const u32) {
+        var clone = std.AutoHashMap(u32, []const u32).init(self.allocator);
+        errdefer self.deinitBorrowAddressTempSnapshot(&clone);
+
+        var iter = self.borrow_address_temps.iterator();
+        while (iter.next()) |entry| {
+            const copied = if (entry.value_ptr.len == 0) &.{} else try self.allocator.dupe(u32, entry.value_ptr.*);
+            try clone.put(entry.key_ptr.*, copied);
+        }
+        return clone;
+    }
+
+    fn deinitBorrowAddressTempSnapshot(self: *Codegen, snapshot: *std.AutoHashMap(u32, []const u32)) void {
+        self.freeBorrowAddressTempSlices(snapshot);
+        snapshot.deinit();
+    }
+
+    fn restoreBorrowAddressTemps(self: *Codegen, snapshot: *const std.AutoHashMap(u32, []const u32)) !void {
+        self.clearBorrowAddressTemps();
+        var iter = snapshot.iterator();
+        while (iter.next()) |entry| {
+            const copied = if (entry.value_ptr.len == 0) &.{} else try self.allocator.dupe(u32, entry.value_ptr.*);
+            try self.borrow_address_temps.put(entry.key_ptr.*, copied);
+        }
+    }
+
+    fn freeRefCellBorrowValueSlices(self: *Codegen, map: *std.AutoHashMap(u32, RefCellBorrowValue)) void {
+        var iter = map.valueIterator();
+        while (iter.next()) |value| {
+            if (value.release_regs.len != 0) self.allocator.free(value.release_regs);
+        }
+    }
+
+    fn clearRefCellBorrowValues(self: *Codegen) void {
+        self.freeRefCellBorrowValueSlices(&self.refcell_borrow_values);
+        self.refcell_borrow_values.clearRetainingCapacity();
+    }
+
+    fn cloneRefCellBorrowValues(self: *Codegen) !std.AutoHashMap(u32, RefCellBorrowValue) {
+        var clone = std.AutoHashMap(u32, RefCellBorrowValue).init(self.allocator);
+        errdefer self.deinitRefCellBorrowValueSnapshot(&clone);
+
+        var iter = self.refcell_borrow_values.iterator();
+        while (iter.next()) |entry| {
+            const value = entry.value_ptr.*;
+            const copied_release_regs = if (value.release_regs.len == 0) &.{} else try self.allocator.dupe(u32, value.release_regs);
+            try clone.put(entry.key_ptr.*, .{
+                .cell_reg = value.cell_reg,
+                .kind = value.kind,
+                .release_regs = copied_release_regs,
+            });
+        }
+        return clone;
+    }
+
+    fn deinitRefCellBorrowValueSnapshot(self: *Codegen, snapshot: *std.AutoHashMap(u32, RefCellBorrowValue)) void {
+        self.freeRefCellBorrowValueSlices(snapshot);
+        snapshot.deinit();
+    }
+
+    fn restoreRefCellBorrowValues(self: *Codegen, snapshot: *const std.AutoHashMap(u32, RefCellBorrowValue)) !void {
+        self.clearRefCellBorrowValues();
+        var iter = snapshot.iterator();
+        while (iter.next()) |entry| {
+            const value = entry.value_ptr.*;
+            const copied_release_regs = if (value.release_regs.len == 0) &.{} else try self.allocator.dupe(u32, value.release_regs);
+            try self.refcell_borrow_values.put(entry.key_ptr.*, .{
+                .cell_reg = value.cell_reg,
+                .kind = value.kind,
+                .release_regs = copied_release_regs,
+            });
+        }
+    }
+
+    fn restoreRefCellBranchState(
+        self: *Codegen,
+        values: *const std.AutoHashMap(u32, RefCellBorrowValue),
+        temps: *const std.AutoHashMap(u32, []const u32),
+    ) !void {
+        try self.restoreRefCellBorrowValues(values);
+        try self.restoreBorrowAddressTemps(temps);
+    }
+
+    fn setMergeRefCellBranchState(
+        self: *Codegen,
+        then_terminated: bool,
+        then_values: *const std.AutoHashMap(u32, RefCellBorrowValue),
+        then_temps: *const std.AutoHashMap(u32, []const u32),
+        else_terminated: bool,
+        else_values: *const std.AutoHashMap(u32, RefCellBorrowValue),
+        else_temps: *const std.AutoHashMap(u32, []const u32),
+        pre_values: *const std.AutoHashMap(u32, RefCellBorrowValue),
+        pre_temps: *const std.AutoHashMap(u32, []const u32),
+    ) !void {
+        if (then_terminated and else_terminated) {
+            try self.restoreRefCellBranchState(pre_values, pre_temps);
+        } else if (then_terminated) {
+            try self.restoreRefCellBranchState(else_values, else_temps);
+        } else if (else_terminated) {
+            try self.restoreRefCellBranchState(then_values, then_temps);
+        } else {
+            // Both branches fall through. Keep the current post-else state here;
+            // this focused snapshot is only needed to undo metadata removals from
+            // terminated sibling branches.
+        }
     }
 
     fn singleReleaseReg(self: *Codegen, reg: u32) ![]const u32 {
@@ -2255,10 +2367,13 @@ pub const Codegen = struct {
     }
 
     fn emitRefCellBorrowRelease(self: *Codegen, handle: RefCellBorrowValue) !void {
-        try self.emitStdMacroFragment("sa_std/core/refcell.sa", lowering_rules.refCellBorrowReleaseMacroName(handle.kind), &.{
-            self.symbols.items[handle.cell_reg],
-        });
-        try self.releaseNonLocalTemps(handle.release_regs);
+        const release_plan = lowering_rules.planRefCellHandleRelease(handle.release_regs.len != 0);
+        if (release_plan.release_dynamic_borrow) {
+            try self.emitStdMacroFragment("sa_std/core/refcell.sa", lowering_rules.refCellBorrowReleaseMacroName(handle.kind), &.{
+                self.symbols.items[handle.cell_reg],
+            });
+        }
+        if (release_plan.release_owner_temps) try self.releaseNonLocalTemps(handle.release_regs);
         if (handle.release_regs.len != 0) self.allocator.free(handle.release_regs);
     }
 
@@ -9630,6 +9745,10 @@ pub const Codegen = struct {
         const branch_locals_len = self.locals.items.len;
         var pre_released = try self.released_regs.clone();
         defer pre_released.deinit();
+        var pre_refcell_values = try self.cloneRefCellBorrowValues();
+        defer self.deinitRefCellBorrowValueSnapshot(&pre_refcell_values);
+        var pre_refcell_temps = try self.cloneBorrowAddressTemps();
+        defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
 
         try self.emitLabel(then_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
@@ -9640,9 +9759,14 @@ pub const Codegen = struct {
         }
         var then_released = try self.released_regs.clone();
         defer then_released.deinit();
+        var then_refcell_values = try self.cloneRefCellBorrowValues();
+        defer self.deinitRefCellBorrowValueSnapshot(&then_refcell_values);
+        var then_refcell_temps = try self.cloneBorrowAddressTemps();
+        defer self.deinitBorrowAddressTempSnapshot(&then_refcell_temps);
 
         self.popLocalsTo(branch_locals_len);
         try self.restoreReleased(&pre_released);
+        try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
 
         try self.emitLabel(else_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
@@ -9653,9 +9777,23 @@ pub const Codegen = struct {
         }
         var else_released = try self.released_regs.clone();
         defer else_released.deinit();
+        var else_refcell_values = try self.cloneRefCellBorrowValues();
+        defer self.deinitRefCellBorrowValueSnapshot(&else_refcell_values);
+        var else_refcell_temps = try self.cloneBorrowAddressTemps();
+        defer self.deinitBorrowAddressTempSnapshot(&else_refcell_temps);
 
         self.popLocalsTo(branch_locals_len);
         try self.setMergeReleased(then_terminated, &then_released, else_terminated, &else_released, &pre_released);
+        try self.setMergeRefCellBranchState(
+            then_terminated,
+            &then_refcell_values,
+            &then_refcell_temps,
+            else_terminated,
+            &else_refcell_values,
+            &else_refcell_temps,
+            &pre_refcell_values,
+            &pre_refcell_temps,
+        );
 
         if (!then_terminated or !else_terminated) {
             try self.emitLabel(merge_label);
@@ -9694,6 +9832,10 @@ pub const Codegen = struct {
         const branch_locals_len = self.locals.items.len;
         var pre_released = try self.released_regs.clone();
         defer pre_released.deinit();
+        var pre_refcell_values = try self.cloneRefCellBorrowValues();
+        defer self.deinitRefCellBorrowValueSnapshot(&pre_refcell_values);
+        var pre_refcell_temps = try self.cloneBorrowAddressTemps();
+        defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
 
         try self.emitLabel(then_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
@@ -9705,9 +9847,14 @@ pub const Codegen = struct {
         }
         var then_released = try self.released_regs.clone();
         defer then_released.deinit();
+        var then_refcell_values = try self.cloneRefCellBorrowValues();
+        defer self.deinitRefCellBorrowValueSnapshot(&then_refcell_values);
+        var then_refcell_temps = try self.cloneBorrowAddressTemps();
+        defer self.deinitBorrowAddressTempSnapshot(&then_refcell_temps);
 
         self.popLocalsTo(branch_locals_len);
         try self.restoreReleased(&pre_released);
+        try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
 
         try self.emitLabel(else_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
@@ -9719,6 +9866,10 @@ pub const Codegen = struct {
         }
         var else_released = try self.released_regs.clone();
         defer else_released.deinit();
+        var else_refcell_values = try self.cloneRefCellBorrowValues();
+        defer self.deinitRefCellBorrowValueSnapshot(&else_refcell_values);
+        var else_refcell_temps = try self.cloneBorrowAddressTemps();
+        defer self.deinitBorrowAddressTempSnapshot(&else_refcell_temps);
 
         self.popLocalsTo(branch_locals_len);
         // The merge is reached only by the non-terminated incoming paths; a
@@ -9728,6 +9879,16 @@ pub const Codegen = struct {
         // double-releases (release present on all paths) nor leaks (release
         // present on only one path).
         try self.setMergeReleased(then_terminated, &then_released, else_terminated, &else_released, &pre_released);
+        try self.setMergeRefCellBranchState(
+            then_terminated,
+            &then_refcell_values,
+            &then_refcell_temps,
+            else_terminated,
+            &else_refcell_values,
+            &else_refcell_temps,
+            &pre_refcell_values,
+            &pre_refcell_temps,
+        );
 
         if (!then_terminated or !else_terminated) try self.emitLabel(merge_label);
         const result = try self.intern(try self.newTmp());

@@ -1663,6 +1663,12 @@ pub const RefCellHandleBindingAction = enum {
     bind_borrow_handle,
 };
 
+pub const RefCellHandleReleasePlan = struct {
+    release_dynamic_borrow: bool,
+    consume_handle_value: bool,
+    release_owner_temps: bool,
+};
+
 pub fn planResultSlotRefCellStore(transfer_plan: ResultSlotTransferPlan, source_has_refcell_handle: bool) ResultSlotRefCellStoreAction {
     if (transfer_plan.transfers_value and source_has_refcell_handle) return .store_borrow_handle_companion;
     return .transfer_value_state;
@@ -1681,6 +1687,14 @@ pub fn planResultSlotRefCellLoad(
 
 pub fn planRefCellHandleBinding(source_has_refcell_handle: bool) RefCellHandleBindingAction {
     return if (source_has_refcell_handle) .bind_borrow_handle else .ordinary_binding;
+}
+
+pub fn planRefCellHandleRelease(has_owner_temps: bool) RefCellHandleReleasePlan {
+    return .{
+        .release_dynamic_borrow = true,
+        .consume_handle_value = true,
+        .release_owner_temps = has_owner_temps,
+    };
 }
 
 pub fn refCellBorrowReleaseMacroName(kind: RefCellBorrowKind) []const u8 {
@@ -3989,6 +4003,16 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
 
     try std.testing.expectEqual(RefCellHandleBindingAction.ordinary_binding, planRefCellHandleBinding(false));
     try std.testing.expectEqual(RefCellHandleBindingAction.bind_borrow_handle, planRefCellHandleBinding(true));
+
+    const plain_release = planRefCellHandleRelease(false);
+    try std.testing.expect(plain_release.release_dynamic_borrow);
+    try std.testing.expect(plain_release.consume_handle_value);
+    try std.testing.expect(!plain_release.release_owner_temps);
+
+    const temp_release = planRefCellHandleRelease(true);
+    try std.testing.expect(temp_release.release_dynamic_borrow);
+    try std.testing.expect(temp_release.consume_handle_value);
+    try std.testing.expect(temp_release.release_owner_temps);
 }
 
 test "shared refcell runtime scanner detects constructor and receiver calls" {

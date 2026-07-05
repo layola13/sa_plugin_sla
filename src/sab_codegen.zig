@@ -1540,8 +1540,8 @@ pub const Codegen = struct {
         };
     }
 
-    fn isStackAddressableType(ty: *const ast.Type) bool {
-        return ty.* == .primitive;
+    fn borrowedBindingNeedsStackStorage(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {
+        return lowering_rules.planBorrowedBindingStorage(self.borrowed_bindings.contains(name), ty).materialize_stack_slot;
     }
 
     fn stackAllocSize(call: ast.CallExpr) !usize {
@@ -3797,8 +3797,7 @@ pub const Codegen = struct {
     fn materializeBorrowedParams(self: *Codegen, params: []const ast.Param) !void {
         for (params) |param| {
             if (param.is_borrow or param.is_move) continue;
-            if (!self.borrowed_bindings.contains(param.name)) continue;
-            if (!isStackAddressableType(param.ty)) continue;
+            if (!self.borrowedBindingNeedsStackStorage(param.name, param.ty)) continue;
             const slot_name = try std.fmt.allocPrint(self.allocator, "{s}_slot", .{param.name});
             const slot = try self.intern(slot_name);
             const param_reg = self.localReg(param.name) orelse return Error.UnsupportedSabDirectFeature;
@@ -4283,7 +4282,7 @@ pub const Codegen = struct {
             try self.pushTypedLocal(name, src, false, let_ty);
             return;
         }
-        if (self.borrowed_bindings.contains(name) and isStackAddressableType(let_ty)) {
+        if (self.borrowedBindingNeedsStackStorage(name, let_ty)) {
             try self.emitStackAlloc(dst, typeSize(let_ty));
             try self.emitStore(dst, 0, src, try storagePrimType(let_ty));
             if (!self.isLocalReg(src)) try self.emitRelease(src);

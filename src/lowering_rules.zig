@@ -261,6 +261,10 @@ pub const ImportedMacroAddressableArgAction = enum {
     materialize_address_expression_stack_slot,
 };
 
+pub const BorrowedBindingStoragePlan = struct {
+    materialize_stack_slot: bool,
+};
+
 pub const ImportedMacroCallPlan = struct {
     macro_name: []const u8,
     import_path: ?[]const u8,
@@ -297,6 +301,10 @@ pub const ImportedMacroCallPlan = struct {
         };
     }
 };
+
+pub fn planBorrowedBindingStorage(binding_is_borrowed: bool, ty: *const ast.Type) BorrowedBindingStoragePlan {
+    return .{ .materialize_stack_slot = binding_is_borrowed and ty.* == .primitive };
+}
 
 pub const LoopControlPlan = struct {
     has_break: bool,
@@ -2634,6 +2642,19 @@ test "shared imported macro call plan classifies addressable arg actions" {
     try std.testing.expect(expression_output_plan.callArgNeedsAddressableSlot(0));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.reuse_existing_addressable, expression_output_plan.planAddressableArgAction(0, true));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_stack_slot, expression_output_plan.planAddressableArgAction(0, false));
+}
+
+test "shared borrowed binding storage plan keeps primitive address-taken bindings stack backed" {
+    var i64_ty = ast.Type{ .primitive = .i64 };
+    var ptr_i64_ty = ast.Type{ .pointer = &i64_ty };
+    var borrow_i64_ty = ast.Type{ .borrow = &i64_ty };
+    var user_ty = ast.Type{ .user_defined = .{ .name = "Payload", .generics = &.{} } };
+
+    try std.testing.expect(planBorrowedBindingStorage(true, &i64_ty).materialize_stack_slot);
+    try std.testing.expect(!planBorrowedBindingStorage(false, &i64_ty).materialize_stack_slot);
+    try std.testing.expect(!planBorrowedBindingStorage(true, &ptr_i64_ty).materialize_stack_slot);
+    try std.testing.expect(!planBorrowedBindingStorage(true, &borrow_i64_ty).materialize_stack_slot);
+    try std.testing.expect(!planBorrowedBindingStorage(true, &user_ty).materialize_stack_slot);
 }
 
 test "shared imported macro address-expression args materialize stack slots" {

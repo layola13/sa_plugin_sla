@@ -1685,7 +1685,7 @@ pub const Codegen = struct {
     }
 
     fn bindingNeedsAddressableStorage(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {
-        return self.addressable_bindings.contains(name) and ty.* == .primitive;
+        return lowering_rules.planBorrowedBindingStorage(self.addressable_bindings.contains(name), ty).materialize_stack_slot;
     }
 
     fn collectAddressableBindings(self: *Codegen, block: []const *ast.Node) CodegenError!void {

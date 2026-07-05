@@ -1921,13 +1921,15 @@ pub const Codegen = struct {
             .restore_borrow_handle_companion => if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
                 _ = self.result_slot_refcell_slots.fetchRemove(slot);
                 const cell_reg = try self.intern(try self.newTmp());
+                const restore_plan = lowering_rules.planRefCellCompanionRestore();
                 try self.emitLoad(cell_reg, entry.value.cell_slot, 0, .ptr);
+                const release_regs = if (restore_plan.track_loaded_cell_owner_temp) try self.singleReleaseReg(cell_reg) else &.{};
                 try self.refcell_borrow_values.put(dst, .{
                     .cell_reg = cell_reg,
                     .kind = entry.value.kind,
-                    .release_regs = try self.singleReleaseReg(cell_reg),
+                    .release_regs = release_regs,
                 });
-                try self.emitRelease(entry.value.cell_slot);
+                if (restore_plan.release_companion_slot_after_restore) try self.emitRelease(entry.value.cell_slot);
             },
             .release_empty_companion => if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
                 try self.emitRelease(entry.value);

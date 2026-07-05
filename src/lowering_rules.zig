@@ -1704,6 +1704,11 @@ pub const RefCellCompanionStoreCleanupPlan = struct {
     clear_non_owning_metadata: bool,
 };
 
+pub const RefCellCompanionRestorePlan = struct {
+    track_loaded_cell_owner_temp: bool,
+    release_companion_slot_after_restore: bool,
+};
+
 pub const RefCellBranchStateMergeAction = enum {
     restore_pre,
     restore_then,
@@ -1790,6 +1795,13 @@ pub fn planRefCellCompanionStoreCleanup(
         .release_owner_temps = has_owner_temps,
         .release_borrow_address_temps = has_borrow_address_temps,
         .clear_non_owning_metadata = has_non_owning_metadata,
+    };
+}
+
+pub fn planRefCellCompanionRestore() RefCellCompanionRestorePlan {
+    return .{
+        .track_loaded_cell_owner_temp = true,
+        .release_companion_slot_after_restore = true,
     };
 }
 
@@ -4160,6 +4172,10 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expect(companion_full.release_owner_temps);
     try std.testing.expect(companion_full.release_borrow_address_temps);
     try std.testing.expect(companion_full.clear_non_owning_metadata);
+
+    const companion_restore = planRefCellCompanionRestore();
+    try std.testing.expect(companion_restore.track_loaded_cell_owner_temp);
+    try std.testing.expect(companion_restore.release_companion_slot_after_restore);
 
     try std.testing.expectEqual(RefCellBranchStateMergeAction.keep_current, planRefCellBranchStateMerge(false, false));
     try std.testing.expectEqual(RefCellBranchStateMergeAction.restore_else, planRefCellBranchStateMerge(true, false));

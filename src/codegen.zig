@@ -810,13 +810,14 @@ pub const Codegen = struct {
             .restore_borrow_handle_companion => if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
                 _ = self.result_slot_refcell_slots.fetchRemove(slot);
                 const cell_reg = try self.newTmp();
+                const restore_plan = lowering_rules.planRefCellCompanionRestore();
                 self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.value.cell_slot }) catch return CodegenError.CodegenError;
                 self.refcell_borrow_handles.put(dst, .{
                     .cell_reg = cell_reg,
                     .kind = entry.value.kind,
-                    .cell_release_temp = cell_reg,
+                    .cell_release_temp = if (restore_plan.track_loaded_cell_owner_temp) cell_reg else null,
                 }) catch return CodegenError.OutOfMemory;
-                try self.emitRelease(entry.value.cell_slot);
+                if (restore_plan.release_companion_slot_after_restore) try self.emitRelease(entry.value.cell_slot);
             },
             .release_empty_companion => if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
                 try self.emitRelease(entry.value);

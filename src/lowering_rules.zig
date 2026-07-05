@@ -1642,6 +1642,23 @@ pub const RefCellBorrowPlan = struct {
     }
 };
 
+pub const RefCellBorrowResultTarget = enum {
+    sa_text,
+    direct_sab,
+};
+
+pub const RefCellBorrowResultAction = enum {
+    use_borrow_slot,
+    load_pointer_payload,
+    take_pointer_payload,
+};
+
+pub const RefCellBorrowResultPlan = struct {
+    action: RefCellBorrowResultAction,
+    release_borrow_slot_after_payload: bool,
+    track_borrow_slot_release_temp: bool,
+};
+
 pub const ResultSlotTransferPlan = struct {
     transfers_value: bool,
     needs_refcell_companion: bool,
@@ -1717,6 +1734,35 @@ pub fn planRefCellHandleRelease(has_owner_temps: bool) RefCellHandleReleasePlan 
         .release_dynamic_borrow = true,
         .consume_handle_value = true,
         .release_owner_temps = has_owner_temps,
+    };
+}
+
+pub fn planRefCellBorrowResult(target: RefCellBorrowResultTarget, value_kind: RefCellBorrowValueKind) RefCellBorrowResultPlan {
+    return switch (target) {
+        .sa_text => switch (value_kind) {
+            .scalar_slot => .{
+                .action = .use_borrow_slot,
+                .release_borrow_slot_after_payload = false,
+                .track_borrow_slot_release_temp = false,
+            },
+            .pointer_payload, .smart_pointer_payload => .{
+                .action = .load_pointer_payload,
+                .release_borrow_slot_after_payload = true,
+                .track_borrow_slot_release_temp = false,
+            },
+        },
+        .direct_sab => switch (value_kind) {
+            .scalar_slot, .smart_pointer_payload => .{
+                .action = .use_borrow_slot,
+                .release_borrow_slot_after_payload = false,
+                .track_borrow_slot_release_temp = false,
+            },
+            .pointer_payload => .{
+                .action = .take_pointer_payload,
+                .release_borrow_slot_after_payload = false,
+                .track_borrow_slot_release_temp = true,
+            },
+        },
     };
 }
 
@@ -4038,11 +4084,36 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     const smart_plan = planRefCellBorrowCall(borrow_call, &refcell_box_ty).?;
     try std.testing.expectEqual(RefCellBorrowValueKind.smart_pointer_payload, smart_plan.value_kind);
 
+    const smart_sa_result = planRefCellBorrowResult(.sa_text, smart_plan.value_kind);
+    try std.testing.expectEqual(RefCellBorrowResultAction.load_pointer_payload, smart_sa_result.action);
+    try std.testing.expect(smart_sa_result.release_borrow_slot_after_payload);
+    try std.testing.expect(!smart_sa_result.track_borrow_slot_release_temp);
+
+    const smart_sab_result = planRefCellBorrowResult(.direct_sab, smart_plan.value_kind);
+    try std.testing.expectEqual(RefCellBorrowResultAction.use_borrow_slot, smart_sab_result.action);
+    try std.testing.expect(!smart_sab_result.release_borrow_slot_after_payload);
+    try std.testing.expect(!smart_sab_result.track_borrow_slot_release_temp);
+
     const pointer_plan = planRefCellBorrowCall(borrow_mut_call, &refcell_payload_ty).?;
     try std.testing.expectEqual(RefCellBorrowKind.mutable, pointer_plan.kind);
     try std.testing.expectEqual(RefCellBorrowValueKind.pointer_payload, pointer_plan.value_kind);
     try std.testing.expectEqualStrings("REFCELL_U64_TRY_BORROW_MUT", pointer_plan.tryBorrowMacroName());
     try std.testing.expectEqualStrings("REFCELL_U64_RELEASE_MUT", pointer_plan.releaseMacroName());
+
+    const pointer_sa_result = planRefCellBorrowResult(.sa_text, pointer_plan.value_kind);
+    try std.testing.expectEqual(RefCellBorrowResultAction.load_pointer_payload, pointer_sa_result.action);
+    try std.testing.expect(pointer_sa_result.release_borrow_slot_after_payload);
+    try std.testing.expect(!pointer_sa_result.track_borrow_slot_release_temp);
+
+    const pointer_sab_result = planRefCellBorrowResult(.direct_sab, pointer_plan.value_kind);
+    try std.testing.expectEqual(RefCellBorrowResultAction.take_pointer_payload, pointer_sab_result.action);
+    try std.testing.expect(!pointer_sab_result.release_borrow_slot_after_payload);
+    try std.testing.expect(pointer_sab_result.track_borrow_slot_release_temp);
+
+    const scalar_sab_result = planRefCellBorrowResult(.direct_sab, scalar_plan.value_kind);
+    try std.testing.expectEqual(RefCellBorrowResultAction.use_borrow_slot, scalar_sab_result.action);
+    try std.testing.expect(!scalar_sab_result.release_borrow_slot_after_payload);
+    try std.testing.expect(!scalar_sab_result.track_borrow_slot_release_temp);
 
     try std.testing.expectEqual(RefCellHandleBindingAction.ordinary_binding, planRefCellHandleBinding(false));
     try std.testing.expectEqual(RefCellHandleBindingAction.bind_borrow_handle, planRefCellHandleBinding(true));

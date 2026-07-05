@@ -8404,14 +8404,18 @@ pub const Codegen = struct {
 
         try self.emitLabel(ok_label);
         try self.emitBranchRelease(ok_reg);
-        const borrow_reg = switch (plan.value_kind) {
-            .scalar_slot, .smart_pointer_payload => borrow_slot_reg,
-            .pointer_payload => blk: {
+        const result_plan = lowering_rules.planRefCellBorrowResult(.direct_sab, plan.value_kind);
+        const borrow_reg = switch (result_plan.action) {
+            .use_borrow_slot => borrow_slot_reg,
+            .take_pointer_payload => blk: {
                 const payload_reg = try self.intern(try self.newTmp());
                 try self.emitTake(payload_reg, borrow_slot_reg, 0, .ptr);
-                try self.borrow_address_temps.put(payload_reg, try self.singleReleaseReg(borrow_slot_reg));
+                if (result_plan.track_borrow_slot_release_temp) {
+                    try self.borrow_address_temps.put(payload_reg, try self.singleReleaseReg(borrow_slot_reg));
+                }
                 break :blk payload_reg;
             },
+            .load_pointer_payload => return Error.UnsupportedSabDirectFeature,
         };
         try self.refcell_borrow_values.put(borrow_reg, .{ .cell_reg = recv_reg, .kind = plan.kind });
         return borrow_reg;

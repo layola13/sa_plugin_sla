@@ -11724,14 +11724,16 @@ pub const Codegen = struct {
                                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
-                                const borrow_reg = switch (borrow_plan.value_kind) {
-                                    .scalar_slot => borrow_slot_reg,
-                                    .pointer_payload, .smart_pointer_payload => blk: {
+                                const borrow_result_plan = lowering_rules.planRefCellBorrowResult(.sa_text, borrow_plan.value_kind);
+                                const borrow_reg = switch (borrow_result_plan.action) {
+                                    .use_borrow_slot => borrow_slot_reg,
+                                    .load_pointer_payload => blk: {
                                         const payload_reg = try self.newTmp();
                                         self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ payload_reg, borrow_slot_reg }) catch return CodegenError.CodegenError;
-                                        try self.emitRelease(borrow_slot_reg);
+                                        if (borrow_result_plan.release_borrow_slot_after_payload) try self.emitRelease(borrow_slot_reg);
                                         break :blk payload_reg;
                                     },
+                                    .take_pointer_payload => return CodegenError.CodegenError,
                                 };
                                 self.refcell_borrow_handles.put(borrow_reg, .{ .cell_reg = recv_reg, .kind = borrow_plan.kind }) catch return CodegenError.OutOfMemory;
                                 return borrow_reg;

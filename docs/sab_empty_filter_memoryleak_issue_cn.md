@@ -2,6 +2,8 @@
 
 日期：2026-07-06
 
+状态：已修复。SLA test runner 在明确 `--filter` 不匹配任何 `@test` 时会直接返回空测试结果，避免进入 SA/SAB 测试输入生成、SAB 编码和 verifier 路径。
+
 ## 背景
 
 在复测 `result_entityitem_filter_cleanup_issue_cn.md` 的历史 filter 时，当前 host 文件中已经没有匹配的测试。
@@ -87,3 +89,55 @@ timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
 
 当 `--filter` 没有选中任何测试时，SAB backend 应与 SA backend 行为一致：直接返回
 `0 passed; 0 failed; 0 skipped`，或至少不应为未选中的测试/辅助函数生成会触发 verifier trap 的 SAB artifact。
+
+## 修复记录
+
+修复位置：`src/plugin.zig`。
+
+当前 `sa sla test` 会在解析测试文件、展开 SLA imports 后先用同一套 `@test` filter 匹配规则判断显式非空 `--filter` 是否命中任何测试。如果没有命中，runner 直接写出：
+
+```text
+----
+test result: ok. 0 passed; 0 failed; 0 skipped
+```
+
+并返回成功，不再生成 managed `.sab` 测试 artifact。解析、宏展开或 import 展开失败时不会吞掉真实错误，而是回到原有测试编译路径。
+
+新增 Zig 回归：`sla test empty filter skips sab compilation`，覆盖 SAB backend 下未命中 filter 时跳过 SAB 编译，且不会生成 managed SAB 路径。
+
+## 修复后验证
+
+本仓库验证：
+
+```sh
+zig build test -Dtest-filter="empty filter skips sab" --summary all
+zig build --summary all
+zig build test --summary all
+timeout 120s sa plugin install --dev .
+timeout 30s env SA_PLUGIN_DEV=1 sa sla help
+```
+
+结果：focused Zig test 1/1；full Zig tests 92/92；官方 dev plugin install/help 通过。
+
+下游只作为 host regression evidence，不修改 `sla_ecs`：
+
+```sh
+cd /home/vscode/projects/sla_ecs
+
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  tests/test_ecs_result_facades.sla \
+  --filter "definitely no such ecs test" \
+  --test-backend sab
+
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  tests/test_ecs_result_facades.sla \
+  --filter "ecs_world_try_query_single returns one" \
+  --test-backend sab
+
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  tests/test_ecs_result_facades.sla \
+  --filter "ecs_world_try_get returns ok for present component" \
+  --test-backend sab
+```
+
+结果：两个空 filter 均返回 `0 passed; 0 failed; 0 skipped`；真实匹配的 SAB focused filter 仍通过 `1 passed; 0 failed; 0 skipped`。

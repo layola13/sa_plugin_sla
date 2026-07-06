@@ -812,6 +812,48 @@ fn pruneTestsByFilter(allocator: std.mem.Allocator, program: *ast.Node, filter: 
     program.program.decls = try filtered_decls.toOwnedSlice();
 }
 
+fn testFilterSelectsNoTests(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    filter: ?[]const u8,
+    stderr: std.io.AnyWriter,
+) !?bool {
+    const pattern = filter orelse return null;
+    if (pattern.len == 0) return null;
+
+    const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
+        try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
+        return null;
+    };
+    const expanded_content = source_expand.expand(allocator, content) catch |err| {
+        try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
+        return null;
+    };
+
+    const sla_base_dir = std.fs.path.dirname(file) orelse ".";
+    var p = parser_mod.Parser.initWithDir(allocator, expanded_content, sla_base_dir);
+    const prog = p.parseProgram() catch |err| {
+        try p.printDiagnostic(stderr, file, err);
+        return null;
+    };
+
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
+        try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
+        return null;
+    };
+
+    for (expanded_prog.program.decls) |decl| {
+        if (decl.* == .test_decl and testMatchesFilter(&decl.test_decl, pattern)) return false;
+    }
+    return true;
+}
+
+fn writeEmptyTestResult(stdout: std.io.AnyWriter) !void {
+    try stdout.writeAll("----\n");
+    try stdout.writeAll("test result: ok. 0 passed; 0 failed; 0 skipped\n");
+}
+
 fn markReachableFunc(
     tc: *const type_checker_mod.TypeChecker,
     reachable: *std.StringHashMap(void),
@@ -2536,6 +2578,12 @@ pub fn runSlaCommandImpl(
             return 1;
         };
 
+        const test_filter = saTestFilterFromArgs(extra_args);
+        if ((try testFilterSelectsNoTests(allocator, file, test_filter, stderr)) orelse false) {
+            try writeEmptyTestResult(stdout);
+            return 0;
+        }
+
         const test_input = switch (backend) {
             .auto, .sab => (try compileSlaSabTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
             .sa => (try compileSlaSaTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
@@ -3028,6 +3076,54 @@ test "sla test sab backend prunes unmatched tests before type checking" {
     }
     try std.testing.expectEqual(@as(usize, 1), test_count);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test empty filter skips sab compilation" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn helper() -> i32 {
+        \\    return 1;
+        \\};
+        \\
+        \\@test "kept only by another filter"() {
+        \\    missing_symbol();
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "empty_filter.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{
+        "sa",
+        "sla",
+        "test",
+        "empty_filter.sla",
+        "--test-backend",
+        "sab",
+        "--filter",
+        "definitely no such test",
+    };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "0 passed; 0 failed; 0 skipped"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+
+    const sab_path = try managedSabTestPath(std.testing.allocator, "empty_filter.sla", &.{ "--filter", "definitely no such test" });
+    defer std.testing.allocator.free(sab_path);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(sab_path, .{}));
 }
 
 test "sla sab backend lowers plain structs directly" {

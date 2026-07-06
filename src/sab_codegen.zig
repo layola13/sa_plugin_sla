@@ -9065,6 +9065,65 @@ pub const Codegen = struct {
         release_regs: []const u32 = &.{},
     };
 
+    fn borrowAddressCallArgReleaseRegs(self: *Codegen, source: AddressSource, prefix: u8) ![]const u32 {
+        const plan = lowering_rules.planPrefixedBorrowAddressCallArgRelease(prefix, !self.isLocalReg(source.reg), source.release_regs.len != 0);
+        var regs = std.ArrayList(u32).init(self.allocator);
+        defer regs.deinit();
+        if (plan.release_address_value) try regs.append(source.reg);
+        if (plan.release_source_temps) try regs.appendSlice(source.release_regs);
+        return try self.ownedReleaseRegs(regs.items);
+    }
+
+    fn prefixedBorrowAddressOperand(self: *Codegen, source_reg: u32, prefix: u8) ![]const u8 {
+        const plan = lowering_rules.planPrefixedBorrowAddressCallArgRelease(prefix, !self.isLocalReg(source_reg), false);
+        if (!plan.emit_arg_prefix) return self.symbols.items[source_reg];
+        return try std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, self.symbols.items[source_reg] });
+    }
+
+    fn moveCallArgFromValueReg(self: *Codegen, value_reg: u32) !SabLoweredCallArg {
+        const moved_reg = try self.intern(try self.newTmp());
+        try self.emitAssignReg(moved_reg, value_reg);
+        try self.markConsumed(value_reg);
+        return .{
+            .operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[moved_reg]}),
+            .release_reg = null,
+        };
+    }
+
+    fn genPrefixedBorrowAddressCallArg(self: *Codegen, arg: *const ast.Node, prefix: u8) anyerror!?SabLoweredCallArg {
+        const inner = switch (arg.*) {
+            .borrow_expr => |borrow| if (prefix == '&') borrow.expr else return null,
+            .move_expr => |move| if (prefix == '^') {
+                const value_reg = try self.genExpr(move.expr);
+                return try self.moveCallArgFromValueReg(value_reg);
+            } else return null,
+            else => return null,
+        };
+        const source = try self.genAddressOf(inner);
+        return .{
+            .operand = try self.prefixedBorrowAddressOperand(source.reg, prefix),
+            .release_reg = null,
+            .release_regs = try self.borrowAddressCallArgReleaseRegs(source, prefix),
+        };
+    }
+
+    fn genMacroPrefixedBorrowAddressCallArg(self: *Codegen, arg: *const ast.Node, ctx: *MacroExpansionContext, prefix: u8) anyerror!?SabLoweredCallArg {
+        const inner = switch (arg.*) {
+            .borrow_expr => |borrow| if (prefix == '&') borrow.expr else return null,
+            .move_expr => |move| if (prefix == '^') {
+                const value_reg = try self.genMacroExpr(move.expr, ctx);
+                return try self.moveCallArgFromValueReg(value_reg);
+            } else return null,
+            else => return null,
+        };
+        const source = try self.genMacroAddressOf(inner, ctx);
+        return .{
+            .operand = try self.prefixedBorrowAddressOperand(source.reg, prefix),
+            .release_reg = null,
+            .release_regs = try self.borrowAddressCallArgReleaseRegs(source, prefix),
+        };
+    }
+
     fn genArrayBorrowToSliceArgFromBase(
         self: *Codegen,
         inner: *const ast.Node,
@@ -9188,14 +9247,17 @@ pub const Codegen = struct {
                 };
             },
             .value => blk: {
-                const arg_reg = try self.genExpr(@constCast(arg));
-                const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                 if (call_plan.argPrefix(arg)) |prefix| {
+                    if (try self.genPrefixedBorrowAddressCallArg(arg, prefix)) |borrowed| break :blk borrowed;
+                    const arg_reg = try self.genExpr(@constCast(arg));
+                    const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                     break :blk .{
                         .operand = try std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, self.symbols.items[arg_reg] }),
                         .release_reg = release_reg,
                     };
                 }
+                const arg_reg = try self.genExpr(@constCast(arg));
+                const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                 break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = release_reg };
             },
         };
@@ -9253,14 +9315,17 @@ pub const Codegen = struct {
                 };
             },
             .value => blk: {
-                const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
-                const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                 if (call_plan.argPrefix(effective_arg)) |prefix| {
+                    if (try self.genMacroPrefixedBorrowAddressCallArg(arg, ctx, prefix)) |borrowed| break :blk borrowed;
+                    const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
+                    const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                     break :blk .{
                         .operand = try std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, self.symbols.items[arg_reg] }),
                         .release_reg = release_reg,
                     };
                 }
+                const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
+                const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                 break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = release_reg };
             },
         };

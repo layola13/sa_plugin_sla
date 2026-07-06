@@ -1713,6 +1713,12 @@ pub const BorrowAddressTempReleasePlan = struct {
     release_source_temps: bool,
 };
 
+pub const PrefixedBorrowAddressCallArgReleasePlan = struct {
+    emit_arg_prefix: bool,
+    release_address_value: bool,
+    release_source_temps: bool,
+};
+
 pub const ResultSlotTransferPlan = struct {
     transfers_value: bool,
     needs_refcell_companion: bool,
@@ -1855,6 +1861,14 @@ pub fn planBorrowAddressTempRelease(has_borrow_address_temps: bool) BorrowAddres
     return .{
         .release_borrow_value = has_borrow_address_temps,
         .release_source_temps = has_borrow_address_temps,
+    };
+}
+
+pub fn planPrefixedBorrowAddressCallArgRelease(prefix: u8, address_value_is_temp: bool, has_source_temps: bool) PrefixedBorrowAddressCallArgReleasePlan {
+    return .{
+        .emit_arg_prefix = prefix == '&' or prefix == '^',
+        .release_address_value = prefix == '&' and address_value_is_temp,
+        .release_source_temps = has_source_temps,
     };
 }
 
@@ -4257,6 +4271,16 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     const borrow_temp_release = planBorrowAddressTempRelease(true);
     try std.testing.expect(borrow_temp_release.release_borrow_value);
     try std.testing.expect(borrow_temp_release.release_source_temps);
+
+    const borrowed_call_arg_release = planPrefixedBorrowAddressCallArgRelease('&', true, true);
+    try std.testing.expect(borrowed_call_arg_release.emit_arg_prefix);
+    try std.testing.expect(borrowed_call_arg_release.release_address_value);
+    try std.testing.expect(borrowed_call_arg_release.release_source_temps);
+
+    const moved_call_arg_release = planPrefixedBorrowAddressCallArgRelease('^', true, true);
+    try std.testing.expect(moved_call_arg_release.emit_arg_prefix);
+    try std.testing.expect(!moved_call_arg_release.release_address_value);
+    try std.testing.expect(moved_call_arg_release.release_source_temps);
 
     const smart_plan = planRefCellBorrowCall(borrow_call, &refcell_box_ty).?;
     try std.testing.expectEqual(RefCellBorrowValueKind.smart_pointer_payload, smart_plan.value_kind);

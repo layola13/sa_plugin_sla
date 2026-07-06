@@ -4104,7 +4104,7 @@ test "sla sab backend lowers array literals dynamic indexes and range for direct
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
-test "sla sab backend lowers move arguments directly" {
+test "sla sab backend lowers move arguments through fresh temps" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
@@ -4123,14 +4123,17 @@ test "sla sab backend lowers move arguments directly" {
 
     var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
     defer module.deinit(std.testing.allocator);
-    var saw_move_call = false;
+    var saw_fresh_move_call = false;
+    var saw_direct_binding_move_call = false;
     for (module.instructions) |item| {
         try std.testing.expectEqualStrings("", item.raw_text);
-        if (item.kind == .call and item.operands[1] == .text and std.mem.indexOf(u8, item.operands[1].text, "^item") != null) {
-            saw_move_call = true;
+        if (item.kind == .call and item.operands[1] == .text) {
+            if (std.mem.indexOf(u8, item.operands[1].text, "^tmp_") != null) saw_fresh_move_call = true;
+            if (std.mem.indexOf(u8, item.operands[1].text, "^item") != null) saw_direct_binding_move_call = true;
         }
     }
-    try std.testing.expect(saw_move_call);
+    try std.testing.expect(saw_fresh_move_call);
+    try std.testing.expect(!saw_direct_binding_move_call);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

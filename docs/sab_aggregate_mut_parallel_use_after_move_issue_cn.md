@@ -2,7 +2,7 @@
 
 日期：2026-07-06
 
-状态：已复验修复。`sla_ecs` 下游仅记录问题，不修改 SLA 编译器源码。
+状态：已修复并复验。`sla_ecs` 下游仅作为回归证据，不修改 SLA 编译器源码。
 
 ## 摘要
 
@@ -130,3 +130,31 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 - 多测试聚合时临时寄存器编号或 lifetime metadata 是否跨函数/测试污染；
 - 函数指针 + `Arc<*TableErasedWorld<R, M>>` + 多个 test case 共存时，SAB verifier 是否错误复用 consumed 状态；
 - `.sab` artefact 的 source-map 是否能补充到 verifier 输出，便于后续下游定位。
+
+## 修复记录
+
+本轮编译器侧修复集中在 direct SAB planned-call 参数 lowering：
+
+- `^field` / `^index` / 非标识符 move 表达式先生成表达式值，再转移到 fresh temp，并以 `^tmp` 调用，避免 call 后或函数尾 cleanup 重复释放同一源值。
+- `^identifier` 也通过 fresh temp 转移，并把源 local 标记为 consumed，避免尾部 cleanup 对已经 move 的绑定再次 `release`。
+- `&...` borrow-address 参数继续走地址源路径，释放策略由 shared `planPrefixedBorrowAddressCallArgRelease()` 控制。
+
+新增本地回归：`tests/test_unit_borrowed_enum_field_arg_direct.sla`，覆盖 `^table_info.storage` 这类 borrowed aggregate enum field move-call 参数。
+
+验证清单：
+
+```sh
+zig build --summary all
+zig build test --summary all                       # 92/92
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_borrowed_enum_field_arg_direct.sla --test-backend sab --jobs 1 --trace-panic
+./zig-out/bin/sla-local-cli sla test tests/test_unit_borrowed_enum_field_arg_direct.sla --test-backend sa --jobs 1 --trace-panic
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_array_direct.sla --test-backend sab --jobs 1 --trace-panic
+# local strict direct-SAB sweep: 110 files / 264 cases
+sa plugin install --dev .
+SA_PLUGIN_DEV=1 sa sla help
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_borrowed_enum_field_arg_direct.sla --test-backend sab --jobs 1 --trace-panic
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_borrowed_enum_field_arg_direct.sla --test-backend sa --jobs 1 --trace-panic
+cd /home/vscode/projects/sla_ecs && SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_ecs_mut_parallel.sla --jobs 1 --trace-panic  # 91/91
+cd /home/vscode/projects/sla_ecs && SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test lib/parallel.sla --test-backend sab --jobs 1 --trace-panic  # 1/1
+git diff --check
+```

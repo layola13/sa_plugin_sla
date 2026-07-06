@@ -6,3 +6,7 @@
     store %value+0, 29 as i64
     %out = 29
 [END_MACRO]
+
+[MACRO] SLA_IMPORTED_READ_PAIR_SUM %out, %value
+    %out = call @sla__imported_macro_read_pair_sum(&%value)
+[END_MACRO]

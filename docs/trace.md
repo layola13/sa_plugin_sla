@@ -7,7 +7,23 @@
 
 ## 概述
 
-`sa_plugin_sla` 是一个 SLA→SAB 编译器插件，采用 Y 形架构：共享 `lowering_rules.zig` 分叉到 `codegen.zig`（SA 文本）和 `sab_codegen.zig`（SAB）。项目文档详细、测试覆盖充分（102 个测试文件，253 个测试用例），但文档的自我评估**系统性地过于乐观**。
+`sa_plugin_sla` 是一个 SLA→SAB 编译器插件，采用 Y 形架构：共享 `lowering_rules.zig` 分叉到 `codegen.zig`（SA 文本）和 `sab_codegen.zig`（SAB）。项目文档详细、测试覆盖充分（当前 tracked unit sweep 为 103 个测试文件、256 个测试用例），但文档的自我评估**系统性地过于乐观**。
+
+## 2026-07-06 Issue 复核更新
+
+本文件是 2026-07-05 的审计快照，其中部分条目已经被后续切片修复。当前复核结果：
+
+- `docs/sab_scalar_param_cleanup_issue_cn.md` 的当前 compiler/host repro surface 已验证修复：新增 `tests/test_unit_scalar_param_cleanup_direct.sla` 覆盖 table-erased-like wrapper、`_auto` wrapper、unused scalar param consumed、`temporary().method()` receiver owner cleanup；direct SAB 参数退出 cleanup 现在区分 skip/consume/release，shared call-arg materialization 会释放临时 auto-borrow receiver，SA-text associated-target 用户方法调用传入 receiver-style auto-borrow 选项。验证包括 `zig build --summary all`、`zig build test --summary all` (85/85)、local/installed focused SA/SAB、borrow-temp 25/25、RefCell payload 7/7、local strict direct-SAB sweep 108/108 files、262/262 cases、official dev install/help、installed host `system_param_table_erased.sla` check/focused SA/SAB、`parallel.sla` strict direct-SAB 1/1。仓库已补 Apache-2.0 `LICENSE`，与 `sci` 对齐。
+- `docs/result_entityitem_filter_cleanup_issue_cn.md` 的当前 host repro surface 已验证修复：新增 Result/EntityItem、Box raw-pointer、void fn-pointer、primitive `scan` reassignment focused regressions；local strict direct-SAB sweep 为 107/107 files、260/260 cases；official `sa plugin install --dev .` 和 `SA_PLUGIN_DEV=1 sa sla help` 通过；installed host `/home/vscode/projects/sla_ecs/tests/test_ecs_result_facades.sla` strict direct-SAB no-fallback 与 SA-text 均为 172/172；`parallel.sla` strict direct-SAB 1/1；borrow-temp 25/25、RefCell payload 7/7；SAB call-target disasm guard 无非法匹配。历史 filter `ecs_world_try_query_single returns one` 仍选中 0 个测试，因此只记录为 stale filter，不作为修复证据。
+- `docs/sab_call_target_issue_cn.md` 的 SAB call target/argument 混合问题已验证修复；`parallel.sla` strict direct-SAB no-fallback 1/1 passed，SAB disasm 中 `@sla__ecs_parallel_sum_i32_chunk` 与参数分离，非法 `@.*(` call-target grep 无匹配。
+- `docs/sa_std_macro_gap_audit.md` 涉及的 rosetta `104_if_let_chains` chained `if let` direct-SAB 缺口已验证修复；本次新增共享 `planLetPattern()` 分类，direct SAB strict no-fallback 和 SA-text host parity 均为 1/1 passed。更广泛 pattern surface 仍按后续真实 fixture 继续扩展。
+- RefCell 共享 runtime import scan 有一个新子切片已完成：`if let` 链的所有 `IfLetCond.value` 现在都会参与 `exprNeedsRefCellRuntime()` 判定，避免第二个及后续 `&& let` 条件里的 RefCell 构造/借用被漏扫。完整 RefCell 生命周期规划仍保持开放。
+- SA-text std macro/import pre-scan 也已补齐同类 `if let` 链缺口：`src/codegen.zig` 的 Box/Vec/Option/Result/Cell/Atomic/Async/TraitObject 等预扫描族、thread-spawn helper 收集、loop-counter/hoisted-allocation 预扫描和 identifier-consumption 检查现在都会遍历所有 `IfLetCond.value`。验证包括 `zig test src/codegen.zig --test-filter "if let chain scanner visits chained values"`、`zig build test --summary all` (85/85)、official dev install/help、host strict direct-SAB RefCell/borrow-temp/parallel 回归。更广泛 shared macro expansion/call planning 仍开放。
+- Phase 3 call/materialization 的 array-to-slice borrow 子缺口已完成：`tests/test_unit_array_to_slice_call.sla` 覆盖 `&[T; N] -> &[T]` 普通 planned static call，local/host SA-text 和 strict direct-SAB no-fallback 均为 1/1，local/host full no-fallback sweep 更新为 103/103 files、256/256 cases。`src/sab_codegen.zig` 现在消费共享 `CallArgMaterializationKind.array_to_slice_borrow` 并发射 stack `Slice`/`SLICE_NEW`，`src/codegen.zig` 同步修复 `&[literal]` 临时底层数组释放。更广泛 call/result materialization、macro 参数地址语义、rosetta `116_va_list_variadic` 仍开放。
+- 用户宏 SA-text focused parity 已完成：`tests/test_unit_user_macro_direct.sla` host SA-text 和 strict direct-SAB no-fallback 均为 2/2。覆盖当前 focused fixture 的参数替换、嵌套宏调用、宏本地 hygiene/block shadowing、聚合/index/static-call 表达式、borrowed field/index/deref args，以及 focused `&*boxed` / `&**nested_box` 地址形式。更广泛的共享宏 expansion/substitution contract 仍开放。
+- `docs/struct_update_sab_review_cn.md` 的 tracked struct-update 问题已按后续记录修复并复核：`tests/test_unit_struct_update.sla` host SA/SAB 2/2，`tests/test_unit_struct_update_pointer_backed.sla` host SA/SAB 1/1。union/ManuallyDrop 等未跟踪边界仍不是已完成面。
+- `docs/sla_compiler_issues_and_lua_refactor_diagnostics_cn.md` 中的 SCI macro body 逃逸、SLA import 输出路径相对化、SCI `PackageNotResolved` double-free 均已验证修复；`sa_lua` 测试空跑仍是应用/runtime 侧开放问题。
+- 全局 100% 仍未完成。Full RefCell 生命周期、pointer-backed imported-macro aggregate alias semantics、完整 shared call/arg materialization、闭包/可调用语义、完整 async state machine、generic SCI fragment naming/boundary、以及更广泛真实语料覆盖仍保持开放。
 
 ---
 
@@ -31,7 +47,7 @@
 | 1 | **完整 RefCell borrow/borrow_mut 生命周期规划**（跨作用域/分支/循环/调用参数/提前返回的冲突时 panic 和释放） | ❌ **未完成** | `tasks.md` P1 未勾选项；`current_plan.md` 明确 "Next Active Slice" |
 | 2 | **可重用共享地址/投影计划**：`&field`, `&index`, `&*smart`, `&**chain`, 后缀-前缀优先级 | ⚠️ **部分完成** | 仅普通形式通过共享分类器；智能指针链式解引用和 `&**chain` 仍标记为 "out of scope" |
 | 3 | **导入宏内部指针支持的聚合字段别名语义** | ❌ **未完成** | 每个导入宏切片末尾都标注 "out of scope/open" |
-| 4 | **用户宏 SA 文本对等性**（用户宏在 SA 文本和 SAB 后端之间行为一致） | ❌ **未完成** | 每个宏切片末尾标注 "out of scope/open" |
+| 4 | **用户宏 SA 文本对等性**（用户宏在 SA 文本和 SAB 后端之间行为一致） | ✅ **focused fixture 已完成； broader shared macro convergence 仍开放** | `tests/test_unit_user_macro_direct.sla` host SA/SAB 2/2；更广泛共享 expansion/substitution contract 仍未关闭 |
 | 5 | 普通 `&*borrow_or_pointer` 和普通地址分类器的共享规划 | ✅ 已完成 | |
 | 6 | 智能指针地址操作共享规划 | ✅ 已完成 | |
 
@@ -40,15 +56,15 @@
 | # | 未完成任务 | 状态 | 证据位置 |
 |---|-----------|------|---------|
 | 7 | **确保宏展开决策存在于共享展开/降级规则中，而非仅限 SAB 的分支** | ⚠️ **部分完成** | `tasks.md` 中 P2 条目未勾选 |
-| 8 | **嵌套宏调用** | ❌ **未完成** | `tasks.md` P2 未勾选项 |
+| 8 | **嵌套宏调用** | ✅ **focused 用户宏路径已完成；broader 宏合同仍开放** | `tests/test_unit_user_macro_direct.sla` 覆盖 nested expansion |
 | 9 | **宏本地 hygiene**（跨独立解码模块的唯一性处理） | ❌ **未完成** | `tasks.md` P2 未勾选项；`current_plan.md` 标注 "generic SCI fragment naming" 为更广泛 SCI 边界任务 |
-| 10 | **调用者参数替换** | ❌ **未完成** | `tasks.md` P2 未勾选项 |
-| 11 | **借用/移动前缀**（宏参数中的 `&` 和 `^`） | ❌ **未完成** | `tasks.md` P2 未勾选项 |
-| 12 | **聚合字面量**（宏参数中的 { } 字面量） | ❌ **未完成** | `tasks.md` P2 未勾选项 |
+| 10 | **调用者参数替换** | ✅ **focused 用户宏路径已完成；broader 宏合同仍开放** | SA-text inline expansion maps macro params to caller registers |
+| 11 | **借用/移动前缀**（宏参数中的 `&` 和 `^`） | ⚠️ **borrowed field/index/deref focused 路径已完成；完整前缀语义仍开放** | `tests/test_unit_user_macro_direct.sla` 覆盖 borrowed address args |
+| 12 | **聚合字面量**（宏参数中的 { } 字面量） | ✅ **focused 用户宏路径已完成；broader 宏合同仍开放** | SA-text macro expansion handles aggregate expressions in the focused fixture |
 | 13 | **元组解构**（宏参数中的 `(a, b)`） | ❌ **未完成** | `tasks.md` P2 未勾选项 |
-| 14 | **索引访问/赋值**（宏体内的 `a[i]`） | ❌ **未完成** | `tasks.md` P2 未勾选项 |
-| 15 | **块阴影**（宏展开中的嵌套作用域） | ❌ **未完成** | `tasks.md` P2 未勾选项 |
-| 16 | **宏展开的静态调用** | ❌ **未完成** | `tasks.md` P2 未勾选项 |
+| 14 | **索引访问/赋值**（宏体内的 `a[i]`） | ✅ **focused 用户宏路径已完成；broader 宏合同仍开放** | `tests/test_unit_user_macro_direct.sla` 覆盖 for/index access |
+| 15 | **块阴影**（宏展开中的嵌套作用域） | ✅ **focused 用户宏路径已完成；broader 宏合同仍开放** | SA-text macro-local hygiene/block shadowing verified in focused fixture |
+| 16 | **宏展开的静态调用** | ✅ **focused 用户宏路径已完成；broader 宏合同仍开放** | static-call expression lowering verified in focused fixture |
 | 17 | 导入宏地址表达式物化 | ✅ 已完成 | |
 | 18 | 导入宏可寻址参数操作规划 | ✅ 已完成 | |
 | 19 | 导入宏参数降级操作共享分类 | ✅ 已完成 | |

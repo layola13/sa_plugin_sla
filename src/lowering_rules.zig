@@ -341,6 +341,7 @@ pub const ImportedMacroCallPlan = struct {
         if (!self.callArgNeedsAddressableSlot(call_arg_index)) return .pass_value;
         if (self.callArgNeedsDirectAddressSlot(call_arg_index) and arg.* == .identifier and (arg_ty.* == .infer or abiPassesAsPointer(arg_ty) or importedMacroBorrowUsesRawPointerValue(arg_ty))) return .pass_value;
         if (importedMacroArgUsesRawPointerValue(arg, arg_ty)) return .pass_raw_pointer_value;
+        if (arg.* == .identifier and abiPassesAsPointer(arg_ty)) return .pass_value;
         return null;
     }
 
@@ -390,6 +391,9 @@ pub const WhileLetPatternPlan = struct {
     }
 };
 
+pub const LetPatternKind = WhileLetPatternKind;
+pub const LetPatternPlan = WhileLetPatternPlan;
+
 pub const DynCoercionKind = enum {
     box_to_dyn,
     rc_new_to_dyn_rc,
@@ -433,7 +437,7 @@ pub fn planLoopControl(body: []const *ast.Node) LoopControlPlan {
     };
 }
 
-pub fn planWhileLetPattern(pattern: ast.EnumPattern, has_user_enum_decl: bool) ?WhileLetPatternPlan {
+pub fn planLetPattern(pattern: ast.EnumPattern, has_user_enum_decl: bool) ?LetPatternPlan {
     if (has_user_enum_decl) {
         return .{
             .kind = .enum_variant,
@@ -463,6 +467,10 @@ pub fn planWhileLetPattern(pattern: ast.EnumPattern, has_user_enum_decl: bool) ?
     }
 
     return null;
+}
+
+pub fn planWhileLetPattern(pattern: ast.EnumPattern, has_user_enum_decl: bool) ?WhileLetPatternPlan {
+    return planLetPattern(pattern, has_user_enum_decl);
 }
 
 pub fn blockTerminates(block: []const *ast.Node) bool {
@@ -2267,6 +2275,13 @@ pub fn planRefCellBorrowCall(call: ast.CallExpr, receiver_ty: *const ast.Type) ?
     return null;
 }
 
+fn ifLetChainNeedsRefCellRuntime(tc: *type_checker.TypeChecker, chain: []const ast.IfLetCond) bool {
+    for (chain) |cond| {
+        if (exprNeedsRefCellRuntime(tc, cond.value)) return true;
+    }
+    return false;
+}
+
 pub fn exprNeedsRefCellRuntime(tc: *type_checker.TypeChecker, expr: *const ast.Node) bool {
     if (tc.expr_types.get(expr)) |ty| {
         if (refCellInnerType(ty) != null) return true;
@@ -2310,7 +2325,7 @@ pub fn exprNeedsRefCellRuntime(tc: *type_checker.TypeChecker, expr: *const ast.N
             for (lit.elements) |elem| if (exprNeedsRefCellRuntime(tc, elem)) break :blk true;
             break :blk false;
         },
-        .if_expr => |ife| exprNeedsRefCellRuntime(tc, ife.cond) or blockNeedsRefCellRuntime(tc, ife.then_block) or if (ife.else_block) |eb| blockNeedsRefCellRuntime(tc, eb) else false,
+        .if_expr => |ife| exprNeedsRefCellRuntime(tc, ife.cond) or (if (ife.let_chain) |chain| ifLetChainNeedsRefCellRuntime(tc, chain) else false) or blockNeedsRefCellRuntime(tc, ife.then_block) or if (ife.else_block) |eb| blockNeedsRefCellRuntime(tc, eb) else false,
         .switch_expr => |swe| blk: {
             if (exprNeedsRefCellRuntime(tc, swe.val)) break :blk true;
             for (swe.cases) |case| if (exprNeedsRefCellRuntime(tc, case.pattern) or blockNeedsRefCellRuntime(tc, case.body)) break :blk true;
@@ -2864,14 +2879,14 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
         if (input.arg_ty) |arg_ty| {
             if (input.statement_receiver_auto_borrow) {
                 if (shouldAutoBorrowStatementReceiverArg(param, arg, arg_ty)) {
-                    return .{ .kind = .auto_borrow, .release_after_call = input.generated_scalar_const_identifier };
+                    return .{ .kind = .auto_borrow, .release_after_call = callArgNeedsRelease(arg) or input.generated_scalar_const_identifier };
                 }
             } else if (input.receiver_style_auto_borrow) {
                 if (shouldAutoBorrowReceiverArg(param, arg, arg_ty)) {
-                    return .{ .kind = .auto_borrow, .release_after_call = input.generated_scalar_const_identifier };
+                    return .{ .kind = .auto_borrow, .release_after_call = callArgNeedsRelease(arg) or input.generated_scalar_const_identifier };
                 }
             } else if (shouldAutoBorrowResolvedArg(param, arg, arg_ty, input.arg_index, input.auto_borrow_receiver)) {
-                return .{ .kind = .auto_borrow, .release_after_call = input.generated_scalar_const_identifier };
+                return .{ .kind = .auto_borrow, .release_after_call = callArgNeedsRelease(arg) or input.generated_scalar_const_identifier };
             }
         }
     }
@@ -3063,7 +3078,7 @@ test "shared imported macro address-expression args materialize stack slots" {
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, plan.planArgValueBypassAction(0, &ident, &int_ty).?);
     try std.testing.expect(plan.planArgValueBypassAction(1, &ident, &int_ty) == null);
     try std.testing.expect(plan.planArgValueBypassAction(1, &ident, &infer_ty) == null);
-    try std.testing.expect(plan.planArgValueBypassAction(1, &ident, &aggregate_ty) == null);
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, plan.planArgValueBypassAction(1, &ident, &aggregate_ty).?);
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.reuse_existing_addressable, plan.planAddressableArgLoweringAction(1, .identifier, true));
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.materialize_stack_slot, plan.planAddressableArgLoweringAction(1, .identifier, false));
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.materialize_address_expression_stack_slot, plan.planAddressableArgLoweringAction(1, .field, false));
@@ -3469,9 +3484,13 @@ test "shared while let pattern classification" {
     const some_bindings = [_][]const u8{"value"};
     const some = ast.EnumPattern{ .enum_name = "Option", .variant_name = "Some", .bindings = some_bindings[0..] };
     const some_plan = planWhileLetPattern(some, false).?;
+    const some_if_plan = planLetPattern(some, false).?;
     try std.testing.expectEqual(WhileLetPatternKind.option_some, some_plan.kind);
+    try std.testing.expectEqual(LetPatternKind.option_some, some_if_plan.kind);
     try std.testing.expect(some_plan.success_on_true);
+    try std.testing.expect(some_if_plan.success_on_true);
     try std.testing.expect(some_plan.bindsPayload());
+    try std.testing.expect(some_if_plan.bindsPayload());
 
     const none = ast.EnumPattern{ .enum_name = "Option", .variant_name = "None", .bindings = &.{} };
     const none_plan = planWhileLetPattern(none, false).?;
@@ -4337,6 +4356,19 @@ test "shared refcell runtime scanner detects constructor and receiver calls" {
 
     var plain_call = ast.Node{ .call_expr = .{ .func_name = "noop", .associated_target = null, .generics = &.{}, .args = &.{} } };
     try std.testing.expect(!exprNeedsRefCellRuntime(&tc, &plain_call));
+
+    var plain_option = ast.Node{ .identifier = "maybe" };
+    var chain_value = ast.Node{ .identifier = "chain_value" };
+    const chain_new_args = [_]*ast.Node{&chain_value};
+    var chain_new_call = ast.Node{ .call_expr = .{ .func_name = "new", .associated_target = "RefCell", .generics = &.{}, .args = chain_new_args[0..] } };
+    const some_pattern = ast.EnumPattern{ .enum_name = "Option", .variant_name = "Some", .bindings = &.{} };
+    const if_let_chain = [_]ast.IfLetCond{
+        .{ .pattern = some_pattern, .value = &plain_option },
+        .{ .pattern = some_pattern, .value = &chain_new_call },
+    };
+    const empty_then = [_]*ast.Node{};
+    var if_let_expr = ast.Node{ .if_expr = .{ .cond = &plain_option, .let_chain = if_let_chain[0..], .then_block = empty_then[0..], .else_block = null } };
+    try std.testing.expect(exprNeedsRefCellRuntime(&tc, &if_let_expr));
 }
 
 test "shared dyn coercion and receiver plans" {

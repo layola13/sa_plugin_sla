@@ -150,12 +150,14 @@ section*:
 - 普通闭包绑定和调用：`let f = |x| ...; f(arg)` 会在 direct SAB 中以内联闭包 body + 参数寄存器映射生成，支持捕获外层局部值和当前一/二参数闭包 smoke tests，不进入 fallback。
 - 首批 std surface 元数据桥接：`sla_std/std_surface.sla_meta` 用数据描述关联函数、方法和索引糖如何展开为已导入 SA 宏片段，并按实际用到的依赖函数过滤合并 SAB module。`sab_codegen.zig` 只读取规则、解析导入、展开宏片段和合并结构化 SAB，不写死 `Vec`、`thread`、ECS 或业务库语义。
 - `if/else` 到 `br` / label / `jmp` / merge 的基础控制流。
+- chained `if let` / value-producing `if let`：通过共享 `planLetPattern()` 分类 Option/Result/user-enum tag 检查，SAB 只负责具体 `br` / label / result-slot merge / cleanup 发射；rosetta `104_if_let_chains` strict direct-SAB no-fallback 已通过。
+- 普通 planned static call 的 `&[T; N] -> &[T]` array-to-slice borrow：共享 `CallArgMaterializationKind.array_to_slice_borrow` 负责语义分类，SAB 只负责 stack `Slice`/`SLICE_NEW` materialization 和临时 backing array cleanup；`tests/test_unit_array_to_slice_call.sla` local/host SA-text 与 strict direct-SAB no-fallback 已通过。
 - `panic(code)`。
 - 函数内 `reg_ids` 元数据和 void/test return 前的局部释放，满足 SA verifier 的作用域和泄漏检查。
 
 当前目标是清零 fallback。未覆盖的 SLA 特性目前仍会显式返回 `UnsupportedSabDirectFeature`，旧路径随后走内存 SA-compatible SAB encoder；这只是过渡兼容，不是最终架构，也不能作为完成标准。后续必须通过通用 direct lowering 或通用 SAB macro/stdlib 表示移除这些缺口，不能在编译器里按 `Vec`、`thread`、ECS 或业务库名写死普通代码语义。
 
-当前优先方向是继续扩大 std surface 元数据、可导出的闭包/function-object lowering、共享 lowering 规则/计划层和 SAB 宏表示，而不是把文本 codegen 中历史遗留的库分支复制到 `sab_codegen.zig`。目标形态是 `SLA AST/typecheck -> shared lowering rules/plan -> {SA text emitter, SAB structured emitter}`。编译器可以认识语言结构、类型信息、导入宏签名和 SAB 指令格式；普通库的名字、容器算法、线程 API、ECS 规则应留在 std / 插件 / 项目层。聚焦的 zero-arg `thread::spawn(^|| ...)` 捕获闭包和 `/home/vscode/projects/sla_ecs/lib/parallel.sla` no-fallback 路径已经通过；剩余工作是把该入口函数/function-object lowering 泛化，并让调用实参 materialization 等规则进入共享计划层，而不是在 SAB 后端写 `thread` 专用分支。
+当前优先方向是继续扩大 std surface 元数据、可导出的闭包/function-object lowering、共享 lowering 规则/计划层和 SAB 宏表示，而不是把文本 codegen 中历史遗留的库分支复制到 `sab_codegen.zig`。目标形态是 `SLA AST/typecheck -> shared lowering rules/plan -> {SA text emitter, SAB structured emitter}`。编译器可以认识语言结构、类型信息、导入宏签名和 SAB 指令格式；普通库的名字、容器算法、线程 API、ECS 规则应留在 std / 插件 / 项目层。聚焦的 zero-arg `thread::spawn(^|| ...)` 捕获闭包、ordinary planned call array-to-slice borrow 和 `/home/vscode/projects/sla_ecs/lib/parallel.sla` no-fallback 路径已经通过；剩余工作是把入口函数/function-object lowering 泛化，并继续完善 result destination、remaining call materialization、macro 参数地址语义等共享计划层，而不是在 SAB 后端写 `thread` 或其它库专用分支。
 
 排查 direct SAB 缺口时使用：
 

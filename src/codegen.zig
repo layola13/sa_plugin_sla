@@ -63,7 +63,10 @@ pub const Codegen = struct {
     label_idx: usize,
     string_idx: usize,
     macro_local_idx: usize,
+    macro_inline_depth: usize,
     macro_locals: std.StringHashMap([]const u8),
+    macro_arg_exprs: std.StringHashMap(*const ast.Node),
+    macro_arg_types: std.StringHashMap(*const ast.Type),
     closure_bindings: std.StringHashMap(*const ast.ClosureLiteral),
     closure_param_regs: std.StringHashMap([]const u8),
     stack_alloc_bindings: std.StringHashMap(void),
@@ -124,7 +127,10 @@ pub const Codegen = struct {
             .label_idx = 0,
             .string_idx = 0,
             .macro_local_idx = 0,
+            .macro_inline_depth = 0,
             .macro_locals = std.StringHashMap([]const u8).init(allocator),
+            .macro_arg_exprs = std.StringHashMap(*const ast.Node).init(allocator),
+            .macro_arg_types = std.StringHashMap(*const ast.Type).init(allocator),
             .closure_bindings = std.StringHashMap(*const ast.ClosureLiteral).init(allocator),
             .closure_param_regs = std.StringHashMap([]const u8).init(allocator),
             .stack_alloc_bindings = std.StringHashMap(void).init(allocator),
@@ -177,6 +183,8 @@ pub const Codegen = struct {
             self.allocator.free(v.*);
         }
         self.macro_locals.deinit();
+        self.macro_arg_exprs.deinit();
+        self.macro_arg_types.deinit();
         self.closure_bindings.deinit();
         self.closure_param_regs.deinit();
         self.stack_alloc_bindings.deinit();
@@ -265,6 +273,14 @@ pub const Codegen = struct {
         }
     }
 
+    fn pushBindingAliasTo(self: *Codegen, name: []const u8, alias: []const u8) CodegenError!void {
+        var entry = self.binding_aliases.getOrPut(name) catch return CodegenError.OutOfMemory;
+        if (!entry.found_existing) {
+            entry.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+        }
+        entry.value_ptr.append(alias) catch return CodegenError.OutOfMemory;
+    }
+
     fn newTmp(self: *Codegen) CodegenError![]const u8 {
         const name = std.fmt.allocPrint(self.allocator, "tmp_{}", .{self.tmp_idx}) catch return CodegenError.OutOfMemory;
         self.tmp_idx += 1;
@@ -288,6 +304,160 @@ pub const Codegen = struct {
         self.macro_local_idx += 1;
         self.macro_locals.put(local_name, name) catch return CodegenError.OutOfMemory;
         return name;
+    }
+
+    fn newInlineMacroLocal(self: *Codegen, macro_name: []const u8, local_name: []const u8) CodegenError![]const u8 {
+        const name = std.fmt.allocPrint(self.allocator, "__sla_macro_{s}_{s}_{}", .{ macro_name, local_name, self.macro_local_idx }) catch return CodegenError.OutOfMemory;
+        self.macro_local_idx += 1;
+        return name;
+    }
+
+    fn genUserMacroBlockInline(
+        self: *Codegen,
+        macro_decl: *const ast.MacroDecl,
+        body: []const *ast.Node,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!void {
+        var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
+        const SavedLocalType = struct {
+            name: []const u8,
+            old_ty: ?*const ast.Type,
+        };
+        var scoped_types = std.ArrayList(SavedLocalType).init(self.allocator);
+        defer {
+            var type_i = scoped_types.items.len;
+            while (type_i > 0) {
+                type_i -= 1;
+                const saved = scoped_types.items[type_i];
+                if (saved.old_ty) |ty| {
+                    self.macro_arg_types.put(saved.name, ty) catch unreachable;
+                } else {
+                    _ = self.macro_arg_types.remove(saved.name);
+                }
+            }
+            scoped_types.deinit();
+
+            var i = scoped_aliases.items.len;
+            while (i > 0) {
+                i -= 1;
+                self.popBindingAlias(scoped_aliases.items[i]);
+            }
+            scoped_aliases.deinit();
+        }
+
+        for (body) |stmt| {
+            switch (stmt.*) {
+                .let_stmt => |let| {
+                    if (std.mem.eql(u8, let.name, "_")) {
+                        try self.genStmt(stmt, hoisted_allocs);
+                        continue;
+                    }
+                    const alias = try self.newInlineMacroLocal(macro_decl.name, let.name);
+                    var let_copy = let;
+                    let_copy.name = alias;
+                    var node = ast.Node{ .let_stmt = let_copy };
+                    try self.genStmt(&node, hoisted_allocs);
+                    try self.pushBindingAliasTo(let.name, alias);
+                    try scoped_aliases.append(let.name);
+                    try scoped_types.append(.{ .name = let.name, .old_ty = self.macro_arg_types.get(let.name) });
+                    if (let.ty) |explicit| {
+                        self.macro_arg_types.put(let.name, explicit) catch return CodegenError.OutOfMemory;
+                    } else if (self.resolvedTypeForExpr(let.value)) |inferred| {
+                        self.macro_arg_types.put(let.name, inferred) catch return CodegenError.OutOfMemory;
+                    } else {
+                        _ = self.macro_arg_types.remove(let.name);
+                    }
+                },
+                .block_stmt => |block| try self.genUserMacroBlockInline(macro_decl, block.body, hoisted_allocs),
+                .for_stmt => |for_stmt| {
+                    const alias = try self.newInlineMacroLocal(macro_decl.name, for_stmt.var_name);
+                    try self.pushBindingAliasTo(for_stmt.var_name, alias);
+                    try scoped_aliases.append(for_stmt.var_name);
+                    const counter_slot = std.fmt.allocPrint(self.allocator, "{s}_slot", .{alias}) catch return CodegenError.OutOfMemory;
+                    self.out.writer().print("    {s} = stack_alloc 8\n", .{counter_slot}) catch return CodegenError.CodegenError;
+                    var for_copy = for_stmt;
+                    for_copy.var_name = alias;
+                    var node = ast.Node{ .for_stmt = for_copy };
+                    try self.genStmt(&node, hoisted_allocs);
+                },
+                else => try self.genStmt(stmt, hoisted_allocs),
+            }
+            if (self.async_pending_return_emitted) break;
+        }
+    }
+
+    fn genUserMacroCallInline(
+        self: *Codegen,
+        macro_decl: *const ast.MacroDecl,
+        call: *const ast.CallExpr,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!void {
+        if (macro_decl.params.len != call.args.len) return CodegenError.CodegenError;
+
+        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        defer arg_regs.deinit();
+        var arg_types = std.ArrayList(?*const ast.Type).init(self.allocator);
+        defer arg_types.deinit();
+        for (call.args) |arg| {
+            const arg_ty = self.resolvedTypeForExpr(arg);
+            try arg_regs.append(try self.genExpr(arg, hoisted_allocs));
+            try arg_types.append(arg_ty);
+        }
+
+        const SavedArg = struct {
+            name: []const u8,
+            old_expr: ?*const ast.Node,
+            old_ty: ?*const ast.Type,
+        };
+        var saved_args = std.ArrayList(SavedArg).init(self.allocator);
+        defer saved_args.deinit();
+
+        var aliased_params = std.ArrayList([]const u8).init(self.allocator);
+        defer {
+            var i = aliased_params.items.len;
+            while (i > 0) {
+                i -= 1;
+                self.popBindingAlias(aliased_params.items[i]);
+            }
+            aliased_params.deinit();
+        }
+
+        for (macro_decl.params, arg_regs.items, call.args, arg_types.items) |param, arg_reg, arg, arg_ty| {
+            try saved_args.append(.{
+                .name = param,
+                .old_expr = self.macro_arg_exprs.get(param),
+                .old_ty = self.macro_arg_types.get(param),
+            });
+            try self.pushBindingAliasTo(param, arg_reg);
+            try aliased_params.append(param);
+            self.macro_arg_exprs.put(param, arg) catch return CodegenError.OutOfMemory;
+            if (arg_ty) |ty| {
+                self.macro_arg_types.put(param, ty) catch return CodegenError.OutOfMemory;
+            } else {
+                _ = self.macro_arg_types.remove(param);
+            }
+        }
+        defer {
+            var i = saved_args.items.len;
+            while (i > 0) {
+                i -= 1;
+                const saved = saved_args.items[i];
+                if (saved.old_expr) |expr| {
+                    self.macro_arg_exprs.put(saved.name, expr) catch unreachable;
+                } else {
+                    _ = self.macro_arg_exprs.remove(saved.name);
+                }
+                if (saved.old_ty) |ty| {
+                    self.macro_arg_types.put(saved.name, ty) catch unreachable;
+                } else {
+                    _ = self.macro_arg_types.remove(saved.name);
+                }
+            }
+        }
+
+        self.macro_inline_depth += 1;
+        defer self.macro_inline_depth -= 1;
+        try self.genUserMacroBlockInline(macro_decl, macro_decl.body, hoisted_allocs);
     }
 
     fn mangleMethodName(self: *Codegen, ty_name: []const u8, method_name: []const u8) CodegenError![]const u8 {
@@ -864,6 +1034,34 @@ pub const Codegen = struct {
         }
     }
 
+    fn restoreRefCellBranchState(
+        self: *Codegen,
+        handles: *std.StringHashMap(RefCellBorrowHandle),
+        borrow_sources: *std.StringHashMap([]const u8),
+    ) CodegenError!void {
+        try self.restoreRefCellBorrowHandles(handles);
+        try self.restoreBorrowSourceTemps(borrow_sources);
+    }
+
+    fn setMergeRefCellBranchState(
+        self: *Codegen,
+        then_terminated: bool,
+        then_handles: *std.StringHashMap(RefCellBorrowHandle),
+        then_borrow_sources: *std.StringHashMap([]const u8),
+        else_terminated: bool,
+        else_handles: *std.StringHashMap(RefCellBorrowHandle),
+        else_borrow_sources: *std.StringHashMap([]const u8),
+        pre_handles: *std.StringHashMap(RefCellBorrowHandle),
+        pre_borrow_sources: *std.StringHashMap([]const u8),
+    ) CodegenError!void {
+        switch (lowering_rules.planRefCellBranchStateMerge(then_terminated, else_terminated)) {
+            .restore_pre => try self.restoreRefCellBranchState(pre_handles, pre_borrow_sources),
+            .restore_then => try self.restoreRefCellBranchState(then_handles, then_borrow_sources),
+            .restore_else => try self.restoreRefCellBranchState(else_handles, else_borrow_sources),
+            .keep_current => {},
+        }
+    }
+
     fn restoreMutexState(
         self: *Codegen,
         guards: *const std.StringHashMap(MutexGuardHandle),
@@ -1228,19 +1426,8 @@ pub const Codegen = struct {
             try self.emitPrintln(call, hoisted_allocs);
             return;
         }
-        if (self.tc.macros.contains(call.func_name)) {
-            var arg_regs = std.ArrayList([]const u8).init(self.allocator);
-            defer arg_regs.deinit();
-            for (call.args) |arg| {
-                const arg_reg = try self.genExpr(arg, hoisted_allocs);
-                try arg_regs.append(arg_reg);
-            }
-
-            self.out.writer().print("    EXPAND {s}", .{call.func_name}) catch return CodegenError.CodegenError;
-            for (arg_regs.items) |arg_reg| {
-                self.out.writer().print(" {s}", .{arg_reg}) catch return CodegenError.CodegenError;
-            }
-            self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+        if (self.tc.macros.get(call.func_name)) |macro_decl| {
+            try self.genUserMacroCallInline(macro_decl, call, hoisted_allocs);
             return;
         }
         if (call.associated_target) |target| {
@@ -2009,7 +2196,7 @@ pub const Codegen = struct {
         return lowering_rules.borrowedPrimitiveType(ty);
     }
 
-    fn arrayType(ty: *ast.Type) ?ast.ArrayType {
+    fn arrayType(ty: *const ast.Type) ?ast.ArrayType {
         var curr = ty;
         while (true) {
             switch (curr.*) {
@@ -2200,6 +2387,117 @@ pub const Codegen = struct {
     fn fieldLayoutForType(self: *Codegen, ty: *const ast.Type, name: []const u8) ?FieldLayout {
         const decl = self.structDeclForType(ty) orelse return null;
         return fieldLayout(decl, name);
+    }
+
+    fn fieldTypeForType(self: *Codegen, ty: *const ast.Type, name: []const u8) ?*const ast.Type {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .pointer => |p| curr = p,
+                .borrow => |b| curr = b,
+                else => break,
+            }
+        }
+        if (curr.* == .tuple) {
+            const index = std.fmt.parseInt(usize, name, 10) catch return null;
+            if (index >= curr.tuple.elems.len) return null;
+            return curr.tuple.elems[index];
+        }
+        const decl = self.structDeclForType(curr) orelse return null;
+        for (decl.fields) |field| {
+            if (std.mem.eql(u8, field.name, name)) return field.ty;
+        }
+        return null;
+    }
+
+    fn macroArgTypeForName(self: *Codegen, name: []const u8) ?*const ast.Type {
+        if (self.macro_arg_types.get(name)) |ty| {
+            if (ty.* != .infer) return ty;
+        }
+        if (self.macro_arg_exprs.get(name)) |arg| {
+            if (self.tc.expr_types.get(arg)) |ty| {
+                if (ty.* != .infer) return ty;
+            }
+        }
+        return null;
+    }
+
+    fn makeBorrowType(self: *Codegen, inner: *const ast.Type) CodegenError!*const ast.Type {
+        const ty = self.allocator.create(ast.Type) catch return CodegenError.OutOfMemory;
+        ty.* = .{ .borrow = @constCast(inner) };
+        return ty;
+    }
+
+    fn makeTupleType(self: *Codegen, elems: []*ast.Type) CodegenError!*const ast.Type {
+        const ty = self.allocator.create(ast.Type) catch return CodegenError.OutOfMemory;
+        ty.* = .{ .tuple = .{ .elems = elems } };
+        return ty;
+    }
+
+    fn makeArrayType(self: *Codegen, elem_ty: *const ast.Type, len: usize) CodegenError!*const ast.Type {
+        const ty = self.allocator.create(ast.Type) catch return CodegenError.OutOfMemory;
+        ty.* = .{ .array = .{ .elem = @constCast(elem_ty), .len = len } };
+        return ty;
+    }
+
+    fn resolvedTypeForExpr(self: *Codegen, expr: *const ast.Node) ?*const ast.Type {
+        if (self.tc.expr_types.get(expr)) |ty| {
+            if (ty.* != .infer) return ty;
+        }
+        return switch (expr.*) {
+            .identifier => |name| self.macroArgTypeForName(name),
+            .binary_expr => |bin| blk: {
+                if (bin.op == .eq or bin.op == .ne or bin.op == .lt or bin.op == .le or bin.op == .gt or bin.op == .ge or bin.op == .logical_and or bin.op == .logical_or) {
+                    break :blk null;
+                }
+                break :blk self.resolvedTypeForExpr(bin.left) orelse self.resolvedTypeForExpr(bin.right);
+            },
+            .borrow_expr => |borrow| blk: {
+                const inner = self.resolvedTypeForExpr(borrow.expr) orelse break :blk null;
+                break :blk self.makeBorrowType(inner) catch null;
+            },
+            .deref_expr => |deref| blk: {
+                const source_ty = self.resolvedTypeForExpr(deref.expr) orelse break :blk null;
+                break :blk switch (source_ty.*) {
+                    .borrow => |inner| inner,
+                    .pointer => |inner| inner,
+                    else => if (lowering_rules.smartPointerDerefType(source_ty)) |smart| smart.inner else null,
+                };
+            },
+            .cast_expr => |cast| cast.ty,
+            .field_expr => |field| blk: {
+                const target_ty = self.resolvedTypeForExpr(field.expr) orelse break :blk null;
+                break :blk self.fieldTypeForType(target_ty, field.field_name);
+            },
+            .index_expr => |idx| blk: {
+                const target_ty = self.resolvedTypeForExpr(idx.target) orelse break :blk null;
+                if (arrayType(@constCast(target_ty))) |arr| break :blk arr.elem;
+                if (sliceElementType(target_ty)) |elem| break :blk elem;
+                if (vecElementType(target_ty)) |elem| break :blk elem;
+                if (vecDequeElementType(target_ty)) |elem| break :blk elem;
+                break :blk null;
+            },
+            .struct_literal => |lit| lit.ty,
+            .tuple_literal => |lit| blk: {
+                if (lit.elements.len == 0) break :blk null;
+                const elems = self.allocator.alloc(*ast.Type, lit.elements.len) catch break :blk null;
+                for (lit.elements, 0..) |elem, i| {
+                    elems[i] = @constCast(self.resolvedTypeForExpr(elem) orelse break :blk null);
+                }
+                break :blk self.makeTupleType(elems) catch null;
+            },
+            .array_literal => |lit| blk: {
+                if (lit.elements.len == 0) break :blk null;
+                const elem_ty = self.resolvedTypeForExpr(lit.elements[0]) orelse break :blk null;
+                break :blk self.makeArrayType(elem_ty, lit.elements.len) catch null;
+            },
+            .repeat_array_literal => |lit| blk: {
+                const elem_ty = self.resolvedTypeForExpr(lit.value) orelse break :blk null;
+                break :blk self.makeArrayType(elem_ty, lit.len) catch null;
+            },
+            .move_expr => |move| self.resolvedTypeForExpr(move.expr),
+            else => null,
+        };
     }
 
     fn deriveNameMatches(actual: []const u8, wanted: []const u8) bool {
@@ -3720,6 +4018,41 @@ pub const Codegen = struct {
         }
     }
 
+    fn ifLetChainNeedsNoSelf(comptime predicate: fn (*const ast.Node) bool, chain: ?[]const ast.IfLetCond) bool {
+        if (chain) |items| {
+            for (items) |cond| if (predicate(cond.value)) return true;
+        }
+        return false;
+    }
+
+    fn ifLetChainNeedsSelf(self: *Codegen, comptime predicate: fn (*Codegen, *const ast.Node) bool, chain: ?[]const ast.IfLetCond) bool {
+        if (chain) |items| {
+            for (items) |cond| if (predicate(self, cond.value)) return true;
+        }
+        return false;
+    }
+
+    fn ifExprNeedsNoSelf(comptime expr_predicate: fn (*const ast.Node) bool, comptime block_predicate: fn ([]const *ast.Node) bool, ife: ast.IfExpr) bool {
+        if (expr_predicate(ife.cond) or ifLetChainNeedsNoSelf(expr_predicate, ife.let_chain)) return true;
+        if (block_predicate(ife.then_block)) return true;
+        if (ife.else_block) |eb| if (block_predicate(eb)) return true;
+        return false;
+    }
+
+    fn ifExprNeedsSelf(self: *Codegen, comptime expr_predicate: fn (*Codegen, *const ast.Node) bool, comptime block_predicate: fn (*Codegen, []const *ast.Node) bool, ife: ast.IfExpr) bool {
+        if (expr_predicate(self, ife.cond) or self.ifLetChainNeedsSelf(expr_predicate, ife.let_chain)) return true;
+        if (block_predicate(self, ife.then_block)) return true;
+        if (ife.else_block) |eb| if (block_predicate(self, eb)) return true;
+        return false;
+    }
+
+    fn ifLetChainConsumesIdentifier(chain: ?[]const ast.IfLetCond, name: []const u8) bool {
+        if (chain) |items| {
+            for (items) |cond| if (exprConsumesIdentifier(cond.value, name)) return true;
+        }
+        return false;
+    }
+
     fn exprNeedsIterMacros(expr: *const ast.Node) bool {
         return switch (expr.*) {
             .call_expr => |call| blk: {
@@ -3763,7 +4096,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| exprNeedsIterMacros(ife.cond) or blockNeedsIterMacros(ife.then_block) or if (ife.else_block) |eb| blockNeedsIterMacros(eb) else false,
+            .if_expr => |ife| ifExprNeedsNoSelf(exprNeedsIterMacros, blockNeedsIterMacros, ife),
             .switch_expr => |swe| blk: {
                 if (exprNeedsIterMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -3861,7 +4194,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| exprNeedsBoxMacros(ife.cond) or blockNeedsBoxMacros(ife.then_block) or if (ife.else_block) |eb| blockNeedsBoxMacros(eb) else false,
+            .if_expr => |ife| ifExprNeedsNoSelf(exprNeedsBoxMacros, blockNeedsBoxMacros, ife),
             .switch_expr => |swe| blk: {
                 if (exprNeedsBoxMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -3947,7 +4280,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsVecMacros(ife.cond) or self.blockNeedsVecMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsVecMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsVecMacros, blockNeedsVecMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsVecMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -4069,7 +4402,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsOptionMacros(ife.cond) or self.blockNeedsOptionMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsOptionMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsOptionMacros, blockNeedsOptionMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsOptionMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -4156,12 +4489,7 @@ pub const Codegen = struct {
             .closure_literal => |lit| self.exprNeedsCmpMacros(lit.body),
             .await_expr => |aw| self.exprNeedsCmpMacros(aw.expr),
             .try_expr => |trye| self.exprNeedsCmpMacros(trye.expr),
-            .if_expr => |ife| blk: {
-                if (self.exprNeedsCmpMacros(ife.cond)) break :blk true;
-                if (self.blockNeedsCmpMacros(ife.then_block)) break :blk true;
-                if (ife.else_block) |eb| if (self.blockNeedsCmpMacros(eb)) break :blk true;
-                break :blk false;
-            },
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsCmpMacros, blockNeedsCmpMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsCmpMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -4284,7 +4612,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsResultMacros(ife.cond) or self.blockNeedsResultMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsResultMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsResultMacros, blockNeedsResultMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsResultMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -4381,7 +4709,7 @@ pub const Codegen = struct {
                 break :blk false;
             },
             .repeat_array_literal => |lit| self.exprNeedsMpscMacros(lit.value),
-            .if_expr => |ife| self.exprNeedsMpscMacros(ife.cond) or self.blockNeedsMpscMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsMpscMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsMpscMacros, blockNeedsMpscMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsMpscMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| if (self.exprNeedsMpscMacros(case.pattern) or self.blockNeedsMpscMacros(case.body)) break :blk true;
@@ -4483,7 +4811,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsRcMacros(ife.cond) or self.blockNeedsRcMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsRcMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsRcMacros, blockNeedsRcMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsRcMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -4590,7 +4918,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsVecDequeMacros(ife.cond) or self.blockNeedsVecDequeMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsVecDequeMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsVecDequeMacros, blockNeedsVecDequeMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsVecDequeMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -4693,7 +5021,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsHashMapMacros(ife.cond) or self.blockNeedsHashMapMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsHashMapMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsHashMapMacros, blockNeedsHashMapMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsHashMapMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -4788,7 +5116,7 @@ pub const Codegen = struct {
                 for (lit.elements) |elem| if (self.exprNeedsHashSetMacros(elem)) break :blk true;
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsHashSetMacros(ife.cond) or self.blockNeedsHashSetMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsHashSetMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsHashSetMacros, blockNeedsHashSetMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsHashSetMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| if (self.exprNeedsHashSetMacros(case.pattern) or self.blockNeedsHashSetMacros(case.body)) break :blk true;
@@ -4881,7 +5209,7 @@ pub const Codegen = struct {
                 for (lit.elements) |elem| if (self.exprNeedsBTreeSetMacros(elem)) break :blk true;
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsBTreeSetMacros(ife.cond) or self.blockNeedsBTreeSetMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsBTreeSetMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsBTreeSetMacros, blockNeedsBTreeSetMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsBTreeSetMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| if (self.exprNeedsBTreeSetMacros(case.pattern) or self.blockNeedsBTreeSetMacros(case.body)) break :blk true;
@@ -4970,7 +5298,7 @@ pub const Codegen = struct {
                 for (lit.elements) |elem| if (self.exprNeedsBTreeMapMacros(elem)) break :blk true;
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsBTreeMapMacros(ife.cond) or self.blockNeedsBTreeMapMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsBTreeMapMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsBTreeMapMacros, blockNeedsBTreeMapMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsBTreeMapMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| if (self.exprNeedsBTreeMapMacros(case.pattern) or self.blockNeedsBTreeMapMacros(case.body)) break :blk true;
@@ -5060,7 +5388,7 @@ pub const Codegen = struct {
                 for (lit.elements) |elem| if (self.exprNeedsAtomicMacros(elem)) break :blk true;
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsAtomicMacros(ife.cond) or self.blockNeedsAtomicMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsAtomicMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsAtomicMacros, blockNeedsAtomicMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsAtomicMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| if (self.exprNeedsAtomicMacros(case.pattern) or self.blockNeedsAtomicMacros(case.body)) break :blk true;
@@ -5147,7 +5475,7 @@ pub const Codegen = struct {
                 for (lit.elements) |elem| if (self.exprNeedsPtrMacros(elem)) break :blk true;
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsPtrMacros(ife.cond) or self.blockNeedsPtrMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsPtrMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsPtrMacros, blockNeedsPtrMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsPtrMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| if (self.exprNeedsPtrMacros(case.pattern) or self.blockNeedsPtrMacros(case.body)) break :blk true;
@@ -5240,7 +5568,7 @@ pub const Codegen = struct {
                 for (lit.elements) |elem| if (self.exprNeedsCellMacros(elem)) break :blk true;
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsCellMacros(ife.cond) or self.blockNeedsCellMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsCellMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsCellMacros, blockNeedsCellMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsCellMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| if (self.exprNeedsCellMacros(case.pattern) or self.blockNeedsCellMacros(case.body)) break :blk true;
@@ -5341,7 +5669,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| exprNeedsAsyncMacros(ife.cond) or blockNeedsAsyncMacros(ife.then_block) or if (ife.else_block) |eb| blockNeedsAsyncMacros(eb) else false,
+            .if_expr => |ife| ifExprNeedsNoSelf(exprNeedsAsyncMacros, blockNeedsAsyncMacros, ife),
             .switch_expr => |swe| blk: {
                 if (exprNeedsAsyncMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -5428,7 +5756,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .if_expr => |ife| self.exprNeedsTraitObjectMacros(ife.cond) or self.blockNeedsTraitObjectMacros(ife.then_block) or if (ife.else_block) |eb| self.blockNeedsTraitObjectMacros(eb) else false,
+            .if_expr => |ife| self.ifExprNeedsSelf(exprNeedsTraitObjectMacros, blockNeedsTraitObjectMacros, ife),
             .switch_expr => |swe| blk: {
                 if (self.exprNeedsTraitObjectMacros(swe.val)) break :blk true;
                 for (swe.cases) |case| {
@@ -5598,6 +5926,9 @@ pub const Codegen = struct {
             .try_expr => |trye| try self.collectThreadSpawnInExpr(trye.expr),
             .if_expr => |ife| {
                 try self.collectThreadSpawnInExpr(ife.cond);
+                if (ife.let_chain) |chain| {
+                    for (chain) |cond| try self.collectThreadSpawnInExpr(cond.value);
+                }
                 try self.collectThreadSpawnInBlock(ife.then_block);
                 if (ife.else_block) |eb| try self.collectThreadSpawnInBlock(eb);
             },
@@ -5817,12 +6148,7 @@ pub const Codegen = struct {
         }
         try self.emitThreadSpawnHelpers();
 
-        // 2. Emit macros
-        for (program.program.decls) |decl| {
-            if (decl.* == .macro_decl) {
-                try self.genMacroDecl(&decl.macro_decl);
-            }
-        }
+        // 2. User macros are inline-expanded at call sites.
 
         // 3. Emit top-level const declarations
         for (program.program.decls) |decl| {
@@ -6328,6 +6654,10 @@ pub const Codegen = struct {
     fn collectLoopCounterSlotsInExpr(self: *Codegen, expr: *ast.Node, list: *std.ArrayList([]const u8)) CodegenError!void {
         switch (expr.*) {
             .if_expr => |ife| {
+                try self.collectLoopCounterSlotsInExpr(ife.cond, list);
+                if (ife.let_chain) |chain| {
+                    for (chain) |cond| try self.collectLoopCounterSlotsInExpr(cond.value, list);
+                }
                 try self.collectLoopCounterSlots(ife.then_block, list);
                 if (ife.else_block) |eb| try self.collectLoopCounterSlots(eb, list);
             },
@@ -6431,6 +6761,10 @@ pub const Codegen = struct {
     fn collectHoistedAllocsInExpr(self: *Codegen, expr: *ast.Node, list: *std.ArrayList([]const u8), in_loop: bool) CodegenError!void {
         switch (expr.*) {
             .if_expr => |ife| {
+                try self.collectHoistedAllocsInExpr(ife.cond, list, in_loop);
+                if (ife.let_chain) |chain| {
+                    for (chain) |cond| try self.collectHoistedAllocsInExpr(cond.value, list, in_loop);
+                }
                 try self.collectHoistedAllocsInternal(ife.then_block, list, in_loop);
                 if (ife.else_block) |eb| {
                     try self.collectHoistedAllocsInternal(eb, list, in_loop);
@@ -7513,10 +7847,7 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
         return switch (materialization.kind) {
-            .array_to_slice_borrow => .{
-                .reg = try self.genArrayBorrowToSliceArg(arg, hoisted_allocs),
-                .release_after_call = materialization.release_after_call,
-            },
+            .array_to_slice_borrow => try self.genArrayBorrowToSliceArg(arg, hoisted_allocs),
             .dyn_borrow => blk: {
                 const trait_name = materialization.dyn_borrow_trait_name orelse return CodegenError.CodegenError;
                 const fat_reg = try self.genDynBorrowCoercionArg(arg, trait_name, hoisted_allocs);
@@ -7577,7 +7908,7 @@ pub const Codegen = struct {
             false;
         const materialization = lowering_rules.planCallArgMaterialization(arg, .{
             .param = options.param,
-            .arg_ty = self.tc.expr_types.get(arg),
+            .arg_ty = self.resolvedTypeForExpr(arg),
             .arg_index = options.arg_index,
             .auto_borrow_receiver = options.auto_borrow_receiver,
             .receiver_style_auto_borrow = options.receiver_style_auto_borrow,
@@ -7802,7 +8133,7 @@ pub const Codegen = struct {
         return reg;
     }
 
-    fn genArrayBorrowToSliceInto(self: *Codegen, target: []const u8, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn genArrayBorrowToSliceInto(self: *Codegen, target: []const u8, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
         if (arg.* != .borrow_expr) return CodegenError.CodegenError;
         const inner = arg.borrow_expr.expr;
         const inner_ty = self.tc.expr_types.get(inner) orelse return CodegenError.CodegenError;
@@ -7822,12 +8153,13 @@ pub const Codegen = struct {
         self.out.writer().print("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ target, base_reg, len_reg }) catch return CodegenError.CodegenError;
         try self.emitRelease(len_reg);
         if (!std.mem.eql(u8, base_reg, base_source_reg)) try self.emitRelease(base_reg);
+        return if (exprResultNeedsRelease(inner)) base_source_reg else null;
     }
 
-    fn genArrayBorrowToSliceArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genArrayBorrowToSliceArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
         const slice_reg = try self.newTmp();
-        try self.genArrayBorrowToSliceInto(slice_reg, arg, hoisted_allocs);
-        return slice_reg;
+        const base_release_reg = try self.genArrayBorrowToSliceInto(slice_reg, arg, hoisted_allocs);
+        return .{ .reg = slice_reg, .release_after_call = false, .release_reg = base_release_reg };
     }
 
     fn genOwnedStringLiteral(self: *Codegen, value: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
@@ -7904,7 +8236,7 @@ pub const Codegen = struct {
             },
             .closure_literal => |lit| exprConsumesIdentifier(lit.body, name),
             .try_expr => |trye| exprConsumesIdentifier(trye.expr, name),
-            .if_expr => |ife| exprConsumesIdentifier(ife.cond, name) or blockConsumesIdentifier(ife.then_block, name) or if (ife.else_block) |eb| blockConsumesIdentifier(eb, name) else false,
+            .if_expr => |ife| exprConsumesIdentifier(ife.cond, name) or ifLetChainConsumesIdentifier(ife.let_chain, name) or blockConsumesIdentifier(ife.then_block, name) or if (ife.else_block) |eb| blockConsumesIdentifier(eb, name) else false,
             .switch_expr => |swe| blk: {
                 if (exprConsumesIdentifier(swe.val, name)) break :blk true;
                 for (swe.cases) |case| if (exprConsumesIdentifier(case.pattern, name) or blockConsumesIdentifier(case.body, name)) break :blk true;
@@ -8071,7 +8403,7 @@ pub const Codegen = struct {
                 } else if (let.value.* == .borrow_expr and sliceElementType(let_ty) != null) {
                     const borrowed_ty = self.tc.expr_types.get(let.value) orelse return CodegenError.CodegenError;
                     if (borrowed_ty.* == .borrow and arrayType(borrowed_ty.borrow) != null) {
-                        try self.genArrayBorrowToSliceInto(let.name, let.value, hoisted_allocs);
+                        _ = try self.genArrayBorrowToSliceInto(let.name, let.value, hoisted_allocs);
                     } else {
                         const val_reg = try self.genExpr(let.value, hoisted_allocs);
                         self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
@@ -8424,9 +8756,9 @@ pub const Codegen = struct {
                 } else if (assign.target.* == .field_expr) {
                     const field = assign.target.field_expr;
                     const base_reg = try self.genExpr(field.expr, hoisted_allocs);
-                    const target_ty = self.tc.expr_types.get(assign.target) orelse return CodegenError.CodegenError;
+                    const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
-                    const expr_ty = self.tc.expr_types.get(field.expr) orelse return CodegenError.CodegenError;
+                    const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
 
                     var curr_ty = expr_ty;
                     while (true) {
@@ -8450,7 +8782,7 @@ pub const Codegen = struct {
                     if (exprResultNeedsRelease(field.expr)) try self.emitRelease(base_reg);
                     if (callArgNeedsRelease(assign.value) or self.storedIdentifierNeedsRelease(assign.value, target_ty)) try self.emitRelease(val_reg);
                 } else if (assign.target.* == .identifier) {
-                    const target_ty = self.tc.expr_types.get(assign.target) orelse return CodegenError.CodegenError;
+                    const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
                     if (assign.value.* == .identifier and self.typeIsCopyStruct(target_ty)) {
                         const target_name = self.resolveBindingName(assign.target.identifier);
                         try self.emitRelease(assign.target.identifier);
@@ -9259,7 +9591,7 @@ pub const Codegen = struct {
         idx: *const ast.IndexExpr,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!IndexAddress {
-        const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
+        const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
 
         if (sliceElementType(target_ty)) |elem_ty| {
             const slice_reg = try self.genExpr(idx.target, hoisted_allocs);
@@ -9345,11 +9677,11 @@ pub const Codegen = struct {
         field: *const ast.FieldExpr,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!AddressProjection {
-        const expr_ty = self.tc.expr_types.get(field.expr) orelse return CodegenError.CodegenError;
+        const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
         const layout = try self.fieldAddressLayout(expr_ty, field.field_name);
         const base = if (field.expr.* == .field_expr) blk: {
             const nested = try self.genFieldAddress(&field.expr.field_expr, hoisted_allocs);
-            const nested_ty = self.tc.expr_types.get(field.expr) orelse return CodegenError.CodegenError;
+            const nested_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
             if (std.mem.eql(u8, typeString(nested_ty), "ptr")) {
                 const loaded = try self.newTmp();
                 self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ loaded, nested.ptr }) catch return CodegenError.CodegenError;
@@ -9376,7 +9708,7 @@ pub const Codegen = struct {
         value: *ast.Node,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!void {
-        const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
+        const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
         if (vecElementType(target_ty)) |elem_ty| {
             const vec_reg = try self.genExpr(idx.target, hoisted_allocs);
             const index_reg = try self.genExpr(idx.index, hoisted_allocs);
@@ -9973,7 +10305,7 @@ pub const Codegen = struct {
                 const resolved_name = self.resolveBindingName(name);
                 if (!std.mem.eql(u8, resolved_name, name)) {
                     if (self.addressable_bindings.contains(resolved_name)) {
-                        const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                        const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                         const reg = try self.newTmp();
                         self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                         return reg;
@@ -9987,13 +10319,13 @@ pub const Codegen = struct {
                 }
                 if (self.global_const_bindings.contains(name)) return name;
                 if (self.bindingStorageAddress(name)) |address| {
-                    const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                    const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                     const reg = try self.newTmp();
                     self.out.writer().print("    {s} = load {s} as {s}\n", .{ reg, address, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                     return reg;
                 }
                 if (self.tc.funcs.contains(name)) {
-                    const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                    const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                     if (expr_ty.* == .fn_ptr) {
                         const reg = try self.newTmp();
                         const vt_name = try self.fnPtrVTableName(name);
@@ -10024,8 +10356,8 @@ pub const Codegen = struct {
                     const plan = lowering_rules.planResolvedStaticCall(self.tc, expr, call) orelse return CodegenError.CodegenError;
                     return try self.genResolvedFunctionCall(plan, &call, hoisted_allocs, false);
                 }
-                const left_ty = self.tc.expr_types.get(bin.left) orelse return CodegenError.CodegenError;
-                const right_ty = self.tc.expr_types.get(bin.right) orelse return CodegenError.CodegenError;
+                const left_ty = self.resolvedTypeForExpr(bin.left) orelse self.tc.expr_types.get(bin.left) orelse return CodegenError.CodegenError;
+                const right_ty = self.resolvedTypeForExpr(bin.right) orelse self.tc.expr_types.get(bin.right) orelse return CodegenError.CodegenError;
                 if (try self.genSpaceshipExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructEqualityExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
                 if (try self.genStructOrdExpr(&bin, left_ty, right_ty, hoisted_allocs)) |reg| return reg;
@@ -10043,12 +10375,12 @@ pub const Codegen = struct {
                 var deref_source_ty: ?*const ast.Type = null;
                 var index_target_ty: ?*const ast.Type = null;
                 switch (borrow.expr.*) {
-                    .deref_expr => deref_source_ty = self.tc.expr_types.get(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError,
-                    .index_expr => |idx| index_target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError,
+                    .deref_expr => deref_source_ty = self.resolvedTypeForExpr(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError,
+                    .index_expr => |idx| index_target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError,
                     else => {},
                 }
                 if (borrow.expr.* == .field_expr) {
-                    const field_ty = self.tc.expr_types.get(borrow.expr) orelse return CodegenError.CodegenError;
+                    const field_ty = self.resolvedTypeForExpr(borrow.expr) orelse return CodegenError.CodegenError;
                     if (lowering_rules.smartPointerDerefType(field_ty) != null) {
                         return try self.genExpr(borrow.expr, hoisted_allocs);
                     }
@@ -10087,13 +10419,25 @@ pub const Codegen = struct {
                         try self.rememberIndexAddressSource(address);
                         return address.ptr;
                     },
-                    .deref_smart_pointer => {},
+                    .deref_smart_pointer => {
+                        const source_ty = deref_source_ty orelse return CodegenError.CodegenError;
+                        if (self.macro_inline_depth > 0 and boxInnerType(source_ty) != null) {
+                            const source = try self.genExpr(borrow.expr.deref_expr.expr, hoisted_allocs);
+                            const addr = try self.newTmp();
+                            self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, source }) catch return CodegenError.CodegenError;
+                            const temp_plan = lowering_rules.planBorrowAddressTemps(exprResultNeedsRelease(borrow.expr.deref_expr.expr), false);
+                            if (temp_plan.track_primary_temp) {
+                                self.borrow_source_temps.put(addr, source) catch return CodegenError.OutOfMemory;
+                            }
+                            return addr;
+                        }
+                    },
                     .value_temp => {},
                 }
                 const inner = try self.genExpr(borrow.expr, hoisted_allocs);
                 if (borrow.expr.* == .deref_expr) {
-                    const deref_ty = self.tc.expr_types.get(borrow.expr) orelse return CodegenError.CodegenError;
-                    const owner_ty = self.tc.expr_types.get(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError;
+                    const deref_ty = self.resolvedTypeForExpr(borrow.expr) orelse return CodegenError.CodegenError;
+                    const owner_ty = self.resolvedTypeForExpr(borrow.expr.deref_expr.expr) orelse return CodegenError.CodegenError;
                     if (dynTraitName(deref_ty) != null) {
                         if (boxInnerType(owner_ty)) |box_inner| {
                             if (dynTraitName(box_inner) != null) {
@@ -10129,7 +10473,7 @@ pub const Codegen = struct {
             .deref_expr => |deref| {
                 const inner = try self.genExpr(deref.expr, hoisted_allocs);
                 const reg = try self.newTmp();
-                const inner_ty = self.tc.expr_types.get(deref.expr) orelse return CodegenError.CodegenError;
+                const inner_ty = self.resolvedTypeForExpr(deref.expr) orelse return CodegenError.CodegenError;
                 if (rcInnerType(inner_ty) != null) {
                     self.out.writer().print("    EXPAND RC_GET {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                     if (exprResultNeedsRelease(deref.expr)) try self.emitRelease(inner);
@@ -10143,7 +10487,7 @@ pub const Codegen = struct {
                 if (boxInnerType(inner_ty)) |box_inner| {
                     if (dynTraitName(box_inner) != null) return inner;
                 }
-                const deref_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
+                const deref_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, inner, typeString(deref_ty) }) catch return CodegenError.CodegenError;
                 if (deref.expr.* != .identifier and
                     (self.refcell_borrow_handles.contains(inner) or self.mutex_guard_handles.contains(inner) or self.rwlock_guard_handles.contains(inner)))
@@ -10156,7 +10500,7 @@ pub const Codegen = struct {
             },
             .cast_expr => |cast| {
                 const inner = try self.genExpr(cast.expr, hoisted_allocs);
-                const src_ty = self.tc.expr_types.get(cast.expr) orelse return CodegenError.CodegenError;
+                const src_ty = self.resolvedTypeForExpr(cast.expr) orelse return CodegenError.CodegenError;
                 if (isPointerCarrierCastType(src_ty) and isPointerCarrierCastType(cast.ty)) {
                     return inner;
                 }
@@ -10205,7 +10549,7 @@ pub const Codegen = struct {
                 const reg = try self.newTmp();
 
                 // Look up the struct's type to find the field offset
-                const expr_ty = self.tc.expr_types.get(field.expr) orelse return CodegenError.CodegenError;
+                const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
                 var curr_ty = expr_ty;
                 while (true) {
                     switch (curr_ty.*) {
@@ -10370,7 +10714,7 @@ pub const Codegen = struct {
                 return reg;
             },
             .index_expr => |idx| {
-                const target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError;
+                const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
                 if (hashMapTypes(target_ty)) |hm| {
                     const map_reg = try self.genExpr(idx.target, hoisted_allocs);
                     const key_reg = try self.genHashMapKeyReg(idx.index, hoisted_allocs);
@@ -10976,6 +11320,7 @@ pub const Codegen = struct {
                                     const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
                                         .param = func.params[i],
                                         .arg_index = i,
+                                        .receiver_style_auto_borrow = i == 0,
                                     });
                                     arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
                                     arg_release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
@@ -12465,6 +12810,13 @@ pub const Codegen = struct {
                     }
                 }
 
+                if (self.tc.macros.get(call.func_name)) |macro_decl| {
+                    try self.genUserMacroCallInline(macro_decl, &call, hoisted_allocs);
+                    const sentinel = try self.newTmp();
+                    try self.emitIntConst(sentinel, 0);
+                    return sentinel;
+                }
+
                 // Assume macro expansion call in Sla
                 const reg = try self.newTmp();
                 var arg_regs = std.ArrayList([]const u8).init(self.allocator);
@@ -12674,6 +13026,11 @@ pub const Codegen = struct {
                 }
                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
 
+                var then_branch_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
+                defer then_branch_borrow_sources.deinit();
+                var then_branch_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+                defer then_branch_refcell_handles.deinit();
+
                 if (then_terminates) {
                     try self.restoreMutexState(&pre_then_mutex_guards, &pre_then_mutex_results);
                     try self.restoreRwLockState(&pre_then_rwlock_guards, &pre_then_rwlock_results);
@@ -12724,12 +13081,28 @@ pub const Codegen = struct {
                 }
                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
 
+                var else_branch_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
+                defer else_branch_borrow_sources.deinit();
+                var else_branch_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+                defer else_branch_refcell_handles.deinit();
+
                 if (else_terminates) {
                     try self.restoreMutexState(&pre_else_mutex_guards, &pre_else_mutex_results);
                     try self.restoreRwLockState(&pre_else_rwlock_guards, &pre_else_rwlock_results);
                     try self.restoreFileState(&pre_else_files, &pre_else_file_results);
                     try self.restoreMetadataState(&pre_else_metadata, &pre_else_metadata_results);
                 }
+
+                try self.setMergeRefCellBranchState(
+                    then_terminates,
+                    &then_branch_refcell_handles,
+                    &then_branch_borrow_sources,
+                    else_terminates,
+                    &else_branch_refcell_handles,
+                    &else_branch_borrow_sources,
+                    &pre_branch_refcell_handles,
+                    &pre_branch_borrow_sources,
+                );
 
                 if (needs_merge) {
                     self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
@@ -12885,6 +13258,53 @@ pub const Codegen = struct {
         }
     }
 };
+
+test "if let chain scanner visits chained values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const first = try allocator.create(ast.Node);
+    first.* = .{ .identifier = "first" };
+
+    const payload = try allocator.create(ast.Node);
+    payload.* = .{ .identifier = "payload" };
+
+    const moved_payload = try allocator.create(ast.Node);
+    moved_payload.* = .{ .move_expr = .{ .expr = payload } };
+
+    const box_args = try allocator.alloc(*ast.Node, 1);
+    box_args[0] = moved_payload;
+
+    const boxed = try allocator.create(ast.Node);
+    boxed.* = .{ .call_expr = .{
+        .func_name = "new",
+        .associated_target = "Box",
+        .generics = &.{},
+        .args = box_args,
+    } };
+
+    const chain = try allocator.alloc(ast.IfLetCond, 1);
+    chain[0] = .{
+        .pattern = .{
+            .enum_name = "Option",
+            .variant_name = "Some",
+            .bindings = &.{"boxed"},
+        },
+        .value = boxed,
+    };
+
+    const if_node = try allocator.create(ast.Node);
+    if_node.* = .{ .if_expr = .{
+        .cond = first,
+        .let_chain = chain,
+        .then_block = &.{},
+        .else_block = null,
+    } };
+
+    try std.testing.expect(Codegen.exprNeedsBoxMacros(if_node));
+    try std.testing.expect(Codegen.exprConsumesIdentifier(if_node, "payload"));
+}
 
 test "basic code generation" {
     const source =

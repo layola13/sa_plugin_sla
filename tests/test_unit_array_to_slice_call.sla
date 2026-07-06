@@ -1,0 +1,17 @@
+@import "sa_std/core/slice.sa"
+
+fn slice_second(values: &[i32]) -> i32 {
+    values[1]
+}
+
+fn slice_sum_edges(values: &[i32]) -> i32 {
+    values[0] + values[2]
+}
+
+@test "array borrow materializes slice call arg"() {
+    let values = [4i32, 5i32, 6i32];
+    if slice_second(&values) != 5 { panic(50801); };
+    if slice_sum_edges(&values) != 10 { panic(50802); };
+    if slice_second(&[7i32, 8i32, 9i32]) != 8 { panic(50803); };
+    if slice_sum_edges(&[1i32, 2i32, 3i32]) != 4 { panic(50804); };
+}

@@ -461,6 +461,49 @@ fn markExpandedImportedMacroParamMasks(
     }
 }
 
+fn importedMacroCalleeName(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n\"");
+    const without_at = if (std.mem.startsWith(u8, trimmed, "@")) trimmed[1..] else trimmed;
+    const source_name = if (std.mem.startsWith(u8, without_at, "sla__")) without_at["sla__".len..] else without_at;
+    return try allocator.dupe(u8, source_name);
+}
+
+fn appendUniqueDirectCallee(callees: *std.ArrayList([]const u8), name: []const u8) !void {
+    for (callees.items) |existing| {
+        if (std.mem.eql(u8, existing, name)) return;
+    }
+    try callees.append(name);
+}
+
+fn collectDirectSlaMacroCallees(allocator: std.mem.Allocator, callees: *std.ArrayList([]const u8), line: []const u8) !void {
+    var rest = line;
+    while (std.mem.indexOf(u8, rest, "call @")) |idx| {
+        const start = idx + "call @".len;
+        var end = start;
+        while (end < rest.len) : (end += 1) {
+            const c = rest[end];
+            if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == ':')) break;
+        }
+        if (end > start) {
+            const name = try importedMacroCalleeName(allocator, rest[start..end]);
+            try appendUniqueDirectCallee(callees, name);
+        }
+        rest = rest[end..];
+    }
+}
+
+fn appendExpandedImportedMacroDirectCallees(
+    tc: *type_checker_mod.TypeChecker,
+    callees: *std.ArrayList([]const u8),
+    line: []const u8,
+) !void {
+    if (!std.mem.startsWith(u8, line, "EXPAND")) return;
+    var parts = std.mem.tokenizeAny(u8, line["EXPAND".len..], " \t,");
+    const expanded_name = parts.next() orelse return;
+    const expanded = tc.imported_macros.get(expanded_name) orelse return;
+    for (expanded.direct_callees) |callee| try appendUniqueDirectCallee(callees, callee);
+}
+
 fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, source: []const u8, import_path: ?[]const u8) !void {
     const expanded_source = try source_expand.expand(allocator, source);
     var lines = std.mem.splitScalar(u8, expanded_source, '\n');
@@ -491,16 +534,20 @@ fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allo
 
         var borrowed_arg_mask: u64 = 0;
         var address_slot_arg_mask: u64 = 0;
+        var direct_callees = std.ArrayList([]const u8).init(allocator);
+        defer direct_callees.deinit();
         while (lines.next()) |body_raw_line| {
             const body_line = std.mem.trim(u8, body_raw_line, " \t\r");
             if (std.mem.startsWith(u8, body_line, "[END_MACRO]")) break;
             try markDirectBorrowedMacroParams(allocator, &borrowed_arg_mask, param_names.items, body_line);
             try markDirectAddressSlotMacroParams(allocator, &address_slot_arg_mask, param_names.items, body_line);
             markExpandedImportedMacroParamMasks(tc, &borrowed_arg_mask, &address_slot_arg_mask, param_names.items, body_line);
+            try collectDirectSlaMacroCallees(allocator, &direct_callees, body_line);
+            try appendExpandedImportedMacroDirectCallees(tc, &direct_callees, body_line);
         }
 
         const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
-        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask);
+        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, try direct_callees.toOwnedSlice());
     }
 }
 
@@ -807,6 +854,10 @@ fn markReachableCallTarget(
         if (associatedReachableFuncKey(tc, target_name, call.func_name)) |symbol| {
             try markReachableFunc(tc, reachable, worklist, symbol);
         }
+        return;
+    }
+    if (tc.imported_macros.get(call.func_name)) |macro| {
+        for (macro.direct_callees) |callee| try markReachableFunc(tc, reachable, worklist, callee);
         return;
     }
     try markReachableFunc(tc, reachable, worklist, call.func_name);

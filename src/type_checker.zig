@@ -30,6 +30,7 @@ pub const ImportedMacro = struct {
     import_path: ?[]const u8 = null,
     borrowed_arg_mask: u64 = 0,
     address_slot_arg_mask: u64 = 0,
+    direct_callees: []const []const u8 = &.{},
 };
 
 pub const Symbol = struct {
@@ -2265,13 +2266,14 @@ pub const TypeChecker = struct {
         }
     }
 
-    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64) !void {
+    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, direct_callees: []const []const u8) !void {
         try self.imported_macros.put(name, .{
             .arity = arity,
             .leading_outputs = leading_outputs,
             .import_path = import_path,
             .borrowed_arg_mask = borrowed_arg_mask,
             .address_slot_arg_mask = address_slot_arg_mask,
+            .direct_callees = direct_callees,
         });
     }
 
@@ -2449,36 +2451,19 @@ pub const TypeChecker = struct {
     }
 
     fn checkMacro(self: *TypeChecker, macro_decl: *ast.MacroDecl) !void {
-        var scope = try Scope.init(self.allocator, self.global_scope);
+        const scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
+
+        const void_ty = try self.allocator.create(ast.Type);
+        void_ty.* = .{ .primitive = .void_type };
+        try self.defineSymbol(scope, "return_ty_sentinel", void_ty, true);
 
         const infer_ty = try self.makeInferType();
         for (macro_decl.params) |param| {
             try self.defineSymbol(scope, param, infer_ty, false);
         }
 
-        for (macro_decl.body) |stmt| {
-            switch (stmt.*) {
-                .let_stmt => |let| {
-                    const val_ty = try self.checkExpr(let.value, scope);
-                    const declared_ty = let.ty orelse val_ty;
-                    try self.defineSymbol(scope, let.name, declared_ty, false);
-                },
-                .assign_stmt => |assign| {
-                    _ = try self.checkExpr(assign.target, scope);
-                    _ = try self.checkExpr(assign.value, scope);
-                },
-                .expr_stmt => |expr| {
-                    _ = try self.checkExpr(expr, scope);
-                },
-                .release_stmt => |rel| {
-                    const sym = scope.lookup(rel.var_name) orelse return TypeError.UndefinedVariable;
-                    if (sym.state == .consumed) return TypeError.UseAfterMove;
-                    sym.state = .consumed;
-                },
-                else => {},
-            }
-        }
+        try self.checkBlock(macro_decl.body, scope, void_ty, null, null);
     }
 
     fn checkTest(self: *TypeChecker, test_decl: *ast.TestDecl) !void {
@@ -3162,6 +3147,7 @@ pub const TypeChecker = struct {
             },
             .deref_expr => |deref| {
                 const inner_ty = try self.checkExpr(deref.expr, scope);
+                if (inner_ty.* == .infer) return try self.makeInferType();
                 if (rcInnerType(inner_ty)) |rc_inner| return rc_inner;
                 if (arcInnerType(inner_ty)) |arc_inner| return arc_inner;
                 if (boxInnerType(inner_ty)) |box_inner| return box_inner;
@@ -3179,6 +3165,7 @@ pub const TypeChecker = struct {
                 if (isPointerCarrierCastType(src_ty) and isPointerCarrierCastType(cast.ty)) {
                     return cast.ty;
                 }
+                if (src_ty.* == .infer) return cast.ty;
                 if (!isNumericType(src_ty) or !isNumericType(cast.ty)) {
                     self.setError("unsupported cast: only numeric primitive casts are currently allowed", .{});
                     return TypeError.TypeMismatch;
@@ -3241,6 +3228,7 @@ pub const TypeChecker = struct {
                         }
                         return tuple.elems[index];
                     },
+                    .infer => return try self.makeInferType(),
                     else => {
                         self.setError("field access `{s}` requires struct/tuple target, got tag={s}", .{ field.field_name, @tagName(curr_ty.*) });
                         return TypeError.NotAStruct;
@@ -3376,6 +3364,8 @@ pub const TypeChecker = struct {
             .index_expr => |idx| {
                 const target_ty = try self.checkExpr(idx.target, scope);
                 const index_ty = try self.checkExpr(idx.index, scope);
+
+                if (target_ty.* == .infer) return try self.makeInferType();
 
                 if (hashMapTypes(target_ty)) |hm| {
                     if (!self.typesEqual(hm.key, index_ty)) return TypeError.TypeMismatch;
@@ -5148,8 +5138,11 @@ pub const TypeChecker = struct {
 
                 const cond_ty = try self.checkExpr(ife.cond, scope);
                 // Comparisons produce integers (0/1) in SA; booleans are also fine.
-                if (cond_ty.* != .primitive) return TypeError.TypeMismatch;
-                switch (cond_ty.primitive) {
+                if (cond_ty.* == .infer) {
+                    // Macro parameter condition; the call site supplies the concrete type.
+                } else if (cond_ty.* != .primitive) {
+                    return TypeError.TypeMismatch;
+                } else switch (cond_ty.primitive) {
                     .boolean, .integer => {},
                     else => return TypeError.TypeMismatch,
                 }

@@ -2,6 +2,7 @@
 @import "sa_std/core/box.sa"
 
 struct ImportedMacroAddressPoint { left: i64, right: i64 }
+struct ImportedMacroAddressPair { left: i64, right: i64 }
 
 fn imported_macro_read_i64(value: &i64) -> i64 {
     *value
@@ -40,6 +41,15 @@ fn imported_macro_field_write_address() -> i64 {
     point.left
 }
 
+fn imported_macro_read_pair_sum(value: &ImportedMacroAddressPair) -> i64 {
+    value.left + value.right
+}
+
+fn imported_macro_whole_pair_identifier_address() -> i64 {
+    let pair = ImportedMacroAddressPair { left: 31, right: 11 };
+    SLA_IMPORTED_READ_PAIR_SUM(pair)
+}
+
 @test "imported macro borrowed field address"() {
     if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
     if imported_macro_field_address() != 11 { panic(31901); };
@@ -62,4 +72,8 @@ fn imported_macro_field_write_address() -> i64 {
 
 @test "imported macro borrowed field write address"() {
     if imported_macro_field_write_address() != 29 { panic(31905); };
+}
+
+@test "imported macro borrowed whole aggregate address"() {
+    if imported_macro_whole_pair_identifier_address() != 42 { panic(31906); };
 }

@@ -6,7 +6,7 @@
 
 ## 摘要
 
-`sla_ecs` 在 `tests/test_ecs_mut_parallel.sla` 中新增 multi-threaded executor ready-batch 循环 runner、access-conflict-aware ready-batch 选择、动态 `Vec<fn>` catalog 和 width-4 pthread batch 后，生成 SA 后端整文件通过；默认/SAB 后端的 focused smoke 也通过。但默认/SAB 后端整文件聚合编译失败，SAB verifier 报 `UseAfterMove`。
+`sla_ecs` 在 `tests/test_ecs_mut_parallel.sla` 中新增 multi-threaded executor ready-batch 循环 runner、access-conflict-aware ready-batch 选择、动态 `Vec<fn>` catalog、width-4 pthread batch 和 worker-count `EcsParallelTaskPool` facade 后，生成 SA 后端整文件通过；默认/SAB 后端的 focused smoke 也通过。但默认/SAB 后端整文件聚合编译失败，SAB verifier 报 `UseAfterMove`。
 
 这不同于已修复的 `sab_thread_fnptr_ready_batch_unknown_register_issue_cn.md`：当前 failure 不是 focused function-pointer/thread 路径的 `UnknownRegister`，而是整文件聚合 `.sab` artefact 中临时寄存器的 move 状态错误。
 
@@ -47,7 +47,7 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 结果：
 
 ```text
-84 passed; 0 failed; 0 skipped
+86 passed; 0 failed; 0 skipped
 ```
 
 默认/SAB focused smoke 通过：
@@ -88,6 +88,12 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 
 timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
   --filter "dynamic catalog quad waves" --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --filter "task pool batch respects worker count" --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --filter "task pool all runs worker limited waves" --jobs 1 --trace-panic
 ```
 
 以上 focused default/SAB runs 均通过。

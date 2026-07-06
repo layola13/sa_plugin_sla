@@ -17,7 +17,7 @@ timeout 240s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 ```text
 error[UseAfterMove]: moved value is no longer usable
   in function @sla__table_erased_world_attach_with_values_TableErasedTime_Tabl
-  line 41254 (expanded 25624):     !next_world
+  line 41255 (expanded 25624):     !next_world
   register: next_world
 ```
 
@@ -60,10 +60,10 @@ timeout 180s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 ```text
 error[UseAfterMove]: moved value is no longer usable
   in function @sla__table_erased_world_attach_with_values_TableErasedTime_Tabl
-  line 41254 (expanded 25624):     !next_world
+  line 41255 (expanded 25624):     !next_world
   register: next_world
   state: expected Consumed, actual Consumed
-{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":25624,"source_line":41254,"source_text":"    !next_world","original_text":"    !next_world","register":"next_world","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@sla__table_erased_world_attach_with_values_TableErasedTime_Tabl","message":"moved value is no longer usable"}
+{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":25624,"source_line":41255,"source_text":"    !next_world","original_text":"    !next_world","register":"next_world","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@sla__table_erased_world_attach_with_values_TableErasedTime_Tabl","message":"moved value is no longer usable"}
 ```
 
 上一轮同一整文件聚合还曾在旧 allocator 测试里暴露 `next_a` cleanup failure：
@@ -152,6 +152,10 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
   --filter "nested child result generators by workers" \
   --test-backend sa --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --filter "ticks child generator lanes" \
+  --test-backend sa --jobs 1 --trace-panic
 ```
 
 结果：
@@ -159,7 +163,8 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 ```text
 1 passed; 0 failed; 0 skipped
 16 passed; 0 failed; 0 skipped
-10 passed; 0 failed; 0 skipped
+11 passed; 0 failed; 0 skipped
+1 passed; 0 failed; 0 skipped
 1 passed; 0 failed; 0 skipped
 1 passed; 0 failed; 0 skipped
 ```
@@ -176,7 +181,7 @@ timeout 300s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 结果：
 
 ```text
-127 passed; 0 failed; 0 skipped
+128 passed; 0 failed; 0 skipped
 ```
 
 新增 0-worker 用例在默认/SAB 后端通过：

@@ -3289,6 +3289,22 @@ pub const Codegen = struct {
         }
     }
 
+    fn isCallBodyIdentChar(c: u8) bool {
+        return std.ascii.isAlphanumeric(c) or c == '_';
+    }
+
+    fn recordCallBodyRegs(self: *Codegen, body: []const u8) !void {
+        var i: usize = 0;
+        while (i < body.len) {
+            while (i < body.len and !isCallBodyIdentChar(body[i])) i += 1;
+            const start = i;
+            while (i < body.len and isCallBodyIdentChar(body[i])) i += 1;
+            if (start == i) continue;
+            const name = body[start..i];
+            if (self.symbol_ids.get(name)) |reg| try self.recordReg(reg);
+        }
+    }
+
     fn moduleHasFunctionSig(module: sab.Module, name: []const u8) bool {
         for (module.function_sigs) |fsig| {
             if (std.mem.eql(u8, fsig.name, name)) return true;
@@ -3788,6 +3804,7 @@ pub const Codegen = struct {
         } else {
             item.operands[0] = .{ .text = body };
         }
+        try self.recordCallBodyRegs(body);
         try self.appendInst(item);
     }
 
@@ -8270,6 +8287,7 @@ pub const Codegen = struct {
         var item = self.makeInst(.call_indirect);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .text = try body.toOwnedSlice() };
+        try self.recordCallBodyRegs(item.operands[1].text);
         try self.appendInst(item);
 
         try self.emitRelease(fn_reg);
@@ -8732,6 +8750,32 @@ pub const Codegen = struct {
         return borrow_reg;
     }
 
+    fn genSmartPointerCloneCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!std.mem.eql(u8, call.func_name, "clone") or call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const receiver_type_name = typeBaseName(receiver_ty) orelse return null;
+        const macro_name = if (std.mem.eql(u8, receiver_type_name, "Rc"))
+            "RC_CLONE_OUT"
+        else if (std.mem.eql(u8, receiver_type_name, "Arc"))
+            "ARC_CLONE_OUT"
+        else
+            return null;
+        const import_path = if (std.mem.eql(u8, receiver_type_name, "Rc"))
+            "sa_std/core/rc.sa"
+        else
+            "sa_std/core/arc.sa";
+
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment(import_path, macro_name, &.{
+            self.symbols.items[dst],
+            self.symbols.items[receiver_reg],
+        });
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        return dst;
+    }
+
     fn importedMacroExistingAddressableSymbol(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) ?[]const u8 {
         if (arg.* != .identifier) return null;
         const name = arg.identifier;
@@ -8951,6 +8995,7 @@ pub const Codegen = struct {
         if (try self.genVecLiteralCall(expr, call)) |reg| return reg;
         if (try self.genVecPopCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
+        if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const call_plan = lowering_rules.planStaticCall(self.tc, expr, call) orelse return Error.UnsupportedSabDirectFeature;
         return try self.emitPlannedStaticCall(self.tc.expr_types.get(expr), call_plan, call);
@@ -9817,8 +9862,10 @@ pub const Codegen = struct {
         if (dst) |reg| {
             item.operands[0] = .{ .reg = reg };
             item.operands[1] = .{ .text = try body.toOwnedSlice() };
+            try self.recordCallBodyRegs(item.operands[1].text);
         } else {
             item.operands[0] = .{ .text = try body.toOwnedSlice() };
+            try self.recordCallBodyRegs(item.operands[0].text);
         }
         try self.appendInst(item);
         try self.releaseNonLocalTemps(arg_regs.items);

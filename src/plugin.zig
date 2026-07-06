@@ -3193,6 +3193,40 @@ test "sla sab backend lowers escaped thread closure function pointer callee dire
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend lowers paired escaped thread function pointer callees directly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_fn_ptr_thread_pair_direct.sla",
+        ".sla-cache/sab/fn_ptr_thread_pair_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "thread closures capture function pointer pair", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var worker_count: usize = 0;
+    var indirect_count: usize = 0;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.startsWith(u8, fsig.name, "sla_thread_worker_")) worker_count += 1;
+    }
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .call_indirect) indirect_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), worker_count);
+    try std.testing.expectEqual(@as(usize, 2), indirect_count);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab backend lowers multi-argument calls directly" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

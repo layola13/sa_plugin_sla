@@ -43,10 +43,10 @@ timeout 180s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 ```text
 error[UseAfterMove]: moved value is no longer usable
   in function @test "dynamic allocator grows beyond fixed capacity"():
-  line 90921 (expanded 114484):     !next_a
+  line 91287 (expanded 114783):     !next_a
   register: next_a
   state: expected Consumed, actual Consumed
-{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":114484,"source_line":90921,"source_text":"    !next_a","original_text":"    !next_a","register":"next_a","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@test \"dynamic allocator grows beyond fixed capacity\"():","message":"moved value is no longer usable"}
+{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":114783,"source_line":91287,"source_text":"    !next_a","original_text":"    !next_a","register":"next_a","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@test \"dynamic allocator grows beyond fixed capacity\"():","message":"moved value is no longer usable"}
 ```
 
 规避前，新增 scoped recursive runner 路径曾稳定复现：
@@ -62,11 +62,34 @@ error[UseAfterMove]: moved value is no longer usable
 
 同一轮还观察到过相同形态的 generated-SA cleanup failure：`let handle = handles[j]; handle.join().unwrap();` 后生成 `!handle`，报 `handle` already consumed。下游已把该处改为直接 `handles[j].join().unwrap()` 规避。
 
+2026-07-06 继续实现 pool-lane child generator threaded execution 时，又观察到两个 related generated-SA failure，默认/SAB 后端均通过：
+
+```text
+error[UseAfterMove]: moved value is no longer usable
+  in function @sla__ecs_parallel_task_pool_scope_run_tasks_recursive_with_opti
+  line 32024 (expanded 15707):     !child_handle
+  register: child_handle
+  state: expected Consumed, actual Consumed
+```
+
+下游将 `let child_handle = thread::spawn(...); child_handle.join().unwrap()` 改成链式 `thread::spawn(...).join().unwrap()` 后，generated-SA 继续暴露同一函数内的局部重定义问题：
+
+```text
+error[RegisterRedefinition]: register is already live
+  in function @sla__ecs_parallel_task_pool_scope_run_tasks_recursive_with_opti
+  line 32650 (expanded 16481):     child_tasks = tmp_3364
+  register: child_tasks
+```
+
+下游最终通过“不在多分支中复用 `child_tasks` 可重赋值局部、每个分支直接 merge generated task set”规避。
+
 ## 下游规避记录
 
 `sla_ecs` 当前未改编译器，只做了两类源码级规避：
 
 - 避免 `JoinHandle` 从 `Vec` 取出到局部后再 consuming `join()`，改为直接 `handles[j].join().unwrap()`；
+- 避免 `JoinHandle` 先绑定到局部再 consuming `join()`，在 child generator threaded path 中改为链式 `thread::spawn(...).join().unwrap()`；
+- 避免多分支复用同一个 aggregate local 后反复赋值，改为每个分支直接把 generated task set merge 到目标 task set；
 - 避免 `pending = next` 直接把局部 aggregate move 给另一个 local，改为 `pending = ecs_parallel_scoped_task_set_extend(ecs_parallel_scoped_task_set_new(), next)`，复用已有 child-set move helper 形态。
 
 规避后，相关 focused generated-SA 用例通过：
@@ -79,6 +102,10 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
   --filter "task pool scoped task set" \
   --test-backend sa --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --filter "recursive scope" \
+  --test-backend sa --jobs 1 --trace-panic
 ```
 
 结果：
@@ -86,6 +113,7 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 ```text
 1 passed; 0 failed; 0 skipped
 16 passed; 0 failed; 0 skipped
+6 passed; 0 failed; 0 skipped
 ```
 
 ## 已通过对照

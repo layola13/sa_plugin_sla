@@ -4,6 +4,27 @@
 - 发现日期: 2026-07-06
 - 发现仓库: `/home/vscode/projects/sla_ecs`
 - 仅报告 issue, 未修改 SLA 编译器源码。
+- 2026-07-06 复验：当前安装态 dev plugin 仍复现；这是当前 docs-priority 开放 compiler/SAB cleanup issue。
+
+## 最新复验
+```bash
+cd /home/vscode/projects/sla_ecs
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test lib/world_table_erased.sla \
+  --filter "anyof nested" --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test lib/system_param_table_erased.sla \
+  --filter "filtered pair mut system params" --jobs 1 --trace-panic
+```
+
+结果：两条默认/SAB focused gate 均仍失败，函数出口保留 active `first_type_id`：
+
+```text
+error[MemoryLeak]: live registers remain at function exit
+  register: first_type_id
+  state: Active
+```
+
+这说明后续修复仍应落在 `sa_plugin_sla` 的 shared lowering / direct SAB cleanup 路径；`sla_ecs` 只作为下游回归证据。
 
 ## 复现命令
 ```bash
@@ -33,6 +54,9 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test lib/system_param_table_erased.sla \
 - 追加复测: `sla_ecs` 已把 ordinary table-erased nested `WithAnyOf` / `PairWithAnyOf` 也扩到 `AnyOf9`; generated-SA backend focused tests 仍通过, 且整文件通过:
   - `lib/world_table_erased.sla`: `69 passed; 0 failed; 0 skipped`
   - `lib/system_param_table_erased.sla`: `125 passed; 0 failed; 0 skipped`
+- wrapper 追加复测: `sla_ecs` 已把 relationship / observer table-erased wrapper 的 direct `AnyOf`、nested `WithAnyOf`、nested `PairWithAnyOf` runners 也扩到 `AnyOf9`; generated-SA backend focused tests 仍通过, 且整文件通过:
+  - `lib/system_param_table_erased_relationship.sla`: `130 passed; 0 failed; 0 skipped`
+  - `lib/system_param_table_erased_observer.sla`: `121 passed; 0 failed; 0 skipped`
 - 默认/SAB backend world focused test 失败:
 
 ```text
@@ -86,6 +110,30 @@ error[MemoryLeak]: live registers remain at function exit
   register: first_type_id
   state: Active
 {"trap":"MemoryLeak","trap_code":1012,"file":".sla-cache/sab/system_param_table_erased-e5afa1ce58522277.sab","line":22663,"source_line":0,"column":null,"source_text":null,"original_text":null,"bad_token":null,"context":[],"register":"first_type_id","registers":[],"expected_mask":null,"actual_mask":1,"expected_mask_name":null,"actual_mask_name":"Active","upstream_loc":null,"function":null,"is_ffi_wrapper":false,"message":"live registers remain at function exit","hint":null}
+```
+
+wrapper 追加复测中, relationship / observer system-param wrapper 的 generated direct/nested runner 均从 `5..8` 扩到 `5..9`, 并通过 `TableErasedPrime` 作为第 9 分支断言。generated-SA 通过, 默认/SAB 仍在同一寄存器失败:
+
+```bash
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test lib/system_param_table_erased_relationship.sla \
+  --filter "relationship anyof query resource" --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test lib/system_param_table_erased_observer.sla \
+  --filter "observer anyof6 query resource" --jobs 1 --trace-panic
+```
+
+```text
+error[MemoryLeak]: live registers remain at function exit
+  register: first_type_id
+  state: Active
+{"trap":"MemoryLeak","trap_code":1012,"file":".sla-cache/sab/system_param_table_erased_relationship-60589cc0138ce138.sab","line":25334,"source_line":0,"column":null,"source_text":null,"original_text":null,"bad_token":null,"context":[],"register":"first_type_id","registers":[],"expected_mask":null,"actual_mask":1,"expected_mask_name":null,"actual_mask_name":"Active","upstream_loc":null,"function":null,"is_ffi_wrapper":false,"message":"live registers remain at function exit","hint":null}
+```
+
+```text
+error[MemoryLeak]: live registers remain at function exit
+  register: first_type_id
+  state: Active
+{"trap":"MemoryLeak","trap_code":1012,"file":".sla-cache/sab/system_param_table_erased_observer-1fc04974ee29ba21.sab","line":24210,"source_line":0,"column":null,"source_text":null,"original_text":null,"bad_token":null,"context":[],"register":"first_type_id","registers":[],"expected_mask":null,"actual_mask":1,"expected_mask_name":null,"actual_mask_name":"Active","upstream_loc":null,"function":null,"is_ffi_wrapper":false,"message":"live registers remain at function exit","hint":null}
 ```
 
 ## 期望

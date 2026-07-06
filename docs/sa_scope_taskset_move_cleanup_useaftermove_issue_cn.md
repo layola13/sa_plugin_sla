@@ -2,7 +2,24 @@
 
 日期：2026-07-06
 
-状态：新发现，下游 `sla_ecs` 已对当前 scoped-task-set 和 `JoinHandle` 形态做局部规避；生成 SA 整文件聚合仍可在无关旧测试中复现同类 cleanup 问题。不修改 SLA 编译器源码。
+状态：仍开放。下游 `sla_ecs` 已对当前 scoped-task-set 和 `JoinHandle` 形态做局部规避；生成 SA 整文件聚合仍可在无关旧测试中复现同类 cleanup 问题。2026-07-06 在 execute/cli cleanup 修复后复验，仍失败于 `next_a` UseAfterMove，因此本 issue 不能随 `execute_extra`/`sab_large_execute` 一起关闭。
+
+最新复验：
+
+```sh
+cd /home/vscode/projects/sla_ecs
+timeout 240s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --test-backend sa --jobs 1 --trace-panic
+```
+
+结果仍为：
+
+```text
+error[UseAfterMove]: moved value is no longer usable
+  in function @test "dynamic allocator grows beyond fixed capacity"():
+  line 92494 (expanded 116474):     !next_a
+  register: next_a
+```
 
 ## 摘要
 
@@ -43,10 +60,10 @@ timeout 180s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 ```text
 error[UseAfterMove]: moved value is no longer usable
   in function @test "dynamic allocator grows beyond fixed capacity"():
-  line 92067 (expanded 115769):     !next_a
+  line 92494 (expanded 116474):     !next_a
   register: next_a
   state: expected Consumed, actual Consumed
-{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":115769,"source_line":92067,"source_text":"    !next_a","original_text":"    !next_a","register":"next_a","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@test \"dynamic allocator grows beyond fixed capacity\"():","message":"moved value is no longer usable"}
+{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":116474,"source_line":92494,"source_text":"    !next_a","original_text":"    !next_a","register":"next_a","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@test \"dynamic allocator grows beyond fixed capacity\"():","message":"moved value is no longer usable"}
 ```
 
 规避前，新增 scoped recursive runner 路径曾稳定复现：
@@ -83,6 +100,18 @@ error[RegisterRedefinition]: register is already live
 
 下游最终通过“不在多分支中复用 `child_tasks` 可重赋值局部、每个分支直接 merge generated task set”规避。
 
+2026-07-06 继续实现 pool-lane child-result generator 批处理时，generated-SA focused 测试还观察到一个同类控制流状态合并问题，默认/SAB 后端通过：
+
+```text
+error[PhiStateConflict]: incoming control-flow states do not agree
+  in function @sla__ecs_parallel_task_pool_scope_run_tasks_recursive_with_opti
+  line 32678 (expanded 16485):     jmp L_WHILE_HEAD_991
+  register: result_value
+  state: expected Consumed, actual Active
+```
+
+下游将跨分支可重赋值的 `result_value` 改为各分支局部绑定后，focused generated-SA 用例通过；整文件 generated-SA 仍回到上面的旧 `next_a` cleanup failure。
+
 ## 下游规避记录
 
 `sla_ecs` 当前未改编译器，只做了两类源码级规避：
@@ -106,6 +135,10 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
   --filter "recursive scope" \
   --test-backend sa --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --filter "child result generators by workers" \
+  --test-backend sa --jobs 1 --trace-panic
 ```
 
 结果：
@@ -113,7 +146,8 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 ```text
 1 passed; 0 failed; 0 skipped
 16 passed; 0 failed; 0 skipped
-6 passed; 0 failed; 0 skipped
+9 passed; 0 failed; 0 skipped
+1 passed; 0 failed; 0 skipped
 ```
 
 ## 已通过对照
@@ -128,7 +162,7 @@ timeout 300s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 结果：
 
 ```text
-122 passed; 0 failed; 0 skipped
+126 passed; 0 failed; 0 skipped
 ```
 
 新增 0-worker 用例在默认/SAB 后端通过：

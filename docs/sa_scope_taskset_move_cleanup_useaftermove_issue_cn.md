@@ -43,10 +43,10 @@ timeout 180s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 ```text
 error[UseAfterMove]: moved value is no longer usable
   in function @test "dynamic allocator grows beyond fixed capacity"():
-  line 91800 (expanded 115360):     !next_a
+  line 92067 (expanded 115769):     !next_a
   register: next_a
   state: expected Consumed, actual Consumed
-{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":115360,"source_line":91800,"source_text":"    !next_a","original_text":"    !next_a","register":"next_a","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@test \"dynamic allocator grows beyond fixed capacity\"():","message":"moved value is no longer usable"}
+{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":115769,"source_line":92067,"source_text":"    !next_a","original_text":"    !next_a","register":"next_a","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@test \"dynamic allocator grows beyond fixed capacity\"():","message":"moved value is no longer usable"}
 ```
 
 规避前，新增 scoped recursive runner 路径曾稳定复现：

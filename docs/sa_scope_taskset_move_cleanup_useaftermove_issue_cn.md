@@ -2,7 +2,7 @@
 
 日期：2026-07-06
 
-状态：仍开放。下游 `sla_ecs` 已对当前 scoped-task-set 和 `JoinHandle` 形态做局部规避；生成 SA 整文件聚合仍可在无关旧测试中复现同类 cleanup 问题。2026-07-06 在 execute/cli cleanup 修复后复验，仍失败于 `next_a` UseAfterMove，因此本 issue 不能随 `execute_extra`/`sab_large_execute` 一起关闭。
+状态：仍开放。下游 `sla_ecs` 已对当前 scoped-task-set 和 `JoinHandle` 形态做局部规避；生成 SA 整文件聚合仍可在无关旧测试中复现同类 cleanup 问题。2026-07-06 在 execute/cli cleanup 修复后复验，仍失败于 aggregate move cleanup UseAfterMove，因此本 issue 不能随 `execute_extra`/`sab_large_execute` 一起关闭。
 
 最新复验：
 
@@ -16,9 +16,9 @@ timeout 240s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 
 ```text
 error[UseAfterMove]: moved value is no longer usable
-  in function @test "dynamic allocator grows beyond fixed capacity"():
-  line 92494 (expanded 116474):     !next_a
-  register: next_a
+  in function @sla__table_erased_world_attach_with_values_TableErasedTime_Tabl
+  line 41254 (expanded 25624):     !next_world
+  register: next_world
 ```
 
 ## 摘要
@@ -49,7 +49,7 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 
 ## 当前失败输出
 
-下游规避 `next` / `handle` 后，整文件 generated-SA 聚合仍可在旧 allocator 测试里复现同类 move cleanup 问题：
+下游规避 `next` / `handle` 后，整文件 generated-SA 聚合仍可在 table-erased world attach 路径复现同类 move cleanup 问题：
 
 ```sh
 cd /home/vscode/projects/sla_ecs
@@ -59,11 +59,20 @@ timeout 180s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 
 ```text
 error[UseAfterMove]: moved value is no longer usable
+  in function @sla__table_erased_world_attach_with_values_TableErasedTime_Tabl
+  line 41254 (expanded 25624):     !next_world
+  register: next_world
+  state: expected Consumed, actual Consumed
+{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":25624,"source_line":41254,"source_text":"    !next_world","original_text":"    !next_world","register":"next_world","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@sla__table_erased_world_attach_with_values_TableErasedTime_Tabl","message":"moved value is no longer usable"}
+```
+
+上一轮同一整文件聚合还曾在旧 allocator 测试里暴露 `next_a` cleanup failure：
+
+```text
+error[UseAfterMove]: moved value is no longer usable
   in function @test "dynamic allocator grows beyond fixed capacity"():
   line 92494 (expanded 116474):     !next_a
   register: next_a
-  state: expected Consumed, actual Consumed
-{"trap":"UseAfterMove","trap_code":1009,"file":"tests/test_ecs_mut_parallel.test.sa","line":116474,"source_line":92494,"source_text":"    !next_a","original_text":"    !next_a","register":"next_a","expected_mask_name":"Consumed","actual_mask_name":"Consumed","function":"@test \"dynamic allocator grows beyond fixed capacity\"():","message":"moved value is no longer usable"}
 ```
 
 规避前，新增 scoped recursive runner 路径曾稳定复现：
@@ -110,7 +119,7 @@ error[PhiStateConflict]: incoming control-flow states do not agree
   state: expected Consumed, actual Active
 ```
 
-下游将跨分支可重赋值的 `result_value` 改为各分支局部绑定后，focused generated-SA 用例通过；整文件 generated-SA 仍回到上面的旧 `next_a` cleanup failure。
+下游将跨分支可重赋值的 `result_value` 改为各分支局部绑定后，focused generated-SA 用例通过；整文件 generated-SA 仍回到上面的 aggregate cleanup failure。
 
 ## 下游规避记录
 
@@ -139,6 +148,10 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
   --filter "child result generators by workers" \
   --test-backend sa --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --filter "nested child result generators by workers" \
+  --test-backend sa --jobs 1 --trace-panic
 ```
 
 结果：
@@ -146,7 +159,8 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 ```text
 1 passed; 0 failed; 0 skipped
 16 passed; 0 failed; 0 skipped
-9 passed; 0 failed; 0 skipped
+10 passed; 0 failed; 0 skipped
+1 passed; 0 failed; 0 skipped
 1 passed; 0 failed; 0 skipped
 ```
 
@@ -162,7 +176,7 @@ timeout 300s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
 结果：
 
 ```text
-126 passed; 0 failed; 0 skipped
+127 passed; 0 failed; 0 skipped
 ```
 
 新增 0-worker 用例在默认/SAB 后端通过：

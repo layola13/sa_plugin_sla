@@ -6,6 +6,7 @@ const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
 const codegen_mod = @import("codegen.zig");
 const sab_codegen_mod = @import("sab_codegen.zig");
+const stability_metadata = @import("stability_metadata.zig");
 const source_expand = @import("source_expand.zig");
 const sla_workspace = @import("workspace.zig");
 const sci_bridge = @import("sci_bridge");
@@ -147,6 +148,7 @@ const skills = [_]plugin_api.SkillSection{
         .items = &.{
             "sla init [path]",
             "sla skills [--json]",
+            "sla stability schema|verify ...",
             "sla build [file] [-p <package>] [--out <file>]",
             "sla build-workspace [-p <package>] [sa-build-exe-options...]",
             "sla build-exe [file] [-p <package>] [sa-build-exe-options...]",
@@ -1486,9 +1488,91 @@ fn runSlaInitCommand(allocator: std.mem.Allocator, args: []const []const u8, opt
     return 0;
 }
 
+fn runSlaStabilityCommand(allocator: std.mem.Allocator, args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter, default_json_mode: bool) !u8 {
+    if (option_start >= args.len) {
+        try writeCommandHelp(stderr, "stability");
+        return 1;
+    }
+    const subcmd = args[option_start];
+    if (isHelpArg(subcmd)) {
+        try writeCommandHelp(stderr, "stability");
+        return 0;
+    }
+
+    if (std.mem.eql(u8, subcmd, "schema")) {
+        var idx = option_start + 1;
+        while (idx < args.len) : (idx += 1) {
+            const arg = args[idx];
+            if (isHelpArg(arg)) {
+                try writeCommandHelp(stderr, "stability schema");
+                return 0;
+            }
+            if (std.mem.eql(u8, arg, "--json")) continue;
+            try stderr.print("Unknown sla stability schema option: {s}\n", .{arg});
+            try writeCommandHelp(stderr, "stability schema");
+            return 1;
+        }
+        try stdout.writeAll(stability_metadata.schema_json);
+        try stdout.writeByte('\n');
+        return 0;
+    }
+
+    if (std.mem.eql(u8, subcmd, "verify")) {
+        var json_mode = default_json_mode;
+        var manifest_path: ?[]const u8 = null;
+        var idx = option_start + 1;
+        while (idx < args.len) : (idx += 1) {
+            const arg = args[idx];
+            if (isHelpArg(arg)) {
+                try writeCommandHelp(stderr, "stability verify");
+                return 0;
+            }
+            if (std.mem.eql(u8, arg, "--json")) {
+                json_mode = true;
+                continue;
+            }
+            if (std.mem.startsWith(u8, arg, "-")) {
+                try stderr.print("Unknown sla stability verify option: {s}\n", .{arg});
+                try writeCommandHelp(stderr, "stability verify");
+                return 1;
+            }
+            if (manifest_path != null) {
+                try stderr.print("Unexpected sla stability verify argument: {s}\n", .{arg});
+                try writeCommandHelp(stderr, "stability verify");
+                return 1;
+            }
+            manifest_path = arg;
+        }
+        const path = manifest_path orelse {
+            try stderr.writeAll("Missing stability manifest path\n");
+            try writeCommandHelp(stderr, "stability verify");
+            return 1;
+        };
+        const manifest = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| {
+            try stderr.print("File Error: failed to read {s}: {}\n", .{ path, err });
+            return 1;
+        };
+        var report = try stability_metadata.validateManifestText(allocator, manifest);
+        defer report.deinit();
+        if (json_mode) {
+            try stability_metadata.writeReportJson(stdout, &report);
+        } else {
+            try stability_metadata.writeReportText(stdout, &report);
+        }
+        return if (report.valid) 0 else 1;
+    }
+
+    try stderr.print("Unknown sla stability command: {s}\n", .{subcmd});
+    try writeCommandHelp(stderr, "stability");
+    return 1;
+}
+
 fn commandUsage(command: []const u8) []const u8 {
     if (std.mem.eql(u8, command, "init")) return "usage: sa sla init [path]\n";
     if (std.mem.eql(u8, command, "skills")) return "usage: sa sla skills [--json]\n";
+    if (std.mem.eql(u8, command, "stability")) return "usage: sa sla stability <schema|verify> [options]\n";
+    if (std.mem.eql(u8, command, "stability schema")) return "usage: sa sla stability schema [--json]\n";
+    if (std.mem.eql(u8, command, "stability verify")) return "usage: sa sla stability verify <manifest.json> [--json]\n";
     if (std.mem.eql(u8, command, "build")) return "usage: sa sla build [file] [-p <package>] [--out <file>]\n";
     if (std.mem.eql(u8, command, "build-workspace")) return "usage: sa sla build-workspace [-p <package>] [sa-build-exe-options...]\n";
     if (std.mem.eql(u8, command, "build-exe")) return "usage: sa sla build-exe [file] [-p <package>] [sa-build-exe-options...]\n";
@@ -1512,6 +1596,23 @@ fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
         try writer.writeAll("\n");
         try writer.writeAll("List SLA plugin capabilities. Text mode also writes agent skills into the current directory.\n\n");
         try writer.writeAll("  --json                  Emit machine-readable capability JSON\n");
+        try writer.writeAll("  -h, --help              Show this help message\n");
+    }
+    if (std.mem.eql(u8, command, "stability")) {
+        try writer.writeAll("\n");
+        try writer.writeAll("Validate downstream stability metadata manifests without assigning downstream label meaning.\n\n");
+        try writer.writeAll("  schema                  Emit the JSON schema for stability metadata\n");
+        try writer.writeAll("  verify <manifest.json>  Validate a downstream manifest\n");
+        try writer.writeAll("  -h, --help              Show this help message\n");
+    }
+    if (std.mem.eql(u8, command, "stability schema")) {
+        try writer.writeAll("\n");
+        try writer.writeAll("  --json                  Accepted for consistency; schema output is JSON\n");
+        try writer.writeAll("  -h, --help              Show this help message\n");
+    }
+    if (std.mem.eql(u8, command, "stability verify")) {
+        try writer.writeAll("\n");
+        try writer.writeAll("  --json                  Emit machine-readable verification output\n");
         try writer.writeAll("  -h, --help              Show this help message\n");
     }
     if (std.mem.eql(u8, command, "build") or
@@ -2188,6 +2289,7 @@ pub fn runSlaCommandImpl(
         try stderr.writeAll("Commands:\n");
         try stderr.writeAll("  init       [path]\n");
         try stderr.writeAll("  skills     [--json]\n");
+        try stderr.writeAll("  stability  schema|verify ...\n");
         try stderr.writeAll("  build      [file] [-p <package>] [--out <file>]\n");
         try stderr.writeAll("  build-workspace [-p <package>] [sa-build-exe args]\n");
         try stderr.writeAll("  build-exe  [file] [-p <package>] [sa-build-exe args]\n");
@@ -2206,6 +2308,11 @@ pub fn runSlaCommandImpl(
     }
     if (std.mem.eql(u8, cmd, "skills")) {
         return try runSlaSkillsCommand(args, 3, stdout, stderr, ctx.json_mode);
+    }
+    if (std.mem.eql(u8, cmd, "stability")) {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        return try runSlaStabilityCommand(arena.allocator(), args, 3, stdout, stderr, ctx.json_mode);
     }
     if (std.mem.eql(u8, cmd, "sab")) {
         return try runSabCommand(args, 3, stdout, stderr);
@@ -2616,6 +2723,83 @@ test "sla skills text writes agent skill files" {
     try tmp.dir.access(".claude/skills/sla/SKILL.md", .{});
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "generated agent skills"));
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla skills [--json]"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla stability schema emits json schema" {
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "stability", "schema" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"schema_version\""));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"artifacts\""));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla stability verify emits json report" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+    try tmp.dir.writeFile(.{ .sub_path = "stability.json", .data = stability_metadata.example_manifest_json });
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "stability", "verify", "stability.json", "--json" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"status\":\"ok\""));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"labels\":5"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla stability verify rejects undeclared labels" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+    try tmp.dir.writeFile(.{
+        .sub_path = "bad_stability.json",
+        .data =
+        \\
+        \\{
+        \\  "schema_version": 1,
+        \\  "labels": [{ "name": "stable-demo", "description": "demo" }],
+        \\  "artifacts": [{ "path": "demo.sla", "labels": ["verified-sab-backend"] }]
+        \\}
+        \\
+        ,
+    });
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "stability", "verify", "bad_stability.json", "--json" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    try std.testing.expectEqual(@as(?u8, 1), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"status\":\"error\""));
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "undeclared label"));
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

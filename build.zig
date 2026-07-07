@@ -2,7 +2,8 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const requested_optimize = b.standardOptimizeOption(.{});
+    const optimize = effectiveOptimizeForDevInstall(b, requested_optimize);
     const test_filter = b.option([]const u8, "test-filter", "Only compile and run Zig tests whose name contains this filter.");
 
     const plugin_api = b.createModule(.{
@@ -68,4 +69,12 @@ pub fn build(b: *std.Build) void {
     const run_main_tests = b.addRunArtifact(main_tests);
     const test_step = b.step("test", "Run library unit tests");
     test_step.dependOn(&run_main_tests.step);
+}
+
+fn effectiveOptimizeForDevInstall(b: *std.Build, requested: std.builtin.OptimizeMode) std.builtin.OptimizeMode {
+    if (requested != .ReleaseFast) return requested;
+    const value = std.process.getEnvVarOwned(b.allocator, "SA_PLUGIN_DEV") catch return requested;
+    defer b.allocator.free(value);
+    if (std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "true")) return .Debug;
+    return requested;
 }

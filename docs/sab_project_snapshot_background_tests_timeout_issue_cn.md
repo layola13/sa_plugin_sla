@@ -190,7 +190,7 @@ SAB 应在 10 秒窗口内完成这些单测试的编译和执行；如果有所
 - `zig build test --summary all` 通过，99/99，约 53.60s，MaxRSS 约 1.1GB
 - `SA_PLUGIN_DEV=1 sa sla help` 通过
 
-安装器 gate 未通过：`sa plugin install --dev .` 一次 187.67s 无输出后被终止，一次在外层 `timeout 120s` 下超时，MaxRSS 很低，表现像 installer flow hang 而不是 Zig 编译。
+安装器 gate 后续已恢复：根因是安装器固定执行 `zig build -Doptimize=ReleaseFast`，而本插件 ReleaseFast 构建直接跑 300s 仍无输出超时。`build.zig` 现在只在 `SA_PLUGIN_DEV=1/true` 下把安装器请求的 ReleaseFast 映射为 Debug，`SA_PLUGIN_DEV=1 sa plugin install --dev .` 已恢复到约 0.31s。非 dev ReleaseFast 行为保持不变，仍是独立的编译耗时问题。
 
 复核本工单真实路径仍使用 10 秒硬超时：
 
@@ -213,3 +213,16 @@ cd /home/vscode/projects/mnt/sla_tsgo
 - `reachable decl filter`: 1ms
 
 判断：这是 ModuleGraph/lazy traversal 的数据结构基础，能消除当前早期可达分析里的重复全图 decl 扫描，但尚未关闭本工单。导入声明仍会 flatten 到当前 program，TypeChecker/monomorphizer 仍沿用现有合约；还需要 shallow exported-signature index、namespace isolation、lazy imported-body typecheck，以及 reachable filter 之后 direct-SAB codegen/依赖加载的按需化。
+
+安装 gate 恢复后又用已安装 dev 插件复核一次，仍为 `timeout` 退出码 124，`elapsed 10.04 maxrss 429184`。profile：
+
+- `parse`: 1670ms
+- `import expand`: 4380ms
+- `monomorphize`: 2ms
+- `pre-typecheck reachable decl filter`: 2ms
+- `load contracts`: 632ms
+- `type check`: 299ms
+- `primary decl filter`: 0ms
+- `reachable decl filter`: 1ms
+
+判断不变：本工单仍未关闭，主要瓶颈仍是大型 import graph 与 reachable filter 之后的 direct-SAB codegen/依赖加载。

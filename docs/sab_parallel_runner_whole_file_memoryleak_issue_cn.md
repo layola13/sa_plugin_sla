@@ -85,11 +85,13 @@ error[MemoryLeak]: live registers remain at function exit
 
 检讨：之前把 `lib/parallel_runner.sla` 当作普通下游整文件验证，并给到 180s 超时，是错误的。该路径多次在 30s 内无输出，且当前 10s smoke 也不生成 `parallel_runner-*.sab` 缓存产物；继续长跑会浪费编译时间，并可能被误认为“仍在有效验证”。后续规则：全量 `parallel_runner.sla` / `task_pool_builder.sla` direct-SAB 只能用 `timeout 10s` 做危险 smoke；没有输出就立即视为“未取得证据”，转回最小 fixture。
 
-本轮新增编译器仓库内最小模拟：`tests/test_unit_parallel_runner_min_direct.sla`。它只覆盖当前已收敛的基础形态：
+本轮新增编译器仓库内最小模拟：`tests/test_unit_parallel_runner_min_direct.sla`。它覆盖当前已收敛的基础形态，并已推进到一层无循环 parent/child extend：
 
 - struct 字段持有 `Vec<fn(i32) -> i32>`；
 - 函数指针被 push 进 Vec；
 - 从 struct 字段 `holder.runs[0]` 取回函数指针并调用。
+- 同一 holder 维护 `run_order_positions: Vec<i64>`；
+- 从 child holder 的 `child.runs[0]` 取函数指针，push 到 parent holder，模拟 `parallel_runner.sla` 中 task-set extend 的最小无循环形态。
 
 验证命令全部使用 10s 超时：
 
@@ -102,12 +104,13 @@ timeout 10s /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local
 
 结果：
 
-- 最小模拟 SA：1/1 通过，约 1.5s。
-- 最小模拟 SAB build：通过，约 7.7s，写出 `/tmp/parallel_runner_min_direct.sab`。
-- 最小模拟 direct-SAB test：1/1 通过，约 8.5s。
+- 最小模拟第一层 SA：1/1 通过，约 1.5s。
+- 最小模拟第一层 SAB build：通过，约 7.7s，写出 `/tmp/parallel_runner_min_direct.sab`。
+- 最小模拟第一层 direct-SAB test：1/1 通过，约 8.5s。
+- 增加 `run_order_positions` 与无循环 `extend_one` 后，SA 2/2 通过约 1.5s，SAB build 约 7.9s，direct-SAB test 2/2 通过约 8.1s，仍在 10s 门槛内。
 - 全量 `lib/parallel_runner.sla`：10s 无输出超时，未生成 `parallel_runner-*.sab` 缓存产物。
 
-因此当前最小可提交基线已覆盖 `Vec<fn>` struct 字段这一层；下一步应继续在本仓库细化增加 order-position extend、多个 `Vec<fn>` 字段、`Arc<*World>` 参数、child-scope 返回 taskset、thread spawn 等维度，每个维度都必须保持 10s 内可验证。只有当某个细化 fixture 复现 MemoryLeak 或明确超过 10s，才进入对应编译器热点/cleanup 修复；全量下游文件不再作为首要定位工具。
+因此当前最小可提交基线已覆盖 `Vec<fn>` struct 字段和无循环 order-position extend；下一步应继续在本仓库细化增加 while-loop extend、多个 `Vec<fn>` 字段、`Arc<*World>` 参数、child-scope 返回 taskset、thread spawn 等维度，每个维度都必须保持 10s 内可验证。只有当某个细化 fixture 复现 MemoryLeak 或明确超过 10s，才进入对应编译器热点/cleanup 修复；全量下游文件不再作为首要定位工具。
 
 ## 后续建议
 

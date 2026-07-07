@@ -3447,7 +3447,9 @@ pub const Codegen = struct {
             while (i < body.len and isCallBodyIdentChar(body[i])) i += 1;
             if (start == i) continue;
             const name = body[start..i];
-            if (self.symbol_ids.get(name)) |reg| try self.recordReg(reg);
+            if (self.symbol_ids.get(name)) |reg| {
+                if (self.current_reg_seen.contains(reg)) try self.recordReg(reg);
+            }
         }
     }
 
@@ -11267,21 +11269,24 @@ test "direct sab instruction reg scan records call body refs" {
     var cg = Codegen.init(allocator, &tc);
     defer cg.deinit();
 
-    const dst = try cg.internStable("dst");
+    const out = try cg.internStable("out");
+    const leaked_dst = try cg.internStable("dst");
     const param = try cg.internStable("s");
     const tmp = try cg.internStable("tmp_42");
     try std.testing.expect(cg.symbol_ids.get("later_func") == null);
+    try cg.recordReg(param);
 
     var item = inst.makeInstruction(.call, 1, 1, null, "");
-    item.operands[0] = .{ .reg = dst };
-    item.operands[1] = .{ .text = "@later_func(s, tmp_42)" };
+    item.operands[0] = .{ .reg = out };
+    item.operands[1] = .{ .text = "@later_func(s, dst, tmp_42)" };
 
     try cg.recordInstructionRegs(item);
 
     const callee = cg.symbol_ids.get("later_func") orelse return error.TestExpectedEqual;
-    try std.testing.expect(cg.current_reg_seen.contains(dst));
+    try std.testing.expect(cg.current_reg_seen.contains(out));
     try std.testing.expect(cg.current_reg_seen.contains(param));
-    try std.testing.expect(cg.current_reg_seen.contains(tmp));
+    try std.testing.expect(!cg.current_reg_seen.contains(leaked_dst));
+    try std.testing.expect(!cg.current_reg_seen.contains(tmp));
     try std.testing.expect(cg.current_reg_seen.contains(callee));
 }
 

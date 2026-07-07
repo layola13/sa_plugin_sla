@@ -147,6 +147,32 @@ cd /home/vscode/projects/mnt/sla_tsgo
 
 判断：import-expansion 可达体裁剪使 typecheck 继续下降到约 0.33s，import expand 从上一轮约 5.5s 降到约 4.8s，但本工单仍未关闭。当前剩余瓶颈仍包括 parser/import graph 预扫描、唯一模块解析和 reachable filter 之后的 direct-SAB codegen/依赖加载；下一步需要真正的 shallow signature index、命名空间隔离和 lazy codegen dependency loading，而不是继续把大量 imported body 拼入当前 program。
 
+## 2026-07-07 vtable-aware trait impl 裁剪复核
+
+`sa_plugin_sla/src/plugin.zig` 已在 typecheck 后、direct-SAB codegen 前加入 vtable-aware trait impl 输出裁剪：只有在 trait impl 没有任何可达 trait 方法，且当前可达测试/函数没有 dyn borrow、Box dyn 或 Rc dyn vtable 证据时，才会删除整组 trait impl；需要 vtable 的 impl 仍整组保留。`tests/test_unit_rc_dyn_trait.sla` strict SAB 10 秒 guard 已通过，证明此前的 vtable `UnknownRegister` 风险没有复现。
+
+复核本工单真实路径：
+
+```sh
+cd /home/vscode/projects/mnt/sla_tsgo
+/usr/bin/time -f 'elapsed %e maxrss %M' timeout 10s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla test tests/test_project_background_update_contract.sla --test-backend sab --trace-panic
+```
+
+结果：仍为 `timeout` 退出码 124，`elapsed 10.04 maxrss 343040`。已输出 profile：
+
+- `parse`: 2136ms
+- `import expand`: 5685ms
+- `monomorphize`: 4ms
+- `pre-typecheck reachable decl filter`: 2ms
+- `load contracts`: 741ms
+- `type check`: 399ms
+- `primary decl filter`: 0ms
+- `reachable decl filter`: 1ms
+
+判断：vtable-aware trait impl 裁剪是安全的 codegen 前缩减，但对 project background timeout 没有实质改善。本工单仍主要受 parser/import expansion 和 reachable filter 后续 direct-SAB/codegen 依赖加载影响。
+
 ## 期望
 
 SAB 应在 10 秒窗口内完成这些单测试的编译和执行；如果有所有权或运行期错误，应输出具体 trap，而不是无输出挂到外层 timeout。

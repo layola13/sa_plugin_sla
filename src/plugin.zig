@@ -561,6 +561,11 @@ const SlaModule = struct {
     program: *ast.Node,
 };
 
+const SlaImportExpansionOptions = struct {
+    prune_for_test_codegen: bool = false,
+    test_filter: ?[]const u8 = null,
+};
+
 const SlaModuleTable = struct {
     allocator: std.mem.Allocator,
     modules: std.StringHashMap(*SlaModule),
@@ -634,6 +639,299 @@ fn appendExpandedSlaModuleDecls(
         } else {
             try out_decls.append(decl);
             try primary_decls.put(decl, {});
+        }
+    }
+}
+
+fn collectSlaModulesRecursive(
+    allocator: std.mem.Allocator,
+    modules: *SlaModuleTable,
+    module: *SlaModule,
+    visited: *std.StringHashMap(void),
+    ordered: *std.ArrayList(*SlaModule),
+) !void {
+    if (visited.contains(module.path)) return;
+    try visited.put(module.path, {});
+
+    for (module.program.program.decls) |decl| {
+        if (decl.* != .import_decl) continue;
+        const child_resolved_imports = try resolveImportFiles(allocator, module.base_dir, decl.import_decl.path, module.path);
+        for (child_resolved_imports) |child_resolved| {
+            if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
+            const child_module = try modules.getOrParse(child_resolved);
+            try collectSlaModulesRecursive(allocator, modules, child_module, visited, ordered);
+        }
+    }
+
+    try ordered.append(module);
+}
+
+fn collectTopLevelFuncNamesFromDecls(
+    allocator: std.mem.Allocator,
+    decls: []const *ast.Node,
+    funcs: *std.StringHashMap(void),
+) !void {
+    for (decls) |decl| {
+        switch (decl.*) {
+            .func_decl => try funcs.put(decl.func_decl.name, {}),
+            .impl_decl => |impl_decl| {
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    try funcs.put(symbol, {});
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    try funcs.put(symbol, {});
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn collectSyntacticReachableRootsFromDecls(
+    funcs: *const std.StringHashMap(void),
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    decls: []const *ast.Node,
+    test_filter: ?[]const u8,
+    saw_test: *bool,
+) !void {
+    for (decls) |decl| {
+        switch (decl.*) {
+            .test_decl => |test_decl| {
+                if (!testMatchesFilter(&test_decl, test_filter)) continue;
+                saw_test.* = true;
+                try collectSyntacticReachableBlock(funcs, reachable, worklist, test_decl.body);
+            },
+            .const_stmt => |const_stmt| try collectSyntacticReachableExpr(funcs, reachable, worklist, const_stmt.value),
+            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(funcs, reachable, worklist, macro_decl.body),
+            .impl_decl => |impl_decl| {
+                if (impl_decl.trait_name != null) {
+                    for (impl_decl.methods) |method| {
+                        if (method.* == .func_decl) try collectSyntacticReachableBlock(funcs, reachable, worklist, method.func_decl.body);
+                    }
+                }
+            },
+            .overload_decl => |overload_decl| for (overload_decl.methods) |method| {
+                if (method.* == .func_decl) try collectSyntacticReachableBlock(funcs, reachable, worklist, method.func_decl.body);
+            },
+            else => {},
+        }
+    }
+}
+
+fn collectSyntacticReachableBodyForName(
+    allocator: std.mem.Allocator,
+    funcs: *const std.StringHashMap(void),
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    decls: []const *ast.Node,
+    name: []const u8,
+) !void {
+    for (decls) |decl| {
+        switch (decl.*) {
+            .func_decl => {
+                if (!std.mem.eql(u8, decl.func_decl.name, name)) continue;
+                try collectSyntacticReachableBlock(funcs, reachable, worklist, decl.func_decl.body);
+                return;
+            },
+            .impl_decl => |impl_decl| {
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (!std.mem.eql(u8, symbol, name)) continue;
+                    try collectSyntacticReachableBlock(funcs, reachable, worklist, method.func_decl.body);
+                    return;
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (!std.mem.eql(u8, symbol, name)) continue;
+                    try collectSyntacticReachableBlock(funcs, reachable, worklist, method.func_decl.body);
+                    return;
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn buildReachableImportedTestSymbols(
+    allocator: std.mem.Allocator,
+    root_program: *ast.Node,
+    modules: []const *SlaModule,
+    test_filter: ?[]const u8,
+) !?std.StringHashMap(void) {
+    if (root_program.* != .program) return error.InvalidProgram;
+
+    var funcs = std.StringHashMap(void).init(allocator);
+    try collectTopLevelFuncNamesFromDecls(allocator, root_program.program.decls, &funcs);
+    for (modules) |module| try collectTopLevelFuncNamesFromDecls(allocator, module.program.program.decls, &funcs);
+    if (funcs.count() == 0) return null;
+
+    var reachable = std.StringHashMap(void).init(allocator);
+    var worklist = std.ArrayList([]const u8).init(allocator);
+
+    var saw_test = false;
+    try collectSyntacticReachableRootsFromDecls(&funcs, &reachable, &worklist, root_program.program.decls, test_filter, &saw_test);
+    for (modules) |module| {
+        try collectSyntacticReachableRootsFromDecls(&funcs, &reachable, &worklist, module.program.program.decls, test_filter, &saw_test);
+    }
+    if (!saw_test) return null;
+
+    var index: usize = 0;
+    while (index < worklist.items.len) : (index += 1) {
+        const name = worklist.items[index];
+        try collectSyntacticReachableBodyForName(allocator, &funcs, &reachable, &worklist, root_program.program.decls, name);
+        for (modules) |module| {
+            try collectSyntacticReachableBodyForName(allocator, &funcs, &reachable, &worklist, module.program.program.decls, name);
+        }
+    }
+
+    return reachable;
+}
+
+fn appendFilteredFunctionDecl(
+    decl: *ast.Node,
+    reachable: *const std.StringHashMap(void),
+    out_decls: *std.ArrayList(*ast.Node),
+) !void {
+    if (decl.func_decl.is_decl_only or reachable.contains(decl.func_decl.name)) try out_decls.append(decl);
+}
+
+fn appendFilteredImplDecl(
+    allocator: std.mem.Allocator,
+    decl: *ast.Node,
+    reachable: *const std.StringHashMap(void),
+    out_decls: *std.ArrayList(*ast.Node),
+) !void {
+    const impl_decl = decl.impl_decl;
+    if (impl_decl.trait_name != null) {
+        try out_decls.append(decl);
+        return;
+    }
+    const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse {
+        try out_decls.append(decl);
+        return;
+    };
+
+    var methods = std.ArrayList(*ast.Node).init(allocator);
+    for (impl_decl.methods) |method| {
+        if (method.* != .func_decl) {
+            try methods.append(method);
+            continue;
+        }
+        const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+        if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+    }
+    if (methods.items.len == impl_decl.methods.len) {
+        try out_decls.append(decl);
+    } else if (methods.items.len > 0) {
+        const pruned = try allocator.create(ast.Node);
+        pruned.* = .{ .impl_decl = .{
+            .trait_name = null,
+            .target_ty = impl_decl.target_ty,
+            .methods = try methods.toOwnedSlice(),
+        } };
+        try out_decls.append(pruned);
+    }
+}
+
+fn appendFilteredOverloadDecl(
+    allocator: std.mem.Allocator,
+    decl: *ast.Node,
+    reachable: *const std.StringHashMap(void),
+    out_decls: *std.ArrayList(*ast.Node),
+) !void {
+    const overload_decl = decl.overload_decl;
+    const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse {
+        try out_decls.append(decl);
+        return;
+    };
+
+    var methods = std.ArrayList(*ast.Node).init(allocator);
+    for (overload_decl.methods) |method| {
+        if (method.* != .func_decl) {
+            try methods.append(method);
+            continue;
+        }
+        const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+        if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+    }
+    if (methods.items.len == overload_decl.methods.len) {
+        try out_decls.append(decl);
+    } else if (methods.items.len > 0) {
+        const pruned = try allocator.create(ast.Node);
+        pruned.* = .{ .overload_decl = .{
+            .target_ty = overload_decl.target_ty,
+            .methods = try methods.toOwnedSlice(),
+        } };
+        try out_decls.append(pruned);
+    }
+}
+
+fn appendDeclWithReachableFilter(
+    allocator: std.mem.Allocator,
+    decl: *ast.Node,
+    reachable: ?*const std.StringHashMap(void),
+    out_decls: *std.ArrayList(*ast.Node),
+) !void {
+    const filter = reachable orelse {
+        try out_decls.append(decl);
+        return;
+    };
+    switch (decl.*) {
+        .func_decl => try appendFilteredFunctionDecl(decl, filter, out_decls),
+        .impl_decl => try appendFilteredImplDecl(allocator, decl, filter, out_decls),
+        .overload_decl => try appendFilteredOverloadDecl(allocator, decl, filter, out_decls),
+        else => try out_decls.append(decl),
+    }
+}
+
+fn appendExpandedSlaModuleDeclsWithFilter(
+    allocator: std.mem.Allocator,
+    modules: *SlaModuleTable,
+    module: *SlaModule,
+    emitted: *std.StringHashMap(void),
+    primary_decls: *std.AutoHashMap(*const ast.Node, void),
+    out_decls: *std.ArrayList(*ast.Node),
+    reachable: ?*const std.StringHashMap(void),
+) !void {
+    if (emitted.contains(module.path)) return;
+    try emitted.put(module.path, {});
+
+    for (module.program.program.decls) |decl| {
+        if (decl.* == .import_decl) {
+            const child_resolved_imports = try resolveImportFiles(allocator, module.base_dir, decl.import_decl.path, module.path);
+            for (child_resolved_imports) |child_resolved| {
+                if (std.mem.endsWith(u8, child_resolved.path, ".sla")) {
+                    const child_module = try modules.getOrParse(child_resolved);
+                    try appendExpandedSlaModuleDeclsWithFilter(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable);
+                } else {
+                    try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls);
+                }
+            }
+        } else {
+            const before = out_decls.items.len;
+            try appendDeclWithReachableFilter(allocator, decl, reachable, out_decls);
+            if (out_decls.items.len != before) try primary_decls.put(out_decls.items[out_decls.items.len - 1], {});
         }
     }
 }
@@ -727,6 +1025,7 @@ fn expandSlaImports(
     program: *ast.Node,
     source_file: []const u8,
     primary_decls: *std.AutoHashMap(*const ast.Node, void),
+    options: SlaImportExpansionOptions,
 ) !*ast.Node {
     if (program.* != .program) return error.InvalidProgram;
 
@@ -740,20 +1039,44 @@ fn expandSlaImports(
     const source_dir = std.fs.path.dirname(source_file) orelse ".";
     const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch source_file;
 
+    var ordered_modules = std.ArrayList(*SlaModule).init(allocator);
+    if (options.prune_for_test_codegen) {
+        var visited_modules = std.StringHashMap(void).init(allocator);
+        for (program.program.decls) |decl| {
+            if (decl.* != .import_decl) continue;
+            const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
+            for (resolved_imports) |resolved| {
+                if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
+                const module = try modules.getOrParse(resolved);
+                try collectSlaModulesRecursive(allocator, &modules, module, &visited_modules, &ordered_modules);
+            }
+        }
+    }
+
+    var reachable_import_symbols = if (options.prune_for_test_codegen)
+        try buildReachableImportedTestSymbols(allocator, program, ordered_modules.items, options.test_filter)
+    else
+        null;
+
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
             const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
             for (resolved_imports) |resolved| {
                 if (std.mem.endsWith(u8, resolved.path, ".sla")) {
                     const module = try modules.getOrParse(resolved);
-                    try appendExpandedSlaModuleDecls(allocator, &modules, module, &emitted, primary_decls, &decls);
+                    if (reachable_import_symbols) |*reachable| {
+                        try appendExpandedSlaModuleDeclsWithFilter(allocator, &modules, module, &emitted, primary_decls, &decls, reachable);
+                    } else {
+                        try appendExpandedSlaModuleDecls(allocator, &modules, module, &emitted, primary_decls, &decls);
+                    }
                 } else {
                     try appendResolvedNonSlaImportDecl(allocator, resolved, primary_decls, &decls);
                 }
             }
         } else {
-            try decls.append(decl);
-            try primary_decls.put(decl, {});
+            const before = decls.items.len;
+            try appendDeclWithReachableFilter(allocator, decl, if (reachable_import_symbols) |*reachable| reachable else null, &decls);
+            if (decls.items.len != before) try primary_decls.put(decls.items[decls.items.len - 1], {});
         }
     }
 
@@ -882,7 +1205,7 @@ fn testFilterSelectsNoTests(
     };
 
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-    const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
+    const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls, .{}) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
         return null;
     };
@@ -1534,7 +1857,10 @@ fn runSlaFrontend(
 
     stage_start = std.time.nanoTimestamp();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-    const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
+    const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls, .{
+        .prune_for_test_codegen = options.prune_for_test_codegen,
+        .test_filter = options.test_filter,
+    }) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
         return null;
     };
@@ -2949,7 +3275,7 @@ pub fn runSlaCommandImpl(
         };
 
         var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-        const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls) catch |err| {
+        const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls, .{}) catch |err| {
             try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
             return 1;
         };
@@ -3542,6 +3868,65 @@ test "sla test codegen prunes unreachable functions before type checking" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used_value") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_broken_value") == null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test import expansion prunes unreachable imported functions" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn used_import() -> i32 {
+        \\    return import_helper();
+        \\};
+        \\
+        \\fn import_helper() -> i32 {
+        \\    return 41;
+        \\};
+        \\
+        \\fn unused_import() -> i32 {
+        \\    return 99;
+        \\};
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "reachable import only"() {
+        \\    let got = used_import();
+        \\    if got != 41 { panic(24006); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{
+        .prune_for_test_codegen = true,
+    });
+
+    var saw_used = false;
+    var saw_helper = false;
+    var saw_unused = false;
+    for (expanded_prog.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        if (std.mem.eql(u8, decl.func_decl.name, "used_import")) saw_used = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "import_helper")) saw_helper = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "unused_import")) saw_unused = true;
+    }
+    try std.testing.expect(saw_used);
+    try std.testing.expect(saw_helper);
+    try std.testing.expect(!saw_unused);
 }
 
 test "sla sab test codegen omits unreachable functions after type checking" {

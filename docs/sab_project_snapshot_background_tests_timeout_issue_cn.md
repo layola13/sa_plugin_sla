@@ -101,7 +101,7 @@ cd /home/vscode/projects/mnt/sla_tsgo
 
 ## 2026-07-07 test-codegen 可达裁剪复核
 
-`sa_plugin_sla/src/plugin.zig` 已在 test-input 生成路径启用 `pre-typecheck reachable decl filter`，会在 typecheck 前裁掉未被当前 `@test` 可达的顶层函数和 inherent impl/overload 方法。复核命令使用真实 `sla test` 路径：
+`sa_plugin_sla/src/plugin.zig` 已在 test-input 生成路径启用 `pre-typecheck reachable decl filter`，并在 typecheck 后、direct-SAB codegen 前启用精确 `reachable decl filter`。两者都会裁掉未被当前 `@test` 可达的顶层函数和 inherent impl/overload 方法，但保留 trait impl 整组以避免 vtable 破洞。复核命令使用真实 `sla test` 路径：
 
 ```sh
 cd /home/vscode/projects/mnt/sla_tsgo
@@ -110,16 +110,18 @@ cd /home/vscode/projects/mnt/sla_tsgo
   sla test tests/test_project_background_update_contract.sla --test-backend sab --trace-panic
 ```
 
-结果：仍为 `timeout` 退出码 124，`elapsed 10.05 maxrss 337408`。已输出 profile：
+结果：仍为 `timeout` 退出码 124，`elapsed 10.05 maxrss 339712`。已输出 profile：
 
-- `parse`: 1774ms
-- `import expand`: 6085ms
+- `parse`: 2280ms
+- `import expand`: 5495ms
 - `monomorphize`: 33ms
 - `pre-typecheck reachable decl filter`: 26ms
-- `load contracts`: 770ms
-- `type check`: 426ms
+- `load contracts`: 678ms
+- `type check`: 551ms
+- `primary decl filter`: 0ms
+- `reachable decl filter`: 1ms
 
-判断：test-path 可达裁剪已把 typecheck 压到 0.5s 以内，但本工单仍未修复。当前最大前端成本仍是 import expand 约 6s，且 timeout 发生在 primary decl filter 之后、direct-SAB codegen/test 执行完成前。下一步需要 ModuleGraph/shallow symbol index，避免把大量唯一 imported AST 先拼接展开；同时 direct-SAB codegen 也需要只生成可达 test 子图。
+判断：test-path 可达裁剪已把 typecheck 压到约 0.5s，post-typecheck output filter 本身约 1ms，但本工单仍未修复。当前最大前端成本仍是 import expand 约 5.5s，且 timeout 发生在 reachable decl filter 之后、direct-SAB codegen/test 执行完成前。下一步需要 ModuleGraph/shallow symbol index，避免把大量唯一 imported AST 先拼接展开；同时 direct-SAB codegen 需要按可达 test 子图加载 std/helper 依赖。
 
 ## 期望
 

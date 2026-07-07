@@ -1373,8 +1373,9 @@ fn pruneUnreachableFilteredTestDecls(
     program: *ast.Node,
     tc: *const type_checker_mod.TypeChecker,
     test_filter: ?[]const u8,
+    force: bool,
 ) !void {
-    if (test_filter == null or test_filter.?.len == 0) return;
+    if (!force and (test_filter == null or test_filter.?.len == 0)) return;
     if (program.* != .program) return error.InvalidProgram;
 
     var reachable = std.StringHashMap(void).init(allocator);
@@ -1384,12 +1385,6 @@ fn pruneUnreachableFilteredTestDecls(
         switch (decl.*) {
             .test_decl => |test_decl| try collectReachableBlock(tc, &reachable, &worklist, test_decl.body),
             .const_stmt => |const_stmt| try collectReachableExpr(tc, &reachable, &worklist, const_stmt.value),
-            .impl_decl => |impl_decl| for (impl_decl.methods) |method| {
-                if (method.* == .func_decl) try collectReachableBlock(tc, &reachable, &worklist, method.func_decl.body);
-            },
-            .overload_decl => |overload_decl| for (overload_decl.methods) |method| {
-                if (method.* == .func_decl) try collectReachableBlock(tc, &reachable, &worklist, method.func_decl.body);
-            },
             else => {},
         }
     }
@@ -1406,6 +1401,62 @@ fn pruneUnreachableFilteredTestDecls(
         switch (decl.*) {
             .func_decl => |func_decl| {
                 if (func_decl.is_decl_only or reachable.contains(func_decl.name)) try filtered_decls.append(decl);
+            },
+            .impl_decl => |impl_decl| {
+                if (impl_decl.trait_name != null) {
+                    try filtered_decls.append(decl);
+                    continue;
+                }
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse {
+                    try filtered_decls.append(decl);
+                    continue;
+                };
+
+                var methods = std.ArrayList(*ast.Node).init(allocator);
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) {
+                        try methods.append(method);
+                        continue;
+                    }
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+                }
+                if (methods.items.len == impl_decl.methods.len) {
+                    try filtered_decls.append(decl);
+                } else if (methods.items.len > 0) {
+                    const pruned = try allocator.create(ast.Node);
+                    pruned.* = .{ .impl_decl = .{
+                        .trait_name = null,
+                        .target_ty = impl_decl.target_ty,
+                        .methods = try methods.toOwnedSlice(),
+                    } };
+                    try filtered_decls.append(pruned);
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse {
+                    try filtered_decls.append(decl);
+                    continue;
+                };
+                var methods = std.ArrayList(*ast.Node).init(allocator);
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) {
+                        try methods.append(method);
+                        continue;
+                    }
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+                }
+                if (methods.items.len == overload_decl.methods.len) {
+                    try filtered_decls.append(decl);
+                } else if (methods.items.len > 0) {
+                    const pruned = try allocator.create(ast.Node);
+                    pruned.* = .{ .overload_decl = .{
+                        .target_ty = overload_decl.target_ty,
+                        .methods = try methods.toOwnedSlice(),
+                    } };
+                    try filtered_decls.append(pruned);
+                }
             },
             else => try filtered_decls.append(decl),
         }
@@ -2429,7 +2480,7 @@ fn compileSlaFileToSabWithOptions(
     const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile)) orelse return null;
 
     var stage_start = std.time.nanoTimestamp();
-    pruneUnreachableFilteredTestDecls(allocator, specialized_prog, &tc, options.test_filter) catch |err| {
+    pruneUnreachableFilteredTestDecls(allocator, specialized_prog, &tc, options.test_filter, options.prune_for_test_codegen) catch |err| {
         try stderr.print("Test Filter Error: failed to prune unreachable declarations: {}\n", .{err});
         return null;
     };
@@ -3490,6 +3541,61 @@ test "sla test codegen prunes unreachable functions before type checking" {
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used_value") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_broken_value") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab test codegen omits unreachable functions after type checking" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn used_value() -> i32 {
+        \\    return 11;
+        \\};
+        \\
+        \\fn unused_value() -> i32 {
+        \\    return 99;
+        \\};
+        \\
+        \\@test "reachable output only"() {
+        \\    let got = used_value();
+        \\    if got != 11 { panic(24005); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "reachable_output.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "reachable_output.sla",
+        ".sla-cache/sab/reachable_output.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_used = false;
+    var saw_unused = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.indexOf(u8, fsig.name, "used_value") != null) saw_used = true;
+        if (std.mem.indexOf(u8, fsig.name, "unused_value") != null) saw_unused = true;
+    }
+    try std.testing.expect(saw_used);
+    try std.testing.expect(!saw_unused);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

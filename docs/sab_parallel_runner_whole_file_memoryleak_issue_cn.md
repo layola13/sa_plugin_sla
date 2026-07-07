@@ -1,6 +1,6 @@
 # SAB parallel_runner whole-file MemoryLeak issue
 
-状态：待修复。下游 `sla_ecs` 已用 generated-SA 后端验证新增 `TaskPoolBuilder` / global task-pool facade 通过；默认/SAB 后端的单个 focused tests 也通过。但当测试文件导入 `lib/parallel_runner.sla` 并执行整文件聚合测试时，SAB verifier 在 `.sab` 文件尾部报告无源码定位的 `MemoryLeak`。本文只记录 issue，不修改 SLA 编译器源码。
+状态：待修复，且全量复现命令归类为危险测试。下游 `sla_ecs` 已用 generated-SA 后端验证新增 `TaskPoolBuilder` / global task-pool facade 通过；默认/SAB 后端的单个 focused tests 也通过。但当测试文件导入 `lib/parallel_runner.sla` 并执行整文件聚合测试时，SAB verifier 在 `.sab` 文件尾部报告无源码定位的 `MemoryLeak`。当前全量 `lib/parallel_runner.sla` 在本地 direct-SAB 路径 10 秒内无输出且不写出 `.sab` 产物，后续不得用长超时反复探测，应先用编译器仓库内的细化模拟 fixture 定位。
 
 ## 触发背景
 
@@ -81,15 +81,45 @@ error[MemoryLeak]: live registers remain at function exit
 - 默认/SAB focused tests 全部通过，但导入 `parallel_runner.sla` 的整文件聚合失败，疑似 SAB whole-file aggregation / final cleanup metadata 在大导入图、thread/Arc/function-pointer helper 共存时留下未释放临时寄存器。
 - verifier JSON 没有函数名或 SLA 源映射，当前只能定位到 managed `.sab` 文件尾部。
 
+## 2026-07-07 危险测试复核与细化模拟
+
+检讨：之前把 `lib/parallel_runner.sla` 当作普通下游整文件验证，并给到 180s 超时，是错误的。该路径多次在 30s 内无输出，且当前 10s smoke 也不生成 `parallel_runner-*.sab` 缓存产物；继续长跑会浪费编译时间，并可能被误认为“仍在有效验证”。后续规则：全量 `parallel_runner.sla` / `task_pool_builder.sla` direct-SAB 只能用 `timeout 10s` 做危险 smoke；没有输出就立即视为“未取得证据”，转回最小 fixture。
+
+本轮新增编译器仓库内最小模拟：`tests/test_unit_parallel_runner_min_direct.sla`。它只覆盖当前已收敛的基础形态：
+
+- struct 字段持有 `Vec<fn(i32) -> i32>`；
+- 函数指针被 push 进 Vec；
+- 从 struct 字段 `holder.runs[0]` 取回函数指针并调用。
+
+验证命令全部使用 10s 超时：
+
+```bash
+timeout 10s ./zig-out/bin/sla-local-cli sla test tests/test_unit_parallel_runner_min_direct.sla --test-backend sa --trace-panic
+timeout 10s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla sab build tests/test_unit_parallel_runner_min_direct.sla --out /tmp/parallel_runner_min_direct.sab
+timeout 10s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_parallel_runner_min_direct.sla --test-backend sab --trace-panic
+timeout 10s /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test lib/parallel_runner.sla --trace-panic
+```
+
+结果：
+
+- 最小模拟 SA：1/1 通过，约 1.5s。
+- 最小模拟 SAB build：通过，约 7.7s，写出 `/tmp/parallel_runner_min_direct.sab`。
+- 最小模拟 direct-SAB test：1/1 通过，约 8.5s。
+- 全量 `lib/parallel_runner.sla`：10s 无输出超时，未生成 `parallel_runner-*.sab` 缓存产物。
+
+因此当前最小可提交基线已覆盖 `Vec<fn>` struct 字段这一层；下一步应继续在本仓库细化增加 order-position extend、多个 `Vec<fn>` 字段、`Arc<*World>` 参数、child-scope 返回 taskset、thread spawn 等维度，每个维度都必须保持 10s 内可验证。只有当某个细化 fixture 复现 MemoryLeak 或明确超过 10s，才进入对应编译器热点/cleanup 修复；全量下游文件不再作为首要定位工具。
+
 ## 后续建议
 
 修复 SAB 后应重跑：
 
 ```bash
 cd /home/vscode/projects/sla_ecs
-SA_PLUGIN_DEV=1 sa sla test lib/parallel_runner.sla --jobs 1 --trace-panic
-SA_PLUGIN_DEV=1 sa sla test lib/task_pool_builder.sla --jobs 1 --trace-panic
-SA_PLUGIN_DEV=1 sa sla test lib/task_pool_builder.sla --test-backend sa --jobs 1 --trace-panic
+timeout 10s env SA_PLUGIN_DEV=1 sa sla test lib/parallel_runner.sla --trace-panic
+timeout 10s env SA_PLUGIN_DEV=1 sa sla test lib/task_pool_builder.sla --trace-panic
+timeout 10s env SA_PLUGIN_DEV=1 sa sla test lib/task_pool_builder.sla --test-backend sa --trace-panic
 ```
+
+如果 10s smoke 无输出，不能把它当作失败细节；必须回到本仓库细化 fixture 或缓存 SAB 反汇编定位。
 
 下游当前继续以 generated-SA 整文件通过和默认/SAB focused tests 作为 `TaskPoolBuilder` facade 的验证证据。

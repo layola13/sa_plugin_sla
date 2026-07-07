@@ -1,0 +1,31 @@
+@import "sa_std/vec.sa"
+
+struct MiniFnPtrVecHolder {
+    runs: Vec<fn(i32) -> i32>,
+}
+
+fn mini_fn_ptr_vec_inc(value: i32) -> i32 {
+    return value + 1;
+}
+
+fn mini_fn_ptr_vec_holder_new() -> MiniFnPtrVecHolder {
+    let runs: Vec<fn(i32) -> i32> = Vec::new();
+    return MiniFnPtrVecHolder { runs: runs };
+}
+
+fn mini_fn_ptr_vec_holder_push(holder: MiniFnPtrVecHolder, run: fn(i32) -> i32) -> MiniFnPtrVecHolder {
+    holder.runs.push(run);
+    return holder;
+}
+
+fn mini_fn_ptr_vec_holder_call(holder: MiniFnPtrVecHolder, value: i32) -> i32 {
+    let run = holder.runs[0];
+    return run(value);
+}
+
+@test "parallel runner minimal struct vec fnptr"() {
+    let holder0 = mini_fn_ptr_vec_holder_new();
+    let holder1 = mini_fn_ptr_vec_holder_push(holder0, mini_fn_ptr_vec_inc);
+    if len(holder1.runs) as i64 != 1 { panic(52001); };
+    if mini_fn_ptr_vec_holder_call(holder1, 10) != 11 { panic(52002); };
+}

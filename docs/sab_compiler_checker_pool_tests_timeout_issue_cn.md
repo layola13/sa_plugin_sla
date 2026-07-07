@@ -35,9 +35,15 @@ timeout 10s env SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 \
 
 timeout 10s env SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 \
   sa sla test tests/test_compiler_checker_pool_idle_contract.sla --test-backend sab
+
+timeout 10s env SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 \
+  sa sla test tests/test_compiler_checker_pool_global_diagnostics_contract.sla --test-backend sab
+
+timeout 10s env SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 \
+  sa sla test tests/test_compiler_checker_pool_canceled_global_diagnostics_contract.sla --test-backend sab
 ```
 
-这些命令均表现为 10 秒内没有 stdout/stderr，`timeout` 返回 124。`test_compiler_checker_pool_diagnostics_contract.sla`、`test_compiler_checker_pool_query_contract.sla`、`test_compiler_checker_pool_idle_contract.sla` 于 2026-07-07 追加复核，仍是 strict SAB 10 秒无输出超时。
+这些命令均表现为 10 秒内没有 stdout/stderr，`timeout` 返回 124。`test_compiler_checker_pool_diagnostics_contract.sla`、`test_compiler_checker_pool_query_contract.sla`、`test_compiler_checker_pool_idle_contract.sla` 于 2026-07-07 追加复核，仍是 strict SAB 10 秒无输出超时。`test_compiler_checker_pool_global_diagnostics_contract.sla` 和 `test_compiler_checker_pool_canceled_global_diagnostics_contract.sla` 于 2026-07-07 追加复核，修正测试内 move 顺序后仍是 strict SAB 10 秒无输出超时。
 
 ## 对照命令
 
@@ -60,6 +66,8 @@ timeout 10s env SA_PLUGIN_DEV=1 sa sla check tests/test_compiler_checker_pool_ca
 timeout 10s env SA_PLUGIN_DEV=1 sa sla check tests/test_compiler_checker_pool_diagnostics_contract.sla
 timeout 10s env SA_PLUGIN_DEV=1 sa sla check tests/test_compiler_checker_pool_query_contract.sla
 timeout 10s env SA_PLUGIN_DEV=1 sa sla check tests/test_compiler_checker_pool_idle_contract.sla
+timeout 10s env SA_PLUGIN_DEV=1 sa sla check tests/test_compiler_checker_pool_global_diagnostics_contract.sla
+timeout 10s env SA_PLUGIN_DEV=1 sa sla check tests/test_compiler_checker_pool_canceled_global_diagnostics_contract.sla
 timeout 10s env SA_PLUGIN_DEV=1 sa sla check tests/test_compiler_contract.sla
 timeout 10s env SA_PLUGIN_DEV=1 sa sla check members/project/src/snapshot.sla
 timeout 10s env SA_PLUGIN_DEV=1 sa sla check members/ls/src/ls.sla
@@ -75,6 +83,8 @@ timeout 10s env SA_PLUGIN_DEV=1 sa sla check members/ls/src/ls.sla
 - diagnostics checker 使用固定 dedicated slot，release 后调度 idle cleanup。
 - query checker release 后按 file affinity 复用。
 - idle cleanup 清理 diagnostics/query checker，但保留独立 API checker。
+- diagnostics/query checker release 时可合并 count-level global diagnostics，并由 TakeNewGlobalDiagnostics 重置 changed 标志。
+- canceled checker release 跳过 global diagnostics merge。
 
 ## 2026-07-07 Module Table 复核
 

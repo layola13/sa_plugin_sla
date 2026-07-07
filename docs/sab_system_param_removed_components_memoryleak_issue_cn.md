@@ -92,6 +92,23 @@ error[MemoryLeak]: live registers remain at function exit
 {"trap":"MemoryLeak","trap_code":1012,"file":".sla-cache/sab/system_param_table_erased-630fd12a0f95801b.sab","line":272691,"source_line":0,"column":null,"source_text":null,"original_text":null,"bad_token":null,"context":[],"register":"removed_components","registers":[],"expected_mask":null,"actual_mask":1,"expected_mask_name":null,"actual_mask_name":"Active","upstream_loc":null,"function":null,"is_ffi_wrapper":false,"message":"live registers remain at function exit","hint":null}
 ```
 
+## 2026-07-07 四组 ParamSet 复测
+
+下游继续新增普通 `TableErasedWorld` 四个 disjoint pair-mut query 的 `ParamSet` 写回覆盖。`sa sla check` 通过，generated-SA 后端通过，测试数更新为：
+
+```text
+test result: ok. 129 passed; 0 failed; 0 skipped
+```
+
+默认/SAB 后端仍复现同一类 `removed_components` 清理泄漏，`.sab` 行号随新增代码更新为 `275575`：
+
+```text
+error[MemoryLeak]: live registers remain at function exit
+  register: removed_components
+  state: Active
+{"trap":"MemoryLeak","trap_code":1012,"file":".sla-cache/sab/system_param_table_erased-630fd12a0f95801b.sab","line":275575,"source_line":0,"column":null,"source_text":null,"original_text":null,"bad_token":null,"context":[],"register":"removed_components","registers":[],"expected_mask":null,"actual_mask":1,"expected_mask_name":null,"actual_mask_name":"Active","upstream_loc":null,"function":null,"is_ffi_wrapper":false,"message":"live registers remain at function exit","hint":null}
+```
+
 ## 判断
 
 该失败目前看起来不是新增 `AnyOf12` 业务逻辑错误：同一 SLA 源文件的类型检查通过，generated-SA 后端 126 个测试全通过，失败发生在 SAB `.sab` 文件尾部附近且无源码定位，寄存器名 `removed_components` 来自 `TableErasedWorld` 字段/导入聚合清理路径。

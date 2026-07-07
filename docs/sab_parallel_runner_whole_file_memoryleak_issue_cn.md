@@ -158,6 +158,22 @@ timeout 10s ./zig-out/bin/sla-local-cli \
 
 结论：此前“loop 内动态索引函数指针 Vec 并转存”已从 10s 无输出/卡死降到 3s 内可验证；这修复了当前最小危险 repro 的卡死症状。性能尚未达到用户期望的约 900ms，剩余明显成本是每进程 contract load 约 1s，以及 SAB direct codegen 中仍需导入/过滤 `sa_std/vec.sa` 依赖函数约 1.9s。后续若继续压到 900ms，应优先做 std dependency/module 级缓存或更细粒度 std helper 载入，而不是继续扩大下游全量危险测试。
 
+## 2026-07-07 Module Table 后复核
+
+SLA frontend 已加入第一阶段 `SlaModuleTable`，避免同一次 import expansion 内重复解析和重复输出同一 `.sla` 模块。该变更不改变本工单结论：最小并行 runner fixture 仍可在 10s 内验证，但下游 whole-file `parallel_runner.sla` / `task_pool_builder.sla` 仍是危险 smoke，不能用长超时反复跑。
+
+最新 focused build profile：
+
+```sh
+timeout 10s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla sab build tests/test_unit_parallel_runner_loop_fnptr_transfer_direct.sla \
+  --out /tmp/parallel_runner_loop_fnptr_transfer_direct.sab
+```
+
+结果：通过，约 1.45s；profile 中 `import expand` 0ms，`load contracts` 约 396ms，`sab direct codegen` 约 1039ms。
+
+判断：这个局部 fixture 的 9.42s 级 SAB build 已经降到约 1.5s，但要接近理论 900ms，下一步应减少 contract/std helper 载入和直接 SAB codegen 依赖过滤成本。whole-file 卡死类问题仍按 10s smoke 规则处理：无输出即中断，回到更小 fixture。
+
 ## 后续建议
 
 修复 SAB 后应重跑：

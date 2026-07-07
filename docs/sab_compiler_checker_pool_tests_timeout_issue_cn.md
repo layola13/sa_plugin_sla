@@ -61,6 +61,28 @@ timeout 10s env SA_PLUGIN_DEV=1 sa sla check members/ls/src/ls.sla
 - checker pool discard 后保留 API checker。
 - canceled API checker release 后清除 persistent checker，并在下次 acquire 创建新 identity。
 
+## 2026-07-07 Module Table 复核
+
+`sa_plugin_sla/src/plugin.zig` 已加入第一阶段 `SlaModuleTable`，对同一次 import expansion 内的重复 `.sla` import 做 resolved-path 解析缓存，并避免重复输出同一模块声明。但 checker-pool API 单测仍无法在 10 秒内完成 strict SAB build：
+
+```sh
+cd /home/vscode/projects/mnt/sla_tsgo
+/usr/bin/time -f 'elapsed %e maxrss %M' timeout 10s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla sab build tests/test_compiler_checker_pool_api_contract.sla \
+  --out /tmp/compiler_checker_pool_api.sab
+```
+
+结果：`timeout` 退出码 124，`elapsed 10.03 maxrss 150784`。已输出 profile：
+
+- `parse`: 709ms
+- `import expand`: 1914ms
+- `monomorphize`: 50ms
+- `load contracts`: 1631ms
+- `type check`: 5302ms 后仍未完成
+
+判断：该工单已经证明单纯 SAB 后端优化或重复解析缓存不够。剩余主要成本来自 flatten 后对 imported body 的无差别 typecheck；后续需要模块符号表、导出签名索引和按调用路径懒惰 typecheck。
+
 ## 期望
 
 SAB 应在 10 秒窗口内完成这些单测试的编译和执行；如果有所有权或运行期错误，应输出具体 trap，而不是无输出挂到外层 timeout。

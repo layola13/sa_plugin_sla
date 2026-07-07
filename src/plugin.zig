@@ -553,45 +553,86 @@ fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allo
     }
 }
 
-fn appendExpandedSlaImportDecls(
-    allocator: std.mem.Allocator,
+const SlaModule = struct {
+    path: []const u8,
+    output_path: []const u8,
     base_dir: []const u8,
-    import_path: []const u8,
-    exclude_path: ?[]const u8,
-    visited: *std.StringHashMap(void),
+    program: *ast.Node,
+};
+
+const SlaModuleTable = struct {
+    allocator: std.mem.Allocator,
+    modules: std.StringHashMap(*SlaModule),
+
+    fn init(allocator: std.mem.Allocator) SlaModuleTable {
+        return .{
+            .allocator = allocator,
+            .modules = std.StringHashMap(*SlaModule).init(allocator),
+        };
+    }
+
+    fn deinit(self: *SlaModuleTable) void {
+        self.modules.deinit();
+    }
+
+    fn getOrParse(self: *SlaModuleTable, resolved: ResolvedImport) !*SlaModule {
+        if (self.modules.get(resolved.path)) |module| return module;
+
+        const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
+        const expanded_source = try source_expand.expand(self.allocator, resolved.source);
+        var parser = parser_mod.Parser.initWithDir(self.allocator, expanded_source, base_dir);
+        const parsed = try parser.parseProgram();
+        if (parsed.* != .program) return error.InvalidProgram;
+
+        const module = try self.allocator.create(SlaModule);
+        module.* = .{
+            .path = resolved.path,
+            .output_path = resolved.output_path,
+            .base_dir = base_dir,
+            .program = parsed,
+        };
+        try self.modules.put(module.path, module);
+        return module;
+    }
+};
+
+fn appendResolvedNonSlaImportDecl(
+    allocator: std.mem.Allocator,
+    resolved: ResolvedImport,
     primary_decls: *std.AutoHashMap(*const ast.Node, void),
     out_decls: *std.ArrayList(*ast.Node),
 ) !void {
-    const resolved_imports = try resolveImportFiles(allocator, base_dir, import_path, exclude_path);
-    for (resolved_imports) |resolved| {
-        if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
-        if (visited.contains(resolved.path)) continue;
-        try visited.put(resolved.path, {});
+    const import_decl = try allocator.create(ast.Node);
+    import_decl.* = .{ .import_decl = .{ .path = resolved.output_path } };
+    try out_decls.append(import_decl);
+    try primary_decls.put(import_decl, {});
+}
 
-        const imported_base_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-        const expanded_source = try source_expand.expand(allocator, resolved.source);
-        var parser = parser_mod.Parser.initWithDir(allocator, expanded_source, imported_base_dir);
-        const imported_prog = try parser.parseProgram();
-        if (imported_prog.* != .program) return error.InvalidProgram;
+fn appendExpandedSlaModuleDecls(
+    allocator: std.mem.Allocator,
+    modules: *SlaModuleTable,
+    module: *SlaModule,
+    emitted: *std.StringHashMap(void),
+    primary_decls: *std.AutoHashMap(*const ast.Node, void),
+    out_decls: *std.ArrayList(*ast.Node),
+) !void {
+    if (emitted.contains(module.path)) return;
+    try emitted.put(module.path, {});
 
-        const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-        for (imported_prog.program.decls) |decl| {
-            if (decl.* == .import_decl) {
-                const child_resolved_imports = try resolveImportFiles(allocator, import_dir, decl.import_decl.path, resolved.path);
-                for (child_resolved_imports) |child_resolved| {
-                    if (std.mem.endsWith(u8, child_resolved.path, ".sla")) {
-                        try appendExpandedSlaImportDecls(allocator, import_dir, decl.import_decl.path, resolved.path, visited, primary_decls, out_decls);
-                    } else {
-                        const import_decl = try allocator.create(ast.Node);
-                        import_decl.* = .{ .import_decl = .{ .path = child_resolved.output_path } };
-                        try out_decls.append(import_decl);
-                        try primary_decls.put(import_decl, {});
-                    }
+    for (module.program.program.decls) |decl| {
+        if (decl.* == .import_decl) {
+            const child_resolved_imports = try resolveImportFiles(allocator, module.base_dir, decl.import_decl.path, module.path);
+            for (child_resolved_imports) |child_resolved| {
+                if (std.mem.endsWith(u8, child_resolved.path, ".sla")) {
+                    const child_module = try modules.getOrParse(child_resolved);
+                    try appendExpandedSlaModuleDecls(allocator, modules, child_module, emitted, primary_decls, out_decls);
+                } else {
+                    try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls);
                 }
-            } else {
-                try out_decls.append(decl);
-                try primary_decls.put(decl, {});
             }
+        } else {
+            try out_decls.append(decl);
+            try primary_decls.put(decl, {});
         }
     }
 }
@@ -688,8 +729,11 @@ fn expandSlaImports(
 ) !*ast.Node {
     if (program.* != .program) return error.InvalidProgram;
 
-    var visited = std.StringHashMap(void).init(allocator);
-    defer visited.deinit();
+    var modules = SlaModuleTable.init(allocator);
+    defer modules.deinit();
+
+    var emitted = std.StringHashMap(void).init(allocator);
+    defer emitted.deinit();
 
     var decls = std.ArrayList(*ast.Node).init(allocator);
     const source_dir = std.fs.path.dirname(source_file) orelse ".";
@@ -700,12 +744,10 @@ fn expandSlaImports(
             const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
             for (resolved_imports) |resolved| {
                 if (std.mem.endsWith(u8, resolved.path, ".sla")) {
-                    try appendExpandedSlaImportDecls(allocator, source_dir, decl.import_decl.path, source_abs, &visited, primary_decls, &decls);
+                    const module = try modules.getOrParse(resolved);
+                    try appendExpandedSlaModuleDecls(allocator, &modules, module, &emitted, primary_decls, &decls);
                 } else {
-                    const import_decl = try allocator.create(ast.Node);
-                    import_decl.* = .{ .import_decl = .{ .path = resolved.output_path } };
-                    try decls.append(import_decl);
-                    try primary_decls.put(import_decl, {});
+                    try appendResolvedNonSlaImportDecl(allocator, resolved, primary_decls, &decls);
                 }
             }
         } else {

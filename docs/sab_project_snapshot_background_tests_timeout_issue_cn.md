@@ -78,6 +78,27 @@ timeout 10s env SA_PLUGIN_DEV=1 sa sla check tests/test_project_api_update_contr
 
 测试已经从大的 `tests/test_project_contract.sla` 拆成单测试文件，每个文件只包含一个 `@test`。background 单测使用 synthetic `SessionState` / `project_empty_program()` 构造 project snapshot，避免 parser/program 文本扫描路径干扰；project collection 单测只覆盖 `ProjectCollection.fileDefaultProjects` / open configured project 小路径；config registry 单测只覆盖 fixed-capacity `ConfigFileRegistry` lookup、ancestor 和 snapshot/collection registry retention；API 单测只覆盖 `APIOpenProject`/`APIUpdateWithFileChanges` 的固定容量 `apiOpenedProjects` 状态和 pending flush/scheduled update cancellation。
 
+## 2026-07-07 Module Table 复核
+
+`sa_plugin_sla/src/plugin.zig` 已加入第一阶段 `SlaModuleTable`：同一次 import expansion 内按 resolved path 缓存已解析 `.sla` AST，并用 emitted set 防止重复 append。同一轮复核确认该 stopgap 没有解决本工单的大型 unique import graph：
+
+```sh
+cd /home/vscode/projects/mnt/sla_tsgo
+/usr/bin/time -f 'elapsed %e maxrss %M' timeout 10s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla sab build tests/test_project_background_update_contract.sla \
+  --out /tmp/project_background_update.sab
+```
+
+结果：`timeout` 退出码 124。已输出 profile：
+
+- `parse`: 2313ms
+- `import expand`: 5679ms
+- `monomorphize`: 28ms
+- `load contracts`: 861ms
+
+判断：当前瓶颈仍在 SLA 前端导入展开/全量 flatten 后续流程。Module Table 防重复解析只能处理重复 import，对 project snapshot 这类大量唯一模块的图不够；后续需要 shallow exported-symbol index、namespace isolation 和 lazy typecheck，避免把所有 imported function body 拼进当前 program 后一起 typecheck。
+
 ## 期望
 
 SAB 应在 10 秒窗口内完成这些单测试的编译和执行；如果有所有权或运行期错误，应输出具体 trap，而不是无输出挂到外层 timeout。

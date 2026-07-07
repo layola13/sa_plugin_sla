@@ -1263,6 +1263,7 @@ pub const Codegen = struct {
         return switch (ty.*) {
             .primitive => |p| p != .void_type,
             .user_defined => blk: {
+                if (userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
                 if (!lowering_rules.structHasDerive(decl, "copy") or decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {
@@ -1272,6 +1273,25 @@ pub const Codegen = struct {
             },
             else => false,
         };
+    }
+
+    fn userDefinedStdOwnerIsNonCopy(ty: *const ast.Type) bool {
+        if (ty.* != .user_defined) return false;
+        const name = ty.user_defined.name;
+        return std.mem.eql(u8, name, "Vec") or
+            std.mem.eql(u8, name, "VecDeque") or
+            std.mem.eql(u8, name, "String") or
+            std.mem.eql(u8, name, "Box") or
+            std.mem.eql(u8, name, "Rc") or
+            std.mem.eql(u8, name, "Arc") or
+            std.mem.eql(u8, name, "HashMap") or
+            std.mem.eql(u8, name, "BTreeMap") or
+            std.mem.eql(u8, name, "HashSet") or
+            std.mem.eql(u8, name, "BTreeSet") or
+            std.mem.eql(u8, name, "RefCell") or
+            std.mem.eql(u8, name, "Mutex") or
+            std.mem.eql(u8, name, "RwLock") or
+            std.mem.eql(u8, name, "JoinHandle");
     }
 
     fn typeIsCopyStruct(self: *Codegen, ty: *const ast.Type) bool {
@@ -2741,6 +2761,13 @@ pub const Codegen = struct {
 
     fn emitMove(self: *Codegen, reg: u32) !void {
         if (self.released_regs.contains(reg)) return;
+        var item = self.makeInst(.move_);
+        item.operands[0] = .{ .reg = reg };
+        try self.appendInst(item);
+        try self.released_regs.put(reg, {});
+    }
+
+    fn emitAssignmentMove(self: *Codegen, reg: u32) !void {
         var item = self.makeInst(.move_);
         item.operands[0] = .{ .reg = reg };
         try self.appendInst(item);
@@ -5954,10 +5981,16 @@ pub const Codegen = struct {
 
     fn markAssignmentMovedSource(self: *Codegen, target: *const ast.Node, value: *const ast.Node) anyerror!void {
         if (value.* != .identifier) return;
-        const value_ty = (try self.exprTypeOrFallback(value)) orelse return Error.MissingType;
-        const source_name = lowering_rules.assignmentMovesIdentifier(target, value, value_ty, self.typeIsCopyValue(value_ty)) orelse return;
-        const source_reg = self.localReg(source_name) orelse return;
-        try self.emitMove(source_reg);
+        const source_name = value.identifier;
+        const value_ty = self.localType(source_name) orelse (try self.exprTypeOrFallback(value)) orelse return Error.MissingType;
+        try self.markAssignmentMovedSourceWithType(target, value, value_ty);
+    }
+
+    fn markAssignmentMovedSourceWithType(self: *Codegen, target: *const ast.Node, value: *const ast.Node, stored_ty: *const ast.Type) anyerror!void {
+        if (value.* != .identifier) return;
+        const moved_name = lowering_rules.assignmentMovesIdentifier(target, value, stored_ty, self.typeIsCopyValue(stored_ty)) orelse return;
+        const source_reg = self.localReg(moved_name) orelse return;
+        try self.emitAssignmentMove(source_reg);
     }
 
     fn macroArgBinding(ctx: *const MacroExpansionContext, name: []const u8) ?MacroArgBinding {
@@ -7143,7 +7176,7 @@ pub const Codegen = struct {
             try self.emitStore(target.reg, 0, value, try primType(field_ty));
             if (!self.isLocalReg(value)) try self.emitRelease(value);
             if (!self.isLocalReg(target.reg)) try self.emitRelease(target.reg);
-            try self.markAssignmentMovedSource(assign.target, assign.value);
+            try self.markAssignmentMovedSourceWithType(assign.target, assign.value, field_ty);
             return;
         }
 
@@ -7192,7 +7225,8 @@ pub const Codegen = struct {
         const name = assign.target.identifier;
         const value = try self.genExpr(assign.value);
         try self.assignToIdentifier(name, value);
-        try self.markAssignmentMovedSource(assign.target, assign.value);
+        const target_ty = self.localType(name) orelse (try self.exprTypeOrFallback(assign.target)) orelse return Error.MissingType;
+        try self.markAssignmentMovedSourceWithType(assign.target, assign.value, target_ty);
     }
 
     fn genExpr(self: *Codegen, expr: *ast.Node) anyerror!u32 {

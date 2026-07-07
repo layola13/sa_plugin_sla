@@ -1,6 +1,6 @@
 # SAB system_param_table_erased removed_components cleanup MemoryLeak issue
 
-状态：待修复。下游 `sla_ecs` 在把普通 `TableErasedWorld` system-param `AnyOf` wrapper 从 10 扩到 12 后，generated-SA 后端整文件测试通过，但默认/SAB 后端在整文件聚合测试退出清理阶段报告 `removed_components` 仍为 Active。本文只记录 issue，不修改 SLA 编译器源码。
+状态：编译器侧聚焦修复已验证，仍待下游整文件复测。下游 `sla_ecs` 在把普通 `TableErasedWorld` system-param `AnyOf` wrapper 从 10 扩到 12 后，generated-SA 后端整文件测试通过，但默认/SAB 后端在整文件聚合测试退出清理阶段报告 `removed_components` 仍为 Active。
 
 ## 下游变更
 
@@ -165,3 +165,59 @@ error[MemoryLeak]: live registers remain at function exit
 该失败目前看起来不是新增 `AnyOf12` 业务逻辑错误：同一 SLA 源文件的类型检查通过，generated-SA 后端 126 个测试全通过，失败发生在 SAB `.sab` 文件尾部附近且无源码定位，寄存器名 `removed_components` 来自 `TableErasedWorld` 字段/导入聚合清理路径。
 
 更像是 SAB 对大型导入聚合文件中 world 字段 cleanup 的整文件 verifier 问题。需要在 SLA 编译器侧检查 SAB lowering/codegen 对聚合字段、导入展开后未直接使用字段、以及函数/测试出口 cleanup 的 register ownership 状态收敛。
+
+## 2026-07-07 编译器侧聚焦修复
+
+用缓存 SAB 反汇编定位到失败函数形态后，最小根因收敛为 direct-SAB 对字段赋值的 owner RHS 没有在 `store` 后发出可见 `move_`：
+
+```sla
+fn table_erased_world_clear_removed_components<R, M>(world: TableErasedWorld<R, M>) -> TableErasedWorld<R, M> {
+    let removed_components: Vec<TableErasedRemovedComponent> = Vec::new();
+    world.removed_components = removed_components;
+    return world;
+}
+```
+
+缓存失败 SAB 中对应片段只有 `store` 和 `return_`，没有 `move_ removed_components` 等价指令：
+
+```text
+call r126296,"@sa_vec_new",""
+assign r58656,r126296
+ptr_add r126297,r1482,56u
+store r126297,0u,r58656,ty:12
+release r126297
+return_ r1482
+```
+
+已在编译器侧补齐 direct-SAB 字段/标识符赋值的 owner RHS move 标记，并避免把 `Vec` 等标准库 owner 类型误判为 Copy。新增最小覆盖 `tests/test_unit_field_assign_move_cleanup.sla` 的空 `Vec::new()` 字段替换场景。
+
+验证结果：
+
+```bash
+zig fmt --check src/sab_codegen.zig
+zig build --summary all
+./zig-out/bin/sla-local-cli sla test tests/test_unit_field_assign_move_cleanup.sla --test-backend sa --trace-panic
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_field_assign_move_cleanup.sla --test-backend sab --trace-panic
+./zig-out/bin/sla-local-cli sla sab build tests/test_unit_field_assign_move_cleanup.sla --out /tmp/field_assign_move_cleanup.sab
+./zig-out/bin/sla-local-cli sla sab disasm /tmp/field_assign_move_cleanup.sab --out /tmp/field_assign_move_cleanup.disasm.sa
+```
+
+聚焦 SA/SAB 均通过：
+
+```text
+test result: ok. 3 passed; 0 failed; 0 skipped
+```
+
+新 SAB 反汇编确认 `store` 后已有显式 `move_`：
+
+```text
+func_decl $sla__clear_vec_field,fn:354
+label $L_ENTRY,L4
+    call r356,"@sa_vec_new",""
+    assign r345,r356
+    store r355,0u,r345,ty:12
+    move_ r345
+    return_ r355
+```
+
+未重新跑下游 `lib/system_param_table_erased.sla` 整文件测试：该文件前一次默认并行过滤测试 120s 无输出超时，继续使用最小回归和 SAB 反汇编作为本次提交证据，避免浪费编译时间和破坏增量缓存。

@@ -28,10 +28,23 @@ fn replace_vec_field(holder: VecHolder) -> VecHolder {
     return holder;
 }
 
+fn clear_vec_field(holder: VecHolder) -> VecHolder {
+    let next_values: Vec<i32> = Vec::new();
+    holder.values = next_values;
+    return holder;
+}
+
 @test "field assign moved vec local cleanup"() {
     let start_values: Vec<i32> = Vec::new();
     start_values.push(1);
     let out = replace_vec_field(VecHolder { values: start_values });
     if len(out.values) as i64 != 1 { panic(1610); };
     if out.values[0] != 7 { panic(1611); };
+}
+
+@test "field assign empty vec local cleanup"() {
+    let start_values: Vec<i32> = Vec::new();
+    start_values.push(1);
+    let out = clear_vec_field(VecHolder { values: start_values });
+    if len(out.values) as i64 != 0 { panic(1620); };
 }

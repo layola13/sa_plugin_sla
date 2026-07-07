@@ -16,3 +16,22 @@ fn replace_item(holder: Holder) -> Holder {
     let out = replace_item(Holder { item: Item { value: 4 } });
     if out.item.value != 5 { panic(1600); };
 }
+
+struct VecHolder {
+    values: Vec<i32>,
+}
+
+fn replace_vec_field(holder: VecHolder) -> VecHolder {
+    let next_values: Vec<i32> = Vec::new();
+    next_values.push(7);
+    holder.values = next_values;
+    return holder;
+}
+
+@test "field assign moved vec local cleanup"() {
+    let start_values: Vec<i32> = Vec::new();
+    start_values.push(1);
+    let out = replace_vec_field(VecHolder { values: start_values });
+    if len(out.values) as i64 != 1 { panic(1610); };
+    if out.values[0] != 7 { panic(1611); };
+}

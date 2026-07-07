@@ -5957,7 +5957,7 @@ pub const Codegen = struct {
         const value_ty = (try self.exprTypeOrFallback(value)) orelse return Error.MissingType;
         const source_name = lowering_rules.assignmentMovesIdentifier(target, value, value_ty, self.typeIsCopyValue(value_ty)) orelse return;
         const source_reg = self.localReg(source_name) orelse return;
-        try self.markConsumed(source_reg);
+        try self.emitMove(source_reg);
     }
 
     fn macroArgBinding(ctx: *const MacroExpansionContext, name: []const u8) ?MacroArgBinding {

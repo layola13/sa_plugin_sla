@@ -9,6 +9,7 @@ const sab_codegen_mod = @import("sab_codegen.zig");
 const stability_metadata = @import("stability_metadata.zig");
 const source_expand = @import("source_expand.zig");
 const sla_workspace = @import("workspace.zig");
+const lowering_rules = @import("lowering_rules.zig");
 const sci_bridge = @import("sci_bridge");
 pub const handler_bridge = @import("handler_bridge.zig");
 
@@ -815,6 +816,7 @@ fn loadImportedContracts(
 const SlaCompileOptions = struct {
     test_filter: ?[]const u8 = null,
     allow_fallback: bool = true,
+    prune_for_test_codegen: bool = false,
 };
 
 fn slaProfileEnabled(allocator: std.mem.Allocator) bool {
@@ -1052,6 +1054,320 @@ fn collectReachableBlock(
     }
 }
 
+fn collectTopLevelFuncNames(program: *const ast.Node, funcs: *std.StringHashMap(void)) !void {
+    if (program.* != .program) return error.InvalidProgram;
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .func_decl => try funcs.put(decl.func_decl.name, {}),
+            .impl_decl => |impl_decl| {
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(funcs.allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(funcs.allocator, type_name, method.func_decl.name);
+                    try funcs.put(symbol, {});
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = try lowering_rules.mangleMethodName(funcs.allocator, type_name, method.func_decl.name);
+                    try funcs.put(symbol, {});
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn markSyntacticReachableFunc(
+    funcs: *const std.StringHashMap(void),
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    name: []const u8,
+) !void {
+    if (!funcs.contains(name)) return;
+    if (reachable.contains(name)) return;
+    try reachable.put(name, {});
+    try worklist.append(name);
+}
+
+fn markSyntacticAssociatedCallCandidates(
+    funcs: *const std.StringHashMap(void),
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    method_name: []const u8,
+) !void {
+    var iter = funcs.keyIterator();
+    while (iter.next()) |key_ptr| {
+        const name = key_ptr.*;
+        if (std.mem.eql(u8, name, method_name)) {
+            try markSyntacticReachableFunc(funcs, reachable, worklist, name);
+            continue;
+        }
+        if (name.len <= method_name.len + 1) continue;
+        const suffix_start = name.len - method_name.len;
+        if (!std.mem.eql(u8, name[suffix_start..], method_name)) continue;
+        const sep = name[suffix_start - 1];
+        if (sep == '_' or sep == ':') try markSyntacticReachableFunc(funcs, reachable, worklist, name);
+    }
+}
+
+fn collectSyntacticReachableExpr(
+    funcs: *const std.StringHashMap(void),
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    expr: *const ast.Node,
+) anyerror!void {
+    switch (expr.*) {
+        .identifier => |name| try markSyntacticReachableFunc(funcs, reachable, worklist, name),
+        .generic_func_ref => |ref| try markSyntacticReachableFunc(funcs, reachable, worklist, ref.func_name),
+        .call_expr => |call| {
+            if (call.associated_target != null) {
+                try markSyntacticAssociatedCallCandidates(funcs, reachable, worklist, call.func_name);
+            } else {
+                try markSyntacticReachableFunc(funcs, reachable, worklist, call.func_name);
+                try markSyntacticAssociatedCallCandidates(funcs, reachable, worklist, call.func_name);
+            }
+            for (call.args) |arg| try collectSyntacticReachableExpr(funcs, reachable, worklist, arg);
+        },
+        .if_expr => |ife| {
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, ife.cond);
+            if (ife.let_chain) |chain| {
+                for (chain) |cond| try collectSyntacticReachableExpr(funcs, reachable, worklist, cond.value);
+            }
+            try collectSyntacticReachableBlock(funcs, reachable, worklist, ife.then_block);
+            if (ife.else_block) |else_block| try collectSyntacticReachableBlock(funcs, reachable, worklist, else_block);
+        },
+        .switch_expr => |swe| {
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, swe.val);
+            for (swe.cases) |case| {
+                try collectSyntacticReachableExpr(funcs, reachable, worklist, case.pattern);
+                try collectSyntacticReachableBlock(funcs, reachable, worklist, case.body);
+            }
+        },
+        .match_expr => |mat| {
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, mat.val);
+            for (mat.cases) |case| {
+                if (case.guard) |guard| try collectSyntacticReachableExpr(funcs, reachable, worklist, guard);
+                try collectSyntacticReachableBlock(funcs, reachable, worklist, case.body);
+            }
+        },
+        .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, reachable, worklist, unsafe_expr.body),
+        .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, reachable, worklist, await_expr.expr),
+        .try_expr => |try_expr| try collectSyntacticReachableExpr(funcs, reachable, worklist, try_expr.expr),
+        .binary_expr => |bin| {
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, bin.left);
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, bin.right);
+        },
+        .closure_literal => |closure| try collectSyntacticReachableExpr(funcs, reachable, worklist, closure.body),
+        .borrow_expr => |borrow| try collectSyntacticReachableExpr(funcs, reachable, worklist, borrow.expr),
+        .move_expr => |move| try collectSyntacticReachableExpr(funcs, reachable, worklist, move.expr),
+        .deref_expr => |deref| try collectSyntacticReachableExpr(funcs, reachable, worklist, deref.expr),
+        .cast_expr => |cast| try collectSyntacticReachableExpr(funcs, reachable, worklist, cast.expr),
+        .field_expr => |field| try collectSyntacticReachableExpr(funcs, reachable, worklist, field.expr),
+        .struct_literal => |lit| {
+            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, reachable, worklist, field.value);
+            if (lit.update_expr) |update| try collectSyntacticReachableExpr(funcs, reachable, worklist, update);
+        },
+        .enum_literal => |lit| for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, reachable, worklist, field.value),
+        .tuple_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, reachable, worklist, elem),
+        .array_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, reachable, worklist, elem),
+        .repeat_array_literal => |lit| try collectSyntacticReachableExpr(funcs, reachable, worklist, lit.value),
+        .index_expr => |idx| {
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, idx.target);
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, idx.index);
+        },
+        .slice_expr => |slice| {
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, slice.target);
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, slice.start);
+            try collectSyntacticReachableExpr(funcs, reachable, worklist, slice.end);
+        },
+        else => {},
+    }
+}
+
+fn collectSyntacticReachableBlock(
+    funcs: *const std.StringHashMap(void),
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    block: []const *ast.Node,
+) anyerror!void {
+    for (block) |stmt| {
+        switch (stmt.*) {
+            .let_stmt => |let| try collectSyntacticReachableExpr(funcs, reachable, worklist, let.value),
+            .let_else_stmt => |let| {
+                try collectSyntacticReachableExpr(funcs, reachable, worklist, let.value);
+                try collectSyntacticReachableBlock(funcs, reachable, worklist, let.else_block);
+            },
+            .let_destructure_stmt => |let| try collectSyntacticReachableExpr(funcs, reachable, worklist, let.value),
+            .const_stmt => |c| try collectSyntacticReachableExpr(funcs, reachable, worklist, c.value),
+            .assign_stmt => |assign| {
+                try collectSyntacticReachableExpr(funcs, reachable, worklist, assign.target);
+                try collectSyntacticReachableExpr(funcs, reachable, worklist, assign.value);
+            },
+            .block_stmt => |blk| try collectSyntacticReachableBlock(funcs, reachable, worklist, blk.body),
+            .expr_stmt => |expr| try collectSyntacticReachableExpr(funcs, reachable, worklist, expr),
+            .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, reachable, worklist, value),
+            .for_stmt => |for_stmt| {
+                try collectSyntacticReachableExpr(funcs, reachable, worklist, for_stmt.start);
+                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, reachable, worklist, end_expr);
+                try collectSyntacticReachableBlock(funcs, reachable, worklist, for_stmt.body);
+            },
+            .while_stmt => |while_stmt| {
+                try collectSyntacticReachableExpr(funcs, reachable, worklist, while_stmt.cond);
+                try collectSyntacticReachableBlock(funcs, reachable, worklist, while_stmt.body);
+            },
+            else => {},
+        }
+    }
+}
+
+fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator, program: *ast.Node) !void {
+    if (program.* != .program) return error.InvalidProgram;
+
+    var funcs = std.StringHashMap(void).init(allocator);
+    try collectTopLevelFuncNames(program, &funcs);
+    if (funcs.count() == 0) return;
+
+    var reachable = std.StringHashMap(void).init(allocator);
+    var worklist = std.ArrayList([]const u8).init(allocator);
+
+    var saw_test = false;
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .test_decl => |test_decl| {
+                saw_test = true;
+                try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, test_decl.body);
+            },
+            .const_stmt => |const_stmt| try collectSyntacticReachableExpr(&funcs, &reachable, &worklist, const_stmt.value),
+            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, macro_decl.body),
+            .impl_decl => |impl_decl| {
+                if (impl_decl.trait_name != null) {
+                    for (impl_decl.methods) |method| {
+                        if (method.* == .func_decl) try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, method.func_decl.body);
+                    }
+                }
+            },
+            .overload_decl => |overload_decl| for (overload_decl.methods) |method| {
+                if (method.* == .func_decl) try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, method.func_decl.body);
+            },
+            else => {},
+        }
+    }
+    if (!saw_test) return;
+
+    var index: usize = 0;
+    while (index < worklist.items.len) : (index += 1) {
+        const name = worklist.items[index];
+        for (program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => {
+                    if (!std.mem.eql(u8, decl.func_decl.name, name)) continue;
+                    try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, decl.func_decl.body);
+                    break;
+                },
+                .impl_decl => |impl_decl| {
+                    const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                    for (impl_decl.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const symbol = if (impl_decl.trait_name) |trait_name|
+                            try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                        else
+                            try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                        if (!std.mem.eql(u8, symbol, name)) continue;
+                        try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, method.func_decl.body);
+                        break;
+                    }
+                },
+                .overload_decl => |overload_decl| {
+                    const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                    for (overload_decl.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                        if (!std.mem.eql(u8, symbol, name)) continue;
+                        try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, method.func_decl.body);
+                        break;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .func_decl => |func_decl| {
+                if (func_decl.is_decl_only or reachable.contains(func_decl.name)) try filtered_decls.append(decl);
+            },
+            .impl_decl => |impl_decl| {
+                if (impl_decl.trait_name != null) {
+                    try filtered_decls.append(decl);
+                    continue;
+                }
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse {
+                    try filtered_decls.append(decl);
+                    continue;
+                };
+                var methods = std.ArrayList(*ast.Node).init(allocator);
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) {
+                        try methods.append(method);
+                        continue;
+                    }
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+                }
+                if (methods.items.len == impl_decl.methods.len) {
+                    try filtered_decls.append(decl);
+                } else if (methods.items.len > 0) {
+                    const pruned = try allocator.create(ast.Node);
+                    pruned.* = .{ .impl_decl = .{
+                        .trait_name = impl_decl.trait_name,
+                        .target_ty = impl_decl.target_ty,
+                        .methods = try methods.toOwnedSlice(),
+                    } };
+                    try filtered_decls.append(pruned);
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse {
+                    try filtered_decls.append(decl);
+                    continue;
+                };
+                var methods = std.ArrayList(*ast.Node).init(allocator);
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) {
+                        try methods.append(method);
+                        continue;
+                    }
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+                }
+                if (methods.items.len == overload_decl.methods.len) {
+                    try filtered_decls.append(decl);
+                } else if (methods.items.len > 0) {
+                    const pruned = try allocator.create(ast.Node);
+                    pruned.* = .{ .overload_decl = .{
+                        .target_ty = overload_decl.target_ty,
+                        .methods = try methods.toOwnedSlice(),
+                    } };
+                    try filtered_decls.append(pruned);
+                }
+            },
+            else => try filtered_decls.append(decl),
+        }
+    }
+    program.program.decls = try filtered_decls.toOwnedSlice();
+}
+
 fn pruneUnreachableFilteredTestDecls(
     allocator: std.mem.Allocator,
     program: *ast.Node,
@@ -1187,6 +1503,15 @@ fn runSlaFrontend(
         return null;
     };
     slaProfileStage(stderr, profile, "monomorphize", stage_start);
+
+    if (options.prune_for_test_codegen) {
+        stage_start = std.time.nanoTimestamp();
+        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog) catch |err| {
+            try stderr.print("Test Filter Error: failed to prune unreachable functions before type checking: {}\n", .{err});
+            return null;
+        };
+        slaProfileStage(stderr, profile, "pre-typecheck reachable decl filter", stage_start);
+    }
 
     stage_start = std.time.nanoTimestamp();
     loadImportedContracts(tc, allocator, specialized_prog, file) catch |err| {
@@ -2162,6 +2487,7 @@ fn compileSlaSabTestInput(
     const sab_out = try managedSabTestPath(allocator, file, extra_args);
     const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, .{
         .test_filter = saTestFilterFromArgs(extra_args),
+        .prune_for_test_codegen = true,
     })) orelse return null;
     if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return null;
     if (emit_sab_file) {
@@ -2187,6 +2513,7 @@ fn compileSlaSaTestInput(
 
     const sa_code = (try compileSlaToSaStringWithOptions(allocator, file, sa_out, stderr, .{
         .test_filter = saTestFilterFromArgs(extra_args),
+        .prune_for_test_codegen = true,
     })) orelse return null;
 
     std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
@@ -3117,6 +3444,52 @@ test "sla test sab backend prunes unmatched tests before type checking" {
         if (fsig.kind == .test_func) test_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), test_count);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen prunes unreachable functions before type checking" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn used_value() -> i32 {
+        \\    return 7;
+        \\};
+        \\
+        \\fn unused_broken_value() -> i32 {
+        \\    return missing_symbol();
+        \\};
+        \\
+        \\@test "reachable function only"() {
+        \\    let got = used_value();
+        \\    if got != 7 { panic(24003); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "reachable_only.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "reachable_only.sla",
+        "reachable_only.test.sa",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used_value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_broken_value") == null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

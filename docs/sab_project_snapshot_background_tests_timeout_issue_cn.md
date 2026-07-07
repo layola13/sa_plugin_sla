@@ -99,6 +99,28 @@ cd /home/vscode/projects/mnt/sla_tsgo
 
 判断：当前瓶颈仍在 SLA 前端导入展开/全量 flatten 后续流程。Module Table 防重复解析只能处理重复 import，对 project snapshot 这类大量唯一模块的图不够；后续需要 shallow exported-symbol index、namespace isolation 和 lazy typecheck，避免把所有 imported function body 拼进当前 program 后一起 typecheck。
 
+## 2026-07-07 test-codegen 可达裁剪复核
+
+`sa_plugin_sla/src/plugin.zig` 已在 test-input 生成路径启用 `pre-typecheck reachable decl filter`，会在 typecheck 前裁掉未被当前 `@test` 可达的顶层函数和 inherent impl/overload 方法。复核命令使用真实 `sla test` 路径：
+
+```sh
+cd /home/vscode/projects/mnt/sla_tsgo
+/usr/bin/time -f 'elapsed %e maxrss %M' timeout 10s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla test tests/test_project_background_update_contract.sla --test-backend sab --trace-panic
+```
+
+结果：仍为 `timeout` 退出码 124，`elapsed 10.05 maxrss 337408`。已输出 profile：
+
+- `parse`: 1774ms
+- `import expand`: 6085ms
+- `monomorphize`: 33ms
+- `pre-typecheck reachable decl filter`: 26ms
+- `load contracts`: 770ms
+- `type check`: 426ms
+
+判断：test-path 可达裁剪已把 typecheck 压到 0.5s 以内，但本工单仍未修复。当前最大前端成本仍是 import expand 约 6s，且 timeout 发生在 primary decl filter 之后、direct-SAB codegen/test 执行完成前。下一步需要 ModuleGraph/shallow symbol index，避免把大量唯一 imported AST 先拼接展开；同时 direct-SAB codegen 也需要只生成可达 test 子图。
+
 ## 期望
 
 SAB 应在 10 秒窗口内完成这些单测试的编译和执行；如果有所有权或运行期错误，应输出具体 trap，而不是无输出挂到外层 timeout。

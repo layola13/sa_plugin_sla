@@ -666,37 +666,58 @@ fn collectSlaModulesRecursive(
     try ordered.append(module);
 }
 
-fn collectTopLevelFuncNamesFromDecls(
+const SlaCallableIndex = struct {
     allocator: std.mem.Allocator,
-    decls: []const *ast.Node,
-    funcs: *std.StringHashMap(void),
-) !void {
-    for (decls) |decl| {
-        switch (decl.*) {
-            .func_decl => try funcs.put(decl.func_decl.name, {}),
-            .impl_decl => |impl_decl| {
-                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
-                for (impl_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = if (impl_decl.trait_name) |trait_name|
-                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
-                    else
-                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    try funcs.put(symbol, {});
-                }
-            },
-            .overload_decl => |overload_decl| {
-                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
-                for (overload_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    try funcs.put(symbol, {});
-                }
-            },
-            else => {},
+    names: std.StringHashMap(void),
+    bodies: std.StringHashMap([]const *ast.Node),
+
+    fn init(allocator: std.mem.Allocator) SlaCallableIndex {
+        return .{
+            .allocator = allocator,
+            .names = std.StringHashMap(void).init(allocator),
+            .bodies = std.StringHashMap([]const *ast.Node).init(allocator),
+        };
+    }
+
+    fn deinit(self: *SlaCallableIndex) void {
+        self.bodies.deinit();
+        self.names.deinit();
+    }
+
+    fn addFunction(self: *SlaCallableIndex, name: []const u8, body: []const *ast.Node) !void {
+        try self.names.put(name, {});
+        const body_entry = try self.bodies.getOrPut(name);
+        if (!body_entry.found_existing) body_entry.value_ptr.* = body;
+    }
+
+    fn addDecls(self: *SlaCallableIndex, decls: []const *ast.Node) !void {
+        for (decls) |decl| {
+            switch (decl.*) {
+                .func_decl => try self.addFunction(decl.func_decl.name, decl.func_decl.body),
+                .impl_decl => |impl_decl| {
+                    const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                    for (impl_decl.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const symbol = if (impl_decl.trait_name) |trait_name|
+                            try lowering_rules.mangleTraitMethodName(self.allocator, type_name, trait_name, method.func_decl.name)
+                        else
+                            try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
+                        try self.addFunction(symbol, method.func_decl.body);
+                    }
+                },
+                .overload_decl => |overload_decl| {
+                    const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                    for (overload_decl.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const symbol = try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
+                        try self.addFunction(symbol, method.func_decl.body);
+                    }
+                },
+                else => {},
+            }
         }
     }
-}
+};
 
 fn collectSyntacticReachableRootsFromDecls(
     funcs: *const std.StringHashMap(void),
@@ -730,49 +751,6 @@ fn collectSyntacticReachableRootsFromDecls(
     }
 }
 
-fn collectSyntacticReachableBodyForName(
-    allocator: std.mem.Allocator,
-    funcs: *const std.StringHashMap(void),
-    reachable: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
-    decls: []const *ast.Node,
-    name: []const u8,
-) !void {
-    for (decls) |decl| {
-        switch (decl.*) {
-            .func_decl => {
-                if (!std.mem.eql(u8, decl.func_decl.name, name)) continue;
-                try collectSyntacticReachableBlock(funcs, reachable, worklist, decl.func_decl.body);
-                return;
-            },
-            .impl_decl => |impl_decl| {
-                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
-                for (impl_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = if (impl_decl.trait_name) |trait_name|
-                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
-                    else
-                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    if (!std.mem.eql(u8, symbol, name)) continue;
-                    try collectSyntacticReachableBlock(funcs, reachable, worklist, method.func_decl.body);
-                    return;
-                }
-            },
-            .overload_decl => |overload_decl| {
-                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
-                for (overload_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    if (!std.mem.eql(u8, symbol, name)) continue;
-                    try collectSyntacticReachableBlock(funcs, reachable, worklist, method.func_decl.body);
-                    return;
-                }
-            },
-            else => {},
-        }
-    }
-}
-
 fn buildReachableImportedTestSymbols(
     allocator: std.mem.Allocator,
     root_program: *ast.Node,
@@ -781,28 +759,27 @@ fn buildReachableImportedTestSymbols(
 ) !?std.StringHashMap(void) {
     if (root_program.* != .program) return error.InvalidProgram;
 
-    var funcs = std.StringHashMap(void).init(allocator);
-    try collectTopLevelFuncNamesFromDecls(allocator, root_program.program.decls, &funcs);
-    for (modules) |module| try collectTopLevelFuncNamesFromDecls(allocator, module.program.program.decls, &funcs);
-    if (funcs.count() == 0) return null;
+    var callable_index = SlaCallableIndex.init(allocator);
+    defer callable_index.deinit();
+    try callable_index.addDecls(root_program.program.decls);
+    for (modules) |module| try callable_index.addDecls(module.program.program.decls);
+    if (callable_index.names.count() == 0) return null;
 
     var reachable = std.StringHashMap(void).init(allocator);
     var worklist = std.ArrayList([]const u8).init(allocator);
 
     var saw_test = false;
-    try collectSyntacticReachableRootsFromDecls(&funcs, &reachable, &worklist, root_program.program.decls, test_filter, &saw_test);
+    try collectSyntacticReachableRootsFromDecls(&callable_index.names, &reachable, &worklist, root_program.program.decls, test_filter, &saw_test);
     for (modules) |module| {
-        try collectSyntacticReachableRootsFromDecls(&funcs, &reachable, &worklist, module.program.program.decls, test_filter, &saw_test);
+        try collectSyntacticReachableRootsFromDecls(&callable_index.names, &reachable, &worklist, module.program.program.decls, test_filter, &saw_test);
     }
     if (!saw_test) return null;
 
     var index: usize = 0;
     while (index < worklist.items.len) : (index += 1) {
         const name = worklist.items[index];
-        try collectSyntacticReachableBodyForName(allocator, &funcs, &reachable, &worklist, root_program.program.decls, name);
-        for (modules) |module| {
-            try collectSyntacticReachableBodyForName(allocator, &funcs, &reachable, &worklist, module.program.program.decls, name);
-        }
+        const body = callable_index.bodies.get(name) orelse continue;
+        try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, body);
     }
 
     return reachable;
@@ -1513,35 +1490,6 @@ fn collectNeededTraitImplsBlock(
     }
 }
 
-fn collectTopLevelFuncNames(program: *const ast.Node, funcs: *std.StringHashMap(void)) !void {
-    if (program.* != .program) return error.InvalidProgram;
-    for (program.program.decls) |decl| {
-        switch (decl.*) {
-            .func_decl => try funcs.put(decl.func_decl.name, {}),
-            .impl_decl => |impl_decl| {
-                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
-                for (impl_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = if (impl_decl.trait_name) |trait_name|
-                        try lowering_rules.mangleTraitMethodName(funcs.allocator, type_name, trait_name, method.func_decl.name)
-                    else
-                        try lowering_rules.mangleMethodName(funcs.allocator, type_name, method.func_decl.name);
-                    try funcs.put(symbol, {});
-                }
-            },
-            .overload_decl => |overload_decl| {
-                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
-                for (overload_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = try lowering_rules.mangleMethodName(funcs.allocator, type_name, method.func_decl.name);
-                    try funcs.put(symbol, {});
-                }
-            },
-            else => {},
-        }
-    }
-}
-
 fn markSyntacticReachableFunc(
     funcs: *const std.StringHashMap(void),
     reachable: *std.StringHashMap(void),
@@ -1688,9 +1636,10 @@ fn collectSyntacticReachableBlock(
 fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator, program: *ast.Node) !void {
     if (program.* != .program) return error.InvalidProgram;
 
-    var funcs = std.StringHashMap(void).init(allocator);
-    try collectTopLevelFuncNames(program, &funcs);
-    if (funcs.count() == 0) return;
+    var callable_index = SlaCallableIndex.init(allocator);
+    defer callable_index.deinit();
+    try callable_index.addDecls(program.program.decls);
+    if (callable_index.names.count() == 0) return;
 
     var reachable = std.StringHashMap(void).init(allocator);
     var worklist = std.ArrayList([]const u8).init(allocator);
@@ -1700,19 +1649,19 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
         switch (decl.*) {
             .test_decl => |test_decl| {
                 saw_test = true;
-                try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, test_decl.body);
+                try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, test_decl.body);
             },
-            .const_stmt => |const_stmt| try collectSyntacticReachableExpr(&funcs, &reachable, &worklist, const_stmt.value),
-            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, macro_decl.body),
+            .const_stmt => |const_stmt| try collectSyntacticReachableExpr(&callable_index.names, &reachable, &worklist, const_stmt.value),
+            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, macro_decl.body),
             .impl_decl => |impl_decl| {
                 if (impl_decl.trait_name != null) {
                     for (impl_decl.methods) |method| {
-                        if (method.* == .func_decl) try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, method.func_decl.body);
+                        if (method.* == .func_decl) try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, method.func_decl.body);
                     }
                 }
             },
             .overload_decl => |overload_decl| for (overload_decl.methods) |method| {
-                if (method.* == .func_decl) try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, method.func_decl.body);
+                if (method.* == .func_decl) try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, method.func_decl.body);
             },
             else => {},
         }
@@ -1722,39 +1671,8 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
     var index: usize = 0;
     while (index < worklist.items.len) : (index += 1) {
         const name = worklist.items[index];
-        for (program.program.decls) |decl| {
-            switch (decl.*) {
-                .func_decl => {
-                    if (!std.mem.eql(u8, decl.func_decl.name, name)) continue;
-                    try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, decl.func_decl.body);
-                    break;
-                },
-                .impl_decl => |impl_decl| {
-                    const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
-                    for (impl_decl.methods) |method| {
-                        if (method.* != .func_decl) continue;
-                        const symbol = if (impl_decl.trait_name) |trait_name|
-                            try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
-                        else
-                            try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                        if (!std.mem.eql(u8, symbol, name)) continue;
-                        try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, method.func_decl.body);
-                        break;
-                    }
-                },
-                .overload_decl => |overload_decl| {
-                    const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
-                    for (overload_decl.methods) |method| {
-                        if (method.* != .func_decl) continue;
-                        const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                        if (!std.mem.eql(u8, symbol, name)) continue;
-                        try collectSyntacticReachableBlock(&funcs, &reachable, &worklist, method.func_decl.body);
-                        break;
-                    }
-                },
-                else => {},
-            }
-        }
+        const body = callable_index.bodies.get(name) orelse continue;
+        try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, body);
     }
 
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);

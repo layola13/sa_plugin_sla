@@ -176,3 +176,40 @@ cd /home/vscode/projects/mnt/sla_tsgo
 ## 期望
 
 SAB 应在 10 秒窗口内完成这些单测试的编译和执行；如果有所有权或运行期错误，应输出具体 trap，而不是无输出挂到外层 timeout。
+
+## 2026-07-07 callable index 进展记录
+
+`sa_plugin_sla/src/plugin.zig` 的 test-codegen 可达性阶段现在建立 `SlaCallableIndex`：root/imported `.sla` declarations 只注册一次 callable name 与函数/方法 body，之后 worklist 通过哈希表直接取 body，而不是每个 reachable name 都重新扫描 root 和所有 imported module 的 decls。
+
+当前验证：
+
+- `zig fmt --check src/plugin.zig`
+- `zig build test -Dtest-filter="sla test import expansion prunes unreachable imported functions" --summary all`
+- `zig build test -Dtest-filter="sla test codegen prunes unreachable functions before type checking" --summary all`
+- `zig build --summary all` 通过，约 40.94s，MaxRSS 约 1GB
+- `zig build test --summary all` 通过，99/99，约 53.60s，MaxRSS 约 1.1GB
+- `SA_PLUGIN_DEV=1 sa sla help` 通过
+
+安装器 gate 未通过：`sa plugin install --dev .` 一次 187.67s 无输出后被终止，一次在外层 `timeout 120s` 下超时，MaxRSS 很低，表现像 installer flow hang 而不是 Zig 编译。
+
+复核本工单真实路径仍使用 10 秒硬超时：
+
+```sh
+cd /home/vscode/projects/mnt/sla_tsgo
+/usr/bin/time -f 'elapsed %e maxrss %M' timeout 10s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla test tests/test_project_background_update_contract.sla --test-backend sab --trace-panic
+```
+
+结果：仍为 `timeout` 退出码 124，`elapsed 10.03 maxrss 358016`。已输出 profile：
+
+- `parse`: 1851ms
+- `import expand`: 5189ms
+- `monomorphize`: 3ms
+- `pre-typecheck reachable decl filter`: 1ms
+- `load contracts`: 559ms
+- `type check`: 309ms
+- `primary decl filter`: 0ms
+- `reachable decl filter`: 1ms
+
+判断：这是 ModuleGraph/lazy traversal 的数据结构基础，能消除当前早期可达分析里的重复全图 decl 扫描，但尚未关闭本工单。导入声明仍会 flatten 到当前 program，TypeChecker/monomorphizer 仍沿用现有合约；还需要 shallow exported-signature index、namespace isolation、lazy imported-body typecheck，以及 reachable filter 之后 direct-SAB codegen/依赖加载的按需化。

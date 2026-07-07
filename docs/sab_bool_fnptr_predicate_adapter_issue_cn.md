@@ -2,7 +2,7 @@
 
 日期：2026-07-06
 
-状态：待修复。下游 `sla_ecs` 已用 generated-SA 后端验证同一测试通过；默认/SAB 后端在普通 `fn(i32) -> bool` predicate adapter 路径返回错误结果。本文只记录 issue，不修改 SLA 编译器源码。
+状态：已修复并本地复验。下游 `sla_ecs` 已用 generated-SA 后端验证同一测试通过；默认/SAB 后端曾在普通 `fn(i32) -> bool` predicate adapter 路径返回错误结果。2026-07-07 已在编译器侧修复 direct-SAB bool fnptr 返回 ABI，并用本地 direct-SAB no-fallback 复验。
 
 ## 摘要
 

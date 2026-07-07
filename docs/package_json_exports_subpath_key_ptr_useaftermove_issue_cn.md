@@ -1,6 +1,16 @@
 # package_json_exports_subpath_from_text key_ptr UseAfterMove
 
-状态：新发现，待 SLA compiler/backend 修复。
+状态：当前已不复现，并用本地 rebuilt CLI 复验通过。下游 `members/packagejson/src/packagejson.sla` 现在也避免复用同一个 `key_ptr` binding 贯穿多个 helper 调用；编译器侧 raw ptr imported macro expression-output 类型修复后，`SLA_JSON_OBJECT_KEY_PTR(...)` 这类结果按只读 ptr 值参与后续调用，不再触发原 `key_ptr` UseAfterMove。官方 installed host 链路本轮未作为证据。
+
+## 当前复验
+
+```sh
+cd /home/vscode/projects/mnt/sla_tsgo
+/home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test tests/test_module_contract.sla --test-backend sa --jobs 1 --trace-panic
+/home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test tests/test_packagejson_contract.sla --test-backend sa --jobs 1 --trace-panic
+```
+
+结果：`test_module_contract.sla` 为 19/19 passed，`test_packagejson_contract.sla` 为 22/22 passed。
 
 ## 背景
 
@@ -50,4 +60,3 @@ if pkg_starts_with(subpath, subpath_len, key_ptr, pre_len) {
 
 - 阻塞 `sla_tsgo` 的 `tests/test_module_contract.sla --test-backend sa` 聚合验证。
 - 本次主线变更的 focused gates 不受影响：`tests/test_tspath_contract.sla --test-backend sa`、`tests/test_compiler_contract.sla --test-backend sa`、`tests/test_ls_contract.sla --test-backend sa` 均可继续验证。
-

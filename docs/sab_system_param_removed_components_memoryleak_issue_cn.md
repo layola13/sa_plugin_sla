@@ -221,3 +221,35 @@ label $L_ENTRY,L4
 ```
 
 未重新跑下游 `lib/system_param_table_erased.sla` 整文件测试：该文件前一次默认并行过滤测试 120s 无输出超时，继续使用最小回归和 SAB 反汇编作为本次提交证据，避免浪费编译时间和破坏增量缓存。
+
+## 2026-07-07 当前 HEAD 聚焦复验
+
+在 `34baf12` 之后重新复验本仓库最小 fixture，确认后续 direct-SAB identifier assignment 调整没有破坏字段赋值 owner RHS 的显式 consume：
+
+```bash
+timeout 10s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_field_assign_move_cleanup.sla --test-backend sab --trace-panic
+
+timeout 10s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla sab build tests/test_unit_field_assign_move_cleanup.sla \
+  --out /tmp/field_assign_move_cleanup.sab
+
+timeout 10s ./zig-out/bin/sla-local-cli \
+  sla sab disasm /tmp/field_assign_move_cleanup.sab \
+  --out /tmp/field_assign_move_cleanup.disasm.sa
+```
+
+结果：
+
+- strict direct-SAB no-fallback：3/3 passed，约 1.63s。
+- SAB build：约 1.64s。
+- 反汇编中 `clear_vec_field` 仍在字段 `store` 后发出可见 `move_`：
+
+```text
+func_decl $sla__clear_vec_field
+    store r350,0u,r345,ty:12
+    move_ r345
+    return_ r350
+```
+
+本次仍不重新跑危险下游整文件 `lib/system_param_table_erased.sla`：该路径此前长时间无输出/超时，继续使用本仓库聚焦 fixture 和 SAB 反汇编作为 compiler-owned 修复证据。

@@ -101,3 +101,19 @@ SAB 路径需要检查：
 - 与 thread-closure fnptr capture issue 区分：本 issue 没有线程、没有 closure、没有 `JoinHandle`，是普通同步 adapter predicate。
 
 下游当前继续按用户要求优先使用 generated-SA 推进 Bevy parity；SAB 问题留作编译器侧 issue。
+
+## 2026-07-07 修复记录
+
+状态：已在编译器侧修复并用本地 direct-SAB no-fallback 验证。根因与 thread-closure issue 共享：native SAB 间接调用 bool 返回时，`i1` 返回值在 caller 侧可被错误解释。SAB 函数签名层将 boolean 返回 ABI 扩宽为 `i32` 后，同步 predicate adapter 和 threaded predicate batch 均通过。
+
+验证：
+
+```sh
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_fn_ptr_value.sla --test-backend sab --jobs 1 --trace-panic
+cd /home/vscode/projects/sla_ecs
+/home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test \
+  lib/parallel_iterator.sla --filter "parallel iterator adapters" --test-backend sab --jobs 1 --trace-panic
+```
+
+下游 adapter 结果：`chain filter filter map`、`flat map flatten inspect copy clone`、`cycle take and fuse next batch` 均通过。

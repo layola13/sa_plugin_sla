@@ -134,3 +134,39 @@ SAB 路径需要重点检查：
 - closure lowered call target 与函数指针 vtable/call-target 的线程入口传递。
 
 下游当前按用户要求优先使用 generated-SA 继续推进 Bevy parity；SAB 问题留作编译器侧 issue。
+
+## 2026-07-07 修复记录
+
+状态：已在编译器侧修复并用本地 direct-SAB no-fallback 验证。官方 `sa plugin install --dev .` 本轮曾长时间无输出并被中断，因此下游 host 证据使用刚构建的 `zig-out/bin/sla-local-cli` 直接运行；提交前仍需在可用 host 环境重跑安装链路。
+
+根因与修复：
+
+- native SAB 间接调用 `fn(...) -> bool` 时，`i1` 返回 ABI 在跨 helper/thread-closure 组合路径上不稳定；SAB 函数签名层将 boolean 返回扩宽为 `i32`，返回点由 emitter/native lowering 负责 coercion，避免 `predicate(4)` 在 caller 侧变成 false。
+- `thread::spawn(^|| ...)` 的 inline-join 路径不再把同步执行的 noncopy capture 当作逃逸结果强制消费，避免 loop 分支合流时 `chunk` 在一条路径 Active、另一条路径 Consumed。
+- escaped worker 的 fnptr capture slot 现在保存实际 call target，worker 对 fnptr capture 使用 slot 地址，避免多一层间接。
+- struct literal 显式 move 字段的标识符消费延迟到所有字段生成之后，修复 `batch_count: len(batch_starts)` 在 `batch_starts` 字段 move 后再次使用的 UseAfterMove。
+
+新增/扩展回归：
+
+```text
+tests/test_unit_fn_ptr_thread_loop_partition_direct.sla
+```
+
+验证：
+
+```sh
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_fn_ptr_thread_loop_partition_direct.sla --test-backend sab --jobs 1 --trace-panic
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_fn_ptr_value.sla --test-backend sab --jobs 1 --trace-panic
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_fn_ptr_thread_pair_direct.sla --test-backend sab --jobs 1 --trace-panic
+zig build test --summary all
+cd /home/vscode/projects/sla_ecs
+/home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test \
+  lib/parallel_iterator.sla --filter "parallel iterator partition" --test-backend sab --jobs 1 --trace-panic
+/home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test \
+  lib/parallel_iterator.sla --filter "parallel iterator fold" --test-backend sab --jobs 1 --trace-panic
+/home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test \
+  lib/parallel_iterator.sla --filter "parallel iterator all any position" --test-backend sab --jobs 1 --trace-panic
+```

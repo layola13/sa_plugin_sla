@@ -1751,6 +1751,11 @@ pub const RefCellHandleReleasePlan = struct {
     release_owner_temps: bool,
 };
 
+pub const RefCellHandleCellReleaseAction = enum {
+    skip,
+    release_handle,
+};
+
 pub const RefCellCompanionStoreCleanupPlan = struct {
     consume_handle_value: bool,
     release_owner_temps: bool,
@@ -1800,6 +1805,12 @@ pub fn planRefCellHandleRelease(has_owner_temps: bool) RefCellHandleReleasePlan 
         .consume_handle_value = true,
         .release_owner_temps = has_owner_temps,
     };
+}
+
+pub fn planRefCellHandleCellRelease(handle_cell_matches_release_target: bool, handle_is_release_target: bool) RefCellHandleCellReleaseAction {
+    if (!handle_cell_matches_release_target) return .skip;
+    if (handle_is_release_target) return .skip;
+    return .release_handle;
 }
 
 pub fn planRefCellBorrowResult(target: RefCellBorrowResultTarget, value_kind: RefCellBorrowValueKind) RefCellBorrowResultPlan {
@@ -2792,6 +2803,24 @@ pub fn exprResultNeedsRelease(expr: *const ast.Node) bool {
     };
 }
 
+pub fn castResultMaterializesTemp(src_ty: *const ast.Type, dst_ty: *const ast.Type) bool {
+    return !(isPointerCarrierCastType(src_ty) and isPointerCarrierCastType(dst_ty));
+}
+
+pub fn isPointerCarrierCastType(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .pointer, .borrow => true,
+        .primitive => |p| p == .void_type,
+        .user_defined => |ud| std.mem.eql(u8, ud.name, "AtomicI32") or
+            std.mem.eql(u8, ud.name, "AtomicUsize") or
+            std.mem.eql(u8, ud.name, "RawWaker") or
+            std.mem.eql(u8, ud.name, "Waker") or
+            std.mem.eql(u8, ud.name, "LocalWaker") or
+            std.mem.eql(u8, ud.name, "Wake"),
+        else => false,
+    };
+}
+
 /// Result slots used by `if`/`match`-style expression lowering must treat
 /// pointer-passing values as moves into the slot, not copy-and-release temps.
 /// The loaded merge result becomes the sole owner/borrow carrier.
@@ -2844,6 +2873,55 @@ pub fn assignmentMovesIdentifier(
         if (std.mem.eql(u8, target_name, value_name)) return null;
     }
     return value_name;
+}
+
+pub const EscapedClosureCapturePlan = struct {
+    consumes_source: bool,
+};
+
+pub fn planEscapedClosureCapture(value_ty: *const ast.Type, value_is_copy: bool) EscapedClosureCapturePlan {
+    return .{ .consumes_source = !value_is_copy and !isBorrowLikeType(value_ty) };
+}
+
+pub const EscapedClosureCaptureSummary = struct {
+    has_fn_ptr: bool = false,
+    has_noncopy_payload: bool = false,
+};
+
+pub const EscapedClosureExecutionPlan = struct {
+    inline_join: bool,
+};
+
+pub fn accumulateEscapedClosureCapture(summary: EscapedClosureCaptureSummary, value_ty: *const ast.Type, value_is_copy: bool) EscapedClosureCaptureSummary {
+    var next = summary;
+    if (value_ty.* == .fn_ptr) next.has_fn_ptr = true;
+    if (!value_is_copy and !isBorrowLikeType(value_ty)) next.has_noncopy_payload = true;
+    return next;
+}
+
+pub fn planEscapedClosureExecution(summary: EscapedClosureCaptureSummary) EscapedClosureExecutionPlan {
+    return .{ .inline_join = summary.has_fn_ptr and summary.has_noncopy_payload };
+}
+
+pub const ValueCallArgConsumptionPlan = struct {
+    consumes_source: bool,
+};
+
+pub fn planValueCallArgConsumption(
+    arg: *const ast.Node,
+    param: ?ast.Param,
+    arg_ty: ?*const ast.Type,
+    value_is_copy: bool,
+    has_explicit_prefix: bool,
+    result_escapes_caller: bool,
+) ValueCallArgConsumptionPlan {
+    if (!result_escapes_caller) return .{ .consumes_source = false };
+    if (has_explicit_prefix) return .{ .consumes_source = false };
+    const target_param = param orelse return .{ .consumes_source = false };
+    if (target_param.is_borrow or target_param.is_move) return .{ .consumes_source = false };
+    if (arg.* != .identifier) return .{ .consumes_source = false };
+    const ty = arg_ty orelse return .{ .consumes_source = false };
+    return .{ .consumes_source = !value_is_copy and !isBorrowLikeType(ty) };
 }
 
 pub fn shouldAutoBorrowResolvedArg(
@@ -3220,6 +3298,14 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(assignmentMovesIdentifier(&target, &source, &primitive_ty, true) == null);
     try std.testing.expect(assignmentMovesIdentifier(&target, &source, &borrow_boxed_ty, false) == null);
     try std.testing.expect(assignmentMovesIdentifier(&target, &field, &boxed_ty, false) == null);
+
+    const boxed_param = ast.Param{ .name = "value", .ty = &boxed_ty };
+    try std.testing.expect(planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, true).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, false).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, true, false, true).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &borrow_boxed_ty, false, false, true).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&field, boxed_param, &boxed_ty, false, false, true).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, true, true).consumes_source);
 
     var i64_ty = ast.Type{ .primitive = .i64 };
     var borrow_i64_ty = ast.Type{ .borrow = &i64_ty };
@@ -4301,6 +4387,16 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expectEqualStrings("REFCELL_U64_TRY_BORROW_MUT", pointer_plan.tryBorrowMacroName());
     try std.testing.expectEqualStrings("REFCELL_U64_RELEASE_MUT", pointer_plan.releaseMacroName());
 
+    const escaped_copy = planEscapedClosureCapture(&i64_ty, true);
+    try std.testing.expect(!escaped_copy.consumes_source);
+
+    const escaped_move = planEscapedClosureCapture(&refcell_i64_ty, false);
+    try std.testing.expect(escaped_move.consumes_source);
+
+    var borrow_i64_ty = ast.Type{ .borrow = &i64_ty };
+    const escaped_borrow = planEscapedClosureCapture(&borrow_i64_ty, false);
+    try std.testing.expect(!escaped_borrow.consumes_source);
+
     const pointer_sa_result = planRefCellBorrowResult(.sa_text, pointer_plan.value_kind);
     try std.testing.expectEqual(RefCellBorrowResultAction.load_pointer_payload, pointer_sa_result.action);
     try std.testing.expect(pointer_sa_result.release_borrow_slot_after_payload);
@@ -4330,6 +4426,10 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expect(temp_release.release_dynamic_borrow);
     try std.testing.expect(temp_release.consume_handle_value);
     try std.testing.expect(temp_release.release_owner_temps);
+
+    try std.testing.expectEqual(RefCellHandleCellReleaseAction.skip, planRefCellHandleCellRelease(false, false));
+    try std.testing.expectEqual(RefCellHandleCellReleaseAction.skip, planRefCellHandleCellRelease(true, true));
+    try std.testing.expectEqual(RefCellHandleCellReleaseAction.release_handle, planRefCellHandleCellRelease(true, false));
 
     const companion_plain = planRefCellCompanionStoreCleanup(false, false, false);
     try std.testing.expect(companion_plain.consume_handle_value);

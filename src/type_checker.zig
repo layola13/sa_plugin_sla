@@ -990,6 +990,18 @@ pub const TypeChecker = struct {
         return ty;
     }
 
+    fn makeI64Type(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .primitive = .i64 };
+        return ty;
+    }
+
+    fn makeRawPtrType(self: *TypeChecker) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .primitive = .void_type };
+        return ty;
+    }
+
     fn makeBoolType(self: *TypeChecker) TypeError!*ast.Type {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .primitive = .boolean };
@@ -4924,6 +4936,17 @@ pub const TypeChecker = struct {
                         return ret;
                     }
                     if (macro.leading_outputs == 1 and call.args.len + 1 == macro.arity) {
+                        if (std.mem.endsWith(u8, call.func_name, "_PTR") or
+                            std.mem.endsWith(u8, call.func_name, "_DATA") or
+                            std.mem.endsWith(u8, call.func_name, "_AS_PTR"))
+                        {
+                            return try self.makeRawPtrType();
+                        }
+                        if (std.mem.endsWith(u8, call.func_name, "_LEN") or
+                            std.mem.endsWith(u8, call.func_name, "_COUNT"))
+                        {
+                            return try self.makeI64Type();
+                        }
                         return try self.makeInferType();
                     }
                     self.setError("macro {s} expects {} args or {} args when using expression output, got {}", .{ call.func_name, macro.arity, macro.arity - 1, call.args.len });

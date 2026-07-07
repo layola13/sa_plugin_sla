@@ -2631,8 +2631,8 @@ pub fn planStructLiteralField(decl: *const ast.StructDecl, lit: *const ast.Struc
 /// than emit an aliasing load/store.
 pub fn structFieldIsPointerBacked(field_ty: *const ast.Type) bool {
     return switch (field_ty.*) {
-        .primitive => |p| p == .void_type,
-        .pointer, .borrow, .fn_ptr, .user_defined, .tuple, .array => true,
+        .primitive, .pointer, .borrow, .fn_ptr => false,
+        .user_defined, .tuple, .array => true,
         else => true,
     };
 }
@@ -3506,6 +3506,15 @@ test "shared struct literal update field plan" {
     // i32 is a primitive scalar, not pointer-backed.
     try std.testing.expect(!structFieldIsPointerBacked(&i32_ty));
     try std.testing.expectEqual(StructLiteralFieldTransfer.direct, planStructLiteralFieldTransfer(y_plan, false));
+
+    var raw_ptr_ty = ast.Type{ .primitive = .void_type };
+    var pointer_ty = ast.Type{ .pointer = &i32_ty };
+    var borrow_ty = ast.Type{ .borrow = &i32_ty };
+    var fn_ptr_ty = ast.Type{ .fn_ptr = .{ .params = &.{}, .ret = &i32_ty } };
+    try std.testing.expect(!structFieldIsPointerBacked(&raw_ptr_ty));
+    try std.testing.expect(!structFieldIsPointerBacked(&pointer_ty));
+    try std.testing.expect(!structFieldIsPointerBacked(&borrow_ty));
+    try std.testing.expect(!structFieldIsPointerBacked(&fn_ptr_ty));
 
     var nested_ty = ast.Type{ .user_defined = .{ .name = "Nested", .generics = &.{} } };
     const nested_fields = [_]ast.Field{.{ .name = "payload", .ty = &nested_ty }};

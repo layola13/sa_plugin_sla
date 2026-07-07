@@ -8006,7 +8006,7 @@ pub const Codegen = struct {
         self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
         self.out.writer().print("    {s} = stack_alloc {}\n", .{ slot, typeSize(arg_ty) }) catch return CodegenError.CodegenError;
         self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ slot, value_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
-        if (callArgNeedsRelease(arg)) try self.emitRelease(value_reg);
+        if (self.importedMacroValueArgNeedsRelease(arg, value_reg)) try self.emitRelease(value_reg);
         return .{ .reg = slot, .release_after_call = false };
     }
 
@@ -8045,7 +8045,7 @@ pub const Codegen = struct {
         };
 
         self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ slot, value_reg, typeString(arg_ty) }) catch return CodegenError.CodegenError;
-        if (callArgNeedsRelease(arg)) try self.emitRelease(value_reg);
+        if (self.importedMacroValueArgNeedsRelease(arg, value_reg)) try self.emitRelease(value_reg);
         return .{ .reg = slot, .release_after_call = false };
     }
 
@@ -8077,6 +8077,32 @@ pub const Codegen = struct {
         return .{ .reg = address_reg, .release_after_call = false, .release_reg = address_reg };
     }
 
+    fn importedMacroValueArgNeedsRelease(self: *Codegen, arg: *const ast.Node, reg: []const u8) bool {
+        if (self.exprResultRegNeedsRelease(arg)) return true;
+        if (arg.* != .identifier) return false;
+
+        const name = arg.identifier;
+        const resolved_name = self.resolveBindingName(name);
+        if (std.mem.eql(u8, reg, name) or std.mem.eql(u8, reg, resolved_name)) return false;
+
+        if (self.global_scalar_consts.contains(name)) return true;
+        if (self.tc.funcs.contains(name)) {
+            if (self.resolvedTypeForExpr(arg)) |arg_ty| {
+                if (arg_ty.* == .fn_ptr) return true;
+            }
+        }
+
+        if (!std.mem.eql(u8, resolved_name, name)) {
+            if (self.addressable_bindings.contains(resolved_name)) return true;
+            return false;
+        }
+        if (self.addressable_bindings.contains(name)) return true;
+        if (self.bindingStorageAddress(name) != null) return true;
+        return !std.mem.eql(u8, reg, name) and
+            !self.global_const_bindings.contains(name) and
+            self.closure_param_regs.get(name) == null;
+    }
+
     fn genImportedMacroArg(
         self: *Codegen,
         plan: lowering_rules.ImportedMacroCallPlan,
@@ -8086,13 +8112,19 @@ pub const Codegen = struct {
     ) CodegenError!LoweredCallArg {
         const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
         if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| switch (action) {
-            .pass_value, .pass_raw_pointer_value => return .{ .reg = try self.genExpr(arg, hoisted_allocs), .release_after_call = callArgNeedsRelease(arg) },
+            .pass_value, .pass_raw_pointer_value => {
+                const reg = try self.genExpr(arg, hoisted_allocs);
+                return .{ .reg = reg, .release_after_call = self.importedMacroValueArgNeedsRelease(arg, reg) };
+            },
             else => unreachable,
         };
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg);
         const address_shape = try self.importedMacroArgAddressShape(arg);
         switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null)) {
-            .pass_value => return .{ .reg = try self.genExpr(arg, hoisted_allocs), .release_after_call = callArgNeedsRelease(arg) },
+            .pass_value => {
+                const reg = try self.genExpr(arg, hoisted_allocs);
+                return .{ .reg = reg, .release_after_call = self.importedMacroValueArgNeedsRelease(arg, reg) };
+            },
             .pass_raw_pointer_value => unreachable,
             .pass_address_expression => return self.genImportedMacroAddressExpressionArg(arg, hoisted_allocs),
             .reuse_existing_addressable => return .{ .reg = existing_symbol.?, .release_after_call = false },
@@ -8193,6 +8225,15 @@ pub const Codegen = struct {
 
     fn exprResultNeedsRelease(expr: *const ast.Node) bool {
         return lowering_rules.exprResultNeedsRelease(expr);
+    }
+
+    fn exprResultRegNeedsRelease(self: *Codegen, expr: *const ast.Node) bool {
+        if (expr.* == .cast_expr) {
+            const cast = expr.cast_expr;
+            const src_ty = self.resolvedTypeForExpr(cast.expr) orelse self.tc.expr_types.get(cast.expr) orelse return exprResultNeedsRelease(expr);
+            return lowering_rules.castResultMaterializesTemp(src_ty, cast.ty);
+        }
+        return exprResultNeedsRelease(expr);
     }
 
     fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {

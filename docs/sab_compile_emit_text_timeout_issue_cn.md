@@ -52,14 +52,16 @@ let x = 42;
 
 ```sh
 timeout 10s env SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test tests/test_emitter_js_text_contract.sla --test-backend sab
+timeout 10s env SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test tests/test_emitter_write_capture_contract.sla --test-backend sab
 ```
 
 通过结果：
 
 ```text
 [PASS] emit js text erases simple type annotation
+[PASS] emit write capture records file name and js text
 ----
-test result: ok. 1 passed; 0 failed; 0 skipped
+test result: ok.
 ```
 
 因此当前问题不是 `emit_js_text` 的简单循环逻辑。问题在 Program 级路径：

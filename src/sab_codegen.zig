@@ -8965,6 +8965,33 @@ pub const Codegen = struct {
         return vec_reg;
     }
 
+    fn genVecNewCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        const target_name = call.associated_target orelse return null;
+        if (!std.mem.eql(u8, target_name, "Vec") or !std.mem.eql(u8, call.func_name, "new") or call.args.len != 0) return null;
+        const vec_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        _ = lowering_rules.vecElementType(vec_ty) orelse return null;
+
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_new"});
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitCallBody(dst, "@sa_vec_new()");
+        return dst;
+    }
+
+    fn genVecLenCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.associated_target != null or !std.mem.eql(u8, call.func_name, "len") or call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        _ = lowering_rules.vecElementType(receiver_ty) orelse return null;
+
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_vec_len(&{s})", .{self.symbols.items[receiver_reg]}));
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        return dst;
+    }
+
     fn genVecPopCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (call.associated_target != null or !std.mem.eql(u8, call.func_name, "pop") or call.args.len != 1) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
@@ -9024,6 +9051,36 @@ pub const Codegen = struct {
         try self.emitLabel(end_label);
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
         return option_reg;
+    }
+
+    fn genVecPushCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.associated_target != null or !std.mem.eql(u8, call.func_name, "push") or call.args.len != 2) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const elem_ty = lowering_rules.vecElementType(receiver_ty) orelse return null;
+        if (lowering_rules.vecElementSlotSize(elem_ty) != 8) return null;
+
+        try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_push", "sa_mem_copy" });
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const value_reg = try self.genExpr(@constCast(call.args[1]));
+        try self.emitCallBody(receiver_reg, try std.fmt.allocPrint(self.allocator, "@sa_vec_push(^{s}, {s}, 8)", .{
+            self.symbols.items[receiver_reg],
+            self.symbols.items[value_reg],
+        }));
+
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        if (!self.isLocalReg(value_reg)) {
+            const value_ty = self.tc.expr_types.get(call.args[1]) orelse return Error.MissingType;
+            if ((try primType(value_ty)) == .ptr) {
+                try self.emitMove(value_reg);
+            } else {
+                try self.emitRelease(value_reg);
+            }
+        }
+
+        const sentinel = try self.intern(try self.newTmp());
+        try self.recordReg(sentinel);
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
     }
 
     fn genRefCellBorrowCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
@@ -9347,8 +9404,11 @@ pub const Codegen = struct {
         if (try self.genDynMethodCall(expr, call)) |reg| return reg;
         if (try self.genOptionClosureCall(expr, call)) |reg| return reg;
         if (try self.genResultUnwrap(expr, call)) |reg| return reg;
+        if (try self.genVecNewCall(expr, call)) |reg| return reg;
+        if (try self.genVecLenCall(call)) |reg| return reg;
         if (try self.genVecLiteralCall(expr, call)) |reg| return reg;
         if (try self.genVecPopCall(call)) |reg| return reg;
+        if (try self.genVecPushCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
@@ -10342,6 +10402,8 @@ pub const Codegen = struct {
             return dst;
         }
 
+        if (try self.genVecDirectIndex(idx, target_ty)) |dst| return dst;
+
         const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
         const rule = self.findStdSurfaceRule(.index, target_type_name, null) orelse return Error.UnsupportedSabDirectFeature;
         const target_reg = try self.genExpr(idx.target);
@@ -10356,6 +10418,61 @@ pub const Codegen = struct {
             .elem_ty = try self.elementLoadType(target_ty),
         });
         try self.releaseNonLocalTemps(&.{ target_reg, index_reg });
+        return dst;
+    }
+
+    fn genVecDirectIndex(self: *Codegen, idx: ast.IndexExpr, target_ty: *const ast.Type) anyerror!?u32 {
+        const elem_ty = lowering_rules.vecElementType(target_ty) orelse return null;
+        const load_ty: sig.PrimType = if (elem_ty.* == .fn_ptr)
+            .ptr
+        else switch (primType(elem_ty) catch return null) {
+            .i64 => .i64,
+            .u64 => .u64,
+            .ptr => .ptr,
+            else => return null,
+        };
+        if (lowering_rules.vecElementSlotSize(elem_ty) != 8) return null;
+
+        const target_reg = try self.genExpr(idx.target);
+        const index_reg = try self.genExpr(idx.index);
+        const data_ptr = try self.intern(try self.newTmp());
+        const len_reg = try self.intern(try self.newTmp());
+        const in_bounds = try self.intern(try self.newTmp());
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+
+        try self.emitLoad(data_ptr, target_reg, lowering_rules.VecAbi.ptr_offset, .ptr);
+        try self.emitLoad(len_reg, target_reg, lowering_rules.VecAbi.len_offset, .u64);
+        try self.emitOp(in_bounds, .ult, .{ .reg = index_reg }, .{ .reg = len_reg });
+
+        const hit_label = try self.newLabel("L_VEC_FNPTR_INDEX_HIT");
+        const miss_label = try self.newLabel("L_VEC_FNPTR_INDEX_MISS");
+        const end_label = try self.newLabel("L_VEC_FNPTR_INDEX_END");
+        try self.emitBranch(in_bounds, hit_label, miss_label);
+
+        try self.emitLabel(hit_label);
+        const offset = try self.intern(try self.newTmp());
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitOp(offset, .mul, .{ .reg = index_reg }, .{ .imm_i64 = @intCast(lowering_rules.vecElementSlotSize(elem_ty)) });
+        try self.emitPtrAdd(elem_ptr, data_ptr, .{ .reg = offset });
+        try self.emitLoad(dst, elem_ptr, 0, load_ty);
+        try self.emitBranchRelease(elem_ptr);
+        try self.emitBranchRelease(offset);
+        try self.emitBranchRelease(data_ptr);
+        try self.emitBranchRelease(in_bounds);
+        try self.emitBranchRelease(len_reg);
+        try self.emitJmp(end_label);
+
+        try self.emitLabel(miss_label);
+        try self.emitAssignImm(dst, 0);
+        try self.emitBranchRelease(data_ptr);
+        try self.emitBranchRelease(in_bounds);
+        try self.emitBranchRelease(len_reg);
+        try self.emitJmp(end_label);
+
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+        if (!self.isLocalReg(target_reg)) try self.emitRelease(target_reg);
         return dst;
     }
 

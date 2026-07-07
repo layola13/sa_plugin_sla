@@ -1,6 +1,6 @@
 # SAB parallel_runner whole-file MemoryLeak issue
 
-状态：待修复，且全量复现命令归类为危险测试。下游 `sla_ecs` 已用 generated-SA 后端验证新增 `TaskPoolBuilder` / global task-pool facade 通过；默认/SAB 后端的单个 focused tests 也通过。但当测试文件导入 `lib/parallel_runner.sla` 并执行整文件聚合测试时，SAB verifier 在 `.sab` 文件尾部报告无源码定位的 `MemoryLeak`。当前全量 `lib/parallel_runner.sla` 在本地 direct-SAB 路径 10 秒内无输出且不写出 `.sab` 产物，后续不得用长超时反复探测，应先用编译器仓库内的细化模拟 fixture 定位。
+状态：部分修复，仍开放。最小危险 repro 中的 loop 内动态索引 `Vec<fn>` 并转存到另一个 holder 已修复为 10s 内稳定通过，SAB build 从约 9.6s 降到约 2.9s；但下游整文件 `lib/parallel_runner.sla` / `task_pool_builder.sla` 仍归类为危险测试，尚未证明整文件聚合 `MemoryLeak` 全面消失。下游 `sla_ecs` 已用 generated-SA 后端验证新增 `TaskPoolBuilder` / global task-pool facade 通过；默认/SAB 后端的单个 focused tests 也通过。但当测试文件导入 `lib/parallel_runner.sla` 并执行整文件聚合测试时，历史上 SAB verifier 在 `.sab` 文件尾部报告无源码定位的 `MemoryLeak`。当前全量 `lib/parallel_runner.sla` 在本地 direct-SAB 路径 10 秒内无输出且不写出 `.sab` 产物，后续不得用长超时反复探测，应先用编译器仓库内的细化模拟 fixture 定位。
 
 ## 触发背景
 
@@ -122,6 +122,41 @@ timeout 10s /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local
 - 全量 `lib/parallel_runner.sla`：10s 无输出超时，未生成 `parallel_runner-*.sab` 缓存产物。
 
 因此当前最小可提交基线已覆盖 `Vec<fn>` struct 字段、无循环 order-position extend、以及 while-loop order-position 骨架；下一步应修复或优化 loop 内动态索引函数指针 Vec 并转存的 direct-SAB 路径，然后再继续增加多个 `Vec<fn>` 字段、`Arc<*World>` 参数、child-scope 返回 taskset、thread spawn 等维度。每个维度都必须保持 10s 内可验证。只有当某个细化 fixture 复现 MemoryLeak 或明确超过 10s，才进入对应编译器热点/cleanup 修复；全量下游文件不再作为首要定位工具。
+
+## 2026-07-07 Vec 基础快路径优化
+
+已将上一节的 `_tmp` 探针转为正式编译器回归：
+
+- `tests/test_unit_parallel_runner_loop_fnptr_transfer_direct.sla`
+
+该 fixture 覆盖 loop 内动态读取 `child.run_order_positions[order_pos]`、动态索引 `child.runs[order_pos]` 取得函数指针，并通过 `parent = ...push(parent, fnptr)` 转存到另一个 holder。它是此前 10s 内无输出的最小危险形态。
+
+修复/优化点：
+
+- `src/lowering_rules.zig` 新增共享 `VecAbi` 布局常量，和 `sa_std/alloc/vec.sal` 的 `Vec_SIZE=24`、`Vec_ptr=0`、`Vec_cap=8`、`Vec_len=16` 对齐。
+- direct SAB 为当前 8 字节 Vec 热点增加结构化快路径：`Vec::new()`、`len(Vec)`、`Vec.push(value)`、`Vec<fn>` 动态 index、`Vec<i64>` 动态 index。
+- 这些路径不再反复 fresh flatten `sa_std/vec.sa` 的 `VEC_PUSH` / `VEC_GET_TYPED_PTR` / `VEC_GET_TYPED_I64` / `VEC_LEN` / `VEC_NEW` 宏片段；反汇编中只保留直接 `@sa_vec_new`、`@sa_vec_len`、`@sa_vec_push` call body 和 `L_VEC_FNPTR_INDEX_*` 结构化分支。
+
+10s 门槛验证：
+
+```bash
+timeout 10s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla sab build tests/test_unit_parallel_runner_loop_fnptr_transfer_direct.sla \
+  --out /tmp/parallel_runner_loop_fnptr_transfer_direct.sab
+timeout 10s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_loop_fnptr_transfer_direct.sla --test-backend sab --trace-panic
+timeout 10s ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_loop_fnptr_transfer_direct.sla --test-backend sa --trace-panic
+```
+
+结果：
+
+- SAB build 通过，约 2.94s；profile 中 `load contracts` 约 1.00s，`sab direct codegen` 约 1.92s。
+- direct-SAB test 1/1 通过，约 2.88s。
+- SA backend test 1/1 通过，约 2.27s。
+- 既有安全拆分 fixture 仍通过：`test_unit_parallel_runner_min_direct.sla` direct-SAB 2/2 约 2.98s，`test_unit_parallel_runner_loop_order_direct.sla` direct-SAB 1/1 约 3.07s。
+
+结论：此前“loop 内动态索引函数指针 Vec 并转存”已从 10s 无输出/卡死降到 3s 内可验证；这修复了当前最小危险 repro 的卡死症状。性能尚未达到用户期望的约 900ms，剩余明显成本是每进程 contract load 约 1s，以及 SAB direct codegen 中仍需导入/过滤 `sa_std/vec.sa` 依赖函数约 1.9s。后续若继续压到 900ms，应优先做 std dependency/module 级缓存或更细粒度 std helper 载入，而不是继续扩大下游全量危险测试。
 
 ## 后续建议
 

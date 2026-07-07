@@ -1616,6 +1616,13 @@ pub const SliceAbi = struct {
     pub const len_offset: usize = 8;
 };
 
+pub const VecAbi = struct {
+    pub const object_size: usize = 24;
+    pub const ptr_offset: usize = 0;
+    pub const cap_offset: usize = 8;
+    pub const len_offset: usize = 16;
+};
+
 pub const OptionClosureMethodKind = enum {
     map,
     and_then,
@@ -3446,6 +3453,10 @@ test "shared ABI layout keeps fixed-array fields as pointer slots" {
     try std.testing.expectEqual(@as(usize, 16), SliceAbi.size);
     try std.testing.expectEqual(@as(usize, 0), SliceAbi.ptr_offset);
     try std.testing.expectEqual(@as(usize, 8), SliceAbi.len_offset);
+    try std.testing.expectEqual(@as(usize, 24), VecAbi.object_size);
+    try std.testing.expectEqual(@as(usize, 0), VecAbi.ptr_offset);
+    try std.testing.expectEqual(@as(usize, 8), VecAbi.cap_offset);
+    try std.testing.expectEqual(@as(usize, 16), VecAbi.len_offset);
     try std.testing.expectEqual(@as(?usize, 1), arrayRestLen(bool_array_ty.array, 1));
     try std.testing.expectEqual(@as(?usize, null), arrayRestLen(bool_array_ty.array, 3));
 

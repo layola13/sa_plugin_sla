@@ -1,6 +1,6 @@
 # SAB field move + local reassign cleanup MemoryLeak issue
 
-状态：待修复。下游 `sla_ecs` 在新增 `lib/parallel_mut_writeback.sla` 时复现：generated-SA 后端通过，但默认/SAB 后端对“从 struct 字段取出 owner 到局部变量，再把该局部变量赋回字段”的写法报 `MemoryLeak`。本文只记录 issue，不修改 SLA 编译器源码。
+状态：已修复并本地复验。下游 `sla_ecs` 在新增 `lib/parallel_mut_writeback.sla` 时曾复现：generated-SA 后端通过，但默认/SAB 后端对“从 struct 字段取出 owner 到局部变量，再把该局部变量赋回字段”的写法报 `MemoryLeak`。2026-07-07 使用当前本地 compiler/CLI 复验，SA 后端与 direct SAB 后端均 15/15 通过。
 
 ## 触发背景
 
@@ -94,3 +94,17 @@ cd /home/vscode/projects/sla_ecs
 SA_PLUGIN_DEV=1 sa sla test lib/parallel_mut_writeback.sla --jobs 1 --trace-panic
 SA_PLUGIN_DEV=1 sa sla test lib/parallel_mut_writeback.sla --test-backend sa --jobs 1 --trace-panic
 ```
+
+## 2026-07-07 复验记录
+
+使用当前仓库构建出的本地 CLI 复验：
+
+```bash
+cd /home/vscode/projects/sla_ecs
+timeout 180s /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test \
+  lib/parallel_mut_writeback.sla --test-backend sa --jobs 1 --trace-panic
+timeout 180s /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test \
+  lib/parallel_mut_writeback.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+结果：两条路径均 `15 passed; 0 failed; 0 skipped`。当前 compiler 已不再复现 `safety` local owner 写回字段后的 `MemoryLeak`。

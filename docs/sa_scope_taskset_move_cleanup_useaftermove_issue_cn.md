@@ -2,24 +2,63 @@
 
 日期：2026-07-06
 
-状态：仍开放。下游 `sla_ecs` 已对当前 scoped-task-set 和 `JoinHandle` 形态做局部规避；生成 SA 整文件聚合仍可在无关旧测试中复现同类 cleanup 问题。2026-07-06 在 execute/cli cleanup 修复后复验，仍失败于 aggregate move cleanup UseAfterMove，因此本 issue 不能随 `execute_extra`/`sab_large_execute` 一起关闭。
+状态：cleanup 子问题已修复并复验；完整下游聚合 SA 与默认/SAB 路径均已通过。`next_world` / `next_a` / `next_bag` 这类非 Copy aggregate identifier reassignment 不再生成额外 RHS release，也不会在 loop-body cleanup 阶段二次释放。完整 `/home/vscode/projects/sla_ecs/tests/test_ecs_mut_parallel.sla` 现在越过 aggregate cleanup UseAfterMove；先前观察到的 `ecs_parallel_scope_run_result_recursive` 21 args vs 22 params `InvalidArgsCount` 属于历史瞬态记录，最新复验不再复现。
 
 最新复验：
 
+本 repo 新增 focused 回归：
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_sa_aggregate_reassign_move_cleanup.sla \
+  --test-backend sa --jobs 1 --trace-panic
+
+SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_sa_aggregate_reassign_move_cleanup.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+结果均为 1/1 passed。
+
+下游局部复验：
+
 ```sh
 cd /home/vscode/projects/sla_ecs
-timeout 240s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+SA_PLUGIN_DEV=1 sa sla test lib/entity_dynamic.sla \
+  --test-backend sa --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --filter "task pool scoped task set" \
   --test-backend sa --jobs 1 --trace-panic
 ```
 
-结果仍为：
+结果：`lib/entity_dynamic.sla` 7/7 passed，`task pool scoped task set` 16/16 passed。
+
+完整聚合复验：
+
+```sh
+cd /home/vscode/projects/sla_ecs
+timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --test-backend sa --jobs 1 --trace-panic
+
+timeout 300s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
+  --jobs 1 --trace-panic
+```
+
+结果：完整 generated-SA 129/129 passed；完整默认/SAB 路径 129/129 passed。历史上同一区域曾短暂出现 `InvalidArgsCount`，但最新 full-run 证据显示它不再是当前 blocker；`--filter "task pool scoped task set"` 仍保留为本 issue 的 focused generated-SA cleanup gate。
+
+## 编译器侧修复
+
+新增回归：`tests/test_unit_sa_aggregate_reassign_move_cleanup.sla`，覆盖：
 
 ```text
-error[UseAfterMove]: moved value is no longer usable
-  in function @sla__table_erased_world_attach_with_values_TableErasedTime_Tabl
-  line 41255 (expanded 25624):     !next_world
-  register: next_world
+let (next_bag, value) = move_bag_advance(bag, ...);
+bag = next_bag;
 ```
+
+根因：identifier-to-identifier aggregate assignment 在生成 `bag = next_bag` 后，SA/SAB verifier 已把 RHS 当作 move 消费；旧 codegen 仍允许 loop-body cleanup 对 `next_bag` 发 `!next_bag`。direct SAB 旧路径同样会在 `assign bag,next_bag` 后再发 `move_ next_bag`，导致 strict SAB `UseAfterMove`。直接调用 release/move RHS 都不正确，因为会立刻生成额外消费。
+
+修复：`src/codegen.zig` 在普通 identifier assignment 写入 target 后，如果 RHS 是非 Copy、非 borrow-like 的 identifier，则只迁移 compiler-side value-state metadata 并标记 RHS consumed，不输出额外 release；target 的 consumed 状态仍在新值写入后恢复为 live。`src/sab_codegen.zig` 对 identifier assignment 采用同样策略：`assign` 后只更新 emitter consumed 状态，不再额外发 `move_`；字段/索引 `store` 路径仍保留显式 move。
+
+当前本地 10s strict direct-SAB no-fallback 复验：`tests/test_unit_sa_aggregate_reassign_move_cleanup.sla` 1/1 passed，约 2.01s。
 
 ## 摘要
 
@@ -47,7 +86,7 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test tests/test_ecs_mut_parallel.sla \
   --test-backend sa --jobs 1 --trace-panic
 ```
 
-## 当前失败输出
+## 历史 cleanup 失败输出
 
 下游规避 `next` / `handle` 后，整文件 generated-SA 聚合仍可在 table-erased world attach 路径复现同类 move cleanup 问题：
 

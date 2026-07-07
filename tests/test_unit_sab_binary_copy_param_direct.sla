@@ -1,0 +1,20 @@
+struct BinaryCopyParamResult {
+    first: int,
+    second: int,
+    third: int,
+}
+
+fn binary_copy_param_result(value: int, enabled: bool) -> BinaryCopyParamResult {
+    let first = value;
+    let second = 0;
+    if enabled { second = value + 4; };
+    let third = value + 6;
+    return BinaryCopyParamResult { first: first, second: second, third: third };
+}
+
+@test "direct sab binary copy param can be reused"() {
+    let got = binary_copy_param_result(10, true);
+    if got.first != 10 { panic(44001); };
+    if got.second != 14 { panic(44002); };
+    if got.third != 16 { panic(44003); };
+}

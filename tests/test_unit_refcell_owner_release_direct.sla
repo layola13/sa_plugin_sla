@@ -1,0 +1,27 @@
+@import "sa_std/core/refcell.sa"
+@import "sa_std/core/option.sa"
+
+struct OwnerReleasePayload {
+    value: int,
+}
+
+@test "refcell owner release clears active borrow handle"() {
+    let refcell = RefCell::new(OwnerReleasePayload { value: 17 });
+    let borrowed: &OwnerReleasePayload = refcell.borrow();
+    if borrowed.value != 17 {
+        panic(30901);
+    };
+    !refcell;
+}
+
+@test "refcell if-let failure cleanup releases active borrow handle"() {
+    let none: Option<i32> = None;
+    let result = if let Some(refcell) = Some(RefCell::new(OwnerReleasePayload { value: 23 })) && let Some(borrowed) = Some(refcell.borrow()) && let Some(_) = none {
+        borrowed.value
+    } else {
+        0
+    };
+    if result != 0 {
+        panic(30902);
+    };
+}

@@ -2,6 +2,8 @@
 
 日期：2026-07-06
 
+状态：当前仍存在的 direct scanner helper 复现面已修复并复验。该工单由 imported macro value-arg receiver-temp cleanup 覆盖修复，根因是 `STR_PTR(...)` / `STR_LEN(...)` 的 receiver load 临时寄存器没有在宏展开后释放。文档早期提到的部分 subpath/imports helper 在当前下游源码中已移除或改写，无法原样复验。
+
 ## 背景
 
 `/home/vscode/projects/mnt/sla_tsgo` 在继续移植 `typescript-go/internal/modulespecifiers/specifiers.go`
@@ -107,6 +109,34 @@ error[MemoryLeak]: live registers remain at function exit
 `module_specifier_try_node_module_specifier` 的 package-root trimming 与 inaccessible node_modules 两个断言。
 
 进一步验证中，`module_specifier_count_path_components`、`module_specifier_contains_ignored_path` 等新增
-ptr/len scanner helper 的 direct contract 调用也会在测试函数出口触发同类 MemoryLeak。因此当前项目侧只保留
-已经稳定通过的 19 个 modulespecifiers contract 用例；本文件记录的新增 scanner/path-choice 用例待编译器
-cleanup 修复后恢复。
+ptr/len scanner helper 的 direct contract 调用也曾在测试函数出口触发同类 MemoryLeak。因此项目侧曾只保留
+已经稳定通过的 19 个 modulespecifiers contract 用例；当前编译器 cleanup 修复后，scanner/path-choice/node_modules
+direct helper 用例已恢复到稳定 contract。
+
+## 修复与复验
+
+当前 `src/codegen.zig` / `src/sab_codegen.zig` 已在 imported macro value 参数求值产生临时结果时释放该参数寄存器。插件内回归 `tests/test_unit_str_ptr_len_identifier_direct.sla` 覆盖 `STR_PTR(text)` / `STR_LEN(text)` identifier receiver 临时值。
+
+下游稳定 direct regression 已恢复，覆盖：
+
+```sla
+let rel = "./pkg/foo/bar";
+let ignored = "/repo/node_modules/.cache/pkg/index.d.ts";
+let clean = "/repo/node_modules/pkg/index.d.ts";
+module_specifier_count_path_components(STR_PTR(rel), STR_LEN(rel));
+module_specifier_contains_ignored_path(STR_PTR(ignored), STR_LEN(ignored));
+module_specifier_contains_ignored_path(STR_PTR(clean), STR_LEN(clean));
+module_specifier_choose_local_specifier(...);
+module_specifier_try_node_module_specifier(...);
+```
+
+验证命令：
+
+```sh
+cd /home/vscode/projects/mnt/sla_tsgo
+SA_PLUGIN_DEV=1 sa sla check members/modulespecifiers/src/modulespecifiers.sla
+SA_PLUGIN_DEV=1 sa sla test tests/test_modulespecifiers_contract.sla --test-backend sa
+SA_PLUGIN_DEV=1 sa sla test tests/test_modulespecifiers_contract.sla --jobs 1 --trace-panic
+```
+
+结果：稳定 contract 的 path scanner、local-choice、node_modules info direct helper 用例已恢复；host `--test-backend sa` 下 24/24 通过。

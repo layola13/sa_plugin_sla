@@ -4864,7 +4864,7 @@ pub const Codegen = struct {
         if (self.borrowedBindingNeedsStackStorage(name, let_ty)) {
             try self.emitStackAlloc(dst, typeSize(let_ty));
             try self.emitStore(dst, 0, src, try storagePrimType(let_ty));
-            if (!self.isLocalReg(src)) try self.emitRelease(src);
+            if (!self.isLocalReg(src) and !self.non_owning_regs.contains(src)) try self.emitRelease(src);
             try self.pushStackLocal(name, dst, let_ty);
             return;
         }
@@ -7226,7 +7226,11 @@ pub const Codegen = struct {
         const value = try self.genExpr(assign.value);
         try self.assignToIdentifier(name, value);
         const target_ty = self.localType(name) orelse (try self.exprTypeOrFallback(assign.target)) orelse return Error.MissingType;
-        try self.markAssignmentMovedSourceWithType(assign.target, assign.value, target_ty);
+        if (assign.value.* == .identifier) {
+            if (lowering_rules.assignmentMovesIdentifier(assign.target, assign.value, target_ty, self.typeIsCopyValue(target_ty))) |moved_name| {
+                if (self.localReg(moved_name)) |source_reg| try self.markConsumed(source_reg);
+            }
+        }
     }
 
     fn genExpr(self: *Codegen, expr: *ast.Node) anyerror!u32 {

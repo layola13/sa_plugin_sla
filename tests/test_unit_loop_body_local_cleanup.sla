@@ -1,0 +1,21 @@
+fn loop_body_local_cleanup(limit: int) -> int {
+    let i = 0;
+    while i < limit {
+        let c = i;
+        if c == 0 {
+            i = i + 1;
+        } else {
+            if c == 1 {
+                i = i + 1;
+            } else {
+                break;
+            };
+        };
+    }
+    return i;
+}
+
+@test "while body locals are cleaned before natural loop backedge"() {
+    let got = loop_body_local_cleanup(5);
+    if got != 2 { panic(43001); };
+}

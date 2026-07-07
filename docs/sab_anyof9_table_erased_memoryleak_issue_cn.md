@@ -3,28 +3,35 @@
 ## 状态
 - 发现日期: 2026-07-06
 - 发现仓库: `/home/vscode/projects/sla_ecs`
-- 仅报告 issue, 未修改 SLA 编译器源码。
-- 2026-07-06 复验：当前安装态 dev plugin 仍复现；这是当前 docs-priority 开放 compiler/SAB cleanup issue。
+- 状态：编译器-owned `first_type_id` MemoryLeak 已修复并复验。direct SAB 对入口 stack-slot 化后的 by-value Copy 标量参数现在发出 SAB 可见 `.move_` consume 指令，而不是只更新 codegen 内部状态。
+- 剩余 world focused `panic 15305` 在 generated-SA backend 与 strict SAB backend 同样复现，属于下游 table-erased AnyOf10 业务/语义断言，不再是 SAB verifier blocker。
 
 ## 最新复验
 ```bash
 cd /home/vscode/projects/sla_ecs
 timeout 120s env SA_PLUGIN_DEV=1 sa sla test lib/world_table_erased.sla \
-  --filter "anyof nested" --jobs 1 --trace-panic
+  --filter "anyof nested" --test-backend sa --jobs 1 --trace-panic
 
-timeout 120s env SA_PLUGIN_DEV=1 sa sla test lib/system_param_table_erased.sla \
-  --filter "filtered pair mut system params" --jobs 1 --trace-panic
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test lib/world_table_erased.sla \
+  --filter "anyof nested" --test-backend sab --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test lib/system_param_table_erased.sla \
+  --filter "filtered pair mut system params" --test-backend sab --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test lib/system_param_table_erased_relationship.sla \
+  --filter "relationship anyof query resource" --test-backend sab --jobs 1 --trace-panic
+
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test lib/system_param_table_erased_observer.sla \
+  --filter "observer anyof6 query resource" --test-backend sab --jobs 1 --trace-panic
 ```
 
-结果：两条默认/SAB focused gate 均仍失败，函数出口保留 active `first_type_id`：
+结果：`system_param_table_erased`、relationship wrapper、observer wrapper focused strict SAB gate 均通过，不再出现 active `first_type_id`。`world_table_erased --filter "anyof nested"` 不再出现 verifier `MemoryLeak`，但 SA backend 和 strict SAB backend 均失败于同一个业务断言：
 
 ```text
-error[MemoryLeak]: live registers remain at function exit
-  register: first_type_id
-  state: Active
+panic: code=15305
 ```
 
-这说明后续修复仍应落在 `sa_plugin_sla` 的 shared lowering / direct SAB cleanup 路径；`sla_ecs` 只作为下游回归证据。
+因此本 issue 的 compiler/SAB cleanup blocker 已关闭；`15305` 应在下游语义/业务断言上下文中单独处理。
 
 ## 复现命令
 ```bash
@@ -45,7 +52,7 @@ timeout 120s env SA_PLUGIN_DEV=1 sa sla test lib/system_param_table_erased.sla \
   --filter "filtered pair mut system params" --jobs 1 --trace-panic
 ```
 
-## 现象
+## 历史现象
 - `sa sla check lib/world_table_erased.sla`: 通过。
 - `sa sla check lib/system_param_table_erased.sla`: 通过。
 - generated-SA backend focused tests 通过:

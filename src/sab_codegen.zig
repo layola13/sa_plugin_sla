@@ -2244,7 +2244,7 @@ pub const Codegen = struct {
         if (cap == .raw) return .skip;
         if (cap == .borrow) return .release;
         const ty = local.ty orelse return .skip;
-        if (ty.* == .fn_ptr) return .mark_consumed;
+        if (ty.* == .fn_ptr) return .consume;
         if (self.typeIsCopyValue(ty)) return .consume;
         if ((try primType(ty)) == .ptr) return .consume;
         return .skip;

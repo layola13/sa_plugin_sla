@@ -151,6 +151,12 @@ fn appendPlaceholder(out: *std.ArrayList(u8), text: []const u8, index: *usize, c
         index.* += "$ORD".len;
         return true;
     }
+    if (startsWithAt(text, i + 1, ctx.type_prefix) and placeholderBoundary(text, i + 1 + ctx.type_prefix.len)) {
+        const type_index = ctx.current_index orelse return SourceExpandError.InvalidExpandTuple;
+        out.writer().print("{s}{}", .{ ctx.type_prefix, type_index }) catch return SourceExpandError.OutOfMemory;
+        index.* += 1 + ctx.type_prefix.len;
+        return true;
+    }
     if (startsWithAt(text, i, "$T")) {
         const type_index = ctx.current_index orelse return SourceExpandError.InvalidExpandTuple;
         out.writer().print("{s}{}", .{ ctx.type_prefix, type_index }) catch return SourceExpandError.OutOfMemory;
@@ -269,6 +275,10 @@ fn isIdentContinue(c: u8) bool {
     return isIdentStart(c) or std.ascii.isDigit(c);
 }
 
+fn placeholderBoundary(source: []const u8, index: usize) bool {
+    return index >= source.len or !isIdentContinue(source[index]);
+}
+
 fn ordinalName(index: usize) ?[]const u8 {
     return switch (index) {
         0 => "first",
@@ -330,6 +340,24 @@ test "expand tuple ordinal placeholder" {
     try std.testing.expect(std.mem.indexOf(u8, expanded, "first: T0") != null);
     try std.testing.expect(std.mem.indexOf(u8, expanded, "second: T1") != null);
     try std.testing.expect(std.mem.indexOf(u8, expanded, "third: T2") != null);
+}
+
+test "expand tuple current type placeholder follows prefix" {
+    const source =
+        \\@expand_tuple(1, 2, P) {
+        \\struct ParamSet$N<@join(P, ", ") { $P }> {
+        \\@each(P) {
+        \\    p$I: $P,
+        \\}
+        \\}
+        \\}
+    ;
+    const expanded = try expand(std.testing.allocator, source);
+    defer std.testing.allocator.free(expanded);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "struct ParamSet1<P0>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "p0: P0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "struct ParamSet2<P0, P1>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expanded, "p1: P1") != null);
 }
 
 test "expand tuple processes multiple top level directives" {

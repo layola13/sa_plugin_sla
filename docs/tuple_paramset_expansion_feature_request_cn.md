@@ -1,6 +1,8 @@
 # Tuple / ParamSet 展开能力 feature request
 
-状态：需求待设计。下游 `sla_ecs` 在追齐 Bevy ECS `ParamSet` tuple parity 时，已经暴露出手写宽度展开不可持续：普通 `TableErasedWorld` 已写到 7 组 disjoint pair-mut query，relationship wrapper 也写到 7 组，observer wrapper 到 6 组。继续手写到 Bevy 当前上限 8 可以短期补洞，但会制造大量重复 SLA 源码和 SAB 编译压力；如果未来需要 16、32、100 组，同样模式会彻底失控。
+状态：第一阶段基线已实现并验证。下游 `sla_ecs` 在追齐 Bevy ECS `ParamSet` tuple parity 时，已经暴露出手写宽度展开不可持续：普通 `TableErasedWorld` 已写到 7 组 disjoint pair-mut query，relationship wrapper 也写到 7 组，observer wrapper 到 6 组。继续手写到 Bevy 当前上限 8 可以短期补洞，但会制造大量重复 SLA 源码和 SAB 编译压力；如果未来需要 16、32、100 组，同样模式会彻底失控。
+
+2026-07-07 更新：编译器现有 `@expand_tuple(min, max, P)` 已补齐“当前类型项 placeholder 跟随声明前缀”的能力，模板中可直接写 `$P`，不再被硬编码 `$T` 限制。新增 `tests/test_unit_expand_tuple_paramset.sla` 作为 ParamSet 基线，覆盖宽度 1/2/3 的 struct/构造器展开、展开类型进入函数指针 runner、以及顺序 writeback。该阶段没有引入 `P...` / `@for_each_index` 新语法，剩余语法糖、展开索引诊断和宽度 8/16 压力测试仍属后续工作。
 
 本文只记录 SLA 编译器 / 语言层 feature request，不要求在 `sla_ecs` 继续堆手写展开，也不修改 SLA 编译器源码。
 
@@ -150,6 +152,8 @@ fn use_two(param: ParamSet<Pos, Vel>) -> ParamSet<Pos, Vel> {
 
 ### 测试 1：宽度 1/2/3 生成 struct 与构造器
 
+状态：已用现有 `@expand_tuple` 语法覆盖。测试文件：`tests/test_unit_expand_tuple_paramset.sla`。
+
 目标：证明泛型参数、字段、构造器实参、struct literal 字段都能按宽度展开。
 
 断言：
@@ -159,6 +163,8 @@ fn use_two(param: ParamSet<Pos, Vel>) -> ParamSet<Pos, Vel> {
 - `ParamSet<Pos, Vel, Marker>` 可访问 `p0`、`p1`、`p2`。
 
 ### 测试 2：展开函数指针参数
+
+状态：已用现有 `@expand_tuple` 语法覆盖。该测试同时修复了 direct-SAB 对 fn-ptr 参数退出 cleanup 只做内部 consumed 标记、未发出 verifier 可见 `move_` 的问题。
 
 目标：证明展开出来的 `ParamSet<P...>` 可以作为函数指针入参和返回值。
 
@@ -174,6 +180,8 @@ fn run_param_set<P...>(param: ParamSet<P...>, run: fn(ParamSet<P...>) -> ParamSe
 
 ### 测试 3：顺序 fold writeback
 
+状态：已覆盖顺序 writeback 基线。当前测试用手写 concrete `write_three` 验证展开 ParamSet 的字段按 `0, 1, 2` 稳定写回；模板内 `@fold` 语法仍未实现。
+
 目标：证明展开代码中的顺序写回稳定，不能被并发或优化重排。
 
 示例：
@@ -187,6 +195,8 @@ state = write_slot(state, i, param.p{i}.value);
 
 ### 测试 4：错误定位包含展开索引
 
+状态：未实现。当前 `@expand_tuple` 仍是源码级展开，诊断可以落到 expanded 源行，但没有专门报告模板宽度和当前索引。
+
 目标：展开模板内部类型错误时，诊断能指向模板源码和具体展开索引。
 
 示例：在 `p{i}.missing_field` 上制造错误。
@@ -199,12 +209,49 @@ state = write_slot(state, i, param.p{i}.value);
 
 ### 测试 5：上限压力测试不落盘 generated-SA
 
+状态：未实现。当前基线只覆盖宽度 1/2/3；宽度 8/16 压力和不依赖 generated-SA 文件仍需后续单独验证。
+
 目标：宽度 8 和宽度 16 的展开可以通过 SAB/default 编译测试，不生成或要求提交 `.test.sa`。
 
 断言：
 
 - `sa sla test tests/test_tuple_expansion.sla --trace-panic` 通过。
 - 测试后仓库内没有新增 tracked 或落盘依赖的 `*.test.sa`。
+
+## 2026-07-07 第一阶段验证
+
+实现内容：
+
+- `src/source_expand.zig`：`@expand_tuple(min, max, P)` 的当前类型 placeholder 跟随声明前缀，`$P` 会在 `@each(P)` / `@join(P, ...)` 内展开为 `P0`、`P1` 等。
+- `src/sab_codegen.zig`：函数指针参数在函数退出 cleanup 时发出 verifier 可见 `move_`，避免展开 runner `run(param)` 后 `run` 参数仍为 Active。
+- `tests/test_unit_expand_tuple_paramset.sla`：新增 ParamSet 最小基线。
+
+验证命令：
+
+```bash
+zig test src/source_expand.zig --test-filter "expand tuple"
+zig build --summary all
+./zig-out/bin/sla-local-cli sla test tests/test_unit_expand_tuple_paramset.sla --test-backend sa --trace-panic
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_expand_tuple_paramset.sla --test-backend sab --trace-panic
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_fn_ptr_value.sla --test-backend sab --trace-panic
+./zig-out/bin/sla-local-cli sla sab build tests/test_unit_expand_tuple_paramset.sla --out /tmp/expand_tuple_paramset.sab
+./zig-out/bin/sla-local-cli sla sab disasm /tmp/expand_tuple_paramset.sab --out /tmp/expand_tuple_paramset.disasm.sa
+```
+
+结果：
+
+- `source_expand` 聚焦测试 4/4 通过。
+- ParamSet fixture：SA 3/3、direct-SAB 3/3 通过。
+- 既有 fn-ptr direct-SAB fixture：11/11 通过。
+- `run_expanded_param_set2<Pos, Vel>` 反汇编确认 `call_indirect` 后已有 `move_` 清理 fn-ptr 参数：
+
+```text
+call_indirect r243,"tmp_166","sla__run_expanded_param_set2_Pos_Vel__param_0_param"
+move_ r242
+move_ r241
+move_ r240
+return_ r243
+```
 
 ## `sla_ecs` 验收场景
 

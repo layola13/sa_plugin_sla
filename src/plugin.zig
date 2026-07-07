@@ -1377,6 +1377,142 @@ fn collectReachableBlock(
     }
 }
 
+fn dynConcreteTypeName(ty: *const ast.Type) ?[]const u8 {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .borrow => |b| curr = b,
+            .pointer => |p| curr = p,
+            .user_defined => |ud| {
+                if (std.mem.startsWith(u8, ud.name, "__dyn_")) return null;
+                if ((std.mem.eql(u8, ud.name, "Box") or std.mem.eql(u8, ud.name, "Rc") or std.mem.eql(u8, ud.name, "Arc")) and ud.generics.len == 1) {
+                    return dynConcreteTypeName(ud.generics[0]);
+                }
+                return ud.name;
+            },
+            else => return null,
+        }
+    }
+}
+
+fn markNeededTraitImplForExpr(
+    allocator: std.mem.Allocator,
+    tc: *const type_checker_mod.TypeChecker,
+    needed: *std.StringHashMap(void),
+    expr: *const ast.Node,
+    trait_name: []const u8,
+) !void {
+    const source_expr = if (expr.* == .borrow_expr) expr.borrow_expr.expr else expr;
+    const source_ty = tc.expr_types.get(source_expr) orelse tc.expr_types.get(expr) orelse return;
+    const type_name = dynConcreteTypeName(source_ty) orelse return;
+    const key = try std.fmt.allocPrint(allocator, "{s}|{s}", .{ trait_name, type_name });
+    try needed.put(key, {});
+}
+
+fn collectNeededTraitImplsExpr(
+    allocator: std.mem.Allocator,
+    tc: *const type_checker_mod.TypeChecker,
+    needed: *std.StringHashMap(void),
+    expr: *const ast.Node,
+) anyerror!void {
+    if (tc.dyn_borrow_args.get(expr)) |trait_name| try markNeededTraitImplForExpr(allocator, tc, needed, expr, trait_name);
+    if (tc.dyn_box_coercions.get(expr)) |trait_name| try markNeededTraitImplForExpr(allocator, tc, needed, expr, trait_name);
+    if (tc.dyn_rc_coercions.get(expr)) |trait_name| try markNeededTraitImplForExpr(allocator, tc, needed, expr, trait_name);
+
+    switch (expr.*) {
+        .call_expr => |call| for (call.args) |arg| try collectNeededTraitImplsExpr(allocator, tc, needed, arg),
+        .if_expr => |ife| {
+            try collectNeededTraitImplsExpr(allocator, tc, needed, ife.cond);
+            if (ife.let_chain) |chain| {
+                for (chain) |cond| try collectNeededTraitImplsExpr(allocator, tc, needed, cond.value);
+            }
+            try collectNeededTraitImplsBlock(allocator, tc, needed, ife.then_block);
+            if (ife.else_block) |else_block| try collectNeededTraitImplsBlock(allocator, tc, needed, else_block);
+        },
+        .switch_expr => |swe| {
+            try collectNeededTraitImplsExpr(allocator, tc, needed, swe.val);
+            for (swe.cases) |case| {
+                try collectNeededTraitImplsExpr(allocator, tc, needed, case.pattern);
+                try collectNeededTraitImplsBlock(allocator, tc, needed, case.body);
+            }
+        },
+        .match_expr => |mat| {
+            try collectNeededTraitImplsExpr(allocator, tc, needed, mat.val);
+            for (mat.cases) |case| {
+                if (case.guard) |guard| try collectNeededTraitImplsExpr(allocator, tc, needed, guard);
+                try collectNeededTraitImplsBlock(allocator, tc, needed, case.body);
+            }
+        },
+        .unsafe_expr => |unsafe_expr| try collectNeededTraitImplsBlock(allocator, tc, needed, unsafe_expr.body),
+        .await_expr => |await_expr| try collectNeededTraitImplsExpr(allocator, tc, needed, await_expr.expr),
+        .try_expr => |try_expr| try collectNeededTraitImplsExpr(allocator, tc, needed, try_expr.expr),
+        .binary_expr => |bin| {
+            try collectNeededTraitImplsExpr(allocator, tc, needed, bin.left);
+            try collectNeededTraitImplsExpr(allocator, tc, needed, bin.right);
+        },
+        .closure_literal => |closure| try collectNeededTraitImplsExpr(allocator, tc, needed, closure.body),
+        .borrow_expr => |borrow| try collectNeededTraitImplsExpr(allocator, tc, needed, borrow.expr),
+        .move_expr => |move| try collectNeededTraitImplsExpr(allocator, tc, needed, move.expr),
+        .deref_expr => |deref| try collectNeededTraitImplsExpr(allocator, tc, needed, deref.expr),
+        .cast_expr => |cast| try collectNeededTraitImplsExpr(allocator, tc, needed, cast.expr),
+        .field_expr => |field| try collectNeededTraitImplsExpr(allocator, tc, needed, field.expr),
+        .struct_literal => |lit| {
+            for (lit.fields) |field| try collectNeededTraitImplsExpr(allocator, tc, needed, field.value);
+            if (lit.update_expr) |update| try collectNeededTraitImplsExpr(allocator, tc, needed, update);
+        },
+        .enum_literal => |lit| for (lit.fields) |field| try collectNeededTraitImplsExpr(allocator, tc, needed, field.value),
+        .tuple_literal => |lit| for (lit.elements) |elem| try collectNeededTraitImplsExpr(allocator, tc, needed, elem),
+        .array_literal => |lit| for (lit.elements) |elem| try collectNeededTraitImplsExpr(allocator, tc, needed, elem),
+        .repeat_array_literal => |lit| try collectNeededTraitImplsExpr(allocator, tc, needed, lit.value),
+        .index_expr => |idx| {
+            try collectNeededTraitImplsExpr(allocator, tc, needed, idx.target);
+            try collectNeededTraitImplsExpr(allocator, tc, needed, idx.index);
+        },
+        .slice_expr => |slice| {
+            try collectNeededTraitImplsExpr(allocator, tc, needed, slice.target);
+            try collectNeededTraitImplsExpr(allocator, tc, needed, slice.start);
+            try collectNeededTraitImplsExpr(allocator, tc, needed, slice.end);
+        },
+        else => {},
+    }
+}
+
+fn collectNeededTraitImplsBlock(
+    allocator: std.mem.Allocator,
+    tc: *const type_checker_mod.TypeChecker,
+    needed: *std.StringHashMap(void),
+    block: []const *ast.Node,
+) anyerror!void {
+    for (block) |stmt| {
+        switch (stmt.*) {
+            .let_stmt => |let| try collectNeededTraitImplsExpr(allocator, tc, needed, let.value),
+            .let_else_stmt => |let| {
+                try collectNeededTraitImplsExpr(allocator, tc, needed, let.value);
+                try collectNeededTraitImplsBlock(allocator, tc, needed, let.else_block);
+            },
+            .let_destructure_stmt => |let| try collectNeededTraitImplsExpr(allocator, tc, needed, let.value),
+            .const_stmt => |c| try collectNeededTraitImplsExpr(allocator, tc, needed, c.value),
+            .assign_stmt => |assign| {
+                try collectNeededTraitImplsExpr(allocator, tc, needed, assign.target);
+                try collectNeededTraitImplsExpr(allocator, tc, needed, assign.value);
+            },
+            .block_stmt => |blk| try collectNeededTraitImplsBlock(allocator, tc, needed, blk.body),
+            .expr_stmt => |expr| try collectNeededTraitImplsExpr(allocator, tc, needed, expr),
+            .return_stmt => |ret| if (ret.value) |value| try collectNeededTraitImplsExpr(allocator, tc, needed, value),
+            .for_stmt => |for_stmt| {
+                try collectNeededTraitImplsExpr(allocator, tc, needed, for_stmt.start);
+                if (for_stmt.end) |end_expr| try collectNeededTraitImplsExpr(allocator, tc, needed, end_expr);
+                try collectNeededTraitImplsBlock(allocator, tc, needed, for_stmt.body);
+            },
+            .while_stmt => |while_stmt| {
+                try collectNeededTraitImplsExpr(allocator, tc, needed, while_stmt.cond);
+                try collectNeededTraitImplsBlock(allocator, tc, needed, while_stmt.body);
+            },
+            else => {},
+        }
+    }
+}
+
 fn collectTopLevelFuncNames(program: *const ast.Node, funcs: *std.StringHashMap(void)) !void {
     if (program.* != .program) return error.InvalidProgram;
     for (program.program.decls) |decl| {
@@ -1719,6 +1855,37 @@ fn pruneUnreachableFilteredTestDecls(
         try collectReachableBlock(tc, &reachable, &worklist, func.body);
     }
 
+    var needed_trait_impls = std.StringHashMap(void).init(allocator);
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .test_decl => |test_decl| try collectNeededTraitImplsBlock(allocator, tc, &needed_trait_impls, test_decl.body),
+            .const_stmt => |const_stmt| try collectNeededTraitImplsExpr(allocator, tc, &needed_trait_impls, const_stmt.value),
+            .func_decl => |func_decl| {
+                if (reachable.contains(func_decl.name)) try collectNeededTraitImplsBlock(allocator, tc, &needed_trait_impls, func_decl.body);
+            },
+            .impl_decl => |impl_decl| {
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (reachable.contains(symbol)) try collectNeededTraitImplsBlock(allocator, tc, &needed_trait_impls, method.func_decl.body);
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (reachable.contains(symbol)) try collectNeededTraitImplsBlock(allocator, tc, &needed_trait_impls, method.func_decl.body);
+                }
+            },
+            else => {},
+        }
+    }
+
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
     for (program.program.decls) |decl| {
         switch (decl.*) {
@@ -1727,7 +1894,23 @@ fn pruneUnreachableFilteredTestDecls(
             },
             .impl_decl => |impl_decl| {
                 if (impl_decl.trait_name != null) {
-                    try filtered_decls.append(decl);
+                    const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse {
+                        try filtered_decls.append(decl);
+                        continue;
+                    };
+                    const key = try std.fmt.allocPrint(allocator, "{s}|{s}", .{ impl_decl.trait_name.?, type_name });
+                    var keep_impl = needed_trait_impls.contains(key);
+                    if (!keep_impl) {
+                        for (impl_decl.methods) |method| {
+                            if (method.* != .func_decl) continue;
+                            const symbol = try lowering_rules.mangleTraitMethodName(allocator, type_name, impl_decl.trait_name.?, method.func_decl.name);
+                            if (reachable.contains(symbol)) {
+                                keep_impl = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (keep_impl) try filtered_decls.append(decl);
                     continue;
                 }
                 const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse {
@@ -3981,6 +4164,63 @@ test "sla sab test codegen omits unreachable functions after type checking" {
     }
     try std.testing.expect(saw_used);
     try std.testing.expect(!saw_unused);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab test codegen omits unreachable trait impls after type checking" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\trait UnusedTrait {
+        \\    fn value(&self) -> i32;
+        \\}
+        \\
+        \\struct UnusedType {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl UnusedTrait for UnusedType {
+        \\    fn value(&self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\}
+        \\
+        \\@test "trait impl output pruning"() {
+        \\    let item = UnusedType { value: 7 };
+        \\    if item.value != 7 { panic(24007); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "trait_impl_output.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "trait_impl_output.sla",
+        ".sla-cache/sab/trait_impl_output.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    for (module.function_sigs) |fsig| {
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "UnusedTrait") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "UnusedType_value") == null);
+    }
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

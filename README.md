@@ -1,53 +1,111 @@
 # sa_plugin_sla
 
-Sla compiler and tools plugin for Safe ASM (SA).
+Safe ASM (SA) 的 Sla 编译器与工具插件。提供 Sla → SA 编译能力，并向宿主 SA 环境暴露一组 skill 和 CLI 命令。
 
-## Overview
-This is the standalone Sla compiler plugin, providing Sla-to-SA compilation capabilities. It exposes the following skills and CLI commands to the host SA environment:
-- `sa sla init [path]`: Create a minimal SLA binary project with `sa.mod`, `src/main.sla`, and `.gitignore` entries for `.sla-cache/`.
-- `sa sla skills [--json]`: List SLA plugin capabilities. Text mode also writes `.codex/skills/sla/SKILL.md` and `.claude/skills/sla/SKILL.md` into the current directory.
-- `sa sla build <file>`: Compile a `.sla` source file into a verified `.sa` assembly file.
-- `sa sla build-exe <file>`: Compile a `.sla` source file to a native executable through the direct SAB path, using a managed `.sla-cache/sab/...` input for the delegated `sa build-exe` step.
-- `sa sla sab build <file>`: Compile `.sla` directly to SAB bytes. By default the managed artifact is written under `.sla-cache/sab/`; pass `--out <file.sab>` to also write a visible SAB file.
-- `sa sla sab workspace`: Resolve the current `sa.mod` workspace member, compile it through managed SAB, and delegate to `sa build-exe`. Use `-p <package>` to select a member and `--sab-out <file.sab>` to also write an inspection artifact.
-- `sa sla sab disasm <file.sab>`: Disassemble a SAB file for debugging; this is not part of the compile path.
-- `sa slab ...`: Short alias for `sa sla sab ...`.
-- `sa sla check <file>`: Lex, parse, and type-check a `.sla` source file without emitting final SA assembly.
-- `sa sla test <file>`: Compile a `.sla` test file to managed SAB under `.sla-cache/sab/` and run it through `sa test`. The default `auto` backend uses the SAB mainline; use `--test-backend sa` only when explicitly debugging the legacy `.test.sa` path, or `--test-backend sab` to spell out strict SAB mode.
+## 状态
 
-## Documentation
+> 项目处于 1.0 之前的活跃开发阶段，**SAB 路径是主线**。
+> 具体、可核实的进度指标（no-fallback sweep、Y 型共享 lowering 覆盖率、fallback 移除率）以
+> [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) 为准，本 README 不硬编码这些百分比以免过期。
 
-| Document | Description |
-|----------|-------------|
-| [`docs/architecture_cn.md`](docs/architecture_cn.md) | Y-shaped compiler architecture, shared front-end trunk, lowering rules, and emitter design |
-| [`docs/std_surface_metadata_cn.md`](docs/std_surface_metadata_cn.md) | `std_surface.sla_meta` format specification and rule reference |
-| [`docs/testing_and_verification_cn.md`](docs/testing_and_verification_cn.md) | Test writing, no-fallback testing, and the 9-step verification gate process |
-| [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) | Current completion progress (58/69 sweep), Phase 1-9 roadmap, and remaining failure ownership |
-| [`docs/sab_pipeline_cn.md`](docs/sab_pipeline_cn.md) | SAB pipeline design and binary format |
-| [`docs/compilation_optimization_cn.md`](docs/compilation_optimization_cn.md) | Compilation optimization strategies |
-| [`docs/mutability_decision_cn.md`](docs/mutability_decision_cn.md) | Mutability design decisions (`let mut`, `&mut T` Phase 1/2) |
-| [`docs/operator_overload_decision_cn.md`](docs/operator_overload_decision_cn.md) | Operator overload design (`@overload` block, `@derive(Add/...)` route) |
-| [`docs/sla_language_specification_cn.md`](docs/sla_language_specification_cn.md) | Complete Sla language specification |
-| [`docs/macro_vs_rust_cn.md`](docs/macro_vs_rust_cn.md) | Macro system comparison: Sla vs Rust |
-| [`docs/rust_vs_sla_final_cn.md`](docs/rust_vs_sla_final_cn.md) | Rust vs Sla comprehensive comparison (verified) |
-| [`docs/bevy_syntax_gap_analysis_cn.md`](docs/bevy_syntax_gap_analysis_cn.md) | Bevy ECS syntax gap analysis |
-| [`tutor/01_intro.md`](docs/tutor/01_intro.md) through [`07_builtin_api.md`](docs/tutor/07_builtin_api.md) | Tutorial series |
+成熟度快照（2026-07-07 本地实测，非性能/兼容性保证）：
 
-Sla source uses compiler-managed lifetime cleanup by default. User-facing `.sla` code should not need explicit `!x;` releases; generated `.sa` may still contain `!` instructions because that is SA's ownership primitive. Sla intentionally does not add a `drop` keyword or `drop()` function.
+| 指标 | 结果 | 含义 |
+|------|------|------|
+| `sa sla check`（前端：词法/语法/类型检查） | 306/313 | demo 能被前端吃下的比例 |
+| `sa sla build-exe`（端到端编译到原生可执行） | **239/313（约 76%）** | 真正落地成熟度指标 |
 
-Recent frontend additions include discard bindings (`_`), struct update / slice rest patterns (`Struct { ..base }`, `[a, b, ..rest]`), explicit `using` static extensions for module-backed method-style calls, `type` aliases with flattened `&` composition for plain data layouts, and a restricted `@overload` block for `+ - * /` on explicit target types. These features are handled entirely in the frontend and lower to existing SA shapes without adding runtime dispatch.
+两者约 22 个百分点的差距，反映"前端能解析"与"后端 lowering 能落地"之间的缺口；失败按 Phase 的归属见 [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) §2。
+
+已知局限（详见 [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) §2 剩余失败清单）：
+
+- 部分语言特性（枚举 payload/match 提取、`derive`、`for in` 协议、`async/await`、集合类 std 元数据等）尚未进入 direct-SAB 快路径，命中时会走 SA 兼容回退路径。
+- `demos/rosetta` 树是与 Rust 参考实现对照的样例集，**并非全部都能端到端通过**；请按需单独验证，不要假设整棵树已就绪。
+- `&mut T` / `&mut self` 尚未引入（Phase 2 计划）；当前 `&self` 同时覆盖读写，由 SA Referee 兜底。
+
+## 快速上手
+
+前置：先构建并安装 SA（见下方 [Build](#build)），然后安装本插件（见 [Installation](#installation)）。之后：
+
+```bash
+SA_PLUGIN_DEV=1 sa sla init /tmp/sla_app          # 生成最小项目骨架
+SA_PLUGIN_DEV=1 sa sla check /tmp/sla_app/src/main.sla   # 词法/语法/类型检查
+SA_PLUGIN_DEV=1 sa sla build /tmp/sla_app/src/main.sla --out /tmp/main.sa   # 编译为 .sa
+SA_PLUGIN_DEV=1 sa sla build-exe /tmp/sla_app/src/main.sla -o /tmp/main    # 编译为原生可执行文件
+```
+
+## 命令参考
+
+- `sa sla init [path]`：创建最小 SLA 二进制项目，含 `sa.mod`、`src/main.sla`，并把 `.sla-cache/` 写入 `.gitignore`。
+- `sa sla skills [--json]`：列出 SLA 插件能力。文本模式还会把 `.codex/skills/sla/SKILL.md` 和 `.claude/skills/sla/SKILL.md` 写入当前目录。
+- `sa sla build <file>`：把一个 `.sla` 源文件编译为经校验的 `.sa` 汇编文件。
+- `sa sla build-exe <file>`：走 direct SAB 路径把 `.sla` 编译为原生可执行文件，用 `.sla-cache/sab/...` 下的托管输入交给委派的 `sa build-exe`。
+- `sa sla sab build <file>`：把 `.sla` 直接编译为 SAB 字节。默认托管产物写在 `.sla-cache/sab/`；用 `--out <file.sab>` 额外写出一个可见 SAB 文件。
+- `sa sla sab workspace`：解析当前 `sa.mod` workspace 成员，走托管 SAB 编译，再委派给 `sa build-exe`。用 `-p <package>` 选择成员，`--sab-out <file.sab>` 额外写出检查用产物。
+- `sa sla sab disasm <file.sab>`：反汇编 SAB 文件用于调试；不属于编译路径。
+- `sa slab ...`：`sa sla sab ...` 的短别名。
+- `sa sla check <file>`：对 `.sla` 源文件做词法、语法、类型检查，不发射最终 SA 汇编。
+- `sa sla test <file>`：把 `.sla` 测试文件编译为 `.sla-cache/sab/` 下的托管 SAB 并经 `sa test` 运行。默认 `auto` 后端走 SAB 主线；仅在调试遗留 `.test.sa` 路径时用 `--test-backend sa`，或用 `--test-backend sab` 明确指定严格 SAB 模式。
+
+更多可复制的调用示例见下方 [Installation](#installation) 与 [Rosetta Demos](#rosetta-demos)。
 
 ## Standard Library Imports
-Sla imports SA's top-level `sa_std` package directly:
+
+Sla 直接导入 SA 顶层 `sa_std` 包：
 
 ```sla
 @import "sa_std/io/print.sai"
 ```
 
-The Sla compiler loads imported `.sai` and `.sal` contracts before type checking, so extern functions from imported std contracts are available to Sla code. By default it resolves `sa_std/...` from `SA_STD_DIR` when set, then from `$HOME/projects/sci/sa_std`.
+Sla 编译器在类型检查前加载导入的 `.sai` / `.sal` 契约，因此导入的 std 契约里的 extern 函数对 Sla 代码可用。默认从 `SA_STD_DIR`（已设置时）解析 `sa_std/...`，否则从 `$HOME/projects/sci/sa_std` 解析。
+
+Sla 源码默认使用编译器托管的生命周期清理。用户面 `.sla` 代码不需要显式 `!x;` 释放；生成的 `.sa` 仍可能包含 `!` 指令，因为那是 SA 的所有权原语。Sla 有意不加 `drop` 关键字或 `drop()` 函数。
+
+近期前端新增：丢弃绑定（`_`）、结构体更新 / 切片 rest 模式（`Struct { ..base }`、`[a, b, ..rest]`）、模块级 method-style 调用的显式 `using` 静态扩展、用于平坦数据布局的带 `&` 组合的 `type` 别名、以及限定在 `+ - * /` 的受限 `@overload` 块。这些特性完全在前端处理，lower 到既有 SA 形状，不引入运行时分发。
+
+## 性能
+
+SLA 编译性能的核心事实：**direct（AST→SAB）路径非常快，但命中未覆盖特性会掉到回退路径，回退才是瓶颈**。因此编译性能主要由 fallback 覆盖率决定，而非编译器稳态速度。
+
+以下数字取自 [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) §6 与 [`docs/compilation_optimization_cn.md`](docs/compilation_optimization_cn.md)，均为单文件、特定 fixture 上的微观测量（机器未标定），**不作性能保证**：
+
+| 路径 | 示例 | 耗时 | 备注 |
+|------|------|------|------|
+| Direct AST→SAB（热，带宏模板缓存） | `vec_remove_direct` | ~257 ms | 相对冷编译约 16× |
+| Direct AST→SAB（冷，无缓存） | 同上 | ~4094 ms | 缓存未命中的代价 |
+| SA 兼容 flatten（回退） | `parallel_table_erased` | ~4.04 s | 回退惩罚 |
+| SAB encode（回退） | 同上 | ~5.22 s | 最大单一阶段 |
+| `sa test` 后端（宿主侧） | 同上 | ~13.50 s | 下游，非本仓库范畴 |
+
+大数组初始化优化（`.repeat` + `@memset`，详见 [`docs/compilation_optimization_cn.md`](docs/compilation_optimization_cn.md)）把 `lvm.test.sa` 干净重构从 **>5 分钟缩短到 ~4.6 s**，`lparser.test.sa` 到 **~6.6 s**，消除了单测/增量编译卡死。
+
+本仓库自带 benchmark harness（见 [`docs/benchmarking_cn.md`](docs/benchmarking_cn.md)），定义了 `sla_to_sab_cold` / `sla_to_sab_warm` / `sla_to_native` / fallback-allowed / no-fallback 等基准项：
+
+```sh
+tools/bench_sla_pipeline.sh --runs 3 --out /tmp/sla_pipeline_bench.jsonl
+```
+
+托管 SAB 产物住在 `.sla-cache/sab/`；未变化的 SAB 字节不会重写，以便 SA 增量缓存复用稳定输入（该行为已描述，尚未单独 benchmark）。
+
+## 工作原理（简述）
+
+`.sa` 与 `.sab` 是两条独立的用户面编译主线，但内部正在收敛为 Y 型契约：
+
+```
+SLA AST/typecheck ── 共享 lowering 规则/plan ──┬── SA 文本 emitter
+                                              └── SAB 结构化 emitter
+```
+
+SAB 生成把 SAB 字节直接写到托管产物路径，不创建 `.test.sa`、也不调用遗留文本测试后端，除非显式 `--test-backend sa`。SAB 路径先尝试 direct AST→SAB 快路径；对尚未覆盖的 SA 指令族与 SLA 特性，SAB 暂时经 in-memory SA 兼容 lowering + SCI flattener/SAB encoder 作为兼容路径。
+
+架构与快路径覆盖范围的完整说明见：
+
+- [`docs/architecture_cn.md`](docs/architecture_cn.md) — Y 型架构、共享前端主干、lowering 规则、emitter 设计
+- [`docs/sab_pipeline_cn.md`](docs/sab_pipeline_cn.md) — SAB 快路径已覆盖特性清单、SAB 二进制格式、回退边界
 
 ## Build
-This plugin depends on the SA compiler/runtime from `sci`. Build and install SA first:
+
+本插件依赖来自 `sci` 的 SA 编译器/运行时。先构建并安装 SA：
 
 ```bash
 git clone https://github.com/layola13/sci.git
@@ -55,27 +113,33 @@ cd sci
 ./tools/install.sh --no-shell
 ```
 
-For a local checkout layout like `/home/vscode/projects/sci` beside this plugin, rebuild SA after SAB-related changes before reinstalling the plugin. Current SAB test/build support depends on SCI's SAB v4 decoder preserving structured instruction operands and backend metadata such as function register ids, native register names, package identity, and upstream locations. SAB v4 does not preserve per-instruction raw `.sa` text:
+对于像 `/home/vscode/projects/sci` 这样与本插件并列的本地 checkout，在 SAB 相关改动后要先重建 SA 再重装插件。当前 SAB 测试/构建支持依赖 SCI 的 SAB v4 解码器保留结构化指令操作数与后端元数据（函数寄存器 id、原生寄存器名、包身份、上游位置）。SAB v4 不保留逐指令原始 `.sa` 文本：
 
 ```bash
 /home/vscode/projects/sci/tools/install.sh --no-shell
 ```
 
-Then build the Sla compiler plugin:
+然后构建 Sla 编译器插件：
+
 ```bash
 zig build
 ```
-This produces the plugin manifest and dynamic library:
+
+产出插件清单与动态库：
+
 - `zig-out/lib/sap.json`
 - `zig-out/lib/libsla.so`
 
 ## Installation
-Once built, the plugin can be registered into the SA environment using the package manager:
+
+构建后用包管理器把插件注册进 SA 环境：
+
 ```bash
 SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla
 ```
 
-Run dev-plugin commands with `SA_PLUGIN_DEV=1`, for example:
+用 `SA_PLUGIN_DEV=1` 运行 dev-plugin 命令，例如：
+
 ```bash
 SA_PLUGIN_DEV=1 sa sla init /tmp/sla_app
 SA_PLUGIN_DEV=1 sa sla skills --json
@@ -90,16 +154,11 @@ SA_PLUGIN_DEV=1 sa sla test tests/test_unit_basic.sla
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_basic.sla --test-backend sa
 ```
 
-The `.sa` and `.sab` paths are separate user-facing compiler mainlines, but the implementation is being moved toward a Y-shaped internal contract: `SLA AST/typecheck -> shared lowering rules/plan -> {SA text emitter, SAB structured emitter}`. SAB generation writes SAB bytes directly to the managed artifact path and does not create `.test.sa` or invoke the legacy text test backend unless `--test-backend sa` is explicitly requested.
-
-The SAB path first tries the direct AST-to-SAB fast path, which now covers focused scalar control flow, boolean `&&` / `||`, numeric casts, scalar borrow/deref with addressable field/deref/index borrow precedence, raw `stack_alloc()`, move-prefixed call arguments, non-void tail-expression returns, `var` slots, ordinary closure calls, focused zero-arg escaped thread closures, hygienic user macro calls with scoped shadowing plus nested control flow/ordinary calls/nested macro calls/casts/aggregate literals/indexing, first-class function pointer calls, plain structs, tuples, fixed array and repeat-array literals with literal and dynamic index reads/writes, basic numeric range `for` loops, f32/f64 arithmetic/comparisons, and data-driven std surface macro rules for associated, constructor, free-function, result-valued method, void method, index, and fallible method calls with metadata-provided ok/output slots, including focused `Option` and `Result` construction/query/unwrap/unwrap_or paths. Direct std macro-fragment lowering resolves the active `sa_std` root once per compile, reuses decoded std import modules for dependency preloading from the same import path, caches reusable std macro templates by import/macro/arity (covering identifier and integer arguments such as elem_size), and preserves const-bearing macro fragments such as panic-message branches in structured SAB.
-
-For SA instruction families and SLA features not yet covered by that fast path, including broader exported/escaping closure cases and closure-taking std combinators, SAB still uses the in-memory SA-compatible lowering plus SCI's flattener/SAB encoder as a temporary compatibility path. That encoder round-trips every SA `InstKind`, `OpKind`, and operand tag without storing full instruction raw text, so the output remains `.sab` while preserving downstream SA backend metadata. Managed SAB artifacts live in `.sla-cache/sab/`; filtered test builds use filter-scoped paths so they do not overwrite ordinary build/workspace SAB artifacts, and unchanged SAB bytes are not rewritten so SA's incremental cache can reuse stable inputs. User-visible SAB files are only written when requested with `--out`, `--sab-out`, or `--emit-sab`. Delegated `sa test` / `sa build-exe` calls default to `--jobs auto` unless the user supplies `--jobs` explicitly.
+托管 SAB 产物住在 `.sla-cache/sab/`；过滤测试构建用 filter-scoped 路径，不覆盖普通 build/workspace 的 SAB 产物。用户可见 SAB 文件仅在 `--out` / `--sab-out` / `--emit-sab` 请求时写出。委派的 `sa test` / `sa build-exe` 默认 `--jobs auto`，除非用户显式提供 `--jobs`。
 
 ## Rosetta Demos
-The `demos/rosetta` tree mirrors the Rust references under `/home/vscode/projects/sci/demos/rosetta` with Sla companions and per-demo Rust/Sla comparison notes. The demos are intended to be checked manually for semantic equivalence, not only for matching final output.
 
-Typical commands:
+`demos/rosetta` 树镜像 `/home/vscode/projects/sci/demos/rosetta` 下的 Rust 参考实现，附带 Sla 对照与每个 demo 的 Rust/Sla 比较笔记。这些 demo 意在**人工核对语义等价**，而不仅仅是比对最终输出。注意并非整棵树都已端到端通过（见 [状态](#状态)）。
 
 ```bash
 SA_PLUGIN_DEV=1 sa sla check demos/rosetta/01_hello_world/main.sla
@@ -108,180 +167,24 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/rosetta/01_hello_world/main.sla -o /tmp/0
 SA_PLUGIN_DEV=1 sa sla test demos/rosetta/01_hello_world/main.sla
 ```
 
----
+## 文档
 
-# Sla → Rust 表层兼容性评估报告
-
-> 评估日期：2026-06-15
-> 目标：在不动摇 SA 五符号契约（`= & ^ ! *`）和 Referee O(1) 位掩码验证模型的前提下，让 Sla 表面语法尽可能接近 Rust。
-
-## 一、关键认知校正
-
-**两条红线对应 SA 设计原则**
-
-| 红线 | 对应原则 |
-|------|----------|
-| 不放弃 `^` | "五符号契约"（design.md §1.3）+ 仿射状态机的核心物理输入 |
-| 不引入 `mut` | FAQ §所有权与借用类："共享读 vs 独占写由 Referee 在运行时上下文动态决定，**不在语法层区分**" |
-
-第二条尤其关键 —— **Referee 已经在 `&` 一种语法下自动区分 `Locked_Read` / `Locked_Mut`**，看的是借用视图后面有没有 `store`。Rust 的 `&mut` 完全是冗余声明，引入它反而违背了"少一个前缀 = LLM 出错率更低"。
-
-**第二个关键洞察：`^` 与 Rust 的 `^` 其实没有真正冲突**
-- Sla `^x`：**前缀**一元 = Move（`let y = ^x`）
-- Rust `a ^ b`：**中缀**二元 = XOR
-
-这两个位置在 parser 里是不同上下文，可以共存。
-
-## 二、重新定位目标："Rust 表层兼容子集"
-
-正确的目标不是"让 Sla 变成 Rust"，而是：
-
-> **让大量 Rust 代码能在 Sla 中原样解析通过，编译器在 lowering 期把 Rust 表面的冗余声明（lifetime/pub/where）静默吸收成 SA 的隐式行为。**
->
-> **关于可变性（v0.2 修订）**：Phase 1 当前阶段不引入任何 `mut` 写法；Sla 的 `&self` 当前约定**同时覆盖 Rust 的 `&self` 与 `&mut self`**，由 SA Referee 在 lowering 后兜底（实测 `demos/rosetta/59_method_counter` 等已验证）。`&mut T` 与 `&mut self` 留到 sa3d ECS Phase 6A 启动前（Phase 2）引入；`let mut` 永久不引入（与 sla `let = 可变` 现状冲突）。详见 [`docs/mutability_decision_cn.md`](docs/mutability_decision_cn.md)。
-
-这样 LLM/人类可以直接粘贴 Rust 风格代码，Sla 编译器扮演"翻译器+智能筛选器"的角色，保留 SA 的全部安全约束。
-
-## 三、推荐策略：「Rust 风格 in，SA 语义 out」
-
-### A. 静默吸收型（解析但语义置空，零认知负担）
-
-| Rust 语法 | Sla 解析后处理 | 理由 |
-|-----------|---------------|------|
-| `let mut x = ...` | **永久不接受**（sla `let` 已默认可变，`mut` 反而沉默误导） | Sla 与 Rust 默认可变性反向，详见 [`docs/mutability_decision_cn.md`](docs/mutability_decision_cn.md) |
-| `&mut T` 借用类型 | **Phase 1 不引入**；Phase 2 (sa3d ECS 之前) 引入 | 当前 `&T` 涵盖读写；触发条件见 [`docs/mutability_decision_cn.md`](docs/mutability_decision_cn.md) §2.2 |
-| `fn foo(&mut self)` | **Phase 1**：当前未识别（需手工去 mut）；**Phase 2**：作为独立独占借用契约引入 | 同上 |
-| `'a` / `'static` lifetime | 解析但不落到语义 | SA 不做跨函数借用图（FAQ 明示） |
-| `pub` / `pub(crate)` | 解析丢弃 | SA 默认全部链接器可见（FAQ 明示） |
-| `unsafe { ... }` / `unsafe fn` | 解析丢弃；如涉及裸指针，要求被包在 `@ffi_wrapper` 内 | SA 用 `@ffi_wrapper` 函数级隔离替代块级 unsafe |
-| `where T: Bound` | 解析；约束只在单态化时做 trait 方法查找用 | 不引入约束求解 |
-| `#[derive(...)]` / `#[inline]` | 映射到现有 `@`/`inline` | 同语义换皮 |
-
-这部分对 SA 设计零侵入 —— 纯前端语法 ingestion。
-
-### B. 直接同义映射（Rust 写法 ↔ Sla/SA 既有概念）
-
-| Rust | Sla | 说明 |
-|------|-----|------|
-| `use std::foo::bar` | `@import "sa_std/foo/bar.sai"` | 双轨接受，文档推 Rust 风 |
-| `extern "C" fn ...` | `@extern fn ...` | 双轨 |
-| `#[test]` | `@test` | 双轨 |
-| `println("...")` / `print(...)` | **当前实现：无 `!` 后缀**，直接当普通函数调用，桥到 sa_std 的 `print` 路径 | Sla 已有 `println`，**短期内不引入 `!` 宏调用语法**（见下方"`!` 决议"） |
-| `format(...)` / `vec(...)` / `panic(code)` / `assert(...)` | 同上，短期内全部当函数 / 内建 intrinsic 处理 | 不发射 macro-suffix `!` |
-| `i8..i64 / u8..u64 / f32 / f64 / usize / isize` | 加入类型表 | `int` 保留作 `i64` 别名 |
-| `bool` / `true` / `false` | 已有 / 加 | |
-| `as` 强制转换 | 加 | 与 `.sa` 的 `as` 一致 |
-| `+= -= *= /= %= &= \|= ^= <<= >>=` | 加复合赋值 | desugar 成 `x = x op y` |
-| `&& \|\| ! << >> \| ~`（位运算 `\|`/`~`） | 加 | 注意 `!` 仍是逻辑非，`^` 中缀=XOR |
-| `_` | 加，作为解构/绑定丢弃槽 | 进入前端时直接消耗值，不入作用域 |
-| `..` 结构体更新、`[a, b, ..rest]` 切片解构 | 加 | 纯 AST/lowering，无运行时隐藏开销 |
-| `loop / break / continue / 'label:` | 加（FAQ 已说 SA 不内建，但 Sla 前端要支持，降到 `jmp/br`） | 与 `for/while` 同一套展平器 |
-| `if let` / `while let` / `let else` | 加，desugar 到 `match` | |
-| `match` 多枝 `\|`、守卫 `if`、`@` 绑定、`..=` 范围、`..` 通配 | 扩展现有 match | |
-| `impl Trait for T` + `trait` | 加，**只做单态化静态分发**（FAQ §"为什么没有 Trait"已论证只支持静态分发 + vtable 宏） | 不做 trait coherence、不做 GAT |
-| `using module` 静态扩展 | 加，显式启用模块级 method-style 调用 | 只在 `using` 作用域内生效，歧义直接报错 |
-| `type Alias = A & B & { ... }` | 加，展开为扁平字段布局 | 纯前端别名，不引入运行时包装 |
-| `@overload` 操作符块 | 加，限定 `+ - * /` 的静态分发 | 只在 `@overload` 作用域内生效，优先于普通算术回退 |
-| `Self / self / &self` | 已可用；UFCS 已有，自然到位 | 当前 `&self` 同时覆盖 Rust `&self` 与 `&mut self`（读写均允许，SA Referee 兜底）；`&mut self` 在 Phase 2 引入 |
-| `enum Variant { A, B(T), C{x:int} }` | 加，sum-type；match 解构按 `[tag\|payload]` lowering（设计文档已 sketch） | |
-| 字符字面量 `'a'` | 加，与 lifetime `'a` 用 lexer lookahead 区分 | |
-| 数字字面量后缀 `1u32 / 1.5f64` | 加 | |
-| 字符串字面量 → `&str` / `String` | 加，需要在 sa_std 给出胖指针布局 | |
-
-### C. 重要的"看似 Rust 实则 Sla"的语义差异（必须文档明示）
-
-| 表面 | 实际语义 | 给开发者的承诺 |
-|------|---------|---------------|
-| `let mut x` | **永久不接受**（sla `let` 已默认可变） | Sla 与 Rust 默认可变性反向；详见 [`docs/mutability_decision_cn.md`](docs/mutability_decision_cn.md) |
-| `&T` | **当前涵盖读写两种用途**（sla 约定）；Phase 2 引入 `&mut T` 后区分 | lowered 始终为 SA `&`；Referee 物理层不变 |
-| `Drop` trait | **不支持**（FAQ §显式优于隐式） | 仍由编译器隐式注入 `!`；用户**不能**写 `impl Drop` |
-| `'a` 标注 | 仅解析 | 跨函数借用安全由前端责任制，不做检查 |
-| `unsafe` 块 | 退化为"声明意图"；真正的指针下行仍只允许 `@ffi_wrapper` 函数级 | 块级 `unsafe { *raw }` → 编译期要求外层函数标 `@ffi_wrapper` 或报错 |
-| `panic!()` | `panic(code)`（数值码） | 字符串变体经 sa_std 走 `panic_msg` |
-| `Send/Sync` | 解析；语义由 Referee 的 affine mask + 跨核校验（design.md §1.4#5）兜底 | 不暴露 trait 求解 |
-
-### D. 拒绝引入（守住 SA 哲学）
-
-- `let mut x` 写法（永久；与 sla `let = 可变` 现状冲突）
-- ~~`&mut` 作为独立类型~~ **修正（v0.2）**：Phase 2 sa3d ECS 启动前**会引入** `&mut T` / `&mut self`，用于 ECS 调度器静态 read/write 集；详见 [`docs/mutability_decision_cn.md`](docs/mutability_decision_cn.md)
-- `Drop` trait
-- 隐式 GC / unwind / panic catch
-- 完整 NLL/Polonius lifetime
-- proc-macro / `macro_rules!` 任意复杂展开（保留 Sla 的 `macro` 卫生宏；`println!` 等 hard-coded）
-
-## 四、`^` 与 `!` 在 Rust 兼容下的精确 parser 规则
-
-**`^` 双语义分流（关键，建议写进 parser 测试）**
-
-```
-prefix  '^' expr          → Move (Sla 既有)
-expr '^' expr             → XOR (Rust 风)
-'^' 出现在 type 位置       → 非法
-```
-
-判别法：`^` token 出现时，看左侧是否有可作为操作数的表达式结尾（identifier/literal/`)`/`]`）。有 → 中缀 XOR；没有 → 前缀 Move。
-
-**`!` 决议（短期立场）**
-
-```
-prefix '!' expr           → 逻辑非（唯一接受语义）
-ident '!' (...)           → 短期内不引入。理由：与 SA 的 ! 释放原语在 lexer / 视觉上都易混淆，
-                            等 SA 侧 !reg 完全收敛到编译器隐式注入、用户 .sla 中物理消除
-                            "!" 出现位置之后，再评估是否打开此入口。
-单独 '!' 后跟寄存器        → 仍是 SA 的释放原语，但 .sla 用户层禁止显式书写
-                            （仅生成的 .sa 与 @debug 模式可见）
-```
-
-**关键澄清**：
-- Sla 已经有 `println` 作为普通函数 / 内建调用，无需 `!` 后缀。
-- 这是"短期不引入"，不是"永远不引入"。当 SA 侧的 `!` 已彻底从 `.sla` 用户面消失、
-  视觉冲突风险消除后，可重新评估 Rust 风格的 `println!` / `vec!` / `assert!` 宏入口。
-- 在此期间，Rust 源码里的 `println!("...")` 在 Sla parser 接受时建议**容错降级**：
-  把紧贴标识符的 `!` 当成"语法噪音"剥离，重写为 `println("...")` 后继续解析，
-  这样能保持"Rust 表层兼容子集"的承诺，又不污染 Sla 自己的 `!` 语义。
-
-这套规则不动 SA 任何东西，是纯 Sla 前端 parser 的职责。
-
-## 五、修订后的路线图（按 ROI）
-
-**Phase 1 — 词法/类型表扩容（1 周）**
-1. 新增 token：`&&` `||` `<<` `>>` `|` `~` `+=` 系列 `..=` `'` `#` `_`
-2. 类型表加 `i8/i16/i32/i64/u8/u16/u32/u64/usize/isize/f32/f64/str`，`int`=`i64` 别名
-3. 字面量：`true/false/0x/0o/0b`、字符 `'a'`、字面量后缀
-4. `^` 精确双语义、`!` 三语义 parser
-
-**Phase 2 — 静默吸收型语法（1 周）**
-- 解析 `mut/pub/'a/where/unsafe/#[...]`，全部丢弃或同义重写到 `@` 语法
-- `use` / `mod` 与 `@import` 双轨
-
-**Phase 3 — 控制流补齐（1 周）**
-- `loop` / `break` / `continue` / labeled break / `as` / 复合赋值 / `if let` / `while let` / `let else`
-
-**Phase 4 — match 扩展 + 真正的 enum（2 周）**
-- 多枝 `|`、守卫 `if`、`@` 绑定、范围 `..=`、`..` 通配
-- 带 payload 的 sum-type enum，按 SA 的 tagged union 布局（design.md §1.4#2）lowering
-
-**Phase 5 — trait 静态分发（2 周）**
-- `trait` + `impl Trait for T`
-- 仅生成单态化函数 + vtable 宏；对照 FAQ §动态分发的 `DISPATCH` 宏
-
-**Phase 6 — 标准库表面**
-- `println` / `print` / `format` / `panic` / `assert` 作为**无 `!` 后缀**的函数/内建 intrinsic 桥到 sa_std 现有宏（与 Sla 已实现的 `println` 路径一致）
-- Rust 源码里的 `println!(...)` 由 parser 容错剥 `!` 重写为 `println(...)`
-- `Vec/Box/Rc/Arc/Option/Result/String/&str` 走 `@extern` + `.sal` 桥接，命名对齐 Rust
-- 待 SA 侧 `!` 在 `.sla` 用户层完全隐形后，再评估是否打开 Rust 风 `!` 宏调用入口
-
-## 六、能达到的"Rust 兼容度"重新校准
-
-务实目标：
-- **Phase 1（当前）**：Rust 表层 ≈ **70%**（`let mut x` / `&mut T` / `&mut self` 都需手工去 mut，约定 `&self` 涵盖读写）
-- **Phase 2（sa3d ECS 启动前）**：Rust 表层 ≈ **85%**（引入 `&mut T` / `&mut self`；`let mut` 永久不引入）
-- 语义 ≈ Rust safe 单线程子集 - Drop trait - 完整生命周期 - proc-macro
-
-差异留给文档一页说清：
-1. **可变性反向 + 当前 `&self` 涵盖读写**：Sla `let` 默认可变（Rust `let` 默认不可变）；`let mut` 永久不引入；当前 `&self` 同时覆盖 Rust `&self/&mut self`，由 SA Referee 兜底；Phase 2 sa3d ECS 启动前引入 `&mut T` / `&mut self`。详见 [`docs/mutability_decision_cn.md`](docs/mutability_decision_cn.md)
-2. `Drop` 由编译器代劳
-3. lifetime 只是注释
-4. `unsafe` 收敛到函数级
-
-LLM 写代码时几乎察觉不到边界 —— 它生成 Rust 风格，Sla 静默吸收，SA 拿到的是干净扁平的所有权指令流。
+| 文档 | 说明 |
+|------|------|
+| [`docs/architecture_cn.md`](docs/architecture_cn.md) | Y 型编译器架构、共享前端主干、lowering 规则、emitter 设计 |
+| [`docs/sab_pipeline_cn.md`](docs/sab_pipeline_cn.md) | SAB 快路径覆盖清单、二进制格式、回退边界 |
+| [`docs/roadmap_status_cn.md`](docs/roadmap_status_cn.md) | 当前完成进度、Phase 1-9 路线图、剩余失败归属 |
+| [`docs/compilation_optimization_cn.md`](docs/compilation_optimization_cn.md) | 编译优化策略与实测数字 |
+| [`docs/benchmarking_cn.md`](docs/benchmarking_cn.md) | Benchmark harness 与下游 hook |
+| [`docs/testing_and_verification_cn.md`](docs/testing_and_verification_cn.md) | 测试编写、no-fallback 测试、9 步验证门禁 |
+| [`docs/std_surface_metadata_cn.md`](docs/std_surface_metadata_cn.md) | `std_surface.sla_meta` 格式规范与规则参考 |
+| [`docs/stability_metadata_cn.md`](docs/stability_metadata_cn.md) | 稳定性元数据 |
+| [`docs/mutability_decision_cn.md`](docs/mutability_decision_cn.md) | 可变性设计决策（`let mut`、`&mut T` Phase 1/2） |
+| [`docs/operator_overload_decision_cn.md`](docs/operator_overload_decision_cn.md) | 操作符重载设计（`@overload` 块、`@derive(Add/...)` 路线） |
+| [`docs/sla_language_specification_cn.md`](docs/sla_language_specification_cn.md) | 完整 Sla 语言规范 |
+| [`docs/macro_vs_rust_cn.md`](docs/macro_vs_rust_cn.md) | 宏系统对比：Sla vs Rust |
+| [`docs/rust_vs_sla_final_cn.md`](docs/rust_vs_sla_final_cn.md) | Rust vs Sla 综合对比（已核实） |
+| [`docs/rust_surface_compat_report_cn.md`](docs/rust_surface_compat_report_cn.md) | Sla → Rust 表层兼容性评估报告（2026-06-15 快照） |
+| [`docs/bevy_syntax_gap_analysis_cn.md`](docs/bevy_syntax_gap_analysis_cn.md) | Bevy ECS 语法差距分析 |
+| [`docs/faq.md`](docs/faq.md) | SA/Sla 设计 FAQ（`^`/`!`/Trait/Drop 等决策依据） |
+| [`docs/tutor/01_intro.md`](docs/tutor/01_intro.md) … [`07_builtin_api.md`](docs/tutor/07_builtin_api.md) | 教程系列 |

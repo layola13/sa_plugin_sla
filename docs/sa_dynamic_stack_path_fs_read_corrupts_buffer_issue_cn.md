@@ -5,7 +5,7 @@
 - 发现时间：2026-07-07
 - 下游项目：`/home/vscode/projects/mnt/sla_tsgo`
 - 后端：`--test-backend sa`
-- 当前状态：已在编译器侧修复并用本地 CLI 复验。下游 `extends inherits base target/strict, child overrides module` 原始 filter 已通过 SA 后端；官方 installed host 链路本轮未作为证据。
+- 当前状态：已在编译器侧修复并用本地 CLI 复验。下游 `extends inherits base target/strict, child overrides module` 原始 filter 已通过本地 `sla-local-cli` 的 SA 后端，完整 `tests/test_tsconfig_contract.sla` 也已通过 19/19。默认 installed `sa` 命令截至 2026-07-07 仍表现为旧版本，完整下游合同仍是 18/19 并在 panic 302 失败；这属于工具同步状态，不再作为下游源码阻塞证据。
 
 ## 现象
 
@@ -20,7 +20,7 @@ cd /home/vscode/projects/mnt/sla_tsgo
 SA_PLUGIN_DEV=1 sa sla test tests/test_tsconfig_contract.sla --test-backend sa
 ```
 
-当前稳定结果：18 项通过，`extends inherits base target/strict, child overrides module` 失败。
+默认 installed `sa` 当前结果：18 项通过，`extends inherits base target/strict, child overrides module` 失败。
 
 关键输出形态：
 

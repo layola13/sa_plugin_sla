@@ -4751,6 +4751,7 @@ pub const Codegen = struct {
         const impl_name = concreteTypeName(impl_decl.target_ty) orelse return Error.UnsupportedSabDirectFeature;
         for (impl_decl.methods) |method| {
             if (method.* != .func_decl) return Error.UnsupportedSabDirectFeature;
+            if (method.func_decl.is_decl_only) continue;
             const mangled = if (impl_decl.trait_name) |trait_name|
                 try self.mangleTraitMethodName(impl_name, trait_name, method.func_decl.name)
             else
@@ -4763,6 +4764,7 @@ pub const Codegen = struct {
         const overload_name = concreteTypeName(overload_decl.target_ty) orelse return Error.UnsupportedSabDirectFeature;
         for (overload_decl.methods) |method| {
             if (method.* != .func_decl) return Error.UnsupportedSabDirectFeature;
+            if (method.func_decl.is_decl_only) continue;
             const mangled = try self.mangleMethodName(overload_name, method.func_decl.name);
             try self.genFuncDeclNamed(mangled, &method.func_decl);
         }

@@ -105,6 +105,12 @@ pub const Scope = struct {
 };
 
 pub const TypeChecker = struct {
+    pub const FunctionSignature = struct {
+        params: []const ast.Param,
+        ret_ty: *ast.Type,
+        is_async: bool = false,
+    };
+
     allocator: std.mem.Allocator,
     structs: std.StringHashMap(*ast.StructDecl),
     type_aliases: std.StringHashMap(*ast.TypeAliasDecl),
@@ -124,6 +130,7 @@ pub const TypeChecker = struct {
     // Tracks internal Sla functions for validation
     funcs: std.StringHashMap(*ast.FuncDecl),
     function_aliases: std.StringHashMap([]const u8),
+    imported_function_signatures: std.StringHashMap(FunctionSignature),
     // Tracks user-defined macros
     macros: std.StringHashMap(*ast.MacroDecl),
     imported_macros: std.StringHashMap(ImportedMacro),
@@ -165,6 +172,7 @@ pub const TypeChecker = struct {
             .phi_cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .function_aliases = std.StringHashMap([]const u8).init(allocator),
+            .imported_function_signatures = std.StringHashMap(FunctionSignature).init(allocator),
             .macros = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .imported_macros = std.StringHashMap(ImportedMacro).init(allocator),
             .overloads = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
@@ -332,6 +340,7 @@ pub const TypeChecker = struct {
         self.extern_funcs.deinit();
         self.layout_defines.deinit();
         self.function_aliases.deinit();
+        self.imported_function_signatures.deinit();
         self.funcs.deinit();
         self.macros.deinit();
         self.imported_macros.deinit();
@@ -455,8 +464,16 @@ pub const TypeChecker = struct {
         try self.function_aliases.put(alias, target);
     }
 
-    fn resolveFunctionAlias(self: *TypeChecker, name: []const u8) []const u8 {
+    pub fn resolveFunctionAlias(self: *TypeChecker, name: []const u8) []const u8 {
         return self.function_aliases.get(name) orelse name;
+    }
+
+    pub fn registerImportedFunctionSignature(self: *TypeChecker, name: []const u8, params: []const ast.Param, ret_ty: *ast.Type, is_async: bool) !void {
+        try self.imported_function_signatures.put(name, .{
+            .params = params,
+            .ret_ty = ret_ty,
+            .is_async = is_async,
+        });
     }
 
     fn receiverParamMatches(self: *TypeChecker, param: ast.Param, recv_ty: *ast.Type) bool {
@@ -473,8 +490,19 @@ pub const TypeChecker = struct {
         call_name: []const u8,
         auto_borrow_receiver: bool,
     ) TypeError!void {
-        if (func.params.len != args.len) return TypeError.InvalidArgsCount;
-        for (func.params, args, 0..) |param, arg, i| {
+        try self.checkCallArgsAgainstSignature(func.params, args, scope, call_name, auto_borrow_receiver);
+    }
+
+    fn checkCallArgsAgainstSignature(
+        self: *TypeChecker,
+        params: []const ast.Param,
+        args: []const *ast.Node,
+        scope: *Scope,
+        call_name: []const u8,
+        auto_borrow_receiver: bool,
+    ) TypeError!void {
+        if (params.len != args.len) return TypeError.InvalidArgsCount;
+        for (params, args, 0..) |param, arg, i| {
             if (param.is_move and arg.* != .move_expr) return TypeError.TypeMismatch;
             if (param.is_borrow) {
                 if (dynTraitName(param.ty)) |trait_name| {
@@ -528,6 +556,30 @@ pub const TypeChecker = struct {
             const arg_ty = try self.checkExpr(arg, scope);
             if (!self.plainCallArgMatches(param.ty, arg, arg_ty)) return TypeError.TypeMismatch;
         }
+    }
+
+    fn checkStaticCallBySymbol(
+        self: *TypeChecker,
+        expr: *ast.Node,
+        symbol: []const u8,
+        args: []const *ast.Node,
+        scope: *Scope,
+        call_name: []const u8,
+        auto_borrow_receiver: bool,
+    ) TypeError!?*ast.Type {
+        if (self.funcs.get(symbol)) |func| {
+            try self.checkCallArgsAgainstFunc(func, args, scope, call_name, auto_borrow_receiver);
+            self.resolved_call_symbols.put(expr, symbol) catch return TypeError.OutOfMemory;
+            if (func.is_async) return try self.makeFutureType(func.ret_ty);
+            return func.ret_ty;
+        }
+        if (self.imported_function_signatures.get(symbol)) |signature| {
+            try self.checkCallArgsAgainstSignature(signature.params, args, scope, call_name, auto_borrow_receiver);
+            self.resolved_call_symbols.put(expr, symbol) catch return TypeError.OutOfMemory;
+            if (signature.is_async) return try self.makeFutureType(signature.ret_ty);
+            return signature.ret_ty;
+        }
+        return null;
     }
 
     fn protocolIterableElementType(self: *TypeChecker, ty: *ast.Type) ?*ast.Type {
@@ -2146,6 +2198,12 @@ pub const TypeChecker = struct {
         return std.fmt.allocPrint(self.allocator, "{s}__{s}_{s}", .{ type_name, impl_trait, method_name }) catch return TypeError.OutOfMemory;
     }
 
+    fn functionOrImportedSignatureParamCount(self: *TypeChecker, symbol: []const u8) ?usize {
+        if (self.funcs.get(symbol)) |func| return func.params.len;
+        if (self.imported_function_signatures.get(symbol)) |signature| return signature.params.len;
+        return null;
+    }
+
     fn resolveTraitMethodSymbolForType(
         self: *TypeChecker,
         type_name: []const u8,
@@ -2157,8 +2215,8 @@ pub const TypeChecker = struct {
             if (!self.typeDirectlyImplementsTrait(type_name, trait_name) and !self.typeImplementsTraitName(type_name, trait_name)) return null;
             const declaring_trait = self.findTraitDeclaringMethod(trait_name, method_name) orelse return null;
             const symbol = try self.traitMethodSymbolAlloc(declaring_trait, type_name, method_name);
-            const func = self.funcs.get(symbol) orelse return null;
-            if (func.params.len != arg_count) return null;
+            const param_count = self.functionOrImportedSignatureParamCount(symbol) orelse return null;
+            if (param_count != arg_count) return null;
             return symbol;
         }
 
@@ -2173,8 +2231,8 @@ pub const TypeChecker = struct {
             const declaring_trait = self.findTraitDeclaringMethod(impl_trait, method_name) orelse continue;
 
             const symbol = try self.traitMethodSymbolAlloc(declaring_trait, type_name, method_name);
-            const func = self.funcs.get(symbol) orelse continue;
-            if (func.params.len != arg_count) continue;
+            const param_count = self.functionOrImportedSignatureParamCount(symbol) orelse continue;
+            if (param_count != arg_count) continue;
             if (found) |existing| {
                 if (std.mem.eql(u8, existing, symbol)) continue;
                 self.setError("Ambiguous trait method `{s}` for type `{s}`", .{ method_name, type_name });
@@ -3671,11 +3729,8 @@ pub const TypeChecker = struct {
 
                 if (recv_node_ty) |rt| {
                     if (try self.resolveUsingMethodSymbolForType(scope, rt, call.func_name, call.args.len)) |symbol| {
-                        const func = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;
-                        try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, false);
-                        self.resolved_call_symbols.put(expr, symbol) catch return TypeError.OutOfMemory;
-                        if (func.is_async) return try self.makeFutureType(func.ret_ty);
-                        return func.ret_ty;
+                        if (try self.checkStaticCallBySymbol(expr, symbol, call.args, scope, call.func_name, false)) |ret_ty| return ret_ty;
+                        return TypeError.UndefinedVariable;
                     }
                 }
 
@@ -4157,6 +4212,15 @@ pub const TypeChecker = struct {
                         return try self.makeFutureType(func.ret_ty);
                     }
                     return func.ret_ty;
+                }
+
+                if (self.imported_function_signatures.get(resolved_func_name)) |signature| {
+                    try self.checkCallArgsAgainstSignature(signature.params, call.args, scope, call.func_name, false);
+                    if (!std.mem.eql(u8, resolved_func_name, call.func_name)) {
+                        self.resolved_call_symbols.put(expr, resolved_func_name) catch return TypeError.OutOfMemory;
+                    }
+                    if (signature.is_async) return try self.makeFutureType(signature.ret_ty);
+                    return signature.ret_ty;
                 }
 
                 if (self.structs.get(call.func_name)) |decl| {
@@ -4724,17 +4788,21 @@ pub const TypeChecker = struct {
                         }
                         return func.ret_ty;
                     }
+                    if (self.imported_function_signatures.get(method_name)) |signature| {
+                        try self.checkCallArgsAgainstSignature(signature.params, call.args, scope, call.func_name, true);
+                        const resolved = std.fmt.allocPrint(self.allocator, "{s}", .{method_name}) catch return TypeError.OutOfMemory;
+                        self.resolved_call_symbols.put(expr, resolved) catch return TypeError.OutOfMemory;
+                        if (signature.is_async) return try self.makeFutureType(signature.ret_ty);
+                        return signature.ret_ty;
+                    }
                 }
 
                 if (call.args.len > 0) {
                     const recv_ty = try self.checkExpr(call.args[0], scope);
                     if (concreteTypeName(recv_ty)) |type_name| {
                         if (try self.resolveTraitMethodSymbolForType(type_name, null, call.func_name, call.args.len)) |symbol| {
-                            const func = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;
-                            try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, true);
-                            self.resolved_call_symbols.put(expr, symbol) catch return TypeError.OutOfMemory;
-                            if (func.is_async) return try self.makeFutureType(func.ret_ty);
-                            return func.ret_ty;
+                            if (try self.checkStaticCallBySymbol(expr, symbol, call.args, scope, call.func_name, true)) |ret_ty| return ret_ty;
+                            return TypeError.UndefinedVariable;
                         }
                     }
                 }
@@ -5638,4 +5706,47 @@ pub const TypeChecker = struct {
 test "type checker basic validation" {
     // We can write tests here if we want to build it, but user requested 'no rushing to compile'.
     // Let's ensure the semantic correctness.
+}
+
+test "type checker resolves registered function alias" {
+    var tc = TypeChecker.init(std.testing.allocator);
+    defer tc.deinit();
+
+    try tc.registerFunctionAlias("dep__imported_a", "imported_a");
+    try std.testing.expectEqualStrings("imported_a", tc.resolveFunctionAlias("dep__imported_a"));
+    try std.testing.expectEqualStrings("plain_name", tc.resolveFunctionAlias("plain_name"));
+}
+
+test "type checker resolves imported function signature without function body" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var tc = TypeChecker.init(arena.allocator());
+    defer tc.deinit();
+
+    var ret_ty = ast.Type{ .primitive = .i32 };
+    try tc.registerFunctionAlias("dep__imported_a", "imported_a");
+    try tc.registerImportedFunctionSignature("imported_a", &.{}, &ret_ty, false);
+
+    var call_node = ast.Node{ .call_expr = .{
+        .func_name = "dep__imported_a",
+        .associated_target = null,
+        .generics = &.{},
+        .args = &.{},
+    } };
+    var expr_stmt_node = ast.Node{ .expr_stmt = &call_node };
+    var test_node = ast.Node{ .test_decl = .{
+        .name = "imported signature only",
+        .is_ignored = false,
+        .should_panic = false,
+        .body = &.{&expr_stmt_node},
+    } };
+    var program = ast.Node{ .program = .{ .decls = &.{&test_node} } };
+
+    try tc.checkProgram(&program);
+    const call_ty = tc.expr_types.get(&call_node) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(call_ty.* == .primitive);
+    try std.testing.expectEqual(ast.Primitive.i32, call_ty.primitive);
+    try std.testing.expect(tc.funcs.get("imported_a") == null);
+    try std.testing.expectEqualStrings("imported_a", tc.resolved_call_symbols.get(&call_node).?);
 }

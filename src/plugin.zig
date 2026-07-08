@@ -594,6 +594,7 @@ const SlaModuleExports = struct {
         is_extern: bool,
         abi: ?[]const u8,
         no_mangle: bool,
+        is_async: bool,
         module_path: []const u8,
     };
 
@@ -674,6 +675,7 @@ const SlaModuleExports = struct {
             .is_extern = fd.is_extern,
             .abi = fd.abi,
             .no_mangle = fd.no_mangle,
+            .is_async = fd.is_async,
             .module_path = self.module_path,
         });
     }
@@ -803,6 +805,8 @@ const SlaModule = struct {
 const SlaImportExpansionOptions = struct {
     prune_for_test_codegen: bool = false,
     test_filter: ?[]const u8 = null,
+    imported_bodies_decl_only: bool = false,
+    load_reachable_imported_bodies_from_registry: bool = false,
 };
 
 const SlaModuleTable = struct {
@@ -899,6 +903,44 @@ const SlaModuleTable = struct {
         return exports.functionSignature(name);
     }
 
+    fn functionBody(self: *const SlaModuleTable, module_path: []const u8, name: []const u8) ?*ast.FuncDecl {
+        const exports = self.exportsForModule(module_path) orelse return null;
+        const decl = exports.function_decls.get(name) orelse return null;
+        if (decl.* != .func_decl) return null;
+        return &decl.func_decl;
+    }
+
+    fn associatedFunctionBody(self: *const SlaModuleTable, module_path: []const u8, symbol: []const u8) ?*ast.FuncDecl {
+        const module = self.modules.get(module_path) orelse return null;
+        for (module.program.program.decls) |decl| {
+            switch (decl.*) {
+                .impl_decl => |impl_decl| {
+                    const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                    for (impl_decl.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const candidate = if (impl_decl.trait_name) |trait_name|
+                            lowering_rules.mangleTraitMethodName(self.allocator, type_name, trait_name, method.func_decl.name) catch continue
+                        else
+                            lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name) catch continue;
+                        defer self.allocator.free(candidate);
+                        if (std.mem.eql(u8, candidate, symbol)) return &method.func_decl;
+                    }
+                },
+                .overload_decl => |overload_decl| {
+                    const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                    for (overload_decl.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const candidate = lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name) catch continue;
+                        defer self.allocator.free(candidate);
+                        if (std.mem.eql(u8, candidate, symbol)) return &method.func_decl;
+                    }
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+
     fn typeSignature(self: *const SlaModuleTable, module_path: []const u8, name: []const u8) ?SlaModuleExports.TypeSignature {
         const exports = self.exportsForModule(module_path) orelse return null;
         return exports.typeSignature(name);
@@ -918,6 +960,12 @@ const SlaModuleTable = struct {
         const resolved_import = self.moduleImportByNamespace(module_path, namespace) orelse return null;
         _ = try self.getOrParse(resolved_import.resolved);
         return self.functionSignature(resolved_import.resolved.path, name);
+    }
+
+    fn functionBodyForImportNamespace(self: *SlaModuleTable, module_path: []const u8, namespace: []const u8, name: []const u8) !?*ast.FuncDecl {
+        const resolved_import = self.moduleImportByNamespace(module_path, namespace) orelse return null;
+        _ = try self.getOrParse(resolved_import.resolved);
+        return self.functionBody(resolved_import.resolved.path, name) orelse self.associatedFunctionBody(resolved_import.resolved.path, name);
     }
 
     fn typeSignatureForImportNamespace(self: *SlaModuleTable, module_path: []const u8, namespace: []const u8, name: []const u8) !?SlaModuleExports.TypeSignature {
@@ -941,6 +989,11 @@ const SlaModuleTable = struct {
     fn functionSignatureForImportedMangledName(self: *SlaModuleTable, module_path: []const u8, symbol: []const u8) !?SlaModuleExports.FunctionSignature {
         const imported = splitImportedMangledSymbol(symbol) orelse return null;
         return try self.functionSignatureForImportNamespace(module_path, imported.namespace, imported.name);
+    }
+
+    fn functionBodyForImportedMangledName(self: *SlaModuleTable, module_path: []const u8, symbol: []const u8) !?*ast.FuncDecl {
+        const imported = splitImportedMangledSymbol(symbol) orelse return null;
+        return try self.functionBodyForImportNamespace(module_path, imported.namespace, imported.name);
     }
 
     fn functionSignatureForImportedMangledNameByNamespace(self: *const SlaModuleTable, symbol: []const u8) ?SlaModuleExports.FunctionSignature {
@@ -1037,6 +1090,7 @@ fn appendModuleDeclsSelective(
     out_decls: *std.ArrayList(*ast.Node),
     reachable: *const std.StringHashMap(void),
     referenced_types: *const std.StringHashMap(void),
+    options: SlaImportExpansionOptions,
 ) !void {
     if (emitted.contains(module.path)) return;
     try emitted.put(module.path, {});
@@ -1044,7 +1098,7 @@ fn appendModuleDeclsSelective(
     for (module.resolved_imports) |child_resolved| {
         if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
         const child_module = try modules.getOrParse(child_resolved);
-        try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types);
+        try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types, options);
     }
 
     const is_contributing = try isModuleContributing(allocator, module, reachable, referenced_types);
@@ -1062,15 +1116,15 @@ fn appendModuleDeclsSelective(
             const before = out_decls.items.len;
             switch (decl.*) {
                 .func_decl => |fd| {
-                    if (reachable.contains(fd.name)) {
-                        try out_decls.append(decl);
+                    if (try importedFuncNodeForReachability(allocator, decl, fd.name, reachable, options)) |func_node| {
+                        try out_decls.append(func_node);
                     }
                 },
                 .impl_decl => {
-                    try appendFilteredImplDecl(allocator, decl, reachable, out_decls);
+                    try appendFilteredImplDeclWithOptions(allocator, decl, reachable, out_decls, options);
                 },
                 .overload_decl => {
-                    try appendFilteredOverloadDecl(allocator, decl, reachable, out_decls);
+                    try appendFilteredOverloadDeclWithOptions(allocator, decl, reachable, out_decls, options);
                 },
                 else => {
                     // Flatten types, constants, macros
@@ -1416,11 +1470,53 @@ fn appendFilteredFunctionDecl(
     if (decl.func_decl.is_decl_only or reachable.contains(decl.func_decl.name)) try out_decls.append(decl);
 }
 
+fn makeDeclOnlyFuncNode(allocator: std.mem.Allocator, func: *const ast.FuncDecl) !*ast.Node {
+    var stub_func = func.*;
+    stub_func.is_decl_only = true;
+    stub_func.body = &.{};
+    const stub = try allocator.create(ast.Node);
+    stub.* = .{ .func_decl = stub_func };
+    return stub;
+}
+
+fn maybeDeclOnlyFuncNode(allocator: std.mem.Allocator, method: *ast.Node, force_decl_only: bool) !*ast.Node {
+    if (!force_decl_only or method.func_decl.is_decl_only) return method;
+    return try makeDeclOnlyFuncNode(allocator, &method.func_decl);
+}
+
+fn shouldKeepReachableImportedBody(options: SlaImportExpansionOptions) bool {
+    return options.imported_bodies_decl_only and options.load_reachable_imported_bodies_from_registry;
+}
+
+fn importedFuncNodeForReachability(
+    allocator: std.mem.Allocator,
+    node: *ast.Node,
+    reachable_symbol: []const u8,
+    reachable: *const std.StringHashMap(void),
+    options: SlaImportExpansionOptions,
+) !?*ast.Node {
+    if (node.* != .func_decl) return null;
+    if (!reachable.contains(reachable_symbol)) return null;
+    if (shouldKeepReachableImportedBody(options)) return node;
+    if (options.imported_bodies_decl_only) return try makeDeclOnlyFuncNode(allocator, &node.func_decl);
+    return node;
+}
+
 fn appendFilteredImplDecl(
     allocator: std.mem.Allocator,
     decl: *ast.Node,
     reachable: *const std.StringHashMap(void),
     out_decls: *std.ArrayList(*ast.Node),
+) !void {
+    try appendFilteredImplDeclWithOptions(allocator, decl, reachable, out_decls, .{});
+}
+
+fn appendFilteredImplDeclWithOptions(
+    allocator: std.mem.Allocator,
+    decl: *ast.Node,
+    reachable: *const std.StringHashMap(void),
+    out_decls: *std.ArrayList(*ast.Node),
+    options: SlaImportExpansionOptions,
 ) !void {
     const impl_decl = decl.impl_decl;
     const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse {
@@ -1440,14 +1536,11 @@ fn appendFilteredImplDecl(
         else
             try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
         if (method.func_decl.is_decl_only or reachable.contains(symbol)) {
-            try methods.append(method);
+            const keep_body = reachable.contains(symbol) and shouldKeepReachableImportedBody(options);
+            try methods.append(try maybeDeclOnlyFuncNode(allocator, method, options.imported_bodies_decl_only and !keep_body));
+            if (options.imported_bodies_decl_only and !keep_body and !method.func_decl.is_decl_only) changed = true;
         } else if (impl_decl.trait_name != null) {
-            var stub_func = method.func_decl;
-            stub_func.is_decl_only = true;
-            stub_func.body = &.{};
-            const stub = try allocator.create(ast.Node);
-            stub.* = .{ .func_decl = stub_func };
-            try methods.append(stub);
+            try methods.append(try makeDeclOnlyFuncNode(allocator, &method.func_decl));
             changed = true;
         } else {
             changed = true;
@@ -1472,6 +1565,16 @@ fn appendFilteredOverloadDecl(
     reachable: *const std.StringHashMap(void),
     out_decls: *std.ArrayList(*ast.Node),
 ) !void {
+    try appendFilteredOverloadDeclWithOptions(allocator, decl, reachable, out_decls, .{});
+}
+
+fn appendFilteredOverloadDeclWithOptions(
+    allocator: std.mem.Allocator,
+    decl: *ast.Node,
+    reachable: *const std.StringHashMap(void),
+    out_decls: *std.ArrayList(*ast.Node),
+    options: SlaImportExpansionOptions,
+) !void {
     const overload_decl = decl.overload_decl;
     const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse {
         try out_decls.append(decl);
@@ -1485,9 +1588,12 @@ fn appendFilteredOverloadDecl(
             continue;
         }
         const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-        if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+        if (method.func_decl.is_decl_only or reachable.contains(symbol)) {
+            const keep_body = reachable.contains(symbol) and shouldKeepReachableImportedBody(options);
+            try methods.append(try maybeDeclOnlyFuncNode(allocator, method, options.imported_bodies_decl_only and !keep_body));
+        }
     }
-    if (methods.items.len == overload_decl.methods.len) {
+    if (methods.items.len == overload_decl.methods.len and !options.imported_bodies_decl_only) {
         try out_decls.append(decl);
     } else if (methods.items.len > 0) {
         const pruned = try allocator.create(ast.Node);
@@ -1648,7 +1754,7 @@ fn expandSlaImports(
             for (resolved_imports) |resolved| {
                 if (std.mem.endsWith(u8, resolved.path, ".sla")) {
                     const module = try modules.getOrParse(resolved);
-                    try appendModuleDeclsSelective(allocator, &modules, module, &emitted, primary_decls, &decls, &reachable, &referenced_types);
+                    try appendModuleDeclsSelective(allocator, &modules, module, &emitted, primary_decls, &decls, &reachable, &referenced_types, options);
                 } else {
                     try appendResolvedNonSlaImportDecl(allocator, resolved, primary_decls, &decls);
                 }
@@ -1688,8 +1794,23 @@ fn registerImportedFunctionAliases(tc: *type_checker_mod.TypeChecker, allocator:
             var fn_iter = module.exports.function_signatures.iterator();
             while (fn_iter.next()) |entry| {
                 const name = entry.key_ptr.*;
+                const signature = entry.value_ptr.*;
                 const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ namespace, name });
                 try tc.registerFunctionAlias(alias, name);
+                try tc.registerImportedFunctionSignature(name, signature.params, signature.ret_ty, signature.is_async);
+                try tc.registerImportedFunctionSignature(alias, signature.params, signature.ret_ty, signature.is_async);
+            }
+            for (module.exports.impl_decls.items) |impl_node| {
+                const impl_decl = impl_node.impl_decl;
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    try tc.registerImportedFunctionSignature(symbol, method.func_decl.params, method.func_decl.ret_ty, method.func_decl.is_async);
+                }
             }
         }
     }
@@ -1750,6 +1871,7 @@ const SlaCompileOptions = struct {
     test_filter: ?[]const u8 = null,
     allow_fallback: bool = true,
     prune_for_test_codegen: bool = false,
+    load_reachable_imported_bodies_from_registry: bool = false,
 };
 
 fn slaProfileEnabled(allocator: std.mem.Allocator) bool {
@@ -2757,6 +2879,8 @@ fn runSlaFrontend(
     const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls, .{
         .prune_for_test_codegen = options.prune_for_test_codegen,
         .test_filter = options.test_filter,
+        .imported_bodies_decl_only = options.load_reachable_imported_bodies_from_registry,
+        .load_reachable_imported_bodies_from_registry = options.load_reachable_imported_bodies_from_registry,
     }) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
         return null;
@@ -3769,6 +3893,7 @@ fn compileSlaSabTestInput(
     const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, .{
         .test_filter = saTestFilterFromArgs(extra_args),
         .prune_for_test_codegen = true,
+        .load_reachable_imported_bodies_from_registry = true,
     })) orelse return null;
     if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return null;
     if (emit_sab_file) {
@@ -3795,6 +3920,7 @@ fn compileSlaSaTestInput(
     const sa_code = (try compileSlaToSaStringWithOptions(allocator, file, sa_out, stderr, .{
         .test_filter = saTestFilterFromArgs(extra_args),
         .prune_for_test_codegen = true,
+        .load_reachable_imported_bodies_from_registry = true,
     })) orelse return null;
 
     std.fs.cwd().writeFile(.{ .sub_path = sa_out, .data = sa_code }) catch |err| {
@@ -4179,7 +4305,9 @@ pub fn runSlaCommandImpl(
         };
 
         var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-        const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls, .{}) catch |err| {
+        const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls, .{
+            .imported_bodies_decl_only = true,
+        }) catch |err| {
             try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
             return 1;
         };
@@ -4614,6 +4742,191 @@ test "sla check reports redeclared symbol names" {
     try expectSlaCheckSyntaxDiagnostic("tests/test_error_bare_overload.sla", "found 'overload'");
 }
 
+test "sla check uses imported signatures without checking imported function bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn imported_a() -> i32 {
+        \\    return missing_symbol();
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    return dep::imported_a();
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla check uses imported method signatures without checking imported method bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\struct ImportedBox {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl ImportedBox {
+        \\    fn used(self) -> i32 {
+        \\        return missing_symbol();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    let item = ImportedBox { value: 7 };
+        \\    return item.used();
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla check uses imported trait method signatures without checking imported trait bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\trait Label {
+        \\    fn label(self) -> i32;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl Label for ImportedThing {
+        \\    fn label(self) -> i32 {
+        \\        return missing_trait_symbol();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    let item = ImportedThing { value: 7 };
+        \\    return item.label();
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla check uses imported trait associated signatures without checking imported trait bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\trait Score {
+        \\    fn score(self) -> i32;
+        \\}
+        \\
+        \\struct ImportedScore {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl Score for ImportedScore {
+        \\    fn score(self) -> i32 {
+        \\        return missing_score_symbol();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    let item = ImportedScore { value: 9 };
+        \\    return Score::score(item);
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla build rewrites sla imports relative to final output path" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -4895,6 +5208,115 @@ test "sla test import expansion prunes unreachable imported methods" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla test codegen uses registry loaded imported bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\trait Label {
+        \\    fn label(self) -> i32;
+        \\    fn unused_trait(self) -> i32;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\fn imported_value() -> i32 {
+        \\    return 68;
+        \\}
+        \\
+        \\fn unused_bad() -> MissingType {
+        \\    return nope();
+        \\}
+        \\
+        \\impl ImportedThing {
+        \\    fn used(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\}
+        \\
+        \\impl Label for ImportedThing {
+        \\    fn label(self) -> i32 {
+        \\        return self.value + 1;
+        \\    }
+        \\
+        \\    fn unused_trait(self) -> i32 {
+        \\        return missing_trait_body();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "registry loaded test body"() {
+        \\    let item = ImportedThing { value: imported_value() };
+        \\    let got = item.used() + item.label();
+        \\    if got != 137 { panic(24137); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var sa_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sa_stderr.deinit();
+    const sa_compiled = try compileSlaSaTestInput(allocator, "main.sla", sa_stderr.writer().any(), &.{}, false);
+    if (sa_compiled) |compiled| {
+        defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
+        const sa_code = try std.fs.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__imported_value") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing_used") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing__Label_label") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_bad") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_trait_body") == null);
+    } else {
+        std.debug.print("{s}", .{sa_stderr.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
+
+    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sab_stderr.deinit();
+    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, false);
+    if (sab_compiled) |compiled| {
+        defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
+        const sab_bytes = try std.fs.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
+        var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+        defer module.deinit(std.testing.allocator);
+
+        var saw_value = false;
+        var saw_used = false;
+        var saw_label = false;
+        var saw_unused_bad = false;
+        var saw_unused_trait = false;
+        for (module.function_sigs) |fsig| {
+            if (std.mem.indexOf(u8, fsig.name, "imported_value") != null) saw_value = true;
+            if (std.mem.indexOf(u8, fsig.name, "ImportedThing_used") != null) saw_used = true;
+            if (std.mem.indexOf(u8, fsig.name, "ImportedThing__Label_label") != null) saw_label = true;
+            if (std.mem.indexOf(u8, fsig.name, "unused_bad") != null) saw_unused_bad = true;
+            if (std.mem.indexOf(u8, fsig.name, "unused_trait") != null) saw_unused_trait = true;
+        }
+        try std.testing.expect(saw_value);
+        try std.testing.expect(saw_used);
+        try std.testing.expect(saw_label);
+        try std.testing.expect(!saw_unused_bad);
+        try std.testing.expect(!saw_unused_trait);
+    } else {
+        std.debug.print("{s}", .{sab_stderr.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
+}
+
 test "sla module namespace call resolves through imported function alias" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -4936,8 +5358,8 @@ test "sla module namespace call resolves through imported function alias" {
         return error.TestUnexpectedResult;
     };
 
-    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @imported_a") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @dep__imported_a") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__imported_a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__dep__imported_a") == null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -5201,6 +5623,109 @@ test "sla module exports index records per-module function sources" {
     try std.testing.expect(std.mem.eql(u8, tag_method_source.?, dep.path));
 }
 
+test "sla module table resolves imported function bodies by module and namespace" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "dep.sla",
+        .data =
+        \\trait Label {
+        \\    fn label(self) -> i32;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\fn imported_value() -> i32 {
+        \\    return 41;
+        \\}
+        \\
+        \\impl ImportedThing {
+        \\    fn inherent(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\}
+        \\
+        \\impl Label for ImportedThing {
+        \\    fn label(self) -> i32 {
+        \\        return self.value + 1;
+        \\    }
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "main.sla",
+        .data =
+        \\@import "dep.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    return dep::imported_value();
+        \\}
+        ,
+    });
+
+    const dep_source = try tmp.dir.readFileAlloc(allocator, "dep.sla", 1024 * 1024);
+    const main_source = try tmp.dir.readFileAlloc(allocator, "main.sla", 1024 * 1024);
+    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const dep_path = try tmp.dir.realpathAlloc(allocator, "dep.sla");
+    const main_path = try tmp.dir.realpathAlloc(allocator, "main.sla");
+    const main_dir = std.fs.path.dirname(main_path) orelse cwd;
+
+    const expanded_main = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_main, main_dir);
+    const main_prog = try parser.parseProgram();
+
+    var modules = SlaModuleTable.init(allocator);
+    defer modules.deinit();
+    const dep_module = try modules.getOrParse(.{
+        .path = dep_path,
+        .output_path = "dep.sla",
+        .source = dep_source,
+    });
+    _ = try modules.getOrParse(.{
+        .path = main_path,
+        .output_path = "main.sla",
+        .source = main_source,
+    });
+
+    const top_body = modules.functionBody(dep_module.path, "imported_value");
+    try std.testing.expect(top_body != null);
+    try std.testing.expect(!top_body.?.is_decl_only);
+    try std.testing.expectEqual(@as(usize, 1), top_body.?.body.len);
+
+    const inherent_symbol = try lowering_rules.mangleMethodName(allocator, "ImportedThing", "inherent");
+    const inherent_body = modules.associatedFunctionBody(dep_module.path, inherent_symbol);
+    try std.testing.expect(inherent_body != null);
+    try std.testing.expect(!inherent_body.?.is_decl_only);
+    try std.testing.expectEqual(@as(usize, 1), inherent_body.?.body.len);
+
+    const trait_symbol = try lowering_rules.mangleTraitMethodName(allocator, "ImportedThing", "Label", "label");
+    const trait_body = modules.associatedFunctionBody(dep_module.path, trait_symbol);
+    try std.testing.expect(trait_body != null);
+    try std.testing.expect(!trait_body.?.is_decl_only);
+    try std.testing.expectEqual(@as(usize, 1), trait_body.?.body.len);
+
+    const namespace_body = try modules.functionBodyForImportNamespace(main_path, "dep", "imported_value");
+    try std.testing.expect(namespace_body != null);
+    try std.testing.expect(std.mem.eql(u8, namespace_body.?.name, "imported_value"));
+
+    const imported_symbol_body = try modules.functionBodyForImportedMangledName(main_path, "dep__imported_value");
+    try std.testing.expect(imported_symbol_body != null);
+    try std.testing.expect(std.mem.eql(u8, imported_symbol_body.?.name, "imported_value"));
+
+    try std.testing.expect(try modules.functionBodyForImportNamespace(main_path, "missing", "imported_value") == null);
+    try std.testing.expect(try modules.functionBodyForImportedMangledName(main_path, "imported_value") == null);
+    try std.testing.expect(modules.functionBody(dep_module.path, "missing") == null);
+    try std.testing.expect(modules.associatedFunctionBody(dep_module.path, "ImportedThing_missing") == null);
+    try std.testing.expect(main_prog.* == .program);
+}
+
 test "sla module table skips non contributing imported module bodies" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -5363,6 +5888,109 @@ test "sla module table selective flatten in non test compile path" {
     try std.testing.expect(!saw_unused);
 }
 
+test "sla module table loads reachable imported bodies from registry while stubbing others" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\trait Label {
+        \\    fn label(self) -> i32;
+        \\    fn unused_trait(self) -> i32;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\fn imported_value() -> i32 {
+        \\    return imported_helper();
+        \\}
+        \\
+        \\fn imported_helper() -> i32 {
+        \\    return 67;
+        \\}
+        \\
+        \\fn unused_bad() -> MissingType {
+        \\    return nope();
+        \\}
+        \\
+        \\impl ImportedThing {
+        \\    fn inherent(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\}
+        \\
+        \\impl Label for ImportedThing {
+        \\    fn label(self) -> i32 {
+        \\        return self.value + 1;
+        \\    }
+        \\
+        \\    fn unused_trait(self) -> i32 {
+        \\        return missing_trait_body();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    let item = ImportedThing { value: imported_value() };
+        \\    return item.inherent() + item.label();
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{
+        .imported_bodies_decl_only = true,
+        .load_reachable_imported_bodies_from_registry = true,
+    });
+
+    var saw_value_body = false;
+    var saw_helper_body = false;
+    var saw_unused_bad = false;
+    var saw_inherent_body = false;
+    var saw_label_body = false;
+    var saw_unused_trait_stub = false;
+    for (expanded_prog.program.decls) |decl| {
+        switch (decl.*) {
+            .func_decl => |fd| {
+                if (std.mem.eql(u8, fd.name, "imported_value")) saw_value_body = !fd.is_decl_only and fd.body.len > 0;
+                if (std.mem.eql(u8, fd.name, "imported_helper")) saw_helper_body = !fd.is_decl_only and fd.body.len > 0;
+                if (std.mem.eql(u8, fd.name, "unused_bad")) saw_unused_bad = true;
+            },
+            .impl_decl => |impl_decl| {
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    if (std.mem.eql(u8, method.func_decl.name, "inherent")) saw_inherent_body = !method.func_decl.is_decl_only and method.func_decl.body.len > 0;
+                    if (std.mem.eql(u8, method.func_decl.name, "label")) saw_label_body = !method.func_decl.is_decl_only and method.func_decl.body.len > 0;
+                    if (std.mem.eql(u8, method.func_decl.name, "unused_trait")) saw_unused_trait_stub = method.func_decl.is_decl_only and method.func_decl.body.len == 0;
+                }
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_value_body);
+    try std.testing.expect(saw_helper_body);
+    try std.testing.expect(!saw_unused_bad);
+    try std.testing.expect(saw_inherent_body);
+    try std.testing.expect(saw_label_body);
+    try std.testing.expect(saw_unused_trait_stub);
+}
+
 test "sla module table reaches contributing transitive module through non contributing parent" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -5502,6 +6130,76 @@ test "sla module table prunes unreachable trait impl methods in contributing mod
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_trait_body") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab codegen skips decl only imported trait impl methods" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\trait Label {
+        \\    fn label(self) -> i32;
+        \\    fn unused(self) -> i32;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl Label for ImportedThing {
+        \\    fn label(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\
+        \\    fn unused(self) -> i32 {
+        \\        return missing_trait_body();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "imported trait used method"() {
+        \\    let item = ImportedThing { value: 61 };
+        \\    if item.label() != 61 { panic(61061); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "main.sla",
+        ".sla-cache/sab/imported_trait_decl_only.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_label = false;
+    var saw_unused = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.indexOf(u8, fsig.name, "ImportedThing__Label_label") != null) saw_label = true;
+        if (std.mem.indexOf(u8, fsig.name, "ImportedThing__Label_unused") != null) saw_unused = true;
+    }
+    try std.testing.expect(saw_label);
+    try std.testing.expect(!saw_unused);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

@@ -1555,7 +1555,8 @@ pub const Codegen = struct {
         defer arg_regs.deinit();
         var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
         defer arg_release_regs.deinit();
-        const maybe_func = self.tc.funcs.get(call.func_name);
+        const resolved_func_name = self.tc.resolveFunctionAlias(call.func_name);
+        const maybe_func = self.tc.funcs.get(resolved_func_name);
         for (call.args, 0..) |arg, i| {
             if (maybe_func) |func| {
                 if (i < func.params.len) {
@@ -1573,7 +1574,7 @@ pub const Codegen = struct {
             arg_release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
         }
 
-        const lowered_name = try self.loweredFuncSymbol(call.func_name);
+        const lowered_name = try self.loweredFuncSymbol(resolved_func_name);
         defer self.allocator.free(lowered_name);
         self.out.writer().print("    call @{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
         for (arg_regs.items, 0..) |ar, i| {
@@ -1583,7 +1584,7 @@ pub const Codegen = struct {
         self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
         for (arg_release_regs.items) |release_reg| {
             if (release_reg) |arg_reg| {
-                if (!std.mem.eql(u8, call.func_name, "sum")) try self.emitRelease(arg_reg);
+                if (!std.mem.eql(u8, resolved_func_name, "sum")) try self.emitRelease(arg_reg);
             }
         }
     }
@@ -6210,6 +6211,7 @@ pub const Codegen = struct {
                 };
                 for (decl.impl_decl.methods) |method| {
                     if (method.* != .func_decl) return CodegenError.CodegenError;
+                    if (method.func_decl.is_decl_only) continue;
                     const mangled = if (decl.impl_decl.trait_name) |trait_name|
                         try self.mangleTraitMethodName(impl_name, trait_name, method.func_decl.name)
                     else
@@ -6224,6 +6226,7 @@ pub const Codegen = struct {
                 };
                 for (decl.overload_decl.methods) |method| {
                     if (method.* != .func_decl) return CodegenError.CodegenError;
+                    if (method.func_decl.is_decl_only) continue;
                     const mangled = try self.mangleMethodName(overload_name, method.func_decl.name);
                     defer self.allocator.free(mangled);
                     try self.genFuncDeclNamed(mangled, &method.func_decl);

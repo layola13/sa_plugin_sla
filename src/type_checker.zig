@@ -2857,11 +2857,17 @@ pub const TypeChecker = struct {
                 const start_ty = try self.checkExpr(f.start, scope);
                 const iter_ty = if (f.end) |end_expr| blk: {
                     const end_ty = try self.checkExpr(end_expr, scope);
-                    if (!isNumericType(start_ty) or !isNumericType(end_ty)) return TypeError.TypeMismatch;
+                    if (!isNumericType(start_ty) or !isNumericType(end_ty)) {
+                        self.setError("for range bounds must be numeric: start tag={s}, end tag={s}", .{ @tagName(start_ty.*), @tagName(end_ty.*) });
+                        return TypeError.TypeMismatch;
+                    }
                     break :blk start_ty;
                 } else blk: {
                     if (arrayType(start_ty)) |arr| break :blk arr.elem;
-                    break :blk self.protocolIterableElementType(start_ty) orelse return TypeError.TypeMismatch;
+                    break :blk self.protocolIterableElementType(start_ty) orelse {
+                        self.setError("for iterable value must be array or implement Iterable: start tag={s}", .{@tagName(start_ty.*)});
+                        return TypeError.TypeMismatch;
+                    };
                 };
 
                 const loop_scope = try Scope.init(self.allocator, scope);

@@ -235,3 +235,43 @@ cd /home/vscode/projects/mnt/sla_tsgo
 - `reachable decl filter`: 4ms
 
 判断不变：本工单仍未关闭，下一步要继续处理 reachable filter 之后的 direct-SAB codegen/依赖加载，以及真正的 exported-signature/lazy imported-body typecheck。
+
+## 2026-07-08 associated callable candidate index 进展记录
+
+`sa_plugin_sla/src/plugin.zig` 的 `SlaCallableIndex` 继续收敛为 ModuleGraph/lazy traversal 的可调用符号索引基础。此前 worklist 取函数体已经是哈希查找，但 `item.method()` / `Type::method()` 这类语法可达性仍会对全部 callable name 做后缀扫描。现在索引在注册 mangled inherent/trait/overload method body 时，同时记录短方法名到候选 symbol 列表，方法/associated call 可达性直接查候选表。
+
+新增回归：`sla test import expansion prunes unreachable imported methods`，覆盖 imported `impl` 中保留被调用方法、剪掉未调用且含缺失符号的方法，证明该索引仍保持 test-codegen 剪枝语义。
+
+当前验证：
+
+- `zig fmt src/plugin.zig`
+- `zig build test -Dtest-filter="sla test import expansion prunes unreachable imported methods" --summary all`
+- `zig build test -Dtest-filter="sla test import expansion prunes unreachable imported functions" --summary all`
+- `zig build test -Dtest-filter="sla test codegen prunes unreachable functions before type checking" --summary all`
+- `zig build --summary all`
+- `zig build test --summary all` 通过，100/100
+- `SA_PLUGIN_DEV=1 sa plugin install --dev .`
+- `SA_PLUGIN_DEV=1 sa sla help`
+- local/installed strict SAB guards: `tests/test_unit_impl_static_methods.sla`, `tests/test_unit_rc_dyn_trait.sla`, `tests/test_unit_sla_import.sla`
+
+复核本工单真实路径仍使用 10 秒硬超时：
+
+```sh
+cd /home/vscode/projects/mnt/sla_tsgo
+/usr/bin/time -f 'elapsed %e maxrss %M' timeout 10s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla test tests/test_compiler_checker_pool_api_contract.sla --test-backend sab --trace-panic
+```
+
+结果：仍为 `timeout` 退出码 124，`elapsed 10.02 maxrss 252160`。已输出 profile：
+
+- `parse`: 353ms
+- `import expand`: 558ms
+- `monomorphize`: 7ms
+- `pre-typecheck reachable decl filter`: 2ms
+- `load contracts`: 591ms
+- `type check`: 1340ms
+- `primary decl filter`: 0ms
+- `reachable decl filter`: 5ms
+
+判断不变：这是 callable/exported-symbol index 的基础优化，减少方法调用可达性分析的全符号扫描，但仍未关闭本工单。下一步仍应集中在真实 exported-signature index、lazy imported-body typecheck，以及 reachable filter 之后 direct-SAB codegen/依赖加载的按需化。

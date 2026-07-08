@@ -226,3 +226,41 @@ cd /home/vscode/projects/mnt/sla_tsgo
 - `reachable decl filter`: 1ms
 
 判断不变：本工单仍未关闭，主要瓶颈仍是大型 import graph 与 reachable filter 之后的 direct-SAB codegen/依赖加载。
+
+## 2026-07-08 associated callable candidate index 进展记录
+
+`sa_plugin_sla/src/plugin.zig` 的 `SlaCallableIndex` 现在不只缓存 callable name 与 body，也在注册 mangled inherent/trait/overload method 时建立短方法名到候选 symbol 的索引。test-codegen 可达性遇到 `item.method()` / `Type::method()` 时直接查候选表，替代此前对所有 callable name 的后缀扫描。
+
+新增回归：`sla test import expansion prunes unreachable imported methods`，覆盖 imported `impl` 中保留被调用方法、剪掉未调用且含缺失符号的方法。该切片保持当前 flatten/typecheck 合约，只减少可达性索引成本，不声称完成 namespace isolation 或 lazy imported-body typecheck。
+
+当前验证：
+
+- `zig fmt src/plugin.zig`
+- focused imported-method/imported-function/pre-typecheck pruning Zig tests
+- `zig build --summary all`
+- `zig build test --summary all` 通过，100/100
+- `SA_PLUGIN_DEV=1 sa plugin install --dev .`
+- `SA_PLUGIN_DEV=1 sa sla help`
+- local/installed strict SAB guards: `tests/test_unit_impl_static_methods.sla`, `tests/test_unit_rc_dyn_trait.sla`, `tests/test_unit_sla_import.sla`
+
+复核本工单真实路径仍使用 10 秒硬超时：
+
+```sh
+cd /home/vscode/projects/mnt/sla_tsgo
+/usr/bin/time -f 'elapsed %e maxrss %M' timeout 10s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla test tests/test_project_background_update_contract.sla --test-backend sab --trace-panic
+```
+
+结果：仍为 `timeout` 退出码 124，`elapsed 10.04 maxrss 391168`。已输出 profile：
+
+- `parse`: 1577ms
+- `import expand`: 4235ms
+- `monomorphize`: 4ms
+- `pre-typecheck reachable decl filter`: 0ms
+- `load contracts`: 619ms
+- `type check`: 347ms
+- `primary decl filter`: 0ms
+- `reachable decl filter`: 0ms
+
+判断不变：本工单仍未关闭。该切片消除了方法候选的全符号扫描，但剩余主要瓶颈仍是大型 import graph、真正的 exported-signature/lazy imported-body typecheck，以及 reachable filter 之后的 direct-SAB codegen/依赖加载。

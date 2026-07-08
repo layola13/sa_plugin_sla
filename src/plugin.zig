@@ -670,16 +670,21 @@ const SlaCallableIndex = struct {
     allocator: std.mem.Allocator,
     names: std.StringHashMap(void),
     bodies: std.StringHashMap([]const *ast.Node),
+    associated_candidates: std.StringHashMap(std.ArrayList([]const u8)),
 
     fn init(allocator: std.mem.Allocator) SlaCallableIndex {
         return .{
             .allocator = allocator,
             .names = std.StringHashMap(void).init(allocator),
             .bodies = std.StringHashMap([]const *ast.Node).init(allocator),
+            .associated_candidates = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
         };
     }
 
     fn deinit(self: *SlaCallableIndex) void {
+        var candidates = self.associated_candidates.valueIterator();
+        while (candidates.next()) |list| list.deinit();
+        self.associated_candidates.deinit();
         self.bodies.deinit();
         self.names.deinit();
     }
@@ -688,6 +693,27 @@ const SlaCallableIndex = struct {
         try self.names.put(name, {});
         const body_entry = try self.bodies.getOrPut(name);
         if (!body_entry.found_existing) body_entry.value_ptr.* = body;
+        try self.addFlattenedSuffixCandidates(name);
+    }
+
+    fn addAssociatedFunction(self: *SlaCallableIndex, method_name: []const u8, symbol: []const u8, body: []const *ast.Node) !void {
+        try self.addFunction(symbol, body);
+        try self.addAssociatedCandidate(method_name, symbol);
+    }
+
+    fn addAssociatedCandidate(self: *SlaCallableIndex, method_name: []const u8, symbol: []const u8) !void {
+        const entry = try self.associated_candidates.getOrPut(method_name);
+        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+        try entry.value_ptr.append(symbol);
+    }
+
+    fn addFlattenedSuffixCandidates(self: *SlaCallableIndex, symbol: []const u8) !void {
+        for (symbol, 0..) |ch, index| {
+            if (ch != '_' and ch != ':') continue;
+            if (index + 1 >= symbol.len) continue;
+            if (symbol[index + 1] == '_' or symbol[index + 1] == ':') continue;
+            try self.addAssociatedCandidate(symbol[index + 1 ..], symbol);
+        }
     }
 
     fn addDecls(self: *SlaCallableIndex, decls: []const *ast.Node) !void {
@@ -702,7 +728,7 @@ const SlaCallableIndex = struct {
                             try lowering_rules.mangleTraitMethodName(self.allocator, type_name, trait_name, method.func_decl.name)
                         else
                             try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
-                        try self.addFunction(symbol, method.func_decl.body);
+                        try self.addAssociatedFunction(method.func_decl.name, symbol, method.func_decl.body);
                     }
                 },
                 .overload_decl => |overload_decl| {
@@ -710,7 +736,7 @@ const SlaCallableIndex = struct {
                     for (overload_decl.methods) |method| {
                         if (method.* != .func_decl) continue;
                         const symbol = try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
-                        try self.addFunction(symbol, method.func_decl.body);
+                        try self.addAssociatedFunction(method.func_decl.name, symbol, method.func_decl.body);
                     }
                 },
                 else => {},
@@ -720,7 +746,7 @@ const SlaCallableIndex = struct {
 };
 
 fn collectSyntacticReachableRootsFromDecls(
-    funcs: *const std.StringHashMap(void),
+    funcs: *const SlaCallableIndex,
     reachable: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     decls: []const *ast.Node,
@@ -769,9 +795,9 @@ fn buildReachableImportedTestSymbols(
     var worklist = std.ArrayList([]const u8).init(allocator);
 
     var saw_test = false;
-    try collectSyntacticReachableRootsFromDecls(&callable_index.names, &reachable, &worklist, root_program.program.decls, test_filter, &saw_test);
+    try collectSyntacticReachableRootsFromDecls(&callable_index, &reachable, &worklist, root_program.program.decls, test_filter, &saw_test);
     for (modules) |module| {
-        try collectSyntacticReachableRootsFromDecls(&callable_index.names, &reachable, &worklist, module.program.program.decls, test_filter, &saw_test);
+        try collectSyntacticReachableRootsFromDecls(&callable_index, &reachable, &worklist, module.program.program.decls, test_filter, &saw_test);
     }
     if (!saw_test) return null;
 
@@ -779,7 +805,7 @@ fn buildReachableImportedTestSymbols(
     while (index < worklist.items.len) : (index += 1) {
         const name = worklist.items[index];
         const body = callable_index.bodies.get(name) orelse continue;
-        try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, body);
+        try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, body);
     }
 
     return reachable;
@@ -1491,40 +1517,31 @@ fn collectNeededTraitImplsBlock(
 }
 
 fn markSyntacticReachableFunc(
-    funcs: *const std.StringHashMap(void),
+    funcs: *const SlaCallableIndex,
     reachable: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     name: []const u8,
 ) !void {
-    if (!funcs.contains(name)) return;
+    if (!funcs.names.contains(name)) return;
     if (reachable.contains(name)) return;
     try reachable.put(name, {});
     try worklist.append(name);
 }
 
 fn markSyntacticAssociatedCallCandidates(
-    funcs: *const std.StringHashMap(void),
+    funcs: *const SlaCallableIndex,
     reachable: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     method_name: []const u8,
 ) !void {
-    var iter = funcs.keyIterator();
-    while (iter.next()) |key_ptr| {
-        const name = key_ptr.*;
-        if (std.mem.eql(u8, name, method_name)) {
-            try markSyntacticReachableFunc(funcs, reachable, worklist, name);
-            continue;
-        }
-        if (name.len <= method_name.len + 1) continue;
-        const suffix_start = name.len - method_name.len;
-        if (!std.mem.eql(u8, name[suffix_start..], method_name)) continue;
-        const sep = name[suffix_start - 1];
-        if (sep == '_' or sep == ':') try markSyntacticReachableFunc(funcs, reachable, worklist, name);
+    try markSyntacticReachableFunc(funcs, reachable, worklist, method_name);
+    if (funcs.associated_candidates.get(method_name)) |candidates| {
+        for (candidates.items) |name| try markSyntacticReachableFunc(funcs, reachable, worklist, name);
     }
 }
 
 fn collectSyntacticReachableExpr(
-    funcs: *const std.StringHashMap(void),
+    funcs: *const SlaCallableIndex,
     reachable: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     expr: *const ast.Node,
@@ -1598,7 +1615,7 @@ fn collectSyntacticReachableExpr(
 }
 
 fn collectSyntacticReachableBlock(
-    funcs: *const std.StringHashMap(void),
+    funcs: *const SlaCallableIndex,
     reachable: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     block: []const *ast.Node,
@@ -1649,19 +1666,19 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
         switch (decl.*) {
             .test_decl => |test_decl| {
                 saw_test = true;
-                try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, test_decl.body);
+                try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, test_decl.body);
             },
-            .const_stmt => |const_stmt| try collectSyntacticReachableExpr(&callable_index.names, &reachable, &worklist, const_stmt.value),
-            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, macro_decl.body),
+            .const_stmt => |const_stmt| try collectSyntacticReachableExpr(&callable_index, &reachable, &worklist, const_stmt.value),
+            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, macro_decl.body),
             .impl_decl => |impl_decl| {
                 if (impl_decl.trait_name != null) {
                     for (impl_decl.methods) |method| {
-                        if (method.* == .func_decl) try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, method.func_decl.body);
+                        if (method.* == .func_decl) try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, method.func_decl.body);
                     }
                 }
             },
             .overload_decl => |overload_decl| for (overload_decl.methods) |method| {
-                if (method.* == .func_decl) try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, method.func_decl.body);
+                if (method.* == .func_decl) try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, method.func_decl.body);
             },
             else => {},
         }
@@ -1672,7 +1689,7 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
     while (index < worklist.items.len) : (index += 1) {
         const name = worklist.items[index];
         const body = callable_index.bodies.get(name) orelse continue;
-        try collectSyntacticReachableBlock(&callable_index.names, &reachable, &worklist, body);
+        try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, body);
     }
 
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
@@ -4028,6 +4045,63 @@ test "sla test import expansion prunes unreachable imported functions" {
     try std.testing.expect(saw_used);
     try std.testing.expect(saw_helper);
     try std.testing.expect(!saw_unused);
+}
+
+test "sla test import expansion prunes unreachable imported methods" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\struct ImportedBox {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl ImportedBox {
+        \\    fn used(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\
+        \\    fn unused_broken(self) -> i32 {
+        \\        return missing_import_method_symbol();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "reachable import method only"() {
+        \\    let item = ImportedBox { value: 44 };
+        \\    let got = item.used();
+        \\    if got != 44 { panic(24008); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedBox_used") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_broken") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen omits unreachable functions after type checking" {

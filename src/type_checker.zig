@@ -123,6 +123,7 @@ pub const TypeChecker = struct {
 
     // Tracks internal Sla functions for validation
     funcs: std.StringHashMap(*ast.FuncDecl),
+    function_aliases: std.StringHashMap([]const u8),
     // Tracks user-defined macros
     macros: std.StringHashMap(*ast.MacroDecl),
     imported_macros: std.StringHashMap(ImportedMacro),
@@ -163,6 +164,7 @@ pub const TypeChecker = struct {
             .cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
             .phi_cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
+            .function_aliases = std.StringHashMap([]const u8).init(allocator),
             .macros = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .imported_macros = std.StringHashMap(ImportedMacro).init(allocator),
             .overloads = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
@@ -329,6 +331,7 @@ pub const TypeChecker = struct {
         self.trait_impls.deinit();
         self.extern_funcs.deinit();
         self.layout_defines.deinit();
+        self.function_aliases.deinit();
         self.funcs.deinit();
         self.macros.deinit();
         self.imported_macros.deinit();
@@ -446,6 +449,14 @@ pub const TypeChecker = struct {
         var method_buf: [256]u8 = undefined;
         const key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ recv.user_defined.name, method_name }) catch return null;
         return self.funcs.get(key);
+    }
+
+    pub fn registerFunctionAlias(self: *TypeChecker, alias: []const u8, target: []const u8) !void {
+        try self.function_aliases.put(alias, target);
+    }
+
+    fn resolveFunctionAlias(self: *TypeChecker, name: []const u8) []const u8 {
+        return self.function_aliases.get(name) orelse name;
     }
 
     fn receiverParamMatches(self: *TypeChecker, param: ast.Param, recv_ty: *ast.Type) bool {
@@ -4136,73 +4147,11 @@ pub const TypeChecker = struct {
                     }
                 }
 
-                if (self.funcs.get(call.func_name)) |func| {
-                    if (func.params.len != call.args.len) return TypeError.InvalidArgsCount;
-                    for (func.params, call.args) |param, arg| {
-                        if (param.is_move and arg.* != .move_expr) {
-                            self.setError("Call to {s} requires move argument for parameter {s}", .{ call.func_name, param.name });
-                            return TypeError.TypeMismatch;
-                        }
-                        if (param.ty.* == .borrow) {
-                            const arg_ty = try self.checkExpr(arg, scope);
-                            if (canCoerceBorrowArrayToBorrowSlice(self, param.ty, arg_ty)) {
-                                self.array_to_slice_borrow_args.put(arg, {}) catch return TypeError.OutOfMemory;
-                                continue;
-                            }
-                            if (arg_ty.* != .borrow or !self.typesEqual(param.ty.borrow, arg_ty.borrow)) {
-                                self.setError("Call to {s} requires borrow-typed argument for parameter {s}", .{ call.func_name, param.name });
-                                return TypeError.TypeMismatch;
-                            }
-                            continue;
-                        }
-                        if (param.is_borrow) {
-                            if (dynTraitName(param.ty)) |trait_name| {
-                                const arg_ty = try self.checkExpr(arg, scope);
-                                if (dynDispatchTraitName(arg_ty)) |arg_trait_name| {
-                                    if (!self.traitExtendsTrait(arg_trait_name, trait_name)) {
-                                        self.setError("Type does not implement trait {s} for parameter {s}", .{ trait_name, param.name });
-                                        return TypeError.TypeMismatch;
-                                    }
-                                    continue;
-                                }
-                                const concrete_ty = switch (arg_ty.*) {
-                                    .borrow => |inner| inner,
-                                    else => null,
-                                } orelse {
-                                    self.setError("Call to {s} requires dyn borrow for parameter {s}", .{ call.func_name, param.name });
-                                    return TypeError.TypeMismatch;
-                                };
-                                if (!self.typeImplementsTrait(concrete_ty, trait_name)) {
-                                    self.setError("Type does not implement trait {s} for parameter {s}", .{ trait_name, param.name });
-                                    return TypeError.TypeMismatch;
-                                }
-                                self.dyn_borrow_args.put(arg, trait_name) catch return TypeError.OutOfMemory;
-                                continue;
-                            }
-                        }
-                        if (param.is_borrow and arg.* != .borrow_expr) {
-                            const arg_ty = try self.checkExpr(arg, scope);
-                            if (dynTraitName(param.ty)) |target_trait| {
-                                if (dynDispatchTraitName(arg_ty)) |arg_trait_name| {
-                                    if (!self.traitExtendsTrait(arg_trait_name, target_trait)) {
-                                        self.setError("Type does not implement trait {s} for parameter {s}", .{ target_trait, param.name });
-                                        return TypeError.TypeMismatch;
-                                    }
-                                    continue;
-                                }
-                            }
-                            if (arg_ty.* != .borrow or !self.typesEqual(param.ty, arg_ty.borrow)) {
-                                self.setError("Call to {s} requires borrow argument for parameter {s}", .{ call.func_name, param.name });
-                                return TypeError.TypeMismatch;
-                            }
-                            continue;
-                        }
-                        if (!param.is_move and !param.is_borrow and arg.* == .move_expr) {
-                            self.setError("Call to {s} passes capability argument to plain parameter {s}", .{ call.func_name, param.name });
-                            return TypeError.TypeMismatch;
-                        }
-                        const arg_ty = try self.checkExpr(arg, scope);
-                        if (!self.plainCallArgMatches(param.ty, arg, arg_ty)) return TypeError.TypeMismatch;
+                const resolved_func_name = self.resolveFunctionAlias(call.func_name);
+                if (self.funcs.get(resolved_func_name)) |func| {
+                    try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, false);
+                    if (!std.mem.eql(u8, resolved_func_name, call.func_name)) {
+                        self.resolved_call_symbols.put(expr, resolved_func_name) catch return TypeError.OutOfMemory;
                     }
                     if (func.is_async) {
                         return try self.makeFutureType(func.ret_ty);

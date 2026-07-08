@@ -170,6 +170,37 @@ const ResolvedImport = struct {
     source: []const u8,
 };
 
+const ResolvedModuleImport = struct {
+    namespace: []const u8,
+    resolved: ResolvedImport,
+};
+
+fn moduleNamespaceFromImportPath(allocator: std.mem.Allocator, import_path: []const u8) ![]const u8 {
+    const base = std.fs.path.basename(import_path);
+    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
+    return try allocator.dupe(u8, stem);
+}
+
+fn moduleNamespaceMatchesImportPath(import_path: []const u8, namespace: []const u8) bool {
+    const base = std.fs.path.basename(import_path);
+    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
+    return std.mem.eql(u8, stem, namespace);
+}
+
+const ImportedMangledSymbol = struct {
+    namespace: []const u8,
+    name: []const u8,
+};
+
+fn splitImportedMangledSymbol(symbol: []const u8) ?ImportedMangledSymbol {
+    const sep = std.mem.indexOf(u8, symbol, "__") orelse return null;
+    if (sep == 0 or sep + 2 >= symbol.len) return null;
+    return .{
+        .namespace = symbol[0..sep],
+        .name = symbol[sep + 2 ..],
+    };
+}
+
 fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
@@ -554,11 +585,219 @@ fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allo
     }
 }
 
+const SlaModuleExports = struct {
+    const FunctionSignature = struct {
+        name: []const u8,
+        params: []const ast.Param,
+        ret_ty: *ast.Type,
+        is_pub: bool,
+        is_extern: bool,
+        abi: ?[]const u8,
+        no_mangle: bool,
+        module_path: []const u8,
+    };
+
+    const TypeKind = enum { struct_decl, enum_decl, trait_decl, type_alias_decl };
+
+    const TypeSignature = struct {
+        name: []const u8,
+        kind: TypeKind,
+        generics: []const []const u8,
+        module_path: []const u8,
+    };
+
+    const ConstSignature = struct {
+        name: []const u8,
+        ty: ?*ast.Type,
+        module_path: []const u8,
+    };
+
+    const MacroSignature = struct {
+        name: []const u8,
+        params: []const []const u8,
+        module_path: []const u8,
+    };
+
+    allocator: std.mem.Allocator,
+    module_path: []const u8,
+    type_decls: std.StringHashMap(*ast.Node),
+    type_signatures: std.StringHashMap(TypeSignature),
+    function_decls: std.StringHashMap(*ast.Node),
+    function_signatures: std.StringHashMap(FunctionSignature),
+    const_decls: std.StringHashMap(*ast.Node),
+    const_signatures: std.StringHashMap(ConstSignature),
+    macro_decls: std.StringHashMap(*ast.Node),
+    macro_signatures: std.StringHashMap(MacroSignature),
+    impl_decls: std.ArrayList(*ast.Node),
+    trait_impl_decls: std.ArrayList(*ast.Node),
+
+    fn init(allocator: std.mem.Allocator, module_path: []const u8) SlaModuleExports {
+        return .{
+            .allocator = allocator,
+            .module_path = module_path,
+            .type_decls = std.StringHashMap(*ast.Node).init(allocator),
+            .type_signatures = std.StringHashMap(TypeSignature).init(allocator),
+            .function_decls = std.StringHashMap(*ast.Node).init(allocator),
+            .function_signatures = std.StringHashMap(FunctionSignature).init(allocator),
+            .const_decls = std.StringHashMap(*ast.Node).init(allocator),
+            .const_signatures = std.StringHashMap(ConstSignature).init(allocator),
+            .macro_decls = std.StringHashMap(*ast.Node).init(allocator),
+            .macro_signatures = std.StringHashMap(MacroSignature).init(allocator),
+            .impl_decls = std.ArrayList(*ast.Node).init(allocator),
+            .trait_impl_decls = std.ArrayList(*ast.Node).init(allocator),
+        };
+    }
+
+    fn deinit(self: *SlaModuleExports) void {
+        self.trait_impl_decls.deinit();
+        self.impl_decls.deinit();
+        self.macro_signatures.deinit();
+        self.macro_decls.deinit();
+        self.const_signatures.deinit();
+        self.const_decls.deinit();
+        self.function_signatures.deinit();
+        self.function_decls.deinit();
+        self.type_signatures.deinit();
+        self.type_decls.deinit();
+    }
+
+    fn addDecl(table: *std.StringHashMap(*ast.Node), name: []const u8, decl: *ast.Node) !void {
+        try table.put(name, decl);
+    }
+
+    fn addFunctionSignature(self: *SlaModuleExports, fd: *ast.FuncDecl) !void {
+        try self.function_signatures.put(fd.name, .{
+            .name = fd.name,
+            .params = fd.params,
+            .ret_ty = fd.ret_ty,
+            .is_pub = fd.is_pub,
+            .is_extern = fd.is_extern,
+            .abi = fd.abi,
+            .no_mangle = fd.no_mangle,
+            .module_path = self.module_path,
+        });
+    }
+
+    fn addTypeSignature(self: *SlaModuleExports, name: []const u8, kind: TypeKind, generics: []const []const u8) !void {
+        try self.type_signatures.put(name, .{
+            .name = name,
+            .kind = kind,
+            .generics = generics,
+            .module_path = self.module_path,
+        });
+    }
+
+    fn addConstSignature(self: *SlaModuleExports, c: *ast.ConstStmt) !void {
+        try self.const_signatures.put(c.name, .{
+            .name = c.name,
+            .ty = c.ty,
+            .module_path = self.module_path,
+        });
+    }
+
+    fn addMacroSignature(self: *SlaModuleExports, m: *ast.MacroDecl) !void {
+        try self.macro_signatures.put(m.name, .{
+            .name = m.name,
+            .params = m.params,
+            .module_path = self.module_path,
+        });
+    }
+
+    fn buildFromDecls(self: *SlaModuleExports, decls: []const *ast.Node) !void {
+        for (decls) |decl| {
+            switch (decl.*) {
+                .struct_decl => |s| {
+                    try addDecl(&self.type_decls, s.name, decl);
+                    try self.addTypeSignature(s.name, .struct_decl, s.generics);
+                },
+                .enum_decl => |e| {
+                    try addDecl(&self.type_decls, e.name, decl);
+                    try self.addTypeSignature(e.name, .enum_decl, e.generics);
+                },
+                .trait_decl => |t| {
+                    try addDecl(&self.type_decls, t.name, decl);
+                    try self.addTypeSignature(t.name, .trait_decl, &.{});
+                },
+                .type_alias_decl => |a| {
+                    try addDecl(&self.type_decls, a.name, decl);
+                    try self.addTypeSignature(a.name, .type_alias_decl, &.{});
+                },
+                .func_decl => |f| {
+                    try addDecl(&self.function_decls, f.name, decl);
+                    try self.addFunctionSignature(&decl.func_decl);
+                },
+                .const_stmt => |c| {
+                    try addDecl(&self.const_decls, c.name, decl);
+                    try self.addConstSignature(&decl.const_stmt);
+                },
+                .macro_decl => |m| {
+                    try addDecl(&self.macro_decls, m.name, decl);
+                    try self.addMacroSignature(&decl.macro_decl);
+                },
+                .impl_decl => |impl| {
+                    try self.impl_decls.append(decl);
+                    if (impl.trait_name != null) try self.trait_impl_decls.append(decl);
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn exportsType(self: *const SlaModuleExports, name: []const u8) bool {
+        return self.type_decls.contains(name);
+    }
+    fn typeSignature(self: *const SlaModuleExports, name: []const u8) ?TypeSignature {
+        return self.type_signatures.get(name);
+    }
+    fn exportsFunction(self: *const SlaModuleExports, name: []const u8) bool {
+        return self.function_decls.contains(name);
+    }
+    fn functionSignature(self: *const SlaModuleExports, name: []const u8) ?FunctionSignature {
+        return self.function_signatures.get(name);
+    }
+    fn exportsConst(self: *const SlaModuleExports, name: []const u8) bool {
+        return self.const_decls.contains(name);
+    }
+    fn constSignature(self: *const SlaModuleExports, name: []const u8) ?ConstSignature {
+        return self.const_signatures.get(name);
+    }
+    fn exportsMacro(self: *const SlaModuleExports, name: []const u8) bool {
+        return self.macro_decls.contains(name);
+    }
+    fn macroSignature(self: *const SlaModuleExports, name: []const u8) ?MacroSignature {
+        return self.macro_signatures.get(name);
+    }
+    fn exportsSymbol(self: *const SlaModuleExports, name: []const u8) bool {
+        if (self.function_decls.contains(name)) return true;
+        if (self.const_decls.contains(name)) return true;
+        if (self.macro_decls.contains(name)) return true;
+
+        var type_iter = self.type_decls.keyIterator();
+        while (type_iter.next()) |type_name_ptr| {
+            const type_name = type_name_ptr.*;
+            if (std.mem.startsWith(u8, name, type_name)) {
+                if (name.len > type_name.len and (name[type_name.len] == '_' or name[type_name.len] == '|')) {
+                    return true;
+                }
+            }
+            if (std.mem.indexOf(u8, name, type_name)) |idx| {
+                if (idx > 0 and name[idx - 1] == '_') {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+};
+
 const SlaModule = struct {
     path: []const u8,
     output_path: []const u8,
     base_dir: []const u8,
     program: *ast.Node,
+    exports: SlaModuleExports,
+    resolved_imports: []const ResolvedImport,
+    resolved_module_imports: []const ResolvedModuleImport,
 };
 
 const SlaImportExpansionOptions = struct {
@@ -578,7 +817,40 @@ const SlaModuleTable = struct {
     }
 
     fn deinit(self: *SlaModuleTable) void {
+        var module_iter = self.modules.valueIterator();
+        while (module_iter.next()) |module_ptr| {
+            const module = module_ptr.*;
+            for (module.resolved_module_imports) |resolved_import| {
+                self.allocator.free(resolved_import.namespace);
+            }
+            self.allocator.free(module.resolved_module_imports);
+            self.allocator.free(module.resolved_imports);
+            module.exports.deinit();
+            self.allocator.destroy(module);
+        }
         self.modules.deinit();
+    }
+
+    fn buildModuleImportNamespaces(self: *SlaModuleTable, resolved_imports: []const ResolvedImport) ![]const ResolvedModuleImport {
+        var imports = std.ArrayList(ResolvedModuleImport).init(self.allocator);
+        for (resolved_imports) |resolved| {
+            if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
+            try imports.append(.{
+                .namespace = try moduleNamespaceFromImportPath(self.allocator, resolved.output_path),
+                .resolved = resolved,
+            });
+        }
+        return try imports.toOwnedSlice();
+    }
+
+    fn resolveModuleImports(self: *SlaModuleTable, module_path: []const u8, base_dir: []const u8, decls: []const *ast.Node) ![]const ResolvedImport {
+        var imports = std.ArrayList(ResolvedImport).init(self.allocator);
+        for (decls) |decl| {
+            if (decl.* != .import_decl) continue;
+            const resolved = try resolveImportFiles(self.allocator, base_dir, decl.import_decl.path, module_path);
+            try imports.appendSlice(resolved);
+        }
+        return try imports.toOwnedSlice();
     }
 
     fn getOrParse(self: *SlaModuleTable, resolved: ResolvedImport) !*SlaModule {
@@ -590,15 +862,96 @@ const SlaModuleTable = struct {
         const parsed = try parser.parseProgram();
         if (parsed.* != .program) return error.InvalidProgram;
 
+        var exports = SlaModuleExports.init(self.allocator, resolved.path);
+        try exports.buildFromDecls(parsed.program.decls);
+        const resolved_imports = try self.resolveModuleImports(resolved.path, base_dir, parsed.program.decls);
+        const resolved_module_imports = try self.buildModuleImportNamespaces(resolved_imports);
+
         const module = try self.allocator.create(SlaModule);
         module.* = .{
             .path = resolved.path,
             .output_path = resolved.output_path,
             .base_dir = base_dir,
             .program = parsed,
+            .exports = exports,
+            .resolved_imports = resolved_imports,
+            .resolved_module_imports = resolved_module_imports,
         };
         try self.modules.put(module.path, module);
         return module;
+    }
+
+    fn moduleImportByNamespace(self: *const SlaModuleTable, module_path: []const u8, namespace: []const u8) ?ResolvedModuleImport {
+        const module = self.modules.get(module_path) orelse return null;
+        for (module.resolved_module_imports) |resolved_import| {
+            if (std.mem.eql(u8, resolved_import.namespace, namespace)) return resolved_import;
+        }
+        return null;
+    }
+
+    fn exportsForModule(self: *const SlaModuleTable, module_path: []const u8) ?*const SlaModuleExports {
+        const module = self.modules.get(module_path) orelse return null;
+        return &module.exports;
+    }
+
+    fn functionSignature(self: *const SlaModuleTable, module_path: []const u8, name: []const u8) ?SlaModuleExports.FunctionSignature {
+        const exports = self.exportsForModule(module_path) orelse return null;
+        return exports.functionSignature(name);
+    }
+
+    fn typeSignature(self: *const SlaModuleTable, module_path: []const u8, name: []const u8) ?SlaModuleExports.TypeSignature {
+        const exports = self.exportsForModule(module_path) orelse return null;
+        return exports.typeSignature(name);
+    }
+
+    fn constSignature(self: *const SlaModuleTable, module_path: []const u8, name: []const u8) ?SlaModuleExports.ConstSignature {
+        const exports = self.exportsForModule(module_path) orelse return null;
+        return exports.constSignature(name);
+    }
+
+    fn macroSignature(self: *const SlaModuleTable, module_path: []const u8, name: []const u8) ?SlaModuleExports.MacroSignature {
+        const exports = self.exportsForModule(module_path) orelse return null;
+        return exports.macroSignature(name);
+    }
+
+    fn functionSignatureForImportNamespace(self: *SlaModuleTable, module_path: []const u8, namespace: []const u8, name: []const u8) !?SlaModuleExports.FunctionSignature {
+        const resolved_import = self.moduleImportByNamespace(module_path, namespace) orelse return null;
+        _ = try self.getOrParse(resolved_import.resolved);
+        return self.functionSignature(resolved_import.resolved.path, name);
+    }
+
+    fn typeSignatureForImportNamespace(self: *SlaModuleTable, module_path: []const u8, namespace: []const u8, name: []const u8) !?SlaModuleExports.TypeSignature {
+        const resolved_import = self.moduleImportByNamespace(module_path, namespace) orelse return null;
+        _ = try self.getOrParse(resolved_import.resolved);
+        return self.typeSignature(resolved_import.resolved.path, name);
+    }
+
+    fn constSignatureForImportNamespace(self: *SlaModuleTable, module_path: []const u8, namespace: []const u8, name: []const u8) !?SlaModuleExports.ConstSignature {
+        const resolved_import = self.moduleImportByNamespace(module_path, namespace) orelse return null;
+        _ = try self.getOrParse(resolved_import.resolved);
+        return self.constSignature(resolved_import.resolved.path, name);
+    }
+
+    fn macroSignatureForImportNamespace(self: *SlaModuleTable, module_path: []const u8, namespace: []const u8, name: []const u8) !?SlaModuleExports.MacroSignature {
+        const resolved_import = self.moduleImportByNamespace(module_path, namespace) orelse return null;
+        _ = try self.getOrParse(resolved_import.resolved);
+        return self.macroSignature(resolved_import.resolved.path, name);
+    }
+
+    fn functionSignatureForImportedMangledName(self: *SlaModuleTable, module_path: []const u8, symbol: []const u8) !?SlaModuleExports.FunctionSignature {
+        const imported = splitImportedMangledSymbol(symbol) orelse return null;
+        return try self.functionSignatureForImportNamespace(module_path, imported.namespace, imported.name);
+    }
+
+    fn functionSignatureForImportedMangledNameByNamespace(self: *const SlaModuleTable, symbol: []const u8) ?SlaModuleExports.FunctionSignature {
+        const imported = splitImportedMangledSymbol(symbol) orelse return null;
+        var module_iter = self.modules.valueIterator();
+        while (module_iter.next()) |module_ptr| {
+            const module = module_ptr.*;
+            if (!moduleNamespaceMatchesImportPath(module.output_path, imported.namespace)) continue;
+            if (module.exports.functionSignature(imported.name)) |signature| return signature;
+        }
+        return null;
     }
 };
 
@@ -614,37 +967,122 @@ fn appendResolvedNonSlaImportDecl(
     try primary_decls.put(import_decl, {});
 }
 
-fn appendExpandedSlaModuleDecls(
+fn isModuleContributing(
+    allocator: std.mem.Allocator,
+    module: *const SlaModule,
+    reachable: *const std.StringHashMap(void),
+    referenced_types: *const std.StringHashMap(void),
+) !bool {
+    // 1. Check if any exported function is reachable
+    var func_iter = module.exports.function_decls.keyIterator();
+    while (func_iter.next()) |name_ptr| {
+        if (reachable.contains(name_ptr.*)) return true;
+    }
+
+    // 2. Check if any exported type is referenced
+    var type_iter = module.exports.type_decls.keyIterator();
+    while (type_iter.next()) |name_ptr| {
+        if (referenced_types.contains(name_ptr.*)) return true;
+    }
+
+    // 3. Check if any exported constant is referenced
+    var const_iter = module.exports.const_decls.keyIterator();
+    while (const_iter.next()) |name_ptr| {
+        if (referenced_types.contains(name_ptr.*)) return true;
+    }
+
+    // 4. Check if any exported macro is referenced
+    var macro_iter = module.exports.macro_decls.keyIterator();
+    while (macro_iter.next()) |name_ptr| {
+        if (referenced_types.contains(name_ptr.*)) return true;
+    }
+
+    // 5. Check if any of its inherent/trait impl methods is reachable
+    for (module.program.program.decls) |decl| {
+        switch (decl.*) {
+            .impl_decl => |impl_decl| {
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    defer allocator.free(symbol);
+                    if (reachable.contains(symbol)) return true;
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    defer allocator.free(symbol);
+                    if (reachable.contains(symbol)) return true;
+                }
+            },
+            else => {},
+        }
+    }
+
+    return false;
+}
+
+fn appendModuleDeclsSelective(
     allocator: std.mem.Allocator,
     modules: *SlaModuleTable,
     module: *SlaModule,
     emitted: *std.StringHashMap(void),
     primary_decls: *std.AutoHashMap(*const ast.Node, void),
     out_decls: *std.ArrayList(*ast.Node),
+    reachable: *const std.StringHashMap(void),
+    referenced_types: *const std.StringHashMap(void),
 ) !void {
     if (emitted.contains(module.path)) return;
     try emitted.put(module.path, {});
 
+    for (module.resolved_imports) |child_resolved| {
+        if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
+        const child_module = try modules.getOrParse(child_resolved);
+        try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types);
+    }
+
+    const is_contributing = try isModuleContributing(allocator, module, reachable, referenced_types);
+    if (!is_contributing) {
+        return;
+    }
+
     for (module.program.program.decls) |decl| {
         if (decl.* == .import_decl) {
-            const child_resolved_imports = try resolveImportFiles(allocator, module.base_dir, decl.import_decl.path, module.path);
-            for (child_resolved_imports) |child_resolved| {
-                if (std.mem.endsWith(u8, child_resolved.path, ".sla")) {
-                    const child_module = try modules.getOrParse(child_resolved);
-                    try appendExpandedSlaModuleDecls(allocator, modules, child_module, emitted, primary_decls, out_decls);
-                } else {
-                    try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls);
-                }
+            for (module.resolved_imports) |child_resolved| {
+                if (std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
+                try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls);
             }
         } else {
-            try out_decls.append(decl);
-            try primary_decls.put(decl, {});
+            const before = out_decls.items.len;
+            switch (decl.*) {
+                .func_decl => |fd| {
+                    if (reachable.contains(fd.name)) {
+                        try out_decls.append(decl);
+                    }
+                },
+                .impl_decl => {
+                    try appendFilteredImplDecl(allocator, decl, reachable, out_decls);
+                },
+                .overload_decl => {
+                    try appendFilteredOverloadDecl(allocator, decl, reachable, out_decls);
+                },
+                else => {
+                    // Flatten types, constants, macros
+                    try out_decls.append(decl);
+                },
+            }
+            if (out_decls.items.len != before) try primary_decls.put(out_decls.items[out_decls.items.len - 1], {});
         }
     }
 }
 
 fn collectSlaModulesRecursive(
-    allocator: std.mem.Allocator,
     modules: *SlaModuleTable,
     module: *SlaModule,
     visited: *std.StringHashMap(void),
@@ -653,14 +1091,10 @@ fn collectSlaModulesRecursive(
     if (visited.contains(module.path)) return;
     try visited.put(module.path, {});
 
-    for (module.program.program.decls) |decl| {
-        if (decl.* != .import_decl) continue;
-        const child_resolved_imports = try resolveImportFiles(allocator, module.base_dir, decl.import_decl.path, module.path);
-        for (child_resolved_imports) |child_resolved| {
-            if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
-            const child_module = try modules.getOrParse(child_resolved);
-            try collectSlaModulesRecursive(allocator, modules, child_module, visited, ordered);
-        }
+    for (module.resolved_imports) |child_resolved| {
+        if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
+        const child_module = try modules.getOrParse(child_resolved);
+        try collectSlaModulesRecursive(modules, child_module, visited, ordered);
     }
 
     try ordered.append(module);
@@ -669,14 +1103,20 @@ fn collectSlaModulesRecursive(
 const SlaCallableIndex = struct {
     allocator: std.mem.Allocator,
     names: std.StringHashMap(void),
-    bodies: std.StringHashMap([]const *ast.Node),
+    decls: std.StringHashMap(*ast.FuncDecl),
+    const_decls: std.StringHashMap(*ast.ConstStmt),
+    macro_decls: std.StringHashMap(*ast.MacroDecl),
+    module_sources: std.StringHashMap([]const u8),
     associated_candidates: std.StringHashMap(std.ArrayList([]const u8)),
 
     fn init(allocator: std.mem.Allocator) SlaCallableIndex {
         return .{
             .allocator = allocator,
             .names = std.StringHashMap(void).init(allocator),
-            .bodies = std.StringHashMap([]const *ast.Node).init(allocator),
+            .decls = std.StringHashMap(*ast.FuncDecl).init(allocator),
+            .const_decls = std.StringHashMap(*ast.ConstStmt).init(allocator),
+            .macro_decls = std.StringHashMap(*ast.MacroDecl).init(allocator),
+            .module_sources = std.StringHashMap([]const u8).init(allocator),
             .associated_candidates = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
         };
     }
@@ -685,19 +1125,45 @@ const SlaCallableIndex = struct {
         var candidates = self.associated_candidates.valueIterator();
         while (candidates.next()) |list| list.deinit();
         self.associated_candidates.deinit();
-        self.bodies.deinit();
+        self.module_sources.deinit();
+        self.macro_decls.deinit();
+        self.const_decls.deinit();
+        self.decls.deinit();
         self.names.deinit();
     }
 
-    fn addFunction(self: *SlaCallableIndex, name: []const u8, body: []const *ast.Node) !void {
+    fn recordFunction(self: *SlaCallableIndex, name: []const u8, fd: *ast.FuncDecl, module_path: ?[]const u8) !void {
         try self.names.put(name, {});
-        const body_entry = try self.bodies.getOrPut(name);
-        if (!body_entry.found_existing) body_entry.value_ptr.* = body;
+        const decl_entry = try self.decls.getOrPut(name);
+        if (!decl_entry.found_existing) decl_entry.value_ptr.* = fd;
+        if (module_path) |mp| {
+            const src_entry = try self.module_sources.getOrPut(name);
+            if (!src_entry.found_existing) src_entry.value_ptr.* = mp;
+        }
         try self.addFlattenedSuffixCandidates(name);
     }
 
-    fn addAssociatedFunction(self: *SlaCallableIndex, method_name: []const u8, symbol: []const u8, body: []const *ast.Node) !void {
-        try self.addFunction(symbol, body);
+    fn addFunction(self: *SlaCallableIndex, name: []const u8, fd: *ast.FuncDecl) !void {
+        try self.recordFunction(name, fd, null);
+    }
+
+    fn addAssociatedFunctionWithModule(
+        self: *SlaCallableIndex,
+        method_name: []const u8,
+        symbol: []const u8,
+        fd: *ast.FuncDecl,
+        module_path: ?[]const u8,
+    ) !void {
+        try self.recordFunction(symbol, fd, module_path);
+        try self.addAssociatedCandidate(method_name, symbol);
+    }
+
+    fn moduleSource(self: *const SlaCallableIndex, name: []const u8) ?[]const u8 {
+        return self.module_sources.get(name);
+    }
+
+    fn addAssociatedFunction(self: *SlaCallableIndex, method_name: []const u8, symbol: []const u8, fd: *ast.FuncDecl) !void {
+        try self.addFunction(symbol, fd);
         try self.addAssociatedCandidate(method_name, symbol);
     }
 
@@ -717,9 +1183,24 @@ const SlaCallableIndex = struct {
     }
 
     fn addDecls(self: *SlaCallableIndex, decls: []const *ast.Node) !void {
+        try self.addDeclsFromModule(decls, null);
+    }
+
+    fn addDeclsFromModule(self: *SlaCallableIndex, decls: []const *ast.Node, module: ?*const SlaModule) !void {
+        const module_path = if (module) |m| m.path else null;
         for (decls) |decl| {
             switch (decl.*) {
-                .func_decl => try self.addFunction(decl.func_decl.name, decl.func_decl.body),
+                .func_decl => {
+                    try self.recordFunction(decl.func_decl.name, &decl.func_decl, module_path);
+                },
+                .const_stmt => {
+                    const entry = try self.const_decls.getOrPut(decl.const_stmt.name);
+                    if (!entry.found_existing) entry.value_ptr.* = &decl.const_stmt;
+                },
+                .macro_decl => {
+                    const entry = try self.macro_decls.getOrPut(decl.macro_decl.name);
+                    if (!entry.found_existing) entry.value_ptr.* = &decl.macro_decl;
+                },
                 .impl_decl => |impl_decl| {
                     const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
                     for (impl_decl.methods) |method| {
@@ -728,7 +1209,7 @@ const SlaCallableIndex = struct {
                             try lowering_rules.mangleTraitMethodName(self.allocator, type_name, trait_name, method.func_decl.name)
                         else
                             try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
-                        try self.addAssociatedFunction(method.func_decl.name, symbol, method.func_decl.body);
+                        try self.addAssociatedFunctionWithModule(method.func_decl.name, symbol, &method.func_decl, module_path);
                     }
                 },
                 .overload_decl => |overload_decl| {
@@ -736,7 +1217,7 @@ const SlaCallableIndex = struct {
                     for (overload_decl.methods) |method| {
                         if (method.* != .func_decl) continue;
                         const symbol = try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
-                        try self.addAssociatedFunction(method.func_decl.name, symbol, method.func_decl.body);
+                        try self.addAssociatedFunctionWithModule(method.func_decl.name, symbol, &method.func_decl, module_path);
                     }
                 },
                 else => {},
@@ -747,7 +1228,9 @@ const SlaCallableIndex = struct {
 
 fn collectSyntacticReachableRootsFromDecls(
     funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
     reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     decls: []const *ast.Node,
     test_filter: ?[]const u8,
@@ -758,57 +1241,171 @@ fn collectSyntacticReachableRootsFromDecls(
             .test_decl => |test_decl| {
                 if (!testMatchesFilter(&test_decl, test_filter)) continue;
                 saw_test.* = true;
-                try collectSyntacticReachableBlock(funcs, reachable, worklist, test_decl.body);
+                try collectSyntacticReachableBlock(funcs, modules, null, reachable, referenced_types, worklist, test_decl.body);
             },
-            .const_stmt => |const_stmt| try collectSyntacticReachableExpr(funcs, reachable, worklist, const_stmt.value),
-            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(funcs, reachable, worklist, macro_decl.body),
+            .const_stmt => |const_stmt| {
+                if (const_stmt.ty) |ty| try recordReferencedType(referenced_types, ty);
+                try collectSyntacticReachableExpr(funcs, modules, null, reachable, referenced_types, worklist, const_stmt.value);
+            },
+            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(funcs, modules, macro_decl.name, reachable, referenced_types, worklist, macro_decl.body),
             .impl_decl => |impl_decl| {
+                try recordReferencedType(referenced_types, impl_decl.target_ty);
+                if (impl_decl.trait_name) |tn| try referenced_types.put(tn, {});
                 if (impl_decl.trait_name != null) {
                     for (impl_decl.methods) |method| {
-                        if (method.* == .func_decl) try collectSyntacticReachableBlock(funcs, reachable, worklist, method.func_decl.body);
+                        if (method.* == .func_decl) {
+                            const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                            const symbol = try lowering_rules.mangleTraitMethodName(funcs.allocator, type_name, impl_decl.trait_name.?, method.func_decl.name);
+                            defer funcs.allocator.free(symbol);
+                            try collectSyntacticReachableBlock(funcs, modules, symbol, reachable, referenced_types, worklist, method.func_decl.body);
+                        }
                     }
                 }
             },
-            .overload_decl => |overload_decl| for (overload_decl.methods) |method| {
-                if (method.* == .func_decl) try collectSyntacticReachableBlock(funcs, reachable, worklist, method.func_decl.body);
+            .overload_decl => |overload_decl| {
+                try recordReferencedType(referenced_types, overload_decl.target_ty);
+                for (overload_decl.methods) |method| {
+                    if (method.* == .func_decl) {
+                        const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                        const symbol = try lowering_rules.mangleMethodName(funcs.allocator, type_name, method.func_decl.name);
+                        defer funcs.allocator.free(symbol);
+                        try collectSyntacticReachableBlock(funcs, modules, symbol, reachable, referenced_types, worklist, method.func_decl.body);
+                    }
+                }
             },
             else => {},
         }
     }
 }
 
-fn buildReachableImportedTestSymbols(
+fn scanReferencedSymbolRoots(
+    funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+    scanned_symbol_roots: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+) !bool {
+    var pending = std.ArrayList([]const u8).init(funcs.allocator);
+    defer pending.deinit();
+
+    var referenced_iter = referenced_types.keyIterator();
+    while (referenced_iter.next()) |ref_name_ptr| {
+        const ref_name = ref_name_ptr.*;
+        if (scanned_symbol_roots.contains(ref_name)) continue;
+        try scanned_symbol_roots.put(ref_name, {});
+        try pending.append(ref_name);
+    }
+
+    for (pending.items) |ref_name| {
+        if (funcs.const_decls.get(ref_name)) |const_decl| {
+            if (const_decl.ty) |ty| try recordReferencedType(referenced_types, ty);
+            try collectSyntacticReachableExpr(funcs, modules, null, reachable, referenced_types, worklist, const_decl.value);
+        }
+        if (funcs.macro_decls.get(ref_name)) |macro_decl| {
+            try collectSyntacticReachableBlock(funcs, modules, macro_decl.name, reachable, referenced_types, worklist, macro_decl.body);
+        }
+    }
+
+    return pending.items.len != 0;
+}
+
+fn buildReachableSymbols(
     allocator: std.mem.Allocator,
     root_program: *ast.Node,
     modules: []const *SlaModule,
-    test_filter: ?[]const u8,
-) !?std.StringHashMap(void) {
+    module_table: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    out_reachable: *std.StringHashMap(void),
+    out_referenced_types: *std.StringHashMap(void),
+) !void {
     if (root_program.* != .program) return error.InvalidProgram;
 
     var callable_index = SlaCallableIndex.init(allocator);
     defer callable_index.deinit();
     try callable_index.addDecls(root_program.program.decls);
-    for (modules) |module| try callable_index.addDecls(module.program.program.decls);
-    if (callable_index.names.count() == 0) return null;
-
-    var reachable = std.StringHashMap(void).init(allocator);
-    var worklist = std.ArrayList([]const u8).init(allocator);
-
-    var saw_test = false;
-    try collectSyntacticReachableRootsFromDecls(&callable_index, &reachable, &worklist, root_program.program.decls, test_filter, &saw_test);
     for (modules) |module| {
-        try collectSyntacticReachableRootsFromDecls(&callable_index, &reachable, &worklist, module.program.program.decls, test_filter, &saw_test);
+        try callable_index.addDeclsFromModule(module.program.program.decls, module);
     }
-    if (!saw_test) return null;
 
+    var worklist = std.ArrayList([]const u8).init(allocator);
+    defer worklist.deinit();
+    var scanned_symbol_roots = std.StringHashMap(void).init(allocator);
+    defer scanned_symbol_roots.deinit();
+    var scanned_type_roots = std.StringHashMap(void).init(allocator);
+    defer scanned_type_roots.deinit();
+
+    // 1. Collect roots
+    if (options.prune_for_test_codegen) {
+        var saw_test = false;
+        try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, out_reachable, out_referenced_types, &worklist, root_program.program.decls, options.test_filter, &saw_test);
+        for (modules) |module| {
+            try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, out_reachable, out_referenced_types, &worklist, module.program.program.decls, options.test_filter, &saw_test);
+        }
+    } else {
+        // If not pruning for test, everything in the root program is a root!
+        for (root_program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => |fd| {
+                    try markSyntacticReachableFunc(&callable_index, module_table, null, out_reachable, out_referenced_types, &worklist, fd.name);
+                },
+                .const_stmt => |c| {
+                    if (c.ty) |ty| try recordReferencedType(out_referenced_types, ty);
+                    try collectSyntacticReachableExpr(&callable_index, module_table, null, out_reachable, out_referenced_types, &worklist, c.value);
+                },
+                .macro_decl => |m| {
+                    try collectSyntacticReachableBlock(&callable_index, module_table, m.name, out_reachable, out_referenced_types, &worklist, m.body);
+                },
+                .impl_decl => |impl_decl| {
+                    try recordReferencedType(out_referenced_types, impl_decl.target_ty);
+                    if (impl_decl.trait_name) |tn| try out_referenced_types.put(tn, {});
+                    for (impl_decl.methods) |method| {
+                        if (method.* == .func_decl) {
+                            const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                            const symbol = if (impl_decl.trait_name) |trait_name|
+                                try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                            else
+                                try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                            defer allocator.free(symbol);
+                            try markSyntacticReachableFunc(&callable_index, module_table, null, out_reachable, out_referenced_types, &worklist, symbol);
+                        }
+                    }
+                },
+                .overload_decl => |overload_decl| {
+                    try recordReferencedType(out_referenced_types, overload_decl.target_ty);
+                    for (overload_decl.methods) |method| {
+                        if (method.* == .func_decl) {
+                            const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                            const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                            defer allocator.free(symbol);
+                            try markSyntacticReachableFunc(&callable_index, module_table, null, out_reachable, out_referenced_types, &worklist, symbol);
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    // 2. Traverse callable and exported-symbol worklists. `out_referenced_types`
+    // also carries bare identifier references that can name imported consts or
+    // macros, so scan those roots until no new initializer/body references are
+    // discovered.
     var index: usize = 0;
-    while (index < worklist.items.len) : (index += 1) {
-        const name = worklist.items[index];
-        const body = callable_index.bodies.get(name) orelse continue;
-        try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, body);
+    while (true) {
+        while (index < worklist.items.len) : (index += 1) {
+            const name = worklist.items[index];
+            const fd = callable_index.decls.get(name) orelse continue;
+            for (fd.params) |param| {
+                try recordReferencedType(out_referenced_types, param.ty);
+            }
+            try recordReferencedType(out_referenced_types, fd.ret_ty);
+            try collectSyntacticReachableBlock(&callable_index, module_table, name, out_reachable, out_referenced_types, &worklist, fd.body);
+        }
+        const scanned_symbols = try scanReferencedSymbolRoots(&callable_index, module_table, out_reachable, out_referenced_types, &scanned_symbol_roots, &worklist);
+        const scanned_types = try scanReferencedExportedTypeSignatures(allocator, modules, out_referenced_types, &scanned_type_roots);
+        if (!scanned_symbols and !scanned_types) break;
     }
-
-    return reachable;
 }
 
 fn appendFilteredFunctionDecl(
@@ -826,30 +1423,42 @@ fn appendFilteredImplDecl(
     out_decls: *std.ArrayList(*ast.Node),
 ) !void {
     const impl_decl = decl.impl_decl;
-    if (impl_decl.trait_name != null) {
-        try out_decls.append(decl);
-        return;
-    }
     const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse {
         try out_decls.append(decl);
         return;
     };
 
     var methods = std.ArrayList(*ast.Node).init(allocator);
+    var changed = false;
     for (impl_decl.methods) |method| {
         if (method.* != .func_decl) {
             try methods.append(method);
             continue;
         }
-        const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-        if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+        const symbol = if (impl_decl.trait_name) |trait_name|
+            try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+        else
+            try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+        if (method.func_decl.is_decl_only or reachable.contains(symbol)) {
+            try methods.append(method);
+        } else if (impl_decl.trait_name != null) {
+            var stub_func = method.func_decl;
+            stub_func.is_decl_only = true;
+            stub_func.body = &.{};
+            const stub = try allocator.create(ast.Node);
+            stub.* = .{ .func_decl = stub_func };
+            try methods.append(stub);
+            changed = true;
+        } else {
+            changed = true;
+        }
     }
-    if (methods.items.len == impl_decl.methods.len) {
+    if (!changed and methods.items.len == impl_decl.methods.len) {
         try out_decls.append(decl);
     } else if (methods.items.len > 0) {
         const pruned = try allocator.create(ast.Node);
         pruned.* = .{ .impl_decl = .{
-            .trait_name = null,
+            .trait_name = impl_decl.trait_name,
             .target_ty = impl_decl.target_ty,
             .methods = try methods.toOwnedSlice(),
         } };
@@ -905,37 +1514,6 @@ fn appendDeclWithReachableFilter(
         .impl_decl => try appendFilteredImplDecl(allocator, decl, filter, out_decls),
         .overload_decl => try appendFilteredOverloadDecl(allocator, decl, filter, out_decls),
         else => try out_decls.append(decl),
-    }
-}
-
-fn appendExpandedSlaModuleDeclsWithFilter(
-    allocator: std.mem.Allocator,
-    modules: *SlaModuleTable,
-    module: *SlaModule,
-    emitted: *std.StringHashMap(void),
-    primary_decls: *std.AutoHashMap(*const ast.Node, void),
-    out_decls: *std.ArrayList(*ast.Node),
-    reachable: ?*const std.StringHashMap(void),
-) !void {
-    if (emitted.contains(module.path)) return;
-    try emitted.put(module.path, {});
-
-    for (module.program.program.decls) |decl| {
-        if (decl.* == .import_decl) {
-            const child_resolved_imports = try resolveImportFiles(allocator, module.base_dir, decl.import_decl.path, module.path);
-            for (child_resolved_imports) |child_resolved| {
-                if (std.mem.endsWith(u8, child_resolved.path, ".sla")) {
-                    const child_module = try modules.getOrParse(child_resolved);
-                    try appendExpandedSlaModuleDeclsWithFilter(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable);
-                } else {
-                    try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls);
-                }
-            }
-        } else {
-            const before = out_decls.items.len;
-            try appendDeclWithReachableFilter(allocator, decl, reachable, out_decls);
-            if (out_decls.items.len != before) try primary_decls.put(out_decls.items[out_decls.items.len - 1], {});
-        }
     }
 }
 
@@ -1043,23 +1621,26 @@ fn expandSlaImports(
     const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch source_file;
 
     var ordered_modules = std.ArrayList(*SlaModule).init(allocator);
-    if (options.prune_for_test_codegen) {
-        var visited_modules = std.StringHashMap(void).init(allocator);
-        for (program.program.decls) |decl| {
-            if (decl.* != .import_decl) continue;
-            const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
-            for (resolved_imports) |resolved| {
-                if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
-                const module = try modules.getOrParse(resolved);
-                try collectSlaModulesRecursive(allocator, &modules, module, &visited_modules, &ordered_modules);
-            }
+    defer ordered_modules.deinit();
+    var visited_modules = std.StringHashMap(void).init(allocator);
+    defer visited_modules.deinit();
+
+    for (program.program.decls) |decl| {
+        if (decl.* != .import_decl) continue;
+        const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
+        for (resolved_imports) |resolved| {
+            if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
+            const module = try modules.getOrParse(resolved);
+            try collectSlaModulesRecursive(&modules, module, &visited_modules, &ordered_modules);
         }
     }
 
-    var reachable_import_symbols = if (options.prune_for_test_codegen)
-        try buildReachableImportedTestSymbols(allocator, program, ordered_modules.items, options.test_filter)
-    else
-        null;
+    var reachable = std.StringHashMap(void).init(allocator);
+    defer reachable.deinit();
+    var referenced_types = std.StringHashMap(void).init(allocator);
+    defer referenced_types.deinit();
+
+    try buildReachableSymbols(allocator, program, ordered_modules.items, &modules, options, &reachable, &referenced_types);
 
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
@@ -1067,18 +1648,18 @@ fn expandSlaImports(
             for (resolved_imports) |resolved| {
                 if (std.mem.endsWith(u8, resolved.path, ".sla")) {
                     const module = try modules.getOrParse(resolved);
-                    if (reachable_import_symbols) |*reachable| {
-                        try appendExpandedSlaModuleDeclsWithFilter(allocator, &modules, module, &emitted, primary_decls, &decls, reachable);
-                    } else {
-                        try appendExpandedSlaModuleDecls(allocator, &modules, module, &emitted, primary_decls, &decls);
-                    }
+                    try appendModuleDeclsSelective(allocator, &modules, module, &emitted, primary_decls, &decls, &reachable, &referenced_types);
                 } else {
                     try appendResolvedNonSlaImportDecl(allocator, resolved, primary_decls, &decls);
                 }
             }
         } else {
             const before = decls.items.len;
-            try appendDeclWithReachableFilter(allocator, decl, if (reachable_import_symbols) |*reachable| reachable else null, &decls);
+            if (options.prune_for_test_codegen) {
+                try appendDeclWithReachableFilter(allocator, decl, &reachable, &decls);
+            } else {
+                try decls.append(decl);
+            }
             if (decls.items.len != before) try primary_decls.put(decls.items[decls.items.len - 1], {});
         }
     }
@@ -1086,6 +1667,32 @@ fn expandSlaImports(
     const expanded = try allocator.create(ast.Node);
     expanded.* = .{ .program = .{ .decls = try decls.toOwnedSlice() } };
     return expanded;
+}
+
+fn registerImportedFunctionAliases(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, program: *ast.Node, source_file: []const u8) !void {
+    if (program.* != .program) return error.InvalidProgram;
+
+    var modules = SlaModuleTable.init(allocator);
+    defer modules.deinit();
+
+    const source_dir = std.fs.path.dirname(source_file) orelse ".";
+    const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch source_file;
+
+    for (program.program.decls) |decl| {
+        if (decl.* != .import_decl) continue;
+        const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
+        for (resolved_imports) |resolved| {
+            if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
+            const namespace = try moduleNamespaceFromImportPath(allocator, resolved.output_path);
+            const module = try modules.getOrParse(resolved);
+            var fn_iter = module.exports.function_signatures.iterator();
+            while (fn_iter.next()) |entry| {
+                const name = entry.key_ptr.*;
+                const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ namespace, name });
+                try tc.registerFunctionAlias(alias, name);
+            }
+        }
+    }
 }
 
 fn loadImportContractsRecursive(
@@ -1516,99 +2123,234 @@ fn collectNeededTraitImplsBlock(
     }
 }
 
+fn recordReferencedType(referenced_types: *std.StringHashMap(void), ty: *const ast.Type) anyerror!void {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .borrow => |b| curr = b,
+            .pointer => |p| curr = p,
+            .array => |arr| curr = arr.elem,
+            .tuple => |tup| {
+                for (tup.elems) |t| try recordReferencedType(referenced_types, t);
+                return;
+            },
+            .future => |f| curr = f,
+            .closure => |cl| {
+                for (cl.params) |t| try recordReferencedType(referenced_types, t);
+                curr = cl.ret;
+            },
+            .fn_ptr => |fp| {
+                for (fp.params) |t| try recordReferencedType(referenced_types, t);
+                curr = fp.ret;
+            },
+            .user_defined => |ud| {
+                try referenced_types.put(ud.name, {});
+                for (ud.generics) |g| try recordReferencedType(referenced_types, g);
+                return;
+            },
+            else => return,
+        }
+    }
+}
+
+fn recordReferencedTypesFromTypeDecl(referenced_types: *std.StringHashMap(void), decl: *const ast.Node) !void {
+    switch (decl.*) {
+        .struct_decl => |sd| {
+            for (sd.fields) |field| try recordReferencedType(referenced_types, field.ty);
+        },
+        .enum_decl => |ed| {
+            for (ed.variants) |variant| {
+                for (variant.fields) |field| try recordReferencedType(referenced_types, field.ty);
+            }
+        },
+        .trait_decl => |td| {
+            for (td.supertraits) |supertrait| try referenced_types.put(supertrait, {});
+            for (td.methods) |method| {
+                for (method.params) |param| try recordReferencedType(referenced_types, param.ty);
+                try recordReferencedType(referenced_types, method.ret_ty);
+            }
+        },
+        .type_alias_decl => |alias| {
+            for (alias.components) |component| {
+                switch (component) {
+                    .ty => |ty| try recordReferencedType(referenced_types, ty),
+                    .inline_struct => |fields| for (fields) |field| try recordReferencedType(referenced_types, field.ty),
+                }
+            }
+        },
+        else => {},
+    }
+}
+
+fn scanReferencedExportedTypeSignatures(
+    allocator: std.mem.Allocator,
+    modules: []const *SlaModule,
+    referenced_types: *std.StringHashMap(void),
+    scanned_type_roots: *std.StringHashMap(void),
+) !bool {
+    var pending = std.ArrayList(*ast.Node).init(allocator);
+    defer pending.deinit();
+
+    var referenced_iter = referenced_types.keyIterator();
+    while (referenced_iter.next()) |name_ptr| {
+        const name = name_ptr.*;
+        if (scanned_type_roots.contains(name)) continue;
+        try scanned_type_roots.put(name, {});
+        for (modules) |module| {
+            if (module.exports.type_decls.get(name)) |decl| {
+                try pending.append(decl);
+                break;
+            }
+        }
+    }
+
+    for (pending.items) |decl| try recordReferencedTypesFromTypeDecl(referenced_types, decl);
+    return pending.items.len != 0;
+}
+
 fn markSyntacticReachableFunc(
     funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     name: []const u8,
 ) !void {
-    if (!funcs.names.contains(name)) return;
+    if (!funcs.names.contains(name)) {
+        if (modules) |mod_table| {
+            if (mod_table.functionSignatureForImportedMangledNameByNamespace(name)) |signature| {
+                return try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, signature.name);
+            }
+        }
+        if (splitImportedMangledSymbol(name)) |imported| {
+            if (funcs.names.contains(imported.name)) {
+                return try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, imported.name);
+            }
+        }
+        return;
+    }
     if (reachable.contains(name)) return;
+
+    if (funcs.moduleSource(name)) |callee_mp| {
+        const caller_mp = if (caller_name) |c| funcs.moduleSource(c) else null;
+        const same_module = if (caller_mp) |caller_path| std.mem.eql(u8, callee_mp, caller_path) else false;
+        if (!same_module) {
+            if (modules) |mod_table| {
+                if (mod_table.modules.get(callee_mp)) |mod| {
+                    if (!mod.exports.exportsSymbol(name)) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     try reachable.put(name, {});
     try worklist.append(name);
 }
 
 fn markSyntacticAssociatedCallCandidates(
     funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     method_name: []const u8,
 ) !void {
-    try markSyntacticReachableFunc(funcs, reachable, worklist, method_name);
+    try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, method_name);
     if (funcs.associated_candidates.get(method_name)) |candidates| {
-        for (candidates.items) |name| try markSyntacticReachableFunc(funcs, reachable, worklist, name);
+        for (candidates.items) |name| try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, name);
     }
 }
 
 fn collectSyntacticReachableExpr(
     funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     expr: *const ast.Node,
 ) anyerror!void {
     switch (expr.*) {
-        .identifier => |name| try markSyntacticReachableFunc(funcs, reachable, worklist, name),
-        .generic_func_ref => |ref| try markSyntacticReachableFunc(funcs, reachable, worklist, ref.func_name),
+        .identifier => |name| {
+            try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, name);
+            try referenced_types.put(name, {});
+        },
+        .generic_func_ref => |ref| {
+            try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, ref.func_name);
+            for (ref.generics) |ty| try recordReferencedType(referenced_types, ty);
+        },
         .call_expr => |call| {
             if (call.associated_target != null) {
-                try markSyntacticAssociatedCallCandidates(funcs, reachable, worklist, call.func_name);
+                try markSyntacticAssociatedCallCandidates(funcs, modules, caller_name, reachable, referenced_types, worklist, call.func_name);
             } else {
-                try markSyntacticReachableFunc(funcs, reachable, worklist, call.func_name);
-                try markSyntacticAssociatedCallCandidates(funcs, reachable, worklist, call.func_name);
+                try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, call.func_name);
+                try markSyntacticAssociatedCallCandidates(funcs, modules, caller_name, reachable, referenced_types, worklist, call.func_name);
             }
-            for (call.args) |arg| try collectSyntacticReachableExpr(funcs, reachable, worklist, arg);
+            for (call.generics) |ty| try recordReferencedType(referenced_types, ty);
+            for (call.args) |arg| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, arg);
         },
         .if_expr => |ife| {
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, ife.cond);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, ife.cond);
             if (ife.let_chain) |chain| {
-                for (chain) |cond| try collectSyntacticReachableExpr(funcs, reachable, worklist, cond.value);
+                for (chain) |cond| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, cond.value);
             }
-            try collectSyntacticReachableBlock(funcs, reachable, worklist, ife.then_block);
-            if (ife.else_block) |else_block| try collectSyntacticReachableBlock(funcs, reachable, worklist, else_block);
+            try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, ife.then_block);
+            if (ife.else_block) |else_block| try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, else_block);
         },
         .switch_expr => |swe| {
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, swe.val);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, swe.val);
             for (swe.cases) |case| {
-                try collectSyntacticReachableExpr(funcs, reachable, worklist, case.pattern);
-                try collectSyntacticReachableBlock(funcs, reachable, worklist, case.body);
+                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, case.pattern);
+                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, case.body);
             }
         },
         .match_expr => |mat| {
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, mat.val);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, mat.val);
             for (mat.cases) |case| {
-                if (case.guard) |guard| try collectSyntacticReachableExpr(funcs, reachable, worklist, guard);
-                try collectSyntacticReachableBlock(funcs, reachable, worklist, case.body);
+                if (case.guard) |guard| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, guard);
+                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, case.body);
             }
         },
-        .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, reachable, worklist, unsafe_expr.body),
-        .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, reachable, worklist, await_expr.expr),
-        .try_expr => |try_expr| try collectSyntacticReachableExpr(funcs, reachable, worklist, try_expr.expr),
+        .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, unsafe_expr.body),
+        .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, await_expr.expr),
+        .try_expr => |try_expr| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, try_expr.expr),
         .binary_expr => |bin| {
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, bin.left);
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, bin.right);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, bin.left);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, bin.right);
         },
-        .closure_literal => |closure| try collectSyntacticReachableExpr(funcs, reachable, worklist, closure.body),
-        .borrow_expr => |borrow| try collectSyntacticReachableExpr(funcs, reachable, worklist, borrow.expr),
-        .move_expr => |move| try collectSyntacticReachableExpr(funcs, reachable, worklist, move.expr),
-        .deref_expr => |deref| try collectSyntacticReachableExpr(funcs, reachable, worklist, deref.expr),
-        .cast_expr => |cast| try collectSyntacticReachableExpr(funcs, reachable, worklist, cast.expr),
-        .field_expr => |field| try collectSyntacticReachableExpr(funcs, reachable, worklist, field.expr),
+        .closure_literal => |closure| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, closure.body),
+        .borrow_expr => |borrow| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, borrow.expr),
+        .move_expr => |move| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, move.expr),
+        .deref_expr => |deref| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, deref.expr),
+        .cast_expr => |cast| {
+            try recordReferencedType(referenced_types, cast.ty);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, cast.expr);
+        },
+        .field_expr => |field| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, field.expr),
         .struct_literal => |lit| {
-            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, reachable, worklist, field.value);
-            if (lit.update_expr) |update| try collectSyntacticReachableExpr(funcs, reachable, worklist, update);
+            try recordReferencedType(referenced_types, lit.ty);
+            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, field.value);
+            if (lit.update_expr) |update| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, update);
         },
-        .enum_literal => |lit| for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, reachable, worklist, field.value),
-        .tuple_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, reachable, worklist, elem),
-        .array_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, reachable, worklist, elem),
-        .repeat_array_literal => |lit| try collectSyntacticReachableExpr(funcs, reachable, worklist, lit.value),
+        .enum_literal => |lit| {
+            try referenced_types.put(lit.enum_name, {});
+            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, field.value);
+        },
+        .tuple_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, elem),
+        .array_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, elem),
+        .repeat_array_literal => |lit| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, lit.value),
         .index_expr => |idx| {
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, idx.target);
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, idx.index);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, idx.target);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, idx.index);
         },
         .slice_expr => |slice| {
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, slice.target);
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, slice.start);
-            try collectSyntacticReachableExpr(funcs, reachable, worklist, slice.end);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, slice.target);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, slice.start);
+            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, slice.end);
         },
         else => {},
     }
@@ -1616,34 +2358,45 @@ fn collectSyntacticReachableExpr(
 
 fn collectSyntacticReachableBlock(
     funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     block: []const *ast.Node,
 ) anyerror!void {
     for (block) |stmt| {
         switch (stmt.*) {
-            .let_stmt => |let| try collectSyntacticReachableExpr(funcs, reachable, worklist, let.value),
+            .let_stmt => |let| {
+                if (let.ty) |ty| try recordReferencedType(referenced_types, ty);
+                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, let.value);
+            },
             .let_else_stmt => |let| {
-                try collectSyntacticReachableExpr(funcs, reachable, worklist, let.value);
-                try collectSyntacticReachableBlock(funcs, reachable, worklist, let.else_block);
+                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, let.value);
+                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, let.else_block);
             },
-            .let_destructure_stmt => |let| try collectSyntacticReachableExpr(funcs, reachable, worklist, let.value),
-            .const_stmt => |c| try collectSyntacticReachableExpr(funcs, reachable, worklist, c.value),
+            .let_destructure_stmt => |let| {
+                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, let.value);
+            },
+            .const_stmt => |c| {
+                if (c.ty) |ty| try recordReferencedType(referenced_types, ty);
+                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, c.value);
+            },
             .assign_stmt => |assign| {
-                try collectSyntacticReachableExpr(funcs, reachable, worklist, assign.target);
-                try collectSyntacticReachableExpr(funcs, reachable, worklist, assign.value);
+                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, assign.target);
+                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, assign.value);
             },
-            .block_stmt => |blk| try collectSyntacticReachableBlock(funcs, reachable, worklist, blk.body),
-            .expr_stmt => |expr| try collectSyntacticReachableExpr(funcs, reachable, worklist, expr),
-            .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, reachable, worklist, value),
+            .block_stmt => |blk| try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, blk.body),
+            .expr_stmt => |expr| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, expr),
+            .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, value),
             .for_stmt => |for_stmt| {
-                try collectSyntacticReachableExpr(funcs, reachable, worklist, for_stmt.start);
-                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, reachable, worklist, end_expr);
-                try collectSyntacticReachableBlock(funcs, reachable, worklist, for_stmt.body);
+                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, for_stmt.start);
+                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, end_expr);
+                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, for_stmt.body);
             },
             .while_stmt => |while_stmt| {
-                try collectSyntacticReachableExpr(funcs, reachable, worklist, while_stmt.cond);
-                try collectSyntacticReachableBlock(funcs, reachable, worklist, while_stmt.body);
+                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, while_stmt.cond);
+                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, while_stmt.body);
             },
             else => {},
         }
@@ -1659,26 +2412,48 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
     if (callable_index.names.count() == 0) return;
 
     var reachable = std.StringHashMap(void).init(allocator);
+    defer reachable.deinit();
+    var referenced_types = std.StringHashMap(void).init(allocator);
+    defer referenced_types.deinit();
     var worklist = std.ArrayList([]const u8).init(allocator);
+    defer worklist.deinit();
 
     var saw_test = false;
     for (program.program.decls) |decl| {
         switch (decl.*) {
             .test_decl => |test_decl| {
                 saw_test = true;
-                try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, test_decl.body);
+                try collectSyntacticReachableBlock(&callable_index, null, null, &reachable, &referenced_types, &worklist, test_decl.body);
             },
-            .const_stmt => |const_stmt| try collectSyntacticReachableExpr(&callable_index, &reachable, &worklist, const_stmt.value),
-            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, macro_decl.body),
+            .const_stmt => |const_stmt| {
+                if (const_stmt.ty) |ty| try recordReferencedType(&referenced_types, ty);
+                try collectSyntacticReachableExpr(&callable_index, null, null, &reachable, &referenced_types, &worklist, const_stmt.value);
+            },
+            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&callable_index, null, macro_decl.name, &reachable, &referenced_types, &worklist, macro_decl.body),
             .impl_decl => |impl_decl| {
+                try recordReferencedType(&referenced_types, impl_decl.target_ty);
+                if (impl_decl.trait_name) |tn| try referenced_types.put(tn, {});
                 if (impl_decl.trait_name != null) {
                     for (impl_decl.methods) |method| {
-                        if (method.* == .func_decl) try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, method.func_decl.body);
+                        if (method.* == .func_decl) {
+                            const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                            const symbol = try lowering_rules.mangleTraitMethodName(allocator, type_name, impl_decl.trait_name.?, method.func_decl.name);
+                            defer allocator.free(symbol);
+                            try collectSyntacticReachableBlock(&callable_index, null, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
+                        }
                     }
                 }
             },
-            .overload_decl => |overload_decl| for (overload_decl.methods) |method| {
-                if (method.* == .func_decl) try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, method.func_decl.body);
+            .overload_decl => |overload_decl| {
+                try recordReferencedType(&referenced_types, overload_decl.target_ty);
+                for (overload_decl.methods) |method| {
+                    if (method.* == .func_decl) {
+                        const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                        const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                        defer allocator.free(symbol);
+                        try collectSyntacticReachableBlock(&callable_index, null, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
+                    }
+                }
             },
             else => {},
         }
@@ -1688,8 +2463,12 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
     var index: usize = 0;
     while (index < worklist.items.len) : (index += 1) {
         const name = worklist.items[index];
-        const body = callable_index.bodies.get(name) orelse continue;
-        try collectSyntacticReachableBlock(&callable_index, &reachable, &worklist, body);
+        const fd = callable_index.decls.get(name) orelse continue;
+        for (fd.params) |param| {
+            try recordReferencedType(&referenced_types, param.ty);
+        }
+        try recordReferencedType(&referenced_types, fd.ret_ty);
+        try collectSyntacticReachableBlock(&callable_index, null, name, &reachable, &referenced_types, &worklist, fd.body);
     }
 
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
@@ -2014,6 +2793,13 @@ fn runSlaFrontend(
         return null;
     };
     slaProfileStage(stderr, profile, "load contracts", stage_start);
+
+    stage_start = std.time.nanoTimestamp();
+    registerImportedFunctionAliases(tc, allocator, prog, file) catch |err| {
+        try stderr.print("Import Error: failed to register @import function aliases: {}\n", .{err});
+        return null;
+    };
+    slaProfileStage(stderr, profile, "import aliases", stage_start);
 
     stage_start = std.time.nanoTimestamp();
     tc.checkProgram(specialized_prog) catch |err| {
@@ -3414,6 +4200,11 @@ pub fn runSlaCommandImpl(
             return 1;
         };
 
+        registerImportedFunctionAliases(&tc, allocator, prog, file) catch |err| {
+            try stderr.print("Import Error: failed to register @import function aliases: {}\n", .{err});
+            return 1;
+        };
+
         tc.checkProgram(specialized_prog) catch |err| {
             try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
             return 1;
@@ -4102,6 +4893,819 @@ test "sla test import expansion prunes unreachable imported methods" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedBox_used") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_broken") == null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla module namespace call resolves through imported function alias" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn imported_a() -> i32 {
+        \\    return 7;
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "namespace import call"() {
+        \\    let got = dep::imported_a();
+        \\    if got != 7 { panic(24013); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @imported_a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @dep__imported_a") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla module exports index records per-module function sources" {
+    // The ModuleGraph foundation: SlaModuleExports must index each module's
+    // exported symbols and SlaCallableIndex must record the owning module path
+    // for every reachable callable, so future lazy typecheck can resolve calls
+    // by module-qualified lookup instead of flattening every imported body.
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\@import "child.sla"
+        \\
+        \\fn imported_a() -> i32 {
+        \\    return imported_helper();
+        \\};
+        \\
+        \\fn imported_helper() -> i32 {
+        \\    return 7;
+        \\};
+        \\
+        \\fn unreachable_import() -> i32 {
+        \\    return 99;
+        \\};
+        \\
+        \\const IMPORTED_VALUE: i32 = 9;
+        \\
+        \\macro imported_macro(value) {
+        \\    return value;
+        \\}
+        \\
+        \\struct ImportedTag {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl ImportedTag {
+        \\    fn tag_method(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\}
+    ;
+    const child_source =
+        \\struct ChildExport {
+        \\    value: i32,
+        \\}
+    ;
+    const sibling_source =
+        \\fn imported_a() -> i32 {
+        \\    return 100;
+        \\};
+        \\
+        \\struct ImportedTag {
+        \\    value: i64,
+        \\}
+        \\
+        \\const IMPORTED_VALUE: i32 = 100;
+        \\
+        \\macro imported_macro(value) {
+        \\    return value;
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\@import "sibling.sla"
+        \\
+        \\@test "exports index path"() {
+        \\    let got = imported_a();
+        \\    if got != 7 { panic(24010); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "sibling.sla", .data = sibling_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{
+        .prune_for_test_codegen = true,
+    });
+
+    // After expansion the reachable helper `imported_helper` and `imported_a`
+    // from dep.sla must be present, while `unreachable_import` is pruned.
+    var saw_a = false;
+    var saw_helper = false;
+    var saw_unreachable = false;
+    for (expanded_prog.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        if (std.mem.eql(u8, decl.func_decl.name, "imported_a")) saw_a = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "imported_helper")) saw_helper = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "unreachable_import")) saw_unreachable = true;
+    }
+    try std.testing.expect(saw_a);
+    try std.testing.expect(saw_helper);
+    try std.testing.expect(!saw_unreachable);
+
+    // Now verify the ModuleGraph foundation directly: build a SlaModuleTable,
+    // parse dep.sla, and confirm exports.type_decls / function_decls capture
+    // the right surface and SlaCallableIndex records per-symbol module source.
+    const main_resolved = (try readImportFileIfExists(allocator, "main.sla")).?;
+    const resolved_imports = try resolveImportFiles(allocator, ".", "dep.sla", "main.sla");
+    const sibling_resolved_imports = try resolveImportFiles(allocator, ".", "sibling.sla", "main.sla");
+    var modules = SlaModuleTable.init(allocator);
+    defer modules.deinit();
+    const main_module = try modules.getOrParse(main_resolved);
+    var dep_module: ?*SlaModule = null;
+    for (resolved_imports) |resolved| {
+        if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
+        dep_module = try modules.getOrParse(resolved);
+        break;
+    }
+    var sibling_module: ?*SlaModule = null;
+    for (sibling_resolved_imports) |resolved| {
+        if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
+        sibling_module = try modules.getOrParse(resolved);
+        break;
+    }
+    try std.testing.expect(dep_module != null);
+    try std.testing.expect(sibling_module != null);
+    try std.testing.expectEqual(@as(usize, 2), main_module.resolved_module_imports.len);
+    const dep = dep_module.?;
+    const sibling = sibling_module.?;
+
+    // SlaModuleExports indexes each module's exported surface by kind.
+    try std.testing.expect(dep.exports.exportsFunction("imported_a"));
+    try std.testing.expect(dep.exports.exportsFunction("imported_helper"));
+    try std.testing.expect(dep.exports.exportsFunction("unreachable_import"));
+    try std.testing.expect(dep.exports.exportsType("ImportedTag"));
+    try std.testing.expect(dep.exports.exportsConst("IMPORTED_VALUE"));
+    try std.testing.expect(dep.exports.exportsMacro("imported_macro"));
+    try std.testing.expect(!dep.exports.exportsFunction("NotInDep"));
+
+    const imported_type_sig = dep.exports.typeSignature("ImportedTag");
+    try std.testing.expect(imported_type_sig != null);
+    try std.testing.expect(std.mem.eql(u8, imported_type_sig.?.name, "ImportedTag"));
+    try std.testing.expectEqual(SlaModuleExports.TypeKind.struct_decl, imported_type_sig.?.kind);
+    try std.testing.expectEqual(@as(usize, 0), imported_type_sig.?.generics.len);
+    try std.testing.expect(std.mem.eql(u8, imported_type_sig.?.module_path, dep.path));
+
+    // Exported function signatures are indexed separately from bodies, giving
+    // future lazy typecheck a signature surface to consult before opening a
+    // reachable imported body.
+    const imported_sig = dep.exports.functionSignature("imported_a");
+    try std.testing.expect(imported_sig != null);
+    try std.testing.expect(std.mem.eql(u8, imported_sig.?.name, "imported_a"));
+    try std.testing.expectEqual(@as(usize, 0), imported_sig.?.params.len);
+    try std.testing.expect(imported_sig.?.ret_ty.* == .primitive);
+    try std.testing.expectEqual(ast.Primitive.i32, imported_sig.?.ret_ty.primitive);
+    try std.testing.expect(!imported_sig.?.is_extern);
+    try std.testing.expect(std.mem.eql(u8, imported_sig.?.module_path, dep.path));
+
+    const imported_const_sig = dep.exports.constSignature("IMPORTED_VALUE");
+    try std.testing.expect(imported_const_sig != null);
+    try std.testing.expect(std.mem.eql(u8, imported_const_sig.?.name, "IMPORTED_VALUE"));
+    try std.testing.expect(imported_const_sig.?.ty != null);
+    try std.testing.expect(imported_const_sig.?.ty.?.* == .primitive);
+    try std.testing.expectEqual(ast.Primitive.i32, imported_const_sig.?.ty.?.primitive);
+    try std.testing.expect(std.mem.eql(u8, imported_const_sig.?.module_path, dep.path));
+
+    const imported_macro_sig = dep.exports.macroSignature("imported_macro");
+    try std.testing.expect(imported_macro_sig != null);
+    try std.testing.expect(std.mem.eql(u8, imported_macro_sig.?.name, "imported_macro"));
+    try std.testing.expectEqual(@as(usize, 1), imported_macro_sig.?.params.len);
+    try std.testing.expect(std.mem.eql(u8, imported_macro_sig.?.params[0], "value"));
+    try std.testing.expect(std.mem.eql(u8, imported_macro_sig.?.module_path, dep.path));
+
+    const qualified_dep_fn = modules.functionSignature(dep.path, "imported_a");
+    const qualified_sibling_fn = modules.functionSignature(sibling.path, "imported_a");
+    try std.testing.expect(qualified_dep_fn != null);
+    try std.testing.expect(qualified_sibling_fn != null);
+    try std.testing.expect(std.mem.eql(u8, qualified_dep_fn.?.module_path, dep.path));
+    try std.testing.expect(std.mem.eql(u8, qualified_sibling_fn.?.module_path, sibling.path));
+
+    const qualified_dep_type = modules.typeSignature(dep.path, "ImportedTag");
+    const qualified_sibling_type = modules.typeSignature(sibling.path, "ImportedTag");
+    try std.testing.expect(qualified_dep_type != null);
+    try std.testing.expect(qualified_sibling_type != null);
+    try std.testing.expect(std.mem.eql(u8, qualified_dep_type.?.module_path, dep.path));
+    try std.testing.expect(std.mem.eql(u8, qualified_sibling_type.?.module_path, sibling.path));
+
+    const qualified_dep_const = modules.constSignature(dep.path, "IMPORTED_VALUE");
+    const qualified_sibling_macro = modules.macroSignature(sibling.path, "imported_macro");
+    try std.testing.expect(qualified_dep_const != null);
+    try std.testing.expect(qualified_sibling_macro != null);
+    try std.testing.expect(std.mem.eql(u8, qualified_dep_const.?.module_path, dep.path));
+    try std.testing.expect(std.mem.eql(u8, qualified_sibling_macro.?.module_path, sibling.path));
+
+    const dep_namespace_import = modules.moduleImportByNamespace(main_module.path, "dep");
+    const sibling_namespace_import = modules.moduleImportByNamespace(main_module.path, "sibling");
+    try std.testing.expect(dep_namespace_import != null);
+    try std.testing.expect(sibling_namespace_import != null);
+    try std.testing.expect(std.mem.eql(u8, dep_namespace_import.?.resolved.path, dep.path));
+    try std.testing.expect(std.mem.eql(u8, sibling_namespace_import.?.resolved.path, sibling.path));
+
+    const namespace_dep_fn = try modules.functionSignatureForImportNamespace(main_module.path, "dep", "imported_a");
+    const namespace_sibling_fn = try modules.functionSignatureForImportNamespace(main_module.path, "sibling", "imported_a");
+    try std.testing.expect(namespace_dep_fn != null);
+    try std.testing.expect(namespace_sibling_fn != null);
+    try std.testing.expect(std.mem.eql(u8, namespace_dep_fn.?.module_path, dep.path));
+    try std.testing.expect(std.mem.eql(u8, namespace_sibling_fn.?.module_path, sibling.path));
+
+    const namespace_dep_type = try modules.typeSignatureForImportNamespace(main_module.path, "dep", "ImportedTag");
+    const namespace_sibling_const = try modules.constSignatureForImportNamespace(main_module.path, "sibling", "IMPORTED_VALUE");
+    const namespace_dep_macro = try modules.macroSignatureForImportNamespace(main_module.path, "dep", "imported_macro");
+    try std.testing.expect(namespace_dep_type != null);
+    try std.testing.expect(namespace_sibling_const != null);
+    try std.testing.expect(namespace_dep_macro != null);
+    try std.testing.expect(std.mem.eql(u8, namespace_dep_type.?.module_path, dep.path));
+    try std.testing.expect(std.mem.eql(u8, namespace_sibling_const.?.module_path, sibling.path));
+    try std.testing.expect(std.mem.eql(u8, namespace_dep_macro.?.module_path, dep.path));
+
+    const mangled_dep_fn = try modules.functionSignatureForImportedMangledName(main_module.path, "dep__imported_a");
+    const mangled_sibling_fn = try modules.functionSignatureForImportedMangledName(main_module.path, "sibling__imported_a");
+    try std.testing.expect(mangled_dep_fn != null);
+    try std.testing.expect(mangled_sibling_fn != null);
+    try std.testing.expect(std.mem.eql(u8, mangled_dep_fn.?.module_path, dep.path));
+    try std.testing.expect(std.mem.eql(u8, mangled_sibling_fn.?.module_path, sibling.path));
+    try std.testing.expect(try modules.functionSignatureForImportedMangledName(main_module.path, "imported_a") == null);
+
+    // The module table stores the module graph directly, so later traversal
+    // does not need to rediscover child imports by rescanning dep's AST.
+    var saw_child_import = false;
+    for (dep.resolved_imports) |child_resolved| {
+        if (std.mem.endsWith(u8, child_resolved.path, "child.sla")) saw_child_import = true;
+    }
+    try std.testing.expect(saw_child_import);
+
+    // SlaCallableIndex must attribute each callable symbol to its owning
+    // module path, which is the namespace-qualified resolution primitive the
+    // future lazy traversal needs to avoid re-flattening every imported body.
+    var callable_index = SlaCallableIndex.init(allocator);
+    defer callable_index.deinit();
+    try callable_index.addDeclsFromModule(dep.program.program.decls, dep);
+
+    const dep_a_source = callable_index.moduleSource("imported_a");
+    const dep_helper_source = callable_index.moduleSource("imported_helper");
+    const dep_unreachable_source = callable_index.moduleSource("unreachable_import");
+    try std.testing.expect(dep_a_source != null);
+    try std.testing.expect(dep_helper_source != null);
+    try std.testing.expect(dep_unreachable_source != null);
+    try std.testing.expect(std.mem.eql(u8, dep_a_source.?, dep.path));
+    try std.testing.expect(std.mem.eql(u8, dep_helper_source.?, dep.path));
+    try std.testing.expect(std.mem.eql(u8, dep_unreachable_source.?, dep.path));
+
+    // Inherent method `ImportedTag_tag_method` should also attribute its owning
+    // module path through the associated-method registration path.
+    const tag_method_source = callable_index.moduleSource("ImportedTag_tag_method");
+    try std.testing.expect(tag_method_source != null);
+    try std.testing.expect(std.mem.eql(u8, tag_method_source.?, dep.path));
+}
+
+test "sla module table skips non contributing imported module bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const used_source =
+        \\fn used_value() -> i32 {
+        \\    return used_helper();
+        \\};
+        \\
+        \\fn used_helper() -> i32 {
+        \\    return 42;
+        \\};
+    ;
+    const unused_source =
+        \\struct UnusedTag {
+        \\    value: i32,
+        \\}
+        \\
+        \\fn unused_bad() -> MissingType {
+        \\    return nope();
+        \\};
+    ;
+    const main_source =
+        \\@import "used.sla"
+        \\@import "unused.sla"
+        \\
+        \\@test "selective modules"() {
+        \\    let got = used_value();
+        \\    if got != 42 { panic(24011); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
+    try tmp.dir.writeFile(.{ .sub_path = "unused.sla", .data = unused_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{
+        .prune_for_test_codegen = true,
+    });
+
+    var saw_used = false;
+    var saw_helper = false;
+    var saw_unused_fn = false;
+    var saw_unused_type = false;
+    for (expanded_prog.program.decls) |decl| {
+        switch (decl.*) {
+            .func_decl => |fd| {
+                if (std.mem.eql(u8, fd.name, "used_value")) saw_used = true;
+                if (std.mem.eql(u8, fd.name, "used_helper")) saw_helper = true;
+                if (std.mem.eql(u8, fd.name, "unused_bad")) saw_unused_fn = true;
+            },
+            .struct_decl => |sd| {
+                if (std.mem.eql(u8, sd.name, "UnusedTag")) saw_unused_type = true;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_used);
+    try std.testing.expect(saw_helper);
+    try std.testing.expect(!saw_unused_fn);
+    try std.testing.expect(!saw_unused_type);
+
+    var compile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer compile_arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(compile_arena.allocator());
+    defer stderr_buf.deinit();
+    const compiled = try compileSlaSaTestInput(
+        compile_arena.allocator(),
+        "main.sla",
+        stderr_buf.writer().any(),
+        &.{},
+        false,
+    );
+    if (compiled) |result| {
+        if (result.delete_after) std.fs.cwd().deleteFile(result.path) catch {};
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla module table selective flatten in non test compile path" {
+    // Non-test compile path (prune_for_test_codegen = false): the root program
+    // has a function that calls into used.sla, but unused.sla contains a broken
+    // function referencing MissingType. Selective flattening must omit unused.sla's
+    // body so the broken function never reaches TypeChecker, while used.sla's
+    // reachable functions are flattened normally.
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const used_source =
+        \\fn used_value() -> i32 {
+        \\    return used_helper();
+        \\};
+        \\
+        \\fn used_helper() -> i32 {
+        \\    return 42;
+        \\};
+    ;
+    const unused_source =
+        \\fn unused_bad() -> MissingType {
+        \\    return nope();
+        \\};
+    ;
+    const main_source =
+        \\@import "used.sla"
+        \\@import "unused.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    return used_value();
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
+    try tmp.dir.writeFile(.{ .sub_path = "unused.sla", .data = unused_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{
+        .prune_for_test_codegen = false,
+    });
+
+    var saw_entry = false;
+    var saw_used = false;
+    var saw_helper = false;
+    var saw_unused = false;
+    for (expanded_prog.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        const name = decl.func_decl.name;
+        if (std.mem.eql(u8, name, "entry")) saw_entry = true;
+        if (std.mem.eql(u8, name, "used_value")) saw_used = true;
+        if (std.mem.eql(u8, name, "used_helper")) saw_helper = true;
+        if (std.mem.eql(u8, name, "unused_bad")) saw_unused = true;
+    }
+    try std.testing.expect(saw_entry);
+    try std.testing.expect(saw_used);
+    try std.testing.expect(saw_helper);
+    // unused.sla is non-contributing: its broken function must NOT be flattened.
+    try std.testing.expect(!saw_unused);
+}
+
+test "sla module table reaches contributing transitive module through non contributing parent" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const mid_source =
+        \\@import "leaf.sla"
+        \\
+        \\fn mid_unused_bad() -> MissingType {
+        \\    return nope();
+        \\};
+    ;
+    const leaf_source =
+        \\fn leaf_value() -> i32 {
+        \\    return 53;
+        \\};
+    ;
+    const main_source =
+        \\@import "mid.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    return leaf_value();
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "mid.sla", .data = mid_source });
+    try tmp.dir.writeFile(.{ .sub_path = "leaf.sla", .data = leaf_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{});
+
+    var saw_leaf = false;
+    var saw_mid_bad = false;
+    for (expanded_prog.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        if (std.mem.eql(u8, decl.func_decl.name, "leaf_value")) saw_leaf = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "mid_unused_bad")) saw_mid_bad = true;
+    }
+    try std.testing.expect(saw_leaf);
+    try std.testing.expect(!saw_mid_bad);
+}
+
+test "sla module table prunes unreachable trait impl methods in contributing module" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\trait Label {
+        \\    fn label(self) -> i32;
+        \\    fn unused(self) -> i32;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl Label for ImportedThing {
+        \\    fn label(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\
+        \\    fn unused(self) -> i32 {
+        \\        return missing_trait_body();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    let item = ImportedThing { value: 61 };
+        \\    return item.label();
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{});
+
+    var saw_label = false;
+    var saw_label_body = false;
+    var saw_unused = false;
+    var saw_unused_decl_only = false;
+    for (expanded_prog.program.decls) |decl| {
+        if (decl.* != .impl_decl) continue;
+        for (decl.impl_decl.methods) |method| {
+            if (method.* != .func_decl) continue;
+            if (std.mem.eql(u8, method.func_decl.name, "label")) {
+                saw_label = true;
+                saw_label_body = !method.func_decl.is_decl_only and method.func_decl.body.len > 0;
+            }
+            if (std.mem.eql(u8, method.func_decl.name, "unused")) {
+                saw_unused = true;
+                saw_unused_decl_only = method.func_decl.is_decl_only and method.func_decl.body.len == 0;
+            }
+        }
+    }
+    try std.testing.expect(saw_label);
+    try std.testing.expect(saw_label_body);
+    try std.testing.expect(saw_unused);
+    try std.testing.expect(saw_unused_decl_only);
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        allocator,
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{},
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_trait_body") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla module table follows imported const initializer reachability" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\const IMPORTED_VALUE: i32 = const_helper();
+        \\
+        \\fn const_helper() -> i32 {
+        \\    return 71;
+        \\};
+        \\
+        \\fn unused_bad() -> MissingType {
+        \\    return nope();
+        \\};
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    return IMPORTED_VALUE;
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{});
+
+    var saw_const = false;
+    var saw_helper = false;
+    var saw_unused = false;
+    for (expanded_prog.program.decls) |decl| {
+        switch (decl.*) {
+            .const_stmt => |c| {
+                if (std.mem.eql(u8, c.name, "IMPORTED_VALUE")) saw_const = true;
+            },
+            .func_decl => |fd| {
+                if (std.mem.eql(u8, fd.name, "const_helper")) saw_helper = true;
+                if (std.mem.eql(u8, fd.name, "unused_bad")) saw_unused = true;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_const);
+    try std.testing.expect(saw_helper);
+    try std.testing.expect(!saw_unused);
+}
+
+test "sla module table follows imported type signature dependencies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const child_source =
+        \\struct ChildType {
+        \\    value: i32,
+        \\}
+    ;
+    const parent_source =
+        \\@import "child.sla"
+        \\
+        \\struct ParentType {
+        \\    child: ChildType,
+        \\}
+        \\
+        \\fn unused_bad() -> MissingType {
+        \\    return nope();
+        \\};
+    ;
+    const main_source =
+        \\@import "parent.sla"
+        \\
+        \\fn entry(item: ParentType) -> i32 {
+        \\    return item.child.value;
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tmp.dir.writeFile(.{ .sub_path = "parent.sla", .data = parent_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{});
+
+    var saw_parent = false;
+    var saw_child = false;
+    var saw_unused = false;
+    for (expanded_prog.program.decls) |decl| {
+        switch (decl.*) {
+            .struct_decl => |sd| {
+                if (std.mem.eql(u8, sd.name, "ParentType")) saw_parent = true;
+                if (std.mem.eql(u8, sd.name, "ChildType")) saw_child = true;
+            },
+            .func_decl => |fd| {
+                if (std.mem.eql(u8, fd.name, "unused_bad")) saw_unused = true;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_parent);
+    try std.testing.expect(saw_child);
+    try std.testing.expect(!saw_unused);
+}
+
+test "sla module table follows generic argument type dependencies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const type_source =
+        \\struct ImportedType {
+        \\    value: i32,
+        \\}
+    ;
+    const funcs_source =
+        \\@import "types.sla"
+        \\
+        \\fn generic_id<T>(value: i32) -> i32 {
+        \\    return value;
+        \\};
+        \\
+        \\fn use_generic_ref<T>(value: i32) -> i32 {
+        \\    return value;
+        \\};
+        \\
+        \\fn unused_bad() -> MissingType {
+        \\    return nope();
+        \\};
+    ;
+    const main_source =
+        \\@import "funcs.sla"
+        \\
+        \\fn apply(f: fn(i32) -> i32, value: i32) -> i32 {
+        \\    return f(value);
+        \\};
+        \\
+        \\fn entry() -> i32 {
+        \\    return generic_id<ImportedType>(7) + apply(use_generic_ref<ImportedType>, 8);
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "types.sla", .data = type_source });
+    try tmp.dir.writeFile(.{ .sub_path = "funcs.sla", .data = funcs_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{});
+
+    var saw_type = false;
+    var saw_generic_id = false;
+    var saw_generic_ref_target = false;
+    var saw_unused = false;
+    for (expanded_prog.program.decls) |decl| {
+        switch (decl.*) {
+            .struct_decl => |sd| {
+                if (std.mem.eql(u8, sd.name, "ImportedType")) saw_type = true;
+            },
+            .func_decl => |fd| {
+                if (std.mem.eql(u8, fd.name, "generic_id")) saw_generic_id = true;
+                if (std.mem.eql(u8, fd.name, "use_generic_ref")) saw_generic_ref_target = true;
+                if (std.mem.eql(u8, fd.name, "unused_bad")) saw_unused = true;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_type);
+    try std.testing.expect(saw_generic_id);
+    try std.testing.expect(saw_generic_ref_target);
+    try std.testing.expect(!saw_unused);
 }
 
 test "sla sab test codegen omits unreachable functions after type checking" {

@@ -348,6 +348,13 @@ pub const Parser = struct {
         return false;
     }
 
+    fn recordImportModuleName(self: *Parser, import_path: []const u8) !void {
+        const base = std.fs.path.basename(import_path);
+        const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| base[0..dot] else base;
+        if (stem.len == 0 or self.isKnownModuleName(stem)) return;
+        try self.known_modules.append(stem);
+    }
+
     fn recordImplTargetType(self: *Parser, target_ty: *ast.Type) !void {
         switch (target_ty.*) {
             .user_defined => try self.known_types.append(target_ty.user_defined.name),
@@ -1157,6 +1164,7 @@ pub const Parser = struct {
         // the imported AST, but the parser needs the names earlier to disambiguate
         // `Name { ... }` from a block during its single forward pass.
         if (std.mem.endsWith(u8, import_path, ".sla")) {
+            try self.recordImportModuleName(import_path);
             self.prescanSlaImportTypes(import_path) catch {};
         }
 
@@ -2993,6 +3001,36 @@ test "parse struct and function" {
     try std.testing.expectEqualSlices(u8, "val", s1.let_stmt.name);
     try std.testing.expect(s1.let_stmt.value.* == .call_expr);
     try std.testing.expectEqualSlices(u8, "fetch", s1.let_stmt.value.call_expr.func_name);
+}
+
+test "parse sla import basename as module namespace" {
+    const source =
+        \\@import "dep.sla"
+        \\
+        \\fn call_dep() -> i32 {
+        \\    return dep::imported_a();
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+
+    try std.testing.expect(prog.* == .program);
+    try std.testing.expectEqual(@as(usize, 2), prog.program.decls.len);
+    try std.testing.expect(p.isKnownModuleName("dep"));
+
+    const fn_decl = prog.program.decls[1];
+    try std.testing.expect(fn_decl.* == .func_decl);
+    try std.testing.expectEqual(@as(usize, 1), fn_decl.func_decl.body.len);
+    const ret = fn_decl.func_decl.body[0];
+    try std.testing.expect(ret.* == .return_stmt);
+    const value = ret.return_stmt.value.?;
+    try std.testing.expect(value.* == .call_expr);
+    try std.testing.expectEqualSlices(u8, "dep__imported_a", value.call_expr.func_name);
 }
 
 test "syntax diagnostic includes location token and context" {

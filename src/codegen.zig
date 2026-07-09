@@ -7986,7 +7986,7 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
         auto_borrow_receiver: bool,
     ) CodegenError![]const u8 {
-        const symbol = plan.target_symbol;
+        const symbol = lowering_rules.staticCallEmitSymbol(plan);
         const func = self.tc.funcs.get(symbol) orelse return CodegenError.CodegenError;
         if (func.params.len != plan.arg_count or func.params.len != call.args.len) return CodegenError.CodegenError;
 

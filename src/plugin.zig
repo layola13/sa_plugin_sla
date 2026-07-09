@@ -1026,10 +1026,15 @@ fn isModuleContributing(
     reachable: *const std.StringHashMap(void),
     referenced_types: *const std.StringHashMap(void),
 ) !bool {
+    const module_namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
+    defer allocator.free(module_namespace);
     // 1. Check if any exported function is reachable
     var func_iter = module.exports.function_decls.keyIterator();
     while (func_iter.next()) |name_ptr| {
         if (reachable.contains(name_ptr.*)) return true;
+        const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ module_namespace, name_ptr.* });
+        defer allocator.free(alias);
+        if (reachable.contains(alias)) return true;
     }
 
     // 2. Check if any exported type is referenced
@@ -1106,6 +1111,9 @@ fn appendModuleDeclsSelective(
         return;
     }
 
+    const module_namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
+    defer allocator.free(module_namespace);
+
     for (module.program.program.decls) |decl| {
         if (decl.* == .import_decl) {
             for (module.resolved_imports) |child_resolved| {
@@ -1116,8 +1124,15 @@ fn appendModuleDeclsSelective(
             const before = out_decls.items.len;
             switch (decl.*) {
                 .func_decl => |fd| {
-                    if (try importedFuncNodeForReachability(allocator, decl, fd.name, reachable, options)) |func_node| {
+                    if (try importedFuncNodeForReachability(allocator, decl, fd.name, module_namespace, reachable, options)) |func_node| {
                         try out_decls.append(func_node);
+                        try primary_decls.put(func_node, {});
+                    }
+                    if (try reachableImportedAlias(allocator, module_namespace, fd.name, reachable)) |alias| {
+                        defer allocator.free(alias);
+                        const alias_node = try makeAliasedFuncNode(allocator, &decl.func_decl, alias, options);
+                        try out_decls.append(alias_node);
+                        try primary_decls.put(alias_node, {});
                     }
                 },
                 .impl_decl => {
@@ -1242,10 +1257,15 @@ const SlaCallableIndex = struct {
 
     fn addDeclsFromModule(self: *SlaCallableIndex, decls: []const *ast.Node, module: ?*const SlaModule) !void {
         const module_path = if (module) |m| m.path else null;
+        const namespace = if (module) |m| try moduleNamespaceFromImportPath(self.allocator, m.output_path) else null;
         for (decls) |decl| {
             switch (decl.*) {
                 .func_decl => {
                     try self.recordFunction(decl.func_decl.name, &decl.func_decl, module_path);
+                    if (namespace) |ns| {
+                        const alias = try std.fmt.allocPrint(self.allocator, "{s}__{s}", .{ ns, decl.func_decl.name });
+                        try self.recordFunction(alias, &decl.func_decl, module_path);
+                    }
                 },
                 .const_stmt => {
                     const entry = try self.const_decls.getOrPut(decl.const_stmt.name);
@@ -1283,6 +1303,7 @@ const SlaCallableIndex = struct {
 fn collectSyntacticReachableRootsFromDecls(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
@@ -1295,13 +1316,13 @@ fn collectSyntacticReachableRootsFromDecls(
             .test_decl => |test_decl| {
                 if (!testMatchesFilter(&test_decl, test_filter)) continue;
                 saw_test.* = true;
-                try collectSyntacticReachableBlock(funcs, modules, null, reachable, referenced_types, worklist, test_decl.body);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, null, reachable, referenced_types, worklist, test_decl.body);
             },
             .const_stmt => |const_stmt| {
                 if (const_stmt.ty) |ty| try recordReferencedType(referenced_types, ty);
-                try collectSyntacticReachableExpr(funcs, modules, null, reachable, referenced_types, worklist, const_stmt.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, null, reachable, referenced_types, worklist, const_stmt.value);
             },
-            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(funcs, modules, macro_decl.name, reachable, referenced_types, worklist, macro_decl.body),
+            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(funcs, modules, imported_macros, macro_decl.name, reachable, referenced_types, worklist, macro_decl.body),
             .impl_decl => |impl_decl| {
                 try recordReferencedType(referenced_types, impl_decl.target_ty);
                 if (impl_decl.trait_name) |tn| try referenced_types.put(tn, {});
@@ -1311,7 +1332,7 @@ fn collectSyntacticReachableRootsFromDecls(
                             const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
                             const symbol = try lowering_rules.mangleTraitMethodName(funcs.allocator, type_name, impl_decl.trait_name.?, method.func_decl.name);
                             defer funcs.allocator.free(symbol);
-                            try collectSyntacticReachableBlock(funcs, modules, symbol, reachable, referenced_types, worklist, method.func_decl.body);
+                            try collectSyntacticReachableBlock(funcs, modules, imported_macros, symbol, reachable, referenced_types, worklist, method.func_decl.body);
                         }
                     }
                 }
@@ -1323,7 +1344,7 @@ fn collectSyntacticReachableRootsFromDecls(
                         const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
                         const symbol = try lowering_rules.mangleMethodName(funcs.allocator, type_name, method.func_decl.name);
                         defer funcs.allocator.free(symbol);
-                        try collectSyntacticReachableBlock(funcs, modules, symbol, reachable, referenced_types, worklist, method.func_decl.body);
+                        try collectSyntacticReachableBlock(funcs, modules, imported_macros, symbol, reachable, referenced_types, worklist, method.func_decl.body);
                     }
                 }
             },
@@ -1335,6 +1356,7 @@ fn collectSyntacticReachableRootsFromDecls(
 fn scanReferencedSymbolRoots(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
     scanned_symbol_roots: *std.StringHashMap(void),
@@ -1354,10 +1376,10 @@ fn scanReferencedSymbolRoots(
     for (pending.items) |ref_name| {
         if (funcs.const_decls.get(ref_name)) |const_decl| {
             if (const_decl.ty) |ty| try recordReferencedType(referenced_types, ty);
-            try collectSyntacticReachableExpr(funcs, modules, null, reachable, referenced_types, worklist, const_decl.value);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, null, reachable, referenced_types, worklist, const_decl.value);
         }
         if (funcs.macro_decls.get(ref_name)) |macro_decl| {
-            try collectSyntacticReachableBlock(funcs, modules, macro_decl.name, reachable, referenced_types, worklist, macro_decl.body);
+            try collectSyntacticReachableBlock(funcs, modules, imported_macros, macro_decl.name, reachable, referenced_types, worklist, macro_decl.body);
         }
     }
 
@@ -1370,6 +1392,7 @@ fn buildReachableSymbols(
     modules: []const *SlaModule,
     module_table: *SlaModuleTable,
     options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
     out_reachable: *std.StringHashMap(void),
     out_referenced_types: *std.StringHashMap(void),
 ) !void {
@@ -1392,9 +1415,9 @@ fn buildReachableSymbols(
     // 1. Collect roots
     if (options.prune_for_test_codegen) {
         var saw_test = false;
-        try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, out_reachable, out_referenced_types, &worklist, root_program.program.decls, options.test_filter, &saw_test);
+        try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, imported_macros, out_reachable, out_referenced_types, &worklist, root_program.program.decls, options.test_filter, &saw_test);
         for (modules) |module| {
-            try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, out_reachable, out_referenced_types, &worklist, module.program.program.decls, options.test_filter, &saw_test);
+            try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, imported_macros, out_reachable, out_referenced_types, &worklist, module.program.program.decls, options.test_filter, &saw_test);
         }
     } else {
         // If not pruning for test, everything in the root program is a root!
@@ -1405,10 +1428,10 @@ fn buildReachableSymbols(
                 },
                 .const_stmt => |c| {
                     if (c.ty) |ty| try recordReferencedType(out_referenced_types, ty);
-                    try collectSyntacticReachableExpr(&callable_index, module_table, null, out_reachable, out_referenced_types, &worklist, c.value);
+                    try collectSyntacticReachableExpr(&callable_index, module_table, null, null, out_reachable, out_referenced_types, &worklist, c.value);
                 },
                 .macro_decl => |m| {
-                    try collectSyntacticReachableBlock(&callable_index, module_table, m.name, out_reachable, out_referenced_types, &worklist, m.body);
+                    try collectSyntacticReachableBlock(&callable_index, module_table, null, m.name, out_reachable, out_referenced_types, &worklist, m.body);
                 },
                 .impl_decl => |impl_decl| {
                     try recordReferencedType(out_referenced_types, impl_decl.target_ty);
@@ -1454,9 +1477,9 @@ fn buildReachableSymbols(
                 try recordReferencedType(out_referenced_types, param.ty);
             }
             try recordReferencedType(out_referenced_types, fd.ret_ty);
-            try collectSyntacticReachableBlock(&callable_index, module_table, name, out_reachable, out_referenced_types, &worklist, fd.body);
+            try collectSyntacticReachableBlock(&callable_index, module_table, imported_macros, name, out_reachable, out_referenced_types, &worklist, fd.body);
         }
-        const scanned_symbols = try scanReferencedSymbolRoots(&callable_index, module_table, out_reachable, out_referenced_types, &scanned_symbol_roots, &worklist);
+        const scanned_symbols = try scanReferencedSymbolRoots(&callable_index, module_table, imported_macros, out_reachable, out_referenced_types, &scanned_symbol_roots, &worklist);
         const scanned_types = try scanReferencedExportedTypeSignatures(allocator, modules, out_referenced_types, &scanned_type_roots);
         if (!scanned_symbols and !scanned_types) break;
     }
@@ -1479,6 +1502,18 @@ fn makeDeclOnlyFuncNode(allocator: std.mem.Allocator, func: *const ast.FuncDecl)
     return stub;
 }
 
+fn makeAliasedFuncNode(allocator: std.mem.Allocator, func: *const ast.FuncDecl, alias: []const u8, options: SlaImportExpansionOptions) !*ast.Node {
+    var alias_func = func.*;
+    alias_func.name = try allocator.dupe(u8, alias);
+    if (options.imported_bodies_decl_only and !shouldKeepReachableImportedBody(options)) {
+        alias_func.is_decl_only = true;
+        alias_func.body = &.{};
+    }
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .func_decl = alias_func };
+    return node;
+}
+
 fn maybeDeclOnlyFuncNode(allocator: std.mem.Allocator, method: *ast.Node, force_decl_only: bool) !*ast.Node {
     if (!force_decl_only or method.func_decl.is_decl_only) return method;
     return try makeDeclOnlyFuncNode(allocator, &method.func_decl);
@@ -1488,15 +1523,31 @@ fn shouldKeepReachableImportedBody(options: SlaImportExpansionOptions) bool {
     return options.imported_bodies_decl_only and options.load_reachable_imported_bodies_from_registry;
 }
 
+fn reachableImportedAlias(allocator: std.mem.Allocator, namespace: ?[]const u8, name: []const u8, reachable: *const std.StringHashMap(void)) !?[]const u8 {
+    const ns = namespace orelse return null;
+    const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ ns, name });
+    if (reachable.contains(alias)) return alias;
+    allocator.free(alias);
+    return null;
+}
+
 fn importedFuncNodeForReachability(
     allocator: std.mem.Allocator,
     node: *ast.Node,
     reachable_symbol: []const u8,
+    namespace: ?[]const u8,
     reachable: *const std.StringHashMap(void),
     options: SlaImportExpansionOptions,
 ) !?*ast.Node {
     if (node.* != .func_decl) return null;
-    if (!reachable.contains(reachable_symbol)) return null;
+    var is_reachable = reachable.contains(reachable_symbol);
+    if (!is_reachable) {
+        if (try reachableImportedAlias(allocator, namespace, reachable_symbol, reachable)) |alias| {
+            allocator.free(alias);
+            is_reachable = true;
+        }
+    }
+    if (!is_reachable) return null;
     if (shouldKeepReachableImportedBody(options)) return node;
     if (options.imported_bodies_decl_only) return try makeDeclOnlyFuncNode(allocator, &node.func_decl);
     return node;
@@ -1746,7 +1797,14 @@ fn expandSlaImports(
     var referenced_types = std.StringHashMap(void).init(allocator);
     defer referenced_types.deinit();
 
-    try buildReachableSymbols(allocator, program, ordered_modules.items, &modules, options, &reachable, &referenced_types);
+    var imported_macro_tc = type_checker_mod.TypeChecker.init(allocator);
+    defer imported_macro_tc.deinit();
+    if (options.prune_for_test_codegen) {
+        try loadImportedContracts(&imported_macro_tc, allocator, program, source_file);
+    }
+    const imported_macros = if (options.prune_for_test_codegen) &imported_macro_tc.imported_macros else null;
+
+    try buildReachableSymbols(allocator, program, ordered_modules.items, &modules, options, imported_macros, &reachable, &referenced_types);
 
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
@@ -1796,7 +1854,7 @@ fn registerImportedFunctionAliases(tc: *type_checker_mod.TypeChecker, allocator:
                 const name = entry.key_ptr.*;
                 const signature = entry.value_ptr.*;
                 const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ namespace, name });
-                try tc.registerFunctionAlias(alias, name);
+                try tc.registerFunctionAliasWithMetadata(alias, name, namespace, module.path);
                 try tc.registerImportedFunctionSignature(name, signature.params, signature.ret_ty, signature.is_async);
                 try tc.registerImportedFunctionSignature(alias, signature.params, signature.ret_ty, signature.is_async);
             }
@@ -1873,6 +1931,10 @@ const SlaCompileOptions = struct {
     prune_for_test_codegen: bool = false,
     load_reachable_imported_bodies_from_registry: bool = false,
 };
+
+fn defaultSlaCompileOptions() SlaCompileOptions {
+    return .{ .load_reachable_imported_bodies_from_registry = true };
+}
 
 fn slaProfileEnabled(allocator: std.mem.Allocator) bool {
     const value = std.process.getEnvVarOwned(allocator, "SLA_PROFILE") catch return false;
@@ -1965,6 +2027,15 @@ fn markReachableFunc(
     try worklist.append(name);
 }
 
+fn markReachableResolvedCallAlias(
+    tc: *const type_checker_mod.TypeChecker,
+    reachable: *std.StringHashMap(void),
+    expr: *const ast.Node,
+) anyerror!void {
+    const metadata = tc.resolved_call_alias_metadata.get(expr) orelse return;
+    if (!reachable.contains(metadata.alias)) try reachable.put(metadata.alias, {});
+}
+
 fn associatedReachableFuncKey(
     tc: *const type_checker_mod.TypeChecker,
     target_name: []const u8,
@@ -1990,6 +2061,7 @@ fn markReachableCallTarget(
     call: ast.CallExpr,
 ) anyerror!void {
     if (tc.resolved_call_symbols.get(expr)) |symbol| {
+        try markReachableResolvedCallAlias(tc, reachable, expr);
         try markReachableFunc(tc, reachable, worklist, symbol);
         return;
     }
@@ -2045,7 +2117,10 @@ fn collectReachableExpr(
         .await_expr => |await_expr| try collectReachableExpr(tc, reachable, worklist, await_expr.expr),
         .try_expr => |try_expr| try collectReachableExpr(tc, reachable, worklist, try_expr.expr),
         .binary_expr => |bin| {
-            if (tc.resolved_call_symbols.get(expr)) |symbol| try markReachableFunc(tc, reachable, worklist, symbol);
+            if (tc.resolved_call_symbols.get(expr)) |symbol| {
+                try markReachableResolvedCallAlias(tc, reachable, expr);
+                try markReachableFunc(tc, reachable, worklist, symbol);
+            }
             try collectReachableExpr(tc, reachable, worklist, bin.left);
             try collectReachableExpr(tc, reachable, worklist, bin.right);
         },
@@ -2104,7 +2179,7 @@ fn collectReachableBlock(
                 try collectReachableExpr(tc, reachable, worklist, while_stmt.cond);
                 try collectReachableBlock(tc, reachable, worklist, while_stmt.body);
             },
-            else => {},
+            else => try collectReachableExpr(tc, reachable, worklist, stmt),
         }
     }
 }
@@ -2360,7 +2435,14 @@ fn markSyntacticReachableFunc(
         if (!same_module) {
             if (modules) |mod_table| {
                 if (mod_table.modules.get(callee_mp)) |mod| {
-                    if (!mod.exports.exportsSymbol(name)) {
+                    var exported = mod.exports.exportsSymbol(name);
+                    if (!exported) {
+                        if (splitImportedMangledSymbol(name)) |imported| {
+                            exported = moduleNamespaceMatchesImportPath(mod.output_path, imported.namespace) and
+                                mod.exports.exportsSymbol(imported.name);
+                        }
+                    }
+                    if (!exported) {
                         return;
                     }
                 }
@@ -2390,6 +2472,7 @@ fn markSyntacticAssociatedCallCandidates(
 fn collectSyntacticReachableExpr(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
@@ -2409,70 +2492,77 @@ fn collectSyntacticReachableExpr(
             if (call.associated_target != null) {
                 try markSyntacticAssociatedCallCandidates(funcs, modules, caller_name, reachable, referenced_types, worklist, call.func_name);
             } else {
+                if (imported_macros) |macros| {
+                    if (macros.get(call.func_name)) |macro| {
+                        for (macro.direct_callees) |callee| {
+                            try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, callee);
+                        }
+                    }
+                }
                 try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, call.func_name);
                 try markSyntacticAssociatedCallCandidates(funcs, modules, caller_name, reachable, referenced_types, worklist, call.func_name);
             }
             for (call.generics) |ty| try recordReferencedType(referenced_types, ty);
-            for (call.args) |arg| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, arg);
+            for (call.args) |arg| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, arg);
         },
         .if_expr => |ife| {
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, ife.cond);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, ife.cond);
             if (ife.let_chain) |chain| {
-                for (chain) |cond| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, cond.value);
+                for (chain) |cond| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, cond.value);
             }
-            try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, ife.then_block);
-            if (ife.else_block) |else_block| try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, else_block);
+            try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, ife.then_block);
+            if (ife.else_block) |else_block| try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, else_block);
         },
         .switch_expr => |swe| {
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, swe.val);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, swe.val);
             for (swe.cases) |case| {
-                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, case.pattern);
-                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, case.body);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, case.pattern);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, case.body);
             }
         },
         .match_expr => |mat| {
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, mat.val);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, mat.val);
             for (mat.cases) |case| {
-                if (case.guard) |guard| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, guard);
-                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, case.body);
+                if (case.guard) |guard| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, guard);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, case.body);
             }
         },
-        .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, unsafe_expr.body),
-        .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, await_expr.expr),
-        .try_expr => |try_expr| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, try_expr.expr),
+        .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, unsafe_expr.body),
+        .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, await_expr.expr),
+        .try_expr => |try_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, try_expr.expr),
         .binary_expr => |bin| {
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, bin.left);
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, bin.right);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, bin.left);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, bin.right);
         },
-        .closure_literal => |closure| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, closure.body),
-        .borrow_expr => |borrow| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, borrow.expr),
-        .move_expr => |move| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, move.expr),
-        .deref_expr => |deref| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, deref.expr),
+        .closure_literal => |closure| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, closure.body),
+        .borrow_expr => |borrow| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, borrow.expr),
+        .move_expr => |move| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, move.expr),
+        .deref_expr => |deref| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, deref.expr),
         .cast_expr => |cast| {
             try recordReferencedType(referenced_types, cast.ty);
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, cast.expr);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, cast.expr);
         },
-        .field_expr => |field| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, field.expr),
+        .field_expr => |field| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, field.expr),
         .struct_literal => |lit| {
             try recordReferencedType(referenced_types, lit.ty);
-            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, field.value);
-            if (lit.update_expr) |update| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, update);
+            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, field.value);
+            if (lit.update_expr) |update| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, update);
         },
         .enum_literal => |lit| {
             try referenced_types.put(lit.enum_name, {});
-            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, field.value);
+            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, field.value);
         },
-        .tuple_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, elem),
-        .array_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, elem),
-        .repeat_array_literal => |lit| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, lit.value),
+        .tuple_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, elem),
+        .array_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, elem),
+        .repeat_array_literal => |lit| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, lit.value),
         .index_expr => |idx| {
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, idx.target);
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, idx.index);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, idx.target);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, idx.index);
         },
         .slice_expr => |slice| {
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, slice.target);
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, slice.start);
-            try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, slice.end);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, slice.target);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, slice.start);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, slice.end);
         },
         else => {},
     }
@@ -2481,6 +2571,7 @@ fn collectSyntacticReachableExpr(
 fn collectSyntacticReachableBlock(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
@@ -2491,41 +2582,46 @@ fn collectSyntacticReachableBlock(
         switch (stmt.*) {
             .let_stmt => |let| {
                 if (let.ty) |ty| try recordReferencedType(referenced_types, ty);
-                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, let.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, let.value);
             },
             .let_else_stmt => |let| {
-                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, let.value);
-                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, let.else_block);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, let.value);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, let.else_block);
             },
             .let_destructure_stmt => |let| {
-                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, let.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, let.value);
             },
             .const_stmt => |c| {
                 if (c.ty) |ty| try recordReferencedType(referenced_types, ty);
-                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, c.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, c.value);
             },
             .assign_stmt => |assign| {
-                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, assign.target);
-                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, assign.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, assign.target);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, assign.value);
             },
-            .block_stmt => |blk| try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, blk.body),
-            .expr_stmt => |expr| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, expr),
-            .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, value),
+            .block_stmt => |blk| try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, blk.body),
+            .expr_stmt => |expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, expr),
+            .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, value),
             .for_stmt => |for_stmt| {
-                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, for_stmt.start);
-                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, end_expr);
-                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, for_stmt.body);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, for_stmt.start);
+                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, end_expr);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, for_stmt.body);
             },
             .while_stmt => |while_stmt| {
-                try collectSyntacticReachableExpr(funcs, modules, caller_name, reachable, referenced_types, worklist, while_stmt.cond);
-                try collectSyntacticReachableBlock(funcs, modules, caller_name, reachable, referenced_types, worklist, while_stmt.body);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, while_stmt.cond);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, while_stmt.body);
             },
-            else => {},
+            else => try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, stmt),
         }
     }
 }
 
-fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator, program: *ast.Node) !void {
+fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
+    allocator: std.mem.Allocator,
+    program: *ast.Node,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    primary_decls: ?*std.AutoHashMap(*const ast.Node, void),
+) !void {
     if (program.* != .program) return error.InvalidProgram;
 
     var callable_index = SlaCallableIndex.init(allocator);
@@ -2545,13 +2641,13 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
         switch (decl.*) {
             .test_decl => |test_decl| {
                 saw_test = true;
-                try collectSyntacticReachableBlock(&callable_index, null, null, &reachable, &referenced_types, &worklist, test_decl.body);
+                try collectSyntacticReachableBlock(&callable_index, null, imported_macros, null, &reachable, &referenced_types, &worklist, test_decl.body);
             },
             .const_stmt => |const_stmt| {
                 if (const_stmt.ty) |ty| try recordReferencedType(&referenced_types, ty);
-                try collectSyntacticReachableExpr(&callable_index, null, null, &reachable, &referenced_types, &worklist, const_stmt.value);
+                try collectSyntacticReachableExpr(&callable_index, null, imported_macros, null, &reachable, &referenced_types, &worklist, const_stmt.value);
             },
-            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&callable_index, null, macro_decl.name, &reachable, &referenced_types, &worklist, macro_decl.body),
+            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&callable_index, null, imported_macros, macro_decl.name, &reachable, &referenced_types, &worklist, macro_decl.body),
             .impl_decl => |impl_decl| {
                 try recordReferencedType(&referenced_types, impl_decl.target_ty);
                 if (impl_decl.trait_name) |tn| try referenced_types.put(tn, {});
@@ -2561,7 +2657,7 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
                             const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
                             const symbol = try lowering_rules.mangleTraitMethodName(allocator, type_name, impl_decl.trait_name.?, method.func_decl.name);
                             defer allocator.free(symbol);
-                            try collectSyntacticReachableBlock(&callable_index, null, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
+                            try collectSyntacticReachableBlock(&callable_index, null, imported_macros, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
                         }
                     }
                 }
@@ -2573,7 +2669,7 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
                         const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
                         const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
                         defer allocator.free(symbol);
-                        try collectSyntacticReachableBlock(&callable_index, null, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
+                        try collectSyntacticReachableBlock(&callable_index, null, imported_macros, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
                     }
                 }
             },
@@ -2590,14 +2686,17 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator: std.mem.Allocator
             try recordReferencedType(&referenced_types, param.ty);
         }
         try recordReferencedType(&referenced_types, fd.ret_ty);
-        try collectSyntacticReachableBlock(&callable_index, null, name, &reachable, &referenced_types, &worklist, fd.body);
+        try collectSyntacticReachableBlock(&callable_index, null, imported_macros, name, &reachable, &referenced_types, &worklist, fd.body);
     }
 
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
     for (program.program.decls) |decl| {
         switch (decl.*) {
             .func_decl => |func_decl| {
-                if (func_decl.is_decl_only or reachable.contains(func_decl.name)) try filtered_decls.append(decl);
+                if (func_decl.is_decl_only or reachable.contains(func_decl.name)) {
+                    try filtered_decls.append(decl);
+                    if (primary_decls) |decls| try decls.put(decl, {});
+                }
             },
             .impl_decl => |impl_decl| {
                 if (impl_decl.trait_name != null) {
@@ -2829,7 +2928,7 @@ fn compileSlaToSaString(
     output_file: ?[]const u8,
     stderr: std.io.AnyWriter,
 ) !?[]const u8 {
-    return compileSlaToSaStringWithOptions(allocator, file, output_file, stderr, .{});
+    return compileSlaToSaStringWithOptions(allocator, file, output_file, stderr, defaultSlaCompileOptions());
 }
 
 /// Shared SLA compilation front-end: the trunk of the Y shared by the SA-text
@@ -2902,15 +3001,6 @@ fn runSlaFrontend(
     };
     slaProfileStage(stderr, profile, "monomorphize", stage_start);
 
-    if (options.prune_for_test_codegen) {
-        stage_start = std.time.nanoTimestamp();
-        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog) catch |err| {
-            try stderr.print("Test Filter Error: failed to prune unreachable functions before type checking: {}\n", .{err});
-            return null;
-        };
-        slaProfileStage(stderr, profile, "pre-typecheck reachable decl filter", stage_start);
-    }
-
     stage_start = std.time.nanoTimestamp();
     loadImportedContracts(tc, allocator, specialized_prog, file) catch |err| {
         try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
@@ -2924,6 +3014,15 @@ fn runSlaFrontend(
         return null;
     };
     slaProfileStage(stderr, profile, "import aliases", stage_start);
+
+    if (options.prune_for_test_codegen) {
+        stage_start = std.time.nanoTimestamp();
+        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, &specialized_primary_decls) catch |err| {
+            try stderr.print("Test Filter Error: failed to prune unreachable functions before type checking: {}\n", .{err});
+            return null;
+        };
+        slaProfileStage(stderr, profile, "pre-typecheck reachable decl filter", stage_start);
+    }
 
     stage_start = std.time.nanoTimestamp();
     tc.checkProgram(specialized_prog) catch |err| {
@@ -3682,7 +3781,7 @@ fn compileSlaFileToSab(
     output_file: []const u8,
     stderr: std.io.AnyWriter,
 ) !?[]u8 {
-    return compileSlaFileToSabWithOptions(allocator, file, output_file, stderr, .{});
+    return compileSlaFileToSabWithOptions(allocator, file, output_file, stderr, defaultSlaCompileOptions());
 }
 
 fn virtualSaPathForSabOutput(allocator: std.mem.Allocator, output_file: []const u8) ![]const u8 {
@@ -5317,6 +5416,79 @@ test "sla test codegen uses registry loaded imported bodies" {
     try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
 }
 
+test "sla test codegen keeps imported macro direct callee" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const macro_source =
+        \\[MACRO] TEST_IMPORTED_PAIR_SUM %out, %value
+        \\    %out = call @sla__macro_pair_sum(&%value)
+        \\[END_MACRO]
+    ;
+    const main_source =
+        \\@import "imported_macros.sa"
+        \\
+        \\struct Pair { left: i64, right: i64 }
+        \\
+        \\fn macro_pair_sum(value: &Pair) -> i64 {
+        \\    value.left + value.right
+        \\}
+        \\
+        \\fn use_imported_macro() -> i64 {
+        \\    let pair = Pair { left: 31, right: 11 };
+        \\    TEST_IMPORTED_PAIR_SUM(pair)
+        \\}
+        \\
+        \\@test "imported macro callee stays reachable"() {
+        \\    if use_imported_macro() != 42 { panic(24042); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "imported_macros.sa", .data = macro_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var macro_tc = type_checker_mod.TypeChecker.init(allocator);
+    defer macro_tc.deinit();
+    try loadImportedContracts(&macro_tc, allocator, prog, "main.sla");
+    const imported_macro = macro_tc.imported_macros.get("TEST_IMPORTED_PAIR_SUM");
+    try std.testing.expect(imported_macro != null);
+    try std.testing.expectEqual(@as(usize, 1), imported_macro.?.direct_callees.len);
+    try std.testing.expectEqualStrings("macro_pair_sum", imported_macro.?.direct_callees[0]);
+
+    var modules = SlaModuleTable.init(allocator);
+    defer modules.deinit();
+    var reachable = std.StringHashMap(void).init(allocator);
+    var referenced_types = std.StringHashMap(void).init(allocator);
+    try buildReachableSymbols(allocator, prog, &.{}, &modules, .{ .prune_for_test_codegen = true }, &macro_tc.imported_macros, &reachable, &referenced_types);
+    try std.testing.expect(reachable.contains("use_imported_macro"));
+    try std.testing.expect(reachable.contains("macro_pair_sum"));
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    if (compiled) |test_input| {
+        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND TEST_IMPORTED_PAIR_SUM") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "@sla__macro_pair_sum(value") != null);
+    } else {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla module namespace call resolves through imported function alias" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -5358,9 +5530,246 @@ test "sla module namespace call resolves through imported function alias" {
         return error.TestUnexpectedResult;
     };
 
-    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__imported_a") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__dep__imported_a") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__imported_a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__dep__imported_a") != null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+
+    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sab_stderr.deinit();
+    const sab_compiled = try compileSlaSabTestInput(arena.allocator(), "main.sla", sab_stderr.writer().any(), &.{}, false);
+    if (sab_compiled) |compiled| {
+        defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
+        const sab_bytes = try std.fs.cwd().readFileAlloc(arena.allocator(), compiled.path, 10 * 1024 * 1024);
+        var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+        defer module.deinit(std.testing.allocator);
+
+        var saw_alias_sig = false;
+        for (module.function_sigs) |fsig| {
+            if (std.mem.indexOf(u8, fsig.name, "dep__imported_a") != null) saw_alias_sig = true;
+        }
+        try std.testing.expect(saw_alias_sig);
+
+        const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
+        try std.testing.expect(std.mem.indexOf(u8, disasm, "\"@sla__dep__imported_a\"") != null);
+    } else {
+        std.debug.print("{s}", .{sab_stderr.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
+}
+
+test "sla imported function aliases retain namespace metadata" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "dep.sla",
+        .data =
+        \\fn imported_a() -> i32 {
+        \\    return 7;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "sibling.sla",
+        .data =
+        \\fn imported_a() -> i32 {
+        \\    return 100;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "main.sla",
+        .data =
+        \\@import "dep.sla"
+        \\@import "sibling.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    return dep::imported_a() + sibling::imported_a();
+        \\}
+        ,
+    });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const main_source = try std.fs.cwd().readFileAlloc(allocator, "main.sla", 1024 * 1024);
+    const expanded_main = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_main, ".");
+    const prog = try parser.parseProgram();
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try registerImportedFunctionAliases(&tc, allocator, prog, "main.sla");
+
+    const dep_meta = tc.resolveFunctionAliasMetadata("dep__imported_a");
+    const sibling_meta = tc.resolveFunctionAliasMetadata("sibling__imported_a");
+    try std.testing.expect(dep_meta != null);
+    try std.testing.expect(sibling_meta != null);
+    try std.testing.expectEqualStrings("imported_a", tc.resolveFunctionAlias("dep__imported_a"));
+    try std.testing.expectEqualStrings("imported_a", tc.resolveFunctionAlias("sibling__imported_a"));
+    try std.testing.expectEqualStrings("dep", dep_meta.?.namespace.?);
+    try std.testing.expectEqualStrings("sibling", sibling_meta.?.namespace.?);
+    try std.testing.expect(dep_meta.?.module_path != null);
+    try std.testing.expect(sibling_meta.?.module_path != null);
+    try std.testing.expect(std.mem.endsWith(u8, dep_meta.?.module_path.?, "dep.sla"));
+    try std.testing.expect(std.mem.endsWith(u8, sibling_meta.?.module_path.?, "sibling.sla"));
+
+    const main_func = prog.program.decls[2].func_decl;
+    const return_expr = main_func.body[0].return_stmt.value.?;
+    const dep_call = return_expr.binary_expr.left;
+    const sibling_call = return_expr.binary_expr.right;
+    try tc.checkProgram(prog);
+    try std.testing.expectEqualStrings("imported_a", tc.resolved_call_symbols.get(dep_call).?);
+    try std.testing.expectEqualStrings("imported_a", tc.resolved_call_symbols.get(sibling_call).?);
+    const dep_call_meta = tc.resolved_call_alias_metadata.get(dep_call);
+    const sibling_call_meta = tc.resolved_call_alias_metadata.get(sibling_call);
+    try std.testing.expect(dep_call_meta != null);
+    try std.testing.expect(sibling_call_meta != null);
+    try std.testing.expectEqualStrings("dep", dep_call_meta.?.namespace.?);
+    try std.testing.expectEqualStrings("sibling", sibling_call_meta.?.namespace.?);
+    try std.testing.expect(std.mem.endsWith(u8, dep_call_meta.?.module_path.?, "dep.sla"));
+    try std.testing.expect(std.mem.endsWith(u8, sibling_call_meta.?.module_path.?, "sibling.sla"));
+}
+
+test "sla module namespace aliases isolate same named imported functions" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "dep.sla",
+        .data =
+        \\fn imported_a() -> i32 {
+        \\    return 7;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "sibling.sla",
+        .data =
+        \\fn imported_a() -> i32 {
+        \\    return 100;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "main.sla",
+        .data =
+        \\@import "dep.sla"
+        \\@import "sibling.sla"
+        \\
+        \\@test "namespace import collision"() {
+        \\    let got = dep::imported_a() + sibling::imported_a();
+        \\    if got != 107 { panic(24014); };
+        \\};
+        ,
+    });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var sa_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sa_stderr.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        allocator,
+        "main.sla",
+        "main.test.sa",
+        sa_stderr.writer().any(),
+        .{ .prune_for_test_codegen = true },
+    )) orelse {
+        std.debug.print("{s}", .{sa_stderr.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__imported_a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__sibling__imported_a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__dep__imported_a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__sibling__imported_a") != null);
+    try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
+
+    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sab_stderr.deinit();
+    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, false);
+    if (sab_compiled) |compiled| {
+        defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
+        const sab_bytes = try std.fs.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
+        var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+        defer module.deinit(std.testing.allocator);
+
+        var saw_dep_sig = false;
+        var saw_sibling_sig = false;
+        for (module.function_sigs) |fsig| {
+            if (std.mem.indexOf(u8, fsig.name, "dep__imported_a") != null) saw_dep_sig = true;
+            if (std.mem.indexOf(u8, fsig.name, "sibling__imported_a") != null) saw_sibling_sig = true;
+        }
+        try std.testing.expect(saw_dep_sig);
+        try std.testing.expect(saw_sibling_sig);
+
+        const disasm = try sci_bridge.disasmSabAlloc(allocator, sab_bytes);
+        try std.testing.expect(std.mem.indexOf(u8, disasm, "\"@sla__dep__imported_a\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, disasm, "\"@sla__sibling__imported_a\"") != null);
+    } else {
+        std.debug.print("{s}", .{sab_stderr.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
+}
+
+test "sla reachable collector records namespace alias call targets" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ret_ty = ast.Type{ .primitive = .i32 };
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.registerFunctionAliasWithMetadata("dep__imported_a", "imported_a", "dep", "/tmp/dep.sla");
+    try tc.registerFunctionAliasWithMetadata("sibling__imported_a", "imported_a", "sibling", "/tmp/sibling.sla");
+    try tc.registerImportedFunctionSignature("imported_a", &.{}, &ret_ty, false);
+
+    var dep_call = ast.Node{ .call_expr = .{
+        .func_name = "dep__imported_a",
+        .associated_target = null,
+        .generics = &.{},
+        .args = &.{},
+    } };
+    var sibling_call = ast.Node{ .call_expr = .{
+        .func_name = "sibling__imported_a",
+        .associated_target = null,
+        .generics = &.{},
+        .args = &.{},
+    } };
+    var left_stmt = ast.Node{ .expr_stmt = &dep_call };
+    var right_stmt = ast.Node{ .expr_stmt = &sibling_call };
+    var test_node = ast.Node{ .test_decl = .{
+        .name = "namespace alias reachability",
+        .is_ignored = false,
+        .should_panic = false,
+        .body = &.{ &left_stmt, &right_stmt },
+    } };
+    var program = ast.Node{ .program = .{ .decls = &.{&test_node} } };
+    try tc.checkProgram(&program);
+
+    var reachable = std.StringHashMap(void).init(allocator);
+    var worklist = std.ArrayList([]const u8).init(allocator);
+    try collectReachableExpr(&tc, &reachable, &worklist, &dep_call);
+    try collectReachableExpr(&tc, &reachable, &worklist, &sibling_call);
+
+    try std.testing.expect(reachable.contains("dep__imported_a"));
+    try std.testing.expect(reachable.contains("sibling__imported_a"));
+    try std.testing.expect(!reachable.contains("imported_a"));
+    try std.testing.expectEqual(@as(usize, 0), worklist.items.len);
 }
 
 test "sla module exports index records per-module function sources" {
@@ -5605,16 +6014,29 @@ test "sla module exports index records per-module function sources" {
     var callable_index = SlaCallableIndex.init(allocator);
     defer callable_index.deinit();
     try callable_index.addDeclsFromModule(dep.program.program.decls, dep);
+    try callable_index.addDeclsFromModule(sibling.program.program.decls, sibling);
 
     const dep_a_source = callable_index.moduleSource("imported_a");
     const dep_helper_source = callable_index.moduleSource("imported_helper");
     const dep_unreachable_source = callable_index.moduleSource("unreachable_import");
+    const dep_alias_source = callable_index.moduleSource("dep__imported_a");
+    const sibling_alias_source = callable_index.moduleSource("sibling__imported_a");
     try std.testing.expect(dep_a_source != null);
     try std.testing.expect(dep_helper_source != null);
     try std.testing.expect(dep_unreachable_source != null);
+    try std.testing.expect(dep_alias_source != null);
+    try std.testing.expect(sibling_alias_source != null);
     try std.testing.expect(std.mem.eql(u8, dep_a_source.?, dep.path));
     try std.testing.expect(std.mem.eql(u8, dep_helper_source.?, dep.path));
     try std.testing.expect(std.mem.eql(u8, dep_unreachable_source.?, dep.path));
+    try std.testing.expect(std.mem.eql(u8, dep_alias_source.?, dep.path));
+    try std.testing.expect(std.mem.eql(u8, sibling_alias_source.?, sibling.path));
+    const dep_alias_decl = callable_index.decls.get("dep__imported_a");
+    const sibling_alias_decl = callable_index.decls.get("sibling__imported_a");
+    try std.testing.expect(dep_alias_decl != null);
+    try std.testing.expect(sibling_alias_decl != null);
+    try std.testing.expect(std.mem.eql(u8, dep_alias_decl.?.body[0].return_stmt.value.?.call_expr.func_name, "imported_helper"));
+    try std.testing.expectEqual(@as(i64, 100), sibling_alias_decl.?.body[0].return_stmt.value.?.literal.int_val);
 
     // Inherent method `ImportedTag_tag_method` should also attribute its owning
     // module path through the associated-method registration path.
@@ -5660,9 +6082,18 @@ test "sla module table resolves imported function bodies by module and namespace
         ,
     });
     try tmp.dir.writeFile(.{
+        .sub_path = "sibling.sla",
+        .data =
+        \\fn imported_value() -> i32 {
+        \\    return 100;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
         .sub_path = "main.sla",
         .data =
         \\@import "dep.sla"
+        \\@import "sibling.sla"
         \\
         \\fn main() -> i32 {
         \\    return dep::imported_value();
@@ -5671,9 +6102,11 @@ test "sla module table resolves imported function bodies by module and namespace
     });
 
     const dep_source = try tmp.dir.readFileAlloc(allocator, "dep.sla", 1024 * 1024);
+    const sibling_source = try tmp.dir.readFileAlloc(allocator, "sibling.sla", 1024 * 1024);
     const main_source = try tmp.dir.readFileAlloc(allocator, "main.sla", 1024 * 1024);
     const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
     const dep_path = try tmp.dir.realpathAlloc(allocator, "dep.sla");
+    const sibling_path = try tmp.dir.realpathAlloc(allocator, "sibling.sla");
     const main_path = try tmp.dir.realpathAlloc(allocator, "main.sla");
     const main_dir = std.fs.path.dirname(main_path) orelse cwd;
 
@@ -5687,6 +6120,11 @@ test "sla module table resolves imported function bodies by module and namespace
         .path = dep_path,
         .output_path = "dep.sla",
         .source = dep_source,
+    });
+    const sibling_module = try modules.getOrParse(.{
+        .path = sibling_path,
+        .output_path = "sibling.sla",
+        .source = sibling_source,
     });
     _ = try modules.getOrParse(.{
         .path = main_path,
@@ -5718,6 +6156,27 @@ test "sla module table resolves imported function bodies by module and namespace
     const imported_symbol_body = try modules.functionBodyForImportedMangledName(main_path, "dep__imported_value");
     try std.testing.expect(imported_symbol_body != null);
     try std.testing.expect(std.mem.eql(u8, imported_symbol_body.?.name, "imported_value"));
+
+    var reachable = std.StringHashMap(void).init(allocator);
+    var referenced_types = std.StringHashMap(void).init(allocator);
+    var emitted = std.StringHashMap(void).init(allocator);
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    var out_decls = std.ArrayList(*ast.Node).init(allocator);
+    try reachable.put("sibling__imported_value", {});
+    try appendModuleDeclsSelective(allocator, &modules, sibling_module, &emitted, &primary_decls, &out_decls, &reachable, &referenced_types, .{});
+
+    var saw_sibling_body = false;
+    var saw_dep_body = false;
+    for (out_decls.items) |decl| {
+        if (decl.* != .func_decl) continue;
+        if (std.mem.eql(u8, decl.func_decl.name, "imported_value")) {
+            const ret = decl.func_decl.body[0].return_stmt.value.?;
+            if (ret.* == .literal and ret.literal == .int_val and ret.literal.int_val == 100) saw_sibling_body = true;
+            if (ret.* == .literal and ret.literal == .int_val and ret.literal.int_val == 41) saw_dep_body = true;
+        }
+    }
+    try std.testing.expect(saw_sibling_body);
+    try std.testing.expect(!saw_dep_body);
 
     try std.testing.expect(try modules.functionBodyForImportNamespace(main_path, "missing", "imported_value") == null);
     try std.testing.expect(try modules.functionBodyForImportedMangledName(main_path, "imported_value") == null);
@@ -5886,6 +6345,182 @@ test "sla module table selective flatten in non test compile path" {
     try std.testing.expect(saw_helper);
     // unused.sla is non-contributing: its broken function must NOT be flattened.
     try std.testing.expect(!saw_unused);
+}
+
+test "sla build codegen uses registry loaded imported bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\trait Label {
+        \\    fn label(self) -> i32;
+        \\    fn unused_trait(self) -> i32;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\fn imported_value() -> i32 {
+        \\    return 69;
+        \\}
+        \\
+        \\fn unused_bad() -> MissingType {
+        \\    return nope();
+        \\}
+        \\
+        \\impl ImportedThing {
+        \\    fn used(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\}
+        \\
+        \\impl Label for ImportedThing {
+        \\    fn label(self) -> i32 {
+        \\        return self.value + 1;
+        \\    }
+        \\
+        \\    fn unused_trait(self) -> i32 {
+        \\        return missing_trait_body();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    let item = ImportedThing { value: imported_value() };
+        \\    return item.used() + item.label();
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var sa_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sa_stderr.deinit();
+    const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", sa_stderr.writer().any())) orelse {
+        std.debug.print("{s}", .{sa_stderr.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__imported_value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing_used") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing__Label_label") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_bad") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_trait_body") == null);
+    try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
+
+    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sab_stderr.deinit();
+    const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr.writer().any())) orelse {
+        std.debug.print("{s}", .{sab_stderr.items});
+        return error.TestUnexpectedResult;
+    };
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_value = false;
+    var saw_used = false;
+    var saw_label = false;
+    var saw_unused_bad = false;
+    var saw_unused_trait = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.indexOf(u8, fsig.name, "imported_value") != null) saw_value = true;
+        if (std.mem.indexOf(u8, fsig.name, "ImportedThing_used") != null) saw_used = true;
+        if (std.mem.indexOf(u8, fsig.name, "ImportedThing__Label_label") != null) saw_label = true;
+        if (std.mem.indexOf(u8, fsig.name, "unused_bad") != null) saw_unused_bad = true;
+        if (std.mem.indexOf(u8, fsig.name, "unused_trait") != null) saw_unused_trait = true;
+    }
+    try std.testing.expect(saw_value);
+    try std.testing.expect(saw_used);
+    try std.testing.expect(saw_label);
+    try std.testing.expect(!saw_unused_bad);
+    try std.testing.expect(!saw_unused_trait);
+    try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
+}
+
+test "sla build codegen keeps imported dyn trait impl bodies from registry" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\trait Identified {
+        \\    fn get_id(&self) -> i32;
+        \\    fn unused_dyn(&self) -> i32;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    id: i32,
+        \\}
+        \\
+        \\impl Identified for ImportedThing {
+        \\    fn get_id(&self) -> i32 {
+        \\        return self.id;
+        \\    }
+        \\
+        \\    fn unused_dyn(&self) -> i32 {
+        \\        return missing_dyn_body();
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "sa_std/core/box.sa"
+        \\@import "sa_std/core/trait_object.sa"
+        \\@import "dep.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    let obj: Box<dyn Identified> = Box::new(ImportedThing { id: 74 });
+        \\    return obj.get_id();
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var sa_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sa_stderr.deinit();
+    const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", sa_stderr.writer().any())) orelse {
+        std.debug.print("{s}", .{sa_stderr.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing__Identified_get_id") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_dyn_body") == null);
+    try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
+
+    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sab_stderr.deinit();
+    const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr.writer().any())) orelse {
+        std.debug.print("{s}", .{sab_stderr.items});
+        return error.TestUnexpectedResult;
+    };
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_get_id = false;
+    var saw_unused_dyn = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.indexOf(u8, fsig.name, "ImportedThing__Identified_get_id") != null) saw_get_id = true;
+        if (std.mem.indexOf(u8, fsig.name, "unused_dyn") != null) saw_unused_dyn = true;
+    }
+    try std.testing.expect(saw_get_id);
+    try std.testing.expect(!saw_unused_dyn);
+    try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
 }
 
 test "sla module table loads reachable imported bodies from registry while stubbing others" {

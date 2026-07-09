@@ -111,6 +111,13 @@ pub const TypeChecker = struct {
         is_async: bool = false,
     };
 
+    pub const FunctionAliasMetadata = struct {
+        alias: []const u8,
+        target: []const u8,
+        namespace: ?[]const u8 = null,
+        module_path: ?[]const u8 = null,
+    };
+
     allocator: std.mem.Allocator,
     structs: std.StringHashMap(*ast.StructDecl),
     type_aliases: std.StringHashMap(*ast.TypeAliasDecl),
@@ -130,6 +137,7 @@ pub const TypeChecker = struct {
     // Tracks internal Sla functions for validation
     funcs: std.StringHashMap(*ast.FuncDecl),
     function_aliases: std.StringHashMap([]const u8),
+    function_alias_metadata: std.StringHashMap(FunctionAliasMetadata),
     imported_function_signatures: std.StringHashMap(FunctionSignature),
     // Tracks user-defined macros
     macros: std.StringHashMap(*ast.MacroDecl),
@@ -145,6 +153,7 @@ pub const TypeChecker = struct {
     fn_ptr_calls: std.AutoHashMap(*const ast.Node, void),
     array_to_slice_borrow_args: std.AutoHashMap(*const ast.Node, void),
     resolved_call_symbols: std.AutoHashMap(*const ast.Node, []const u8),
+    resolved_call_alias_metadata: std.AutoHashMap(*const ast.Node, FunctionAliasMetadata),
     current_loop_scope: ?*Scope,
     global_scope: ?*Scope,
     unsafe_depth: usize,
@@ -172,6 +181,7 @@ pub const TypeChecker = struct {
             .phi_cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .function_aliases = std.StringHashMap([]const u8).init(allocator),
+            .function_alias_metadata = std.StringHashMap(FunctionAliasMetadata).init(allocator),
             .imported_function_signatures = std.StringHashMap(FunctionSignature).init(allocator),
             .macros = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .imported_macros = std.StringHashMap(ImportedMacro).init(allocator),
@@ -185,6 +195,7 @@ pub const TypeChecker = struct {
             .fn_ptr_calls = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .array_to_slice_borrow_args = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .resolved_call_symbols = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
+            .resolved_call_alias_metadata = std.AutoHashMap(*const ast.Node, FunctionAliasMetadata).init(allocator),
             .current_loop_scope = null,
             .global_scope = null,
             .unsafe_depth = 0,
@@ -340,6 +351,7 @@ pub const TypeChecker = struct {
         self.extern_funcs.deinit();
         self.layout_defines.deinit();
         self.function_aliases.deinit();
+        self.function_alias_metadata.deinit();
         self.imported_function_signatures.deinit();
         self.funcs.deinit();
         self.macros.deinit();
@@ -357,6 +369,7 @@ pub const TypeChecker = struct {
         self.fn_ptr_calls.deinit();
         self.array_to_slice_borrow_args.deinit();
         self.resolved_call_symbols.deinit();
+        self.resolved_call_alias_metadata.deinit();
         for (self.scope_pool.items) |s| {
             s.deinit();
         }
@@ -461,11 +474,32 @@ pub const TypeChecker = struct {
     }
 
     pub fn registerFunctionAlias(self: *TypeChecker, alias: []const u8, target: []const u8) !void {
+        try self.registerFunctionAliasWithMetadata(alias, target, null, null);
+    }
+
+    pub fn registerFunctionAliasWithMetadata(self: *TypeChecker, alias: []const u8, target: []const u8, namespace: ?[]const u8, module_path: ?[]const u8) !void {
         try self.function_aliases.put(alias, target);
+        try self.function_alias_metadata.put(alias, .{
+            .alias = alias,
+            .target = target,
+            .namespace = namespace,
+            .module_path = module_path,
+        });
     }
 
     pub fn resolveFunctionAlias(self: *TypeChecker, name: []const u8) []const u8 {
         return self.function_aliases.get(name) orelse name;
+    }
+
+    pub fn resolveFunctionAliasMetadata(self: *TypeChecker, name: []const u8) ?FunctionAliasMetadata {
+        return self.function_alias_metadata.get(name);
+    }
+
+    fn recordResolvedCallSymbol(self: *TypeChecker, expr: *const ast.Node, call_name: []const u8, resolved_name: []const u8) TypeError!void {
+        try self.resolved_call_symbols.put(expr, resolved_name);
+        if (self.resolveFunctionAliasMetadata(call_name)) |metadata| {
+            try self.resolved_call_alias_metadata.put(expr, metadata);
+        }
     }
 
     pub fn registerImportedFunctionSignature(self: *TypeChecker, name: []const u8, params: []const ast.Param, ret_ty: *ast.Type, is_async: bool) !void {
@@ -4206,7 +4240,7 @@ pub const TypeChecker = struct {
                 if (self.funcs.get(resolved_func_name)) |func| {
                     try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, false);
                     if (!std.mem.eql(u8, resolved_func_name, call.func_name)) {
-                        self.resolved_call_symbols.put(expr, resolved_func_name) catch return TypeError.OutOfMemory;
+                        try self.recordResolvedCallSymbol(expr, call.func_name, resolved_func_name);
                     }
                     if (func.is_async) {
                         return try self.makeFutureType(func.ret_ty);
@@ -4217,7 +4251,7 @@ pub const TypeChecker = struct {
                 if (self.imported_function_signatures.get(resolved_func_name)) |signature| {
                     try self.checkCallArgsAgainstSignature(signature.params, call.args, scope, call.func_name, false);
                     if (!std.mem.eql(u8, resolved_func_name, call.func_name)) {
-                        self.resolved_call_symbols.put(expr, resolved_func_name) catch return TypeError.OutOfMemory;
+                        try self.recordResolvedCallSymbol(expr, call.func_name, resolved_func_name);
                     }
                     if (signature.is_async) return try self.makeFutureType(signature.ret_ty);
                     return signature.ret_ty;
@@ -5712,9 +5746,19 @@ test "type checker resolves registered function alias" {
     var tc = TypeChecker.init(std.testing.allocator);
     defer tc.deinit();
 
-    try tc.registerFunctionAlias("dep__imported_a", "imported_a");
+    try tc.registerFunctionAliasWithMetadata("dep__imported_a", "imported_a", "dep", "/tmp/dep.sla");
     try std.testing.expectEqualStrings("imported_a", tc.resolveFunctionAlias("dep__imported_a"));
     try std.testing.expectEqualStrings("plain_name", tc.resolveFunctionAlias("plain_name"));
+
+    const metadata = tc.resolveFunctionAliasMetadata("dep__imported_a");
+    try std.testing.expect(metadata != null);
+    try std.testing.expectEqualStrings("dep__imported_a", metadata.?.alias);
+    try std.testing.expectEqualStrings("imported_a", metadata.?.target);
+    try std.testing.expect(metadata.?.namespace != null);
+    try std.testing.expect(metadata.?.module_path != null);
+    try std.testing.expectEqualStrings("dep", metadata.?.namespace.?);
+    try std.testing.expectEqualStrings("/tmp/dep.sla", metadata.?.module_path.?);
+    try std.testing.expect(tc.resolveFunctionAliasMetadata("plain_name") == null);
 }
 
 test "type checker resolves imported function signature without function body" {
@@ -5725,7 +5769,7 @@ test "type checker resolves imported function signature without function body" {
     defer tc.deinit();
 
     var ret_ty = ast.Type{ .primitive = .i32 };
-    try tc.registerFunctionAlias("dep__imported_a", "imported_a");
+    try tc.registerFunctionAliasWithMetadata("dep__imported_a", "imported_a", "dep", "/tmp/dep.sla");
     try tc.registerImportedFunctionSignature("imported_a", &.{}, &ret_ty, false);
 
     var call_node = ast.Node{ .call_expr = .{
@@ -5749,4 +5793,10 @@ test "type checker resolves imported function signature without function body" {
     try std.testing.expectEqual(ast.Primitive.i32, call_ty.primitive);
     try std.testing.expect(tc.funcs.get("imported_a") == null);
     try std.testing.expectEqualStrings("imported_a", tc.resolved_call_symbols.get(&call_node).?);
+    const call_metadata = tc.resolved_call_alias_metadata.get(&call_node);
+    try std.testing.expect(call_metadata != null);
+    try std.testing.expectEqualStrings("dep__imported_a", call_metadata.?.alias);
+    try std.testing.expectEqualStrings("imported_a", call_metadata.?.target);
+    try std.testing.expectEqualStrings("dep", call_metadata.?.namespace.?);
+    try std.testing.expectEqualStrings("/tmp/dep.sla", call_metadata.?.module_path.?);
 }

@@ -6625,7 +6625,8 @@ pub const Codegen = struct {
 
         const call_plan = lowering_rules.planStaticCall(self.tc, expr, call) orelse return Error.UnsupportedSabDirectFeature;
 
-        const lowered = try self.loweredFuncSymbol(call_plan.target_symbol);
+        const emit_symbol = lowering_rules.staticCallEmitSymbol(call_plan);
+        const lowered = try self.loweredFuncSymbol(emit_symbol);
         var text = std.ArrayList(u8).init(self.allocator);
         var release_regs = std.ArrayList(u32).init(self.allocator);
         defer release_regs.deinit();
@@ -9462,7 +9463,8 @@ pub const Codegen = struct {
         call_plan: lowering_rules.StaticCallPlan,
         call: ast.CallExpr,
     ) anyerror!u32 {
-        const lowered = try self.loweredFuncSymbol(call_plan.target_symbol);
+        const emit_symbol = lowering_rules.staticCallEmitSymbol(call_plan);
+        const lowered = try self.loweredFuncSymbol(emit_symbol);
         var text = std.ArrayList(u8).init(self.allocator);
         var release_regs = std.ArrayList(u32).init(self.allocator);
         defer release_regs.deinit();

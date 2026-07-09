@@ -18,6 +18,7 @@ pub fn structHasDerive(decl: *const ast.StructDecl, name: []const u8) bool {
 pub const StaticCallPlan = struct {
     target_symbol: []const u8,
     arg_count: usize,
+    alias_metadata: ?type_checker.TypeChecker.FunctionAliasMetadata = null,
 
     pub fn argPrefix(_: StaticCallPlan, arg: *const ast.Node) ?u8 {
         return callArgPrefix(arg);
@@ -2728,7 +2729,11 @@ pub fn dynMethodSlot(tc: *type_checker.TypeChecker, trait_name: []const u8, meth
 
 pub fn planResolvedStaticCall(tc: *type_checker.TypeChecker, expr: *const ast.Node, call: ast.CallExpr) ?StaticCallPlan {
     const symbol = tc.resolved_call_symbols.get(expr) orelse return null;
-    return .{ .target_symbol = symbol, .arg_count = call.args.len };
+    return .{
+        .target_symbol = symbol,
+        .arg_count = call.args.len,
+        .alias_metadata = tc.resolved_call_alias_metadata.get(expr),
+    };
 }
 
 pub fn planStaticCall(tc: *type_checker.TypeChecker, expr: *const ast.Node, call: ast.CallExpr) ?StaticCallPlan {
@@ -2737,9 +2742,14 @@ pub fn planStaticCall(tc: *type_checker.TypeChecker, expr: *const ast.Node, call
     return null;
 }
 
+pub fn staticCallEmitSymbol(plan: StaticCallPlan) []const u8 {
+    if (plan.alias_metadata) |metadata| return metadata.alias;
+    return plan.target_symbol;
+}
+
 pub fn resolveStaticCallSymbol(tc: *type_checker.TypeChecker, expr: *const ast.Node, call: ast.CallExpr) ?[]const u8 {
     const plan = planStaticCall(tc, expr, call) orelse return null;
-    return plan.target_symbol;
+    return staticCallEmitSymbol(plan);
 }
 
 pub fn planAddressOf(expr: *const ast.Node, input: AddressOfInput) AddressOfPlan {
@@ -4566,4 +4576,34 @@ test "shared dyn coercion and receiver plans" {
     const box_coercion = planDynCoercion(&tc, &box_expr) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(DynCoercionKind.box_to_dyn, box_coercion.kind);
     try std.testing.expectEqualSlices(u8, "Draw", box_coercion.trait_name);
+}
+
+test "shared static call plan preserves namespace alias metadata" {
+    var tc = type_checker.TypeChecker.init(std.testing.allocator);
+    defer tc.deinit();
+
+    var call_node = ast.Node{ .call_expr = .{
+        .func_name = "dep__imported_a",
+        .associated_target = null,
+        .generics = &.{},
+        .args = &.{},
+    } };
+    try tc.resolved_call_symbols.put(&call_node, "imported_a");
+    try tc.resolved_call_alias_metadata.put(&call_node, .{
+        .alias = "dep__imported_a",
+        .target = "imported_a",
+        .namespace = "dep",
+        .module_path = "/tmp/dep.sla",
+    });
+
+    const plan = planResolvedStaticCall(&tc, &call_node, call_node.call_expr) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("imported_a", plan.target_symbol);
+    try std.testing.expectEqual(@as(usize, 0), plan.arg_count);
+    try std.testing.expect(plan.alias_metadata != null);
+    try std.testing.expectEqualStrings("dep__imported_a", plan.alias_metadata.?.alias);
+    try std.testing.expectEqualStrings("imported_a", plan.alias_metadata.?.target);
+    try std.testing.expectEqualStrings("dep", plan.alias_metadata.?.namespace.?);
+    try std.testing.expectEqualStrings("/tmp/dep.sla", plan.alias_metadata.?.module_path.?);
+    try std.testing.expectEqualStrings("dep__imported_a", staticCallEmitSymbol(plan));
+    try std.testing.expectEqualStrings("dep__imported_a", resolveStaticCallSymbol(&tc, &call_node, call_node.call_expr).?);
 }

@@ -292,6 +292,14 @@ pub const Codegen = struct {
     current_reg_ids: std.ArrayList(u32),
     current_reg_seen: std.AutoHashMap(u32, void),
     released_regs: std.AutoHashMap(u32, void),
+    // Register ids that have already had a `stack_alloc` emitted in the current
+    // function body. Sibling-scope `let`s of the same name intern to one
+    // function-global register id (register identity here is name-keyed), so a
+    // scalar-reassign-slot binding in two sibling `if`/loop scopes would emit
+    // `stack_alloc <id>` twice for the same id, tripping the SAB verifier's
+    // RegisterRedefinition. The two bindings never coexist and share type/size,
+    // so the slot is allocated once and reused (store-only) on later bindings.
+    stack_alloc_emitted: std.AutoHashMap(u32, void),
     tmp_idx: usize = 0,
     label_idx: usize = 0,
     string_idx: usize = 0,
@@ -358,6 +366,7 @@ pub const Codegen = struct {
             .current_reg_ids = std.ArrayList(u32).init(allocator),
             .current_reg_seen = std.AutoHashMap(u32, void).init(allocator),
             .released_regs = std.AutoHashMap(u32, void).init(allocator),
+            .stack_alloc_emitted = std.AutoHashMap(u32, void).init(allocator),
             .current_expr_later_nodes = std.ArrayList(*const ast.Node).init(allocator),
         };
     }
@@ -433,6 +442,7 @@ pub const Codegen = struct {
         self.current_reg_ids.deinit();
         self.current_reg_seen.deinit();
         self.released_regs.deinit();
+        self.stack_alloc_emitted.deinit();
         self.current_expr_later_nodes.deinit();
     }
 
@@ -2091,6 +2101,7 @@ pub const Codegen = struct {
         self.current_reg_ids.clearRetainingCapacity();
         self.current_reg_seen.clearRetainingCapacity();
         self.released_regs.clearRetainingCapacity();
+        self.stack_alloc_emitted.clearRetainingCapacity();
         self.loop_continue_labels.clearRetainingCapacity();
         self.loop_break_labels.clearRetainingCapacity();
         self.closure_bindings.clearRetainingCapacity();
@@ -3145,6 +3156,15 @@ pub const Codegen = struct {
 
     fn emitStackAlloc(self: *Codegen, dst: u32, size: usize) !void {
         try self.recordReg(dst);
+        // Register identity in this backend is name-keyed and function-global, so
+        // two sibling-scope `let` bindings of the same name (e.g. `let str_end`
+        // in two separate `if` blocks) resolve to one register id. Stack-slot
+        // locals are never killed by scope-exit release, so emitting `stack_alloc`
+        // for the same id twice trips the SAB verifier's RegisterRedefinition.
+        // The bindings never coexist and share type/size, so re-emit is a no-op:
+        // reuse the already-allocated slot and let the caller's store overwrite it.
+        if (self.stack_alloc_emitted.contains(dst)) return;
+        try self.stack_alloc_emitted.put(dst, {});
         var item = self.makeInst(.stack_alloc);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .imm_u64 = @intCast(size) };

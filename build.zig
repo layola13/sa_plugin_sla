@@ -69,6 +69,22 @@ pub fn build(b: *std.Build) void {
     const run_main_tests = b.addRunArtifact(main_tests);
     const test_step = b.step("test", "Run library unit tests");
     test_step.dependOn(&run_main_tests.step);
+
+    // Batched test binary: compiled once with a custom simple-mode runner that
+    // executes only the slice [SLA_TEST_START, SLA_TEST_START+SLA_TEST_COUNT).
+    // A driver script invokes the installed binary repeatedly in fresh
+    // processes so runtime memory is released between small batches on
+    // memory-constrained hosts. See tools/run_tests_batched.sh.
+    const batch_tests = b.addTest(.{
+        .root_module = root_module,
+        .test_runner = .{ .path = b.path("src/batch_test_runner.zig"), .mode = .simple },
+    });
+    batch_tests.root_module.addImport("sci_bridge", sci_bridge);
+    const install_batch_tests = b.addInstallArtifact(batch_tests, .{
+        .dest_dir = .{ .override = .{ .custom = "test" } },
+    });
+    const batch_build_step = b.step("test-batch-build", "Build the batched test binary (run via tools/run_tests_batched.sh)");
+    batch_build_step.dependOn(&install_batch_tests.step);
 }
 
 fn effectiveOptimizeForDevInstall(b: *std.Build, requested: std.builtin.OptimizeMode) std.builtin.OptimizeMode {

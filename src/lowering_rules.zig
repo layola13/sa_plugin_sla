@@ -2930,14 +2930,17 @@ pub fn planValueCallArgConsumption(
     arg_ty: ?*const ast.Type,
     value_is_copy: bool,
     has_explicit_prefix: bool,
+    source_is_param: bool,
+    source_is_std_owner: bool,
     result_escapes_caller: bool,
 ) ValueCallArgConsumptionPlan {
-    if (!result_escapes_caller) return .{ .consumes_source = false };
     if (has_explicit_prefix) return .{ .consumes_source = false };
     const target_param = param orelse return .{ .consumes_source = false };
     if (target_param.is_borrow or target_param.is_move) return .{ .consumes_source = false };
     if (arg.* != .identifier) return .{ .consumes_source = false };
     const ty = arg_ty orelse return .{ .consumes_source = false };
+    if (source_is_param and !result_escapes_caller) return .{ .consumes_source = false };
+    if (!source_is_param and !source_is_std_owner and !result_escapes_caller) return .{ .consumes_source = false };
     return .{ .consumes_source = !value_is_copy and !isBorrowLikeType(ty) };
 }
 
@@ -3317,12 +3320,15 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(assignmentMovesIdentifier(&target, &field, &boxed_ty, false) == null);
 
     const boxed_param = ast.Param{ .name = "value", .ty = &boxed_ty };
-    try std.testing.expect(planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, true).consumes_source);
-    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, false).consumes_source);
-    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, true, false, true).consumes_source);
-    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &borrow_boxed_ty, false, false, true).consumes_source);
-    try std.testing.expect(!planValueCallArgConsumption(&field, boxed_param, &boxed_ty, false, false, true).consumes_source);
-    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, true, true).consumes_source);
+    try std.testing.expect(planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, false, false, true).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, false, false, false).consumes_source);
+    try std.testing.expect(planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, false, true, false).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, true, true, false).consumes_source);
+    try std.testing.expect(planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, true, true, true).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, true, false, false, true, true).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &borrow_boxed_ty, false, false, false, true, true).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&field, boxed_param, &boxed_ty, false, false, false, true, true).consumes_source);
+    try std.testing.expect(!planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, true, false, true, true).consumes_source);
 
     var i64_ty = ast.Type{ .primitive = .i64 };
     var borrow_i64_ty = ast.Type{ .borrow = &i64_ty };

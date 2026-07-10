@@ -2,7 +2,7 @@
 
 日期：2026-07-06
 
-状态：已修复并本地复验。下游 `sla_ecs` 已用 generated-SA 后端验证业务实现正确；默认/SAB 后端曾在函数指针进入 `thread::spawn(^|| ...)` 的路径上产生错误结果。2026-07-07 已在编译器侧修复 direct-SAB bool fnptr 返回 ABI 与 thread closure capture/lifetime 路径，并用本地 direct-SAB no-fallback 复验。
+状态：已修复并完成本地与官方 dev host 复验。下游 `sla_ecs` 已用 generated-SA 后端验证业务实现正确；默认/SAB 后端曾在函数指针进入 `thread::spawn(^|| ...)` 的路径上产生错误结果。2026-07-07 已在编译器侧修复 direct-SAB bool fnptr 返回 ABI 与 thread closure capture/lifetime 路径；2026-07-09 继续修复 `Vec<i32>` direct-SAB 索引槽位宽度问题，并恢复官方 dev host 证据。历史失败记录保留如下，当前不再作为开放项。
 
 ## 摘要
 
@@ -170,3 +170,107 @@ cd /home/vscode/projects/sla_ecs
 /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli sla test \
   lib/parallel_iterator.sla --filter "parallel iterator all any position" --test-backend sab --jobs 1 --trace-panic
 ```
+
+## 2026-07-09 复查与最终补丁
+
+状态：已修复并通过本地、官方 dev host、下游 focused 回归。`tests/test_unit_fn_ptr_thread_loop_partition_direct.sla` 当前 SA 与 strict SAB 都是 11/11；旧的 `/home/vscode/projects/sla_ecs/lib/parallel.sla` strict-SAB panic 15110 当前不可复现，复测为 1/1 通过。
+
+补充根因：
+
+- 上一轮 bool fnptr/thread capture 修复后，本地 loop partition fixture 仍有 6 个 strict-SAB panic。
+- 反汇编显示 threaded worker 读 `Vec<i32>` 时使用了 4 字节 stride；但当前 `Vec<T>` ABI 在该路径中按 8 字节 storage slot 存储元素。
+- `src/sab_codegen.zig` 的 generic std-surface Vec index 路径原来通过 `elementSlotSize()` 返回 `typeSize(i32)=4`，导致 `Vec<i32>` 下标读取错槽，进而让 bool fnptr/thread partition/fold/predicate 路径得到错误值。
+
+修复：
+
+- `elementSlotSize()` 在类型为 `Vec<T>` 时改用 `lowering_rules.vecElementSlotSize(elem_ty)`。
+- `sla sab backend lowers typed vec index directly` 回归断言改为：读取类型仍是 `i32`，但 Vec storage stride 必须是 8 字节，不能退回 raw `i32` 宽度 4 字节。
+
+验证：
+
+```sh
+timeout 120s zig fmt --check src/sab_codegen.zig src/plugin.zig
+timeout 180s zig build --summary all
+timeout 300s zig build test --summary all
+
+timeout 120s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_fn_ptr_thread_loop_partition_direct.sla --test-backend sab --jobs 1 --trace-panic
+timeout 120s ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_fn_ptr_thread_loop_partition_direct.sla --test-backend sa --jobs 1 --trace-panic
+
+timeout 180s env SA_PLUGIN_DEV=1 sa plugin install --dev .
+timeout 60s env SA_PLUGIN_DEV=1 sa sla help
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  tests/test_unit_fn_ptr_thread_loop_partition_direct.sla --test-backend sab --jobs 1 --trace-panic
+
+cd /home/vscode/projects/sla_ecs
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  lib/parallel_iterator.sla --filter "parallel iterator partition" --test-backend sab --jobs 1 --trace-panic
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  lib/parallel_iterator.sla --filter "parallel iterator fold" --test-backend sab --jobs 1 --trace-panic
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  lib/parallel_iterator.sla --filter "parallel iterator all any position" --test-backend sab --jobs 1 --trace-panic
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  lib/parallel.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+结果摘要：
+
+- local `test_unit_fn_ptr_thread_loop_partition_direct.sla`: SA 11/11，strict SAB 11/11。
+- installed host 同 fixture: strict SAB 11/11。
+- local strict-SAB 回归：`test_unit_fn_ptr_thread_pair_direct.sla` 1/1、`test_unit_fn_ptr_value.sla` 11/11、`test_unit_vec_index_direct.sla` 1/1、`test_unit_vec_remove_direct.sla` 1/1、`test_unit_vec_len_direct.sla` 1/1、`test_unit_vec_index_assign.sla` 4/4。
+- downstream `parallel_iterator.sla` focused filters `partition`、`fold`、`all any position` 均通过 strict SAB。
+- downstream `parallel.sla` strict SAB 1/1，通过；旧 panic 15110 不再作为当前开放项。
+
+## 2026-07-09 追加：whole-file `parallel_iterator.sla` strict SAB 合流修复
+
+状态：已修复并通过本地与官方 dev host whole-file 复验。前一节 focused fnptr/thread filters 修复后，whole-file `parallel_iterator.sla` 又暴露出独立的 direct-SAB planned static call 合流问题；当前也已关闭。
+
+根因：
+
+- `ecs_parallel_i32_iter_stats` 中同一个局部 `chunk: Vec<i32>` 在 `if use_threads` 分支被 `thread::spawn(^|| ...)` closure capture 消费。
+- `else` 分支直接调用 `ecs_parallel_i32_iter_batch_stats(chunk)`，旧 planned static call arg lowering 没有为本地 `Vec` owner 发出匹配的 `move_ chunk`。
+- SAB verifier 在 merge 点看到一条路径 Consumed、一条路径 Active，报 `PhiStateConflict`。
+- 宽泛地把所有 by-value 非 Copy 标识符都消费会误伤 `values` 参数循环读源和可复用的 `EcsParallelTaskPool` 配置 struct，因此最终规则必须区分 source 是否为参数、是否为标准 owner。
+
+修复：
+
+- `src/lowering_rules.zig` 的 planned value call-arg consumption 增加 `source_is_param` 与 `source_is_std_owner` 输入。
+- 标准 owner local（例如 `Vec<T>`）在 by-value planned static call 后消费，和 closure capture 分支一致。
+- 函数参数只在旧的 result-forwarding / escaping 路径消费，避免循环内 `values` 被第一次 chunk call 后误 move。
+- 普通 scalar/config struct 不因 planned call 被误当 owner move，避免同一测试复用 `pool` 时 UseAfterMove。
+- `src/sab_codegen.zig` 传入这些 source facts。
+- 新增回归：`tests/test_unit_thread_closure_direct_call_merge_direct.sla`。
+
+追加验证：
+
+```sh
+timeout 120s zig fmt --check src/lowering_rules.zig src/sab_codegen.zig src/plugin.zig src/monomorphizer.zig
+timeout 180s zig build test -Dtest-filter="shared lowering rules" --summary all
+timeout 180s zig build --summary all
+timeout 300s zig build test --summary all
+
+timeout 180s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_thread_closure_direct_call_merge_direct.sla --test-backend sab --jobs 1 --trace-panic
+
+timeout 180s env SA_PLUGIN_DEV=1 sa plugin install --dev .
+timeout 60s env SA_PLUGIN_DEV=1 sa sla help
+timeout 180s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  tests/test_unit_thread_closure_direct_call_merge_direct.sla --test-backend sab --jobs 1 --trace-panic
+
+cd /home/vscode/projects/sla_ecs
+timeout 240s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  lib/parallel_iterator.sla --test-backend sab --jobs 1 --trace-panic
+timeout 180s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test \
+  lib/parallel.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+结果摘要：
+
+- focused shared-rule Zig tests：5/5。
+- `zig build --summary all`：7/7。
+- `zig build test --summary all`：130/130。
+- 新 compiler fixture local/installed strict SAB：1/1。
+- downstream `lib/parallel_iterator.sla` whole-file strict SAB local/installed：10/10。
+- downstream `lib/parallel.sla` strict SAB local/installed：1/1。
+- `lib/parallel_iterator.sla` whole-file `sa sla check` 当前也通过；历史 TypeChecker/Iterable failure 不再作为当前开放项。

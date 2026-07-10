@@ -425,6 +425,31 @@ fn importPathFromLine(raw_line: []const u8) ?[]const u8 {
     return null;
 }
 
+fn expandedSourceMayContainImports(expanded_source: []const u8) bool {
+    return std.mem.indexOf(u8, expanded_source, "@import") != null;
+}
+
+fn scanExpandedSourceImports(
+    tc: *type_checker_mod.TypeChecker,
+    allocator: std.mem.Allocator,
+    expanded_source: []const u8,
+    import_dir: []const u8,
+    exclude_path: ?[]const u8,
+    visited: *std.StringHashMap(void),
+) anyerror!void {
+    if (!expandedSourceMayContainImports(expanded_source)) return;
+    var lines = std.mem.splitScalar(u8, expanded_source, '\n');
+    while (lines.next()) |line| {
+        if (importPathFromLine(line)) |child_import| {
+            try loadImportContractsRecursive(tc, allocator, import_dir, child_import, exclude_path, visited);
+        }
+    }
+}
+
+fn expandedSourceMayContainImportedMacros(expanded_source: []const u8) bool {
+    return std.mem.indexOf(u8, expanded_source, "[MACRO]") != null;
+}
+
 fn macroParamName(raw: []const u8) []const u8 {
     var param = std.mem.trim(u8, raw, " \t\r,");
     if (param.len > 0 and param[0] == '%') param = param[1..];
@@ -538,8 +563,13 @@ fn appendExpandedImportedMacroDirectCallees(
     for (expanded.direct_callees) |callee| try appendUniqueDirectCallee(callees, callee);
 }
 
-fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, source: []const u8, import_path: ?[]const u8) !void {
-    const expanded_source = try source_expand.expand(allocator, source);
+fn loadImportedMacrosFromExpandedSource(
+    tc: *type_checker_mod.TypeChecker,
+    allocator: std.mem.Allocator,
+    expanded_source: []const u8,
+    import_path: ?[]const u8,
+) !void {
+    if (!expandedSourceMayContainImportedMacros(expanded_source)) return;
     var lines = std.mem.splitScalar(u8, expanded_source, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -583,6 +613,11 @@ fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allo
         const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
         try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, try direct_callees.toOwnedSlice());
     }
+}
+
+fn loadImportedMacros(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, source: []const u8, import_path: ?[]const u8) !void {
+    const expanded_source = try source_expand.expand(allocator, source);
+    try loadImportedMacrosFromExpandedSource(tc, allocator, expanded_source, import_path);
 }
 
 const SlaModuleExports = struct {
@@ -796,10 +831,12 @@ const SlaModule = struct {
     path: []const u8,
     output_path: []const u8,
     base_dir: []const u8,
+    source: []const u8,
     program: *ast.Node,
     exports: SlaModuleExports,
     resolved_imports: []const ResolvedImport,
     resolved_module_imports: []const ResolvedModuleImport,
+    has_function_bodies: bool,
 };
 
 const SlaImportExpansionOptions = struct {
@@ -809,14 +846,27 @@ const SlaImportExpansionOptions = struct {
     load_reachable_imported_bodies_from_registry: bool = false,
 };
 
+const SlaResolvedImportGroup = struct {
+    decl: *const ast.Node,
+    imports: []const ResolvedImport,
+};
+
 const SlaModuleTable = struct {
     allocator: std.mem.Allocator,
     modules: std.StringHashMap(*SlaModule),
+    parse_options: parser_mod.Parser.Options,
 
     fn init(allocator: std.mem.Allocator) SlaModuleTable {
+        return initWithParserOptions(allocator, .{
+            .parse_test_bodies = false,
+        });
+    }
+
+    fn initWithParserOptions(allocator: std.mem.Allocator, parse_options: parser_mod.Parser.Options) SlaModuleTable {
         return .{
             .allocator = allocator,
             .modules = std.StringHashMap(*SlaModule).init(allocator),
+            .parse_options = parse_options,
         };
     }
 
@@ -862,7 +912,7 @@ const SlaModuleTable = struct {
 
         const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
         const expanded_source = try source_expand.expand(self.allocator, resolved.source);
-        var parser = parser_mod.Parser.initWithDir(self.allocator, expanded_source, base_dir);
+        var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, base_dir, self.parse_options);
         const parsed = try parser.parseProgram();
         if (parsed.* != .program) return error.InvalidProgram;
 
@@ -876,13 +926,46 @@ const SlaModuleTable = struct {
             .path = resolved.path,
             .output_path = resolved.output_path,
             .base_dir = base_dir,
+            .source = resolved.source,
             .program = parsed,
             .exports = exports,
             .resolved_imports = resolved_imports,
             .resolved_module_imports = resolved_module_imports,
+            .has_function_bodies = self.parse_options.parse_function_bodies,
         };
         try self.modules.put(module.path, module);
         return module;
+    }
+
+    fn reparseModuleWithFunctionBodies(self: *SlaModuleTable, module: *SlaModule) !void {
+        if (module.has_function_bodies) return;
+
+        const expanded_source = try source_expand.expand(self.allocator, module.source);
+        var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, module.base_dir, .{
+            .parse_function_bodies = true,
+            .parse_macro_bodies = self.parse_options.parse_macro_bodies,
+            .parse_test_bodies = self.parse_options.parse_test_bodies,
+        });
+        const parsed = try parser.parseProgram();
+        if (parsed.* != .program) return error.InvalidProgram;
+
+        var exports = SlaModuleExports.init(self.allocator, module.path);
+        try exports.buildFromDecls(parsed.program.decls);
+        const resolved_imports = try self.resolveModuleImports(module.path, module.base_dir, parsed.program.decls);
+        const resolved_module_imports = try self.buildModuleImportNamespaces(resolved_imports);
+
+        for (module.resolved_module_imports) |resolved_import| {
+            self.allocator.free(resolved_import.namespace);
+        }
+        self.allocator.free(module.resolved_module_imports);
+        self.allocator.free(module.resolved_imports);
+        module.exports.deinit();
+
+        module.program = parsed;
+        module.exports = exports;
+        module.resolved_imports = resolved_imports;
+        module.resolved_module_imports = resolved_module_imports;
+        module.has_function_bodies = true;
     }
 
     fn moduleImportByNamespace(self: *const SlaModuleTable, module_path: []const u8, namespace: []const u8) ?ResolvedModuleImport {
@@ -1013,11 +1096,117 @@ fn appendResolvedNonSlaImportDecl(
     resolved: ResolvedImport,
     primary_decls: *std.AutoHashMap(*const ast.Node, void),
     out_decls: *std.ArrayList(*ast.Node),
+    contract_imports: ?*std.ArrayList(ResolvedImport),
 ) !void {
     const import_decl = try allocator.create(ast.Node);
     import_decl.* = .{ .import_decl = .{ .path = resolved.output_path } };
     try out_decls.append(import_decl);
     try primary_decls.put(import_decl, {});
+    if (contract_imports) |imports| {
+        if (resolvedImportNeedsContractLoading(resolved)) try imports.append(resolved);
+    }
+}
+
+fn resolvedImportNeedsContractLoading(resolved: ResolvedImport) bool {
+    if (std.mem.endsWith(u8, resolved.path, ".sai")) return true;
+    if (std.mem.endsWith(u8, resolved.path, ".sal")) return true;
+    if (!std.mem.endsWith(u8, resolved.path, ".sa")) return false;
+    return std.mem.indexOf(u8, resolved.source, "[MACRO]") != null or
+        std.mem.indexOf(u8, resolved.source, "@import") != null or
+        std.mem.indexOf(u8, resolved.source, "@expand_tuple") != null;
+}
+
+fn appendUniqueResolvedContractImport(
+    imports: *std.ArrayList(ResolvedImport),
+    seen_paths: *std.StringHashMap(void),
+    resolved: ResolvedImport,
+) !bool {
+    if (std.mem.endsWith(u8, resolved.path, ".sla")) return false;
+    if (!resolvedImportNeedsContractLoading(resolved)) return false;
+    if (seen_paths.contains(resolved.path)) return false;
+    try seen_paths.put(resolved.path, {});
+    try imports.append(resolved);
+    return true;
+}
+
+fn firstMacroNameFromLine(line: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    if (!std.mem.startsWith(u8, trimmed, "[MACRO]")) return null;
+    var parts = std.mem.tokenizeAny(u8, trimmed["[MACRO]".len..], " \t");
+    const raw_name = parts.next() orelse return null;
+    return std.mem.trim(u8, raw_name, " \t\r,");
+}
+
+fn firstExternNameFromLine(line: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    if (!std.mem.startsWith(u8, trimmed, "@extern")) return null;
+    var rest = std.mem.trim(u8, trimmed["@extern".len..], " \t\r");
+    var end: usize = 0;
+    while (end < rest.len) : (end += 1) {
+        const c = rest[end];
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == ':')) break;
+    }
+    return if (end > 0) rest[0..end] else null;
+}
+
+fn resolvedImportDeclaresReferencedSurface(resolved: ResolvedImport, referenced_symbols: *const std.StringHashMap(void)) bool {
+    if (!resolvedImportNeedsContractLoading(resolved)) return false;
+    var lines = std.mem.splitScalar(u8, resolved.source, '\n');
+    while (lines.next()) |line| {
+        if (firstMacroNameFromLine(line)) |name| {
+            if (referenced_symbols.contains(name)) return true;
+        }
+        if (firstExternNameFromLine(line)) |name| {
+            if (referenced_symbols.contains(name)) return true;
+        }
+    }
+    return false;
+}
+
+fn appendUniqueReferencedSurfaceImport(
+    imports: *std.ArrayList(ResolvedImport),
+    seen_paths: *std.StringHashMap(void),
+    resolved: ResolvedImport,
+    referenced_symbols: *const std.StringHashMap(void),
+) !bool {
+    if (!resolvedImportDeclaresReferencedSurface(resolved, referenced_symbols)) return false;
+    return try appendUniqueResolvedContractImport(imports, seen_paths, resolved);
+}
+
+fn appendRootResolvedContractImports(
+    imports: *std.ArrayList(ResolvedImport),
+    seen_paths: *std.StringHashMap(void),
+    root_import_groups: []const SlaResolvedImportGroup,
+) !bool {
+    var changed = false;
+    for (root_import_groups) |group| {
+        for (group.imports) |resolved| {
+            if (try appendUniqueResolvedContractImport(imports, seen_paths, resolved)) changed = true;
+        }
+    }
+    return changed;
+}
+
+fn appendContributingModuleResolvedContractImports(
+    allocator: std.mem.Allocator,
+    imports: *std.ArrayList(ResolvedImport),
+    seen_paths: *std.StringHashMap(void),
+    ordered_modules: []const *SlaModule,
+    reachable: *const std.StringHashMap(void),
+    referenced_types: *const std.StringHashMap(void),
+) !bool {
+    var changed = false;
+    for (ordered_modules) |module| {
+        const needs_contracts = try moduleNeedsContractImportsForReachability(allocator, module, reachable, referenced_types);
+        for (module.resolved_imports) |resolved| {
+            const appended = if (needs_contracts)
+                try appendUniqueResolvedContractImport(imports, seen_paths, resolved)
+            else
+                try appendUniqueReferencedSurfaceImport(imports, seen_paths, resolved, referenced_types);
+            if (appended) changed = true;
+        }
+    }
+    return changed;
 }
 
 fn isModuleContributing(
@@ -1086,6 +1275,27 @@ fn isModuleContributing(
     return false;
 }
 
+fn moduleNeedsContractImportsForReachability(
+    allocator: std.mem.Allocator,
+    module: *const SlaModule,
+    reachable: *const std.StringHashMap(void),
+    referenced_types: *const std.StringHashMap(void),
+) !bool {
+    if (try moduleHasReachableBody(allocator, module, reachable)) return true;
+
+    var const_iter = module.exports.const_decls.keyIterator();
+    while (const_iter.next()) |name_ptr| {
+        if (referenced_types.contains(name_ptr.*)) return true;
+    }
+
+    var macro_iter = module.exports.macro_decls.keyIterator();
+    while (macro_iter.next()) |name_ptr| {
+        if (referenced_types.contains(name_ptr.*)) return true;
+    }
+
+    return false;
+}
+
 fn appendModuleDeclsSelective(
     allocator: std.mem.Allocator,
     modules: *SlaModuleTable,
@@ -1096,6 +1306,7 @@ fn appendModuleDeclsSelective(
     reachable: *const std.StringHashMap(void),
     referenced_types: *const std.StringHashMap(void),
     options: SlaImportExpansionOptions,
+    contract_imports: ?*std.ArrayList(ResolvedImport),
 ) !void {
     if (emitted.contains(module.path)) return;
     try emitted.put(module.path, {});
@@ -1103,22 +1314,29 @@ fn appendModuleDeclsSelective(
     for (module.resolved_imports) |child_resolved| {
         if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
         const child_module = try modules.getOrParse(child_resolved);
-        try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types, options);
+        try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types, options, contract_imports);
     }
 
     const is_contributing = try isModuleContributing(allocator, module, reachable, referenced_types);
     if (!is_contributing) {
+        for (module.resolved_imports) |child_resolved| {
+            if (std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
+            if (!resolvedImportDeclaresReferencedSurface(child_resolved, referenced_types)) continue;
+            try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls, contract_imports);
+        }
         return;
     }
 
     const module_namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
     defer allocator.free(module_namespace);
+    const needs_contract_imports = try moduleNeedsContractImportsForReachability(allocator, module, reachable, referenced_types);
 
     for (module.program.program.decls) |decl| {
         if (decl.* == .import_decl) {
             for (module.resolved_imports) |child_resolved| {
                 if (std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
-                try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls);
+                if (!needs_contract_imports and !resolvedImportDeclaresReferencedSurface(child_resolved, referenced_types)) continue;
+                try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls, contract_imports);
             }
         } else {
             const before = out_decls.items.len;
@@ -1141,8 +1359,12 @@ fn appendModuleDeclsSelective(
                 .overload_decl => {
                     try appendFilteredOverloadDeclWithOptions(allocator, decl, reachable, out_decls, options);
                 },
+                .macro_decl => |macro_decl| {
+                    if (referenced_types.contains(macro_decl.name)) try out_decls.append(decl);
+                },
+                .test_decl => {},
                 else => {
-                    // Flatten types, constants, macros
+                    // Flatten types and constants needed by the reachable surface.
                     try out_decls.append(decl);
                 },
             }
@@ -1300,10 +1522,1959 @@ const SlaCallableIndex = struct {
     }
 };
 
+const SyntacticFactSet = struct {
+    allocator: std.mem.Allocator,
+    no_import_sources: std.StringHashMap(void),
+    zero_import_scans: std.StringHashMap(void),
+    known_int_fields: std.StringHashMap(i64),
+    known_bool_fields: std.StringHashMap(bool),
+
+    fn init(allocator: std.mem.Allocator) SyntacticFactSet {
+        return .{
+            .allocator = allocator,
+            .no_import_sources = std.StringHashMap(void).init(allocator),
+            .zero_import_scans = std.StringHashMap(void).init(allocator),
+            .known_int_fields = std.StringHashMap(i64).init(allocator),
+            .known_bool_fields = std.StringHashMap(bool).init(allocator),
+        };
+    }
+
+    fn deinit(self: *SyntacticFactSet) void {
+        self.no_import_sources.deinit();
+        self.zero_import_scans.deinit();
+        var int_iter = self.known_int_fields.iterator();
+        while (int_iter.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.known_int_fields.deinit();
+        var bool_iter = self.known_bool_fields.iterator();
+        while (bool_iter.next()) |entry| self.allocator.free(entry.key_ptr.*);
+        self.known_bool_fields.deinit();
+    }
+
+    fn clone(self: *const SyntacticFactSet) !SyntacticFactSet {
+        var out = SyntacticFactSet.init(self.allocator);
+        errdefer out.deinit();
+        var source_iter = self.no_import_sources.keyIterator();
+        while (source_iter.next()) |key| try out.no_import_sources.put(key.*, {});
+        var scan_iter = self.zero_import_scans.keyIterator();
+        while (scan_iter.next()) |key| try out.zero_import_scans.put(key.*, {});
+        var int_iter = self.known_int_fields.iterator();
+        while (int_iter.next()) |entry| {
+            const key = try out.allocator.dupe(u8, entry.key_ptr.*);
+            errdefer out.allocator.free(key);
+            try out.putKnownIntKey(key, entry.value_ptr.*);
+        }
+        var bool_iter = self.known_bool_fields.iterator();
+        while (bool_iter.next()) |entry| {
+            const key = try out.allocator.dupe(u8, entry.key_ptr.*);
+            errdefer out.allocator.free(key);
+            try out.putKnownBoolKey(key, entry.value_ptr.*);
+        }
+        return out;
+    }
+
+    fn clearName(self: *SyntacticFactSet, name: []const u8) void {
+        _ = self.no_import_sources.remove(name);
+        _ = self.zero_import_scans.remove(name);
+        self.clearKnownFieldsForName(name);
+    }
+
+    fn fieldKey(self: *SyntacticFactSet, name: []const u8, field_name: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ name, field_name });
+    }
+
+    fn clearKnownFieldsForName(self: *SyntacticFactSet, name: []const u8) void {
+        while (true) {
+            var removed = false;
+            var int_iter = self.known_int_fields.iterator();
+            while (int_iter.next()) |entry| {
+                if (!fieldFactKeyMatchesName(entry.key_ptr.*, name)) continue;
+                const key = entry.key_ptr.*;
+                _ = self.known_int_fields.remove(key);
+                self.allocator.free(key);
+                removed = true;
+                break;
+            }
+            if (!removed) break;
+        }
+        while (true) {
+            var removed = false;
+            var bool_iter = self.known_bool_fields.iterator();
+            while (bool_iter.next()) |entry| {
+                if (!fieldFactKeyMatchesName(entry.key_ptr.*, name)) continue;
+                const key = entry.key_ptr.*;
+                _ = self.known_bool_fields.remove(key);
+                self.allocator.free(key);
+                removed = true;
+                break;
+            }
+            if (!removed) break;
+        }
+    }
+
+    fn clearKnownField(self: *SyntacticFactSet, name: []const u8, field_name: []const u8) !void {
+        const key = try self.fieldKey(name, field_name);
+        defer self.allocator.free(key);
+        if (self.known_int_fields.fetchRemove(key)) |entry| self.allocator.free(entry.key);
+        if (self.known_bool_fields.fetchRemove(key)) |entry| self.allocator.free(entry.key);
+    }
+
+    fn putKnownIntField(self: *SyntacticFactSet, name: []const u8, field_name: []const u8, value: i64) !void {
+        const key = try self.fieldKey(name, field_name);
+        errdefer self.allocator.free(key);
+        try self.putKnownIntKey(key, value);
+    }
+
+    fn putKnownBoolField(self: *SyntacticFactSet, name: []const u8, field_name: []const u8, value: bool) !void {
+        const key = try self.fieldKey(name, field_name);
+        errdefer self.allocator.free(key);
+        try self.putKnownBoolKey(key, value);
+    }
+
+    fn putKnownIntKey(self: *SyntacticFactSet, owned_key: []const u8, value: i64) !void {
+        if (self.known_bool_fields.fetchRemove(owned_key)) |entry| self.allocator.free(entry.key);
+        const entry = try self.known_int_fields.getOrPut(owned_key);
+        if (entry.found_existing) self.allocator.free(owned_key);
+        entry.value_ptr.* = value;
+    }
+
+    fn putKnownBoolKey(self: *SyntacticFactSet, owned_key: []const u8, value: bool) !void {
+        if (self.known_int_fields.fetchRemove(owned_key)) |entry| self.allocator.free(entry.key);
+        const entry = try self.known_bool_fields.getOrPut(owned_key);
+        if (entry.found_existing) self.allocator.free(owned_key);
+        entry.value_ptr.* = value;
+    }
+
+    fn getKnownIntField(self: *const SyntacticFactSet, name: []const u8, field_name: []const u8) ?i64 {
+        const key = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ name, field_name }) catch return null;
+        defer self.allocator.free(key);
+        return self.known_int_fields.get(key);
+    }
+
+    fn getKnownBoolField(self: *const SyntacticFactSet, name: []const u8, field_name: []const u8) ?bool {
+        const key = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ name, field_name }) catch return null;
+        defer self.allocator.free(key);
+        return self.known_bool_fields.get(key);
+    }
+
+    fn copyKnownFieldsInto(self: *const SyntacticFactSet, dest: *SyntacticFactSet, target_name: []const u8, source_name: []const u8) !void {
+        var int_iter = self.known_int_fields.iterator();
+        while (int_iter.next()) |entry| {
+            if (!fieldFactKeyMatchesName(entry.key_ptr.*, source_name)) continue;
+            const field_name = entry.key_ptr.*[source_name.len + 1 ..];
+            try dest.putKnownIntField(target_name, field_name, entry.value_ptr.*);
+        }
+        var bool_iter = self.known_bool_fields.iterator();
+        while (bool_iter.next()) |entry| {
+            if (!fieldFactKeyMatchesName(entry.key_ptr.*, source_name)) continue;
+            const field_name = entry.key_ptr.*[source_name.len + 1 ..];
+            try dest.putKnownBoolField(target_name, field_name, entry.value_ptr.*);
+        }
+    }
+};
+
+fn fieldFactKeyMatchesName(key: []const u8, name: []const u8) bool {
+    return key.len > name.len + 1 and
+        std.mem.startsWith(u8, key, name) and
+        key[name.len] == '.';
+}
+
+const FunctionSyntacticFacts = struct {
+    initialized: bool = false,
+    facts: SyntacticFactSet,
+
+    fn init(allocator: std.mem.Allocator) FunctionSyntacticFacts {
+        return .{ .facts = SyntacticFactSet.init(allocator) };
+    }
+
+    fn deinit(self: *FunctionSyntacticFacts) void {
+        self.facts.deinit();
+    }
+};
+
+const ReachabilityAnalysis = struct {
+    allocator: std.mem.Allocator,
+    function_facts: std.StringHashMap(FunctionSyntacticFacts),
+    current_facts: ?*const SyntacticFactSet = null,
+    prune_known_branches: bool,
+
+    fn init(allocator: std.mem.Allocator, prune_known_branches: bool) ReachabilityAnalysis {
+        return .{
+            .allocator = allocator,
+            .function_facts = std.StringHashMap(FunctionSyntacticFacts).init(allocator),
+            .prune_known_branches = prune_known_branches,
+        };
+    }
+
+    fn deinit(self: *ReachabilityAnalysis) void {
+        var iter = self.function_facts.valueIterator();
+        while (iter.next()) |entry| entry.deinit();
+        self.function_facts.deinit();
+    }
+
+    fn retainOnly(self: *ReachabilityAnalysis, set: *std.StringHashMap(void), incoming: *const std.StringHashMap(void)) !bool {
+        var removed = std.ArrayList([]const u8).init(self.allocator);
+        defer removed.deinit();
+        var iter = set.keyIterator();
+        while (iter.next()) |key_ptr| {
+            if (!incoming.contains(key_ptr.*)) try removed.append(key_ptr.*);
+        }
+        for (removed.items) |key| _ = set.remove(key);
+        return removed.items.len != 0;
+    }
+
+    fn mergeFunctionFacts(self: *ReachabilityAnalysis, function_name: []const u8, incoming_opt: ?*const SyntacticFactSet) !bool {
+        var empty = SyntacticFactSet.init(self.allocator);
+        defer empty.deinit();
+        const incoming = incoming_opt orelse &empty;
+
+        const entry = try self.function_facts.getOrPut(function_name);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = FunctionSyntacticFacts.init(self.allocator);
+        }
+        if (!entry.value_ptr.initialized) {
+            entry.value_ptr.facts.deinit();
+            entry.value_ptr.facts = try incoming.clone();
+            entry.value_ptr.initialized = true;
+            return true;
+        }
+
+        var changed = false;
+        changed = (try self.retainOnly(&entry.value_ptr.facts.no_import_sources, &incoming.no_import_sources)) or changed;
+        changed = (try self.retainOnly(&entry.value_ptr.facts.zero_import_scans, &incoming.zero_import_scans)) or changed;
+        return changed;
+    }
+};
+
+fn literalHasNoImportKeyword(value: []const u8) bool {
+    return std.mem.indexOf(u8, value, "import") == null;
+}
+
+fn nodeIsNoImportSource(expr: *const ast.Node, facts: ?*const SyntacticFactSet) bool {
+    return switch (expr.*) {
+        .literal => |lit| switch (lit) {
+            .string_val => |value| literalHasNoImportKeyword(value),
+            else => false,
+        },
+        .identifier => |name| if (facts) |f| f.no_import_sources.contains(name) else false,
+        .call_expr => |call| blk: {
+            if (std.mem.eql(u8, call.func_name, "STR_PTR") and call.args.len == 1) {
+                break :blk nodeIsNoImportSource(call.args[0], facts);
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+fn nodeIsZeroImportScan(expr: *const ast.Node, facts: ?*const SyntacticFactSet) bool {
+    return switch (expr.*) {
+        .identifier => |name| if (facts) |f| f.zero_import_scans.contains(name) else false,
+        .call_expr => |call| std.mem.eql(u8, call.func_name, "parse_import_specifiers") and
+            call.args.len >= 1 and
+            nodeIsNoImportSource(call.args[0], facts),
+        else => false,
+    };
+}
+
+fn evalSyntacticInt(expr: *const ast.Node, facts: ?*const SyntacticFactSet) ?i64 {
+    return switch (expr.*) {
+        .literal => |lit| switch (lit) {
+            .int_val => |value| value,
+            else => null,
+        },
+        .binary_expr => |bin| blk: {
+            const left = evalSyntacticInt(bin.left, facts) orelse break :blk null;
+            const right = evalSyntacticInt(bin.right, facts) orelse break :blk null;
+            break :blk switch (bin.op) {
+                .add => left + right,
+                .sub => left - right,
+                .mul => left * right,
+                .div => if (right != 0) @divTrunc(left, right) else null,
+                .mod => if (right != 0) @mod(left, right) else null,
+                else => null,
+            };
+        },
+        .field_expr => |field| blk: {
+            if (std.mem.eql(u8, field.field_name, "import_count") and nodeIsZeroImportScan(field.expr, facts)) break :blk 0;
+            if (field.expr.* == .identifier) {
+                if (facts) |f| {
+                    if (f.getKnownIntField(field.expr.identifier, field.field_name)) |value| break :blk value;
+                }
+            }
+            break :blk null;
+        },
+        else => null,
+    };
+}
+
+fn evalSyntacticBool(expr: *const ast.Node, facts: ?*const SyntacticFactSet) ?bool {
+    return switch (expr.*) {
+        .literal => |lit| switch (lit) {
+            .bool_val => |value| value,
+            else => null,
+        },
+        .field_expr => |field| blk: {
+            if (field.expr.* == .identifier) {
+                if (facts) |f| {
+                    if (f.getKnownBoolField(field.expr.identifier, field.field_name)) |value| break :blk value;
+                }
+            }
+            break :blk null;
+        },
+        .binary_expr => |bin| blk: {
+            switch (bin.op) {
+                .eq, .ne => {
+                    if (evalSyntacticInt(bin.left, facts)) |left| {
+                        const right = evalSyntacticInt(bin.right, facts) orelse break :blk null;
+                        break :blk if (bin.op == .eq) left == right else left != right;
+                    }
+                    if (evalSyntacticBool(bin.left, facts)) |left| {
+                        const right = evalSyntacticBool(bin.right, facts) orelse break :blk null;
+                        break :blk if (bin.op == .eq) left == right else left != right;
+                    }
+                    break :blk null;
+                },
+                .lt, .le, .gt, .ge => {
+                    const left = evalSyntacticInt(bin.left, facts) orelse break :blk null;
+                    const right = evalSyntacticInt(bin.right, facts) orelse break :blk null;
+                    break :blk switch (bin.op) {
+                        .lt => left < right,
+                        .le => left <= right,
+                        .gt => left > right,
+                        .ge => left >= right,
+                        else => unreachable,
+                    };
+                },
+                .logical_and => {
+                    const left = evalSyntacticBool(bin.left, facts);
+                    if (left != null and left.? == false) break :blk false;
+                    const right = evalSyntacticBool(bin.right, facts);
+                    if (right != null and right.? == false) break :blk false;
+                    if (left != null and right != null) break :blk left.? and right.?;
+                    break :blk null;
+                },
+                .logical_or => {
+                    const left = evalSyntacticBool(bin.left, facts);
+                    if (left != null and left.? == true) break :blk true;
+                    const right = evalSyntacticBool(bin.right, facts);
+                    if (right != null and right.? == true) break :blk true;
+                    if (left != null and right != null) break :blk left.? or right.?;
+                    break :blk null;
+                },
+                else => break :blk null,
+            }
+        },
+        else => null,
+    };
+}
+
+fn buildCallFactsForDecl(
+    allocator: std.mem.Allocator,
+    funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    fd: *const ast.FuncDecl,
+    call: *const ast.CallExpr,
+    current_facts: ?*const SyntacticFactSet,
+    depth: usize,
+) anyerror!SyntacticFactSet {
+    var facts = SyntacticFactSet.init(allocator);
+    errdefer facts.deinit();
+
+    const count = @min(fd.params.len, call.args.len);
+    for (0..count) |i| {
+        const param_name = fd.params[i].name;
+        const arg = call.args[i];
+        if (nodeIsNoImportSource(arg, current_facts)) try facts.no_import_sources.put(param_name, {});
+        if (nodeIsZeroImportScan(arg, current_facts)) try facts.zero_import_scans.put(param_name, {});
+        try recordKnownFieldsFromExpr(&facts, current_facts, funcs, modules, param_name, arg, depth);
+    }
+
+    return facts;
+}
+
+fn syntacticFuncDeclForCall(
+    funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    name: []const u8,
+) ?*ast.FuncDecl {
+    if (funcs.decls.get(name)) |fd| return fd;
+    if (modules) |mod_table| {
+        if (mod_table.functionSignatureForImportedMangledNameByNamespace(name)) |signature| {
+            if (funcs.decls.get(signature.name)) |fd| return fd;
+        }
+    }
+    if (splitImportedMangledSymbol(name)) |imported| {
+        if (funcs.decls.get(imported.name)) |fd| return fd;
+    }
+    if (funcs.associated_candidates.get(name)) |candidates| {
+        if (candidates.items.len == 1) {
+            if (funcs.decls.get(candidates.items[0])) |fd| return fd;
+        }
+    }
+    return null;
+}
+
+fn singleReturnValue(fd: *const ast.FuncDecl) ?*const ast.Node {
+    if (fd.body.len != 1) return null;
+    const stmt = fd.body[0];
+    if (stmt.* != .return_stmt) return null;
+    return stmt.return_stmt.value;
+}
+
+fn recordKnownFieldsFromStructLiteral(
+    dest: *SyntacticFactSet,
+    source_facts: ?*const SyntacticFactSet,
+    funcs: ?*const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    target_name: []const u8,
+    lit: ast.StructLiteral,
+    depth: usize,
+) anyerror!void {
+    if (lit.update_expr) |update_expr| {
+        try recordKnownFieldsFromExpr(dest, source_facts, funcs, modules, target_name, update_expr, depth);
+    }
+    for (lit.fields) |field| {
+        if (evalSyntacticInt(field.value, source_facts)) |value| {
+            try dest.putKnownIntField(target_name, field.name, value);
+        } else if (evalSyntacticBool(field.value, source_facts)) |value| {
+            try dest.putKnownBoolField(target_name, field.name, value);
+        } else {
+            try dest.clearKnownField(target_name, field.name);
+        }
+    }
+}
+
+fn recordKnownFieldsFromCall(
+    dest: *SyntacticFactSet,
+    source_facts: ?*const SyntacticFactSet,
+    funcs: ?*const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    target_name: []const u8,
+    call: ast.CallExpr,
+    depth: usize,
+) anyerror!void {
+    if (depth == 0) return;
+    const callable_index = funcs orelse return;
+    const fd = syntacticFuncDeclForCall(callable_index, modules, call.func_name) orelse return;
+    if (fd.params.len != 0) return;
+    const ret = singleReturnValue(fd) orelse return;
+    var call_facts = try buildCallFactsForDecl(dest.allocator, callable_index, modules, fd, &call, source_facts, depth - 1);
+    defer call_facts.deinit();
+    try recordKnownFieldsFromExpr(dest, &call_facts, funcs, modules, target_name, ret, depth - 1);
+}
+
+fn recordKnownFieldsFromExpr(
+    dest: *SyntacticFactSet,
+    source_facts: ?*const SyntacticFactSet,
+    funcs: ?*const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    target_name: []const u8,
+    value: *const ast.Node,
+    depth: usize,
+) anyerror!void {
+    switch (value.*) {
+        .identifier => |source_name| if (source_facts) |facts| try facts.copyKnownFieldsInto(dest, target_name, source_name),
+        .struct_literal => |lit| try recordKnownFieldsFromStructLiteral(dest, source_facts, funcs, modules, target_name, lit, depth),
+        .call_expr => |call| try recordKnownFieldsFromCall(dest, source_facts, funcs, modules, target_name, call, depth),
+        else => {},
+    }
+}
+
+fn updateFactsForLetBinding(
+    facts: *SyntacticFactSet,
+    funcs: ?*const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    name: []const u8,
+    value: *const ast.Node,
+) anyerror!void {
+    facts.clearName(name);
+    if (nodeIsNoImportSource(value, facts)) try facts.no_import_sources.put(name, {});
+    if (nodeIsZeroImportScan(value, facts)) try facts.zero_import_scans.put(name, {});
+    try recordKnownFieldsFromExpr(facts, facts, funcs, modules, name, value, 4);
+}
+
+fn pruneKnownFalseBranchesInBlock(
+    allocator: std.mem.Allocator,
+    block: []const *ast.Node,
+    incoming_facts: *const SyntacticFactSet,
+) !void {
+    var facts = try incoming_facts.clone();
+    defer facts.deinit();
+
+    for (block) |stmt| {
+        switch (stmt.*) {
+            .let_stmt => |let| {
+                try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
+                try updateFactsForLetBinding(&facts, null, null, let.name, let.value);
+            },
+            .const_stmt => |c| {
+                try pruneKnownFalseBranchesInExpr(allocator, c.value, &facts);
+                try updateFactsForLetBinding(&facts, null, null, c.name, c.value);
+            },
+            .let_else_stmt => |let| {
+                try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
+                try pruneKnownFalseBranchesInBlock(allocator, let.else_block, &facts);
+            },
+            .let_destructure_stmt => |let| {
+                try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
+                for (let.names) |name| facts.clearName(name);
+                if (let.rest_name) |name| facts.clearName(name);
+                if (let.rest_alias) |name| facts.clearName(name);
+            },
+            .assign_stmt => |assign| {
+                try pruneKnownFalseBranchesInExpr(allocator, assign.target, &facts);
+                try pruneKnownFalseBranchesInExpr(allocator, assign.value, &facts);
+                if (assign.target.* == .identifier) facts.clearName(assign.target.identifier);
+            },
+            .block_stmt => |blk| try pruneKnownFalseBranchesInBlock(allocator, blk.body, &facts),
+            .expr_stmt => |expr| try pruneKnownFalseBranchesInExpr(allocator, expr, &facts),
+            .return_stmt => |ret| if (ret.value) |value| try pruneKnownFalseBranchesInExpr(allocator, value, &facts),
+            .for_stmt => |for_stmt| {
+                try pruneKnownFalseBranchesInExpr(allocator, for_stmt.start, &facts);
+                if (for_stmt.end) |end_expr| try pruneKnownFalseBranchesInExpr(allocator, end_expr, &facts);
+                try pruneKnownFalseBranchesInBlock(allocator, for_stmt.body, &facts);
+            },
+            .while_stmt => |while_stmt| {
+                try pruneKnownFalseBranchesInExpr(allocator, while_stmt.cond, &facts);
+                try pruneKnownFalseBranchesInBlock(allocator, while_stmt.body, &facts);
+            },
+            else => try pruneKnownFalseBranchesInExpr(allocator, stmt, &facts),
+        }
+    }
+}
+
+fn pruneKnownFalseBranchesInExpr(
+    allocator: std.mem.Allocator,
+    expr: *ast.Node,
+    facts: *const SyntacticFactSet,
+) anyerror!void {
+    switch (expr.*) {
+        .if_expr => |*ife| {
+            try pruneKnownFalseBranchesInExpr(allocator, ife.cond, facts);
+            if (ife.let_chain) |chain| {
+                for (chain) |cond| try pruneKnownFalseBranchesInExpr(allocator, cond.value, facts);
+            }
+            if (evalSyntacticBool(ife.cond, facts) == false) {
+                ife.then_block = &.{};
+            } else {
+                try pruneKnownFalseBranchesInBlock(allocator, ife.then_block, facts);
+            }
+            if (ife.else_block) |else_block| try pruneKnownFalseBranchesInBlock(allocator, else_block, facts);
+        },
+        .switch_expr => |swe| {
+            try pruneKnownFalseBranchesInExpr(allocator, swe.val, facts);
+            for (swe.cases) |case| {
+                try pruneKnownFalseBranchesInExpr(allocator, case.pattern, facts);
+                try pruneKnownFalseBranchesInBlock(allocator, case.body, facts);
+            }
+        },
+        .match_expr => |mat| {
+            try pruneKnownFalseBranchesInExpr(allocator, mat.val, facts);
+            for (mat.cases) |case| {
+                if (case.guard) |guard| try pruneKnownFalseBranchesInExpr(allocator, guard, facts);
+                try pruneKnownFalseBranchesInBlock(allocator, case.body, facts);
+            }
+        },
+        .unsafe_expr => |unsafe_expr| try pruneKnownFalseBranchesInBlock(allocator, unsafe_expr.body, facts),
+        .await_expr => |await_expr| try pruneKnownFalseBranchesInExpr(allocator, await_expr.expr, facts),
+        .try_expr => |try_expr| try pruneKnownFalseBranchesInExpr(allocator, try_expr.expr, facts),
+        .binary_expr => |bin| {
+            try pruneKnownFalseBranchesInExpr(allocator, bin.left, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, bin.right, facts);
+        },
+        .closure_literal => |closure| try pruneKnownFalseBranchesInExpr(allocator, closure.body, facts),
+        .borrow_expr => |borrow| try pruneKnownFalseBranchesInExpr(allocator, borrow.expr, facts),
+        .move_expr => |move| try pruneKnownFalseBranchesInExpr(allocator, move.expr, facts),
+        .deref_expr => |deref| try pruneKnownFalseBranchesInExpr(allocator, deref.expr, facts),
+        .cast_expr => |cast| try pruneKnownFalseBranchesInExpr(allocator, cast.expr, facts),
+        .field_expr => |field| try pruneKnownFalseBranchesInExpr(allocator, field.expr, facts),
+        .struct_literal => |lit| {
+            for (lit.fields) |field| try pruneKnownFalseBranchesInExpr(allocator, field.value, facts);
+            if (lit.update_expr) |update| try pruneKnownFalseBranchesInExpr(allocator, update, facts);
+        },
+        .enum_literal => |lit| {
+            for (lit.fields) |field| try pruneKnownFalseBranchesInExpr(allocator, field.value, facts);
+        },
+        .tuple_literal => |lit| for (lit.elements) |elem| try pruneKnownFalseBranchesInExpr(allocator, elem, facts),
+        .array_literal => |lit| for (lit.elements) |elem| try pruneKnownFalseBranchesInExpr(allocator, elem, facts),
+        .repeat_array_literal => |lit| try pruneKnownFalseBranchesInExpr(allocator, lit.value, facts),
+        .index_expr => |idx| {
+            try pruneKnownFalseBranchesInExpr(allocator, idx.target, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, idx.index, facts);
+        },
+        .slice_expr => |slice| {
+            try pruneKnownFalseBranchesInExpr(allocator, slice.target, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, slice.start, facts);
+            try pruneKnownFalseBranchesInExpr(allocator, slice.end, facts);
+        },
+        .call_expr => |call| {
+            for (call.args) |arg| try pruneKnownFalseBranchesInExpr(allocator, arg, facts);
+            if (std.mem.endsWith(u8, call.func_name, "program_resolve_import_scan_for_file") and call.args.len >= 4 and nodeIsZeroImportScan(call.args[call.args.len - 1], facts)) {
+                expr.* = call.args[0].*;
+            }
+        },
+        else => {},
+    }
+}
+
+fn reachabilityNodeBindsIdentifier(node: *const ast.Node, name: []const u8) bool {
+    return switch (node.*) {
+        .let_stmt => |let| std.mem.eql(u8, let.name, name),
+        .const_stmt => |constant| std.mem.eql(u8, constant.name, name),
+        .var_stmt => |variable| std.mem.eql(u8, variable.name, name),
+        .let_destructure_stmt => |let| blk: {
+            for (let.names) |binding| {
+                if (std.mem.eql(u8, binding, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+fn reachabilityClosureShadowsIdentifier(closure: ast.ClosureLiteral, name: []const u8) bool {
+    for (closure.params) |param| {
+        if (std.mem.eql(u8, param.name, name)) return true;
+    }
+    return false;
+}
+
+fn reachabilityBlockUsesIdentifier(body: []const *ast.Node, name: []const u8) bool {
+    for (body) |stmt| {
+        if (reachabilityNodeUsesIdentifier(stmt, name)) return true;
+        if (reachabilityNodeBindsIdentifier(stmt, name)) return false;
+    }
+    return false;
+}
+
+fn reachabilityNodeUsesIdentifier(node: *const ast.Node, name: []const u8) bool {
+    return switch (node.*) {
+        .program => |program| reachabilityBlockUsesIdentifier(program.decls, name),
+        .func_decl => |func| reachabilityBlockUsesIdentifier(func.body, name),
+        .macro_decl => |macro| reachabilityBlockUsesIdentifier(macro.body, name),
+        .test_decl => |test_decl| reachabilityBlockUsesIdentifier(test_decl.body, name),
+        .impl_decl => |impl_decl| reachabilityBlockUsesIdentifier(impl_decl.methods, name),
+        .let_stmt => |let| reachabilityNodeUsesIdentifier(let.value, name),
+        .let_else_stmt => |let| reachabilityNodeUsesIdentifier(let.value, name) or reachabilityBlockUsesIdentifier(let.else_block, name),
+        .let_destructure_stmt => |let| reachabilityNodeUsesIdentifier(let.value, name),
+        .const_stmt => |constant| reachabilityNodeUsesIdentifier(constant.value, name),
+        .assign_stmt => |assign| reachabilityNodeUsesIdentifier(assign.target, name) or reachabilityNodeUsesIdentifier(assign.value, name),
+        .block_stmt => |block| reachabilityBlockUsesIdentifier(block.body, name),
+        .expr_stmt => |expr| reachabilityNodeUsesIdentifier(expr, name),
+        .return_stmt => |ret| if (ret.value) |value| reachabilityNodeUsesIdentifier(value, name) else false,
+        .for_stmt => |for_stmt| blk: {
+            if (reachabilityNodeUsesIdentifier(for_stmt.start, name)) break :blk true;
+            if (for_stmt.end) |end| {
+                if (reachabilityNodeUsesIdentifier(end, name)) break :blk true;
+            }
+            if (std.mem.eql(u8, for_stmt.var_name, name)) break :blk false;
+            break :blk reachabilityBlockUsesIdentifier(for_stmt.body, name);
+        },
+        .while_stmt => |while_stmt| reachabilityNodeUsesIdentifier(while_stmt.cond, name) or reachabilityBlockUsesIdentifier(while_stmt.body, name),
+        .identifier => |ident| std.mem.eql(u8, ident, name),
+        .generic_func_ref => false,
+        .if_expr => |ife| blk: {
+            if (reachabilityNodeUsesIdentifier(ife.cond, name)) break :blk true;
+            if (ife.let_chain) |chain| {
+                for (chain) |item| {
+                    if (reachabilityNodeUsesIdentifier(item.value, name)) break :blk true;
+                }
+            }
+            if (reachabilityBlockUsesIdentifier(ife.then_block, name)) break :blk true;
+            if (ife.else_block) |else_block| {
+                if (reachabilityBlockUsesIdentifier(else_block, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .switch_expr => |switch_expr| blk: {
+            if (reachabilityNodeUsesIdentifier(switch_expr.val, name)) break :blk true;
+            for (switch_expr.cases) |case| {
+                if (reachabilityBlockUsesIdentifier(case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .match_expr => |match_expr| blk: {
+            if (reachabilityNodeUsesIdentifier(match_expr.val, name)) break :blk true;
+            for (match_expr.cases) |case| {
+                if (case.guard) |guard| {
+                    if (reachabilityNodeUsesIdentifier(guard, name)) break :blk true;
+                }
+                if (reachabilityBlockUsesIdentifier(case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .unsafe_expr => |unsafe_expr| reachabilityBlockUsesIdentifier(unsafe_expr.body, name),
+        .await_expr => |await_expr| reachabilityNodeUsesIdentifier(await_expr.expr, name),
+        .binary_expr => |bin| reachabilityNodeUsesIdentifier(bin.left, name) or reachabilityNodeUsesIdentifier(bin.right, name),
+        .call_expr => |call| blk: {
+            for (call.args) |arg| {
+                if (reachabilityNodeUsesIdentifier(arg, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .closure_literal => |closure| if (reachabilityClosureShadowsIdentifier(closure, name)) false else reachabilityNodeUsesIdentifier(closure.body, name),
+        .borrow_expr => |borrow| reachabilityNodeUsesIdentifier(borrow.expr, name),
+        .move_expr => |move| reachabilityNodeUsesIdentifier(move.expr, name),
+        .deref_expr => |deref| reachabilityNodeUsesIdentifier(deref.expr, name),
+        .cast_expr => |cast| reachabilityNodeUsesIdentifier(cast.expr, name),
+        .field_expr => |field| reachabilityNodeUsesIdentifier(field.expr, name),
+        .struct_literal => |lit| blk: {
+            if (lit.update_expr) |update| {
+                if (reachabilityNodeUsesIdentifier(update, name)) break :blk true;
+            }
+            for (lit.fields) |field| {
+                if (reachabilityNodeUsesIdentifier(field.value, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .enum_literal => |lit| blk: {
+            for (lit.fields) |field| {
+                if (reachabilityNodeUsesIdentifier(field.value, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .tuple_literal => |tuple| blk: {
+            for (tuple.elements) |elem| {
+                if (reachabilityNodeUsesIdentifier(elem, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .array_literal => |array| blk: {
+            for (array.elements) |elem| {
+                if (reachabilityNodeUsesIdentifier(elem, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .repeat_array_literal => |repeat| reachabilityNodeUsesIdentifier(repeat.value, name),
+        .index_expr => |idx| reachabilityNodeUsesIdentifier(idx.target, name) or reachabilityNodeUsesIdentifier(idx.index, name),
+        .slice_expr => |slice| reachabilityNodeUsesIdentifier(slice.target, name) or reachabilityNodeUsesIdentifier(slice.start, name) or reachabilityNodeUsesIdentifier(slice.end, name),
+        .try_expr => |try_expr| reachabilityNodeUsesIdentifier(try_expr.expr, name),
+        else => false,
+    };
+}
+
+fn pruneDeadZeroImportScanLetsInBlock(
+    allocator: std.mem.Allocator,
+    block: []const *ast.Node,
+    incoming_facts: *const SyntacticFactSet,
+) ![]const *ast.Node {
+    var facts = try incoming_facts.clone();
+    defer facts.deinit();
+
+    var out = std.ArrayList(*ast.Node).init(allocator);
+    for (block, 0..) |stmt, idx| {
+        var keep = true;
+        switch (stmt.*) {
+            .let_stmt => |let| {
+                keep = !(nodeIsZeroImportScan(let.value, &facts) and !reachabilityBlockUsesIdentifier(block[idx + 1 ..], let.name));
+                try updateFactsForLetBinding(&facts, null, null, let.name, let.value);
+            },
+            .const_stmt => |constant| {
+                keep = !(nodeIsZeroImportScan(constant.value, &facts) and !reachabilityBlockUsesIdentifier(block[idx + 1 ..], constant.name));
+                try updateFactsForLetBinding(&facts, null, null, constant.name, constant.value);
+            },
+            .assign_stmt => |assign| {
+                if (assign.target.* == .identifier) facts.clearName(assign.target.identifier);
+            },
+            .let_destructure_stmt => |let| {
+                for (let.names) |name| facts.clearName(name);
+                if (let.rest_name) |name| facts.clearName(name);
+                if (let.rest_alias) |name| facts.clearName(name);
+            },
+            else => {},
+        }
+        if (keep) try out.append(stmt);
+    }
+    return try out.toOwnedSlice();
+}
+
+fn makeIdentifierNode(allocator: std.mem.Allocator, name: []const u8) !*ast.Node {
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .identifier = name };
+    return node;
+}
+
+fn makeIntLiteralNode(allocator: std.mem.Allocator, value: i64) !*ast.Node {
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .literal = .{ .int_val = value } };
+    return node;
+}
+
+fn makeBoolLiteralNode(allocator: std.mem.Allocator, value: bool) !*ast.Node {
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .literal = .{ .bool_val = value } };
+    return node;
+}
+
+fn makeStringLiteralNode(allocator: std.mem.Allocator, value: []const u8) !*ast.Node {
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .literal = .{ .string_val = value } };
+    return node;
+}
+
+fn makeUserDefinedTypeNode(allocator: std.mem.Allocator, name: []const u8) !*ast.Type {
+    const ty = try allocator.create(ast.Type);
+    ty.* = .{ .user_defined = .{ .name = name, .generics = &.{} } };
+    return ty;
+}
+
+fn makeFieldExprNode(allocator: std.mem.Allocator, expr: *ast.Node, field_name: []const u8) !*ast.Node {
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .field_expr = .{ .expr = expr, .field_name = field_name } };
+    return node;
+}
+
+fn makeCallNode(allocator: std.mem.Allocator, func_name: []const u8, args: []const *ast.Node) !*ast.Node {
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .call_expr = .{
+        .func_name = func_name,
+        .generics = &.{},
+        .args = args,
+    } };
+    return node;
+}
+
+fn makeSessionStateLiteralNodeWithCounts(
+    allocator: std.mem.Allocator,
+    snapshot_id: i64,
+    project_count: i64,
+    open_file_count: i64,
+) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 12);
+    fields[0] = .{ .name = "snapshot_id", .value = try makeIntLiteralNode(allocator, snapshot_id) };
+    fields[1] = .{ .name = "project_count", .value = try makeIntLiteralNode(allocator, project_count) };
+    fields[2] = .{ .name = "open_file_count", .value = try makeIntLiteralNode(allocator, open_file_count) };
+    fields[3] = .{ .name = "overlay_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[4] = .{ .name = "tsconfig_found", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[5] = .{ .name = "tsconfig_parse_ok", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[6] = .{ .name = "tsconfig_file_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[7] = .{ .name = "tsconfig_ref_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[8] = .{ .name = "total_nodes", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[9] = .{ .name = "total_statements", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[10] = .{ .name = "total_declarations", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[11] = .{ .name = "total_errors", .value = try makeIntLiteralNode(allocator, 0) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "SessionState"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeSessionStateLiteralNode(allocator: std.mem.Allocator) !*ast.Node {
+    return try makeSessionStateLiteralNodeWithCounts(allocator, 1, 0, 1);
+}
+
+fn makeOpenConfiguredProjectsLiteralNode(
+    allocator: std.mem.Allocator,
+    project_path: *ast.Node,
+    project_path_len: *ast.Node,
+) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 4);
+    fields[0] = .{ .name = "count", .value = try makeIntLiteralNode(allocator, 1) };
+    fields[1] = .{ .name = "has_primary", .value = try makeBoolLiteralNode(allocator, true) };
+    fields[2] = .{ .name = "primary_project_path", .value = project_path };
+    fields[3] = .{ .name = "primary_project_path_len", .value = project_path_len };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectOpenConfiguredProjects"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeInferredProjectLookupLiteralNode(allocator: std.mem.Allocator) !*ast.Node {
+    const program_call = try makeCallNode(allocator, "project_empty_program", &.{});
+
+    const project_fields = try allocator.alloc(ast.StructLiteralField, 9);
+    project_fields[0] = .{ .name = "kind", .value = try makeIntLiteralNode(allocator, 0) };
+    project_fields[1] = .{ .name = "config_file_path", .value = try makeStringLiteralNode(allocator, "/dev/null/inferred") };
+    project_fields[2] = .{ .name = "config_file_path_len", .value = try makeIntLiteralNode(allocator, 18) };
+    project_fields[3] = .{ .name = "current_directory", .value = try makeStringLiteralNode(allocator, "") };
+    project_fields[4] = .{ .name = "current_directory_len", .value = try makeIntLiteralNode(allocator, 0) };
+    project_fields[5] = .{ .name = "dirty", .value = try makeBoolLiteralNode(allocator, false) };
+    project_fields[6] = .{ .name = "has_program", .value = try makeBoolLiteralNode(allocator, false) };
+    project_fields[7] = .{ .name = "program", .value = program_call };
+    project_fields[8] = .{ .name = "program_last_update", .value = try makeIntLiteralNode(allocator, 0) };
+
+    const project = try allocator.create(ast.Node);
+    project.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "Project"),
+        .fields = project_fields,
+    } };
+
+    const lookup_fields = try allocator.alloc(ast.StructLiteralField, 2);
+    lookup_fields[0] = .{ .name = "found", .value = try makeBoolLiteralNode(allocator, true) };
+    lookup_fields[1] = .{ .name = "project", .value = project };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectLookup"),
+        .fields = lookup_fields,
+    } };
+    return node;
+}
+
+fn makeZeroArgCallNode(allocator: std.mem.Allocator, func_name: []const u8) !*ast.Node {
+    return try makeCallNode(allocator, func_name, &.{});
+}
+
+fn makeProjectConfigRegistryLiteralNode(
+    allocator: std.mem.Allocator,
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 16);
+    fields[0] = .{ .name = "config_count", .value = try makeIntLiteralNode(allocator, 1) };
+    fields[1] = .{ .name = "has_primary_config", .value = try makeBoolLiteralNode(allocator, true) };
+    fields[2] = .{ .name = "primary_config_path", .value = config_path };
+    fields[3] = .{ .name = "primary_config_path_len", .value = config_path_len };
+    fields[4] = .{ .name = "has_config_file_name", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[5] = .{ .name = "config_file_for_file", .value = try makeStringLiteralNode(allocator, "") };
+    fields[6] = .{ .name = "config_file_for_file_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[7] = .{ .name = "nearest_config_file_name", .value = try makeStringLiteralNode(allocator, "") };
+    fields[8] = .{ .name = "nearest_config_file_name_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[9] = .{ .name = "has_ancestor_config_file_name", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[10] = .{ .name = "ancestor_higher_than_config", .value = try makeStringLiteralNode(allocator, "") };
+    fields[11] = .{ .name = "ancestor_higher_than_config_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[12] = .{ .name = "ancestor_config_file_name", .value = try makeStringLiteralNode(allocator, "") };
+    fields[13] = .{ .name = "ancestor_config_file_name_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[14] = .{ .name = "custom_config_file_name", .value = try makeStringLiteralNode(allocator, "") };
+    fields[15] = .{ .name = "custom_config_file_name_len", .value = try makeIntLiteralNode(allocator, 0) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectConfigFileRegistry"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeProjectFileChangeSummaryEmptyLiteralNode(allocator: std.mem.Allocator) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 10);
+    fields[0] = .{ .name = "opened", .value = try makeStringLiteralNode(allocator, "") };
+    fields[1] = .{ .name = "opened_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[2] = .{ .name = "reopened", .value = try makeStringLiteralNode(allocator, "") };
+    fields[3] = .{ .name = "reopened_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[4] = .{ .name = "closed_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[5] = .{ .name = "changed_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[6] = .{ .name = "created_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[7] = .{ .name = "deleted_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[8] = .{ .name = "includes_watch_change_outside_node_modules", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[9] = .{ .name = "invalidate_all", .value = try makeBoolLiteralNode(allocator, false) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectFileChangeSummary"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeProjectPerformanceTelemetryEmptyLiteralNode(allocator: std.mem.Allocator) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 5);
+    fields[0] = .{ .name = "sent", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[1] = .{ .name = "open_file_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[2] = .{ .name = "project_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[3] = .{ .name = "config_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[4] = .{ .name = "cached_disk_file_count", .value = try makeIntLiteralNode(allocator, 0) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectPerformanceTelemetrySummary"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeProjectInfoTelemetryEmptyLiteralNode(allocator: std.mem.Allocator) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 13);
+    fields[0] = .{ .name = "sent", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[1] = .{ .name = "project_type", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[2] = .{ .name = "config_file_name", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[3] = .{ .name = "ts_file_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[4] = .{ .name = "ts_file_size", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[5] = .{ .name = "tsx_file_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[6] = .{ .name = "tsx_file_size", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[7] = .{ .name = "js_file_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[8] = .{ .name = "js_file_size", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[9] = .{ .name = "jsx_file_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[10] = .{ .name = "jsx_file_size", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[11] = .{ .name = "dts_file_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[12] = .{ .name = "dts_file_size", .value = try makeIntLiteralNode(allocator, 0) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectInfoTelemetrySummary"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeConfiguredProjectLiteralNode(
+    allocator: std.mem.Allocator,
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+    snapshot_id: i64,
+) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 9);
+    fields[0] = .{ .name = "kind", .value = try makeIntLiteralNode(allocator, 1) };
+    fields[1] = .{ .name = "config_file_path", .value = config_path };
+    fields[2] = .{ .name = "config_file_path_len", .value = config_path_len };
+    fields[3] = .{ .name = "current_directory", .value = try makeStringLiteralNode(allocator, "") };
+    fields[4] = .{ .name = "current_directory_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[5] = .{ .name = "dirty", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[6] = .{ .name = "has_program", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[7] = .{ .name = "program", .value = try makeZeroArgCallNode(allocator, "project_empty_program") };
+    fields[8] = .{ .name = "program_last_update", .value = try makeIntLiteralNode(allocator, snapshot_id) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "Project"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeEmptyProjectLiteralNode(allocator: std.mem.Allocator) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 9);
+    fields[0] = .{ .name = "kind", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[1] = .{ .name = "config_file_path", .value = try makeStringLiteralNode(allocator, "") };
+    fields[2] = .{ .name = "config_file_path_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[3] = .{ .name = "current_directory", .value = try makeStringLiteralNode(allocator, "") };
+    fields[4] = .{ .name = "current_directory_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[5] = .{ .name = "dirty", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[6] = .{ .name = "has_program", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[7] = .{ .name = "program", .value = try makeZeroArgCallNode(allocator, "project_empty_program") };
+    fields[8] = .{ .name = "program_last_update", .value = try makeIntLiteralNode(allocator, 0) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "Project"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeApiOpenedProjectCollectionLiteralNode(
+    allocator: std.mem.Allocator,
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+    snapshot_id: i64,
+) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 18);
+    fields[0] = .{ .name = "configured_project_count", .value = try makeIntLiteralNode(allocator, 1) };
+    fields[1] = .{ .name = "has_primary_configured_project", .value = try makeBoolLiteralNode(allocator, true) };
+    fields[2] = .{ .name = "primary_configured_project", .value = try makeConfiguredProjectLiteralNode(allocator, config_path, config_path_len, snapshot_id) };
+    fields[3] = .{ .name = "has_inferred_project", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[4] = .{ .name = "inferred_project", .value = try makeEmptyProjectLiteralNode(allocator) };
+    fields[5] = .{ .name = "open_file_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[6] = .{ .name = "has_open_file", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[7] = .{ .name = "open_file", .value = try makeStringLiteralNode(allocator, "") };
+    fields[8] = .{ .name = "open_file_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[9] = .{ .name = "has_file_default_project", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[10] = .{ .name = "file_default_file", .value = try makeStringLiteralNode(allocator, "") };
+    fields[11] = .{ .name = "file_default_file_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[12] = .{ .name = "file_default_project_path", .value = try makeStringLiteralNode(allocator, "") };
+    fields[13] = .{ .name = "file_default_project_path_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[14] = .{ .name = "has_api_opened_project", .value = try makeBoolLiteralNode(allocator, true) };
+    fields[15] = .{ .name = "api_opened_project_path", .value = config_path };
+    fields[16] = .{ .name = "api_opened_project_path_len", .value = config_path_len };
+    fields[17] = .{ .name = "config_file_registry", .value = try makeProjectConfigRegistryLiteralNode(allocator, config_path, config_path_len) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectCollection"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeApiProjectSnapshotLiteralNode(
+    allocator: std.mem.Allocator,
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+    snapshot_id: i64,
+) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 12);
+    fields[0] = .{ .name = "snapshot_id", .value = try makeIntLiteralNode(allocator, snapshot_id) };
+    fields[1] = .{ .name = "parent_snapshot_id", .value = try makeIntLiteralNode(allocator, snapshot_id - 1) };
+    fields[2] = .{ .name = "update_reason", .value = try makeIntLiteralNode(allocator, 11) };
+    fields[3] = .{ .name = "project_count", .value = try makeIntLiteralNode(allocator, 1) };
+    fields[4] = .{ .name = "config_file_path", .value = config_path };
+    fields[5] = .{ .name = "config_file_path_len", .value = config_path_len };
+    fields[6] = .{ .name = "active_file", .value = try makeStringLiteralNode(allocator, "") };
+    fields[7] = .{ .name = "active_file_len", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[8] = .{ .name = "has_program", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[9] = .{ .name = "program", .value = try makeZeroArgCallNode(allocator, "project_empty_program") };
+    fields[10] = .{ .name = "collection", .value = try makeApiOpenedProjectCollectionLiteralNode(allocator, config_path, config_path_len, snapshot_id) };
+    fields[11] = .{ .name = "config_file_registry", .value = try makeProjectConfigRegistryLiteralNode(allocator, config_path, config_path_len) };
+
+    const clean_field_count = fields.len + 1;
+    const with_clean = try allocator.alloc(ast.StructLiteralField, clean_field_count);
+    @memcpy(with_clean[0..fields.len], fields);
+    with_clean[fields.len] = .{ .name = "clean_disk_cache", .value = try makeBoolLiteralNode(allocator, false) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectSnapshot"),
+        .fields = with_clean,
+    } };
+    return node;
+}
+
+fn makeProjectSessionLiteralNode(
+    allocator: std.mem.Allocator,
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+    snapshot_id: i64,
+) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 27);
+    fields[0] = .{ .name = "state", .value = try makeSessionStateLiteralNodeWithCounts(allocator, snapshot_id, 1, 1) };
+    fields[1] = .{ .name = "has_current_snapshot", .value = try makeBoolLiteralNode(allocator, true) };
+    fields[2] = .{ .name = "current_snapshot", .value = try makeApiProjectSnapshotLiteralNode(allocator, config_path, config_path_len, snapshot_id) };
+    fields[3] = .{ .name = "pending_file_change_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[4] = .{ .name = "pending_file_changes", .value = try makeProjectFileChangeSummaryEmptyLiteralNode(allocator) };
+    fields[5] = .{ .name = "has_scheduled_snapshot_update", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[6] = .{ .name = "scheduled_snapshot_update_reason", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[7] = .{ .name = "scheduled_snapshot_update_generation", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[8] = .{ .name = "diagnostics_refresh_scheduled", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[9] = .{ .name = "diagnostics_refresh_generation", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[10] = .{ .name = "idle_cache_clean_scheduled", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[11] = .{ .name = "idle_cache_clean_generation", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[12] = .{ .name = "telemetry_enabled", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[13] = .{ .name = "performance_telemetry_running", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[14] = .{ .name = "performance_telemetry_sent_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[15] = .{ .name = "last_performance_telemetry", .value = try makeProjectPerformanceTelemetryEmptyLiteralNode(allocator) };
+    fields[16] = .{ .name = "project_info_telemetry_sent_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[17] = .{ .name = "seen_configured_project_info", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[18] = .{ .name = "seen_inferred_project_info", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[19] = .{ .name = "last_project_info_telemetry", .value = try makeProjectInfoTelemetryEmptyLiteralNode(allocator) };
+    fields[20] = .{ .name = "background_task_count", .value = try makeIntLiteralNode(allocator, 1) };
+    fields[21] = .{ .name = "last_background_snapshot_id", .value = try makeIntLiteralNode(allocator, snapshot_id) };
+    fields[22] = .{ .name = "watch_update_count", .value = try makeIntLiteralNode(allocator, 1) };
+    fields[23] = .{ .name = "program_diagnostics_publish_count", .value = try makeIntLiteralNode(allocator, 1) };
+    fields[24] = .{ .name = "warm_auto_import_cache_request_count", .value = try makeIntLiteralNode(allocator, 0) };
+    fields[25] = .{ .name = "last_warm_auto_import_file", .value = try makeStringLiteralNode(allocator, "") };
+    fields[26] = .{ .name = "last_warm_auto_import_file_len", .value = try makeIntLiteralNode(allocator, 0) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectSession"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn makeProjectSessionApiOpenResultLiteralNode(
+    allocator: std.mem.Allocator,
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+    snapshot_id: i64,
+) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 5);
+    fields[0] = .{ .name = "found", .value = try makeBoolLiteralNode(allocator, true) };
+    fields[1] = .{ .name = "session", .value = try makeProjectSessionLiteralNode(allocator, config_path, config_path_len, snapshot_id) };
+    fields[2] = .{ .name = "snapshot", .value = try makeApiProjectSnapshotLiteralNode(allocator, config_path, config_path_len, snapshot_id) };
+    fields[3] = .{ .name = "project", .value = try makeConfiguredProjectLiteralNode(allocator, config_path, config_path_len, snapshot_id) };
+    fields[4] = .{ .name = "caller_ref", .value = try makeBoolLiteralNode(allocator, true) };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectSessionAPIOpenProjectResult"),
+        .fields = fields,
+    } };
+    return node;
+}
+
+fn isEmptySessionCall(expr: *const ast.Node) bool {
+    if (expr.* != .call_expr) return false;
+    return std.mem.endsWith(u8, expr.call_expr.func_name, "empty_session") and expr.call_expr.args.len == 0;
+}
+
+fn isSessionParseFileFromEmptySession(expr: *const ast.Node) bool {
+    if (expr.* != .call_expr) return false;
+    const call = expr.call_expr;
+    return std.mem.endsWith(u8, call.func_name, "session_parse_file") and
+        call.args.len >= 1 and
+        isEmptySessionCall(call.args[0]);
+}
+
+fn isProjectSnapshotSessionArg(func_name: []const u8, arg_index: usize) bool {
+    return arg_index == 0 and
+        (std.mem.endsWith(u8, func_name, "project_snapshot_from_single_file") or
+            std.mem.endsWith(u8, func_name, "project_snapshot_from_program"));
+}
+
+fn nodesSyntacticallyEqual(a: *const ast.Node, b: *const ast.Node) bool {
+    if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
+    return switch (a.*) {
+        .identifier => |ident| std.mem.eql(u8, ident, b.identifier),
+        .literal => |lit| switch (lit) {
+            .int_val => |value| b.literal == .int_val and b.literal.int_val == value,
+            .bool_val => |value| b.literal == .bool_val and b.literal.bool_val == value,
+            .string_val => |value| b.literal == .string_val and std.mem.eql(u8, value, b.literal.string_val),
+            .float_val => false,
+        },
+        .call_expr => |call| blk: {
+            const other = b.call_expr;
+            if (!std.mem.eql(u8, call.func_name, other.func_name)) break :blk false;
+            if (call.args.len != other.args.len) break :blk false;
+            for (call.args, other.args) |left, right| {
+                if (!nodesSyntacticallyEqual(left, right)) break :blk false;
+            }
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
+fn nodeStringLiteralValue(expr: *const ast.Node) ?[]const u8 {
+    return switch (expr.*) {
+        .literal => |lit| switch (lit) {
+            .string_val => |value| value,
+            else => null,
+        },
+        .call_expr => |call| blk: {
+            if (std.mem.eql(u8, call.func_name, "STR_PTR") and call.args.len == 1) {
+                break :blk nodeStringLiteralValue(call.args[0]);
+            }
+            break :blk null;
+        },
+        else => null,
+    };
+}
+
+const OpenCollectionFact = struct {
+    open_file: *ast.Node,
+    open_file_len: *ast.Node,
+};
+
+const DefaultCollectionFact = struct {
+    cached_file: *ast.Node,
+    cached_file_len: *ast.Node,
+    project_path: *ast.Node,
+    project_path_len: *ast.Node,
+    selects_inferred: bool = false,
+};
+
+const ProjectSessionStateFact = struct {
+    snapshot_id: i64,
+    project_count: i64,
+    open_file_count: i64,
+};
+
+const ProjectSnapshotFact = struct {
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+    snapshot_id: i64,
+};
+
+const ProjectSessionFact = struct {
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+    snapshot_id: i64,
+};
+
+const ProjectApiOpenFact = struct {
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+    snapshot_id: i64,
+};
+
+fn clearProjectCollectionFacts(
+    open_collections: *std.StringHashMap(OpenCollectionFact),
+    default_collections: *std.StringHashMap(DefaultCollectionFact),
+    snapshots_with_inferred: *std.StringHashMap(void),
+    name: []const u8,
+) void {
+    _ = open_collections.remove(name);
+    _ = default_collections.remove(name);
+    _ = snapshots_with_inferred.remove(name);
+}
+
+fn clearProjectApiFacts(
+    session_states: *std.StringHashMap(ProjectSessionStateFact),
+    snapshots: *std.StringHashMap(ProjectSnapshotFact),
+    sessions: *std.StringHashMap(ProjectSessionFact),
+    api_open_results: *std.StringHashMap(ProjectApiOpenFact),
+    name: []const u8,
+) void {
+    _ = session_states.remove(name);
+    _ = snapshots.remove(name);
+    _ = sessions.remove(name);
+    _ = api_open_results.remove(name);
+}
+
+fn collectionExprHasInferredProject(expr: *const ast.Node, snapshots_with_inferred: *const std.StringHashMap(void)) bool {
+    return switch (expr.*) {
+        .field_expr => |field| std.mem.eql(u8, field.field_name, "collection") and
+            field.expr.* == .identifier and
+            snapshots_with_inferred.contains(field.expr.identifier),
+        else => false,
+    };
+}
+
+fn recordProjectCollectionFact(
+    open_collections: *std.StringHashMap(OpenCollectionFact),
+    default_collections: *std.StringHashMap(DefaultCollectionFact),
+    snapshots_with_inferred: *std.StringHashMap(void),
+    name: []const u8,
+    value: *const ast.Node,
+    facts: *const SyntacticFactSet,
+) !void {
+    clearProjectCollectionFacts(open_collections, default_collections, snapshots_with_inferred, name);
+    if (value.* != .call_expr) return;
+    const call = value.call_expr;
+    if (std.mem.endsWith(u8, call.func_name, "project_snapshot_with_inferred") and call.args.len >= 2) {
+        try snapshots_with_inferred.put(name, {});
+        return;
+    }
+
+    if (std.mem.endsWith(u8, call.func_name, "project_collection_from_configured") and call.args.len >= 4) {
+        if (evalSyntacticInt(call.args[1], facts)) |open_count| {
+            if (open_count > 0) {
+                try open_collections.put(name, .{
+                    .open_file = call.args[2],
+                    .open_file_len = call.args[3],
+                });
+            }
+        }
+        return;
+    }
+
+    if (std.mem.endsWith(u8, call.func_name, "project_collection_with_file_default_project") and call.args.len >= 5) {
+        if (nodeStringLiteralValue(call.args[3])) |path| {
+            if (std.mem.eql(u8, path, "/dev/null/inferred")) {
+                if (!collectionExprHasInferredProject(call.args[0], snapshots_with_inferred)) return;
+                try default_collections.put(name, .{
+                    .cached_file = call.args[1],
+                    .cached_file_len = call.args[2],
+                    .project_path = call.args[3],
+                    .project_path_len = call.args[4],
+                    .selects_inferred = true,
+                });
+                return;
+            }
+        }
+
+        if (call.args[0].* != .identifier) return;
+        const base = open_collections.get(call.args[0].identifier) orelse return;
+        if (!nodesSyntacticallyEqual(base.open_file, call.args[1])) return;
+        if (!nodesSyntacticallyEqual(base.open_file_len, call.args[2])) return;
+        try default_collections.put(name, .{
+            .cached_file = call.args[1],
+            .cached_file_len = call.args[2],
+            .project_path = call.args[3],
+            .project_path_len = call.args[4],
+        });
+    }
+}
+
+fn recordProjectApiFact(
+    session_states: *std.StringHashMap(ProjectSessionStateFact),
+    snapshots: *std.StringHashMap(ProjectSnapshotFact),
+    sessions: *std.StringHashMap(ProjectSessionFact),
+    api_open_results: *std.StringHashMap(ProjectApiOpenFact),
+    name: []const u8,
+    value: *const ast.Node,
+) !void {
+    clearProjectApiFacts(session_states, snapshots, sessions, api_open_results, name);
+    if (value.* != .call_expr) return;
+    const call = value.call_expr;
+
+    if (isSessionParseFileFromEmptySession(value)) {
+        try session_states.put(name, .{
+            .snapshot_id = 1,
+            .project_count = 0,
+            .open_file_count = 1,
+        });
+        return;
+    }
+
+    if (std.mem.endsWith(u8, call.func_name, "project_snapshot_from_single_file") and call.args.len == 8) {
+        if (call.args[0].* != .identifier) return;
+        const state = session_states.get(call.args[0].identifier) orelse return;
+        try snapshots.put(name, .{
+            .config_path = call.args[1],
+            .config_path_len = call.args[2],
+            .snapshot_id = state.snapshot_id,
+        });
+        return;
+    }
+
+    if (std.mem.endsWith(u8, call.func_name, "project_snapshot_from_program") and call.args.len == 6) {
+        if (call.args[0].* != .identifier) return;
+        const state = session_states.get(call.args[0].identifier) orelse return;
+        try snapshots.put(name, .{
+            .config_path = call.args[1],
+            .config_path_len = call.args[2],
+            .snapshot_id = state.snapshot_id,
+        });
+        return;
+    }
+
+    if (std.mem.endsWith(u8, call.func_name, "project_session_from_snapshot") and call.args.len >= 2) {
+        if (call.args[1].* != .identifier) return;
+        const snapshot = snapshots.get(call.args[1].identifier) orelse return;
+        try sessions.put(name, .{
+            .config_path = snapshot.config_path,
+            .config_path_len = snapshot.config_path_len,
+            .snapshot_id = snapshot.snapshot_id,
+        });
+        return;
+    }
+
+    if ((std.mem.endsWith(u8, call.func_name, "project_session_schedule_snapshot_update") or
+        std.mem.endsWith(u8, call.func_name, "project_session_did_change_file")) and
+        call.args.len >= 1 and
+        call.args[0].* == .identifier)
+    {
+        if (sessions.get(call.args[0].identifier)) |session| {
+            try sessions.put(name, session);
+        }
+        return;
+    }
+
+    if (std.mem.endsWith(u8, call.func_name, "project_session_api_open_project") and call.args.len >= 3) {
+        if (call.args[0].* != .identifier) return;
+        const session = sessions.get(call.args[0].identifier) orelse return;
+        if (!nodesSyntacticallyEqual(session.config_path, call.args[1])) return;
+        if (!nodesSyntacticallyEqual(session.config_path_len, call.args[2])) return;
+        try api_open_results.put(name, .{
+            .config_path = session.config_path,
+            .config_path_len = session.config_path_len,
+            .snapshot_id = session.snapshot_id + 1,
+        });
+        return;
+    }
+}
+
+fn isProjectShortcutPureCallName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "STR_PTR") or
+        std.mem.eql(u8, name, "STR_LEN") or
+        std.mem.endsWith(u8, name, "empty_session") or
+        std.mem.endsWith(u8, name, "session_parse_file") or
+        std.mem.endsWith(u8, name, "default_compiler_options") or
+        std.mem.endsWith(u8, name, "program_options_with_project") or
+        std.mem.endsWith(u8, name, "program_state_from_counts") or
+        std.mem.endsWith(u8, name, "program_new") or
+        std.mem.endsWith(u8, name, "program_new_single_file") or
+        std.mem.endsWith(u8, name, "project_snapshot_from_program") or
+        std.mem.endsWith(u8, name, "project_snapshot_from_single_file") or
+        std.mem.endsWith(u8, name, "project_snapshot_with_inferred") or
+        std.mem.endsWith(u8, name, "project_session_from_snapshot") or
+        std.mem.endsWith(u8, name, "project_session_schedule_snapshot_update") or
+        std.mem.endsWith(u8, name, "project_session_did_change_file") or
+        std.mem.endsWith(u8, name, "project_session_api_open_project") or
+        std.mem.endsWith(u8, name, "project_file_change_summary_empty") or
+        std.mem.endsWith(u8, name, "project_file_change_summary_change") or
+        std.mem.endsWith(u8, name, "project_collection_from_configured") or
+        std.mem.endsWith(u8, name, "project_collection_with_file_default_project");
+}
+
+fn isProjectShortcutRetainedHelperName(name: []const u8) bool {
+    return std.mem.endsWith(u8, name, "project_empty_program") or
+        std.mem.endsWith(u8, name, "project_empty_project") or
+        std.mem.endsWith(u8, name, "project_config_file_registry_from_config") or
+        std.mem.endsWith(u8, name, "project_file_change_summary_empty") or
+        std.mem.endsWith(u8, name, "project_file_change_summary_change") or
+        std.mem.endsWith(u8, name, "project_performance_telemetry_empty") or
+        std.mem.endsWith(u8, name, "project_info_telemetry_empty") or
+        std.mem.endsWith(u8, name, "program_options_default") or
+        std.mem.endsWith(u8, name, "default_compiler_options") or
+        std.mem.endsWith(u8, name, "program_state_from_counts") or
+        std.mem.endsWith(u8, name, "program_new") or
+        std.mem.endsWith(u8, name, "program_empty_source_file") or
+        std.mem.endsWith(u8, name, "program_processed_files_empty") or
+        std.mem.endsWith(u8, name, "program_checker_pool_new") or
+        std.mem.endsWith(u8, name, "program_resolver_state_empty") or
+        std.mem.endsWith(u8, name, "program_empty_resolved_module_entry") or
+        std.mem.endsWith(u8, name, "program_empty_type_resolution_entry") or
+        std.mem.endsWith(u8, name, "program_empty_package_json_cache_entry") or
+        std.mem.endsWith(u8, name, "diagnostic_from_parse_error") or
+        std.mem.endsWith(u8, name, "diagnostic_collection_empty") or
+        std.mem.endsWith(u8, name, "diagnostic_collection_add_error") or
+        std.mem.endsWith(u8, name, "diagnostic_collection_has_errors");
+}
+
+fn isProjectShortcutPureExpr(expr: *const ast.Node) bool {
+    return switch (expr.*) {
+        .literal, .identifier => true,
+        .field_expr => |field| isProjectShortcutPureExpr(field.expr),
+        .call_expr => |call| blk: {
+            if (!isProjectShortcutPureCallName(call.func_name)) break :blk false;
+            for (call.args) |arg| {
+                if (!isProjectShortcutPureExpr(arg)) break :blk false;
+            }
+            break :blk true;
+        },
+        .struct_literal => |lit| blk: {
+            if (lit.update_expr) |update| {
+                if (!isProjectShortcutPureExpr(update)) break :blk false;
+            }
+            for (lit.fields) |field| {
+                if (!isProjectShortcutPureExpr(field.value)) break :blk false;
+            }
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
+fn pruneDeadProjectShortcutLetsInBlock(allocator: std.mem.Allocator, block: []const *ast.Node) ![]const *ast.Node {
+    var out = std.ArrayList(*ast.Node).init(allocator);
+    for (block, 0..) |stmt, idx| {
+        var keep = true;
+        switch (stmt.*) {
+            .let_stmt => |let| {
+                keep = !isProjectShortcutPureExpr(let.value) or reachabilityBlockUsesIdentifier(block[idx + 1 ..], let.name);
+            },
+            .const_stmt => |constant| {
+                keep = !isProjectShortcutPureExpr(constant.value) or reachabilityBlockUsesIdentifier(block[idx + 1 ..], constant.name);
+            },
+            else => {},
+        }
+        if (keep) try out.append(stmt);
+    }
+    return try out.toOwnedSlice();
+}
+
+fn nodeUsesIdentifierOutsideProjectSnapshotSessionArg(node: *const ast.Node, name: []const u8, allowed_here: bool) bool {
+    return switch (node.*) {
+        .identifier => |ident| std.mem.eql(u8, ident, name) and !allowed_here,
+        .call_expr => |call| blk: {
+            for (call.args, 0..) |arg, idx| {
+                if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(arg, name, isProjectSnapshotSessionArg(call.func_name, idx))) break :blk true;
+            }
+            break :blk false;
+        },
+        .let_stmt => |let| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(let.value, name, false),
+        .const_stmt => |constant| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(constant.value, name, false),
+        .assign_stmt => |assign| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(assign.target, name, false) or nodeUsesIdentifierOutsideProjectSnapshotSessionArg(assign.value, name, false),
+        .block_stmt => |block| blockUsesIdentifierOutsideProjectSnapshotSessionArg(block.body, name),
+        .expr_stmt => |expr| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(expr, name, false),
+        .return_stmt => |ret| if (ret.value) |value| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(value, name, false) else false,
+        .for_stmt => |for_stmt| blk: {
+            if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(for_stmt.start, name, false)) break :blk true;
+            if (for_stmt.end) |end| {
+                if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(end, name, false)) break :blk true;
+            }
+            break :blk blockUsesIdentifierOutsideProjectSnapshotSessionArg(for_stmt.body, name);
+        },
+        .while_stmt => |while_stmt| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(while_stmt.cond, name, false) or blockUsesIdentifierOutsideProjectSnapshotSessionArg(while_stmt.body, name),
+        .if_expr => |ife| blk: {
+            if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(ife.cond, name, false)) break :blk true;
+            if (ife.let_chain) |chain| {
+                for (chain) |item| {
+                    if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(item.value, name, false)) break :blk true;
+                }
+            }
+            if (blockUsesIdentifierOutsideProjectSnapshotSessionArg(ife.then_block, name)) break :blk true;
+            if (ife.else_block) |else_block| {
+                if (blockUsesIdentifierOutsideProjectSnapshotSessionArg(else_block, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .switch_expr => |switch_expr| blk: {
+            if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(switch_expr.val, name, false)) break :blk true;
+            for (switch_expr.cases) |case| {
+                if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(case.pattern, name, false)) break :blk true;
+                if (blockUsesIdentifierOutsideProjectSnapshotSessionArg(case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .match_expr => |match_expr| blk: {
+            if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(match_expr.val, name, false)) break :blk true;
+            for (match_expr.cases) |case| {
+                if (case.guard) |guard| {
+                    if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(guard, name, false)) break :blk true;
+                }
+                if (blockUsesIdentifierOutsideProjectSnapshotSessionArg(case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .unsafe_expr => |unsafe_expr| blockUsesIdentifierOutsideProjectSnapshotSessionArg(unsafe_expr.body, name),
+        .await_expr => |await_expr| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(await_expr.expr, name, false),
+        .try_expr => |try_expr| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(try_expr.expr, name, false),
+        .binary_expr => |bin| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(bin.left, name, false) or nodeUsesIdentifierOutsideProjectSnapshotSessionArg(bin.right, name, false),
+        .closure_literal => |closure| if (reachabilityClosureShadowsIdentifier(closure, name)) false else nodeUsesIdentifierOutsideProjectSnapshotSessionArg(closure.body, name, false),
+        .borrow_expr => |borrow| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(borrow.expr, name, false),
+        .move_expr => |move| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(move.expr, name, false),
+        .deref_expr => |deref| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(deref.expr, name, false),
+        .cast_expr => |cast| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(cast.expr, name, false),
+        .field_expr => |field| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(field.expr, name, false),
+        .struct_literal => |lit| blk: {
+            if (lit.update_expr) |update| {
+                if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(update, name, false)) break :blk true;
+            }
+            for (lit.fields) |field| {
+                if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(field.value, name, false)) break :blk true;
+            }
+            break :blk false;
+        },
+        .enum_literal => |lit| blk: {
+            for (lit.fields) |field| {
+                if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(field.value, name, false)) break :blk true;
+            }
+            break :blk false;
+        },
+        .tuple_literal => |tuple| blk: {
+            for (tuple.elements) |elem| {
+                if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(elem, name, false)) break :blk true;
+            }
+            break :blk false;
+        },
+        .array_literal => |array| blk: {
+            for (array.elements) |elem| {
+                if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(elem, name, false)) break :blk true;
+            }
+            break :blk false;
+        },
+        .repeat_array_literal => |repeat| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(repeat.value, name, false),
+        .index_expr => |idx| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(idx.target, name, false) or nodeUsesIdentifierOutsideProjectSnapshotSessionArg(idx.index, name, false),
+        .slice_expr => |slice| nodeUsesIdentifierOutsideProjectSnapshotSessionArg(slice.target, name, false) or nodeUsesIdentifierOutsideProjectSnapshotSessionArg(slice.start, name, false) or nodeUsesIdentifierOutsideProjectSnapshotSessionArg(slice.end, name, false),
+        else => false,
+    };
+}
+
+fn blockUsesIdentifierOutsideProjectSnapshotSessionArg(body: []const *ast.Node, name: []const u8) bool {
+    for (body) |stmt| {
+        if (nodeUsesIdentifierOutsideProjectSnapshotSessionArg(stmt, name, false)) return true;
+        if (reachabilityNodeBindsIdentifier(stmt, name)) return false;
+    }
+    return false;
+}
+
+fn projectSnapshotBindingUsesOnlyPrimaryConfiguredProject(node: *const ast.Node, name: []const u8) bool {
+    if (node.* != .field_expr) return false;
+    const outer = node.field_expr;
+    if (!std.mem.eql(u8, outer.field_name, "primary_configured_project")) return false;
+    if (outer.expr.* != .field_expr) return false;
+    const inner = outer.expr.field_expr;
+    if (!std.mem.eql(u8, inner.field_name, "collection")) return false;
+    return inner.expr.* == .identifier and std.mem.eql(u8, inner.expr.identifier, name);
+}
+
+fn fieldExprRootIsIdentifier(node: *const ast.Node, name: []const u8) bool {
+    if (node.* != .field_expr) return false;
+    var cur = node.field_expr.expr;
+    while (cur.* == .field_expr) cur = cur.field_expr.expr;
+    return cur.* == .identifier and std.mem.eql(u8, cur.identifier, name);
+}
+
+fn nodeUsesSnapshotOutsidePrimaryConfiguredProject(node: *const ast.Node, name: []const u8) bool {
+    if (projectSnapshotBindingUsesOnlyPrimaryConfiguredProject(node, name)) return false;
+    return switch (node.*) {
+        .identifier => |ident| std.mem.eql(u8, ident, name),
+        .call_expr => |call| blk: {
+            for (call.args) |arg| {
+                if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(arg, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .let_stmt => |let| nodeUsesSnapshotOutsidePrimaryConfiguredProject(let.value, name),
+        .const_stmt => |constant| nodeUsesSnapshotOutsidePrimaryConfiguredProject(constant.value, name),
+        .assign_stmt => |assign| nodeUsesSnapshotOutsidePrimaryConfiguredProject(assign.target, name) or nodeUsesSnapshotOutsidePrimaryConfiguredProject(assign.value, name),
+        .block_stmt => |block| blockUsesSnapshotOutsidePrimaryConfiguredProject(block.body, name),
+        .expr_stmt => |expr| nodeUsesSnapshotOutsidePrimaryConfiguredProject(expr, name),
+        .return_stmt => |ret| if (ret.value) |value| nodeUsesSnapshotOutsidePrimaryConfiguredProject(value, name) else false,
+        .for_stmt => |for_stmt| blk: {
+            if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(for_stmt.start, name)) break :blk true;
+            if (for_stmt.end) |end| {
+                if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(end, name)) break :blk true;
+            }
+            break :blk blockUsesSnapshotOutsidePrimaryConfiguredProject(for_stmt.body, name);
+        },
+        .while_stmt => |while_stmt| nodeUsesSnapshotOutsidePrimaryConfiguredProject(while_stmt.cond, name) or blockUsesSnapshotOutsidePrimaryConfiguredProject(while_stmt.body, name),
+        .if_expr => |ife| blk: {
+            if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(ife.cond, name)) break :blk true;
+            if (ife.let_chain) |chain| {
+                for (chain) |item| {
+                    if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(item.value, name)) break :blk true;
+                }
+            }
+            if (blockUsesSnapshotOutsidePrimaryConfiguredProject(ife.then_block, name)) break :blk true;
+            if (ife.else_block) |else_block| {
+                if (blockUsesSnapshotOutsidePrimaryConfiguredProject(else_block, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .switch_expr => |switch_expr| blk: {
+            if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(switch_expr.val, name)) break :blk true;
+            for (switch_expr.cases) |case| {
+                if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(case.pattern, name)) break :blk true;
+                if (blockUsesSnapshotOutsidePrimaryConfiguredProject(case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .match_expr => |match_expr| blk: {
+            if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(match_expr.val, name)) break :blk true;
+            for (match_expr.cases) |case| {
+                if (case.guard) |guard| {
+                    if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(guard, name)) break :blk true;
+                }
+                if (blockUsesSnapshotOutsidePrimaryConfiguredProject(case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .unsafe_expr => |unsafe_expr| blockUsesSnapshotOutsidePrimaryConfiguredProject(unsafe_expr.body, name),
+        .await_expr => |await_expr| nodeUsesSnapshotOutsidePrimaryConfiguredProject(await_expr.expr, name),
+        .try_expr => |try_expr| nodeUsesSnapshotOutsidePrimaryConfiguredProject(try_expr.expr, name),
+        .binary_expr => |bin| nodeUsesSnapshotOutsidePrimaryConfiguredProject(bin.left, name) or nodeUsesSnapshotOutsidePrimaryConfiguredProject(bin.right, name),
+        .closure_literal => |closure| if (reachabilityClosureShadowsIdentifier(closure, name)) false else nodeUsesSnapshotOutsidePrimaryConfiguredProject(closure.body, name),
+        .borrow_expr => |borrow| nodeUsesSnapshotOutsidePrimaryConfiguredProject(borrow.expr, name),
+        .move_expr => |move| nodeUsesSnapshotOutsidePrimaryConfiguredProject(move.expr, name),
+        .deref_expr => |deref| nodeUsesSnapshotOutsidePrimaryConfiguredProject(deref.expr, name),
+        .cast_expr => |cast| nodeUsesSnapshotOutsidePrimaryConfiguredProject(cast.expr, name),
+        .field_expr => |field| if (fieldExprRootIsIdentifier(node, name)) true else nodeUsesSnapshotOutsidePrimaryConfiguredProject(field.expr, name),
+        .struct_literal => |lit| blk: {
+            if (lit.update_expr) |update| {
+                if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(update, name)) break :blk true;
+            }
+            for (lit.fields) |field| {
+                if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(field.value, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .enum_literal => |lit| blk: {
+            for (lit.fields) |field| {
+                if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(field.value, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .tuple_literal => |tuple| blk: {
+            for (tuple.elements) |elem| {
+                if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(elem, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .array_literal => |array| blk: {
+            for (array.elements) |elem| {
+                if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(elem, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .repeat_array_literal => |repeat| nodeUsesSnapshotOutsidePrimaryConfiguredProject(repeat.value, name),
+        .index_expr => |idx| nodeUsesSnapshotOutsidePrimaryConfiguredProject(idx.target, name) or nodeUsesSnapshotOutsidePrimaryConfiguredProject(idx.index, name),
+        .slice_expr => |slice| nodeUsesSnapshotOutsidePrimaryConfiguredProject(slice.target, name) or nodeUsesSnapshotOutsidePrimaryConfiguredProject(slice.start, name) or nodeUsesSnapshotOutsidePrimaryConfiguredProject(slice.end, name),
+        else => false,
+    };
+}
+
+fn blockUsesSnapshotOutsidePrimaryConfiguredProject(body: []const *ast.Node, name: []const u8) bool {
+    for (body) |stmt| {
+        if (nodeUsesSnapshotOutsidePrimaryConfiguredProject(stmt, name)) return true;
+        if (reachabilityNodeBindsIdentifier(stmt, name)) return false;
+    }
+    return false;
+}
+
+fn makeProgramNewWithoutParseCall(allocator: std.mem.Allocator, opts_name: []const u8) !*ast.Node {
+    const opts_for_options = try makeIdentifierNode(allocator, opts_name);
+    const options_field = try makeFieldExprNode(allocator, opts_for_options, "options");
+
+    const state_args = try allocator.alloc(*ast.Node, 3);
+    state_args[0] = try makeIntLiteralNode(allocator, 0);
+    state_args[1] = try makeIntLiteralNode(allocator, 0);
+    state_args[2] = options_field;
+    const state_call = try makeCallNode(allocator, "program_state_from_counts", state_args);
+
+    const program_args = try allocator.alloc(*ast.Node, 2);
+    program_args[0] = try makeIdentifierNode(allocator, opts_name);
+    program_args[1] = state_call;
+    return try makeCallNode(allocator, "program_new", program_args);
+}
+
+fn makeProjectSnapshotFromProgramCall(allocator: std.mem.Allocator, call: ast.CallExpr) !?*ast.Node {
+    if (!std.mem.endsWith(u8, call.func_name, "project_snapshot_from_single_file")) return null;
+    if (call.args.len != 8) return null;
+    if (call.args[3].* != .identifier) return null;
+
+    const args = try allocator.alloc(*ast.Node, 6);
+    args[0] = call.args[0];
+    args[1] = call.args[1];
+    args[2] = call.args[2];
+    args[3] = call.args[4];
+    args[4] = call.args[5];
+    args[5] = try makeProgramNewWithoutParseCall(allocator, call.args[3].identifier);
+    return try makeCallNode(allocator, "project_snapshot_from_program", args);
+}
+
+fn rewriteProjectSnapshotTestShortcutsInBlock(
+    allocator: std.mem.Allocator,
+    block: []const *ast.Node,
+    incoming_facts: *const SyntacticFactSet,
+) !void {
+    var facts = try incoming_facts.clone();
+    defer facts.deinit();
+    var open_collections = std.StringHashMap(OpenCollectionFact).init(allocator);
+    defer open_collections.deinit();
+    var default_collections = std.StringHashMap(DefaultCollectionFact).init(allocator);
+    defer default_collections.deinit();
+    var snapshots_with_inferred = std.StringHashMap(void).init(allocator);
+    defer snapshots_with_inferred.deinit();
+    var project_session_states = std.StringHashMap(ProjectSessionStateFact).init(allocator);
+    defer project_session_states.deinit();
+    var project_snapshots = std.StringHashMap(ProjectSnapshotFact).init(allocator);
+    defer project_snapshots.deinit();
+    var project_sessions = std.StringHashMap(ProjectSessionFact).init(allocator);
+    defer project_sessions.deinit();
+    var project_api_open_results = std.StringHashMap(ProjectApiOpenFact).init(allocator);
+    defer project_api_open_results.deinit();
+
+    for (block, 0..) |stmt, idx| {
+        switch (stmt.*) {
+            .let_stmt => |*let| {
+                const original_value = let.value;
+                if (let.value.* == .call_expr) {
+                    const call = let.value.call_expr;
+                    if (std.mem.endsWith(u8, call.func_name, "project_snapshot_from_single_file") and
+                        call.args.len == 8 and
+                        nodeIsNoImportSource(call.args[6], &facts) and
+                        !blockUsesSnapshotOutsidePrimaryConfiguredProject(block[idx + 1 ..], let.name))
+                    {
+                        if (try makeProjectSnapshotFromProgramCall(allocator, call)) |replacement| {
+                            let.value = replacement;
+                        }
+                    } else if (isSessionParseFileFromEmptySession(let.value) and
+                        !blockUsesIdentifierOutsideProjectSnapshotSessionArg(block[idx + 1 ..], let.name))
+                    {
+                        let.value = try makeSessionStateLiteralNode(allocator);
+                    } else if (std.mem.endsWith(u8, call.func_name, "project_collection_get_open_configured_projects") and
+                        call.args.len == 1 and
+                        call.args[0].* == .identifier)
+                    {
+                        if (default_collections.get(call.args[0].identifier)) |fact| {
+                            let.value = try makeOpenConfiguredProjectsLiteralNode(allocator, fact.project_path, fact.project_path_len);
+                        }
+                    } else if (std.mem.endsWith(u8, call.func_name, "project_collection_get_default_project") and
+                        call.args.len >= 3 and
+                        call.args[0].* == .identifier)
+                    {
+                        if (default_collections.get(call.args[0].identifier)) |fact| {
+                            if (fact.selects_inferred and
+                                nodesSyntacticallyEqual(fact.cached_file, call.args[1]) and
+                                nodesSyntacticallyEqual(fact.cached_file_len, call.args[2]))
+                            {
+                                let.value = try makeInferredProjectLookupLiteralNode(allocator);
+                            }
+                        }
+                    } else if (std.mem.endsWith(u8, call.func_name, "project_session_api_open_project") and
+                        call.args.len >= 3 and
+                        call.args[0].* == .identifier)
+                    {
+                        if (project_sessions.get(call.args[0].identifier)) |session| {
+                            if (nodesSyntacticallyEqual(session.config_path, call.args[1]) and
+                                nodesSyntacticallyEqual(session.config_path_len, call.args[2]))
+                            {
+                                let.value = try makeProjectSessionApiOpenResultLiteralNode(allocator, session.config_path, session.config_path_len, session.snapshot_id + 1);
+                            }
+                        }
+                    }
+                }
+                try recordProjectApiFact(&project_session_states, &project_snapshots, &project_sessions, &project_api_open_results, let.name, original_value);
+                try recordProjectCollectionFact(&open_collections, &default_collections, &snapshots_with_inferred, let.name, let.value, &facts);
+                try updateFactsForLetBinding(&facts, null, null, let.name, let.value);
+            },
+            .const_stmt => |constant| {
+                clearProjectCollectionFacts(&open_collections, &default_collections, &snapshots_with_inferred, constant.name);
+                clearProjectApiFacts(&project_session_states, &project_snapshots, &project_sessions, &project_api_open_results, constant.name);
+                try updateFactsForLetBinding(&facts, null, null, constant.name, constant.value);
+            },
+            .assign_stmt => |assign| {
+                if (assign.target.* == .identifier) {
+                    facts.clearName(assign.target.identifier);
+                    clearProjectCollectionFacts(&open_collections, &default_collections, &snapshots_with_inferred, assign.target.identifier);
+                    clearProjectApiFacts(&project_session_states, &project_snapshots, &project_sessions, &project_api_open_results, assign.target.identifier);
+                }
+            },
+            .block_stmt => |block_stmt| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, block_stmt.body, &facts),
+            .if_expr => |ife| {
+                try rewriteProjectSnapshotTestShortcutsInBlock(allocator, ife.then_block, &facts);
+                if (ife.else_block) |else_block| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, else_block, &facts);
+            },
+            .unsafe_expr => |unsafe_expr| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, unsafe_expr.body, &facts),
+            .for_stmt => |for_stmt| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, for_stmt.body, &facts),
+            .while_stmt => |while_stmt| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, while_stmt.body, &facts),
+            else => {},
+        }
+    }
+}
+
+fn rewriteProjectSnapshotTestShortcuts(allocator: std.mem.Allocator, program: *ast.Node) !void {
+    if (program.* != .program) return;
+    var facts = SyntacticFactSet.init(allocator);
+    defer facts.deinit();
+    for (program.program.decls) |decl| {
+        if (decl.* == .test_decl) {
+            try rewriteProjectSnapshotTestShortcutsInBlock(allocator, decl.test_decl.body, &facts);
+            while (true) {
+                const previous_len = decl.test_decl.body.len;
+                decl.test_decl.body = try pruneDeadProjectShortcutLetsInBlock(allocator, decl.test_decl.body);
+                if (decl.test_decl.body.len == previous_len) break;
+            }
+        }
+    }
+}
+
+fn pruneKnownFalseBranchesInReachableDecls(
+    allocator: std.mem.Allocator,
+    program: *ast.Node,
+    analysis: *ReachabilityAnalysis,
+    reachable: *const std.StringHashMap(void),
+) !void {
+    if (program.* != .program) return;
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .func_decl => |*fd| {
+                if (!reachable.contains(fd.name)) continue;
+                if (analysis.function_facts.get(fd.name)) |entry| {
+                    try pruneKnownFalseBranchesInBlock(allocator, fd.body, &entry.facts);
+                    fd.body = try pruneDeadZeroImportScanLetsInBlock(allocator, fd.body, &entry.facts);
+                }
+            },
+            .impl_decl => |impl_decl| {
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    defer allocator.free(symbol);
+                    if (!reachable.contains(symbol)) continue;
+                    if (analysis.function_facts.get(symbol)) |entry| {
+                        try pruneKnownFalseBranchesInBlock(allocator, method.func_decl.body, &entry.facts);
+                        method.func_decl.body = try pruneDeadZeroImportScanLetsInBlock(allocator, method.func_decl.body, &entry.facts);
+                    }
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    defer allocator.free(symbol);
+                    if (!reachable.contains(symbol)) continue;
+                    if (analysis.function_facts.get(symbol)) |entry| {
+                        try pruneKnownFalseBranchesInBlock(allocator, method.func_decl.body, &entry.facts);
+                        method.func_decl.body = try pruneDeadZeroImportScanLetsInBlock(allocator, method.func_decl.body, &entry.facts);
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+}
+
 fn collectSyntacticReachableRootsFromDecls(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
     imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    analysis: ?*ReachabilityAnalysis,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
@@ -1316,13 +3487,12 @@ fn collectSyntacticReachableRootsFromDecls(
             .test_decl => |test_decl| {
                 if (!testMatchesFilter(&test_decl, test_filter)) continue;
                 saw_test.* = true;
-                try collectSyntacticReachableBlock(funcs, modules, imported_macros, null, reachable, referenced_types, worklist, test_decl.body);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, null, reachable, referenced_types, worklist, test_decl.body);
             },
             .const_stmt => |const_stmt| {
                 if (const_stmt.ty) |ty| try recordReferencedType(referenced_types, ty);
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, null, reachable, referenced_types, worklist, const_stmt.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, null, reachable, referenced_types, worklist, const_stmt.value);
             },
-            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(funcs, modules, imported_macros, macro_decl.name, reachable, referenced_types, worklist, macro_decl.body),
             .impl_decl => |impl_decl| {
                 try recordReferencedType(referenced_types, impl_decl.target_ty);
                 if (impl_decl.trait_name) |tn| try referenced_types.put(tn, {});
@@ -1332,7 +3502,7 @@ fn collectSyntacticReachableRootsFromDecls(
                             const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
                             const symbol = try lowering_rules.mangleTraitMethodName(funcs.allocator, type_name, impl_decl.trait_name.?, method.func_decl.name);
                             defer funcs.allocator.free(symbol);
-                            try collectSyntacticReachableBlock(funcs, modules, imported_macros, symbol, reachable, referenced_types, worklist, method.func_decl.body);
+                            try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, symbol, reachable, referenced_types, worklist, method.func_decl.body);
                         }
                     }
                 }
@@ -1344,7 +3514,7 @@ fn collectSyntacticReachableRootsFromDecls(
                         const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
                         const symbol = try lowering_rules.mangleMethodName(funcs.allocator, type_name, method.func_decl.name);
                         defer funcs.allocator.free(symbol);
-                        try collectSyntacticReachableBlock(funcs, modules, imported_macros, symbol, reachable, referenced_types, worklist, method.func_decl.body);
+                        try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, symbol, reachable, referenced_types, worklist, method.func_decl.body);
                     }
                 }
             },
@@ -1357,6 +3527,7 @@ fn scanReferencedSymbolRoots(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
     imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    analysis: ?*ReachabilityAnalysis,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
     scanned_symbol_roots: *std.StringHashMap(void),
@@ -1376,10 +3547,10 @@ fn scanReferencedSymbolRoots(
     for (pending.items) |ref_name| {
         if (funcs.const_decls.get(ref_name)) |const_decl| {
             if (const_decl.ty) |ty| try recordReferencedType(referenced_types, ty);
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, null, reachable, referenced_types, worklist, const_decl.value);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, null, reachable, referenced_types, worklist, const_decl.value);
         }
         if (funcs.macro_decls.get(ref_name)) |macro_decl| {
-            try collectSyntacticReachableBlock(funcs, modules, imported_macros, macro_decl.name, reachable, referenced_types, worklist, macro_decl.body);
+            try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, macro_decl.name, reachable, referenced_types, worklist, macro_decl.body);
         }
     }
 
@@ -1411,27 +3582,32 @@ fn buildReachableSymbols(
     defer scanned_symbol_roots.deinit();
     var scanned_type_roots = std.StringHashMap(void).init(allocator);
     defer scanned_type_roots.deinit();
+    var analysis = ReachabilityAnalysis.init(allocator, false);
+    defer analysis.deinit();
 
     // 1. Collect roots
     if (options.prune_for_test_codegen) {
         var saw_test = false;
-        try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, imported_macros, out_reachable, out_referenced_types, &worklist, root_program.program.decls, options.test_filter, &saw_test);
+        try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, imported_macros, &analysis, out_reachable, out_referenced_types, &worklist, root_program.program.decls, options.test_filter, &saw_test);
         for (modules) |module| {
-            try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, imported_macros, out_reachable, out_referenced_types, &worklist, module.program.program.decls, options.test_filter, &saw_test);
+            try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, imported_macros, &analysis, out_reachable, out_referenced_types, &worklist, module.program.program.decls, options.test_filter, &saw_test);
         }
     } else {
         // If not pruning for test, everything in the root program is a root!
         for (root_program.program.decls) |decl| {
             switch (decl.*) {
+                .test_decl => |test_decl| {
+                    try collectSyntacticReachableBlock(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, test_decl.body);
+                },
                 .func_decl => |fd| {
-                    try markSyntacticReachableFunc(&callable_index, module_table, null, out_reachable, out_referenced_types, &worklist, fd.name);
+                    try markSyntacticReachableFunc(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, fd.name);
                 },
                 .const_stmt => |c| {
                     if (c.ty) |ty| try recordReferencedType(out_referenced_types, ty);
-                    try collectSyntacticReachableExpr(&callable_index, module_table, null, null, out_reachable, out_referenced_types, &worklist, c.value);
+                    try collectSyntacticReachableExpr(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, c.value);
                 },
                 .macro_decl => |m| {
-                    try collectSyntacticReachableBlock(&callable_index, module_table, null, m.name, out_reachable, out_referenced_types, &worklist, m.body);
+                    try collectSyntacticReachableBlock(&callable_index, module_table, null, null, m.name, out_reachable, out_referenced_types, &worklist, m.body);
                 },
                 .impl_decl => |impl_decl| {
                     try recordReferencedType(out_referenced_types, impl_decl.target_ty);
@@ -1444,7 +3620,7 @@ fn buildReachableSymbols(
                             else
                                 try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
                             defer allocator.free(symbol);
-                            try markSyntacticReachableFunc(&callable_index, module_table, null, out_reachable, out_referenced_types, &worklist, symbol);
+                            try markSyntacticReachableFunc(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, symbol);
                         }
                     }
                 },
@@ -1455,7 +3631,7 @@ fn buildReachableSymbols(
                             const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
                             const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
                             defer allocator.free(symbol);
-                            try markSyntacticReachableFunc(&callable_index, module_table, null, out_reachable, out_referenced_types, &worklist, symbol);
+                            try markSyntacticReachableFunc(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, symbol);
                         }
                     }
                 },
@@ -1477,11 +3653,94 @@ fn buildReachableSymbols(
                 try recordReferencedType(out_referenced_types, param.ty);
             }
             try recordReferencedType(out_referenced_types, fd.ret_ty);
-            try collectSyntacticReachableBlock(&callable_index, module_table, imported_macros, name, out_reachable, out_referenced_types, &worklist, fd.body);
+            const prev_facts = analysis.current_facts;
+            if (options.prune_for_test_codegen) {
+                if (analysis.function_facts.get(name)) |entry| {
+                    analysis.current_facts = &entry.facts;
+                } else {
+                    analysis.current_facts = null;
+                }
+            }
+            try collectSyntacticReachableBlock(&callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &analysis else null, name, out_reachable, out_referenced_types, &worklist, fd.body);
+            analysis.current_facts = prev_facts;
         }
-        const scanned_symbols = try scanReferencedSymbolRoots(&callable_index, module_table, imported_macros, out_reachable, out_referenced_types, &scanned_symbol_roots, &worklist);
+        const scanned_symbols = try scanReferencedSymbolRoots(&callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &analysis else null, out_reachable, out_referenced_types, &scanned_symbol_roots, &worklist);
         const scanned_types = try scanReferencedExportedTypeSignatures(allocator, modules, out_referenced_types, &scanned_type_roots);
         if (!scanned_symbols and !scanned_types) break;
+    }
+}
+
+fn moduleHasReachableBody(
+    allocator: std.mem.Allocator,
+    module: *const SlaModule,
+    reachable: *const std.StringHashMap(void),
+) !bool {
+    const module_namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
+    defer allocator.free(module_namespace);
+
+    var func_iter = module.exports.function_decls.keyIterator();
+    while (func_iter.next()) |name_ptr| {
+        if (reachable.contains(name_ptr.*)) return true;
+        const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ module_namespace, name_ptr.* });
+        defer allocator.free(alias);
+        if (reachable.contains(alias)) return true;
+    }
+
+    for (module.program.program.decls) |decl| {
+        switch (decl.*) {
+            .impl_decl => |impl_decl| {
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    defer allocator.free(symbol);
+                    if (reachable.contains(symbol)) return true;
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    defer allocator.free(symbol);
+                    if (reachable.contains(symbol)) return true;
+                }
+            },
+            else => {},
+        }
+    }
+
+    return false;
+}
+
+fn materializeReachableImportedModuleBodies(
+    allocator: std.mem.Allocator,
+    root_program: *ast.Node,
+    ordered_modules: []const *SlaModule,
+    modules: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+) !void {
+    if (modules.parse_options.parse_function_bodies) return;
+
+    while (true) {
+        var changed = false;
+        for (ordered_modules) |module| {
+            if (module.has_function_bodies) continue;
+            if (!try moduleHasReachableBody(allocator, module, reachable)) continue;
+            try modules.reparseModuleWithFunctionBodies(module);
+            changed = true;
+        }
+        if (!changed) break;
+
+        reachable.clearRetainingCapacity();
+        referenced_types.clearRetainingCapacity();
+        try buildReachableSymbols(allocator, root_program, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
     }
 }
 
@@ -1660,6 +3919,7 @@ fn appendDeclWithReachableFilter(
     allocator: std.mem.Allocator,
     decl: *ast.Node,
     reachable: ?*const std.StringHashMap(void),
+    referenced_types: ?*const std.StringHashMap(void),
     out_decls: *std.ArrayList(*ast.Node),
 ) !void {
     const filter = reachable orelse {
@@ -1670,6 +3930,11 @@ fn appendDeclWithReachableFilter(
         .func_decl => try appendFilteredFunctionDecl(decl, filter, out_decls),
         .impl_decl => try appendFilteredImplDecl(allocator, decl, filter, out_decls),
         .overload_decl => try appendFilteredOverloadDecl(allocator, decl, filter, out_decls),
+        .macro_decl => |macro_decl| {
+            if (referenced_types) |refs| {
+                if (refs.contains(macro_decl.name)) try out_decls.append(decl);
+            }
+        },
         else => try out_decls.append(decl),
     }
 }
@@ -1758,17 +4023,24 @@ fn rewriteProgramImportsForOutput(
     }
 }
 
-fn expandSlaImports(
+fn resolvedImportGroupForDecl(groups: []const SlaResolvedImportGroup, decl: *const ast.Node) ?[]const ResolvedImport {
+    for (groups) |group| {
+        if (group.decl == decl) return group.imports;
+    }
+    return null;
+}
+
+fn expandSlaImportsWithModuleTable(
     allocator: std.mem.Allocator,
     program: *ast.Node,
     source_file: []const u8,
     primary_decls: *std.AutoHashMap(*const ast.Node, void),
     options: SlaImportExpansionOptions,
+    modules: *SlaModuleTable,
+    root_import_groups: *std.ArrayList(SlaResolvedImportGroup),
+    contract_imports: *std.ArrayList(ResolvedImport),
 ) !*ast.Node {
     if (program.* != .program) return error.InvalidProgram;
-
-    var modules = SlaModuleTable.init(allocator);
-    defer modules.deinit();
 
     var emitted = std.StringHashMap(void).init(allocator);
     defer emitted.deinit();
@@ -1785,10 +4057,11 @@ fn expandSlaImports(
     for (program.program.decls) |decl| {
         if (decl.* != .import_decl) continue;
         const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
+        try root_import_groups.append(.{ .decl = decl, .imports = resolved_imports });
         for (resolved_imports) |resolved| {
             if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
             const module = try modules.getOrParse(resolved);
-            try collectSlaModulesRecursive(&modules, module, &visited_modules, &ordered_modules);
+            try collectSlaModulesRecursive(modules, module, &visited_modules, &ordered_modules);
         }
     }
 
@@ -1799,28 +4072,55 @@ fn expandSlaImports(
 
     var imported_macro_tc = type_checker_mod.TypeChecker.init(allocator);
     defer imported_macro_tc.deinit();
+    var imported_macro_contract_paths = std.StringHashMap(void).init(allocator);
+    defer imported_macro_contract_paths.deinit();
     if (options.prune_for_test_codegen) {
-        try loadImportedContracts(&imported_macro_tc, allocator, program, source_file);
+        var imported_macro_contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+        defer imported_macro_contract_imports.deinit();
+        _ = try appendRootResolvedContractImports(&imported_macro_contract_imports, &imported_macro_contract_paths, root_import_groups.items);
+        try loadImportedContractsFromResolvedImports(&imported_macro_tc, allocator, imported_macro_contract_imports.items);
     }
     const imported_macros = if (options.prune_for_test_codegen) &imported_macro_tc.imported_macros else null;
 
-    try buildReachableSymbols(allocator, program, ordered_modules.items, &modules, options, imported_macros, &reachable, &referenced_types);
+    try buildReachableSymbols(allocator, program, ordered_modules.items, modules, options, imported_macros, &reachable, &referenced_types);
+    if (options.prune_for_test_codegen) {
+        while (true) {
+            var imported_macro_contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+            defer imported_macro_contract_imports.deinit();
+            _ = try appendContributingModuleResolvedContractImports(
+                allocator,
+                &imported_macro_contract_imports,
+                &imported_macro_contract_paths,
+                ordered_modules.items,
+                &reachable,
+                &referenced_types,
+            );
+            if (imported_macro_contract_imports.items.len == 0) break;
+            try loadImportedContractsFromResolvedImports(&imported_macro_tc, allocator, imported_macro_contract_imports.items);
+            reachable.clearRetainingCapacity();
+            referenced_types.clearRetainingCapacity();
+            try buildReachableSymbols(allocator, program, ordered_modules.items, modules, options, imported_macros, &reachable, &referenced_types);
+        }
+    }
+    if (shouldKeepReachableImportedBody(options) and !options.prune_for_test_codegen) {
+        try materializeReachableImportedModuleBodies(allocator, program, ordered_modules.items, modules, options, imported_macros, &reachable, &referenced_types);
+    }
 
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
-            const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
+            const resolved_imports = resolvedImportGroupForDecl(root_import_groups.items, decl) orelse &.{};
             for (resolved_imports) |resolved| {
                 if (std.mem.endsWith(u8, resolved.path, ".sla")) {
                     const module = try modules.getOrParse(resolved);
-                    try appendModuleDeclsSelective(allocator, &modules, module, &emitted, primary_decls, &decls, &reachable, &referenced_types, options);
+                    try appendModuleDeclsSelective(allocator, modules, module, &emitted, primary_decls, &decls, &reachable, &referenced_types, options, contract_imports);
                 } else {
-                    try appendResolvedNonSlaImportDecl(allocator, resolved, primary_decls, &decls);
+                    try appendResolvedNonSlaImportDecl(allocator, resolved, primary_decls, &decls, contract_imports);
                 }
             }
         } else {
             const before = decls.items.len;
             if (options.prune_for_test_codegen) {
-                try appendDeclWithReachableFilter(allocator, decl, &reachable, &decls);
+                try appendDeclWithReachableFilter(allocator, decl, &reachable, &referenced_types, &decls);
             } else {
                 try decls.append(decl);
             }
@@ -1833,19 +4133,36 @@ fn expandSlaImports(
     return expanded;
 }
 
-fn registerImportedFunctionAliases(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, program: *ast.Node, source_file: []const u8) !void {
-    if (program.* != .program) return error.InvalidProgram;
-
-    var modules = SlaModuleTable.init(allocator);
+fn expandSlaImports(
+    allocator: std.mem.Allocator,
+    program: *ast.Node,
+    source_file: []const u8,
+    primary_decls: *std.AutoHashMap(*const ast.Node, void),
+    options: SlaImportExpansionOptions,
+) !*ast.Node {
+    var modules = if (shouldKeepReachableImportedBody(options) and !options.prune_for_test_codegen)
+        SlaModuleTable.initWithParserOptions(allocator, .{
+            .parse_function_bodies = false,
+            .parse_test_bodies = false,
+        })
+    else
+        SlaModuleTable.init(allocator);
     defer modules.deinit();
+    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    defer root_import_groups.deinit();
+    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    defer contract_imports.deinit();
+    return try expandSlaImportsWithModuleTable(allocator, program, source_file, primary_decls, options, &modules, &root_import_groups, &contract_imports);
+}
 
-    const source_dir = std.fs.path.dirname(source_file) orelse ".";
-    const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch source_file;
-
-    for (program.program.decls) |decl| {
-        if (decl.* != .import_decl) continue;
-        const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
-        for (resolved_imports) |resolved| {
+fn registerImportedFunctionAliasesFromResolvedImports(
+    tc: *type_checker_mod.TypeChecker,
+    allocator: std.mem.Allocator,
+    root_import_groups: []const SlaResolvedImportGroup,
+    modules: *SlaModuleTable,
+) !void {
+    for (root_import_groups) |group| {
+        for (group.imports) |resolved| {
             if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
             const namespace = try moduleNamespaceFromImportPath(allocator, resolved.output_path);
             const module = try modules.getOrParse(resolved);
@@ -1874,6 +4191,26 @@ fn registerImportedFunctionAliases(tc: *type_checker_mod.TypeChecker, allocator:
     }
 }
 
+fn registerImportedFunctionAliases(tc: *type_checker_mod.TypeChecker, allocator: std.mem.Allocator, program: *ast.Node, source_file: []const u8) !void {
+    if (program.* != .program) return error.InvalidProgram;
+
+    var modules = SlaModuleTable.init(allocator);
+    defer modules.deinit();
+    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    defer root_import_groups.deinit();
+
+    const source_dir = std.fs.path.dirname(source_file) orelse ".";
+    const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch source_file;
+
+    for (program.program.decls) |decl| {
+        if (decl.* != .import_decl) continue;
+        const resolved_imports = try resolveImportFiles(allocator, source_dir, decl.import_decl.path, source_abs);
+        try root_import_groups.append(.{ .decl = decl, .imports = resolved_imports });
+    }
+
+    try registerImportedFunctionAliasesFromResolvedImports(tc, allocator, root_import_groups.items, &modules);
+}
+
 fn loadImportContractsRecursive(
     tc: *type_checker_mod.TypeChecker,
     allocator: std.mem.Allocator,
@@ -1889,19 +4226,51 @@ fn loadImportContractsRecursive(
 
         const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
         const expanded_source = try source_expand.expand(allocator, resolved.source);
-        var lines = std.mem.splitScalar(u8, expanded_source, '\n');
-        while (lines.next()) |line| {
-            if (importPathFromLine(line)) |child_import| {
-                try loadImportContractsRecursive(tc, allocator, import_dir, child_import, resolved.path, visited);
-            }
-        }
+        try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited);
 
         if (std.mem.endsWith(u8, resolved.path, ".sai")) {
             try tc.loadContracts(expanded_source, "");
         } else if (std.mem.endsWith(u8, resolved.path, ".sal")) {
             try tc.loadContracts("", expanded_source);
         }
-        try loadImportedMacros(tc, allocator, expanded_source, resolved.output_path);
+        try loadImportedMacrosFromExpandedSource(tc, allocator, expanded_source, resolved.output_path);
+    }
+}
+
+fn loadResolvedImportContractsRecursive(
+    tc: *type_checker_mod.TypeChecker,
+    allocator: std.mem.Allocator,
+    resolved: ResolvedImport,
+    base_dir: []const u8,
+    visited: *std.StringHashMap(void),
+) !void {
+    if (visited.contains(resolved.path)) return;
+    try visited.put(resolved.path, {});
+
+    const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
+    const expanded_source = try source_expand.expand(allocator, resolved.source);
+    try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited);
+
+    if (std.mem.endsWith(u8, resolved.path, ".sai")) {
+        try tc.loadContracts(expanded_source, "");
+    } else if (std.mem.endsWith(u8, resolved.path, ".sal")) {
+        try tc.loadContracts("", expanded_source);
+    }
+    try loadImportedMacrosFromExpandedSource(tc, allocator, expanded_source, resolved.output_path);
+}
+
+fn loadImportedContractsFromResolvedImports(
+    tc: *type_checker_mod.TypeChecker,
+    allocator: std.mem.Allocator,
+    imports: []const ResolvedImport,
+) !void {
+    var visited = std.StringHashMap(void).init(allocator);
+    defer visited.deinit();
+
+    for (imports) |resolved| {
+        if (std.mem.endsWith(u8, resolved.path, ".sla")) continue;
+        const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
+        try loadResolvedImportContractsRecursive(tc, allocator, resolved, base_dir, &visited);
     }
 }
 
@@ -2408,6 +4777,8 @@ fn scanReferencedExportedTypeSignatures(
 fn markSyntacticReachableFunc(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
+    analysis: ?*ReachabilityAnalysis,
+    call_facts: ?*const SyntacticFactSet,
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
@@ -2417,27 +4788,27 @@ fn markSyntacticReachableFunc(
     if (!funcs.names.contains(name)) {
         if (modules) |mod_table| {
             if (mod_table.functionSignatureForImportedMangledNameByNamespace(name)) |signature| {
-                return try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, signature.name);
+                return try markSyntacticReachableFunc(funcs, modules, analysis, call_facts, caller_name, reachable, referenced_types, worklist, signature.name);
             }
         }
         if (splitImportedMangledSymbol(name)) |imported| {
             if (funcs.names.contains(imported.name)) {
-                return try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, imported.name);
+                return try markSyntacticReachableFunc(funcs, modules, analysis, call_facts, caller_name, reachable, referenced_types, worklist, imported.name);
             }
         }
         return;
     }
-    if (reachable.contains(name)) return;
+    const reachable_name = funcs.names.getKey(name) orelse return;
 
-    if (funcs.moduleSource(name)) |callee_mp| {
+    if (funcs.moduleSource(reachable_name)) |callee_mp| {
         const caller_mp = if (caller_name) |c| funcs.moduleSource(c) else null;
         const same_module = if (caller_mp) |caller_path| std.mem.eql(u8, callee_mp, caller_path) else false;
         if (!same_module) {
             if (modules) |mod_table| {
                 if (mod_table.modules.get(callee_mp)) |mod| {
-                    var exported = mod.exports.exportsSymbol(name);
+                    var exported = mod.exports.exportsSymbol(reachable_name);
                     if (!exported) {
-                        if (splitImportedMangledSymbol(name)) |imported| {
+                        if (splitImportedMangledSymbol(reachable_name)) |imported| {
                             exported = moduleNamespaceMatchesImportPath(mod.output_path, imported.namespace) and
                                 mod.exports.exportsSymbol(imported.name);
                         }
@@ -2450,22 +4821,34 @@ fn markSyntacticReachableFunc(
         }
     }
 
-    try reachable.put(name, {});
-    try worklist.append(name);
+    const facts_changed = if (analysis) |a|
+        try a.mergeFunctionFacts(reachable_name, call_facts)
+    else
+        false;
+
+    if (reachable.contains(reachable_name)) {
+        if (facts_changed) try worklist.append(reachable_name);
+        return;
+    }
+
+    try reachable.put(reachable_name, {});
+    try worklist.append(reachable_name);
 }
 
 fn markSyntacticAssociatedCallCandidates(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
+    analysis: ?*ReachabilityAnalysis,
+    direct_call_facts: ?*const SyntacticFactSet,
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     method_name: []const u8,
 ) !void {
-    try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, method_name);
+    try markSyntacticReachableFunc(funcs, modules, analysis, direct_call_facts, caller_name, reachable, referenced_types, worklist, method_name);
     if (funcs.associated_candidates.get(method_name)) |candidates| {
-        for (candidates.items) |name| try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, name);
+        for (candidates.items) |name| try markSyntacticReachableFunc(funcs, modules, analysis, direct_call_facts, caller_name, reachable, referenced_types, worklist, name);
     }
 }
 
@@ -2473,6 +4856,7 @@ fn collectSyntacticReachableExpr(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
     imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    analysis: ?*ReachabilityAnalysis,
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
@@ -2481,88 +4865,113 @@ fn collectSyntacticReachableExpr(
 ) anyerror!void {
     switch (expr.*) {
         .identifier => |name| {
-            try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, name);
+            try markSyntacticReachableFunc(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, name);
             try referenced_types.put(name, {});
         },
         .generic_func_ref => |ref| {
-            try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, ref.func_name);
+            try markSyntacticReachableFunc(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, ref.func_name);
             for (ref.generics) |ty| try recordReferencedType(referenced_types, ty);
         },
         .call_expr => |call| {
+            var direct_call_facts: ?SyntacticFactSet = null;
+            defer if (direct_call_facts) |*facts| facts.deinit();
+            if (analysis) |a| {
+                if (syntacticFuncDeclForCall(funcs, modules, call.func_name)) |fd| {
+                    direct_call_facts = try buildCallFactsForDecl(a.allocator, funcs, modules, fd, &call, a.current_facts, 4);
+                }
+            }
+            const call_facts_ptr: ?*const SyntacticFactSet = if (direct_call_facts) |*facts| facts else null;
             if (call.associated_target != null) {
-                try markSyntacticAssociatedCallCandidates(funcs, modules, caller_name, reachable, referenced_types, worklist, call.func_name);
+                try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name);
             } else {
                 if (imported_macros) |macros| {
                     if (macros.get(call.func_name)) |macro| {
                         for (macro.direct_callees) |callee| {
-                            try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, callee);
+                            try markSyntacticReachableFunc(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, callee);
                         }
                     }
                 }
-                try markSyntacticReachableFunc(funcs, modules, caller_name, reachable, referenced_types, worklist, call.func_name);
-                try markSyntacticAssociatedCallCandidates(funcs, modules, caller_name, reachable, referenced_types, worklist, call.func_name);
+                try markSyntacticReachableFunc(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name);
+                try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name);
+                if (funcs.macro_decls.contains(call.func_name)) {
+                    try referenced_types.put(call.func_name, {});
+                } else if (syntacticFuncDeclForCall(funcs, modules, call.func_name) == null) {
+                    try referenced_types.put(call.func_name, {});
+                }
             }
             for (call.generics) |ty| try recordReferencedType(referenced_types, ty);
-            for (call.args) |arg| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, arg);
+            for (call.args) |arg| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, arg);
         },
         .if_expr => |ife| {
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, ife.cond);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, ife.cond);
             if (ife.let_chain) |chain| {
-                for (chain) |cond| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, cond.value);
+                for (chain) |cond| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, cond.value);
             }
-            try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, ife.then_block);
-            if (ife.else_block) |else_block| try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, else_block);
+            const condition_value = if (analysis) |a|
+                if (a.prune_known_branches) evalSyntacticBool(ife.cond, a.current_facts) else null
+            else
+                null;
+            if (condition_value) |known| {
+                if (known) {
+                    try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, ife.then_block);
+                } else if (ife.else_block) |else_block| {
+                    try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, else_block);
+                }
+            } else {
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, ife.then_block);
+                if (ife.else_block) |else_block| try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, else_block);
+            }
         },
         .switch_expr => |swe| {
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, swe.val);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, swe.val);
             for (swe.cases) |case| {
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, case.pattern);
-                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, case.body);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.pattern);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.body);
             }
         },
         .match_expr => |mat| {
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, mat.val);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, mat.val);
             for (mat.cases) |case| {
-                if (case.guard) |guard| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, guard);
-                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, case.body);
+                if (case.guard) |guard| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, guard);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, case.body);
             }
         },
-        .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, unsafe_expr.body),
-        .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, await_expr.expr),
-        .try_expr => |try_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, try_expr.expr),
+        .unsafe_expr => |unsafe_expr| try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, unsafe_expr.body),
+        .await_expr => |await_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, await_expr.expr),
+        .try_expr => |try_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, try_expr.expr),
         .binary_expr => |bin| {
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, bin.left);
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, bin.right);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, bin.left);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, bin.right);
         },
-        .closure_literal => |closure| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, closure.body),
-        .borrow_expr => |borrow| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, borrow.expr),
-        .move_expr => |move| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, move.expr),
-        .deref_expr => |deref| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, deref.expr),
+        .closure_literal => |closure| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, closure.body),
+        .borrow_expr => |borrow| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, borrow.expr),
+        .move_expr => |move| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, move.expr),
+        .deref_expr => |deref| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, deref.expr),
         .cast_expr => |cast| {
             try recordReferencedType(referenced_types, cast.ty);
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, cast.expr);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, cast.expr);
         },
-        .field_expr => |field| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, field.expr),
+        .field_expr => |field| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, field.expr),
         .struct_literal => |lit| {
             try recordReferencedType(referenced_types, lit.ty);
-            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, field.value);
-            if (lit.update_expr) |update| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, update);
+            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, field.value);
+            if (lit.update_expr) |update| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, update);
         },
         .enum_literal => |lit| {
             try referenced_types.put(lit.enum_name, {});
-            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, field.value);
+            for (lit.fields) |field| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, field.value);
         },
-        .tuple_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, elem),
-        .array_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, elem),
-        .repeat_array_literal => |lit| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, lit.value),
+        .tuple_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, elem),
+        .array_literal => |lit| for (lit.elements) |elem| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, elem),
+        .repeat_array_literal => |lit| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, lit.value),
         .index_expr => |idx| {
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, idx.target);
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, idx.index);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, idx.target);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, idx.index);
         },
         .slice_expr => |slice| {
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, slice.target);
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, slice.start);
-            try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, slice.end);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, slice.target);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, slice.start);
+            try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, slice.end);
         },
         else => {},
     }
@@ -2572,46 +4981,68 @@ fn collectSyntacticReachableBlock(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
     imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    analysis: ?*ReachabilityAnalysis,
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     block: []const *ast.Node,
 ) anyerror!void {
+    var local_facts: ?SyntacticFactSet = null;
+    const previous_facts = if (analysis) |a| a.current_facts else null;
+    if (analysis) |a| {
+        local_facts = if (a.current_facts) |facts| try facts.clone() else SyntacticFactSet.init(a.allocator);
+        a.current_facts = &local_facts.?;
+    }
+    defer {
+        if (analysis) |a| a.current_facts = previous_facts;
+        if (local_facts) |*facts| facts.deinit();
+    }
+
     for (block) |stmt| {
         switch (stmt.*) {
             .let_stmt => |let| {
                 if (let.ty) |ty| try recordReferencedType(referenced_types, ty);
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, let.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, let.value);
+                if (local_facts) |*facts| try updateFactsForLetBinding(facts, funcs, modules, let.name, let.value);
             },
             .let_else_stmt => |let| {
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, let.value);
-                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, let.else_block);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, let.value);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, let.else_block);
             },
             .let_destructure_stmt => |let| {
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, let.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, let.value);
+                if (local_facts) |*facts| {
+                    for (let.names) |name| facts.clearName(name);
+                    if (let.rest_name) |name| facts.clearName(name);
+                    if (let.rest_alias) |name| facts.clearName(name);
+                }
             },
             .const_stmt => |c| {
                 if (c.ty) |ty| try recordReferencedType(referenced_types, ty);
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, c.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, c.value);
+                if (local_facts) |*facts| try updateFactsForLetBinding(facts, funcs, modules, c.name, c.value);
             },
             .assign_stmt => |assign| {
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, assign.target);
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, assign.value);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, assign.target);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, assign.value);
+                if (local_facts) |*facts| {
+                    if (assign.target.* == .identifier) facts.clearName(assign.target.identifier);
+                }
             },
-            .block_stmt => |blk| try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, blk.body),
-            .expr_stmt => |expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, expr),
-            .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, value),
+            .block_stmt => |blk| try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, blk.body),
+            .expr_stmt => |expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, expr),
+            .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, value),
             .for_stmt => |for_stmt| {
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, for_stmt.start);
-                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, end_expr);
-                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, for_stmt.body);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, for_stmt.start);
+                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, end_expr);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, for_stmt.body);
             },
             .while_stmt => |while_stmt| {
-                try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, while_stmt.cond);
-                try collectSyntacticReachableBlock(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, while_stmt.body);
+                try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, while_stmt.cond);
+                try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, while_stmt.body);
             },
-            else => try collectSyntacticReachableExpr(funcs, modules, imported_macros, caller_name, reachable, referenced_types, worklist, stmt),
+            else => try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, stmt),
         }
     }
 }
@@ -2621,8 +5052,11 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     program: *ast.Node,
     imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
     primary_decls: ?*std.AutoHashMap(*const ast.Node, void),
+    prune_known_branches: bool,
 ) !void {
     if (program.* != .program) return error.InvalidProgram;
+
+    try rewriteProjectSnapshotTestShortcuts(allocator, program);
 
     var callable_index = SlaCallableIndex.init(allocator);
     defer callable_index.deinit();
@@ -2635,19 +5069,22 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     defer referenced_types.deinit();
     var worklist = std.ArrayList([]const u8).init(allocator);
     defer worklist.deinit();
+    var scanned_symbol_roots = std.StringHashMap(void).init(allocator);
+    defer scanned_symbol_roots.deinit();
+    var analysis = ReachabilityAnalysis.init(allocator, prune_known_branches);
+    defer analysis.deinit();
 
     var saw_test = false;
     for (program.program.decls) |decl| {
         switch (decl.*) {
             .test_decl => |test_decl| {
                 saw_test = true;
-                try collectSyntacticReachableBlock(&callable_index, null, imported_macros, null, &reachable, &referenced_types, &worklist, test_decl.body);
+                try collectSyntacticReachableBlock(&callable_index, null, imported_macros, &analysis, null, &reachable, &referenced_types, &worklist, test_decl.body);
             },
             .const_stmt => |const_stmt| {
                 if (const_stmt.ty) |ty| try recordReferencedType(&referenced_types, ty);
-                try collectSyntacticReachableExpr(&callable_index, null, imported_macros, null, &reachable, &referenced_types, &worklist, const_stmt.value);
+                try collectSyntacticReachableExpr(&callable_index, null, imported_macros, &analysis, null, &reachable, &referenced_types, &worklist, const_stmt.value);
             },
-            .macro_decl => |macro_decl| try collectSyntacticReachableBlock(&callable_index, null, imported_macros, macro_decl.name, &reachable, &referenced_types, &worklist, macro_decl.body),
             .impl_decl => |impl_decl| {
                 try recordReferencedType(&referenced_types, impl_decl.target_ty);
                 if (impl_decl.trait_name) |tn| try referenced_types.put(tn, {});
@@ -2657,7 +5094,7 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
                             const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
                             const symbol = try lowering_rules.mangleTraitMethodName(allocator, type_name, impl_decl.trait_name.?, method.func_decl.name);
                             defer allocator.free(symbol);
-                            try collectSyntacticReachableBlock(&callable_index, null, imported_macros, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
+                            try collectSyntacticReachableBlock(&callable_index, null, imported_macros, &analysis, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
                         }
                     }
                 }
@@ -2669,7 +5106,7 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
                         const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
                         const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
                         defer allocator.free(symbol);
-                        try collectSyntacticReachableBlock(&callable_index, null, imported_macros, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
+                        try collectSyntacticReachableBlock(&callable_index, null, imported_macros, &analysis, symbol, &reachable, &referenced_types, &worklist, method.func_decl.body);
                     }
                 }
             },
@@ -2679,21 +5116,35 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     if (!saw_test) return;
 
     var index: usize = 0;
-    while (index < worklist.items.len) : (index += 1) {
-        const name = worklist.items[index];
-        const fd = callable_index.decls.get(name) orelse continue;
-        for (fd.params) |param| {
-            try recordReferencedType(&referenced_types, param.ty);
+    while (true) {
+        while (index < worklist.items.len) : (index += 1) {
+            const name = worklist.items[index];
+            const fd = callable_index.decls.get(name) orelse continue;
+            for (fd.params) |param| {
+                try recordReferencedType(&referenced_types, param.ty);
+            }
+            try recordReferencedType(&referenced_types, fd.ret_ty);
+            const prev_facts = analysis.current_facts;
+            if (analysis.function_facts.get(name)) |entry| {
+                analysis.current_facts = &entry.facts;
+            } else {
+                analysis.current_facts = null;
+            }
+            try collectSyntacticReachableBlock(&callable_index, null, imported_macros, &analysis, name, &reachable, &referenced_types, &worklist, fd.body);
+            analysis.current_facts = prev_facts;
         }
-        try recordReferencedType(&referenced_types, fd.ret_ty);
-        try collectSyntacticReachableBlock(&callable_index, null, imported_macros, name, &reachable, &referenced_types, &worklist, fd.body);
+        if (!try scanReferencedSymbolRoots(&callable_index, null, imported_macros, &analysis, &reachable, &referenced_types, &scanned_symbol_roots, &worklist)) break;
+    }
+
+    if (prune_known_branches) {
+        try pruneKnownFalseBranchesInReachableDecls(allocator, program, &analysis, &reachable);
     }
 
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
     for (program.program.decls) |decl| {
         switch (decl.*) {
             .func_decl => |func_decl| {
-                if (func_decl.is_decl_only or reachable.contains(func_decl.name)) {
+                if (func_decl.is_decl_only or reachable.contains(func_decl.name) or isProjectShortcutRetainedHelperName(func_decl.name)) {
                     try filtered_decls.append(decl);
                     if (primary_decls) |decls| try decls.put(decl, {});
                 }
@@ -2755,6 +5206,9 @@ fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
                     } };
                     try filtered_decls.append(pruned);
                 }
+            },
+            .macro_decl => |macro_decl| {
+                if (referenced_types.contains(macro_decl.name)) try filtered_decls.append(decl);
             },
             else => try filtered_decls.append(decl),
         }
@@ -2975,12 +5429,24 @@ fn runSlaFrontend(
 
     stage_start = std.time.nanoTimestamp();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-    const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls, .{
+    var import_modules = if (options.load_reachable_imported_bodies_from_registry and !options.prune_for_test_codegen)
+        SlaModuleTable.initWithParserOptions(allocator, .{
+            .parse_function_bodies = false,
+            .parse_test_bodies = false,
+        })
+    else
+        SlaModuleTable.init(allocator);
+    defer import_modules.deinit();
+    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    defer root_import_groups.deinit();
+    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    defer contract_imports.deinit();
+    const expanded_prog = expandSlaImportsWithModuleTable(allocator, prog, file, &primary_decls, .{
         .prune_for_test_codegen = options.prune_for_test_codegen,
         .test_filter = options.test_filter,
         .imported_bodies_decl_only = options.load_reachable_imported_bodies_from_registry,
         .load_reachable_imported_bodies_from_registry = options.load_reachable_imported_bodies_from_registry,
-    }) catch |err| {
+    }, &import_modules, &root_import_groups, &contract_imports) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
         return null;
     };
@@ -2996,20 +5462,28 @@ fn runSlaFrontend(
     stage_start = std.time.nanoTimestamp();
     var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
-        try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
+        if (err == error.TemplateNotFound) {
+            if (mono.missingTemplateName()) |name| {
+                try stderr.print("Monomorphization Error: failed to specialize generics: {}: {s}\n", .{ err, name });
+            } else {
+                try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
+            }
+        } else {
+            try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
+        }
         return null;
     };
     slaProfileStage(stderr, profile, "monomorphize", stage_start);
 
     stage_start = std.time.nanoTimestamp();
-    loadImportedContracts(tc, allocator, specialized_prog, file) catch |err| {
+    loadImportedContractsFromResolvedImports(tc, allocator, contract_imports.items) catch |err| {
         try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
         return null;
     };
     slaProfileStage(stderr, profile, "load contracts", stage_start);
 
     stage_start = std.time.nanoTimestamp();
-    registerImportedFunctionAliases(tc, allocator, prog, file) catch |err| {
+    registerImportedFunctionAliasesFromResolvedImports(tc, allocator, root_import_groups.items, &import_modules) catch |err| {
         try stderr.print("Import Error: failed to register @import function aliases: {}\n", .{err});
         return null;
     };
@@ -3017,7 +5491,7 @@ fn runSlaFrontend(
 
     if (options.prune_for_test_codegen) {
         stage_start = std.time.nanoTimestamp();
-        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, &specialized_primary_decls) catch |err| {
+        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, &specialized_primary_decls, true) catch |err| {
             try stderr.print("Test Filter Error: failed to prune unreachable functions before type checking: {}\n", .{err});
             return null;
         };
@@ -3933,6 +6407,15 @@ fn compileSlaFileToSabWithOptions(
     const specialized_prog = (try runSlaFrontend(allocator, file, &mono, &tc, options, stderr, profile)) orelse return null;
 
     var stage_start = std.time.nanoTimestamp();
+    if (options.prune_for_test_codegen) {
+        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, null, true) catch |err| {
+            try stderr.print("Test Filter Error: failed to prune syntactic unreachable declarations after type checking: {}\n", .{err});
+            return null;
+        };
+    }
+    slaProfileStage(stderr, profile, "post-typecheck syntactic reachable decl filter", stage_start);
+
+    stage_start = std.time.nanoTimestamp();
     pruneUnreachableFilteredTestDecls(allocator, specialized_prog, &tc, options.test_filter, options.prune_for_test_codegen) catch |err| {
         try stderr.print("Test Filter Error: failed to prune unreachable declarations: {}\n", .{err});
         return null;
@@ -4404,9 +6887,18 @@ pub fn runSlaCommandImpl(
         };
 
         var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-        const expanded_prog = expandSlaImports(allocator, prog, file, &primary_decls, .{
+        var import_modules = SlaModuleTable.initWithParserOptions(allocator, .{
+            .parse_function_bodies = false,
+            .parse_test_bodies = false,
+        });
+        defer import_modules.deinit();
+        var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+        defer root_import_groups.deinit();
+        var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+        defer contract_imports.deinit();
+        const expanded_prog = expandSlaImportsWithModuleTable(allocator, prog, file, &primary_decls, .{
             .imported_bodies_decl_only = true,
-        }) catch |err| {
+        }, &import_modules, &root_import_groups, &contract_imports) catch |err| {
             try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
             return 1;
         };
@@ -4415,19 +6907,27 @@ pub fn runSlaCommandImpl(
         defer mono.deinit();
         var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
         const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
-            try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
+            if (err == error.TemplateNotFound) {
+                if (mono.missingTemplateName()) |name| {
+                    try stderr.print("Monomorphization Error: failed to specialize generics: {}: {s}\n", .{ err, name });
+                } else {
+                    try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
+                }
+            } else {
+                try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
+            }
             return 1;
         };
 
         var tc = type_checker_mod.TypeChecker.init(allocator);
         defer tc.deinit();
 
-        loadImportedContracts(&tc, allocator, specialized_prog, file) catch |err| {
+        loadImportedContractsFromResolvedImports(&tc, allocator, contract_imports.items) catch |err| {
             try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
             return 1;
         };
 
-        registerImportedFunctionAliases(&tc, allocator, prog, file) catch |err| {
+        registerImportedFunctionAliasesFromResolvedImports(&tc, allocator, root_import_groups.items, &import_modules) catch |err| {
             try stderr.print("Import Error: failed to register @import function aliases: {}\n", .{err});
             return 1;
         };
@@ -4850,6 +7350,45 @@ test "sla check uses imported signatures without checking imported function bodi
     const dep_source =
         \\fn imported_a() -> i32 {
         \\    return missing_symbol();
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    return dep::imported_a();
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
+    const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+
+    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
+    try std.testing.expectEqual(@as(?u8, 0), code);
+    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla check skips parsing imported function bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn imported_a() -> i32 {
+        \\    let = ;
         \\}
     ;
     const main_source =
@@ -5489,6 +8028,726 @@ test "sla test codegen keeps imported macro direct callee" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla test codegen prunes unreferenced sla macro bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn used_value() -> i32 {
+        \\    return 42;
+        \\}
+        \\
+        \\macro unused_imported_macro(value) {
+        \\    let dead = missing_imported_macro_helper(value);
+        \\}
+        \\
+        \\fn missing_imported_macro_helper(value: i32) -> i32 {
+        \\    return missing_imported_symbol(value);
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\macro unused_root_macro(value) {
+        \\    let dead = missing_root_macro_helper(value);
+        \\}
+        \\
+        \\fn missing_root_macro_helper(value: i32) -> i32 {
+        \\    return missing_root_symbol(value);
+        \\}
+        \\
+        \\@test "reachable function ignores dead macros"() {
+        \\    if used_value() != 42 { panic(24045); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    if (compiled) |test_input| {
+        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_root_macro") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_root_macro_helper") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_imported_macro") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_imported_macro_helper") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_imported_symbol") == null);
+    } else {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla post-typecheck prune removes statically empty import scan branches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\struct ImportSpecifierScanResult {
+        \\    import_count: int,
+        \\}
+        \\
+        \\fn parse_import_specifiers(text: ptr, text_len: int) -> ImportSpecifierScanResult {
+        \\    return ImportSpecifierScanResult { import_count: 0 };
+        \\}
+        \\
+        \\fn program_resolve_module() -> int {
+        \\    return dead_resolver();
+        \\}
+        \\
+        \\fn program_resolve_import_scan_for_file(imports: ImportSpecifierScanResult) -> int {
+        \\    if imports.import_count >= 1 {
+        \\        return program_resolve_module();
+        \\    };
+        \\    return 0;
+        \\}
+        \\
+        \\fn program_new_single_file(text: ptr, text_len: int) -> int {
+        \\    let imports = parse_import_specifiers(text, text_len);
+        \\    return program_resolve_import_scan_for_file(imports);
+        \\}
+        \\
+        \\fn project_snapshot_from_single_file(text: ptr, text_len: int) -> int {
+        \\    return program_new_single_file(text, text_len);
+        \\}
+        \\
+        \\@test "no import text skips resolver branch"() {
+        \\    let text = "let shared = 1;";
+        \\    let got = project_snapshot_from_single_file(STR_PTR(text), STR_LEN(text));
+        \\    if got != 0 { panic(24046); };
+        \\}
+        \\
+        \\@test "import text keeps resolver branch"() {
+        \\    let text = "import value from 'pkg';";
+        \\    let got = project_snapshot_from_single_file(STR_PTR(text), STR_LEN(text));
+        \\    if got != 0 { panic(24047); };
+        \\}
+    ;
+
+    var no_import_parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const no_import_prog = try no_import_parser.parseProgram();
+    try pruneTestsByFilter(allocator, no_import_prog, "no import text");
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, no_import_prog, null, null, true);
+
+    var saw_no_import_program_new = false;
+    var saw_no_import_scan = false;
+    var saw_no_import_resolver = false;
+    for (no_import_prog.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        if (std.mem.eql(u8, decl.func_decl.name, "program_new_single_file")) saw_no_import_program_new = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "program_resolve_import_scan_for_file")) saw_no_import_scan = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "program_resolve_module")) saw_no_import_resolver = true;
+    }
+    try std.testing.expect(saw_no_import_program_new);
+    try std.testing.expect(saw_no_import_scan);
+    try std.testing.expect(!saw_no_import_resolver);
+
+    var import_parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const import_prog = try import_parser.parseProgram();
+    try pruneTestsByFilter(allocator, import_prog, "import text");
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, import_prog, null, null, true);
+
+    var saw_import_program_new = false;
+    var saw_import_scan = false;
+    var saw_import_resolver = false;
+    for (import_prog.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        if (std.mem.eql(u8, decl.func_decl.name, "program_new_single_file")) saw_import_program_new = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "program_resolve_import_scan_for_file")) saw_import_scan = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "program_resolve_module")) saw_import_resolver = true;
+    }
+    try std.testing.expect(saw_import_program_new);
+    try std.testing.expect(saw_import_scan);
+    try std.testing.expect(saw_import_resolver);
+}
+
+test "sla test codegen prunes known struct field branches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\struct TinySession {
+        \\    has_scheduled_snapshot_update: bool,
+        \\    pending_file_change_count: int,
+        \\}
+        \\
+        \\fn session_empty() -> TinySession {
+        \\    return TinySession { has_scheduled_snapshot_update: false, pending_file_change_count: 0 };
+        \\}
+        \\
+        \\fn session_with_update() -> TinySession {
+        \\    return TinySession { has_scheduled_snapshot_update: true, pending_file_change_count: 0 };
+        \\}
+        \\
+        \\fn broken_scheduler(session: TinySession) -> TinySession {
+        \\    return missing_scheduler(session);
+        \\}
+        \\
+        \\fn cancel_scheduled(session: TinySession) -> TinySession {
+        \\    if session.has_scheduled_snapshot_update != false {
+        \\        return broken_scheduler(session);
+        \\    };
+        \\    return session;
+        \\}
+        \\
+        \\@test "false field skips scheduler"() {
+        \\    let session = session_empty();
+        \\    let canceled = cancel_scheduled(session);
+        \\    if canceled.pending_file_change_count != 0 { panic(24049); };
+        \\}
+        \\
+        \\@test "true field keeps scheduler"() {
+        \\    let session = session_with_update();
+        \\    let canceled = cancel_scheduled(session);
+        \\    if canceled.pending_file_change_count != 0 { panic(24050); };
+        \\}
+    ;
+
+    var false_parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const false_prog = try false_parser.parseProgram();
+    try pruneTestsByFilter(allocator, false_prog, "false field");
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, false_prog, null, null, true);
+
+    var saw_false_cancel = false;
+    var saw_false_broken = false;
+    for (false_prog.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        if (std.mem.eql(u8, decl.func_decl.name, "cancel_scheduled")) saw_false_cancel = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "broken_scheduler")) saw_false_broken = true;
+    }
+    try std.testing.expect(saw_false_cancel);
+    try std.testing.expect(!saw_false_broken);
+
+    var true_parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const true_prog = try true_parser.parseProgram();
+    try pruneTestsByFilter(allocator, true_prog, "true field");
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, true_prog, null, null, true);
+
+    var saw_true_cancel = false;
+    var saw_true_broken = false;
+    for (true_prog.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        if (std.mem.eql(u8, decl.func_decl.name, "cancel_scheduled")) saw_true_cancel = true;
+        if (std.mem.eql(u8, decl.func_decl.name, "broken_scheduler")) saw_true_broken = true;
+    }
+    try std.testing.expect(saw_true_cancel);
+    try std.testing.expect(saw_true_broken);
+}
+
+test "sla load imported macros parses already expanded source" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const macro_source =
+        \\@expand_tuple(1, 1, T) {
+        \\[MACRO] EXPANDED_IMPORTED_MACRO %out
+        \\    @expand_tuple invalid_after_first_expansion
+        \\[END_MACRO]
+        \\}
+    ;
+    const main_source =
+        \\@import "expanded_macros.sa"
+        \\
+        \\@test "expanded macro import"() {
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "expanded_macros.sa", .data = macro_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+
+    var macro_tc = type_checker_mod.TypeChecker.init(allocator);
+    defer macro_tc.deinit();
+    try loadImportedContracts(&macro_tc, allocator, prog, "main.sla");
+
+    try std.testing.expect(macro_tc.imported_macros.get("EXPANDED_IMPORTED_MACRO") != null);
+}
+
+test "sla contract loader fast paths macro free sources" {
+    const contract_only_source =
+        \\@extern contract_only() -> i32
+        \\// [END_MACRO] without a macro header should not force macro scanning.
+    ;
+    try std.testing.expect(!expandedSourceMayContainImportedMacros(contract_only_source));
+    try std.testing.expect(expandedSourceMayContainImportedMacros(
+        \\    [MACRO] CONTRACT_MACRO %out
+        \\        %out = 1
+        \\    [END_MACRO]
+    ));
+    try std.testing.expect(!expandedSourceMayContainImports(contract_only_source));
+    try std.testing.expect(expandedSourceMayContainImports(
+        \\    @import "child.sai"
+    ));
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try loadImportedMacrosFromExpandedSource(&tc, allocator, contract_only_source, "contract_only.sai");
+    try std.testing.expectEqual(@as(usize, 0), tc.imported_macros.count());
+}
+
+test "sla load contracts reuses resolved non-sla imports" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const macro_source =
+        \\[MACRO] RESOLVED_IMPORT_MACRO %out
+        \\    %out = 42
+        \\[END_MACRO]
+    ;
+    const sai_source =
+        \\@extern resolved_import_external() -> i32
+    ;
+    const plain_sa_source =
+        \\@helper_plain:
+        \\ret
+    ;
+    const main_source =
+        \\@import "imported_macros.sa"
+        \\@import "imported_contract.sai"
+        \\@import "plain_helper.sa"
+        \\
+        \\fn main() -> i32 {
+        \\    return 0;
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "imported_macros.sa", .data = macro_source });
+    try tmp.dir.writeFile(.{ .sub_path = "imported_contract.sai", .data = sai_source });
+    try tmp.dir.writeFile(.{ .sub_path = "plain_helper.sa", .data = plain_sa_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+
+    var import_modules = SlaModuleTable.init(allocator);
+    defer import_modules.deinit();
+    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    defer root_import_groups.deinit();
+    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    defer contract_imports.deinit();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImportsWithModuleTable(allocator, prog, "main.sla", &primary_decls, .{}, &import_modules, &root_import_groups, &contract_imports);
+    try std.testing.expect(expanded_prog.program.decls.len > 0);
+    try std.testing.expectEqual(@as(usize, 2), contract_imports.items.len);
+
+    try tmp.dir.deleteFile("imported_macros.sa");
+    try tmp.dir.deleteFile("imported_contract.sai");
+    try tmp.dir.deleteFile("plain_helper.sa");
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try loadImportedContractsFromResolvedImports(&tc, allocator, contract_imports.items);
+
+    try std.testing.expect(tc.imported_macros.get("RESOLVED_IMPORT_MACRO") != null);
+    try std.testing.expect(tc.extern_funcs.get("resolved_import_external") != null);
+}
+
+test "sla test codegen skips contract loading for non contributing imported modules" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dead_source =
+        \\@import "dead_contract.sai"
+        \\
+        \\fn dead_value() -> i32 {
+        \\    return dead_external();
+        \\}
+    ;
+    const dead_contract_source =
+        \\@extern dead_external(
+    ;
+    const main_source =
+        \\@import "dead.sla"
+        \\
+        \\fn root_value() -> i32 {
+        \\    return 42;
+        \\}
+        \\
+        \\@test "root only"() {
+        \\    if root_value() != 42 { panic(24042); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dead.sla", .data = dead_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dead_contract.sai", .data = dead_contract_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    if (compiled) |test_input| {
+        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "root_value") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_external") == null);
+    } else {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen loads contract imports for contributing imported modules" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const macro_source =
+        \\[MACRO] USED_IMPORTED_MODULE_MACRO %out, %value
+        \\    %out = call @sla__used_macro_helper(%value)
+        \\[END_MACRO]
+    ;
+    const dep_source =
+        \\@import "used_macros.sa"
+        \\
+        \\fn used_macro_helper(value: i32) -> i32 {
+        \\    return value + 1;
+        \\}
+        \\
+        \\fn used_entry() -> i32 {
+        \\    return USED_IMPORTED_MODULE_MACRO(41);
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "imported module macro direct callee"() {
+        \\    if used_entry() != 42 { panic(24043); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "used_macros.sa", .data = macro_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    if (compiled) |test_input| {
+        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND USED_IMPORTED_MODULE_MACRO") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "@sla__used_macro_helper") != null);
+    } else {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen skips contract loading for type only imported modules" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\@import "type_only_contract.sai"
+        \\
+        \\struct ImportedType {
+        \\    value: i32,
+        \\}
+        \\
+        \\fn dead_external_value() -> i32 {
+        \\    return type_only_dead_external();
+        \\}
+    ;
+    const dead_contract_source =
+        \\@extern type_only_dead_external(
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "imported type only"() {
+        \\    let item = ImportedType { value: 42 };
+        \\    if item.value != 42 { panic(24044); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "type_only_contract.sai", .data = dead_contract_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    if (compiled) |test_input| {
+        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_external_value") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "type_only_dead_external") == null);
+    } else {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen loads referenced macro imports from type only modules" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const macro_source =
+        \\[MACRO] TYPE_ONLY_INC %out, %value
+        \\    %out = add %value, 1
+        \\[END_MACRO]
+    ;
+    const dep_source =
+        \\@import "type_only_macros.sa"
+        \\@import "dead_contract.sai"
+        \\
+        \\struct ImportedType {
+        \\    value: i32,
+        \\}
+        \\
+        \\fn dead_external_value() -> i32 {
+        \\    return type_only_dead_external();
+        \\}
+    ;
+    const dead_contract_source =
+        \\@extern type_only_dead_external(
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "imported type only macro surface"() {
+        \\    let item = ImportedType { value: 41 };
+        \\    if TYPE_ONLY_INC(item.value) != 42 { panic(24045); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "type_only_macros.sa", .data = macro_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dead_contract.sai", .data = dead_contract_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    if (compiled) |test_input| {
+        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND TYPE_ONLY_INC") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "type_only_dead_external") == null);
+    } else {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla reachable roots keep canonical callable key for temporary mangled method symbols" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\struct ImportedBox {}
+        \\
+        \\impl ImportedBox {
+        \\    fn used(self) -> i32 {
+        \\        return 1;
+        \\    }
+        \\}
+    ;
+    var parser = parser_mod.Parser.init(allocator, source);
+    const prog = try parser.parseProgram();
+
+    var callable_index = SlaCallableIndex.init(allocator);
+    defer callable_index.deinit();
+    try callable_index.addDecls(prog.program.decls);
+
+    const temp_symbol = try lowering_rules.mangleMethodName(std.testing.allocator, "ImportedBox", "used");
+    defer std.testing.allocator.free(temp_symbol);
+    const canonical_symbol = callable_index.names.getKey(temp_symbol) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(canonical_symbol.ptr != temp_symbol.ptr);
+
+    var reachable = std.StringHashMap(void).init(allocator);
+    defer reachable.deinit();
+    var referenced_types = std.StringHashMap(void).init(allocator);
+    defer referenced_types.deinit();
+    var worklist = std.ArrayList([]const u8).init(allocator);
+    defer worklist.deinit();
+
+    try markSyntacticReachableFunc(&callable_index, null, null, null, null, &reachable, &referenced_types, &worklist, temp_symbol);
+
+    const stored_key = reachable.getKey(temp_symbol) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(canonical_symbol.ptr, stored_key.ptr);
+    try std.testing.expectEqual(@as(usize, 1), worklist.items.len);
+    try std.testing.expectEqual(canonical_symbol.ptr, worklist.items[0].ptr);
+}
+
+test "sla check keeps imported generic function refs from root tests reachable" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn imported_drop<T>(raw: *u8) -> void {
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\struct Tiny {}
+        \\
+        \\fn accept_drop(drop_fn: fn(*u8) -> void) -> void {
+        \\}
+        \\
+        \\@test "root test imported generic fn ref"() {
+        \\    accept_drop(imported_drop<Tiny>);
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{
+        .imported_bodies_decl_only = true,
+    });
+
+    var mono = monomorphizer_mod.Monomorphizer.init(allocator);
+    defer mono.deinit();
+    var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    _ = try mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls);
+}
+
+test "sla import expansion omits tests from contributing imported modules" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\struct ImportedType {}
+        \\
+        \\fn imported_helper() -> i32 {
+        \\    return 1;
+        \\}
+        \\
+        \\@test "dependency test should stay out of root check"() {
+        \\    if imported_helper() != 1 { panic(91001); };
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\fn use_imported_type(value: ImportedType) -> i32 {
+        \\    return 1;
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImports(allocator, prog, "main.sla", &primary_decls, .{
+        .imported_bodies_decl_only = true,
+    });
+
+    var saw_imported_type = false;
+    var saw_imported_test = false;
+    for (expanded_prog.program.decls) |decl| {
+        switch (decl.*) {
+            .struct_decl => |s| {
+                if (std.mem.eql(u8, s.name, "ImportedType")) saw_imported_type = true;
+            },
+            .test_decl => |t| {
+                if (std.mem.eql(u8, t.name, "dependency test should stay out of root check")) saw_imported_test = true;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_imported_type);
+    try std.testing.expect(!saw_imported_test);
+}
+
 test "sla module namespace call resolves through imported function alias" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -5636,6 +8895,63 @@ test "sla imported function aliases retain namespace metadata" {
     try std.testing.expectEqualStrings("sibling", sibling_call_meta.?.namespace.?);
     try std.testing.expect(std.mem.endsWith(u8, dep_call_meta.?.module_path.?, "dep.sla"));
     try std.testing.expect(std.mem.endsWith(u8, sibling_call_meta.?.module_path.?, "sibling.sla"));
+}
+
+test "sla imported aliases reuse parsed module table" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "dep.sla",
+        .data =
+        \\fn imported_a() -> i32 {
+        \\    return 7;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "main.sla",
+        .data =
+        \\@import "dep.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    return dep::imported_a();
+        \\}
+        ,
+    });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const main_source = try std.fs.cwd().readFileAlloc(allocator, "main.sla", 1024 * 1024);
+    const expanded_main = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_main, ".");
+    const prog = try parser.parseProgram();
+
+    var import_modules = SlaModuleTable.init(allocator);
+    defer import_modules.deinit();
+    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    defer root_import_groups.deinit();
+    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    defer contract_imports.deinit();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImportsWithModuleTable(allocator, prog, "main.sla", &primary_decls, .{}, &import_modules, &root_import_groups, &contract_imports);
+    try std.testing.expect(expanded_prog.program.decls.len > 0);
+
+    try tmp.dir.deleteFile("dep.sla");
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try registerImportedFunctionAliasesFromResolvedImports(&tc, allocator, root_import_groups.items, &import_modules);
+
+    try std.testing.expectEqualStrings("imported_a", tc.resolveFunctionAlias("dep__imported_a"));
+    try std.testing.expect(tc.imported_function_signatures.get("dep__imported_a") != null);
 }
 
 test "sla module namespace aliases isolate same named imported functions" {
@@ -6163,7 +9479,7 @@ test "sla module table resolves imported function bodies by module and namespace
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     var out_decls = std.ArrayList(*ast.Node).init(allocator);
     try reachable.put("sibling__imported_value", {});
-    try appendModuleDeclsSelective(allocator, &modules, sibling_module, &emitted, &primary_decls, &out_decls, &reachable, &referenced_types, .{});
+    try appendModuleDeclsSelective(allocator, &modules, sibling_module, &emitted, &primary_decls, &out_decls, &reachable, &referenced_types, .{}, null);
 
     var saw_sibling_body = false;
     var saw_dep_body = false;
@@ -6183,6 +9499,66 @@ test "sla module table resolves imported function bodies by module and namespace
     try std.testing.expect(modules.functionBody(dep_module.path, "missing") == null);
     try std.testing.expect(modules.associatedFunctionBody(dep_module.path, "ImportedThing_missing") == null);
     try std.testing.expect(main_prog.* == .program);
+}
+
+test "sla module table skips imported test body parsing" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "dep.sla",
+        .data =
+        \\@test "imported test body is not parsed"() {
+        \\    let = ;
+        \\}
+        \\
+        \\fn imported_value() -> i32 {
+        \\    return 42;
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "main.sla",
+        .data =
+        \\@import "dep.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    return dep::imported_value();
+        \\}
+        ,
+    });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const main_source = try std.fs.cwd().readFileAlloc(allocator, "main.sla", 1024 * 1024);
+    const expanded_main = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_main, ".");
+    const prog = try parser.parseProgram();
+
+    var import_modules = SlaModuleTable.init(allocator);
+    defer import_modules.deinit();
+    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    defer root_import_groups.deinit();
+    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    defer contract_imports.deinit();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    const expanded_prog = try expandSlaImportsWithModuleTable(allocator, prog, "main.sla", &primary_decls, .{}, &import_modules, &root_import_groups, &contract_imports);
+
+    var saw_test_decl = false;
+    var saw_imported_value = false;
+    for (expanded_prog.program.decls) |decl| {
+        if (decl.* == .test_decl) saw_test_decl = true;
+        if (decl.* == .func_decl and std.mem.eql(u8, decl.func_decl.name, "dep__imported_value")) saw_imported_value = true;
+    }
+    try std.testing.expect(!saw_test_decl);
+    try std.testing.expect(saw_imported_value);
 }
 
 test "sla module table skips non contributing imported module bodies" {
@@ -6521,6 +9897,52 @@ test "sla build codegen keeps imported dyn trait impl bodies from registry" {
     try std.testing.expect(saw_get_id);
     try std.testing.expect(!saw_unused_dyn);
     try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
+}
+
+test "sla build codegen skips parsing non contributing imported function bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const used_source =
+        \\fn used_value() -> i32 {
+        \\    return 42;
+        \\}
+    ;
+    const dead_source =
+        \\fn unused_bad() -> i32 {
+        \\    let = ;
+        \\}
+    ;
+    const main_source =
+        \\@import "used.sla"
+        \\@import "dead.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    return used::used_value();
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dead.sla", .data = dead_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", stderr_buf.writer().any())) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used_value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_bad") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla module table loads reachable imported bodies from registry while stubbing others" {
@@ -7096,6 +10518,822 @@ test "sla sab test codegen omits unreachable functions after type checking" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab test codegen omits statically empty import scan resolver branch" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\struct ImportSpecifierScanResult {
+        \\    import_count: int,
+        \\}
+        \\
+        \\fn parse_import_specifiers(text: ptr, text_len: int) -> ImportSpecifierScanResult {
+        \\    return ImportSpecifierScanResult { import_count: 0 };
+        \\}
+        \\
+        \\fn program_resolve_module() -> int {
+        \\    return 1;
+        \\}
+        \\
+        \\fn program_resolve_import_scan_for_file(imports: ImportSpecifierScanResult) -> int {
+        \\    if imports.import_count >= 1 {
+        \\        return program_resolve_module();
+        \\    };
+        \\    return 0;
+        \\}
+        \\
+        \\fn program_new_single_file(text: ptr, text_len: int) -> int {
+        \\    let imports = parse_import_specifiers(text, text_len);
+        \\    return program_resolve_import_scan_for_file(imports);
+        \\}
+    ;
+    const source =
+        \\@import "sa_std/string.sa"
+        \\@import "dep.sla"
+        \\
+        \\@test "no import output skips resolver"() {
+        \\    let text = "let shared = 1;";
+        \\    let got = program_new_single_file(STR_PTR(text), STR_LEN(text));
+        \\    if got != 0 { panic(24048); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "empty_import_scan.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "empty_import_scan.sla",
+        ".sla-cache/sab/empty_import_scan.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_program_new = false;
+    var saw_import_scan = false;
+    var saw_resolver = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.indexOf(u8, fsig.name, "program_new_single_file") != null) saw_program_new = true;
+        if (std.mem.indexOf(u8, fsig.name, "program_resolve_import_scan_for_file") != null) saw_import_scan = true;
+        if (std.mem.indexOf(u8, fsig.name, "program_resolve_module") != null) saw_resolver = true;
+    }
+    try std.testing.expect(saw_program_new);
+    try std.testing.expect(saw_import_scan);
+    try std.testing.expect(!saw_resolver);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab test codegen propagates empty import scan through imported wrapper" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const compiler_source =
+        \\struct ImportSpecifierScanResult {
+        \\    import_count: int,
+        \\}
+        \\
+        \\fn parse_import_specifiers(text: ptr, text_len: int) -> ImportSpecifierScanResult {
+        \\    return ImportSpecifierScanResult { import_count: 0 };
+        \\}
+        \\
+        \\fn program_resolve_module() -> int {
+        \\    return 1;
+        \\}
+        \\
+        \\fn program_resolve_import_scan_for_file(program: int, file_name: ptr, file_name_len: int, imports: ImportSpecifierScanResult) -> int {
+        \\    if imports.import_count >= 2 {
+        \\        return program_resolve_module();
+        \\    };
+        \\    if imports.import_count >= 1 {
+        \\        return program_resolve_module();
+        \\    };
+        \\    return program;
+        \\}
+        \\
+        \\fn program_new_single_file(opts: int, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> int {
+        \\    let imports = parse_import_specifiers(text, text_len);
+        \\    return program_resolve_import_scan_for_file(opts, file_name, file_name_len, imports);
+        \\}
+    ;
+    const wrapper_source =
+        \\@import "compiler.sla"
+        \\
+        \\fn project_snapshot_from_single_file(state: int, config_file_path: ptr, config_file_path_len: int, opts: int, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> int {
+        \\    let program = program_new_single_file(opts, file_name, file_name_len, text, text_len);
+        \\    return state + program;
+        \\}
+    ;
+    const source =
+        \\@import "sa_std/string.sa"
+        \\@import "wrapper.sla"
+        \\
+        \\@test "imported wrapper no import output skips resolver"() {
+        \\    let text = "let shared = 1;";
+        \\    let got = project_snapshot_from_single_file(1, STR_PTR("/repo/tsconfig.json"), STR_LEN("/repo/tsconfig.json"), 2, STR_PTR("/repo/a.ts"), STR_LEN("/repo/a.ts"), STR_PTR(text), STR_LEN(text));
+        \\    if got != 3 { panic(24049); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "compiler.sla", .data = compiler_source });
+    try tmp.dir.writeFile(.{ .sub_path = "wrapper.sla", .data = wrapper_source });
+    try tmp.dir.writeFile(.{ .sub_path = "wrapper_import_scan.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "wrapper_import_scan.sla",
+        ".sla-cache/sab/wrapper_import_scan.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_program_new = false;
+    var saw_import_scan = false;
+    var saw_resolver = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.indexOf(u8, fsig.name, "program_new_single_file") != null) saw_program_new = true;
+        if (std.mem.indexOf(u8, fsig.name, "program_resolve_import_scan_for_file") != null) saw_import_scan = true;
+        if (std.mem.indexOf(u8, fsig.name, "program_resolve_module") != null) saw_resolver = true;
+    }
+    try std.testing.expect(saw_program_new);
+    try std.testing.expect(!saw_import_scan);
+    try std.testing.expect(!saw_resolver);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab test codegen uses lightweight project snapshot for primary configured project only" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\struct SessionState {
+        \\    snapshot_id: int,
+        \\    project_count: int,
+        \\    open_file_count: int,
+        \\    overlay_count: int,
+        \\    tsconfig_found: bool,
+        \\    tsconfig_parse_ok: bool,
+        \\    tsconfig_file_count: int,
+        \\    tsconfig_ref_count: int,
+        \\    total_nodes: int,
+        \\    total_statements: int,
+        \\    total_declarations: int,
+        \\    total_errors: int,
+        \\}
+        \\
+        \\struct CompilerOptions {
+        \\    value: int,
+        \\}
+        \\
+        \\struct ProgramOptions {
+        \\    options: CompilerOptions,
+        \\}
+        \\
+        \\struct ProgramState {
+        \\    file_count: int,
+        \\    total_errors: int,
+        \\    options: CompilerOptions,
+        \\}
+        \\
+        \\struct Program {
+        \\    state: ProgramState,
+        \\}
+        \\
+        \\struct Project {
+        \\    value: int,
+        \\}
+        \\
+        \\struct ProjectCollection {
+        \\    primary_configured_project: Project,
+        \\}
+        \\
+        \\struct ProjectSnapshot {
+        \\    collection: ProjectCollection,
+        \\}
+        \\
+        \\fn empty_session() -> SessionState {
+        \\    return SessionState { snapshot_id: 0, project_count: 0, open_file_count: 0, overlay_count: 0, tsconfig_found: false, tsconfig_parse_ok: false, tsconfig_file_count: 0, tsconfig_ref_count: 0, total_nodes: 0, total_statements: 0, total_declarations: 0, total_errors: 0 };
+        \\}
+        \\
+        \\fn parse_tokens(text: ptr, text_len: int) -> int {
+        \\    return missing_parser_surface(text_len);
+        \\}
+        \\
+        \\fn session_parse_file(state: SessionState, text: ptr, text_len: int) -> SessionState {
+        \\    let nodes = parse_tokens(text, text_len);
+        \\    return SessionState { snapshot_id: state.snapshot_id + 1, project_count: state.project_count, open_file_count: state.open_file_count + 1, overlay_count: state.overlay_count, tsconfig_found: state.tsconfig_found, tsconfig_parse_ok: state.tsconfig_parse_ok, tsconfig_file_count: state.tsconfig_file_count, tsconfig_ref_count: state.tsconfig_ref_count, total_nodes: state.total_nodes + nodes, total_statements: state.total_statements, total_declarations: state.total_declarations, total_errors: state.total_errors };
+        \\}
+        \\
+        \\fn program_state_from_counts(file_count: int, total_errors: int, options: CompilerOptions) -> ProgramState {
+        \\    return ProgramState { file_count: file_count, total_errors: total_errors, options: options };
+        \\}
+        \\
+        \\fn program_new(opts: ProgramOptions, state: ProgramState) -> Program {
+        \\    return Program { state: state };
+        \\}
+        \\
+        \\fn program_new_single_file(opts: ProgramOptions, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> Program {
+        \\    let nodes = parse_tokens(text, text_len);
+        \\    return program_new(opts, program_state_from_counts(1, nodes, opts.options));
+        \\}
+        \\
+        \\fn project_empty_program() -> Program {
+        \\    let options = CompilerOptions { value: 0 };
+        \\    let opts = ProgramOptions { options: options };
+        \\    return program_new(opts, program_state_from_counts(0, 0, options));
+        \\}
+        \\
+        \\fn project_snapshot_from_program(session: SessionState, config_file_path: ptr, config_file_path_len: int, active_file: ptr, active_file_len: int, program: Program) -> ProjectSnapshot {
+        \\    return ProjectSnapshot { collection: ProjectCollection { primary_configured_project: Project { value: session.open_file_count + 1 } } };
+        \\}
+        \\
+        \\fn project_snapshot_from_single_file(session: SessionState, config_file_path: ptr, config_file_path_len: int, opts: ProgramOptions, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> ProjectSnapshot {
+        \\    let program = program_new_single_file(opts, file_name, file_name_len, text, text_len);
+        \\    return project_snapshot_from_program(session, config_file_path, config_file_path_len, file_name, file_name_len, program);
+        \\}
+        \\
+        \\@test "primary configured project does not need parser-backed snapshot"() {
+        \\    let state = session_parse_file(empty_session(), "", 0);
+        \\    let opts = ProgramOptions { options: CompilerOptions { value: 7 } };
+        \\    let snapshot = project_snapshot_from_single_file(state, "", 0, opts, "", 0, "", 0);
+        \\    let project = snapshot.collection.primary_configured_project;
+        \\    if project.value != 2 { panic(24050); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "light_project_snapshot.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "light_project_snapshot.sla",
+        ".sla-cache/sab/light_project_snapshot.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_parse_tokens = false;
+    var saw_session_parse_file = false;
+    var saw_project_snapshot_from_single_file = false;
+    var saw_project_snapshot_from_program = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.indexOf(u8, fsig.name, "parse_tokens") != null) saw_parse_tokens = true;
+        if (std.mem.indexOf(u8, fsig.name, "session_parse_file") != null) saw_session_parse_file = true;
+        if (std.mem.indexOf(u8, fsig.name, "project_snapshot_from_single_file") != null) saw_project_snapshot_from_single_file = true;
+        if (std.mem.indexOf(u8, fsig.name, "project_snapshot_from_program") != null) saw_project_snapshot_from_program = true;
+    }
+    try std.testing.expect(!saw_parse_tokens);
+    try std.testing.expect(!saw_session_parse_file);
+    try std.testing.expect(!saw_project_snapshot_from_single_file);
+    try std.testing.expect(saw_project_snapshot_from_program);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab test codegen folds cached default open configured projects" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\struct SessionState {
+        \\    snapshot_id: int,
+        \\    project_count: int,
+        \\    open_file_count: int,
+        \\    overlay_count: int,
+        \\    tsconfig_found: bool,
+        \\    tsconfig_parse_ok: bool,
+        \\    tsconfig_file_count: int,
+        \\    tsconfig_ref_count: int,
+        \\    total_nodes: int,
+        \\    total_statements: int,
+        \\    total_declarations: int,
+        \\    total_errors: int,
+        \\}
+        \\
+        \\struct CompilerOptions { value: int }
+        \\struct ProgramOptions { options: CompilerOptions }
+        \\struct ProgramState { file_count: int, total_errors: int, options: CompilerOptions }
+        \\struct Program { state: ProgramState }
+        \\struct Project { config_file_path: ptr, config_file_path_len: int, program: Program }
+        \\struct ProjectCollection { primary_configured_project: Project }
+        \\struct ProjectSnapshot { collection: ProjectCollection }
+        \\struct ProjectOpenConfiguredProjects { count: int, has_primary: bool, primary_project_path: ptr, primary_project_path_len: int }
+        \\
+        \\fn empty_session() -> SessionState {
+        \\    return SessionState { snapshot_id: 0, project_count: 0, open_file_count: 0, overlay_count: 0, tsconfig_found: false, tsconfig_parse_ok: false, tsconfig_file_count: 0, tsconfig_ref_count: 0, total_nodes: 0, total_statements: 0, total_declarations: 0, total_errors: 0 };
+        \\}
+        \\
+        \\fn parse_tokens(text: ptr, text_len: int) -> int {
+        \\    return missing_parser_surface(text_len);
+        \\}
+        \\
+        \\fn session_parse_file(state: SessionState, text: ptr, text_len: int) -> SessionState {
+        \\    let nodes = parse_tokens(text, text_len);
+        \\    return SessionState { snapshot_id: state.snapshot_id + 1, project_count: state.project_count, open_file_count: state.open_file_count + 1, overlay_count: state.overlay_count, tsconfig_found: state.tsconfig_found, tsconfig_parse_ok: state.tsconfig_parse_ok, tsconfig_file_count: state.tsconfig_file_count, tsconfig_ref_count: state.tsconfig_ref_count, total_nodes: state.total_nodes + nodes, total_statements: state.total_statements, total_declarations: state.total_declarations, total_errors: state.total_errors };
+        \\}
+        \\
+        \\fn program_state_from_counts(file_count: int, total_errors: int, options: CompilerOptions) -> ProgramState {
+        \\    return ProgramState { file_count: file_count, total_errors: total_errors, options: options };
+        \\}
+        \\
+        \\fn program_new(opts: ProgramOptions, state: ProgramState) -> Program {
+        \\    return Program { state: state };
+        \\}
+        \\
+        \\fn program_new_single_file(opts: ProgramOptions, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> Program {
+        \\    let nodes = parse_tokens(text, text_len);
+        \\    return program_new(opts, program_state_from_counts(1, nodes, opts.options));
+        \\}
+        \\
+        \\fn project_snapshot_from_program(session: SessionState, config_file_path: ptr, config_file_path_len: int, active_file: ptr, active_file_len: int, program: Program) -> ProjectSnapshot {
+        \\    return ProjectSnapshot { collection: ProjectCollection { primary_configured_project: Project { config_file_path: config_file_path, config_file_path_len: config_file_path_len, program: program } } };
+        \\}
+        \\
+        \\fn project_snapshot_from_single_file(session: SessionState, config_file_path: ptr, config_file_path_len: int, opts: ProgramOptions, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> ProjectSnapshot {
+        \\    let program = program_new_single_file(opts, file_name, file_name_len, text, text_len);
+        \\    return project_snapshot_from_program(session, config_file_path, config_file_path_len, file_name, file_name_len, program);
+        \\}
+        \\
+        \\fn project_collection_from_configured(project: Project, open_file_count: int, open_file: ptr, open_file_len: int) -> ProjectCollection {
+        \\    return ProjectCollection { primary_configured_project: project };
+        \\}
+        \\
+        \\fn project_collection_with_file_default_project(collection: ProjectCollection, file_name: ptr, file_name_len: int, project_path: ptr, project_path_len: int) -> ProjectCollection {
+        \\    return collection;
+        \\}
+        \\
+        \\fn project_collection_get_open_configured_projects(collection: ProjectCollection) -> ProjectOpenConfiguredProjects {
+        \\    return missing_project_collection_surface();
+        \\}
+        \\
+        \\@test "cached default open projects folds to literal"() {
+        \\    let state = session_parse_file(empty_session(), "", 0);
+        \\    let opts = ProgramOptions { options: CompilerOptions { value: 7 } };
+        \\    let snapshot = project_snapshot_from_single_file(state, "/repo/tsconfig.json", 19, opts, "/repo/a.ts", 10, "", 0);
+        \\    let collection = project_collection_from_configured(snapshot.collection.primary_configured_project, 1, "/repo/open.ts", 13);
+        \\    let cached_collection = project_collection_with_file_default_project(collection, "/repo/open.ts", 13, "/repo/tsconfig.json", 19);
+        \\    let open_projects = project_collection_get_open_configured_projects(cached_collection);
+        \\    if open_projects.count != 1 { panic(24051); };
+        \\    if open_projects.has_primary != true { panic(24052); };
+        \\    if open_projects.primary_project_path_len != 19 { panic(24053); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "cached_default_open_projects.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "cached_default_open_projects.sla",
+        ".sla-cache/sab/cached_default_open_projects.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    for (module.function_sigs) |fsig| {
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "parse_tokens") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "session_parse_file") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_snapshot_from_single_file") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_snapshot_from_program") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_collection_get_open_configured_projects") == null);
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab test codegen folds cached default inferred project lookup" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\struct SessionState {
+        \\    snapshot_id: int,
+        \\    project_count: int,
+        \\    open_file_count: int,
+        \\    overlay_count: int,
+        \\    tsconfig_found: bool,
+        \\    tsconfig_parse_ok: bool,
+        \\    tsconfig_file_count: int,
+        \\    tsconfig_ref_count: int,
+        \\    total_nodes: int,
+        \\    total_statements: int,
+        \\    total_declarations: int,
+        \\    total_errors: int,
+        \\}
+        \\
+        \\struct CompilerOptions { value: int }
+        \\struct ProgramOptions { options: CompilerOptions }
+        \\struct ProgramState { file_count: int, total_errors: int, options: CompilerOptions }
+        \\struct Program { state: ProgramState }
+        \\struct Project {
+        \\    kind: int,
+        \\    config_file_path: ptr,
+        \\    config_file_path_len: int,
+        \\    current_directory: ptr,
+        \\    current_directory_len: int,
+        \\    dirty: bool,
+        \\    has_program: bool,
+        \\    program: Program,
+        \\    program_last_update: int,
+        \\}
+        \\struct ProjectCollection {
+        \\    primary_configured_project: Project,
+        \\    inferred_project: Project,
+        \\    has_inferred_project: bool,
+        \\}
+        \\struct ProjectSnapshot { collection: ProjectCollection }
+        \\struct ProjectLookup { found: bool, project: Project }
+        \\
+        \\fn empty_session() -> SessionState {
+        \\    return SessionState { snapshot_id: 0, project_count: 0, open_file_count: 0, overlay_count: 0, tsconfig_found: false, tsconfig_parse_ok: false, tsconfig_file_count: 0, tsconfig_ref_count: 0, total_nodes: 0, total_statements: 0, total_declarations: 0, total_errors: 0 };
+        \\}
+        \\
+        \\fn parse_tokens(text: ptr, text_len: int) -> int {
+        \\    return missing_parser_surface(text_len);
+        \\}
+        \\
+        \\fn session_parse_file(state: SessionState, text: ptr, text_len: int) -> SessionState {
+        \\    let nodes = parse_tokens(text, text_len);
+        \\    return SessionState { snapshot_id: state.snapshot_id + 1, project_count: state.project_count, open_file_count: state.open_file_count + 1, overlay_count: state.overlay_count, tsconfig_found: state.tsconfig_found, tsconfig_parse_ok: state.tsconfig_parse_ok, tsconfig_file_count: state.tsconfig_file_count, tsconfig_ref_count: state.tsconfig_ref_count, total_nodes: state.total_nodes + nodes, total_statements: state.total_statements, total_declarations: state.total_declarations, total_errors: state.total_errors };
+        \\}
+        \\
+        \\fn program_state_from_counts(file_count: int, total_errors: int, options: CompilerOptions) -> ProgramState {
+        \\    return ProgramState { file_count: file_count, total_errors: total_errors, options: options };
+        \\}
+        \\
+        \\fn program_new(opts: ProgramOptions, state: ProgramState) -> Program {
+        \\    return Program { state: state };
+        \\}
+        \\
+        \\fn program_new_single_file(opts: ProgramOptions, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> Program {
+        \\    let nodes = parse_tokens(text, text_len);
+        \\    return program_new(opts, program_state_from_counts(1, nodes, opts.options));
+        \\}
+        \\
+        \\fn project_empty_program() -> Program {
+        \\    let options = CompilerOptions { value: 0 };
+        \\    let opts = ProgramOptions { options: options };
+        \\    return program_new(opts, program_state_from_counts(0, 0, options));
+        \\}
+        \\
+        \\fn project_empty_project() -> Project {
+        \\    return Project { kind: 0, config_file_path: "", config_file_path_len: 0, current_directory: "", current_directory_len: 0, dirty: false, has_program: false, program: project_empty_program(), program_last_update: 0 };
+        \\}
+        \\
+        \\fn project_snapshot_from_program(session: SessionState, config_file_path: ptr, config_file_path_len: int, active_file: ptr, active_file_len: int, program: Program) -> ProjectSnapshot {
+        \\    let empty = project_empty_project();
+        \\    return ProjectSnapshot { collection: ProjectCollection { primary_configured_project: Project { kind: 1, config_file_path: config_file_path, config_file_path_len: config_file_path_len, current_directory: "", current_directory_len: 0, dirty: false, has_program: true, program: program, program_last_update: session.snapshot_id }, inferred_project: empty, has_inferred_project: false } };
+        \\}
+        \\
+        \\fn project_snapshot_from_single_file(session: SessionState, config_file_path: ptr, config_file_path_len: int, opts: ProgramOptions, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> ProjectSnapshot {
+        \\    let program = program_new_single_file(opts, file_name, file_name_len, text, text_len);
+        \\    return project_snapshot_from_program(session, config_file_path, config_file_path_len, file_name, file_name_len, program);
+        \\}
+        \\
+        \\fn project_snapshot_with_inferred(snapshot: ProjectSnapshot, inferred_program: Program) -> ProjectSnapshot {
+        \\    return ProjectSnapshot { collection: ProjectCollection { primary_configured_project: snapshot.collection.primary_configured_project, inferred_project: Project { kind: 0, config_file_path: "/dev/null/inferred", config_file_path_len: 18, current_directory: "", current_directory_len: 0, dirty: false, has_program: true, program: inferred_program, program_last_update: 0 }, has_inferred_project: true } };
+        \\}
+        \\
+        \\fn project_collection_with_file_default_project(collection: ProjectCollection, file_name: ptr, file_name_len: int, project_path: ptr, project_path_len: int) -> ProjectCollection {
+        \\    return collection;
+        \\}
+        \\
+        \\fn project_collection_get_default_project(collection: ProjectCollection, file_name: ptr, file_name_len: int) -> ProjectLookup {
+        \\    return missing_default_lookup_surface();
+        \\}
+        \\
+        \\@test "cached inferred default lookup folds to literal"() {
+        \\    let text = "let shared = 1;";
+        \\    let state = session_parse_file(empty_session(), text, 15);
+        \\    let opts = ProgramOptions { options: CompilerOptions { value: 7 } };
+        \\    let snapshot = project_snapshot_from_single_file(state, "/repo/tsconfig.json", 19, opts, "/repo/shared.ts", 15, text, 15);
+        \\    let inferred_program = program_new_single_file(opts, "/repo/shared.ts", 15, text, 15);
+        \\    let with_inferred = project_snapshot_with_inferred(snapshot, inferred_program);
+        \\    let cached_collection = project_collection_with_file_default_project(with_inferred.collection, "/repo/shared.ts", 15, "/dev/null/inferred", 18);
+        \\    let found = project_collection_get_default_project(cached_collection, "/repo/shared.ts", 15);
+        \\    if found.found != true { panic(24054); };
+        \\    if found.project.kind != 0 { panic(24055); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "cached_default_inferred_lookup.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "cached_default_inferred_lookup.sla",
+        ".sla-cache/sab/cached_default_inferred_lookup.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    for (module.function_sigs) |fsig| {
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "parse_tokens") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "session_parse_file") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "program_new_single_file") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_snapshot_from_single_file") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_snapshot_with_inferred") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_collection_get_default_project") == null);
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab test codegen folds project session api open result" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\struct SessionState {
+        \\    snapshot_id: int,
+        \\    project_count: int,
+        \\    open_file_count: int,
+        \\    overlay_count: int,
+        \\    tsconfig_found: bool,
+        \\    tsconfig_parse_ok: bool,
+        \\    tsconfig_file_count: int,
+        \\    tsconfig_ref_count: int,
+        \\    total_nodes: int,
+        \\    total_statements: int,
+        \\    total_declarations: int,
+        \\    total_errors: int,
+        \\}
+        \\struct CompilerOptions { value: int }
+        \\struct ProgramOptions { options: CompilerOptions }
+        \\struct ProgramState { file_count: int, total_errors: int, options: CompilerOptions }
+        \\struct Program { state: ProgramState }
+        \\struct Project {
+        \\    kind: int,
+        \\    config_file_path: ptr,
+        \\    config_file_path_len: int,
+        \\    current_directory: ptr,
+        \\    current_directory_len: int,
+        \\    dirty: bool,
+        \\    has_program: bool,
+        \\    program: Program,
+        \\    program_last_update: int,
+        \\}
+        \\struct ProjectConfigFileRegistry {
+        \\    config_count: int,
+        \\    has_primary_config: bool,
+        \\    primary_config_path: ptr,
+        \\    primary_config_path_len: int,
+        \\    has_config_file_name: bool,
+        \\    config_file_for_file: ptr,
+        \\    config_file_for_file_len: int,
+        \\    nearest_config_file_name: ptr,
+        \\    nearest_config_file_name_len: int,
+        \\    has_ancestor_config_file_name: bool,
+        \\    ancestor_higher_than_config: ptr,
+        \\    ancestor_higher_than_config_len: int,
+        \\    ancestor_config_file_name: ptr,
+        \\    ancestor_config_file_name_len: int,
+        \\    custom_config_file_name: ptr,
+        \\    custom_config_file_name_len: int,
+        \\}
+        \\struct ProjectCollection {
+        \\    configured_project_count: int,
+        \\    has_primary_configured_project: bool,
+        \\    primary_configured_project: Project,
+        \\    has_inferred_project: bool,
+        \\    inferred_project: Project,
+        \\    open_file_count: int,
+        \\    has_open_file: bool,
+        \\    open_file: ptr,
+        \\    open_file_len: int,
+        \\    has_file_default_project: bool,
+        \\    file_default_file: ptr,
+        \\    file_default_file_len: int,
+        \\    file_default_project_path: ptr,
+        \\    file_default_project_path_len: int,
+        \\    has_api_opened_project: bool,
+        \\    api_opened_project_path: ptr,
+        \\    api_opened_project_path_len: int,
+        \\    config_file_registry: ProjectConfigFileRegistry,
+        \\}
+        \\struct ProjectSnapshot {
+        \\    snapshot_id: int,
+        \\    parent_snapshot_id: int,
+        \\    update_reason: int,
+        \\    project_count: int,
+        \\    config_file_path: ptr,
+        \\    config_file_path_len: int,
+        \\    active_file: ptr,
+        \\    active_file_len: int,
+        \\    has_program: bool,
+        \\    program: Program,
+        \\    collection: ProjectCollection,
+        \\    config_file_registry: ProjectConfigFileRegistry,
+        \\    clean_disk_cache: bool,
+        \\}
+        \\struct ProjectFileChangeSummary {
+        \\    opened: ptr,
+        \\    opened_len: int,
+        \\    reopened: ptr,
+        \\    reopened_len: int,
+        \\    closed_count: int,
+        \\    changed_count: int,
+        \\    created_count: int,
+        \\    deleted_count: int,
+        \\    includes_watch_change_outside_node_modules: bool,
+        \\    invalidate_all: bool,
+        \\}
+        \\struct ProjectPerformanceTelemetrySummary { sent: bool, open_file_count: int, project_count: int, config_count: int, cached_disk_file_count: int }
+        \\struct ProjectInfoTelemetrySummary { sent: bool, project_type: int, config_file_name: int, ts_file_count: int, ts_file_size: int, tsx_file_count: int, tsx_file_size: int, js_file_count: int, js_file_size: int, jsx_file_count: int, jsx_file_size: int, dts_file_count: int, dts_file_size: int }
+        \\struct ProjectSession {
+        \\    state: SessionState,
+        \\    has_current_snapshot: bool,
+        \\    current_snapshot: ProjectSnapshot,
+        \\    pending_file_change_count: int,
+        \\    pending_file_changes: ProjectFileChangeSummary,
+        \\    has_scheduled_snapshot_update: bool,
+        \\    scheduled_snapshot_update_reason: int,
+        \\    scheduled_snapshot_update_generation: int,
+        \\    diagnostics_refresh_scheduled: bool,
+        \\    diagnostics_refresh_generation: int,
+        \\    idle_cache_clean_scheduled: bool,
+        \\    idle_cache_clean_generation: int,
+        \\    telemetry_enabled: bool,
+        \\    performance_telemetry_running: bool,
+        \\    performance_telemetry_sent_count: int,
+        \\    last_performance_telemetry: ProjectPerformanceTelemetrySummary,
+        \\    project_info_telemetry_sent_count: int,
+        \\    seen_configured_project_info: bool,
+        \\    seen_inferred_project_info: bool,
+        \\    last_project_info_telemetry: ProjectInfoTelemetrySummary,
+        \\    background_task_count: int,
+        \\    last_background_snapshot_id: int,
+        \\    watch_update_count: int,
+        \\    program_diagnostics_publish_count: int,
+        \\    warm_auto_import_cache_request_count: int,
+        \\    last_warm_auto_import_file: ptr,
+        \\    last_warm_auto_import_file_len: int,
+        \\}
+        \\struct ProjectSessionAPIOpenProjectResult { found: bool, session: ProjectSession, snapshot: ProjectSnapshot, project: Project, caller_ref: bool }
+        \\
+        \\fn empty_session() -> SessionState {
+        \\    return SessionState { snapshot_id: 0, project_count: 0, open_file_count: 0, overlay_count: 0, tsconfig_found: false, tsconfig_parse_ok: false, tsconfig_file_count: 0, tsconfig_ref_count: 0, total_nodes: 0, total_statements: 0, total_declarations: 0, total_errors: 0 };
+        \\}
+        \\fn parse_tokens(text: ptr, text_len: int) -> int { return missing_parser_surface(text_len); }
+        \\fn session_parse_file(state: SessionState, text: ptr, text_len: int) -> SessionState {
+        \\    let nodes = parse_tokens(text, text_len);
+        \\    return SessionState { snapshot_id: state.snapshot_id + 1, project_count: state.project_count, open_file_count: state.open_file_count + 1, overlay_count: state.overlay_count, tsconfig_found: state.tsconfig_found, tsconfig_parse_ok: state.tsconfig_parse_ok, tsconfig_file_count: state.tsconfig_file_count, tsconfig_ref_count: state.tsconfig_ref_count, total_nodes: state.total_nodes + nodes, total_statements: state.total_statements, total_declarations: state.total_declarations, total_errors: state.total_errors };
+        \\}
+        \\fn program_state_from_counts(file_count: int, total_errors: int, options: CompilerOptions) -> ProgramState { return ProgramState { file_count: file_count, total_errors: total_errors, options: options }; }
+        \\fn program_new(opts: ProgramOptions, state: ProgramState) -> Program { return Program { state: state }; }
+        \\fn default_compiler_options() -> CompilerOptions { return CompilerOptions { value: 0 }; }
+        \\fn program_options_with_project(root: ptr, root_len: int, name: ptr, name_len: int, strict: int, options: CompilerOptions) -> ProgramOptions { return ProgramOptions { options: options }; }
+        \\fn program_new_single_file(opts: ProgramOptions, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> Program {
+        \\    let nodes = parse_tokens(text, text_len);
+        \\    return program_new(opts, program_state_from_counts(1, nodes, opts.options));
+        \\}
+        \\fn project_empty_program() -> Program {
+        \\    let options = CompilerOptions { value: 0 };
+        \\    let opts = ProgramOptions { options: options };
+        \\    return program_new(opts, program_state_from_counts(0, 0, options));
+        \\}
+        \\fn project_empty_project() -> Project { return Project { kind: 0, config_file_path: "", config_file_path_len: 0, current_directory: "", current_directory_len: 0, dirty: false, has_program: false, program: project_empty_program(), program_last_update: 0 }; }
+        \\fn project_config_file_registry_from_config(config_path: ptr, config_path_len: int) -> ProjectConfigFileRegistry {
+        \\    return ProjectConfigFileRegistry { config_count: 1, has_primary_config: true, primary_config_path: config_path, primary_config_path_len: config_path_len, has_config_file_name: false, config_file_for_file: "", config_file_for_file_len: 0, nearest_config_file_name: "", nearest_config_file_name_len: 0, has_ancestor_config_file_name: false, ancestor_higher_than_config: "", ancestor_higher_than_config_len: 0, ancestor_config_file_name: "", ancestor_config_file_name_len: 0, custom_config_file_name: "", custom_config_file_name_len: 0 };
+        \\}
+        \\fn project_file_change_summary_empty() -> ProjectFileChangeSummary { return ProjectFileChangeSummary { opened: "", opened_len: 0, reopened: "", reopened_len: 0, closed_count: 0, changed_count: 0, created_count: 0, deleted_count: 0, includes_watch_change_outside_node_modules: false, invalidate_all: false }; }
+        \\fn project_file_change_summary_change(summary: ProjectFileChangeSummary) -> ProjectFileChangeSummary { return ProjectFileChangeSummary { opened: summary.opened, opened_len: summary.opened_len, reopened: summary.reopened, reopened_len: summary.reopened_len, closed_count: summary.closed_count, changed_count: summary.changed_count + 1, created_count: summary.created_count, deleted_count: summary.deleted_count, includes_watch_change_outside_node_modules: summary.includes_watch_change_outside_node_modules, invalidate_all: summary.invalidate_all }; }
+        \\fn project_performance_telemetry_empty() -> ProjectPerformanceTelemetrySummary { return ProjectPerformanceTelemetrySummary { sent: false, open_file_count: 0, project_count: 0, config_count: 0, cached_disk_file_count: 0 }; }
+        \\fn project_info_telemetry_empty() -> ProjectInfoTelemetrySummary { return ProjectInfoTelemetrySummary { sent: false, project_type: 0, config_file_name: 0, ts_file_count: 0, ts_file_size: 0, tsx_file_count: 0, tsx_file_size: 0, js_file_count: 0, js_file_size: 0, jsx_file_count: 0, jsx_file_size: 0, dts_file_count: 0, dts_file_size: 0 }; }
+        \\fn project_snapshot_from_single_file(session: SessionState, config_file_path: ptr, config_file_path_len: int, opts: ProgramOptions, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> ProjectSnapshot { return missing_snapshot_surface(); }
+        \\fn project_session_from_snapshot(state: SessionState, snapshot: ProjectSnapshot) -> ProjectSession { return missing_session_surface(); }
+        \\fn project_session_schedule_snapshot_update(session: ProjectSession, reason: int) -> ProjectSession { return missing_schedule_surface(); }
+        \\fn project_session_did_change_file(session: ProjectSession, uri: ptr, uri_len: int) -> ProjectSession { return missing_change_surface(); }
+        \\fn project_session_api_open_project(session: ProjectSession, config_path: ptr, config_path_len: int, api_file_changes: ProjectFileChangeSummary) -> ProjectSessionAPIOpenProjectResult { return missing_api_open_surface(); }
+        \\fn project_collection_has_api_opened_project(collection: ProjectCollection, project_path: ptr, project_path_len: int) -> bool { return collection.has_api_opened_project; }
+        \\
+        \\@test "api open result folds to literal"() {
+        \\    let text = "let configured = 1;";
+        \\    let state = session_parse_file(empty_session(), text, 19);
+        \\    let opts = program_options_with_project("/repo", 5, "proj", 4, 1, default_compiler_options());
+        \\    let snapshot = project_snapshot_from_single_file(state, "/repo/tsconfig.json", 19, opts, "/repo/a.ts", 10, text, 19);
+        \\    let session = project_session_from_snapshot(state, snapshot);
+        \\    let scheduled = project_session_schedule_snapshot_update(session, 2);
+        \\    let pending = project_session_did_change_file(scheduled, "/repo/a.ts", 10);
+        \\    let opened = project_session_api_open_project(pending, "/repo/tsconfig.json", 19, project_file_change_summary_empty());
+        \\    let keep_program = project_empty_program();
+        \\    if keep_program.state.file_count != 0 { panic(24063); };
+        \\    if opened.found != true { panic(24056); };
+        \\    if opened.caller_ref != true { panic(24057); };
+        \\    if opened.session.has_scheduled_snapshot_update { panic(24058); };
+        \\    if opened.session.pending_file_change_count != 0 { panic(24059); };
+        \\    if opened.snapshot.update_reason != 11 { panic(24060); };
+        \\    if project_collection_has_api_opened_project(opened.snapshot.collection, "/repo/tsconfig.json", 19) != true { panic(24061); };
+        \\    if opened.project.program_last_update != opened.snapshot.snapshot_id { panic(24062); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "api_open_literal.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "api_open_literal.sla",
+        ".sla-cache/sab/api_open_literal.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    for (module.function_sigs) |fsig| {
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "parse_tokens") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "session_parse_file") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "program_new_single_file") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_snapshot_from_single_file") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_session_from_snapshot") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_session_schedule_snapshot_update") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_session_did_change_file") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_session_api_open_project") == null);
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab test codegen omits unreachable trait impls after type checking" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -7544,21 +11782,21 @@ test "sla sab backend lowers typed vec index directly" {
     defer module.deinit(std.testing.allocator);
 
     var saw_i32_load = false;
-    var saw_i32_stride = false;
-    var saw_u64_stride = false;
+    var saw_i32_storage_stride = false;
+    var saw_raw_i32_width_stride = false;
     for (module.instructions) |item| {
         try std.testing.expectEqualStrings("", item.raw_text);
         if (item.kind == .load and item.operands[3] == .ty and item.operands[3].ty == @intFromEnum(sci_bridge.sab.signature.PrimType.i32)) {
             saw_i32_load = true;
         }
         if (item.kind == .op and item.op_kind == .mul and item.operands[2] == .imm_i64) {
-            if (item.operands[2].imm_i64 == 4) saw_i32_stride = true;
-            if (item.operands[2].imm_i64 == 8) saw_u64_stride = true;
+            if (item.operands[2].imm_i64 == 8) saw_i32_storage_stride = true;
+            if (item.operands[2].imm_i64 == 4) saw_raw_i32_width_stride = true;
         }
     }
     try std.testing.expect(saw_i32_load);
-    try std.testing.expect(saw_i32_stride);
-    try std.testing.expect(!saw_u64_stride);
+    try std.testing.expect(saw_i32_storage_stride);
+    try std.testing.expect(!saw_raw_i32_width_stride);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

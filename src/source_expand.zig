@@ -34,6 +34,10 @@ const TupleContext = struct {
 };
 
 pub fn expand(allocator: std.mem.Allocator, source: []const u8) SourceExpandError![]const u8 {
+    if (std.mem.indexOf(u8, source, "@expand_tuple") == null) {
+        return allocator.dupe(u8, source) catch return SourceExpandError.OutOfMemory;
+    }
+
     var out = std.ArrayList(u8).init(allocator);
     var i: usize = 0;
     while (i < source.len) {
@@ -323,6 +327,15 @@ test "expand tuple arity template" {
     try std.testing.expect(std.mem.indexOf(u8, expanded, "struct Generated2<T0, T1>") != null);
     try std.testing.expect(std.mem.indexOf(u8, expanded, "value_2: T2") != null);
     try std.testing.expect(std.mem.indexOf(u8, expanded, "fn make3<T0, T1, T2>") != null);
+}
+
+test "expand without tuple directive returns owned copy" {
+    const source = "fn main() -> i32 { return 1; }";
+    const expanded = try expand(std.testing.allocator, source);
+    defer std.testing.allocator.free(expanded);
+
+    try std.testing.expectEqualStrings(source, expanded);
+    try std.testing.expect(expanded.ptr != source.ptr);
 }
 
 test "expand tuple ordinal placeholder" {

@@ -24,6 +24,9 @@ Scenarios:
   fanout_check              many imported modules with many dead functions
   fanout_test_sa            test-codegen path over the same fanout graph
   imported_macro_test_sa    imported .sa macro direct-callee pruning path
+  repeated_multi_macro_test_sa
+                            repeated imports of many .sa macro files, then
+                            expand every imported macro in one test
 
 To compare before/after, run this script twice with different --cli values and
 the same --workdir/options, then compare elapsed_ms by scenario.
@@ -165,6 +168,47 @@ generate_fixtures() {
         printf 'fn use_macro() -> i64 {\n    let pair = Pair { left: 31, right: 11 };\n    BENCH_IMPORTED_SUM(pair)\n}\n\n'
         printf '@test "imported macro callee"() {\n    if use_macro() != 42 { panic(90002); };\n}\n'
     } > "$workdir/fixtures/imported_macro_main.sla"
+
+    mkdir -p "$workdir/fixtures/macros"
+    {
+        local i j
+        for i in $(seq 1 "$fanout"); do
+            {
+                printf '[MACRO] BENCH_MULTI_MACRO_%s %%out, %%value\n' "$i"
+                printf '    %%out = call @sla__multi_macro_callee_%s(&%%value)\n' "$i"
+                printf '[END_MACRO]\n'
+            } > "$workdir/fixtures/macros/macro_$i.sa"
+        done
+
+        for i in $(seq 1 "$fanout"); do
+            printf '@import "macros/macro_%s.sa"\n' "$i"
+        done
+        for j in $(seq 1 "$repeat_imports"); do
+            i=$(( ((j - 1) % fanout) + 1 ))
+            printf '@import "macros/macro_%s.sa"\n' "$i"
+        done
+
+        printf '\nstruct MultiMacroValue { left: i64, right: i64 }\n\n'
+        for i in $(seq 1 "$fanout"); do
+            printf 'fn multi_macro_callee_%s(value: &MultiMacroValue) -> i64 {\n    value.left + value.right + %s\n}\n\n' "$i" "$i"
+        done
+        for j in $(seq 1 "$dead_funcs"); do
+            printf 'fn multi_macro_dead_%s() -> i64 {\n    return multi_macro_missing_%s();\n}\n\n' "$j" "$j"
+        done
+
+        printf 'fn use_all_imported_macros() -> i64 {\n'
+        printf '    let value = MultiMacroValue { left: 10, right: 20 };\n'
+        printf '    return '
+        for i in $(seq 1 "$fanout"); do
+            if [ "$i" -gt 1 ]; then printf ' + '; fi
+            printf 'BENCH_MULTI_MACRO_%s(value)' "$i"
+        done
+        printf ';\n}\n\n'
+
+        local expected
+        expected=$(( fanout * 30 + (fanout * (fanout + 1)) / 2 ))
+        printf '@test "repeated multi macro imports"() {\n    if use_all_imported_macros() != %s { panic(90003); };\n}\n' "$expected"
+    } > "$workdir/fixtures/repeated_multi_macro_main.sla"
 }
 
 run_timed() {
@@ -196,6 +240,7 @@ cli_q=$(quote "$cli")
 repeated_q=$(quote "$workdir/fixtures/repeated_main.sla")
 fanout_q=$(quote "$workdir/fixtures/fanout_main.sla")
 macro_q=$(quote "$workdir/fixtures/imported_macro_main.sla")
+multi_macro_q=$(quote "$workdir/fixtures/repeated_multi_macro_main.sla")
 
 for i in $(seq 1 "$runs"); do
     run_timed "repeated_import_check" "check" "$i" "SA_PLUGIN_DEV=\${SA_PLUGIN_DEV:-1} $cli_q sla check $repeated_q"
@@ -211,6 +256,10 @@ done
 
 for i in $(seq 1 "$runs"); do
     run_timed "imported_macro_test_sa" "test_sa" "$i" "SA_PLUGIN_DEV=\${SA_PLUGIN_DEV:-1} $cli_q sla test $macro_q --test-backend sa --jobs 1 --trace-panic"
+done
+
+for i in $(seq 1 "$runs"); do
+    run_timed "repeated_multi_macro_test_sa" "test_sa" "$i" "SA_PLUGIN_DEV=\${SA_PLUGIN_DEV:-1} $cli_q sla test $multi_macro_q --test-backend sa --jobs 1 --trace-panic"
 done
 
 if [ -n "$out" ]; then

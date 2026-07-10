@@ -1,0 +1,38 @@
+@import "sa_std/vec.sa"
+@import "sa_std/thread.sa"
+@import "sa_std/core/result.sa"
+
+fn merge_direct_chunk() -> Vec<i32> {
+    let chunk: Vec<i32> = Vec::new();
+    chunk.push(7);
+    chunk.push(11);
+    return chunk;
+}
+
+fn merge_direct_batch(chunk: Vec<i32>) -> i64 {
+    return len(chunk) as i64;
+}
+
+fn merge_direct_spawn_or_call(use_threads: bool) -> i64 {
+    let handles: Vec<JoinHandle<i64>> = Vec::new();
+    let total: i64 = 0;
+    let chunk = merge_direct_chunk();
+    if use_threads {
+        handles.push(thread::spawn(^|| merge_direct_batch(chunk)));
+    } else {
+        let part = merge_direct_batch(chunk);
+        total = total + part;
+    };
+    let i: i64 = 0;
+    while i < len(handles) as i64 {
+        let part = handles[i].join().unwrap();
+        total = total + part;
+        i = i + 1;
+    }
+    return total;
+}
+
+@test "thread closure and direct call both consume branch chunk"() {
+    if merge_direct_spawn_or_call(false) != 2 { panic(51380); };
+    if merge_direct_spawn_or_call(true) != 2 { panic(51381); };
+}

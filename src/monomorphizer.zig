@@ -27,6 +27,7 @@ pub const Monomorphizer = struct {
 
     // Accumulators for the generated concrete declarations
     new_decls: std.ArrayList(*ast.Node),
+    last_missing_template: ?[]const u8,
 
     pub fn init(allocator: std.mem.Allocator) Monomorphizer {
         return .{
@@ -40,6 +41,7 @@ pub const Monomorphizer = struct {
             .specialized_impls = std.StringHashMap([]const u8).init(allocator),
             .specialized_funcs = std.StringHashMap([]const u8).init(allocator),
             .new_decls = std.ArrayList(*ast.Node).init(allocator),
+            .last_missing_template = null,
         };
     }
 
@@ -81,6 +83,15 @@ pub const Monomorphizer = struct {
             .user_defined => |ud| ud.generics.len > 0,
             else => false,
         };
+    }
+
+    pub fn missingTemplateName(self: *const Monomorphizer) ?[]const u8 {
+        return self.last_missing_template;
+    }
+
+    fn templateNotFound(self: *Monomorphizer, name: []const u8) MonomorphizeError {
+        self.last_missing_template = name;
+        return MonomorphizeError.TemplateNotFound;
     }
 
     fn genericNamesFromTarget(self: *Monomorphizer, target_ty: *ast.Type) MonomorphizeError![]const []const u8 {
@@ -140,6 +151,7 @@ pub const Monomorphizer = struct {
         original_primary_decls: ?*const std.AutoHashMap(*const ast.Node, void),
         specialized_primary_decls: ?*std.AutoHashMap(*const ast.Node, void),
     ) MonomorphizeError!*ast.Node {
+        self.last_missing_template = null;
         if (program.* != .program) return MonomorphizeError.MonomorphizeError;
 
         var regular_decls = std.ArrayList(*ast.Node).init(self.allocator);
@@ -233,8 +245,8 @@ pub const Monomorphizer = struct {
                         .is_union = s.is_union,
                         .is_opaque = s.is_opaque,
                     },
-                    };
-                    return res;
+                };
+                return res;
             },
             .type_alias_decl => |a| {
                 var new_components = std.ArrayList(ast.TypeAliasComponent).init(self.allocator);
@@ -502,7 +514,7 @@ pub const Monomorphizer = struct {
                 const generics = try spec_generics.toOwnedSlice();
                 const mangled_name = try self.getMangledFuncName(ref.func_name, generics);
                 if (!self.specialized_funcs.contains(mangled_name)) {
-                    const template = self.func_templates.get(ref.func_name) orelse return MonomorphizeError.TemplateNotFound;
+                    const template = self.func_templates.get(ref.func_name) orelse return self.templateNotFound(ref.func_name);
                     try self.instantiateFunction(mangled_name, template, generics);
                 }
                 const res = try self.allocator.create(ast.Node);
@@ -737,7 +749,7 @@ pub const Monomorphizer = struct {
 
                     // Instantiate if not already done
                     if (!self.specialized_funcs.contains(mangled_name)) {
-                        const template = self.func_templates.get(call.func_name) orelse return MonomorphizeError.TemplateNotFound;
+                        const template = self.func_templates.get(call.func_name) orelse return self.templateNotFound(call.func_name);
                         try self.instantiateFunction(mangled_name, template, call.generics);
                     }
 
@@ -1095,7 +1107,7 @@ pub const Monomorphizer = struct {
                             try self.instantiateEnum(mangled_name, template, ud.generics);
                         }
                     } else {
-                        return MonomorphizeError.TemplateNotFound;
+                        return self.templateNotFound(ud.name);
                     }
 
                     const res = try self.allocator.create(ast.Type);

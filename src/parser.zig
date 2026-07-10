@@ -20,6 +20,12 @@ pub const ParserError = error{
 };
 
 pub const Parser = struct {
+    pub const Options = struct {
+        parse_function_bodies: bool = true,
+        parse_macro_bodies: bool = true,
+        parse_test_bodies: bool = true,
+    };
+
     allocator: std.mem.Allocator,
     lex: lexer.Lexer,
     tok: lexer.Token,
@@ -30,12 +36,17 @@ pub const Parser = struct {
     current_impl_target: ?*ast.Type,
     base_dir: []const u8,
     import_scan_depth: usize,
+    options: Options,
 
     pub fn init(allocator: std.mem.Allocator, buffer: []const u8) Parser {
         return initWithDir(allocator, buffer, ".");
     }
 
     pub fn initWithDir(allocator: std.mem.Allocator, buffer: []const u8, base_dir: []const u8) Parser {
+        return initWithDirAndOptions(allocator, buffer, base_dir, .{});
+    }
+
+    pub fn initWithDirAndOptions(allocator: std.mem.Allocator, buffer: []const u8, base_dir: []const u8, options: Options) Parser {
         var p = Parser{
             .allocator = allocator,
             .lex = lexer.Lexer.init(buffer),
@@ -47,6 +58,7 @@ pub const Parser = struct {
             .current_impl_target = null,
             .base_dir = base_dir,
             .import_scan_depth = 0,
+            .options = options,
         };
         p.tok = p.lex.next();
         return p;
@@ -967,7 +979,10 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = try self.parseBlock();
+        const body = if (self.options.parse_function_bodies) try self.parseBlock() else blk: {
+            try self.skipBlock();
+            break :blk &.{};
+        };
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1040,7 +1055,10 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = try self.parseBlock();
+        const body = if (self.options.parse_function_bodies) try self.parseBlock() else blk: {
+            try self.skipBlock();
+            break :blk &.{};
+        };
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1093,7 +1111,10 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (is_decl_only) &.{} else try self.parseBlock();
+        const body = if (is_decl_only) &.{} else if (self.options.parse_function_bodies) try self.parseBlock() else blk: {
+            try self.skipBlock();
+            break :blk &.{};
+        };
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1133,7 +1154,10 @@ pub const Parser = struct {
 
         try self.expect(.r_paren);
 
-        const body = try self.parseBlock();
+        const body = if (self.options.parse_macro_bodies) try self.parseBlock() else blk: {
+            try self.skipBlock();
+            break :blk &.{};
+        };
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1230,7 +1254,11 @@ pub const Parser = struct {
 
         const import_dir = std.fs.path.dirname(resolved_path) orelse ".";
 
-        var sub = initWithDir(self.allocator, expanded_source, import_dir);
+        var sub = initWithDirAndOptions(self.allocator, expanded_source, import_dir, .{
+            .parse_function_bodies = false,
+            .parse_macro_bodies = false,
+            .parse_test_bodies = false,
+        });
         sub.import_scan_depth = self.import_scan_depth + 1;
         const prog = sub.parseProgram() catch return;
         if (prog.* != .program) return;
@@ -1273,7 +1301,10 @@ pub const Parser = struct {
         try self.expect(.l_paren);
         try self.expect(.r_paren);
 
-        const body = try self.parseBlock();
+        const body = if (self.options.parse_test_bodies) try self.parseBlock() else blk: {
+            try self.skipBlock();
+            break :blk &.{};
+        };
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1285,6 +1316,28 @@ pub const Parser = struct {
             },
         };
         return node;
+    }
+
+    fn skipBlock(self: *Parser) ParserError!void {
+        try self.expect(.l_brace);
+        var depth: usize = 1;
+        while (depth > 0 and self.peek() != .eof) {
+            switch (self.peek()) {
+                .l_brace => {
+                    depth += 1;
+                    self.advance();
+                },
+                .r_brace => {
+                    depth -= 1;
+                    self.advance();
+                },
+                else => self.advance(),
+            }
+        }
+        if (depth != 0) {
+            self.last_expected = "matching closing brace";
+            return ParserError.SyntaxError;
+        }
     }
 
     fn parseBlock(self: *Parser) ParserError![]const *ast.Node {
@@ -3031,6 +3084,48 @@ test "parse sla import basename as module namespace" {
     const value = ret.return_stmt.value.?;
     try std.testing.expect(value.* == .call_expr);
     try std.testing.expectEqualSlices(u8, "dep__imported_a", value.call_expr.func_name);
+}
+
+test "sla import type prescan skips imported function bodies" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "dep.sla",
+        .data =
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\fn invalid_imported_body() -> i32 {
+        \\    let = ;
+        \\}
+        ,
+    });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    const source =
+        \\@import "dep.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    let item = ImportedThing { value: 41 };
+        \\    return item.value;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.initWithDir(allocator, source, ".");
+    const prog = try p.parseProgram();
+
+    try std.testing.expect(prog.* == .program);
+    try std.testing.expect(p.isKnownTypeName("ImportedThing"));
 }
 
 test "syntax diagnostic includes location token and context" {

@@ -1,6 +1,6 @@
 # SAB system_param_table_erased removed_components cleanup MemoryLeak issue
 
-状态：编译器侧聚焦修复已验证，仍待下游整文件复测。下游 `sla_ecs` 在把普通 `TableErasedWorld` system-param `AnyOf` wrapper 从 10 扩到 12 后，generated-SA 后端整文件测试通过，但默认/SAB 后端在整文件聚合测试退出清理阶段报告 `removed_components` 仍为 Active。
+状态：已关闭（2026-07-09）。下游 `sla_ecs` 普通 `TableErasedWorld` system-param 整文件当前在 `sa sla check`、generated-SA 后端、默认/SAB 后端均通过；历史 `removed_components` MemoryLeak 不再复现，后续暴露出的 direct-SAB `UseAfterMove` / `PhiStateConflict` 也已在本次 compiler slice 中修复。
 
 ## 下游变更
 
@@ -253,3 +253,40 @@ func_decl $sla__clear_vec_field
 ```
 
 本次仍不重新跑危险下游整文件 `lib/system_param_table_erased.sla`：该路径此前长时间无输出/超时，继续使用本仓库聚焦 fixture 和 SAB 反汇编作为 compiler-owned 修复证据。
+
+## 2026-07-09 下游整文件关闭复验
+
+在后续 Module Table / direct-SAB cleanup 后重新安装 dev plugin，并对下游当前 `lib/system_param_table_erased.sla` 做整文件复验。历史 `removed_components` MemoryLeak 已不再复现；第一次 default/SAB 复验暴露出两个新的 direct-SAB owner-state 问题：
+
+- `table_erased_world_res_mut` / `resource_ref` 形态：returned struct literal 某个字段先调用 `get_resource(world)`，后续字段继续读取 `world.tick` / `world.last`，direct-SAB 过早发出 `move_ world`。
+- `table_erased_run_entity_single_resource_system` 形态：外层 call 参数 `world` 与兄弟参数里的嵌套 `get_values(world)` 共用同一个 owner，内层 call materialization 后过早消费 `world`，外层 call 文本随后仍使用该寄存器。
+- `table_erased_world_query_with_any_of2` 形态：`any_first` 只在 then 分支被移动到 pushed item，else 分支保持 Active，merge 前未补齐另一边 cleanup，触发 `PhiStateConflict`。
+
+编译器侧修复：
+
+- `src/sab_codegen.zig` 新增当前表达式 later-use 上下文栈。struct literal 字段生成会把后续字段表达式挂入上下文；planned call / macro planned call 参数生成会把兄弟实参挂入上下文。`planValueCallArgConsumption()` 的语义不变，direct-SAB 只是在同一表达式仍会使用 source identifier 时延后可见 `move_`。
+- `genIfStatement()` 的 fallthrough 改为 then/else exit pad。两边分支状态都已知后，在 exit pad 中补齐只在另一分支 consumed 的外层 local cleanup，再统一跳转 merge，避免 verifier 看到 Active/Consumed 不一致。
+- 新增 `tests/test_unit_struct_literal_call_arg_later_field_direct.sla`，覆盖 returned struct literal 后续字段读取、外层 call sibling 参数 materialization、以及分支移动外层 local 后的 merge balance。
+
+本次串行验证：
+
+```bash
+timeout 180s zig build -j1 --summary all
+timeout 300s zig build test -j1 --summary all
+timeout 180s env SA_PLUGIN_DEV=1 sa plugin install --dev .
+timeout 60s env SA_PLUGIN_DEV=1 sa sla help
+timeout 180s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_struct_literal_call_arg_later_field_direct.sla --test-backend sab --jobs 1 --trace-panic
+timeout 180s env SA_PLUGIN_DEV=1 /usr/bin/time -f 'elapsed=%e maxrss=%M' sa sla check lib/system_param_table_erased.sla
+timeout 300s env SA_PLUGIN_DEV=1 /usr/bin/time -f 'elapsed=%e maxrss=%M' sa sla test lib/system_param_table_erased.sla --test-backend sa --jobs 1 --trace-panic
+timeout 300s env SA_PLUGIN_DEV=1 /usr/bin/time -f 'elapsed=%e maxrss=%M' sa sla test lib/system_param_table_erased.sla --jobs 1 --trace-panic
+```
+
+结果：
+
+- 本仓库新增 strict direct-SAB no-fallback fixture：3/3 passed。
+- `zig build`：7/7 passed。
+- `zig build test`：147/147 passed。
+- 官方 dev install/help：passed。
+- 下游 `sa sla check lib/system_param_table_erased.sla`：passed，`elapsed=3.43 maxrss=125568`。
+- 下游 generated-SA 整文件：43/43 passed，`elapsed=38.63 maxrss=432232`。
+- 下游 default/SAB 整文件：43/43 passed，`elapsed=57.93 maxrss=774604`。

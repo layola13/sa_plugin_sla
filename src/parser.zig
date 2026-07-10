@@ -22,7 +22,9 @@ pub const ParserError = error{
 pub const Parser = struct {
     pub const Options = struct {
         parse_function_bodies: bool = true,
+        function_body_names: ?*const std.StringHashMap(void) = null,
         parse_macro_bodies: bool = true,
+        macro_body_names: ?*const std.StringHashMap(void) = null,
         parse_test_bodies: bool = true,
     };
 
@@ -874,7 +876,7 @@ pub const Parser = struct {
             const is_inline = self.match(.keyword_inline);
             const is_async = self.match(.keyword_async);
             if (is_inline or is_async) return ParserError.ExpectedDeclaration;
-            try methods.append(try self.parseMethodDecl(target_ty));
+            try methods.append(try self.parseMethodDecl(target_ty, trait_name));
             _ = self.match(.semicolon);
         }
         try self.expect(.r_brace);
@@ -918,7 +920,7 @@ pub const Parser = struct {
         return try generics.toOwnedSlice();
     }
 
-    fn parseMethodDecl(self: *Parser, target_ty: *ast.Type) ParserError!*ast.Node {
+    fn parseMethodDecl(self: *Parser, target_ty: *ast.Type, trait_name: ?[]const u8) ParserError!*ast.Node {
         try self.expect(.keyword_fn);
         const name_tok = self.tok;
         try self.expect(.identifier);
@@ -979,7 +981,7 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (self.options.parse_function_bodies) try self.parseBlock() else blk: {
+        const body = if (try self.shouldParseMethodBody(target_ty, trait_name, name)) try self.parseBlock() else blk: {
             try self.skipBlock();
             break :blk &.{};
         };
@@ -1055,7 +1057,7 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (self.options.parse_function_bodies) try self.parseBlock() else blk: {
+        const body = if (try self.shouldParseMethodBody(target_ty, null, op_name)) try self.parseBlock() else blk: {
             try self.skipBlock();
             break :blk &.{};
         };
@@ -1074,7 +1076,6 @@ pub const Parser = struct {
                 .operator = op,
             },
         };
-        _ = target_ty;
         return node;
     }
 
@@ -1111,7 +1112,7 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (is_decl_only) &.{} else if (self.options.parse_function_bodies) try self.parseBlock() else blk: {
+        const body = if (is_decl_only) &.{} else if (self.shouldParseFunctionBody(name)) try self.parseBlock() else blk: {
             try self.skipBlock();
             break :blk &.{};
         };
@@ -1154,7 +1155,7 @@ pub const Parser = struct {
 
         try self.expect(.r_paren);
 
-        const body = if (self.options.parse_macro_bodies) try self.parseBlock() else blk: {
+        const body = if (self.shouldParseMacroBody(name)) try self.parseBlock() else blk: {
             try self.skipBlock();
             break :blk &.{};
         };
@@ -1338,6 +1339,42 @@ pub const Parser = struct {
             self.last_expected = "matching closing brace";
             return ParserError.SyntaxError;
         }
+    }
+
+    fn shouldParseFunctionBody(self: *const Parser, name: []const u8) bool {
+        if (!self.options.parse_function_bodies) return false;
+        const selected = self.options.function_body_names orelse return true;
+        return selected.contains(name);
+    }
+
+    fn shouldParseMacroBody(self: *const Parser, name: []const u8) bool {
+        if (!self.options.parse_macro_bodies) return false;
+        const selected = self.options.macro_body_names orelse return true;
+        return selected.contains(name);
+    }
+
+    fn concreteTypeNameForMethodSelection(ty: *const ast.Type) ?[]const u8 {
+        var curr = ty;
+        while (true) {
+            switch (curr.*) {
+                .borrow => |inner| curr = inner,
+                .pointer => |inner| curr = inner,
+                .user_defined => |ud| return ud.name,
+                else => return null,
+            }
+        }
+    }
+
+    fn shouldParseMethodBody(self: *const Parser, target_ty: *const ast.Type, trait_name: ?[]const u8, method_name: []const u8) !bool {
+        if (!self.options.parse_function_bodies) return false;
+        const selected = self.options.function_body_names orelse return true;
+        const type_name = concreteTypeNameForMethodSelection(target_ty) orelse return false;
+        const symbol = if (trait_name) |tn|
+            try std.fmt.allocPrint(self.allocator, "{s}__{s}_{s}", .{ type_name, tn, method_name })
+        else
+            try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ type_name, method_name });
+        defer self.allocator.free(symbol);
+        return selected.contains(symbol);
     }
 
     fn parseBlock(self: *Parser) ParserError![]const *ast.Node {
@@ -3126,6 +3163,62 @@ test "sla import type prescan skips imported function bodies" {
 
     try std.testing.expect(prog.* == .program);
     try std.testing.expect(p.isKnownTypeName("ImportedThing"));
+}
+
+test "sla parser selectively parses named function bodies" {
+    const source =
+        \\fn used() -> i32 {
+        \\    return 41;
+        \\}
+        \\
+        \\fn unused_invalid() -> i32 {
+        \\    let = ;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var selected = std.StringHashMap(void).init(allocator);
+    try selected.put("used", {});
+    var p = Parser.initWithDirAndOptions(allocator, source, ".", .{
+        .function_body_names = &selected,
+    });
+    const prog = try p.parseProgram();
+
+    try std.testing.expect(prog.* == .program);
+    try std.testing.expectEqual(@as(usize, 2), prog.program.decls.len);
+    try std.testing.expectEqual(@as(usize, 1), prog.program.decls[0].func_decl.body.len);
+    try std.testing.expectEqual(@as(usize, 0), prog.program.decls[1].func_decl.body.len);
+}
+
+test "sla parser selectively parses named macro bodies" {
+    const source =
+        \\macro used(value) {
+        \\    return value;
+        \\}
+        \\
+        \\macro unused_invalid(value) {
+        \\    let = ;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var selected = std.StringHashMap(void).init(allocator);
+    try selected.put("used", {});
+    var p = Parser.initWithDirAndOptions(allocator, source, ".", .{
+        .macro_body_names = &selected,
+    });
+    const prog = try p.parseProgram();
+
+    try std.testing.expect(prog.* == .program);
+    try std.testing.expectEqual(@as(usize, 2), prog.program.decls.len);
+    try std.testing.expectEqual(@as(usize, 1), prog.program.decls[0].macro_decl.body.len);
+    try std.testing.expectEqual(@as(usize, 0), prog.program.decls[1].macro_decl.body.len);
 }
 
 test "syntax diagnostic includes location token and context" {

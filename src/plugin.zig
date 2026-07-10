@@ -12,155 +12,41 @@ const sla_workspace = @import("workspace.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const sci_bridge = @import("sci_bridge");
 pub const handler_bridge = @import("handler_bridge.zig");
+const plugin_handler = @import("plugin_handler.zig");
+const plugin_skills = @import("plugin_skills.zig");
+const plugin_cli = @import("plugin_cli.zig");
+const plugin_sab_paths = @import("plugin_sab_paths.zig");
 
-pub const SlaHandlerStateFieldAbi = extern struct {
-    name_ptr: ?[*]const u8,
-    name_len: usize,
-    ty: u32,
-    address_ptr: ?[*]const u8,
-    address_len: usize,
-};
-
-pub const SlaCompileHandlerOptionsAbi = extern struct {
-    base_dir_ptr: ?[*]const u8 = null,
-    base_dir_len: usize = 0,
-};
-
-pub const SlaCompileHandlerResultAbi = extern struct {
-    body_ptr: ?[*]const u8 = null,
-    body_len: usize = 0,
-    support_ptr: ?[*]const u8 = null,
-    support_len: usize = 0,
-    error_name_ptr: ?[*]const u8 = null,
-    error_name_len: usize = 0,
-};
-
-fn abiSlice(ptr: ?[*]const u8, len: usize) ?[]const u8 {
-    if (len == 0) return "";
-    const raw = ptr orelse return null;
-    return raw[0..len];
-}
-
-fn abiStateType(ty: u32) ?handler_bridge.HandlerStateType {
-    return switch (ty) {
-        1 => .i1,
-        2 => .i32,
-        3 => .i64,
-        4 => .f64,
-        5 => .ptr,
-        else => null,
-    };
-}
-
-fn setAbiError(out: *SlaCompileHandlerResultAbi, err_name: []const u8) void {
-    out.* = .{
-        .error_name_ptr = err_name.ptr,
-        .error_name_len = err_name.len,
-    };
-}
-
-pub export fn sla_compile_handler(
-    handler_name_ptr: ?[*]const u8,
-    handler_name_len: usize,
-    handler_source_ptr: ?[*]const u8,
-    handler_source_len: usize,
-    fields_ptr: ?[*]const SlaHandlerStateFieldAbi,
-    fields_len: usize,
-    options_ptr: ?*const SlaCompileHandlerOptionsAbi,
-    out: ?*SlaCompileHandlerResultAbi,
-) callconv(.c) u32 {
-    const result_out = out orelse return 1;
-    result_out.* = .{};
-
-    const handler_name = abiSlice(handler_name_ptr, handler_name_len) orelse {
-        setAbiError(result_out, "InvalidHandlerName");
-        return 1;
-    };
-    const handler_source = abiSlice(handler_source_ptr, handler_source_len) orelse {
-        setAbiError(result_out, "InvalidHandlerSource");
-        return 1;
-    };
-    const raw_fields = if (fields_len == 0) &[_]SlaHandlerStateFieldAbi{} else blk: {
-        const ptr = fields_ptr orelse {
-            setAbiError(result_out, "InvalidStateFields");
-            return 1;
-        };
-        break :blk ptr[0..fields_len];
-    };
-
-    const allocator = std.heap.c_allocator;
-    const fields = allocator.alloc(handler_bridge.HandlerStateField, raw_fields.len) catch {
-        setAbiError(result_out, "OutOfMemory");
-        return 1;
-    };
-    defer allocator.free(fields);
-
-    for (raw_fields, 0..) |raw, idx| {
-        const name = abiSlice(raw.name_ptr, raw.name_len) orelse {
-            setAbiError(result_out, "InvalidStateFieldName");
-            return 1;
-        };
-        const address = abiSlice(raw.address_ptr, raw.address_len) orelse {
-            setAbiError(result_out, "InvalidStateFieldAddress");
-            return 1;
-        };
-        fields[idx] = .{
-            .name = name,
-            .ty = abiStateType(raw.ty) orelse {
-                setAbiError(result_out, "InvalidStateFieldType");
-                return 1;
-            },
-            .address = address,
-        };
-    }
-
-    const options = if (options_ptr) |opts| handler_bridge.CompileHandlerOptions{
-        .base_dir = abiSlice(opts.base_dir_ptr, opts.base_dir_len) orelse {
-            setAbiError(result_out, "InvalidBaseDir");
-            return 1;
-        },
-    } else handler_bridge.CompileHandlerOptions{};
-
-    const compiled = handler_bridge.compileHandlerWithSupport(allocator, handler_name, handler_source, fields, options) catch |err| {
-        setAbiError(result_out, @errorName(err));
-        return 2;
-    };
-    result_out.* = .{
-        .body_ptr = compiled.body.ptr,
-        .body_len = compiled.body.len,
-        .support_ptr = compiled.support.ptr,
-        .support_len = compiled.support.len,
-    };
-    return 0;
-}
-
-pub export fn sla_compile_handler_result_free(result: ?*SlaCompileHandlerResultAbi) callconv(.c) void {
-    const res = result orelse return;
-    const allocator = std.heap.c_allocator;
-    if (res.body_ptr) |ptr| allocator.free(ptr[0..res.body_len]);
-    if (res.support_ptr) |ptr| allocator.free(ptr[0..res.support_len]);
-    res.* = .{};
-}
-
-const skills = [_]plugin_api.SkillSection{
-    .{
-        .name = "sla",
-        .summary = "Sla compiler and tools",
-        .items = &.{
-            "sla init [path]",
-            "sla skills [--json]",
-            "sla stability schema|verify ...",
-            "sla build [file] [-p <package>] [--out <file>]",
-            "sla build-workspace [-p <package>] [sa-build-exe-options...]",
-            "sla build-exe [file] [-p <package>] [sa-build-exe-options...]",
-            "sla sab build [file] [-p <package>] [--out <file.sab>]",
-            "sla sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]",
-            "slab build|workspace|disasm ...",
-            "sla check [file] [-p <package>]",
-            "sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]",
-        },
-    },
-};
+pub const SlaHandlerStateFieldAbi = plugin_handler.SlaHandlerStateFieldAbi;
+pub const SlaCompileHandlerOptionsAbi = plugin_handler.SlaCompileHandlerOptionsAbi;
+pub const SlaCompileHandlerResultAbi = plugin_handler.SlaCompileHandlerResultAbi;
+pub const sla_compile_handler = plugin_handler.sla_compile_handler;
+pub const sla_compile_handler_result_free = plugin_handler.sla_compile_handler_result_free;
+const TestBackend = plugin_cli.TestBackend;
+const SlaCliOptions = plugin_cli.SlaCliOptions;
+const isHelpArg = plugin_cli.isHelpArg;
+const parseTestBackendFromArgs = plugin_cli.parseTestBackendFromArgs;
+const appendSaTestPassthrough = plugin_cli.appendSaTestPassthrough;
+const appendDefaultJobsAuto = plugin_cli.appendDefaultJobsAuto;
+const runSlaSkillsCommand = plugin_cli.runSlaSkillsCommand;
+const runSlaInitCommand = plugin_cli.runSlaInitCommand;
+const runSlaStabilityCommand = plugin_cli.runSlaStabilityCommand;
+const writeCommandHelp = plugin_cli.writeCommandHelp;
+const parseSlaCliOptionsFrom = plugin_cli.parseSlaCliOptionsFrom;
+const parseSlaCliOptions = plugin_cli.parseSlaCliOptions;
+const saTestFilterFromArgs = plugin_cli.saTestFilterFromArgs;
+const defaultOutputPath = plugin_sab_paths.defaultOutputPath;
+const managedSabPath = plugin_sab_paths.managedSabPath;
+const managedSabTestPath = plugin_sab_paths.managedSabTestPath;
+const writeSabFile = plugin_sab_paths.writeSabFile;
+const writeManagedSab = plugin_sab_paths.writeManagedSab;
+const parseOutFileArg = plugin_sab_paths.parseOutFileArg;
+const parseSabOutFileArg = plugin_sab_paths.parseSabOutFileArg;
+const hasEmitSabArg = plugin_sab_paths.hasEmitSabArg;
+const appendSabWorkspacePassthrough = plugin_sab_paths.appendSabWorkspacePassthrough;
+const virtualSaPathForSabOutput = plugin_sab_paths.virtualSaPathForSabOutput;
+const sabSaStdRoot = plugin_sab_paths.sabSaStdRoot;
+const sabProjectRoot = plugin_sab_paths.sabProjectRoot;
 
 const max_import_bytes = 16 * 1024 * 1024;
 
@@ -660,6 +546,8 @@ const SlaModuleExports = struct {
     type_signatures: std.StringHashMap(TypeSignature),
     function_decls: std.StringHashMap(*ast.Node),
     function_signatures: std.StringHashMap(FunctionSignature),
+    associated_function_decls: std.StringHashMap(*ast.Node),
+    associated_function_signatures: std.StringHashMap(FunctionSignature),
     const_decls: std.StringHashMap(*ast.Node),
     const_signatures: std.StringHashMap(ConstSignature),
     macro_decls: std.StringHashMap(*ast.Node),
@@ -675,6 +563,8 @@ const SlaModuleExports = struct {
             .type_signatures = std.StringHashMap(TypeSignature).init(allocator),
             .function_decls = std.StringHashMap(*ast.Node).init(allocator),
             .function_signatures = std.StringHashMap(FunctionSignature).init(allocator),
+            .associated_function_decls = std.StringHashMap(*ast.Node).init(allocator),
+            .associated_function_signatures = std.StringHashMap(FunctionSignature).init(allocator),
             .const_decls = std.StringHashMap(*ast.Node).init(allocator),
             .const_signatures = std.StringHashMap(ConstSignature).init(allocator),
             .macro_decls = std.StringHashMap(*ast.Node).init(allocator),
@@ -691,6 +581,10 @@ const SlaModuleExports = struct {
         self.macro_decls.deinit();
         self.const_signatures.deinit();
         self.const_decls.deinit();
+        var associated_key_iter = self.associated_function_decls.keyIterator();
+        while (associated_key_iter.next()) |key_ptr| self.allocator.free(key_ptr.*);
+        self.associated_function_signatures.deinit();
+        self.associated_function_decls.deinit();
         self.function_signatures.deinit();
         self.function_decls.deinit();
         self.type_signatures.deinit();
@@ -702,8 +596,12 @@ const SlaModuleExports = struct {
     }
 
     fn addFunctionSignature(self: *SlaModuleExports, fd: *ast.FuncDecl) !void {
-        try self.function_signatures.put(fd.name, .{
-            .name = fd.name,
+        try self.addFunctionSignatureNamed(&self.function_signatures, fd.name, fd);
+    }
+
+    fn addFunctionSignatureNamed(self: *SlaModuleExports, table: *std.StringHashMap(FunctionSignature), name: []const u8, fd: *ast.FuncDecl) !void {
+        try table.put(name, .{
+            .name = name,
             .params = fd.params,
             .ret_ty = fd.ret_ty,
             .is_pub = fd.is_pub,
@@ -713,6 +611,11 @@ const SlaModuleExports = struct {
             .is_async = fd.is_async,
             .module_path = self.module_path,
         });
+    }
+
+    fn addAssociatedFunctionDecl(self: *SlaModuleExports, symbol: []const u8, decl: *ast.Node) !void {
+        try self.associated_function_decls.put(symbol, decl);
+        try self.addFunctionSignatureNamed(&self.associated_function_signatures, symbol, &decl.func_decl);
     }
 
     fn addTypeSignature(self: *SlaModuleExports, name: []const u8, kind: TypeKind, generics: []const []const u8) !void {
@@ -774,6 +677,23 @@ const SlaModuleExports = struct {
                 .impl_decl => |impl| {
                     try self.impl_decls.append(decl);
                     if (impl.trait_name != null) try self.trait_impl_decls.append(decl);
+                    const type_name = lowering_rules.concreteTypeName(impl.target_ty) orelse continue;
+                    for (impl.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const symbol = if (impl.trait_name) |trait_name|
+                            try lowering_rules.mangleTraitMethodName(self.allocator, type_name, trait_name, method.func_decl.name)
+                        else
+                            try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
+                        try self.addAssociatedFunctionDecl(symbol, method);
+                    }
+                },
+                .overload_decl => |overload| {
+                    const type_name = lowering_rules.concreteTypeName(overload.target_ty) orelse continue;
+                    for (overload.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const symbol = try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
+                        try self.addAssociatedFunctionDecl(symbol, method);
+                    }
                 },
                 else => {},
             }
@@ -790,7 +710,7 @@ const SlaModuleExports = struct {
         return self.function_decls.contains(name);
     }
     fn functionSignature(self: *const SlaModuleExports, name: []const u8) ?FunctionSignature {
-        return self.function_signatures.get(name);
+        return self.function_signatures.get(name) orelse self.associated_function_signatures.get(name);
     }
     fn exportsConst(self: *const SlaModuleExports, name: []const u8) bool {
         return self.const_decls.contains(name);
@@ -806,6 +726,7 @@ const SlaModuleExports = struct {
     }
     fn exportsSymbol(self: *const SlaModuleExports, name: []const u8) bool {
         if (self.function_decls.contains(name)) return true;
+        if (self.associated_function_decls.contains(name)) return true;
         if (self.const_decls.contains(name)) return true;
         if (self.macro_decls.contains(name)) return true;
 
@@ -832,11 +753,15 @@ const SlaModule = struct {
     output_path: []const u8,
     base_dir: []const u8,
     source: []const u8,
+    expanded_source: []const u8,
     program: *ast.Node,
     exports: SlaModuleExports,
     resolved_imports: []const ResolvedImport,
     resolved_module_imports: []const ResolvedModuleImport,
     has_function_bodies: bool,
+    has_macro_bodies: bool,
+    parsed_function_bodies: std.StringHashMap(void),
+    parsed_macro_bodies: std.StringHashMap(void),
 };
 
 const SlaImportExpansionOptions = struct {
@@ -844,6 +769,7 @@ const SlaImportExpansionOptions = struct {
     test_filter: ?[]const u8 = null,
     imported_bodies_decl_only: bool = false,
     load_reachable_imported_bodies_from_registry: bool = false,
+    lazy_transitive_sla_imports: bool = false,
 };
 
 const SlaResolvedImportGroup = struct {
@@ -879,6 +805,8 @@ const SlaModuleTable = struct {
             }
             self.allocator.free(module.resolved_module_imports);
             self.allocator.free(module.resolved_imports);
+            module.parsed_macro_bodies.deinit();
+            module.parsed_function_bodies.deinit();
             module.exports.deinit();
             self.allocator.destroy(module);
         }
@@ -927,23 +855,45 @@ const SlaModuleTable = struct {
             .output_path = resolved.output_path,
             .base_dir = base_dir,
             .source = resolved.source,
+            .expanded_source = expanded_source,
             .program = parsed,
             .exports = exports,
             .resolved_imports = resolved_imports,
             .resolved_module_imports = resolved_module_imports,
-            .has_function_bodies = self.parse_options.parse_function_bodies,
+            .has_function_bodies = self.parse_options.parse_function_bodies and self.parse_options.function_body_names == null,
+            .has_macro_bodies = self.parse_options.parse_macro_bodies and self.parse_options.macro_body_names == null,
+            .parsed_function_bodies = std.StringHashMap(void).init(self.allocator),
+            .parsed_macro_bodies = std.StringHashMap(void).init(self.allocator),
         };
+        if (self.parse_options.parse_function_bodies) {
+            if (self.parse_options.function_body_names) |selected| {
+                var selected_iter = selected.keyIterator();
+                while (selected_iter.next()) |name_ptr| try module.parsed_function_bodies.put(name_ptr.*, {});
+            }
+        }
+        if (self.parse_options.parse_macro_bodies) {
+            if (self.parse_options.macro_body_names) |selected| {
+                var selected_iter = selected.keyIterator();
+                while (selected_iter.next()) |name_ptr| try module.parsed_macro_bodies.put(name_ptr.*, {});
+            }
+        }
         try self.modules.put(module.path, module);
         return module;
     }
 
-    fn reparseModuleWithFunctionBodies(self: *SlaModuleTable, module: *SlaModule) !void {
-        if (module.has_function_bodies) return;
+    fn reparseModuleWithSelectedBodies(
+        self: *SlaModuleTable,
+        module: *SlaModule,
+        selected_function_bodies: ?*const std.StringHashMap(void),
+        selected_macro_bodies: ?*const std.StringHashMap(void),
+    ) !void {
+        if (module.has_function_bodies and module.has_macro_bodies) return;
 
-        const expanded_source = try source_expand.expand(self.allocator, module.source);
-        var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, module.base_dir, .{
+        var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, module.expanded_source, module.base_dir, .{
             .parse_function_bodies = true,
-            .parse_macro_bodies = self.parse_options.parse_macro_bodies,
+            .function_body_names = selected_function_bodies,
+            .parse_macro_bodies = true,
+            .macro_body_names = selected_macro_bodies,
             .parse_test_bodies = self.parse_options.parse_test_bodies,
         });
         const parsed = try parser.parseProgram();
@@ -951,21 +901,22 @@ const SlaModuleTable = struct {
 
         var exports = SlaModuleExports.init(self.allocator, module.path);
         try exports.buildFromDecls(parsed.program.decls);
-        const resolved_imports = try self.resolveModuleImports(module.path, module.base_dir, parsed.program.decls);
-        const resolved_module_imports = try self.buildModuleImportNamespaces(resolved_imports);
-
-        for (module.resolved_module_imports) |resolved_import| {
-            self.allocator.free(resolved_import.namespace);
-        }
-        self.allocator.free(module.resolved_module_imports);
-        self.allocator.free(module.resolved_imports);
         module.exports.deinit();
 
         module.program = parsed;
         module.exports = exports;
-        module.resolved_imports = resolved_imports;
-        module.resolved_module_imports = resolved_module_imports;
-        module.has_function_bodies = true;
+        module.has_function_bodies = selected_function_bodies == null;
+        module.has_macro_bodies = selected_macro_bodies == null;
+        module.parsed_function_bodies.clearRetainingCapacity();
+        if (selected_function_bodies) |selected| {
+            var selected_iter = selected.keyIterator();
+            while (selected_iter.next()) |name_ptr| try module.parsed_function_bodies.put(name_ptr.*, {});
+        }
+        module.parsed_macro_bodies.clearRetainingCapacity();
+        if (selected_macro_bodies) |selected| {
+            var selected_iter = selected.keyIterator();
+            while (selected_iter.next()) |name_ptr| try module.parsed_macro_bodies.put(name_ptr.*, {});
+        }
     }
 
     fn moduleImportByNamespace(self: *const SlaModuleTable, module_path: []const u8, namespace: []const u8) ?ResolvedModuleImport {
@@ -995,33 +946,9 @@ const SlaModuleTable = struct {
 
     fn associatedFunctionBody(self: *const SlaModuleTable, module_path: []const u8, symbol: []const u8) ?*ast.FuncDecl {
         const module = self.modules.get(module_path) orelse return null;
-        for (module.program.program.decls) |decl| {
-            switch (decl.*) {
-                .impl_decl => |impl_decl| {
-                    const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
-                    for (impl_decl.methods) |method| {
-                        if (method.* != .func_decl) continue;
-                        const candidate = if (impl_decl.trait_name) |trait_name|
-                            lowering_rules.mangleTraitMethodName(self.allocator, type_name, trait_name, method.func_decl.name) catch continue
-                        else
-                            lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name) catch continue;
-                        defer self.allocator.free(candidate);
-                        if (std.mem.eql(u8, candidate, symbol)) return &method.func_decl;
-                    }
-                },
-                .overload_decl => |overload_decl| {
-                    const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
-                    for (overload_decl.methods) |method| {
-                        if (method.* != .func_decl) continue;
-                        const candidate = lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name) catch continue;
-                        defer self.allocator.free(candidate);
-                        if (std.mem.eql(u8, candidate, symbol)) return &method.func_decl;
-                    }
-                },
-                else => {},
-            }
-        }
-        return null;
+        const decl = module.exports.associated_function_decls.get(symbol) orelse return null;
+        if (decl.* != .func_decl) return null;
+        return &decl.func_decl;
     }
 
     fn typeSignature(self: *const SlaModuleTable, module_path: []const u8, name: []const u8) ?SlaModuleExports.TypeSignature {
@@ -1149,6 +1076,30 @@ fn firstExternNameFromLine(line: []const u8) ?[]const u8 {
     return if (end > 0) rest[0..end] else null;
 }
 
+fn firstLayoutDefineNameFromLine(line: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    if (!std.mem.startsWith(u8, trimmed, "#def")) return null;
+    var rest = std.mem.trim(u8, trimmed["#def".len..], " \t\r");
+    var end: usize = 0;
+    while (end < rest.len) : (end += 1) {
+        const c = rest[end];
+        if (!(std.ascii.isAlphanumeric(c) or c == '_')) break;
+    }
+    return if (end > 0) rest[0..end] else null;
+}
+
+fn layoutDefineMatchesReferencedSymbol(define_name: []const u8, referenced_symbols: *const std.StringHashMap(void)) bool {
+    if (referenced_symbols.contains(define_name)) return true;
+    var iter = referenced_symbols.keyIterator();
+    while (iter.next()) |symbol_ptr| {
+        const symbol = symbol_ptr.*;
+        if (define_name.len <= symbol.len + 1) continue;
+        if (!std.mem.startsWith(u8, define_name, symbol)) continue;
+        if (define_name[symbol.len] == '_') return true;
+    }
+    return false;
+}
+
 fn resolvedImportDeclaresReferencedSurface(resolved: ResolvedImport, referenced_symbols: *const std.StringHashMap(void)) bool {
     if (!resolvedImportNeedsContractLoading(resolved)) return false;
     var lines = std.mem.splitScalar(u8, resolved.source, '\n');
@@ -1159,8 +1110,26 @@ fn resolvedImportDeclaresReferencedSurface(resolved: ResolvedImport, referenced_
         if (firstExternNameFromLine(line)) |name| {
             if (referenced_symbols.contains(name)) return true;
         }
+        if (firstLayoutDefineNameFromLine(line)) |name| {
+            if (layoutDefineMatchesReferencedSymbol(name, referenced_symbols)) return true;
+        }
     }
     return false;
+}
+
+fn resolvedImportNeedsTransitiveContractScan(resolved: ResolvedImport) bool {
+    if (!std.mem.endsWith(u8, resolved.path, ".sa")) return false;
+    return std.mem.indexOf(u8, resolved.source, "@import") != null or
+        std.mem.indexOf(u8, resolved.source, "@expand_tuple") != null;
+}
+
+fn shouldRetainResolvedContractImport(
+    resolved: ResolvedImport,
+    referenced_symbols: *const std.StringHashMap(void),
+    module_needs_contracts: bool,
+) bool {
+    if (resolvedImportDeclaresReferencedSurface(resolved, referenced_symbols)) return true;
+    return module_needs_contracts and resolvedImportNeedsTransitiveContractScan(resolved);
 }
 
 fn appendUniqueReferencedSurfaceImport(
@@ -1199,10 +1168,8 @@ fn appendContributingModuleResolvedContractImports(
     for (ordered_modules) |module| {
         const needs_contracts = try moduleNeedsContractImportsForReachability(allocator, module, reachable, referenced_types);
         for (module.resolved_imports) |resolved| {
-            const appended = if (needs_contracts)
-                try appendUniqueResolvedContractImport(imports, seen_paths, resolved)
-            else
-                try appendUniqueReferencedSurfaceImport(imports, seen_paths, resolved, referenced_types);
+            if (!shouldRetainResolvedContractImport(resolved, referenced_types, needs_contracts)) continue;
+            const appended = try appendUniqueResolvedContractImport(imports, seen_paths, resolved);
             if (appended) changed = true;
         }
     }
@@ -1245,31 +1212,9 @@ fn isModuleContributing(
     }
 
     // 5. Check if any of its inherent/trait impl methods is reachable
-    for (module.program.program.decls) |decl| {
-        switch (decl.*) {
-            .impl_decl => |impl_decl| {
-                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
-                for (impl_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = if (impl_decl.trait_name) |trait_name|
-                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
-                    else
-                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    defer allocator.free(symbol);
-                    if (reachable.contains(symbol)) return true;
-                }
-            },
-            .overload_decl => |overload_decl| {
-                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
-                for (overload_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    defer allocator.free(symbol);
-                    if (reachable.contains(symbol)) return true;
-                }
-            },
-            else => {},
-        }
+    var associated_iter = module.exports.associated_function_decls.keyIterator();
+    while (associated_iter.next()) |symbol_ptr| {
+        if (reachable.contains(symbol_ptr.*)) return true;
     }
 
     return false;
@@ -1281,7 +1226,12 @@ fn moduleNeedsContractImportsForReachability(
     reachable: *const std.StringHashMap(void),
     referenced_types: *const std.StringHashMap(void),
 ) !bool {
-    if (try moduleHasReachableBody(allocator, module, reachable)) return true;
+    var selected_function_bodies = std.StringHashMap(void).init(allocator);
+    defer selected_function_bodies.deinit();
+    var selected_macro_bodies = std.StringHashMap(void).init(allocator);
+    defer selected_macro_bodies.deinit();
+    try collectReachableModuleBodyNames(allocator, module, reachable, referenced_types, &selected_function_bodies, &selected_macro_bodies);
+    if (selected_function_bodies.count() != 0 or selected_macro_bodies.count() != 0) return true;
 
     var const_iter = module.exports.const_decls.keyIterator();
     while (const_iter.next()) |name_ptr| {
@@ -1311,17 +1261,19 @@ fn appendModuleDeclsSelective(
     if (emitted.contains(module.path)) return;
     try emitted.put(module.path, {});
 
-    for (module.resolved_imports) |child_resolved| {
-        if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
-        const child_module = try modules.getOrParse(child_resolved);
-        try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types, options, contract_imports);
+    if (!options.lazy_transitive_sla_imports) {
+        for (module.resolved_imports) |child_resolved| {
+            if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
+            const child_module = try modules.getOrParse(child_resolved);
+            try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types, options, contract_imports);
+        }
     }
 
     const is_contributing = try isModuleContributing(allocator, module, reachable, referenced_types);
     if (!is_contributing) {
         for (module.resolved_imports) |child_resolved| {
             if (std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
-            if (!resolvedImportDeclaresReferencedSurface(child_resolved, referenced_types)) continue;
+            if (!shouldRetainResolvedContractImport(child_resolved, referenced_types, false)) continue;
             try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls, contract_imports);
         }
         return;
@@ -1331,11 +1283,19 @@ fn appendModuleDeclsSelective(
     defer allocator.free(module_namespace);
     const needs_contract_imports = try moduleNeedsContractImportsForReachability(allocator, module, reachable, referenced_types);
 
+    if (options.lazy_transitive_sla_imports) {
+        for (module.resolved_imports) |child_resolved| {
+            if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
+            const child_module = modules.modules.get(child_resolved.path) orelse continue;
+            try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types, options, contract_imports);
+        }
+    }
+
     for (module.program.program.decls) |decl| {
         if (decl.* == .import_decl) {
             for (module.resolved_imports) |child_resolved| {
                 if (std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
-                if (!needs_contract_imports and !resolvedImportDeclaresReferencedSurface(child_resolved, referenced_types)) continue;
+                if (!shouldRetainResolvedContractImport(child_resolved, referenced_types, needs_contract_imports)) continue;
                 try appendResolvedNonSlaImportDecl(allocator, child_resolved, primary_decls, out_decls, contract_imports);
             }
         } else {
@@ -1362,9 +1322,12 @@ fn appendModuleDeclsSelective(
                 .macro_decl => |macro_decl| {
                     if (referenced_types.contains(macro_decl.name)) try out_decls.append(decl);
                 },
+                .const_stmt => |const_stmt| {
+                    if (!options.prune_for_test_codegen or referenced_types.contains(const_stmt.name)) try out_decls.append(decl);
+                },
                 .test_decl => {},
                 else => {
-                    // Flatten types and constants needed by the reachable surface.
+                    // Flatten type declarations needed by the reachable surface.
                     try out_decls.append(decl);
                 },
             }
@@ -1389,6 +1352,62 @@ fn collectSlaModulesRecursive(
     }
 
     try ordered.append(module);
+}
+
+fn appendSlaModuleIfNew(
+    module: *SlaModule,
+    visited: *std.StringHashMap(void),
+    ordered: *std.ArrayList(*SlaModule),
+) !bool {
+    if (visited.contains(module.path)) return false;
+    try visited.put(module.path, {});
+    try ordered.append(module);
+    return true;
+}
+
+fn symbolSetReferencesImportNamespace(set: *const std.StringHashMap(void), namespace: []const u8) bool {
+    var iter = set.keyIterator();
+    while (iter.next()) |key_ptr| {
+        const key = key_ptr.*;
+        if (key.len <= namespace.len + 2) continue;
+        if (!std.mem.startsWith(u8, key, namespace)) continue;
+        if (key[namespace.len] == '_' and key[namespace.len + 1] == '_') return true;
+    }
+    return false;
+}
+
+fn resolvedSlaImportNamespaceIsReferenced(
+    allocator: std.mem.Allocator,
+    resolved: ResolvedImport,
+    reachable: *const std.StringHashMap(void),
+    referenced_types: *const std.StringHashMap(void),
+) !bool {
+    const namespace = try moduleNamespaceFromImportPath(allocator, resolved.output_path);
+    defer allocator.free(namespace);
+    return symbolSetReferencesImportNamespace(reachable, namespace) or
+        symbolSetReferencesImportNamespace(referenced_types, namespace);
+}
+
+fn discoverContributingChildSlaModules(
+    allocator: std.mem.Allocator,
+    modules: *SlaModuleTable,
+    visited: *std.StringHashMap(void),
+    ordered: *std.ArrayList(*SlaModule),
+    reachable: *const std.StringHashMap(void),
+    referenced_types: *const std.StringHashMap(void),
+) !bool {
+    var changed = false;
+    const module_count = ordered.items.len;
+    for (ordered.items[0..module_count]) |module| {
+        if (!try isModuleContributing(allocator, module, reachable, referenced_types)) continue;
+        for (module.resolved_imports) |child_resolved| {
+            if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
+            if (!try resolvedSlaImportNamespaceIsReferenced(allocator, child_resolved, reachable, referenced_types)) continue;
+            const child_module = try modules.getOrParse(child_resolved);
+            changed = (try appendSlaModuleIfNew(child_module, visited, ordered)) or changed;
+        }
+    }
+    return changed;
 }
 
 const SlaCallableIndex = struct {
@@ -1528,6 +1547,7 @@ const SyntacticFactSet = struct {
     zero_import_scans: std.StringHashMap(void),
     known_int_fields: std.StringHashMap(i64),
     known_bool_fields: std.StringHashMap(bool),
+    local_types: std.StringHashMap([]const u8),
 
     fn init(allocator: std.mem.Allocator) SyntacticFactSet {
         return .{
@@ -1536,6 +1556,7 @@ const SyntacticFactSet = struct {
             .zero_import_scans = std.StringHashMap(void).init(allocator),
             .known_int_fields = std.StringHashMap(i64).init(allocator),
             .known_bool_fields = std.StringHashMap(bool).init(allocator),
+            .local_types = std.StringHashMap([]const u8).init(allocator),
         };
     }
 
@@ -1548,6 +1569,7 @@ const SyntacticFactSet = struct {
         var bool_iter = self.known_bool_fields.iterator();
         while (bool_iter.next()) |entry| self.allocator.free(entry.key_ptr.*);
         self.known_bool_fields.deinit();
+        self.local_types.deinit();
     }
 
     fn clone(self: *const SyntacticFactSet) !SyntacticFactSet {
@@ -1569,12 +1591,15 @@ const SyntacticFactSet = struct {
             errdefer out.allocator.free(key);
             try out.putKnownBoolKey(key, entry.value_ptr.*);
         }
+        var type_iter = self.local_types.iterator();
+        while (type_iter.next()) |entry| try out.local_types.put(entry.key_ptr.*, entry.value_ptr.*);
         return out;
     }
 
     fn clearName(self: *SyntacticFactSet, name: []const u8) void {
         _ = self.no_import_sources.remove(name);
         _ = self.zero_import_scans.remove(name);
+        _ = self.local_types.remove(name);
         self.clearKnownFieldsForName(name);
     }
 
@@ -1669,6 +1694,14 @@ const SyntacticFactSet = struct {
             const field_name = entry.key_ptr.*[source_name.len + 1 ..];
             try dest.putKnownBoolField(target_name, field_name, entry.value_ptr.*);
         }
+    }
+
+    fn putLocalType(self: *SyntacticFactSet, name: []const u8, type_name: []const u8) !void {
+        try self.local_types.put(name, type_name);
+    }
+
+    fn getLocalType(self: *const SyntacticFactSet, name: []const u8) ?[]const u8 {
+        return self.local_types.get(name);
     }
 };
 
@@ -1884,6 +1917,7 @@ fn buildCallFactsForDecl(
     for (0..count) |i| {
         const param_name = fd.params[i].name;
         const arg = call.args[i];
+        if (lowering_rules.concreteTypeName(fd.params[i].ty)) |type_name| try facts.putLocalType(param_name, type_name);
         if (nodeIsNoImportSource(arg, current_facts)) try facts.no_import_sources.put(param_name, {});
         if (nodeIsZeroImportScan(arg, current_facts)) try facts.zero_import_scans.put(param_name, {});
         try recordKnownFieldsFromExpr(&facts, current_facts, funcs, modules, param_name, arg, depth);
@@ -1912,6 +1946,35 @@ fn syntacticFuncDeclForCall(
         }
     }
     return null;
+}
+
+fn moduleQualifiedCallableForCaller(
+    funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    caller_name: ?[]const u8,
+    name: []const u8,
+) !?[]const u8 {
+    _ = modules;
+    if (splitImportedMangledSymbol(name) != null) return null;
+    const caller = caller_name orelse return null;
+    const imported_caller = splitImportedMangledSymbol(caller) orelse return null;
+    const alias = try std.fmt.allocPrint(funcs.allocator, "{s}__{s}", .{ imported_caller.namespace, name });
+    if (funcs.names.contains(alias)) return alias;
+    funcs.allocator.free(alias);
+    return null;
+}
+
+fn syntacticFuncDeclForCallFromCaller(
+    funcs: *const SlaCallableIndex,
+    modules: ?*SlaModuleTable,
+    caller_name: ?[]const u8,
+    name: []const u8,
+) !?*ast.FuncDecl {
+    if (try moduleQualifiedCallableForCaller(funcs, modules, caller_name, name)) |qualified| {
+        defer funcs.allocator.free(qualified);
+        if (funcs.decls.get(qualified)) |fd| return fd;
+    }
+    return syntacticFuncDeclForCall(funcs, modules, name);
 }
 
 fn singleReturnValue(fd: *const ast.FuncDecl) ?*const ast.Node {
@@ -1980,16 +2043,29 @@ fn recordKnownFieldsFromExpr(
     }
 }
 
+fn syntacticConcreteTypeNameFromExpr(value: *const ast.Node) ?[]const u8 {
+    return switch (value.*) {
+        .struct_literal => |lit| lowering_rules.concreteTypeName(lit.ty),
+        .borrow_expr => |borrow| syntacticConcreteTypeNameFromExpr(borrow.expr),
+        .move_expr => |move| syntacticConcreteTypeNameFromExpr(move.expr),
+        else => null,
+    };
+}
+
 fn updateFactsForLetBinding(
     facts: *SyntacticFactSet,
     funcs: ?*const SlaCallableIndex,
     modules: ?*SlaModuleTable,
     name: []const u8,
+    declared_ty: ?*const ast.Type,
     value: *const ast.Node,
 ) anyerror!void {
     facts.clearName(name);
     if (nodeIsNoImportSource(value, facts)) try facts.no_import_sources.put(name, {});
     if (nodeIsZeroImportScan(value, facts)) try facts.zero_import_scans.put(name, {});
+    if (if (declared_ty) |ty| lowering_rules.concreteTypeName(ty) else syntacticConcreteTypeNameFromExpr(value)) |type_name| {
+        try facts.putLocalType(name, type_name);
+    }
     try recordKnownFieldsFromExpr(facts, facts, funcs, modules, name, value, 4);
 }
 
@@ -2005,11 +2081,11 @@ fn pruneKnownFalseBranchesInBlock(
         switch (stmt.*) {
             .let_stmt => |let| {
                 try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
-                try updateFactsForLetBinding(&facts, null, null, let.name, let.value);
+                try updateFactsForLetBinding(&facts, null, null, let.name, let.ty, let.value);
             },
             .const_stmt => |c| {
                 try pruneKnownFalseBranchesInExpr(allocator, c.value, &facts);
-                try updateFactsForLetBinding(&facts, null, null, c.name, c.value);
+                try updateFactsForLetBinding(&facts, null, null, c.name, c.ty, c.value);
             },
             .let_else_stmt => |let| {
                 try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
@@ -2267,11 +2343,11 @@ fn pruneDeadZeroImportScanLetsInBlock(
         switch (stmt.*) {
             .let_stmt => |let| {
                 keep = !(nodeIsZeroImportScan(let.value, &facts) and !reachabilityBlockUsesIdentifier(block[idx + 1 ..], let.name));
-                try updateFactsForLetBinding(&facts, null, null, let.name, let.value);
+                try updateFactsForLetBinding(&facts, null, null, let.name, let.ty, let.value);
             },
             .const_stmt => |constant| {
                 keep = !(nodeIsZeroImportScan(constant.value, &facts) and !reachabilityBlockUsesIdentifier(block[idx + 1 ..], constant.name));
-                try updateFactsForLetBinding(&facts, null, null, constant.name, constant.value);
+                try updateFactsForLetBinding(&facts, null, null, constant.name, constant.ty, constant.value);
             },
             .assign_stmt => |assign| {
                 if (assign.target.* == .identifier) facts.clearName(assign.target.identifier);
@@ -3377,12 +3453,12 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                 }
                 try recordProjectApiFact(&project_session_states, &project_snapshots, &project_sessions, &project_api_open_results, let.name, original_value);
                 try recordProjectCollectionFact(&open_collections, &default_collections, &snapshots_with_inferred, let.name, let.value, &facts);
-                try updateFactsForLetBinding(&facts, null, null, let.name, let.value);
+                try updateFactsForLetBinding(&facts, null, null, let.name, let.ty, let.value);
             },
             .const_stmt => |constant| {
                 clearProjectCollectionFacts(&open_collections, &default_collections, &snapshots_with_inferred, constant.name);
                 clearProjectApiFacts(&project_session_states, &project_snapshots, &project_sessions, &project_api_open_results, constant.name);
-                try updateFactsForLetBinding(&facts, null, null, constant.name, constant.value);
+                try updateFactsForLetBinding(&facts, null, null, constant.name, constant.ty, constant.value);
             },
             .assign_stmt => |assign| {
                 if (assign.target.* == .identifier) {
@@ -3589,9 +3665,6 @@ fn buildReachableSymbols(
     if (options.prune_for_test_codegen) {
         var saw_test = false;
         try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, imported_macros, &analysis, out_reachable, out_referenced_types, &worklist, root_program.program.decls, options.test_filter, &saw_test);
-        for (modules) |module| {
-            try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, imported_macros, &analysis, out_reachable, out_referenced_types, &worklist, module.program.program.decls, options.test_filter, &saw_test);
-        }
     } else {
         // If not pruning for test, everything in the root program is a root!
         for (root_program.program.decls) |decl| {
@@ -3670,50 +3743,49 @@ fn buildReachableSymbols(
     }
 }
 
-fn moduleHasReachableBody(
+fn collectReachableModuleBodyNames(
     allocator: std.mem.Allocator,
     module: *const SlaModule,
     reachable: *const std.StringHashMap(void),
-) !bool {
+    referenced_types: *const std.StringHashMap(void),
+    selected_function_bodies: *std.StringHashMap(void),
+    selected_macro_bodies: *std.StringHashMap(void),
+) !void {
     const module_namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
     defer allocator.free(module_namespace);
 
     var func_iter = module.exports.function_decls.keyIterator();
     while (func_iter.next()) |name_ptr| {
-        if (reachable.contains(name_ptr.*)) return true;
+        if (reachable.contains(name_ptr.*)) {
+            try selected_function_bodies.put(name_ptr.*, {});
+            continue;
+        }
         const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ module_namespace, name_ptr.* });
         defer allocator.free(alias);
-        if (reachable.contains(alias)) return true;
+        if (reachable.contains(alias)) try selected_function_bodies.put(name_ptr.*, {});
     }
 
-    for (module.program.program.decls) |decl| {
-        switch (decl.*) {
-            .impl_decl => |impl_decl| {
-                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
-                for (impl_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = if (impl_decl.trait_name) |trait_name|
-                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
-                    else
-                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    defer allocator.free(symbol);
-                    if (reachable.contains(symbol)) return true;
-                }
-            },
-            .overload_decl => |overload_decl| {
-                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
-                for (overload_decl.methods) |method| {
-                    if (method.* != .func_decl) continue;
-                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                    defer allocator.free(symbol);
-                    if (reachable.contains(symbol)) return true;
-                }
-            },
-            else => {},
-        }
+    var macro_iter = module.exports.macro_decls.keyIterator();
+    while (macro_iter.next()) |name_ptr| {
+        if (referenced_types.contains(name_ptr.*)) try selected_macro_bodies.put(name_ptr.*, {});
     }
 
-    return false;
+    var associated_iter = module.exports.associated_function_decls.keyIterator();
+    while (associated_iter.next()) |symbol_ptr| {
+        if (reachable.contains(symbol_ptr.*)) try selected_function_bodies.put(symbol_ptr.*, {});
+    }
+}
+
+fn stringSetContainsAll(haystack: *const std.StringHashMap(void), needles: *const std.StringHashMap(void)) bool {
+    var iter = needles.keyIterator();
+    while (iter.next()) |name_ptr| {
+        if (!haystack.contains(name_ptr.*)) return false;
+    }
+    return true;
+}
+
+fn stringSetsEqual(a: *const std.StringHashMap(void), b: *const std.StringHashMap(void)) bool {
+    return a.count() == b.count() and stringSetContainsAll(a, b);
 }
 
 fn materializeReachableImportedModuleBodies(
@@ -3726,14 +3798,24 @@ fn materializeReachableImportedModuleBodies(
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
 ) !void {
-    if (modules.parse_options.parse_function_bodies) return;
-
     while (true) {
         var changed = false;
         for (ordered_modules) |module| {
-            if (module.has_function_bodies) continue;
-            if (!try moduleHasReachableBody(allocator, module, reachable)) continue;
-            try modules.reparseModuleWithFunctionBodies(module);
+            if (module.has_function_bodies and module.has_macro_bodies) continue;
+            {
+                var selected_functions = std.StringHashMap(void).init(allocator);
+                defer selected_functions.deinit();
+                var selected_macros = std.StringHashMap(void).init(allocator);
+                defer selected_macros.deinit();
+                var parsed_func_iter = module.parsed_function_bodies.keyIterator();
+                while (parsed_func_iter.next()) |name_ptr| try selected_functions.put(name_ptr.*, {});
+                var parsed_macro_iter = module.parsed_macro_bodies.keyIterator();
+                while (parsed_macro_iter.next()) |name_ptr| try selected_macros.put(name_ptr.*, {});
+                try collectReachableModuleBodyNames(allocator, module, reachable, referenced_types, &selected_functions, &selected_macros);
+                if (stringSetsEqual(&selected_functions, &module.parsed_function_bodies) and
+                    stringSetsEqual(&selected_macros, &module.parsed_macro_bodies)) continue;
+                try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
+            }
             changed = true;
         }
         if (!changed) break;
@@ -3798,15 +3880,9 @@ fn importedFuncNodeForReachability(
     reachable: *const std.StringHashMap(void),
     options: SlaImportExpansionOptions,
 ) !?*ast.Node {
+    _ = namespace;
     if (node.* != .func_decl) return null;
-    var is_reachable = reachable.contains(reachable_symbol);
-    if (!is_reachable) {
-        if (try reachableImportedAlias(allocator, namespace, reachable_symbol, reachable)) |alias| {
-            allocator.free(alias);
-            is_reachable = true;
-        }
-    }
-    if (!is_reachable) return null;
+    if (!reachable.contains(reachable_symbol)) return null;
     if (shouldKeepReachableImportedBody(options)) return node;
     if (options.imported_bodies_decl_only) return try makeDeclOnlyFuncNode(allocator, &node.func_decl);
     return node;
@@ -4042,6 +4118,15 @@ fn expandSlaImportsWithModuleTable(
 ) !*ast.Node {
     if (program.* != .program) return error.InvalidProgram;
 
+    var effective_options = options;
+    const root_source_size = blk: {
+        const stat = std.fs.cwd().statFile(source_file) catch break :blk @as(u64, 0);
+        break :blk stat.size;
+    };
+    effective_options.lazy_transitive_sla_imports = options.prune_for_test_codegen and
+        program.program.decls.len <= 64 and
+        root_source_size <= 32 * 1024;
+
     var emitted = std.StringHashMap(void).init(allocator);
     defer emitted.deinit();
 
@@ -4061,7 +4146,11 @@ fn expandSlaImportsWithModuleTable(
         for (resolved_imports) |resolved| {
             if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
             const module = try modules.getOrParse(resolved);
-            try collectSlaModulesRecursive(modules, module, &visited_modules, &ordered_modules);
+            if (effective_options.lazy_transitive_sla_imports) {
+                _ = try appendSlaModuleIfNew(module, &visited_modules, &ordered_modules);
+            } else {
+                try collectSlaModulesRecursive(modules, module, &visited_modules, &ordered_modules);
+            }
         }
     }
 
@@ -4082,7 +4171,16 @@ fn expandSlaImportsWithModuleTable(
     }
     const imported_macros = if (options.prune_for_test_codegen) &imported_macro_tc.imported_macros else null;
 
-    try buildReachableSymbols(allocator, program, ordered_modules.items, modules, options, imported_macros, &reachable, &referenced_types);
+    while (true) {
+        try buildReachableSymbols(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
+        if (shouldKeepReachableImportedBody(effective_options)) {
+            try materializeReachableImportedModuleBodies(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
+        }
+        if (!effective_options.lazy_transitive_sla_imports) break;
+        if (!try discoverContributingChildSlaModules(allocator, modules, &visited_modules, &ordered_modules, &reachable, &referenced_types)) break;
+        reachable.clearRetainingCapacity();
+        referenced_types.clearRetainingCapacity();
+    }
     if (options.prune_for_test_codegen) {
         while (true) {
             var imported_macro_contract_imports = std.ArrayList(ResolvedImport).init(allocator);
@@ -4099,11 +4197,17 @@ fn expandSlaImportsWithModuleTable(
             try loadImportedContractsFromResolvedImports(&imported_macro_tc, allocator, imported_macro_contract_imports.items);
             reachable.clearRetainingCapacity();
             referenced_types.clearRetainingCapacity();
-            try buildReachableSymbols(allocator, program, ordered_modules.items, modules, options, imported_macros, &reachable, &referenced_types);
+            while (true) {
+                try buildReachableSymbols(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
+                if (shouldKeepReachableImportedBody(effective_options)) {
+                    try materializeReachableImportedModuleBodies(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
+                }
+                if (!effective_options.lazy_transitive_sla_imports) break;
+                if (!try discoverContributingChildSlaModules(allocator, modules, &visited_modules, &ordered_modules, &reachable, &referenced_types)) break;
+                reachable.clearRetainingCapacity();
+                referenced_types.clearRetainingCapacity();
+            }
         }
-    }
-    if (shouldKeepReachableImportedBody(options) and !options.prune_for_test_codegen) {
-        try materializeReachableImportedModuleBodies(allocator, program, ordered_modules.items, modules, options, imported_macros, &reachable, &referenced_types);
     }
 
     for (program.program.decls) |decl| {
@@ -4112,14 +4216,14 @@ fn expandSlaImportsWithModuleTable(
             for (resolved_imports) |resolved| {
                 if (std.mem.endsWith(u8, resolved.path, ".sla")) {
                     const module = try modules.getOrParse(resolved);
-                    try appendModuleDeclsSelective(allocator, modules, module, &emitted, primary_decls, &decls, &reachable, &referenced_types, options, contract_imports);
+                    try appendModuleDeclsSelective(allocator, modules, module, &emitted, primary_decls, &decls, &reachable, &referenced_types, effective_options, contract_imports);
                 } else {
                     try appendResolvedNonSlaImportDecl(allocator, resolved, primary_decls, &decls, contract_imports);
                 }
             }
         } else {
             const before = decls.items.len;
-            if (options.prune_for_test_codegen) {
+            if (effective_options.prune_for_test_codegen) {
                 try appendDeclWithReachableFilter(allocator, decl, &reachable, &referenced_types, &decls);
             } else {
                 try decls.append(decl);
@@ -4140,9 +4244,10 @@ fn expandSlaImports(
     primary_decls: *std.AutoHashMap(*const ast.Node, void),
     options: SlaImportExpansionOptions,
 ) !*ast.Node {
-    var modules = if (shouldKeepReachableImportedBody(options) and !options.prune_for_test_codegen)
+    var modules = if (shouldKeepReachableImportedBody(options))
         SlaModuleTable.initWithParserOptions(allocator, .{
             .parse_function_bodies = false,
+            .parse_macro_bodies = false,
             .parse_test_bodies = false,
         })
     else
@@ -4785,6 +4890,10 @@ fn markSyntacticReachableFunc(
     worklist: *std.ArrayList([]const u8),
     name: []const u8,
 ) !void {
+    if (try moduleQualifiedCallableForCaller(funcs, modules, caller_name, name)) |qualified| {
+        defer funcs.allocator.free(qualified);
+        return try markSyntacticReachableFunc(funcs, modules, analysis, call_facts, caller_name, reachable, referenced_types, worklist, qualified);
+    }
     if (!funcs.names.contains(name)) {
         if (modules) |mod_table| {
             if (mod_table.functionSignatureForImportedMangledNameByNamespace(name)) |signature| {
@@ -4835,6 +4944,21 @@ fn markSyntacticReachableFunc(
     try worklist.append(reachable_name);
 }
 
+fn associatedCandidateMatchesReceiverType(candidate: []const u8, type_name: []const u8, method_name: []const u8) bool {
+    if (!std.mem.startsWith(u8, candidate, type_name)) return false;
+    if (candidate.len == type_name.len + 1 + method_name.len and
+        candidate[type_name.len] == '_' and
+        std.mem.eql(u8, candidate[type_name.len + 1 ..], method_name))
+    {
+        return true;
+    }
+
+    if (candidate.len <= type_name.len + 3 + method_name.len) return false;
+    if (candidate[type_name.len] != '_' or candidate[type_name.len + 1] != '_') return false;
+    if (!std.mem.endsWith(u8, candidate, method_name)) return false;
+    return candidate[candidate.len - method_name.len - 1] == '_';
+}
+
 fn markSyntacticAssociatedCallCandidates(
     funcs: *const SlaCallableIndex,
     modules: ?*SlaModuleTable,
@@ -4845,11 +4969,46 @@ fn markSyntacticAssociatedCallCandidates(
     referenced_types: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
     method_name: []const u8,
+    target_type_name: ?[]const u8,
 ) !void {
-    try markSyntacticReachableFunc(funcs, modules, analysis, direct_call_facts, caller_name, reachable, referenced_types, worklist, method_name);
     if (funcs.associated_candidates.get(method_name)) |candidates| {
+        if (target_type_name) |type_name| {
+            var marked_typed_candidate = false;
+            for (candidates.items) |name| {
+                if (!associatedCandidateMatchesReceiverType(name, type_name, method_name)) continue;
+                marked_typed_candidate = true;
+                try markSyntacticReachableFunc(funcs, modules, analysis, direct_call_facts, caller_name, reachable, referenced_types, worklist, name);
+            }
+            if (marked_typed_candidate) return;
+        }
+        try markSyntacticReachableFunc(funcs, modules, analysis, direct_call_facts, caller_name, reachable, referenced_types, worklist, method_name);
         for (candidates.items) |name| try markSyntacticReachableFunc(funcs, modules, analysis, direct_call_facts, caller_name, reachable, referenced_types, worklist, name);
+        return;
     }
+    try markSyntacticReachableFunc(funcs, modules, analysis, direct_call_facts, caller_name, reachable, referenced_types, worklist, method_name);
+}
+
+fn syntacticAssociatedTargetTypeName(call: ast.CallExpr, facts: ?*const SyntacticFactSet) ?[]const u8 {
+    const target_name = call.associated_target orelse return null;
+    if (facts) |f| {
+        if (f.getLocalType(target_name)) |type_name| return type_name;
+    }
+    return target_name;
+}
+
+fn syntacticReceiverExprTypeName(expr: *const ast.Node, facts: ?*const SyntacticFactSet) ?[]const u8 {
+    return switch (expr.*) {
+        .identifier => |name| if (facts) |f| f.getLocalType(name) else null,
+        .struct_literal => |lit| lowering_rules.concreteTypeName(lit.ty),
+        .borrow_expr => |borrow| syntacticReceiverExprTypeName(borrow.expr, facts),
+        .move_expr => |move| syntacticReceiverExprTypeName(move.expr, facts),
+        else => null,
+    };
+}
+
+fn syntacticMethodCallReceiverTypeName(call: ast.CallExpr, facts: ?*const SyntacticFactSet) ?[]const u8 {
+    if (call.args.len == 0) return null;
+    return syntacticReceiverExprTypeName(call.args[0], facts);
 }
 
 fn collectSyntacticReachableExpr(
@@ -4876,13 +5035,14 @@ fn collectSyntacticReachableExpr(
             var direct_call_facts: ?SyntacticFactSet = null;
             defer if (direct_call_facts) |*facts| facts.deinit();
             if (analysis) |a| {
-                if (syntacticFuncDeclForCall(funcs, modules, call.func_name)) |fd| {
+                if (try syntacticFuncDeclForCallFromCaller(funcs, modules, caller_name, call.func_name)) |fd| {
                     direct_call_facts = try buildCallFactsForDecl(a.allocator, funcs, modules, fd, &call, a.current_facts, 4);
                 }
             }
             const call_facts_ptr: ?*const SyntacticFactSet = if (direct_call_facts) |*facts| facts else null;
             if (call.associated_target != null) {
-                try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name);
+                const target_type_name = syntacticAssociatedTargetTypeName(call, if (analysis) |a| a.current_facts else null);
+                try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name, target_type_name);
             } else {
                 if (imported_macros) |macros| {
                     if (macros.get(call.func_name)) |macro| {
@@ -4892,7 +5052,8 @@ fn collectSyntacticReachableExpr(
                     }
                 }
                 try markSyntacticReachableFunc(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name);
-                try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name);
+                const receiver_type_name = syntacticMethodCallReceiverTypeName(call, if (analysis) |a| a.current_facts else null);
+                try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, call_facts_ptr, caller_name, reachable, referenced_types, worklist, call.func_name, receiver_type_name);
                 if (funcs.macro_decls.contains(call.func_name)) {
                     try referenced_types.put(call.func_name, {});
                 } else if (syntacticFuncDeclForCall(funcs, modules, call.func_name) == null) {
@@ -5004,7 +5165,7 @@ fn collectSyntacticReachableBlock(
             .let_stmt => |let| {
                 if (let.ty) |ty| try recordReferencedType(referenced_types, ty);
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, let.value);
-                if (local_facts) |*facts| try updateFactsForLetBinding(facts, funcs, modules, let.name, let.value);
+                if (local_facts) |*facts| try updateFactsForLetBinding(facts, funcs, modules, let.name, let.ty, let.value);
             },
             .let_else_stmt => |let| {
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, let.value);
@@ -5021,7 +5182,7 @@ fn collectSyntacticReachableBlock(
             .const_stmt => |c| {
                 if (c.ty) |ty| try recordReferencedType(referenced_types, ty);
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, c.value);
-                if (local_facts) |*facts| try updateFactsForLetBinding(facts, funcs, modules, c.name, c.value);
+                if (local_facts) |*facts| try updateFactsForLetBinding(facts, funcs, modules, c.name, c.ty, c.value);
             },
             .assign_stmt => |assign| {
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, assign.target);
@@ -5359,23 +5520,6 @@ fn pruneUnreachableFilteredTestDecls(
     program.program.decls = try filtered_decls.toOwnedSlice();
 }
 
-fn saTestFilterFromArgs(args: []const []const u8) ?[]const u8 {
-    var idx: usize = 0;
-    while (idx < args.len) : (idx += 1) {
-        const arg = args[idx];
-        if (std.mem.eql(u8, arg, "--filter")) {
-            if (idx + 1 < args.len and args[idx + 1].len != 0) return args[idx + 1];
-            return null;
-        }
-        if (std.mem.startsWith(u8, arg, "--filter=")) {
-            const pattern = arg["--filter=".len..];
-            if (pattern.len != 0) return pattern;
-            return null;
-        }
-    }
-    return null;
-}
-
 fn compileSlaToSaString(
     allocator: std.mem.Allocator,
     file: []const u8,
@@ -5429,9 +5573,10 @@ fn runSlaFrontend(
 
     stage_start = std.time.nanoTimestamp();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-    var import_modules = if (options.load_reachable_imported_bodies_from_registry and !options.prune_for_test_codegen)
+    var import_modules = if (options.load_reachable_imported_bodies_from_registry)
         SlaModuleTable.initWithParserOptions(allocator, .{
             .parse_function_bodies = false,
+            .parse_macro_bodies = false,
             .parse_test_bodies = false,
         })
     else
@@ -5564,530 +5709,6 @@ fn compileSlaFileToSa(
     return compileSlaToSaString(allocator, file, output_file, stderr);
 }
 
-const TestBackend = enum {
-    auto,
-    sab,
-    sa,
-};
-
-const SlaCliOptions = struct {
-    package_name: ?[]const u8 = null,
-    source_file: ?[]const u8 = null,
-    passthrough_start: usize,
-    help_requested: bool = false,
-    emit_sab_file: bool = false,
-    test_backend: TestBackend = .auto,
-};
-
-fn isHelpArg(arg: []const u8) bool {
-    return std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help");
-}
-
-fn parseTestBackendValue(value: []const u8) !TestBackend {
-    if (std.mem.eql(u8, value, "auto")) return .auto;
-    if (std.mem.eql(u8, value, "sab")) return .sab;
-    if (std.mem.eql(u8, value, "sa")) return .sa;
-    return error.InvalidFormat;
-}
-
-fn parseTestBackendFromArgs(args: []const []const u8, default_backend: TestBackend) !TestBackend {
-    var backend = default_backend;
-    var idx: usize = 0;
-    while (idx < args.len) : (idx += 1) {
-        const arg = args[idx];
-        if (std.mem.eql(u8, arg, "--test-backend")) {
-            idx += 1;
-            if (idx >= args.len) return error.InvalidFormat;
-            backend = try parseTestBackendValue(args[idx]);
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--test-backend=")) {
-            backend = try parseTestBackendValue(arg["--test-backend=".len..]);
-            continue;
-        }
-    }
-    return backend;
-}
-
-fn appendSaTestPassthrough(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
-    var idx: usize = 0;
-    while (idx < args.len) : (idx += 1) {
-        const arg = args[idx];
-        if (std.mem.eql(u8, arg, "--test-backend")) {
-            idx += 1;
-            if (idx >= args.len) return error.InvalidFormat;
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--test-backend=")) continue;
-        try argv.append(arg);
-    }
-    try appendDefaultJobsAuto(argv, args);
-}
-
-fn hasJobsArg(args: []const []const u8) bool {
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--jobs") or std.mem.startsWith(u8, arg, "--jobs=")) return true;
-    }
-    return false;
-}
-
-fn appendDefaultJobsAuto(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
-    if (hasJobsArg(args)) return;
-    try argv.append("--jobs");
-    try argv.append("auto");
-}
-
-fn ensureParentDir(path: []const u8) !void {
-    if (std.fs.path.dirname(path)) |dir| {
-        if (dir.len != 0) try std.fs.cwd().makePath(dir);
-    }
-}
-
-fn ensureNewFile(path: []const u8, bytes: []const u8) !void {
-    try ensureParentDir(path);
-    var file = try std.fs.cwd().createFile(path, .{ .exclusive = true });
-    defer file.close();
-    try file.writeAll(bytes);
-}
-
-fn writeJsonString(writer: anytype, text: []const u8) !void {
-    try writer.writeByte('"');
-    for (text) |c| {
-        switch (c) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            else => {
-                if (c < 0x20) {
-                    try writer.print("\\u{X:0>4}", .{c});
-                } else {
-                    try writer.writeByte(c);
-                }
-            },
-        }
-    }
-    try writer.writeByte('"');
-}
-
-fn writeJsonStringArray(writer: anytype, items: []const []const u8) !void {
-    try writer.writeByte('[');
-    for (items, 0..) |item, idx| {
-        if (idx != 0) try writer.writeByte(',');
-        try writeJsonString(writer, item);
-    }
-    try writer.writeByte(']');
-}
-
-fn writeSlaSkillsJson(writer: anytype) !void {
-    try writer.writeAll("{\"status\":\"ok\",\"skills\":[");
-    for (skills, 0..) |section, idx| {
-        if (idx != 0) try writer.writeByte(',');
-        try writer.writeByte('{');
-        try writer.writeAll("\"name\":");
-        try writeJsonString(writer, section.name);
-        try writer.writeAll(",\"summary\":");
-        try writeJsonString(writer, section.summary);
-        try writer.writeAll(",\"items\":");
-        try writeJsonStringArray(writer, section.items);
-        try writer.writeByte('}');
-    }
-    try writer.writeAll("]}\n");
-}
-
-fn writeSlaSkillSectionText(writer: anytype, section: plugin_api.SkillSection) !void {
-    try writer.print("{s}\n", .{section.name});
-    try writer.print("summary: {s}\n", .{section.summary});
-    for (section.items) |item| {
-        try writer.print("- {s}\n", .{item});
-    }
-}
-
-fn writeMarkdownCodeList(writer: anytype, items: []const []const u8) !void {
-    for (items) |item| try writer.print("- `{s}`\n", .{item});
-}
-
-fn writeSlaAgentSkillMarkdown(writer: anytype, agent_name: []const u8) !void {
-    const description = if (std.mem.eql(u8, agent_name, "claude"))
-        "Use the installed SLA plugin from Claude to build, check, test, scaffold, and inspect direct SAB workflows."
-    else
-        "Use the installed SLA plugin from Codex to build, check, test, scaffold, and inspect direct SAB workflows.";
-
-    try writer.writeAll("---\n");
-    try writer.writeAll("name: \"sla\"\n");
-    try writer.writeAll("description: ");
-    try writeJsonString(writer, description);
-    try writer.writeByte('\n');
-    try writer.writeAll("when_to_use: \"Use when working on .sla sources, SLA workspace builds, direct SLA-to-SAB output, or SLA plugin CLI commands.\"\n");
-    try writer.writeAll("---\n\n");
-
-    try writer.writeAll("# SLA Toolchain\n\n");
-    try writer.writeAll("## Core Workflow\n");
-    try writer.writeAll("- Use `sa sla init [path]` to scaffold a minimal SLA binary project.\n");
-    try writer.writeAll("- Use `sa sla build <file>` only when a visible `.sa` text artifact is needed.\n");
-    try writer.writeAll("- Use `sa sla build-exe <file>` or `sa sla sab workspace` for executable builds through the direct SAB path.\n");
-    try writer.writeAll("- Use `sa sla test <file>` for tests through the direct SAB path by default; add `--test-backend sa` only when debugging legacy `.test.sa` output.\n");
-    try writer.writeAll("- Use `sa sla sab build <file>` to emit managed SAB under `.sla-cache/sab/`; add `--out <file.sab>` only for an inspection copy.\n");
-    try writer.writeAll("- Keep SLA-to-SA and SLA-to-SAB as separate mainlines; SAB output must not be implemented as `sla -> sa -> sab`.\n");
-    try writer.writeAll("- Prefer focused checks with `timeout 120s`; do not run full test suites unless explicitly requested. Build commands do not need the timeout wrapper.\n\n");
-
-    try writer.writeAll("## CLI Skill Sections\n");
-    for (skills) |section| {
-        try writer.print("### {s}\n", .{section.name});
-        try writer.print("{s}\n", .{section.summary});
-        try writeMarkdownCodeList(writer, section.items);
-        try writer.writeByte('\n');
-    }
-}
-
-const SlaAgentSkillPaths = struct {
-    codex: []const u8,
-    claude: []const u8,
-};
-
-fn writeSlaAgentSkills() !SlaAgentSkillPaths {
-    const codex_path = ".codex/skills/sla/SKILL.md";
-    const claude_path = ".claude/skills/sla/SKILL.md";
-    try ensureParentDir(codex_path);
-    try ensureParentDir(claude_path);
-    {
-        var file = try std.fs.cwd().createFile(codex_path, .{ .truncate = true });
-        defer file.close();
-        try writeSlaAgentSkillMarkdown(file.writer(), "codex");
-    }
-    {
-        var file = try std.fs.cwd().createFile(claude_path, .{ .truncate = true });
-        defer file.close();
-        try writeSlaAgentSkillMarkdown(file.writer(), "claude");
-    }
-    return .{ .codex = codex_path, .claude = claude_path };
-}
-
-fn runSlaSkillsCommand(args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter, default_json_mode: bool) !u8 {
-    var json_mode = default_json_mode;
-    var idx = option_start;
-    while (idx < args.len) : (idx += 1) {
-        const arg = args[idx];
-        if (isHelpArg(arg)) {
-            try writeCommandHelp(stderr, "skills");
-            return 0;
-        }
-        if (std.mem.eql(u8, arg, "--json")) {
-            json_mode = true;
-            continue;
-        }
-        try stderr.print("Unknown sla skills option: {s}\n", .{arg});
-        try writeCommandHelp(stderr, "skills");
-        return 1;
-    }
-
-    if (json_mode) {
-        try writeSlaSkillsJson(stdout);
-    } else {
-        const paths = try writeSlaAgentSkills();
-        try stdout.writeAll("sla compiler plugin\n");
-        try stdout.print("generated agent skills:\n- {s}\n- {s}\n", .{ paths.codex, paths.claude });
-        for (skills) |section| try writeSlaSkillSectionText(stdout, section);
-    }
-    return 0;
-}
-
-fn projectPackageName(project_path: []const u8) []const u8 {
-    if (std.mem.eql(u8, project_path, ".")) return "app";
-    const base = std.fs.path.basename(project_path);
-    if (base.len == 0 or std.mem.eql(u8, base, ".")) return "app";
-    return base;
-}
-
-fn runSlaInitCommand(allocator: std.mem.Allocator, args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter) !u8 {
-    var project_path: ?[]const u8 = null;
-    var idx = option_start;
-    while (idx < args.len) : (idx += 1) {
-        const arg = args[idx];
-        if (isHelpArg(arg)) {
-            try writeCommandHelp(stderr, "init");
-            return 0;
-        }
-        if (std.mem.startsWith(u8, arg, "-")) {
-            try stderr.print("Unknown sla init option: {s}\n", .{arg});
-            try writeCommandHelp(stderr, "init");
-            return 1;
-        }
-        if (project_path != null) {
-            try stderr.print("Unexpected sla init argument: {s}\n", .{arg});
-            try writeCommandHelp(stderr, "init");
-            return 1;
-        }
-        project_path = arg;
-    }
-
-    const root = project_path orelse ".";
-    const package_name = projectPackageName(root);
-    try std.fs.cwd().makePath(root);
-
-    const src_dir = try std.fs.path.join(allocator, &.{ root, "src" });
-    defer allocator.free(src_dir);
-    try std.fs.cwd().makePath(src_dir);
-
-    const manifest_path = try std.fs.path.join(allocator, &.{ root, "sa.mod" });
-    defer allocator.free(manifest_path);
-    const main_path = try std.fs.path.join(allocator, &.{ root, "src", "main.sla" });
-    defer allocator.free(main_path);
-    const gitignore_path = try std.fs.path.join(allocator, &.{ root, ".gitignore" });
-    defer allocator.free(gitignore_path);
-
-    const manifest = try std.fmt.allocPrint(allocator,
-        \\# generated by sla init
-        \\package "{s}"
-        \\
-    , .{package_name});
-    defer allocator.free(manifest);
-
-    ensureNewFile(manifest_path, manifest) catch |err| {
-        try stderr.print("File Error: failed to create {s}: {}\n", .{ manifest_path, err });
-        return 1;
-    };
-    ensureNewFile(main_path,
-        \\fn main() -> i32 {
-        \\    return 0;
-        \\};
-        \\
-    ) catch |err| {
-        try stderr.print("File Error: failed to create {s}: {}\n", .{ main_path, err });
-        return 1;
-    };
-    ensureNewFile(gitignore_path,
-        \\.sla-cache/
-        \\.zig-cache/
-        \\.sa_cache/
-        \\zig-out/
-        \\*.out
-        \\*.sa.bc
-        \\
-    ) catch |err| {
-        try stderr.print("File Error: failed to create {s}: {}\n", .{ gitignore_path, err });
-        return 1;
-    };
-
-    try stdout.print("Initialized SLA binary project: {s}\n", .{root});
-    try stdout.print("Entry: {s}\n", .{main_path});
-    return 0;
-}
-
-fn runSlaStabilityCommand(allocator: std.mem.Allocator, args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter, default_json_mode: bool) !u8 {
-    if (option_start >= args.len) {
-        try writeCommandHelp(stderr, "stability");
-        return 1;
-    }
-    const subcmd = args[option_start];
-    if (isHelpArg(subcmd)) {
-        try writeCommandHelp(stderr, "stability");
-        return 0;
-    }
-
-    if (std.mem.eql(u8, subcmd, "schema")) {
-        var idx = option_start + 1;
-        while (idx < args.len) : (idx += 1) {
-            const arg = args[idx];
-            if (isHelpArg(arg)) {
-                try writeCommandHelp(stderr, "stability schema");
-                return 0;
-            }
-            if (std.mem.eql(u8, arg, "--json")) continue;
-            try stderr.print("Unknown sla stability schema option: {s}\n", .{arg});
-            try writeCommandHelp(stderr, "stability schema");
-            return 1;
-        }
-        try stdout.writeAll(stability_metadata.schema_json);
-        try stdout.writeByte('\n');
-        return 0;
-    }
-
-    if (std.mem.eql(u8, subcmd, "verify")) {
-        var json_mode = default_json_mode;
-        var manifest_path: ?[]const u8 = null;
-        var idx = option_start + 1;
-        while (idx < args.len) : (idx += 1) {
-            const arg = args[idx];
-            if (isHelpArg(arg)) {
-                try writeCommandHelp(stderr, "stability verify");
-                return 0;
-            }
-            if (std.mem.eql(u8, arg, "--json")) {
-                json_mode = true;
-                continue;
-            }
-            if (std.mem.startsWith(u8, arg, "-")) {
-                try stderr.print("Unknown sla stability verify option: {s}\n", .{arg});
-                try writeCommandHelp(stderr, "stability verify");
-                return 1;
-            }
-            if (manifest_path != null) {
-                try stderr.print("Unexpected sla stability verify argument: {s}\n", .{arg});
-                try writeCommandHelp(stderr, "stability verify");
-                return 1;
-            }
-            manifest_path = arg;
-        }
-        const path = manifest_path orelse {
-            try stderr.writeAll("Missing stability manifest path\n");
-            try writeCommandHelp(stderr, "stability verify");
-            return 1;
-        };
-        const manifest = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| {
-            try stderr.print("File Error: failed to read {s}: {}\n", .{ path, err });
-            return 1;
-        };
-        var report = try stability_metadata.validateManifestText(allocator, manifest);
-        defer report.deinit();
-        if (json_mode) {
-            try stability_metadata.writeReportJson(stdout, &report);
-        } else {
-            try stability_metadata.writeReportText(stdout, &report);
-        }
-        return if (report.valid) 0 else 1;
-    }
-
-    try stderr.print("Unknown sla stability command: {s}\n", .{subcmd});
-    try writeCommandHelp(stderr, "stability");
-    return 1;
-}
-
-fn commandUsage(command: []const u8) []const u8 {
-    if (std.mem.eql(u8, command, "init")) return "usage: sa sla init [path]\n";
-    if (std.mem.eql(u8, command, "skills")) return "usage: sa sla skills [--json]\n";
-    if (std.mem.eql(u8, command, "stability")) return "usage: sa sla stability <schema|verify> [options]\n";
-    if (std.mem.eql(u8, command, "stability schema")) return "usage: sa sla stability schema [--json]\n";
-    if (std.mem.eql(u8, command, "stability verify")) return "usage: sa sla stability verify <manifest.json> [--json]\n";
-    if (std.mem.eql(u8, command, "build")) return "usage: sa sla build [file] [-p <package>] [--out <file>]\n";
-    if (std.mem.eql(u8, command, "build-workspace")) return "usage: sa sla build-workspace [-p <package>] [sa-build-exe-options...]\n";
-    if (std.mem.eql(u8, command, "build-exe")) return "usage: sa sla build-exe [file] [-p <package>] [sa-build-exe-options...]\n";
-    if (std.mem.eql(u8, command, "sab")) return "usage: sa sla sab <build|workspace|disasm> [options]\n       sa slab <build|workspace|disasm> [options]\n";
-    if (std.mem.eql(u8, command, "sab build")) return "usage: sa sla sab build [file] [-p <package>] [--out <file.sab>]\n       sa slab build [file] [-p <package>] [--out <file.sab>]\n";
-    if (std.mem.eql(u8, command, "sab workspace")) return "usage: sa sla sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]\n       sa slab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]\n";
-    if (std.mem.eql(u8, command, "sab disasm")) return "usage: sa sla sab disasm <file.sab> [--out <file.sa>]\n       sa slab disasm <file.sab> [--out <file.sa>]\n";
-    if (std.mem.eql(u8, command, "check")) return "usage: sa sla check [file] [-p <package>]\n";
-    if (std.mem.eql(u8, command, "test")) return "usage: sa sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]\n";
-    return "usage: sa sla <command> [options]\n";
-}
-
-fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
-    try writer.writeAll(commandUsage(command));
-    if (std.mem.eql(u8, command, "init")) {
-        try writer.writeAll("\n");
-        try writer.writeAll("Create a new SLA binary project with sa.mod, src/main.sla, and .gitignore.\n\n");
-        try writer.writeAll("  -h, --help              Show this help message\n");
-    }
-    if (std.mem.eql(u8, command, "skills")) {
-        try writer.writeAll("\n");
-        try writer.writeAll("List SLA plugin capabilities. Text mode also writes agent skills into the current directory.\n\n");
-        try writer.writeAll("  --json                  Emit machine-readable capability JSON\n");
-        try writer.writeAll("  -h, --help              Show this help message\n");
-    }
-    if (std.mem.eql(u8, command, "stability")) {
-        try writer.writeAll("\n");
-        try writer.writeAll("Validate downstream stability metadata manifests without assigning downstream label meaning.\n\n");
-        try writer.writeAll("  schema                  Emit the JSON schema for stability metadata\n");
-        try writer.writeAll("  verify <manifest.json>  Validate a downstream manifest\n");
-        try writer.writeAll("  -h, --help              Show this help message\n");
-    }
-    if (std.mem.eql(u8, command, "stability schema")) {
-        try writer.writeAll("\n");
-        try writer.writeAll("  --json                  Accepted for consistency; schema output is JSON\n");
-        try writer.writeAll("  -h, --help              Show this help message\n");
-    }
-    if (std.mem.eql(u8, command, "stability verify")) {
-        try writer.writeAll("\n");
-        try writer.writeAll("  --json                  Emit machine-readable verification output\n");
-        try writer.writeAll("  -h, --help              Show this help message\n");
-    }
-    if (std.mem.eql(u8, command, "build") or
-        std.mem.eql(u8, command, "build-workspace") or
-        std.mem.eql(u8, command, "build-exe") or
-        std.mem.eql(u8, command, "sab build") or
-        std.mem.eql(u8, command, "sab workspace") or
-        std.mem.eql(u8, command, "check") or
-        std.mem.eql(u8, command, "test"))
-    {
-        try writer.writeAll("\n");
-        try writer.writeAll("  -p, --package <name>    Select a workspace member package\n");
-        if (std.mem.eql(u8, command, "build-exe") or std.mem.eql(u8, command, "build-workspace") or std.mem.eql(u8, command, "test")) {
-            try writer.writeAll("  --emit-sab              Also write a sibling .sab artifact for inspection\n");
-        }
-        if (std.mem.eql(u8, command, "test")) {
-            try writer.writeAll("  --test-backend auto|sab|sa\n");
-            try writer.writeAll("                          Select test compiler backend; default auto uses SAB\n");
-        }
-        if (std.mem.eql(u8, command, "sab build")) {
-            try writer.writeAll("  -o, --out <file.sab>    Also write SAB output file; default uses .sla-cache/sab/\n");
-        }
-        if (std.mem.eql(u8, command, "sab workspace")) {
-            try writer.writeAll("  --sab-out <file.sab>    Also write SAB output file; default uses .sla-cache/sab/\n");
-            try writer.writeAll("  --emit-sab              Also write a sibling .sab artifact for inspection\n");
-        }
-        try writer.writeAll("  -h, --help              Show this help message\n");
-    }
-    if (std.mem.eql(u8, command, "sab disasm")) {
-        try writer.writeAll("\n");
-        try writer.writeAll("  -o, --out <file.sa>     Write text SA debug output instead of stdout\n");
-        try writer.writeAll("  -h, --help              Show this help message\n");
-    }
-}
-
-fn parseSlaCliOptionsFrom(args: []const []const u8, command: []const u8, start_idx: usize) !SlaCliOptions {
-    var options = SlaCliOptions{ .passthrough_start = args.len };
-    var idx: usize = start_idx;
-    while (idx < args.len) : (idx += 1) {
-        const arg = args[idx];
-        if (isHelpArg(arg)) {
-            options.help_requested = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--emit-sab") or std.mem.eql(u8, arg, "--emit-sab-file")) {
-            options.emit_sab_file = true;
-            continue;
-        }
-        if (std.mem.eql(u8, command, "test") and std.mem.startsWith(u8, arg, "--test-backend=")) {
-            options.test_backend = try parseTestBackendValue(arg["--test-backend=".len..]);
-            continue;
-        }
-        if (std.mem.eql(u8, command, "test") and std.mem.eql(u8, arg, "--test-backend")) {
-            idx += 1;
-            if (idx >= args.len) return error.InvalidFormat;
-            options.test_backend = try parseTestBackendValue(args[idx]);
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--package=")) {
-            options.package_name = arg["--package=".len..];
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "-p=")) {
-            options.package_name = arg["-p=".len..];
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--package") or std.mem.eql(u8, arg, "-p")) {
-            idx += 1;
-            if (idx >= args.len) return error.InvalidFormat;
-            options.package_name = args[idx];
-            continue;
-        }
-        if (options.source_file == null and !std.mem.startsWith(u8, arg, "-")) {
-            options.source_file = arg;
-            options.passthrough_start = idx + 1;
-            break;
-        }
-        options.passthrough_start = idx;
-        break;
-    }
-
-    return options;
-}
-
-fn parseSlaCliOptions(args: []const []const u8, command: []const u8) !SlaCliOptions {
-    return parseSlaCliOptionsFrom(args, command, 3);
-}
-
 fn resolveWorkspaceSourcePath(
     allocator: std.mem.Allocator,
     stderr: std.io.AnyWriter,
@@ -6135,120 +5756,6 @@ fn resolveSlaInputFile(
     return resolveWorkspaceSourcePath(allocator, stderr, options.package_name);
 }
 
-fn defaultOutputPath(allocator: std.mem.Allocator, file: []const u8, from_ext: []const u8, to_ext: []const u8) ![]u8 {
-    if (std.mem.endsWith(u8, file, from_ext)) {
-        return try std.fmt.allocPrint(allocator, "{s}{s}", .{ file[0 .. file.len - from_ext.len], to_ext });
-    }
-    return try std.fmt.allocPrint(allocator, "{s}{s}", .{ file, to_ext });
-}
-
-fn managedSabPath(allocator: std.mem.Allocator, file: []const u8) ![]u8 {
-    const base = std.fs.path.basename(file);
-    const stem = if (std.mem.endsWith(u8, base, ".sla")) base[0 .. base.len - 4] else base;
-    const hash = std.hash.Wyhash.hash(0, file);
-    return try std.fmt.allocPrint(allocator, ".sla-cache/sab/{s}-{x}.sab", .{ stem, hash });
-}
-
-fn managedSabPathWithVariantParts(
-    allocator: std.mem.Allocator,
-    file: []const u8,
-    variant_name: []const u8,
-    variant_value: ?[]const u8,
-) ![]u8 {
-    const base = std.fs.path.basename(file);
-    const stem = if (std.mem.endsWith(u8, base, ".sla")) base[0 .. base.len - 4] else base;
-    var hasher = std.hash.Wyhash.init(0);
-    hasher.update(file);
-    hasher.update("\x00");
-    hasher.update(variant_name);
-    if (variant_value) |value| {
-        hasher.update("\x00");
-        hasher.update(value);
-    }
-    const hash = hasher.final();
-    return try std.fmt.allocPrint(allocator, ".sla-cache/sab/{s}-{x}.sab", .{ stem, hash });
-}
-
-fn managedSabPathWithVariant(allocator: std.mem.Allocator, file: []const u8, variant: []const u8) ![]u8 {
-    return try managedSabPathWithVariantParts(allocator, file, variant, null);
-}
-
-fn managedSabTestPath(allocator: std.mem.Allocator, file: []const u8, extra_args: []const []const u8) ![]u8 {
-    if (saTestFilterFromArgs(extra_args)) |filter| {
-        return try managedSabPathWithVariantParts(allocator, file, "test-filter", filter);
-    }
-    return try managedSabPathWithVariant(allocator, file, "test-all");
-}
-
-fn writeSabFile(allocator: std.mem.Allocator, path: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWriter) !bool {
-    if (std.fs.path.dirname(path)) |dir| {
-        std.fs.cwd().makePath(dir) catch |err| {
-            try stderr.print("File Error: failed to create SAB output directory {s}: {}\n", .{ dir, err });
-            return false;
-        };
-    }
-
-    if (std.fs.cwd().readFileAlloc(allocator, path, sab_bytes.len + 1)) |existing| {
-        defer allocator.free(existing);
-        if (std.mem.eql(u8, existing, sab_bytes)) return true;
-    } else |_| {}
-
-    std.fs.cwd().writeFile(.{ .sub_path = path, .data = sab_bytes }) catch |err| {
-        try stderr.print("File Error: failed to write SAB output {s}: {}\n", .{ path, err });
-        return false;
-    };
-    return true;
-}
-
-fn writeManagedSab(allocator: std.mem.Allocator, file: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWriter) !?[]u8 {
-    const path = try managedSabPath(allocator, file);
-    if (!try writeSabFile(allocator, path, sab_bytes, stderr)) return null;
-    return path;
-}
-
-fn parseOutFileArg(args: []const []const u8, start_idx: usize) ?[]const u8 {
-    var idx = start_idx;
-    while (idx < args.len) : (idx += 1) {
-        if (std.mem.eql(u8, args[idx], "--out") or std.mem.eql(u8, args[idx], "-o")) {
-            if (idx + 1 < args.len) return args[idx + 1];
-            return null;
-        }
-    }
-    return null;
-}
-
-fn parseSabOutFileArg(args: []const []const u8, start_idx: usize) ?[]const u8 {
-    var idx = start_idx;
-    while (idx < args.len) : (idx += 1) {
-        if (std.mem.eql(u8, args[idx], "--sab-out")) {
-            if (idx + 1 < args.len) return args[idx + 1];
-            return null;
-        }
-    }
-    return null;
-}
-
-fn hasEmitSabArg(args: []const []const u8, start_idx: usize) bool {
-    for (args[start_idx..]) |arg| {
-        if (std.mem.eql(u8, arg, "--emit-sab") or std.mem.eql(u8, arg, "--emit-sab-file")) return true;
-    }
-    return false;
-}
-
-fn appendSabWorkspacePassthrough(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
-    var idx: usize = 0;
-    while (idx < args.len) : (idx += 1) {
-        const arg = args[idx];
-        if (std.mem.eql(u8, arg, "--emit-sab") or std.mem.eql(u8, arg, "--emit-sab-file")) continue;
-        if (std.mem.eql(u8, arg, "--sab-out")) {
-            idx += 1;
-            continue;
-        }
-        try argv.append(arg);
-    }
-    try appendDefaultJobsAuto(argv, args);
-}
-
 fn compileSlaFileToSab(
     allocator: std.mem.Allocator,
     file: []const u8,
@@ -6256,69 +5763,6 @@ fn compileSlaFileToSab(
     stderr: std.io.AnyWriter,
 ) !?[]u8 {
     return compileSlaFileToSabWithOptions(allocator, file, output_file, stderr, defaultSlaCompileOptions());
-}
-
-fn virtualSaPathForSabOutput(allocator: std.mem.Allocator, output_file: []const u8) ![]const u8 {
-    const stem = if (std.mem.endsWith(u8, output_file, ".sab")) output_file[0 .. output_file.len - 4] else output_file;
-    const sa_path = try std.fmt.allocPrint(allocator, "{s}.sa", .{stem});
-    if (std.fs.path.isAbsolute(sa_path)) return sa_path;
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
-    return try std.fs.path.join(allocator, &.{ cwd, sa_path });
-}
-
-fn saStdRootLooksValid(allocator: std.mem.Allocator, root: []const u8) !bool {
-    const required_files = [_][]const u8{
-        "core/sa_core.sa",
-        "core/option.sa",
-        "core/result.sa",
-        "io/print.sai",
-    };
-    for (required_files) |rel| {
-        const path = try std.fs.path.join(allocator, &.{ root, rel });
-        if (std.fs.cwd().openFile(path, .{})) |file| {
-            file.close();
-        } else |err| switch (err) {
-            error.FileNotFound, error.NotDir => return false,
-            else => return err,
-        }
-    }
-    return true;
-}
-
-fn sabSaStdRoot(allocator: std.mem.Allocator) ![]const u8 {
-    if (std.process.getEnvVarOwned(allocator, "SA_STD_DIR")) |env_root| {
-        if (try saStdRootLooksValid(allocator, env_root)) return env_root;
-    } else |_| {}
-
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        const home_repo_std_root = try std.fs.path.join(allocator, &.{ home, "projects", "sci", "sa_std" });
-        if (try saStdRootLooksValid(allocator, home_repo_std_root)) return home_repo_std_root;
-
-        const installed_std_root = try std.fs.path.join(allocator, &.{ home, ".sa", "std" });
-        if (try saStdRootLooksValid(allocator, installed_std_root)) return installed_std_root;
-    } else |_| {}
-
-    const candidate_roots = [_][]const u8{
-        "sa_std",
-        "sci/sa_std",
-        "../sci/sa_std",
-        "../../sci/sa_std",
-        "/home/vscode/projects/sci/sa_std",
-        "/home/vscode/.sa/std",
-    };
-    for (candidate_roots) |root| {
-        if (try saStdRootLooksValid(allocator, root)) return try allocator.dupe(u8, root);
-    }
-
-    return error.FileNotFound;
-}
-
-fn sabProjectRoot(allocator: std.mem.Allocator, source_file: []const u8) ![]const u8 {
-    const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch return std.fs.cwd().realpathAlloc(allocator, ".");
-    const source_dir = std.fs.path.dirname(source_abs) orelse ".";
-    var resolution = sla_workspace.resolveFromRootPath(allocator, source_dir, .{}) catch return std.fs.cwd().realpathAlloc(allocator, ".");
-    defer resolution.deinit(allocator);
-    return try allocator.dupe(u8, resolution.workspace_root);
 }
 
 fn encodeSaTextAsSab(
@@ -7050,51 +6494,13 @@ const descriptor = plugin_api.PluginDescriptor{
     .prebuild = null,
     .postbuild = null,
     .handle_command = runSlaCommandAbi,
-    .skills_ptr = skills[0..].ptr,
-    .skills_len = skills.len,
+    .skills_ptr = plugin_skills.skills[0..].ptr,
+    .skills_len = plugin_skills.skills.len,
 };
 
 pub export const saasm_plugin_descriptor_v1: plugin_api.PluginDescriptor = descriptor;
 pub export fn saasm_plugin_descriptor_v1_fn(out: *plugin_api.PluginDescriptor) callconv(.c) void {
     out.* = descriptor;
-}
-
-test "sla_compile_handler C ABI lowers state handler" {
-    const handler_name = "inc";
-    const handler_source =
-        \\fn inc() {
-        \\  count = count + 1;
-        \\  render();
-        \\}
-    ;
-    const field_name = "count";
-    const field_address = "state+Counter_count";
-    const fields = [_]SlaHandlerStateFieldAbi{.{
-        .name_ptr = field_name.ptr,
-        .name_len = field_name.len,
-        .ty = 3,
-        .address_ptr = field_address.ptr,
-        .address_len = field_address.len,
-    }};
-
-    var result: SlaCompileHandlerResultAbi = .{};
-    const status = sla_compile_handler(
-        handler_name.ptr,
-        handler_name.len,
-        handler_source.ptr,
-        handler_source.len,
-        fields[0..].ptr,
-        fields.len,
-        null,
-        &result,
-    );
-    defer sla_compile_handler_result_free(&result);
-
-    try std.testing.expectEqual(@as(u32, 0), status);
-    const body_ptr = result.body_ptr orelse return error.TestUnexpectedResult;
-    const body = body_ptr[0..result.body_len];
-    try std.testing.expect(std.mem.containsAtLeast(u8, body, 1, "state+Counter_count"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, body, 1, "call @render()"));
 }
 
 test "sla skills emits json capability list" {
@@ -7231,31 +6637,6 @@ test "sla stability verify rejects undeclared labels" {
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"status\":\"error\""));
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "undeclared label"));
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
-}
-
-test "sla delegated SA commands default to jobs auto unless supplied" {
-    var test_argv = std.ArrayList([]const u8).init(std.testing.allocator);
-    defer test_argv.deinit();
-    try appendSaTestPassthrough(&test_argv, &.{ "--filter", "one" });
-    try std.testing.expectEqualStrings("--jobs", test_argv.items[test_argv.items.len - 2]);
-    try std.testing.expectEqualStrings("auto", test_argv.items[test_argv.items.len - 1]);
-
-    var explicit_argv = std.ArrayList([]const u8).init(std.testing.allocator);
-    defer explicit_argv.deinit();
-    try appendSaTestPassthrough(&explicit_argv, &.{ "--filter", "one", "--jobs", "2" });
-    var auto_count: usize = 0;
-    for (explicit_argv.items) |item| {
-        if (std.mem.eql(u8, item, "auto")) auto_count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 0), auto_count);
-
-    var workspace_argv = std.ArrayList([]const u8).init(std.testing.allocator);
-    defer workspace_argv.deinit();
-    try appendSabWorkspacePassthrough(&workspace_argv, &.{ "--sab-out", "/tmp/out.sab", "-o", "/tmp/app" });
-    try std.testing.expectEqualStrings("-o", workspace_argv.items[0]);
-    try std.testing.expectEqualStrings("/tmp/app", workspace_argv.items[1]);
-    try std.testing.expectEqualStrings("--jobs", workspace_argv.items[2]);
-    try std.testing.expectEqualStrings("auto", workspace_argv.items[3]);
 }
 
 test "sla init scaffolds project without overwriting" {
@@ -8090,6 +7471,58 @@ test "sla test codegen prunes unreferenced sla macro bodies" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla test codegen does not root imported const initializers" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\const IMPORTED_BONUS: i32 = 1;
+        \\const UNUSED_BAD_CONST: i32 = dead_const_helper();
+        \\
+        \\fn used_value() -> i32 {
+        \\    return 41 + IMPORTED_BONUS;
+        \\}
+        \\
+        \\fn dead_const_helper() -> i32 {
+        \\    return missing_imported_const_symbol();
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "reachable import ignores dead const"() {
+        \\    if used_value() != 42 { panic(24051); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    if (compiled) |test_input| {
+        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "used_value") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "UNUSED_BAD_CONST") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_const_helper") == null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_imported_const_symbol") == null);
+    } else {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla post-typecheck prune removes statically empty import scan branches" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -8445,6 +7878,7 @@ test "sla test codegen loads contract imports for contributing imported modules"
     ;
     const dep_source =
         \\@import "used_macros.sa"
+        \\@import "dead_contract.sai"
         \\
         \\fn used_macro_helper(value: i32) -> i32 {
         \\    return value + 1;
@@ -8454,6 +7888,9 @@ test "sla test codegen loads contract imports for contributing imported modules"
         \\    return USED_IMPORTED_MODULE_MACRO(41);
         \\}
     ;
+    const dead_contract_source =
+        \\@extern dead_external(
+    ;
     const main_source =
         \\@import "dep.sla"
         \\
@@ -8462,6 +7899,7 @@ test "sla test codegen loads contract imports for contributing imported modules"
         \\}
     ;
     try tmp.dir.writeFile(.{ .sub_path = "used_macros.sa", .data = macro_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dead_contract.sai", .data = dead_contract_source });
     try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
     try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
@@ -8480,6 +7918,7 @@ test "sla test codegen loads contract imports for contributing imported modules"
         const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND USED_IMPORTED_MODULE_MACRO") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "@sla__used_macro_helper") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_external") == null);
     } else {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -9485,7 +8924,7 @@ test "sla module table resolves imported function bodies by module and namespace
     var saw_dep_body = false;
     for (out_decls.items) |decl| {
         if (decl.* != .func_decl) continue;
-        if (std.mem.eql(u8, decl.func_decl.name, "imported_value")) {
+        if (std.mem.eql(u8, decl.func_decl.name, "sibling__imported_value")) {
             const ret = decl.func_decl.body[0].return_stmt.value.?;
             if (ret.* == .literal and ret.literal == .int_val and ret.literal.int_val == 100) saw_sibling_body = true;
             if (ret.* == .literal and ret.literal == .int_val and ret.literal.int_val == 41) saw_dep_body = true;
@@ -9940,8 +9379,544 @@ test "sla build codegen skips parsing non contributing imported function bodies"
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
-    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used_value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used__used_value") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_bad") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen materializes reachable bodies in contributing module" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn selected_value() -> i32 {
+        \\    return selected_helper();
+        \\}
+        \\
+        \\fn selected_helper() -> i32 {
+        \\    return 42;
+        \\}
+        \\
+        \\fn unused_invalid() -> i32 {
+        \\    let = ;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl ImportedThing {
+        \\    fn selected(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\
+        \\    fn unused_method_invalid(self) -> i32 {
+        \\        let = ;
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "selected imported bodies"() {
+        \\    let item = ImportedThing { value: 42 };
+        \\    if dep::selected_value() != 42 { panic(42042); };
+        \\    if item.selected() != 42 { panic(42043); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        allocator,
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "selected imported bodies",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__selected_value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__selected_helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing_selected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_invalid") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_method_invalid") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab test codegen materializes reachable bodies in contributing module" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn selected_value() -> i32 {
+        \\    return selected_helper();
+        \\}
+        \\
+        \\fn selected_helper() -> i32 {
+        \\    return 42;
+        \\}
+        \\
+        \\fn unused_invalid() -> i32 {
+        \\    let = ;
+        \\}
+        \\
+        \\struct ImportedThing {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl ImportedThing {
+        \\    fn selected(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\
+        \\    fn unused_method_invalid(self) -> i32 {
+        \\        let = ;
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "selected imported bodies"() {
+        \\    let item = ImportedThing { value: 42 };
+        \\    if dep::selected_value() != 42 { panic(42042); };
+        \\    if item.selected() != 42 { panic(42043); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        allocator,
+        "main.sla",
+        ".sla-cache/sab/selective_imported_bodies.sab",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "selected imported bodies",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+            .allow_fallback = false,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    var sab_module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer sab_module.deinit(std.testing.allocator);
+    var saw_selected_value = false;
+    var saw_selected_method = false;
+    var saw_unused_body = false;
+    for (sab_module.function_sigs) |sig| {
+        if (std.mem.indexOf(u8, sig.name, "dep__selected_value") != null) saw_selected_value = true;
+        if (std.mem.indexOf(u8, sig.name, "ImportedThing_selected") != null) saw_selected_method = true;
+        if (std.mem.indexOf(u8, sig.name, "unused_invalid") != null or
+            std.mem.indexOf(u8, sig.name, "unused_method_invalid") != null) saw_unused_body = true;
+    }
+    try std.testing.expect(saw_selected_value);
+    try std.testing.expect(saw_selected_method);
+    try std.testing.expect(!saw_unused_body);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen materializes reachable macro bodies in contributing module" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\macro ADD_ONE(value) {
+        \\    value = value + 1;
+        \\}
+        \\
+        \\macro UNUSED_BAD(value) {
+        \\    let = ;
+        \\}
+        \\
+        \\fn selected_value() -> i32 {
+        \\    let value = 41;
+        \\    ADD_ONE(value);
+        \\    return value;
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "selected imported macro body"() {
+        \\    if dep::selected_value() != 42 { panic(42045); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        allocator,
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "selected imported macro body",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__selected_value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "add value,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "UNUSED_BAD") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen narrows same named imported methods by symbol" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\struct UsedBox {
+        \\    value: i32,
+        \\}
+        \\
+        \\struct DeadBox {
+        \\    value: i32,
+        \\}
+        \\
+        \\impl UsedBox {
+        \\    fn value(self) -> i32 {
+        \\        return self.value;
+        \\    }
+        \\}
+        \\
+        \\impl DeadBox {
+        \\    fn value(self) -> i32 {
+        \\        let = ;
+        \\    }
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "selected same named imported method"() {
+        \\    let item = UsedBox { value: 42 };
+        \\    if item.value() != 42 { panic(42046); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        allocator,
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "selected same named imported method",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "UsedBox_value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "DeadBox_value") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen skips parsing non contributing transitive sla imports" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const used_source =
+        \\fn value() -> i32 {
+        \\    return 42;
+        \\}
+    ;
+    const dead_parent_source =
+        \\@import "bad_child.sla"
+        \\
+        \\fn unused() -> i32 {
+        \\    return 0;
+        \\}
+    ;
+    const bad_child_source =
+        \\fn = ;
+    ;
+    const main_source =
+        \\@import "used.sla"
+        \\@import "dead_parent.sla"
+        \\
+        \\@test "selected skips dead transitive import"() {
+        \\    if used::value() != 42 { panic(42047); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dead_parent.sla", .data = dead_parent_source });
+    try tmp.dir.writeFile(.{ .sub_path = "bad_child.sla", .data = bad_child_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        allocator,
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "selected skips dead transitive import",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used__value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "bad_child") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen lazily parses reachable transitive sla imports" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const child_source =
+        \\fn value() -> i32 {
+        \\    return 42;
+        \\}
+    ;
+    const parent_source =
+        \\@import "child.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    return child::value();
+        \\}
+    ;
+    const main_source =
+        \\@import "parent.sla"
+        \\
+        \\@test "selected reaches transitive import"() {
+        \\    if parent::entry() != 42 { panic(42048); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tmp.dir.writeFile(.{ .sub_path = "parent.sla", .data = parent_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        allocator,
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "selected reaches transitive import",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__parent__entry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__child__value") != null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen skips unreferenced child imports of contributing modules" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const child_source =
+        \\@import "dead_grandchild.sla"
+        \\
+        \\fn value() -> i32 {
+        \\    return 42;
+        \\}
+    ;
+    const parent_source =
+        \\@import "child.sla"
+        \\
+        \\fn entry() -> i32 {
+        \\    return child::value();
+        \\}
+    ;
+    const dead_grandchild_source =
+        \\fn = ;
+    ;
+    const main_source =
+        \\@import "parent.sla"
+        \\
+        \\@test "selected skips dead child import"() {
+        \\    if parent::entry() != 42 { panic(42049); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tmp.dir.writeFile(.{ .sub_path = "parent.sla", .data = parent_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dead_grandchild.sla", .data = dead_grandchild_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        allocator,
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "selected skips dead child import",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__parent__entry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__child__value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_grandchild") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla test codegen qualifies same named imported helper reachability" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn entry() -> i32 {
+        \\    return helper();
+        \\}
+        \\
+        \\fn helper() -> i32 {
+        \\    return 11;
+        \\}
+    ;
+    const sibling_source =
+        \\fn entry() -> i32 {
+        \\    return helper();
+        \\}
+        \\
+        \\fn helper() -> i32 {
+        \\    return 31;
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\@import "sibling.sla"
+        \\
+        \\@test "same named imported helpers"() {
+        \\    if dep::entry() + sibling::entry() != 42 { panic(42044); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "sibling.sla", .data = sibling_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "same named imported helpers",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__entry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__sibling__entry") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__sibling__helper") != null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -12552,25 +12527,6 @@ test "sla sab build defaults to managed sla cache" {
     const sab_bytes = try tmp.dir.readFileAlloc(std.testing.allocator, cached_path, 1024 * 1024);
     defer std.testing.allocator.free(sab_bytes);
     try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
-}
-
-test "sla sab test managed path is scoped by test filter" {
-    const build_path = try managedSabPath(std.testing.allocator, "direct.sla");
-    defer std.testing.allocator.free(build_path);
-    const all_tests_path = try managedSabTestPath(std.testing.allocator, "direct.sla", &.{});
-    defer std.testing.allocator.free(all_tests_path);
-    const keep_path = try managedSabTestPath(std.testing.allocator, "direct.sla", &.{ "--filter", "keep" });
-    defer std.testing.allocator.free(keep_path);
-    const keep_path_again = try managedSabTestPath(std.testing.allocator, "direct.sla", &.{"--filter=keep"});
-    defer std.testing.allocator.free(keep_path_again);
-    const drop_path = try managedSabTestPath(std.testing.allocator, "direct.sla", &.{ "--filter", "drop" });
-    defer std.testing.allocator.free(drop_path);
-
-    try std.testing.expect(!std.mem.eql(u8, build_path, all_tests_path));
-    try std.testing.expect(!std.mem.eql(u8, all_tests_path, keep_path));
-    try std.testing.expect(!std.mem.eql(u8, keep_path, drop_path));
-    try std.testing.expectEqualStrings(keep_path, keep_path_again);
-    try std.testing.expect(std.mem.startsWith(u8, keep_path, ".sla-cache/sab/"));
 }
 
 fn writeWorkspaceFixture(dir: std.fs.Dir, default_member: []const u8, tool_source: []const u8) !void {

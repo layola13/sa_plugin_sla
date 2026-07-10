@@ -236,6 +236,7 @@ fn isModuleContributing(
     var associated_iter = module.exports.associated_function_decls.keyIterator();
     while (associated_iter.next()) |symbol_ptr| {
         if (reachable.contains(symbol_ptr.*)) return true;
+        if (referenced_types.contains(symbol_ptr.*)) return true;
     }
 
     return false;
@@ -409,6 +410,45 @@ fn resolvedSlaImportNamespaceIsReferenced(
         symbolSetReferencesImportNamespace(referenced_types, namespace);
 }
 
+fn moduleExportsReferencedBareSymbol(
+    module: *const SlaModule,
+    reachable: *const std.StringHashMap(void),
+    referenced_types: *const std.StringHashMap(void),
+) bool {
+    // A cross-module call can be written bare (unqualified), e.g. a wrapper in
+    // one module calling `program_new_single_file` defined in a transitively
+    // imported module. Such references land in `reachable`/`referenced_types`
+    // as the plain exported name (no `ns__` prefix), so namespace-prefix
+    // matching alone would miss them and the defining module would never be
+    // discovered on the lazy-transitive path. Detect a bare exported name that
+    // is already referenced so the child module is pulled in.
+    // A bare cross-module call whose target module has not yet been discovered
+    // will not resolve in the callable index, so it is recorded in
+    // `referenced_types` (as an unresolved call name) rather than `reachable`.
+    // Check both sets against exported function/method names.
+    var func_iter = module.exports.function_decls.keyIterator();
+    while (func_iter.next()) |name_ptr| {
+        if (reachable.contains(name_ptr.*) or referenced_types.contains(name_ptr.*)) return true;
+    }
+    var assoc_iter = module.exports.associated_function_decls.keyIterator();
+    while (assoc_iter.next()) |symbol_ptr| {
+        if (reachable.contains(symbol_ptr.*) or referenced_types.contains(symbol_ptr.*)) return true;
+    }
+    var const_iter = module.exports.const_decls.keyIterator();
+    while (const_iter.next()) |name_ptr| {
+        if (referenced_types.contains(name_ptr.*)) return true;
+    }
+    var macro_iter = module.exports.macro_decls.keyIterator();
+    while (macro_iter.next()) |name_ptr| {
+        if (referenced_types.contains(name_ptr.*)) return true;
+    }
+    var type_iter = module.exports.type_decls.keyIterator();
+    while (type_iter.next()) |name_ptr| {
+        if (referenced_types.contains(name_ptr.*)) return true;
+    }
+    return false;
+}
+
 fn discoverContributingChildSlaModules(
     allocator: std.mem.Allocator,
     modules: *SlaModuleTable,
@@ -423,8 +463,20 @@ fn discoverContributingChildSlaModules(
         if (!try isModuleContributing(allocator, module, reachable, referenced_types)) continue;
         for (module.resolved_imports) |child_resolved| {
             if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
-            if (!try resolvedSlaImportNamespaceIsReferenced(allocator, child_resolved, reachable, referenced_types)) continue;
-            const child_module = try modules.getOrParse(child_resolved);
+            if (try resolvedSlaImportNamespaceIsReferenced(allocator, child_resolved, reachable, referenced_types)) {
+                const child_module = try modules.getOrParse(child_resolved);
+                changed = (try appendSlaModuleIfNew(child_module, visited, ordered)) or changed;
+                continue;
+            }
+            // Namespace not referenced. The child may still be needed through a
+            // bare (unqualified) cross-module call, which requires inspecting its
+            // exports — but that means parsing it. Parse defensively: a genuinely
+            // dead child can be syntactically invalid (the lazy path exists partly
+            // to skip such files), so on any parse failure we skip it rather than
+            // failing the whole compile. Only pull it in when it actually exports
+            // a bare symbol that is already referenced.
+            const child_module = modules.getOrParse(child_resolved) catch continue;
+            if (!moduleExportsReferencedBareSymbol(child_module, reachable, referenced_types)) continue;
             changed = (try appendSlaModuleIfNew(child_module, visited, ordered)) or changed;
         }
     }

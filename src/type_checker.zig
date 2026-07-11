@@ -130,6 +130,9 @@ pub const TypeChecker = struct {
 
     // Maps a return/block exit node to the variables that need to be dropped
     cleanups: std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)),
+    // Maps await expressions to cleanups used only when codegen emits a
+    // generated pending return. Ready paths retain their ordinary state.
+    await_cleanups: std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)),
     // Maps a branch end to the variables to release for Phi resolution
     phi_cleanups: std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)),
 
@@ -177,6 +180,7 @@ pub const TypeChecker = struct {
             .layout_defines = std.StringHashMap(contract_parser.LayoutDefine).init(allocator),
             .scope_pool = std.ArrayList(*Scope).init(allocator),
             .cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
+            .await_cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
             .phi_cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .function_aliases = std.StringHashMap([]const u8).init(allocator),
@@ -251,6 +255,24 @@ pub const TypeChecker = struct {
             current_name = source;
         }
         return false;
+    }
+
+    fn recordAwaitCleanup(self: *TypeChecker, await_node: *const ast.Node, future_expr: *const ast.Node, scope: *Scope) TypeError!void {
+        var cleanup_list = std.ArrayList([]const u8).init(self.allocator);
+        var current: ?*Scope = scope;
+        while (current) |frame| : (current = frame.parent) {
+            var iter = frame.symbols.valueIterator();
+            while (iter.next()) |sym| {
+                if (sym.state != .active or isInternalSymbol(sym.name)) continue;
+                if (functionExitBindingEscapes(scope, future_expr, sym.name)) continue;
+                try cleanup_list.append(sym.name);
+            }
+        }
+        if (cleanup_list.items.len == 0) {
+            cleanup_list.deinit();
+            return;
+        }
+        try self.await_cleanups.put(await_node, cleanup_list);
     }
 
     fn ensureTopLevelNameUnused(self: *TypeChecker, name: []const u8, kind: []const u8) TypeError!void {
@@ -408,6 +430,12 @@ pub const TypeChecker = struct {
             list.deinit();
         }
         self.cleanups.deinit();
+
+        var await_cleanup_iter = self.await_cleanups.valueIterator();
+        while (await_cleanup_iter.next()) |list| {
+            list.deinit();
+        }
+        self.await_cleanups.deinit();
 
         var phi_iter = self.phi_cleanups.valueIterator();
         while (phi_iter.next()) |list| {
@@ -3626,6 +3654,7 @@ pub const TypeChecker = struct {
                         return TypeError.TypeMismatch;
                     },
                 };
+                try self.recordAwaitCleanup(expr, aw.expr, scope);
                 if (rootIdentifier(aw.expr)) |name| {
                     const sym = scope.lookup(name) orelse return TypeError.UndefinedVariable;
                     if (sym.state == .consumed) return TypeError.UseAfterMove;

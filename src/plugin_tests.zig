@@ -1782,6 +1782,38 @@ test "sla sab borrow alias return keeps source register" {
     try std.testing.expect(saw_return);
 }
 
+test "sla typechecker records exact await pending cleanup" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\async fn pending_cleanup(unused: i64, fut: future<i64>) -> i64 {
+        \\    let held = unused + 1;
+        \\    let value = fut.await;
+        \\    return value;
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    const await_expr = prog.program.decls[0].func_decl.body[1].let_stmt.value;
+    try std.testing.expect(await_expr.* == .await_expr);
+    const cleanup = tc.await_cleanups.get(await_expr) orelse return error.TestUnexpectedResult;
+    var saw_unused = false;
+    var saw_held = false;
+    for (cleanup.items) |name| {
+        if (std.mem.eql(u8, name, "unused")) saw_unused = true;
+        if (std.mem.eql(u8, name, "held")) saw_held = true;
+        try std.testing.expect(!std.mem.eql(u8, name, "fut"));
+    }
+    try std.testing.expect(saw_unused);
+    try std.testing.expect(saw_held);
+}
+
 test "sla reachability merges only call facts shared by every caller" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

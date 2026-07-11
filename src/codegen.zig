@@ -1051,7 +1051,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn emitBranchScopedCleanupForNode(self: *Codegen, node: *const ast.Node) CodegenError!void {
+    fn emitBranchScopedCleanupList(self: *Codegen, names: []const []const u8) CodegenError!void {
         var saved_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
         defer saved_consumed.deinit();
         var saved_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
@@ -1059,13 +1059,19 @@ pub const Codegen = struct {
         var saved_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
         defer saved_refcell_handles.deinit();
 
-        if (self.tc.cleanups.get(node)) |list| {
-            for (list.items) |name| try self.emitRelease(name);
-        }
+        for (names) |name| try self.emitRelease(name);
 
         try self.restoreConsumedBindings(&saved_consumed);
         try self.restoreBorrowSourceTemps(&saved_borrow_sources);
         try self.restoreRefCellBorrowHandles(&saved_refcell_handles);
+    }
+
+    fn emitBranchScopedCleanupForNode(self: *Codegen, node: *const ast.Node) CodegenError!void {
+        if (self.tc.cleanups.get(node)) |list| try self.emitBranchScopedCleanupList(list.items);
+    }
+
+    fn emitAwaitPendingCleanups(self: *Codegen, await_expr: *const ast.Node) CodegenError!void {
+        if (self.tc.await_cleanups.get(await_expr)) |list| try self.emitBranchScopedCleanupList(list.items);
     }
 
     fn emitFunctionTailCleanups(self: *Codegen, stmt: *const ast.Node, tail_expr: *const ast.Node) CodegenError!void {
@@ -10826,6 +10832,7 @@ pub const Codegen = struct {
                 const future_reg = try self.genExpr(aw.expr, hoisted_allocs);
                 const plan = lowering_rules.planAwaitFutureWithReadiness(aw.expr, future_ty, self.current_async_return_ty, &self.future_readiness);
                 if (self.current_async and plan.pending_return_if_async) {
+                    try self.emitAwaitPendingCleanups(expr);
                     self.out.writer().print("    return {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
                     self.async_pending_return_emitted = true;
                     return future_reg;
@@ -10852,6 +10859,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    {s} = eq {s}, 0\n", .{ pending_reg, state_reg }) catch return CodegenError.CodegenError;
                     self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ pending_reg, pending_label, ready_label }) catch return CodegenError.CodegenError;
                     self.out.writer().print("{s}:\n", .{pending_label}) catch return CodegenError.CodegenError;
+                    try self.emitAwaitPendingCleanups(expr);
                     self.out.writer().print("    return {s}\n", .{future_reg}) catch return CodegenError.CodegenError;
                     self.out.writer().print("{s}:\n", .{ready_label}) catch return CodegenError.CodegenError;
                     try self.emitRelease(state_reg);

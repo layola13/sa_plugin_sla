@@ -4475,6 +4475,64 @@ test "sla module table reaches contributing transitive module through non contri
     try std.testing.expect(!saw_mid_bad);
 }
 
+test "sla module table discovers transitive generic function references" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const mid_source =
+        \\@import "leaf.sla"
+        \\
+        \\fn mid_unused_bad() -> MissingType {
+        \\    return nope();
+        \\}
+    ;
+    const leaf_source =
+        \\fn leaf_identity<T>(value: T) -> T {
+        \\    return value;
+        \\}
+    ;
+    const main_source =
+        \\@import "mid.sla"
+        \\
+        \\fn apply(f: fn(i32) -> i32, value: i32) -> i32 {
+        \\    return f(value);
+        \\}
+        \\
+        \\@test "transitive generic function reference"() {
+        \\    if apply(leaf_identity<i32>, 53) != 53 { panic(42046); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "mid.sla", .data = mid_source });
+    try tmp.dir.writeFile(.{ .sub_path = "leaf.sla", .data = leaf_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "transitive generic function reference",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "leaf_identity") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "mid_unused_bad") == null);
+}
+
 test "sla module table prunes unreachable trait impl methods in contributing module" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

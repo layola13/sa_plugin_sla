@@ -1591,6 +1591,10 @@ pub fn collectSyntacticReachableExpr(
         },
         .generic_func_ref => |ref| {
             try markSyntacticReachableFunc(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, ref.func_name);
+            // The defining transitive module may not have been lazily
+            // discovered yet. Keep the bare template name as a discovery root
+            // just like an unresolved ordinary call.
+            try referenced_types.put(ref.func_name, {});
             for (ref.generics) |ty| try recordReferencedType(referenced_types, ty);
         },
         .call_expr => |call| {

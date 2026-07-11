@@ -110,6 +110,7 @@ const SyntacticFactSet = plugin_reachability.SyntacticFactSet;
 const fieldFactKeyMatchesName = plugin_reachability.fieldFactKeyMatchesName;
 const FunctionSyntacticFacts = plugin_reachability.FunctionSyntacticFacts;
 const ReachabilityAnalysis = plugin_reachability.ReachabilityAnalysis;
+const ReachabilitySession = plugin_reachability.ReachabilitySession;
 const literalHasNoImportKeyword = plugin_reachability.literalHasNoImportKeyword;
 const nodeIsNoImportSource = plugin_reachability.nodeIsNoImportSource;
 const nodeIsZeroImportScan = plugin_reachability.nodeIsZeroImportScan;
@@ -4080,6 +4081,86 @@ test "sla reachability incrementally extends newly materialized body chains" {
     try std.testing.expect(reachable.contains("dep__first"));
     try std.testing.expect(reachable.contains("dep__second"));
     try std.testing.expect(reachable.contains("dep__third"));
+}
+
+test "sla reachability session retries only unresolved callable roots" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const mid_source =
+        \\@import "leaf.sla"
+        \\fn unused() -> i32 { return 0; }
+    ;
+    const leaf_source =
+        \\fn leaf_identity<T>(value: T) -> T { return value; }
+        \\fn TypeOnlyCollision() -> i32 { return 99; }
+        \\impl RemoteThing {
+        \\    fn selected(self) -> i32 { return self.value; }
+        \\}
+    ;
+    const main_source =
+        \\@import "mid.sla"
+        \\struct TypeOnlyCollision { value: i32 }
+        \\struct RemoteThing { value: i32 }
+        \\fn apply(f: fn(i32) -> i32, value: i32) -> i32 { return f(value); }
+        \\@test "exact lazy callable root"() {
+        \\    let marker = TypeOnlyCollision { value: 1 };
+        \\    if marker.value != 1 { panic(42049); };
+        \\    if apply(leaf_identity<i32>, 42) != 42 { panic(42050); };
+        \\    let item = RemoteThing { value: 43 };
+        \\    if item.selected() != 43 { panic(42051); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "mid.sla", .data = mid_source });
+    try tmp.dir.writeFile(.{ .sub_path = "leaf.sla", .data = leaf_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var modules = SlaModuleTable.initWithParserOptions(allocator, .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+    });
+    defer modules.deinit();
+    const root_imports = try resolveImportFiles(allocator, ".", "mid.sla", "main.sla");
+    const mid = try modules.getOrParse(root_imports[0]);
+    var reachable = std.StringHashMap(void).init(allocator);
+    defer reachable.deinit();
+    var referenced_types = std.StringHashMap(void).init(allocator);
+    defer referenced_types.deinit();
+    const options = SlaImportExpansionOptions{
+        .prune_for_test_codegen = true,
+        .test_filter = "exact lazy callable root",
+        .imported_bodies_decl_only = true,
+        .load_reachable_imported_bodies_from_registry = true,
+        .lazy_transitive_sla_imports = true,
+    };
+    var session = try ReachabilitySession.init(allocator, prog, &.{mid}, &modules, options, null, &reachable, &referenced_types);
+    defer session.deinit();
+    const initial_stats = try session.materialize(&.{mid});
+    try std.testing.expectEqual(@as(usize, 0), initial_stats.reparses);
+    try std.testing.expect(referenced_types.contains("leaf_identity"));
+    try std.testing.expect(referenced_types.contains("TypeOnlyCollision"));
+
+    const leaf = try modules.getOrParse(mid.resolved_imports[0]);
+    try session.addModules(&.{leaf}, &.{ mid, leaf });
+    const extended_stats = try session.materialize(&.{ mid, leaf });
+    try std.testing.expectEqual(@as(usize, 1), extended_stats.reparses);
+    try std.testing.expect(reachable.contains("leaf_identity"));
+    try std.testing.expect(reachable.contains("RemoteThing_selected"));
+    try std.testing.expect(!reachable.contains("TypeOnlyCollision"));
+    try std.testing.expect(leaf.parsed_function_bodies.contains("leaf_identity"));
+    try std.testing.expect(leaf.parsed_function_bodies.contains("RemoteThing_selected"));
+    try std.testing.expect(!leaf.parsed_function_bodies.contains("TypeOnlyCollision"));
 }
 
 test "sla test codegen narrows same named imported methods by symbol" {

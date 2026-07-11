@@ -13,6 +13,58 @@ const SlaModule = plugin_module_table.SlaModule;
 const SlaModuleTable = plugin_module_table.SlaModuleTable;
 const SlaImportExpansionOptions = plugin_module_table.SlaImportExpansionOptions;
 
+pub const UnresolvedCallableKind = enum {
+    direct,
+    associated,
+};
+
+pub const UnresolvedCallable = struct {
+    kind: UnresolvedCallableKind,
+    name: []const u8,
+    caller_name: ?[]const u8,
+    receiver_type_name: ?[]const u8,
+    resolved: bool = false,
+};
+
+pub const UnresolvedCallableSet = struct {
+    records: std.ArrayList(UnresolvedCallable),
+
+    pub fn init(allocator: std.mem.Allocator) UnresolvedCallableSet {
+        return .{ .records = std.ArrayList(UnresolvedCallable).init(allocator) };
+    }
+
+    pub fn deinit(self: *UnresolvedCallableSet) void {
+        self.records.deinit();
+    }
+
+    fn optionalStringEqual(a: ?[]const u8, b: ?[]const u8) bool {
+        if (a == null or b == null) return a == null and b == null;
+        return std.mem.eql(u8, a.?, b.?);
+    }
+
+    pub fn record(
+        self: *UnresolvedCallableSet,
+        kind: UnresolvedCallableKind,
+        name: []const u8,
+        caller_name: ?[]const u8,
+        receiver_type_name: ?[]const u8,
+    ) !void {
+        for (self.records.items) |recorded| {
+            if (recorded.kind != kind) continue;
+            if (!std.mem.eql(u8, recorded.name, name)) continue;
+            if (!optionalStringEqual(recorded.caller_name, caller_name)) continue;
+            if (!optionalStringEqual(recorded.receiver_type_name, receiver_type_name)) continue;
+            return;
+        }
+        try self.records.append(.{
+            .kind = kind,
+            .name = name,
+            .caller_name = caller_name,
+            .receiver_type_name = receiver_type_name,
+        });
+    }
+};
+
 pub const SlaCallableIndex = struct {
     allocator: std.mem.Allocator,
     names: std.StringHashMap(void),
@@ -21,6 +73,7 @@ pub const SlaCallableIndex = struct {
     macro_decls: std.StringHashMap(*ast.MacroDecl),
     module_sources: std.StringHashMap([]const u8),
     associated_candidates: std.StringHashMap(std.ArrayList([]const u8)),
+    unresolved_callables: ?*UnresolvedCallableSet,
 
     pub fn init(allocator: std.mem.Allocator) SlaCallableIndex {
         return .{
@@ -31,6 +84,7 @@ pub const SlaCallableIndex = struct {
             .macro_decls = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .module_sources = std.StringHashMap([]const u8).init(allocator),
             .associated_candidates = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
+            .unresolved_callables = null,
         };
     }
 
@@ -93,6 +147,16 @@ pub const SlaCallableIndex = struct {
             if (symbol[index + 1] == '_' or symbol[index + 1] == ':') continue;
             try self.addAssociatedCandidate(symbol[index + 1 ..], symbol);
         }
+    }
+
+    pub fn recordUnresolvedCallable(
+        self: *const SlaCallableIndex,
+        kind: UnresolvedCallableKind,
+        name: []const u8,
+        caller_name: ?[]const u8,
+        receiver_type_name: ?[]const u8,
+    ) !void {
+        if (self.unresolved_callables) |records| try records.record(kind, name, caller_name, receiver_type_name);
     }
 
     pub fn addDecls(self: *SlaCallableIndex, decls: []const *ast.Node) !void {
@@ -1234,6 +1298,7 @@ const ReachabilityBuildState = struct {
     scanned_symbol_roots: std.StringHashMap(void),
     scanned_type_roots: std.StringHashMap(void),
     analysis: ReachabilityAnalysis,
+    unresolved_callables: UnresolvedCallableSet,
     worklist_index: usize = 0,
 
     fn init(allocator: std.mem.Allocator) ReachabilityBuildState {
@@ -1244,10 +1309,12 @@ const ReachabilityBuildState = struct {
             .scanned_symbol_roots = std.StringHashMap(void).init(allocator),
             .scanned_type_roots = std.StringHashMap(void).init(allocator),
             .analysis = ReachabilityAnalysis.init(allocator, false),
+            .unresolved_callables = UnresolvedCallableSet.init(allocator),
         };
     }
 
     fn deinit(self: *ReachabilityBuildState) void {
+        self.unresolved_callables.deinit();
         self.analysis.deinit();
         self.scanned_type_roots.deinit();
         self.scanned_symbol_roots.deinit();
@@ -1362,11 +1429,138 @@ fn initializeReachabilityBuildState(
     out_referenced_types: *std.StringHashMap(void),
 ) !void {
     if (root_program.* != .program) return error.InvalidProgram;
+    state.callable_index.unresolved_callables = &state.unresolved_callables;
     try state.callable_index.addDecls(root_program.program.decls);
     for (modules) |module| try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
     try collectInitialReachabilityRoots(state, root_program, module_table, options, imported_macros, out_reachable, out_referenced_types);
     try drainReachabilityBuildState(state, modules, module_table, options, imported_macros, out_reachable, out_referenced_types);
 }
+
+fn unresolvedCallableCanResolve(
+    funcs: *const SlaCallableIndex,
+    modules: *SlaModuleTable,
+    record: UnresolvedCallable,
+) !bool {
+    if (try syntacticFuncDeclForCallFromCaller(funcs, modules, record.caller_name, record.name) != null) return true;
+    if (record.kind == .direct) return false;
+    const candidates = funcs.associated_candidates.get(record.name) orelse return false;
+    return candidates.items.len != 0;
+}
+
+pub const ReachabilitySession = struct {
+    state: ReachabilityBuildState,
+    root_program: *ast.Node,
+    module_table: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        root_program: *ast.Node,
+        initial_modules: []const *SlaModule,
+        module_table: *SlaModuleTable,
+        options: SlaImportExpansionOptions,
+        imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+        reachable: *std.StringHashMap(void),
+        referenced_types: *std.StringHashMap(void),
+    ) !ReachabilitySession {
+        reachable.clearRetainingCapacity();
+        referenced_types.clearRetainingCapacity();
+        var session = ReachabilitySession{
+            .state = ReachabilityBuildState.init(allocator),
+            .root_program = root_program,
+            .module_table = module_table,
+            .options = options,
+            .imported_macros = imported_macros,
+            .reachable = reachable,
+            .referenced_types = referenced_types,
+        };
+        errdefer session.state.deinit();
+        try initializeReachabilityBuildState(&session.state, root_program, initial_modules, module_table, options, imported_macros, reachable, referenced_types);
+        return session;
+    }
+
+    pub fn deinit(self: *ReachabilitySession) void {
+        self.state.deinit();
+    }
+
+    pub fn unresolvedCallables(self: *const ReachabilitySession) *const UnresolvedCallableSet {
+        return &self.state.unresolved_callables;
+    }
+
+    pub fn addModules(
+        self: *ReachabilitySession,
+        new_modules: []const *SlaModule,
+        all_modules: []const *SlaModule,
+    ) !void {
+        if (new_modules.len == 0) return;
+        self.state.callable_index.unresolved_callables = &self.state.unresolved_callables;
+        for (new_modules) |module| try self.state.callable_index.addDeclsFromModule(module.program.program.decls, module);
+
+        var rescan_roots = false;
+        var queued_callers = std.StringHashMap(void).init(self.state.allocator);
+        defer queued_callers.deinit();
+        for (self.state.unresolved_callables.records.items) |*record| {
+            if (record.resolved) continue;
+            if (!try unresolvedCallableCanResolve(&self.state.callable_index, self.module_table, record.*)) continue;
+            record.resolved = true;
+            if (record.caller_name) |caller_name| {
+                if (self.reachable.getKey(caller_name)) |reachable_caller| {
+                    if (!queued_callers.contains(reachable_caller)) {
+                        try queued_callers.put(reachable_caller, {});
+                        try self.state.worklist.append(reachable_caller);
+                    }
+                } else {
+                    _ = self.state.scanned_symbol_roots.remove(caller_name);
+                }
+            } else {
+                rescan_roots = true;
+            }
+        }
+
+        var referenced_iter = self.referenced_types.keyIterator();
+        while (referenced_iter.next()) |name_ptr| {
+            _ = self.state.scanned_symbol_roots.remove(name_ptr.*);
+            _ = self.state.scanned_type_roots.remove(name_ptr.*);
+        }
+        if (rescan_roots) {
+            try collectInitialReachabilityRoots(
+                &self.state,
+                self.root_program,
+                self.module_table,
+                self.options,
+                self.imported_macros,
+                self.reachable,
+                self.referenced_types,
+            );
+        }
+        try drainReachabilityBuildState(
+            &self.state,
+            all_modules,
+            self.module_table,
+            self.options,
+            self.imported_macros,
+            self.reachable,
+            self.referenced_types,
+        );
+    }
+
+    pub fn materialize(self: *ReachabilitySession, ordered_modules: []const *SlaModule) !ReachabilityMaterializationStats {
+        self.state.callable_index.unresolved_callables = &self.state.unresolved_callables;
+        return try materializeReachableImportedModuleBodiesWithState(
+            &self.state,
+            self.state.allocator,
+            ordered_modules,
+            self.module_table,
+            self.options,
+            self.imported_macros,
+            self.reachable,
+            self.referenced_types,
+        );
+    }
+};
 
 pub fn buildReachableSymbols(
     allocator: std.mem.Allocator,
@@ -1691,6 +1885,7 @@ pub fn markSyntacticReachableFunc(
                 return try markSyntacticReachableFunc(funcs, modules, analysis, call_facts, caller_name, reachable, referenced_types, worklist, imported.name);
             }
         }
+        try funcs.recordUnresolvedCallable(.direct, name, caller_name, null);
         return;
     }
     const reachable_name = funcs.names.getKey(name) orelse return;
@@ -1771,6 +1966,7 @@ pub fn markSyntacticAssociatedCallCandidates(
         for (candidates.items) |name| try markSyntacticReachableFunc(funcs, modules, analysis, direct_call_facts, caller_name, reachable, referenced_types, worklist, name);
         return;
     }
+    try funcs.recordUnresolvedCallable(.associated, method_name, caller_name, target_type_name);
     try markSyntacticReachableFunc(funcs, modules, analysis, direct_call_facts, caller_name, reachable, referenced_types, worklist, method_name);
 }
 

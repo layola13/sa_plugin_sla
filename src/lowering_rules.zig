@@ -2907,6 +2907,20 @@ pub fn rootIdentifier(expr: *const ast.Node) ?[]const u8 {
     };
 }
 
+pub const FunctionTailCleanupAction = enum {
+    release,
+    transfer_result,
+};
+
+pub fn planFunctionTailCleanup(cleanup_name: []const u8, tail_expr: *const ast.Node) FunctionTailCleanupAction {
+    const result_name = switch (tail_expr.*) {
+        .identifier => |name| name,
+        .move_expr => |move| if (move.expr.* == .identifier) move.expr.identifier else return .release,
+        else => return .release,
+    };
+    return if (std.mem.eql(u8, cleanup_name, result_name)) .transfer_result else .release;
+}
+
 pub fn isBorrowLikeType(ty: *const ast.Type) bool {
     return switch (ty.*) {
         .borrow => true,
@@ -4639,6 +4653,19 @@ test "shared dyn coercion and receiver plans" {
     const box_coercion = planDynCoercion(&tc, &box_expr) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(DynCoercionKind.box_to_dyn, box_coercion.kind);
     try std.testing.expectEqualSlices(u8, "Draw", box_coercion.trait_name);
+}
+
+test "shared function tail cleanup transfers only the direct result binding" {
+    var result = ast.Node{ .identifier = "result" };
+    var other = ast.Node{ .identifier = "other" };
+    var moved_result = ast.Node{ .move_expr = .{ .expr = &result } };
+    var field = ast.Node{ .field_expr = .{ .expr = &result, .field_name = "value" } };
+
+    try std.testing.expectEqual(FunctionTailCleanupAction.transfer_result, planFunctionTailCleanup("result", &result));
+    try std.testing.expectEqual(FunctionTailCleanupAction.transfer_result, planFunctionTailCleanup("result", &moved_result));
+    try std.testing.expectEqual(FunctionTailCleanupAction.release, planFunctionTailCleanup("other", &result));
+    try std.testing.expectEqual(FunctionTailCleanupAction.release, planFunctionTailCleanup("result", &other));
+    try std.testing.expectEqual(FunctionTailCleanupAction.release, planFunctionTailCleanup("result", &field));
 }
 
 test "shared static call plan preserves namespace alias metadata" {

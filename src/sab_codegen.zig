@@ -5533,6 +5533,9 @@ pub const Codegen = struct {
                 if (self.lastIsTerminator()) break;
             }
             if (!self.lastIsTerminator()) {
+                const old_result_escapes = self.current_expr_result_escapes;
+                self.current_expr_result_escapes = true;
+                defer self.current_expr_result_escapes = old_result_escapes;
                 var value = try self.genExpr(tail);
                 if (async_plan.wrap_ready_future) value = try self.genReadyFuture(value);
                 if (!self.lastIsTerminator()) {

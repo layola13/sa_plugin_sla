@@ -1093,6 +1093,17 @@ pub const Codegen = struct {
         try self.restoreRefCellBorrowHandles(&saved_refcell_handles);
     }
 
+    fn emitFunctionTailCleanups(self: *Codegen, stmt: *const ast.Node, tail_expr: *const ast.Node) CodegenError!void {
+        if (self.tc.cleanups.get(stmt)) |list| {
+            for (list.items) |name| {
+                switch (lowering_rules.planFunctionTailCleanup(name, tail_expr)) {
+                    .release => try self.emitRelease(name),
+                    .transfer_result => {},
+                }
+            }
+        }
+    }
+
     fn restoreRefCellBranchState(
         self: *Codegen,
         handles: *std.StringHashMap(RefCellBorrowHandle),
@@ -6560,6 +6571,7 @@ pub const Codegen = struct {
                     if (async_return_plan.wrap_ready_future) {
                         tail_reg = try self.genReadyFutureI64(tail_reg);
                     }
+                    try self.emitFunctionTailCleanups(f.body[f.body.len - 1], tail_expr);
                     self.out.writer().print("    return {s}\n", .{tail_reg}) catch return CodegenError.CodegenError;
                 }
             }
@@ -8651,9 +8663,9 @@ pub const Codegen = struct {
                         },
                         .transfer_value_state => {},
                     }
+                    self.rebindRefCellBorrowHandleOwners(val_reg, let.name);
                     const let_value_is_copy = let_ty.* == .primitive or let_ty.* == .fn_ptr or self.typeIsCopyStruct(let_ty);
                     if (lowering_rules.storedValueMovesIdentifier(let.value, let_ty, let_value_is_copy) != null) {
-                        self.rebindRefCellBorrowHandleOwners(val_reg, let.name);
                         try self.markConsumedBinding(val_reg);
                     }
                     if (self.file_bindings.contains(val_reg)) {

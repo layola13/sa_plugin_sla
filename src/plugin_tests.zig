@@ -1195,6 +1195,41 @@ test "sla test codegen does not root imported const initializers" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla pre-typecheck pruning keeps local function pointer callees" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\fn inc(x: i32) -> i32 {
+        \\    return x + 1;
+        \\}
+        \\
+        \\@test "fnptr"() {
+        \\    let f: fn(i32) -> i32 = inc;
+        \\    if f(1) != 2 { panic(1); };
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    try pruneTestsByFilter(allocator, prog, "fnptr");
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true);
+
+    var saw_binding = false;
+    for (prog.program.decls) |decl| {
+        if (decl.* != .test_decl) continue;
+        for (decl.test_decl.body) |stmt| {
+            if (stmt.* == .let_stmt and std.mem.eql(u8, stmt.let_stmt.name, "f")) saw_binding = true;
+        }
+    }
+    try std.testing.expect(saw_binding);
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+}
+
 test "sla post-typecheck prune removes statically empty import scan branches" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

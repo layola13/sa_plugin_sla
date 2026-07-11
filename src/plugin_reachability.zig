@@ -885,6 +885,7 @@ pub fn reachabilityNodeUsesIdentifier(node: *const ast.Node, name: []const u8) b
         .await_expr => |await_expr| reachabilityNodeUsesIdentifier(await_expr.expr, name),
         .binary_expr => |bin| reachabilityNodeUsesIdentifier(bin.left, name) or reachabilityNodeUsesIdentifier(bin.right, name),
         .call_expr => |call| blk: {
+            if (call.associated_target == null and std.mem.eql(u8, call.func_name, name)) break :blk true;
             for (call.args) |arg| {
                 if (reachabilityNodeUsesIdentifier(arg, name)) break :blk true;
             }

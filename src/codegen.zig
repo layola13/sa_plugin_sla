@@ -1076,6 +1076,23 @@ pub const Codegen = struct {
         }
     }
 
+    fn emitBranchScopedCleanupForNode(self: *Codegen, node: *const ast.Node) CodegenError!void {
+        var saved_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+        defer saved_consumed.deinit();
+        var saved_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
+        defer saved_borrow_sources.deinit();
+        var saved_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+        defer saved_refcell_handles.deinit();
+
+        if (self.tc.cleanups.get(node)) |list| {
+            for (list.items) |name| try self.emitRelease(name);
+        }
+
+        try self.restoreConsumedBindings(&saved_consumed);
+        try self.restoreBorrowSourceTemps(&saved_borrow_sources);
+        try self.restoreRefCellBorrowHandles(&saved_refcell_handles);
+    }
+
     fn restoreRefCellBranchState(
         self: *Codegen,
         handles: *std.StringHashMap(RefCellBorrowHandle),
@@ -8694,6 +8711,13 @@ pub const Codegen = struct {
                     self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ branch_flag, else_label, success_label }) catch return CodegenError.CodegenError;
                 }
 
+                var pre_else_consumed = self.consumed_bindings.clone() catch return CodegenError.OutOfMemory;
+                defer pre_else_consumed.deinit();
+                var pre_else_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
+                defer pre_else_borrow_sources.deinit();
+                var pre_else_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+                defer pre_else_refcell_handles.deinit();
+
                 self.out.writer().print("{s}:\n", .{else_label}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(let.value)) try self.emitRelease(value_reg);
@@ -8702,6 +8726,9 @@ pub const Codegen = struct {
                     self.out.writer().print("    jmp {s}\n", .{cont_label}) catch return CodegenError.CodegenError;
                 }
                 self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
+                try self.restoreConsumedBindings(&pre_else_consumed);
+                try self.restoreBorrowSourceTemps(&pre_else_borrow_sources);
+                try self.restoreRefCellBorrowHandles(&pre_else_refcell_handles);
 
                 self.out.writer().print("{s}:\n", .{success_label}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    !{s}\n", .{branch_flag}) catch return CodegenError.CodegenError;
@@ -13319,11 +13346,7 @@ pub const Codegen = struct {
 
                     self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
                     self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
-                    if (self.tc.cleanups.get(expr)) |list| {
-                        for (list.items) |c_var| {
-                            try self.emitRelease(c_var);
-                        }
-                    }
+                    try self.emitBranchScopedCleanupForNode(expr);
                     self.out.writer().print("    return {s}\n\n", .{inner_reg}) catch return CodegenError.CodegenError;
 
                     self.out.writer().print("{s}:\n", .{some_label}) catch return CodegenError.CodegenError;
@@ -13345,11 +13368,7 @@ pub const Codegen = struct {
 
                     self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
                     self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
-                    if (self.tc.cleanups.get(expr)) |list| {
-                        for (list.items) |c_var| {
-                            try self.emitRelease(c_var);
-                        }
-                    }
+                    try self.emitBranchScopedCleanupForNode(expr);
                     self.out.writer().print("    return {s}\n\n", .{inner_reg}) catch return CodegenError.CodegenError;
 
                     self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
@@ -13385,12 +13404,7 @@ pub const Codegen = struct {
                 self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    !{s}\n", .{is_err}) catch return CodegenError.CodegenError;
 
-                // Auto-cleanup all active local variables in current scopes before early return
-                if (self.tc.cleanups.get(expr)) |list| {
-                    for (list.items) |c_var| {
-                        try self.emitRelease(c_var);
-                    }
-                }
+                try self.emitBranchScopedCleanupForNode(expr);
 
                 self.out.writer().print("    return {s}\n\n", .{inner_reg}) catch return CodegenError.CodegenError;
 

@@ -5552,6 +5552,11 @@ pub const TypeChecker = struct {
             },
             .try_expr => |trye| {
                 const inner_ty = try self.checkExpr(trye.expr, scope);
+                if (trye.expr.* == .identifier) {
+                    if (scope.lookup(trye.expr.identifier)) |source| {
+                        if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) source.state = .consumed;
+                    }
+                }
 
                 if (optionInnerType(inner_ty)) |unwrapped_ty| {
                     var try_cleanup = std.ArrayList([]const u8).init(self.allocator);
@@ -5560,7 +5565,6 @@ pub const TypeChecker = struct {
                         var iter = s.symbols.valueIterator();
                         while (iter.next()) |sym| {
                             if (sym.state == .active and !isInternalSymbol(sym.name)) {
-                                if (isBorrowLikeType(sym.ty)) continue;
                                 if (exprUsesIdentifierValue(trye.expr, sym.name)) continue;
                                 try try_cleanup.append(sym.name);
                             }
@@ -5582,7 +5586,6 @@ pub const TypeChecker = struct {
                         var iter = s.symbols.valueIterator();
                         while (iter.next()) |sym| {
                             if (sym.state == .active and !isInternalSymbol(sym.name)) {
-                                if (isBorrowLikeType(sym.ty)) continue;
                                 if (exprUsesIdentifierValue(trye.expr, sym.name)) continue;
                                 try try_cleanup.append(sym.name);
                             }
@@ -5625,7 +5628,6 @@ pub const TypeChecker = struct {
                     var iter = s.symbols.valueIterator();
                     while (iter.next()) |sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
-                            if (isBorrowLikeType(sym.ty)) continue;
                             if (exprUsesIdentifierValue(trye.expr, sym.name)) continue;
                             try try_cleanup.append(sym.name);
                         }

@@ -2281,38 +2281,33 @@ pub const Parser = struct {
                 const saved_tok = self.tok;
 
                 self.advance();
-                const then_expr = self.parseExpr(0) catch {
-                    self.lex = saved_lex;
-                    self.tok = saved_tok;
-                    break;
-                };
+                const ternary = if (tokenStartsPrefixExpr(self.peek())) blk: {
+                    const then_expr = self.parseExpr(0) catch break :blk null;
+                    if (!self.match(.colon)) break :blk null;
+                    const else_expr = self.parseExpr(0) catch break :blk null;
 
-                if (!self.match(.colon)) {
-                    self.lex = saved_lex;
-                    self.tok = saved_tok;
-                    break;
+                    const then_node = try self.allocator.create(ast.Node);
+                    then_node.* = .{ .expr_stmt = then_expr };
+                    const else_node = try self.allocator.create(ast.Node);
+                    else_node.* = .{ .expr_stmt = else_expr };
+
+                    const then_block = try self.allocator.alloc(*ast.Node, 1);
+                    then_block[0] = then_node;
+                    const else_block = try self.allocator.alloc(*ast.Node, 1);
+                    else_block[0] = else_node;
+
+                    const node = try self.allocator.create(ast.Node);
+                    node.* = .{ .if_expr = .{ .cond = left, .then_block = then_block, .else_block = else_block } };
+                    break :blk node;
+                } else null;
+
+                if (ternary) |node| {
+                    left = node;
+                    continue;
                 }
 
-                const else_expr = self.parseExpr(0) catch {
-                    self.lex = saved_lex;
-                    self.tok = saved_tok;
-                    break;
-                };
-
-                const then_node = try self.allocator.create(ast.Node);
-                then_node.* = .{ .expr_stmt = then_expr };
-                const else_node = try self.allocator.create(ast.Node);
-                else_node.* = .{ .expr_stmt = else_expr };
-
-                const then_block = try self.allocator.alloc(*ast.Node, 1);
-                then_block[0] = then_node;
-                const else_block = try self.allocator.alloc(*ast.Node, 1);
-                else_block[0] = else_node;
-
-                const node = try self.allocator.create(ast.Node);
-                node.* = .{ .if_expr = .{ .cond = left, .then_block = then_block, .else_block = else_block } };
-                left = node;
-                continue;
+                self.lex = saved_lex;
+                self.tok = saved_tok;
             }
 
             var op_prec = self.getInfixPrecedence(self.peek());
@@ -2342,6 +2337,31 @@ pub const Parser = struct {
         }
 
         return left;
+    }
+
+    fn tokenStartsPrefixExpr(tag: lexer.Token.Tag) bool {
+        return switch (tag) {
+            .int_literal,
+            .float_literal,
+            .string_literal,
+            .identifier,
+            .ampersand,
+            .caret,
+            .asterisk,
+            .minus,
+            .bang,
+            .keyword_if,
+            .keyword_switch,
+            .keyword_match,
+            .keyword_unsafe,
+            .keyword_await,
+            .pipe,
+            .pipe_pipe,
+            .l_paren,
+            .l_bracket,
+            => true,
+            else => false,
+        };
     }
 
     fn parsePrefixExpr(self: *Parser) ParserError!*ast.Node {
@@ -2740,7 +2760,7 @@ pub const Parser = struct {
                 const saved_lex = self.lex;
                 const saved_tok = self.tok;
 
-                const ternary_result = blk: {
+                const ternary_result = if (tokenStartsPrefixExpr(self.peek())) blk: {
                     const then_expr = self.parseExpr(0) catch break :blk null;
                     if (!self.match(.colon)) break :blk null;
                     const else_expr = self.parseExpr(0) catch break :blk null;
@@ -2758,7 +2778,7 @@ pub const Parser = struct {
                     const node = try self.allocator.create(ast.Node);
                     node.* = .{ .if_expr = .{ .cond = left, .then_block = then_block, .else_block = else_block } };
                     break :blk node;
-                };
+                } else null;
 
                 if (ternary_result) |node| return node;
 
@@ -3219,6 +3239,38 @@ test "sla parser selectively parses named macro bodies" {
     try std.testing.expectEqual(@as(usize, 2), prog.program.decls.len);
     try std.testing.expectEqual(@as(usize, 1), prog.program.decls[0].macro_decl.body.len);
     try std.testing.expectEqual(@as(usize, 0), prog.program.decls[1].macro_decl.body.len);
+}
+
+test "sla parser distinguishes postfix try from ternary" {
+    const source =
+        \\struct LocalResult {
+        \\    is_err: bool,
+        \\    value: i64,
+        \\    error: i64,
+        \\}
+        \\
+        \\fn propagate(result: LocalResult) -> i64 {
+        \\    let value = result?;
+        \\    return value;
+        \\}
+        \\
+        \\fn choose(flag: bool) -> i64 {
+        \\    return flag ? 1 : 2;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const propagate = prog.program.decls[1].func_decl;
+    try std.testing.expect(propagate.body[0].* == .let_stmt);
+    try std.testing.expect(propagate.body[0].let_stmt.value.* == .try_expr);
+
+    const choose = prog.program.decls[2].func_decl;
+    try std.testing.expect(choose.body[0].* == .return_stmt);
+    try std.testing.expect(choose.body[0].return_stmt.value.?.* == .if_expr);
 }
 
 test "syntax diagnostic includes location token and context" {

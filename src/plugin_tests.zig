@@ -1543,6 +1543,107 @@ test "sla sa loop backedges require live body fallthrough" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, sa_code, "jmp L_LOOP_HEAD"));
 }
 
+test "sla sab filtered primitive call temp remains in test scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_refcell_owner_release_direct.sla",
+        ".sla-cache/sab/filtered_loop_scope_test.sab",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "refcell loop jumps release active borrow handles",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var test_sig_index: ?usize = null;
+    for (module.function_sigs, 0..) |fsig, idx| {
+        if (fsig.kind != .test_func) continue;
+        test_sig_index = idx;
+        break;
+    }
+    const selected_sig_index = test_sig_index orelse return error.TestUnexpectedResult;
+    const selected_sig = &module.function_sigs[selected_sig_index];
+    const body_end = if (selected_sig_index + 1 < module.function_sigs.len)
+        module.function_sigs[selected_sig_index + 1].entry_inst_idx
+    else
+        module.instructions.len;
+
+    var call_arg_name: ?[]const u8 = null;
+    for (module.instructions[selected_sig.entry_inst_idx..body_end]) |item| {
+        if (item.kind != .call) continue;
+        for (item.operands) |operand| {
+            if (operand != .text) continue;
+            const marker = "@sla__owner_release_loop_return_move_value(";
+            const start = std.mem.indexOf(u8, operand.text, marker) orelse continue;
+            const args_start = start + marker.len;
+            const args_end = std.mem.indexOfScalarPos(u8, operand.text, args_start, ')') orelse continue;
+            call_arg_name = std.mem.trim(u8, operand.text[args_start..args_end], " \t\r\n");
+            break;
+        }
+        if (call_arg_name != null) break;
+    }
+    const arg_name = call_arg_name orelse return error.TestUnexpectedResult;
+
+    var arg_id: ?u32 = null;
+    for (module.symbols, 0..) |name, idx| {
+        if (std.mem.eql(u8, name, arg_name)) {
+            arg_id = @intCast(idx);
+            break;
+        }
+    }
+    const selected_arg_id = arg_id orelse return error.TestUnexpectedResult;
+    var in_scope = false;
+    for (selected_sig.reg_ids) |reg_id| {
+        if (reg_id == selected_arg_id) in_scope = true;
+    }
+    try std.testing.expect(in_scope);
+}
+
+test "sla typechecker cleans borrow locals on try propagation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\@import "sa_std/core/option.sa"
+        \\struct Item { value: i64 }
+        \\
+        \\fn propagate(value: &Item, maybe: Option<i64>) -> Option<i64> {
+        \\    let borrowed: &Item = value;
+        \\    let inner = maybe?;
+        \\    return Some(inner + borrowed.value);
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    var saw_try_cleanup = false;
+    var iter = tc.cleanups.iterator();
+    while (iter.next()) |entry| {
+        if (entry.key_ptr.*.* != .try_expr) continue;
+        for (entry.value_ptr.items) |name| {
+            if (std.mem.eql(u8, name, "borrowed")) saw_try_cleanup = true;
+        }
+    }
+    try std.testing.expect(saw_try_cleanup);
+}
+
 test "sla reachability merges only call facts shared by every caller" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

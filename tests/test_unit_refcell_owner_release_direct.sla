@@ -196,6 +196,22 @@ fn owner_release_for_jump_borrow_count() -> i64 {
     owner_release_borrow_count(&cell)
 }
 
+fn owner_release_try_value(cell: &RefCell<OwnerReleasePayload>, fail: bool) -> Option<int> {
+    let borrowed: &OwnerReleasePayload = cell.borrow();
+    let maybe: Option<int> = if fail { None } else { Some(borrowed.value) };
+    let value = maybe?;
+    return Some(value);
+}
+
+fn owner_release_let_else_value(cell: &RefCell<OwnerReleasePayload>, fail: bool) -> int {
+    let borrowed: &OwnerReleasePayload = cell.borrow();
+    let maybe: Option<int> = if fail { None } else { Some(borrowed.value) };
+    let Some(value) = maybe else {
+        return 0;
+    };
+    return value;
+}
+
 @test "refcell owner release clears active borrow handle"() {
     let refcell = RefCell::new(OwnerReleasePayload { value: 17 });
     let borrowed: &OwnerReleasePayload = refcell.borrow();
@@ -331,5 +347,35 @@ fn owner_release_for_jump_borrow_count() -> i64 {
     };
     if owner_release_for_jump_borrow_count() != 0 {
         panic(30931);
+    };
+}
+
+@test "refcell try propagation releases active borrow handle"() {
+    let cell = RefCell::new(OwnerReleasePayload { value: 107 });
+    let failed = owner_release_try_value(&cell, true);
+    !failed;
+    if owner_release_borrow_count(&cell) != 0 {
+        panic(30934);
+    };
+    let succeeded = owner_release_try_value(&cell, false);
+    !succeeded;
+    if owner_release_borrow_count(&cell) != 0 {
+        panic(30935);
+    };
+}
+
+@test "refcell let-else releases active borrow handle"() {
+    let cell = RefCell::new(OwnerReleasePayload { value: 109 });
+    if owner_release_let_else_value(&cell, true) != 0 {
+        panic(30936);
+    };
+    if owner_release_borrow_count(&cell) != 0 {
+        panic(30937);
+    };
+    if owner_release_let_else_value(&cell, false) != 109 {
+        panic(30938);
+    };
+    if owner_release_borrow_count(&cell) != 0 {
+        panic(30939);
     };
 }

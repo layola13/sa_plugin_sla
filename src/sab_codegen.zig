@@ -2836,6 +2836,26 @@ pub const Codegen = struct {
         }
     }
 
+    fn emitBranchCleanupForNode(self: *Codegen, node: *const ast.Node) !void {
+        var seen = std.AutoHashMap(u32, void).init(self.allocator);
+        defer seen.deinit();
+        if (self.tc.cleanups.get(node)) |list| {
+            for (list.items) |name| {
+                var reg: ?u32 = null;
+                var i = self.locals.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const local = self.locals.items[i];
+                    if (!std.mem.eql(u8, local.name, name)) continue;
+                    if (local.stack_ty == null and !local.is_stack_alloc) reg = local.reg;
+                    break;
+                }
+                const value_reg = reg orelse continue;
+                try self.emitBranchReleaseWithMetadata(value_reg, &seen);
+            }
+        }
+    }
+
     fn genLoopJump(self: *Codegen, stmt: *const ast.Node, kind: LoopJumpKind) !void {
         try self.releaseCleanupForStmt(stmt);
         const labels = switch (kind) {
@@ -8387,6 +8407,7 @@ pub const Codegen = struct {
                 try self.pushStackLocal(v.name, dst, v.ty);
             },
             .let_stmt => |let| try self.genLet(let),
+            .let_else_stmt => |let| try self.genLetElse(let),
             .let_destructure_stmt => |let| try self.genLetDestructure(let),
             .assign_stmt => |assign| try self.genAssign(assign),
             .expr_stmt => |expr| {
@@ -8434,6 +8455,42 @@ pub const Codegen = struct {
             .release_stmt => |rel| try self.genReleaseStmt(rel),
             else => return Error.UnsupportedSabDirectFeature,
         }
+    }
+
+    fn genLetElse(self: *Codegen, let: ast.LetElseStmt) anyerror!void {
+        const value_reg = try self.genExpr(let.value);
+        const value_ty = self.tc.expr_types.get(let.value) orelse return Error.MissingType;
+        const enum_decl = try self.enumDeclForPatternValue(let.value, let.pattern);
+        const plan = lowering_rules.planLetPattern(let.pattern, enum_decl != null) orelse return Error.UnsupportedSabDirectFeature;
+        const branch_flag = try self.intern(try self.newTmp());
+        try self.recordReg(branch_flag);
+        try self.emitLetPatternCheck(let.pattern, value_reg, enum_decl, plan, branch_flag);
+
+        const success_label = try self.newLabel("L_LET_ELSE_SUCCESS");
+        const else_label = try self.newLabel("L_LET_ELSE_FAILURE");
+        try self.emitBranch(
+            branch_flag,
+            if (plan.success_on_true) success_label else else_label,
+            if (plan.success_on_true) else_label else success_label,
+        );
+
+        const locals_len = self.locals.items.len;
+        var pre_branch_state = try self.cloneBranchEmitterState();
+        defer self.deinitBranchEmitterStateSnapshot(&pre_branch_state);
+
+        try self.emitLabel(else_label);
+        try self.emitBranchRelease(branch_flag);
+        if (!self.isLocalReg(value_reg)) try self.emitBranchRelease(value_reg);
+        try self.genBlock(let.else_block);
+
+        self.popLocalsTo(locals_len);
+        try self.restoreReleased(&pre_branch_state.released);
+        try self.restoreRefCellBranchState(&pre_branch_state.refcell_values, &pre_branch_state.borrow_temps);
+
+        try self.emitLabel(success_label);
+        try self.emitBranchRelease(branch_flag);
+        try self.bindLetPatternPayload(let.pattern, value_reg, value_ty, enum_decl, plan);
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
     }
 
     fn genLetDestructure(self: *Codegen, let: ast.LetDestructureStmt) anyerror!void {
@@ -8641,12 +8698,100 @@ pub const Codegen = struct {
             .if_expr => |ife| try self.genIf(expr, ife),
             .cast_expr => |cast| try self.genCast(cast),
             .unsafe_expr => |unsafe_expr| try self.genUnsafeExpr(expr, unsafe_expr),
+            .try_expr => |try_expr| try self.genTry(expr, try_expr),
             .await_expr => |aw| try self.genAwait(expr, aw),
             .borrow_expr => |borrow| try self.genBorrow(borrow),
             .move_expr => |move| try self.genMove(move),
             .deref_expr => |deref| try self.genDeref(expr, deref),
             else => Error.UnsupportedSabDirectFeature,
         };
+    }
+
+    fn genTry(self: *Codegen, expr: *const ast.Node, try_expr: ast.TryExpr) anyerror!u32 {
+        const inner_ty = self.tc.expr_types.get(try_expr.expr) orelse return Error.MissingType;
+        const inner_reg = try self.genExpr(try_expr.expr);
+        const success_label = try self.newLabel("L_TRY_SUCCESS");
+        const error_label = try self.newLabel("L_TRY_ERROR");
+
+        if (lowering_rules.optionInnerType(inner_ty) != null) {
+            const is_some = try self.intern(try self.newTmp());
+            try self.recordReg(is_some);
+            try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_IS_SOME", &.{
+                self.symbols.items[is_some],
+                self.symbols.items[inner_reg],
+            });
+            try self.emitBranch(is_some, success_label, error_label);
+
+            try self.emitLabel(error_label);
+            try self.emitBranchRelease(is_some);
+            try self.emitBranchCleanupForNode(expr);
+            try self.emitReturn(inner_reg);
+
+            try self.emitLabel(success_label);
+            try self.emitBranchRelease(is_some);
+            const value = try self.intern(try self.newTmp());
+            try self.recordReg(value);
+            try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_GET", &.{
+                self.symbols.items[value],
+                self.symbols.items[inner_reg],
+            });
+            if (!self.isLocalReg(inner_reg)) try self.emitRelease(inner_reg);
+            return value;
+        }
+
+        if (lowering_rules.resultOkType(inner_ty) != null) {
+            const is_ok = try self.intern(try self.newTmp());
+            try self.recordReg(is_ok);
+            try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_IS_OK", &.{
+                self.symbols.items[is_ok],
+                self.symbols.items[inner_reg],
+            });
+            try self.emitBranch(is_ok, success_label, error_label);
+
+            try self.emitLabel(error_label);
+            try self.emitBranchRelease(is_ok);
+            try self.emitBranchCleanupForNode(expr);
+            try self.emitReturn(inner_reg);
+
+            try self.emitLabel(success_label);
+            try self.emitBranchRelease(is_ok);
+            const value = try self.intern(try self.newTmp());
+            try self.recordReg(value);
+            try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_OK", &.{
+                self.symbols.items[value],
+                self.symbols.items[inner_reg],
+            });
+            if (!self.isLocalReg(inner_reg)) try self.emitRelease(inner_reg);
+            return value;
+        }
+
+        var result_ty = inner_ty;
+        while (true) {
+            switch (result_ty.*) {
+                .pointer => |p| result_ty = p,
+                .borrow => |b| result_ty = b,
+                else => break,
+            }
+        }
+        if (result_ty.* != .user_defined) return Error.UnsupportedSabDirectFeature;
+        const result_decl = self.tc.structs.get(result_ty.user_defined.name) orelse return Error.UnsupportedSabDirectFeature;
+        const is_err_layout = lowering_rules.structFieldLayout(result_decl, "is_err") orelse return Error.UnsupportedSabDirectFeature;
+        const value_layout = lowering_rules.structFieldLayout(result_decl, "value") orelse return Error.UnsupportedSabDirectFeature;
+        const is_err = try self.intern(try self.newTmp());
+        try self.emitLoad(is_err, inner_reg, is_err_layout.offset, try storagePrimType(is_err_layout.ty));
+        try self.emitBranch(is_err, error_label, success_label);
+
+        try self.emitLabel(error_label);
+        try self.emitBranchRelease(is_err);
+        try self.emitBranchCleanupForNode(expr);
+        try self.emitReturn(inner_reg);
+
+        try self.emitLabel(success_label);
+        try self.emitBranchRelease(is_err);
+        const value = try self.intern(try self.newTmp());
+        try self.emitLoad(value, inner_reg, value_layout.offset, try storagePrimType(value_layout.ty));
+        if (!self.isLocalReg(inner_reg)) try self.emitRelease(inner_reg);
+        return value;
     }
 
     fn genLiteral(self: *Codegen, lit: ast.Literal) anyerror!u32 {

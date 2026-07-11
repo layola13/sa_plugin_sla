@@ -4094,6 +4094,12 @@ pub const Codegen = struct {
         stable_names: *const std.StringHashMap(void),
     ) !sig.FunctionSig {
         const param_ids = try self.remapDecodedModuleIds(symbols, source.param_ids, remap, stable_names);
+        const source_reg_ids = try self.remapDecodedModuleIds(symbols, source.reg_ids, remap, stable_names);
+        defer if (source_reg_ids.len != 0) self.allocator.free(source_reg_ids);
+        var required_reg_ids = std.ArrayList(u32).init(self.allocator);
+        defer required_reg_ids.deinit();
+        try required_reg_ids.appendSlice(param_ids);
+        try required_reg_ids.appendSlice(source_reg_ids);
         return .{
             .id = @intCast(self.function_sigs.items.len),
             .name = try self.allocator.dupe(u8, source.name),
@@ -4107,7 +4113,7 @@ pub const Codegen = struct {
             .upstream_file = try self.cloneOptionalText(source.upstream_file),
             .upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc),
             .param_ids = param_ids,
-            .reg_ids = try self.cloneDecodedModuleRegIds(param_ids, remap),
+            .reg_ids = try self.cloneDecodedModuleRegIds(required_reg_ids.items, remap),
             .llvm_name = try self.cloneOptionalText(source.llvm_name),
             .ignored = source.ignored,
             .should_panic = source.should_panic,
@@ -4305,8 +4311,13 @@ pub const Codegen = struct {
         for (module.const_decls) |decl| try stable_names.put(decl.name, {});
 
         for (module.const_decls) |decl| {
-            _ = try self.internStable(decl.name);
-            try self.const_decls.append(try self.cloneModuleConstDecl(decl));
+            const const_id = try self.internStable(decl.name);
+            try self.recordReg(const_id);
+            if (self.hasConstDecl(decl.name)) continue;
+            var cloned = try self.cloneModuleConstDecl(decl);
+            cloned.source_line = 0;
+            cloned.expanded_line = 0;
+            try self.const_decls.append(cloned);
         }
 
         var selected = std.StringHashMap(void).init(self.allocator);
@@ -12961,6 +12972,59 @@ test "filtered decoded std deps include same-module direct-call closure" {
     try std.testing.expect(cg.included_imports.contains("ext"));
     try std.testing.expect(cg.included_imports.contains("helper"));
     try std.testing.expect(!cg.included_imports.contains("unused"));
+}
+
+test "filtered decoded std deps deduplicate and hoist consts" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const function_sigs = try allocator.alloc(sig.FunctionSig, 1);
+    function_sigs[0] = try sig.parseFunctionSig(allocator, "@entry() -> void:", 0, 0);
+    function_sigs[0].reg_ids = try allocator.dupe(u32, &.{0});
+
+    const instructions = try allocator.alloc(inst.Instruction, 2);
+    instructions[0] = inst.makeInstruction(.func_decl, 1, 1, null, "");
+    instructions[1] = inst.makeInstruction(.return_, 2, 2, null, "");
+
+    const sentinel_bytes = try allocator.dupe(u8, "hashset");
+    const sentinel = const_decl.ConstDecl{
+        .source_line = 50,
+        .expanded_line = 50,
+        .upstream_loc = null,
+        .raw_text = try allocator.dupe(u8, "@const HASHSET_SENTINEL = utf8:\"hashset\""),
+        .name = try allocator.dupe(u8, "HASHSET_SENTINEL"),
+        .literal_text = try allocator.dupe(u8, "utf8:\"hashset\""),
+        .value = .{ .utf8 = .{ .kind = .utf8, .bytes = sentinel_bytes } },
+    };
+    const const_decls = try allocator.alloc(const_decl.ConstDecl, 1);
+    const_decls[0] = sentinel;
+    const module = sab.Module{
+        .symbols = &.{"HASHSET_SENTINEL"},
+        .function_sigs = function_sigs,
+        .const_decls = const_decls,
+        .instructions = instructions,
+        .owned_text = &.{},
+    };
+
+    try cg.appendDecodedModuleFiltered(module, &.{"entry"});
+    try cg.appendDecodedModuleFiltered(module, &.{"entry"});
+
+    try std.testing.expectEqual(@as(usize, 1), cg.const_decls.items.len);
+    try std.testing.expectEqual(@as(u32, 0), cg.const_decls.items[0].source_line);
+    try std.testing.expectEqual(@as(u32, 0), cg.const_decls.items[0].expanded_line);
+    const sentinel_id = cg.symbol_ids.get("HASHSET_SENTINEL") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(cg.current_reg_seen.contains(sentinel_id));
+    var function_has_sentinel = false;
+    for (cg.function_sigs.items[0].reg_ids) |reg_id| {
+        if (reg_id == sentinel_id) function_has_sentinel = true;
+    }
+    try std.testing.expect(function_has_sentinel);
 }
 
 test "filtered decoded std deps emit exported helper bodies in original order" {

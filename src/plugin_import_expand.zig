@@ -7,6 +7,7 @@ const plugin_imports = @import("plugin_imports.zig");
 const plugin_module_table = @import("plugin_module_table.zig");
 const plugin_reachability = @import("plugin_reachability.zig");
 const plugin_imported_macros = @import("plugin_imported_macros.zig");
+const plugin_compile_options = @import("plugin_compile_options.zig");
 
 const ResolvedImport = plugin_imports.ResolvedImport;
 const moduleNamespaceFromImportPath = plugin_imports.moduleNamespaceFromImportPath;
@@ -21,6 +22,12 @@ const buildReachableSymbols = plugin_reachability.buildReachableSymbols;
 const collectReachableModuleBodyNames = plugin_reachability.collectReachableModuleBodyNames;
 const materializeReachableImportedModuleBodies = plugin_reachability.materializeReachableImportedModuleBodies;
 const loadImportedMacrosFromExpandedSource = plugin_imported_macros.loadImportedMacrosFromExpandedSource;
+
+fn profileImportExpandStage(enabled: bool, label: []const u8, start_ns: i128) void {
+    if (!enabled) return;
+    const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - start_ns, std.time.ns_per_ms);
+    std.debug.print("[sla-profile] import expand {s}: {d}ms\n", .{ label, elapsed_ms });
+}
 
 fn scanExpandedSourceImports(
     tc: *type_checker_mod.TypeChecker,
@@ -458,8 +465,9 @@ fn discoverContributingChildSlaModules(
     referenced_types: *const std.StringHashMap(void),
 ) !bool {
     var changed = false;
-    const module_count = ordered.items.len;
-    for (ordered.items[0..module_count]) |module| {
+    var module_index: usize = 0;
+    while (module_index < ordered.items.len) : (module_index += 1) {
+        const module = ordered.items[module_index];
         if (!try isModuleContributing(allocator, module, reachable, referenced_types)) continue;
         for (module.resolved_imports) |child_resolved| {
             if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
@@ -690,6 +698,8 @@ pub fn expandSlaImportsWithModuleTable(
     contract_imports: *std.ArrayList(ResolvedImport),
 ) !*ast.Node {
     if (program.* != .program) return error.InvalidProgram;
+    const profile_enabled = plugin_compile_options.slaProfileEnabled(allocator);
+    var profile_start = std.time.nanoTimestamp();
 
     var effective_options = options;
     const root_source_size = blk: {
@@ -726,6 +736,8 @@ pub fn expandSlaImportsWithModuleTable(
             }
         }
     }
+    profileImportExpandStage(profile_enabled, "resolve roots", profile_start);
+    profile_start = std.time.nanoTimestamp();
 
     var reachable = std.StringHashMap(void).init(allocator);
     defer reachable.deinit();
@@ -754,6 +766,8 @@ pub fn expandSlaImportsWithModuleTable(
         reachable.clearRetainingCapacity();
         referenced_types.clearRetainingCapacity();
     }
+    profileImportExpandStage(profile_enabled, "reachable materialize", profile_start);
+    profile_start = std.time.nanoTimestamp();
     if (options.prune_for_test_codegen) {
         while (true) {
             var imported_macro_contract_imports = std.ArrayList(ResolvedImport).init(allocator);
@@ -782,6 +796,8 @@ pub fn expandSlaImportsWithModuleTable(
             }
         }
     }
+    profileImportExpandStage(profile_enabled, "macro contracts", profile_start);
+    profile_start = std.time.nanoTimestamp();
 
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
@@ -804,6 +820,7 @@ pub fn expandSlaImportsWithModuleTable(
             if (decls.items.len != before) try primary_decls.put(decls.items[decls.items.len - 1], {});
         }
     }
+    profileImportExpandStage(profile_enabled, "selective append", profile_start);
 
     const expanded = try allocator.create(ast.Node);
     expanded.* = .{ .program = .{ .decls = try decls.toOwnedSlice() } };

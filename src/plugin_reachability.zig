@@ -4,6 +4,7 @@ const lowering_rules = @import("lowering_rules.zig");
 const type_checker_mod = @import("type_checker.zig");
 const plugin_imports = @import("plugin_imports.zig");
 const plugin_module_table = @import("plugin_module_table.zig");
+const plugin_compile_options = @import("plugin_compile_options.zig");
 
 const moduleNamespaceFromImportPath = plugin_imports.moduleNamespaceFromImportPath;
 const moduleNamespaceMatchesImportPath = plugin_imports.moduleNamespaceMatchesImportPath;
@@ -1322,11 +1323,19 @@ pub fn materializeReachableImportedModuleBodies(
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
 ) !void {
+    const profile_enabled = plugin_compile_options.slaProfileEnabled(allocator);
+    var pass_count: usize = 0;
+    var reparse_count: usize = 0;
+    var select_ns: i128 = 0;
+    var reparse_ns: i128 = 0;
+    var rebuild_ns: i128 = 0;
     while (true) {
+        pass_count += 1;
         var changed = false;
         for (ordered_modules) |module| {
             if (module.has_function_bodies and module.has_macro_bodies) continue;
             {
+                const select_start = std.time.nanoTimestamp();
                 var selected_functions = std.StringHashMap(void).init(allocator);
                 defer selected_functions.deinit();
                 var selected_macros = std.StringHashMap(void).init(allocator);
@@ -1336,9 +1345,14 @@ pub fn materializeReachableImportedModuleBodies(
                 var parsed_macro_iter = module.parsed_macro_bodies.keyIterator();
                 while (parsed_macro_iter.next()) |name_ptr| try selected_macros.put(name_ptr.*, {});
                 try collectReachableModuleBodyNames(allocator, module, reachable, referenced_types, &selected_functions, &selected_macros);
-                if (stringSetsEqual(&selected_functions, &module.parsed_function_bodies) and
-                    stringSetsEqual(&selected_macros, &module.parsed_macro_bodies)) continue;
+                const unchanged = stringSetsEqual(&selected_functions, &module.parsed_function_bodies) and
+                    stringSetsEqual(&selected_macros, &module.parsed_macro_bodies);
+                select_ns += std.time.nanoTimestamp() - select_start;
+                if (unchanged) continue;
+                const reparse_start = std.time.nanoTimestamp();
                 try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
+                reparse_ns += std.time.nanoTimestamp() - reparse_start;
+                reparse_count += 1;
             }
             changed = true;
         }
@@ -1346,7 +1360,21 @@ pub fn materializeReachableImportedModuleBodies(
 
         reachable.clearRetainingCapacity();
         referenced_types.clearRetainingCapacity();
+        const rebuild_start = std.time.nanoTimestamp();
         try buildReachableSymbols(allocator, root_program, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
+        rebuild_ns += std.time.nanoTimestamp() - rebuild_start;
+    }
+    if (profile_enabled) {
+        std.debug.print(
+            "[sla-profile] import materialize passes={d} reparses={d} select={d}ms reparse={d}ms rebuild={d}ms\n",
+            .{
+                pass_count,
+                reparse_count,
+                @divTrunc(select_ns, std.time.ns_per_ms),
+                @divTrunc(reparse_ns, std.time.ns_per_ms),
+                @divTrunc(rebuild_ns, std.time.ns_per_ms),
+            },
+        );
     }
 }
 

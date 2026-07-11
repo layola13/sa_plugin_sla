@@ -357,6 +357,55 @@ pub const ReachabilityAnalysis = struct {
         return removed.items.len != 0;
     }
 
+    pub fn retainMatchingInts(self: *ReachabilityAnalysis, facts: *std.StringHashMap(i64), incoming: *const std.StringHashMap(i64)) !bool {
+        var removed = std.ArrayList([]const u8).init(self.allocator);
+        defer removed.deinit();
+        var iter = facts.iterator();
+        while (iter.next()) |entry| {
+            const incoming_value = incoming.get(entry.key_ptr.*) orelse {
+                try removed.append(entry.key_ptr.*);
+                continue;
+            };
+            if (incoming_value != entry.value_ptr.*) try removed.append(entry.key_ptr.*);
+        }
+        for (removed.items) |key| {
+            if (facts.fetchRemove(key)) |entry| self.allocator.free(entry.key);
+        }
+        return removed.items.len != 0;
+    }
+
+    pub fn retainMatchingBools(self: *ReachabilityAnalysis, facts: *std.StringHashMap(bool), incoming: *const std.StringHashMap(bool)) !bool {
+        var removed = std.ArrayList([]const u8).init(self.allocator);
+        defer removed.deinit();
+        var iter = facts.iterator();
+        while (iter.next()) |entry| {
+            const incoming_value = incoming.get(entry.key_ptr.*) orelse {
+                try removed.append(entry.key_ptr.*);
+                continue;
+            };
+            if (incoming_value != entry.value_ptr.*) try removed.append(entry.key_ptr.*);
+        }
+        for (removed.items) |key| {
+            if (facts.fetchRemove(key)) |entry| self.allocator.free(entry.key);
+        }
+        return removed.items.len != 0;
+    }
+
+    pub fn retainMatchingTypes(self: *ReachabilityAnalysis, facts: *std.StringHashMap([]const u8), incoming: *const std.StringHashMap([]const u8)) !bool {
+        var removed = std.ArrayList([]const u8).init(self.allocator);
+        defer removed.deinit();
+        var iter = facts.iterator();
+        while (iter.next()) |entry| {
+            const incoming_value = incoming.get(entry.key_ptr.*) orelse {
+                try removed.append(entry.key_ptr.*);
+                continue;
+            };
+            if (!std.mem.eql(u8, incoming_value, entry.value_ptr.*)) try removed.append(entry.key_ptr.*);
+        }
+        for (removed.items) |key| _ = facts.remove(key);
+        return removed.items.len != 0;
+    }
+
     pub fn mergeFunctionFacts(self: *ReachabilityAnalysis, function_name: []const u8, incoming_opt: ?*const SyntacticFactSet) !bool {
         var empty = SyntacticFactSet.init(self.allocator);
         defer empty.deinit();
@@ -376,6 +425,9 @@ pub const ReachabilityAnalysis = struct {
         var changed = false;
         changed = (try self.retainOnly(&entry.value_ptr.facts.no_import_sources, &incoming.no_import_sources)) or changed;
         changed = (try self.retainOnly(&entry.value_ptr.facts.zero_import_scans, &incoming.zero_import_scans)) or changed;
+        changed = (try self.retainMatchingInts(&entry.value_ptr.facts.known_int_fields, &incoming.known_int_fields)) or changed;
+        changed = (try self.retainMatchingBools(&entry.value_ptr.facts.known_bool_fields, &incoming.known_bool_fields)) or changed;
+        changed = (try self.retainMatchingTypes(&entry.value_ptr.facts.local_types, &incoming.local_types)) or changed;
         return changed;
     }
 };

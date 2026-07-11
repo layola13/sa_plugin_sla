@@ -1230,6 +1230,33 @@ test "sla pre-typecheck pruning keeps local function pointer callees" {
     try tc.checkProgram(prog);
 }
 
+test "sla reachability merges only call facts shared by every caller" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var analysis = ReachabilityAnalysis.init(allocator, true);
+    defer analysis.deinit();
+    var first = SyntacticFactSet.init(allocator);
+    defer first.deinit();
+    try first.putKnownIntField("change", "reason", 4);
+    try first.putKnownBoolField("change", "has_active_file", true);
+    try first.putLocalType("change", "MiniSnapshotChange");
+    try std.testing.expect(try analysis.mergeFunctionFacts("warm", &first));
+
+    var second = SyntacticFactSet.init(allocator);
+    defer second.deinit();
+    try second.putKnownIntField("change", "reason", 1);
+    try second.putKnownBoolField("change", "has_active_file", true);
+    try second.putLocalType("change", "MiniSnapshotChange");
+    try std.testing.expect(try analysis.mergeFunctionFacts("warm", &second));
+
+    const merged = &analysis.function_facts.getPtr("warm").?.facts;
+    try std.testing.expectEqual(@as(?i64, null), merged.getKnownIntField("change", "reason"));
+    try std.testing.expectEqual(@as(?bool, true), merged.getKnownBoolField("change", "has_active_file"));
+    try std.testing.expectEqualStrings("MiniSnapshotChange", merged.getLocalType("change").?);
+}
+
 test "sla pre-typecheck pruning keeps for-in protocol methods" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

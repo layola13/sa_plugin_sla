@@ -1814,6 +1814,31 @@ test "sla typechecker records exact await pending cleanup" {
     try std.testing.expect(saw_held);
 }
 
+test "sla empty void exits keep caller managed parameters" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaString(
+        arena.allocator(),
+        "tests/test_unit_empty_void_exit_cleanup_direct.sla",
+        ".sla-cache/empty_void_exit_test.sa",
+        stderr_buf.writer().any(),
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    for ([_][]const u8{ "@sla__empty_void_borrow(value: ptr):", "@sla__empty_void_owned(value: ptr):" }) |header| {
+        const start = std.mem.indexOf(u8, sa_code, header) orelse return error.TestUnexpectedResult;
+        const tail = sa_code[start..];
+        const end = std.mem.indexOfPos(u8, tail, 1, "\n@") orelse tail.len;
+        const body = tail[0..end];
+        try std.testing.expect(std.mem.indexOf(u8, body, "    return\n") != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "    !value\n") == null);
+    }
+}
+
 test "sla reachability merges only call facts shared by every caller" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

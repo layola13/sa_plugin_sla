@@ -5413,6 +5413,47 @@ test "sla sab backend lowers escaped thread closure function pointer callee dire
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab escaped loop closure loads stack slot scalar capture" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_fn_ptr_value.sla",
+        ".sla-cache/sab/fn_ptr_thread_loop_capture_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "loop thread closures capture bool function pointer callee", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    var start: ?usize = null;
+    var end = module.instructions.len;
+    for (module.function_sigs, 0..) |fsig, idx| {
+        if (!std.mem.eql(u8, fsig.name, "sla__fn_ptr_thread_bool_loop_pair")) continue;
+        start = fsig.entry_inst_idx;
+        if (idx + 1 < module.function_sigs.len) end = module.function_sigs[idx + 1].entry_inst_idx;
+        break;
+    }
+
+    var stack_regs = std.AutoHashMap(u32, void).init(std.testing.allocator);
+    defer stack_regs.deinit();
+    var saw_capture_store = false;
+    for (module.instructions[start orelse return error.TestUnexpectedResult .. end]) |item| {
+        if (item.kind == .stack_alloc and item.operands[0] == .reg) try stack_regs.put(item.operands[0].reg, {});
+        if (item.kind != .store or item.operands[1] != .imm_u64 or item.operands[1].imm_u64 != 24 or item.operands[2] != .reg) continue;
+        saw_capture_store = true;
+        try std.testing.expect(!stack_regs.contains(item.operands[2].reg));
+    }
+    try std.testing.expect(saw_capture_store);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab backend lowers paired escaped thread function pointer callees directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

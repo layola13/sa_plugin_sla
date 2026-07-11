@@ -9801,16 +9801,30 @@ pub const Codegen = struct {
 
         for (entry.captures) |capture| {
             const capture_reg = self.localReg(capture.name) orelse return Error.UnsupportedSabDirectFeature;
+            const capture_plan = lowering_rules.planEscapedClosureCapture(capture.ty, self.typeIsCopyValue(capture.ty));
             if (capture.ty.* == .fn_ptr) {
                 const target = try self.intern(try self.newTmp());
                 try self.emitLoad(target, capture_reg, 0, .ptr);
                 try self.emitStore(slot, capture.offset, target, .ptr);
                 try self.emitMove(target);
             } else {
-                try self.emitStore(slot, capture.offset, capture_reg, try storagePrimType(capture.ty));
+                var capture_value = capture_reg;
+                const loaded_from_slot = self.stack_alloc_emitted.contains(capture_reg);
+                if (loaded_from_slot) {
+                    capture_value = try self.intern(try self.newTmp());
+                    try self.emitLoad(capture_value, capture_reg, 0, try storagePrimType(capture.ty));
+                }
+                try self.emitStore(slot, capture.offset, capture_value, try storagePrimType(capture.ty));
+                if (loaded_from_slot) {
+                    if (capture_plan.consumes_source) {
+                        try self.emitMove(capture_value);
+                        try self.emitRelease(capture_reg);
+                    } else {
+                        try self.emitRelease(capture_value);
+                    }
+                }
             }
-            const capture_plan = lowering_rules.planEscapedClosureCapture(capture.ty, self.typeIsCopyValue(capture.ty));
-            if (capture_plan.consumes_source) try self.emitMove(capture_reg);
+            if (capture_plan.consumes_source and !self.stack_alloc_emitted.contains(capture_reg)) try self.emitMove(capture_reg);
         }
 
         const handle = try self.intern(try self.newTmp());

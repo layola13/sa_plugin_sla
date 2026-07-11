@@ -1230,6 +1230,62 @@ test "sla pre-typecheck pruning keeps local function pointer callees" {
     try tc.checkProgram(prog);
 }
 
+test "sla pre-typecheck pruning keeps for-in protocol methods" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\struct Items {
+        \\    len: i64,
+        \\}
+        \\
+        \\impl Items {
+        \\    fn iter_len(&self) -> i64 {
+        \\        return self.len;
+        \\    }
+        \\
+        \\    fn iter_at(&self, index: i64) -> i32 {
+        \\        return index as i32;
+        \\    }
+        \\}
+        \\
+        \\@test "protocol"() {
+        \\    let items = Items { len: 2 };
+        \\    let total: i32 = 0;
+        \\    for item in items {
+        \\        total = total + item;
+        \\    }
+        \\    if total != 1 { panic(1); };
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    try pruneTestsByFilter(allocator, prog, "protocol");
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true);
+
+    var method_count: usize = 0;
+    for (prog.program.decls) |decl| {
+        if (decl.* == .impl_decl) method_count += decl.impl_decl.methods.len;
+    }
+    try std.testing.expectEqual(@as(usize, 2), method_count);
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    var reachable = std.StringHashMap(void).init(allocator);
+    defer reachable.deinit();
+    var worklist = std.ArrayList([]const u8).init(allocator);
+    defer worklist.deinit();
+    for (prog.program.decls) |decl| {
+        if (decl.* == .test_decl) try collectReachableBlock(&tc, &reachable, &worklist, decl.test_decl.body);
+    }
+    try std.testing.expect(reachable.contains("Items_iter_len"));
+    try std.testing.expect(reachable.contains("Items_iter_at"));
+}
+
 test "sla post-typecheck prune removes statically empty import scan branches" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

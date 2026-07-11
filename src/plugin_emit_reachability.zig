@@ -65,6 +65,22 @@ fn markReachableCallTarget(
     try markReachableFunc(tc, reachable, worklist, call.func_name);
 }
 
+fn markReachableProtocolMethod(
+    tc: *const type_checker_mod.TypeChecker,
+    reachable: *std.StringHashMap(void),
+    worklist: *std.ArrayList([]const u8),
+    iterable_ty: *ast.Type,
+    method_name: []const u8,
+) !void {
+    const method = @constCast(tc).methodForType(iterable_ty, method_name) orelse return;
+    var iter = tc.funcs.iterator();
+    while (iter.next()) |entry| {
+        if (entry.value_ptr.* != method) continue;
+        try markReachableFunc(tc, reachable, worklist, entry.key_ptr.*);
+        return;
+    }
+}
+
 pub fn collectReachableExpr(
     tc: *const type_checker_mod.TypeChecker,
     reachable: *std.StringHashMap(void),
@@ -159,7 +175,12 @@ pub fn collectReachableBlock(
             .return_stmt => |ret| if (ret.value) |value| try collectReachableExpr(tc, reachable, worklist, value),
             .for_stmt => |for_stmt| {
                 try collectReachableExpr(tc, reachable, worklist, for_stmt.start);
-                if (for_stmt.end) |end_expr| try collectReachableExpr(tc, reachable, worklist, end_expr);
+                if (for_stmt.end) |end_expr| {
+                    try collectReachableExpr(tc, reachable, worklist, end_expr);
+                } else if (tc.expr_types.get(for_stmt.start)) |iterable_ty| {
+                    try markReachableProtocolMethod(tc, reachable, worklist, iterable_ty, "iter_len");
+                    try markReachableProtocolMethod(tc, reachable, worklist, iterable_ty, "iter_at");
+                }
                 try collectReachableBlock(tc, reachable, worklist, for_stmt.body);
             },
             .while_stmt => |while_stmt| {

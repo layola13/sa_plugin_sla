@@ -1705,7 +1705,13 @@ pub fn collectSyntacticReachableBlock(
             .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, value),
             .for_stmt => |for_stmt| {
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, for_stmt.start);
-                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, end_expr);
+                if (for_stmt.end) |end_expr| {
+                    try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, end_expr);
+                } else {
+                    const iterable_type_name = syntacticReceiverExprTypeName(for_stmt.start, if (analysis) |a| a.current_facts else null);
+                    try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, "iter_len", iterable_type_name);
+                    try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, "iter_at", iterable_type_name);
+                }
                 try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, for_stmt.body);
             },
             .while_stmt => |while_stmt| {

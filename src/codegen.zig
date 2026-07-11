@@ -826,31 +826,6 @@ pub const Codegen = struct {
         }
     }
 
-    fn emitActiveRefCellBorrowReleases(self: *Codegen) CodegenError!void {
-        var handles_to_release = std.ArrayList([]const u8).init(self.allocator);
-        defer handles_to_release.deinit();
-
-        var iter = self.refcell_borrow_handles.iterator();
-        while (iter.next()) |entry| {
-            handles_to_release.append(entry.key_ptr.*) catch return CodegenError.OutOfMemory;
-        }
-
-        for (handles_to_release.items) |handle_name| {
-            if (self.refcell_borrow_handles.get(handle_name)) |handle| {
-                _ = self.refcell_borrow_handles.remove(handle_name);
-                const has_owner_temp = if (handle.cell_release_temp) |temp| !std.mem.eql(u8, temp, handle_name) else false;
-                const release_plan = lowering_rules.planRefCellHandleRelease(has_owner_temp);
-                if (release_plan.consume_handle_value) self.consumed_bindings.put(handle_name, {}) catch return CodegenError.OutOfMemory;
-                if (release_plan.release_dynamic_borrow) {
-                    self.out.writer().print("    EXPAND {s} {s}\n", .{ lowering_rules.refCellBorrowReleaseMacroName(handle.kind), handle.cell_reg }) catch return CodegenError.CodegenError;
-                }
-                if (handle.cell_release_temp) |temp| {
-                    if (release_plan.release_owner_temps) try self.emitRelease(temp);
-                }
-            }
-        }
-    }
-
     fn markConsumedBinding(self: *Codegen, name: []const u8) CodegenError!void {
         self.consumed_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
     }
@@ -7613,6 +7588,8 @@ pub const Codegen = struct {
             self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ async_state, capture.offset, addend_reg, store_ty }) catch return CodegenError.CodegenError;
             if (capture.storage == .scalar) try self.emitRelease(addend_reg);
         }
+        try self.emitRelease(inner_state);
+        for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
@@ -7645,6 +7622,9 @@ pub const Codegen = struct {
         self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ async_state, first_state }) catch return CodegenError.CodegenError;
         self.out.writer().print("    store {s}+16, {s} as ptr\n", .{ async_state, second_state }) catch return CodegenError.CodegenError;
         self.out.writer().print("    store {s}+24, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        try self.emitRelease(second_state);
+        try self.emitRelease(first_state);
+        for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncTwoAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
@@ -7674,6 +7654,8 @@ pub const Codegen = struct {
         self.out.writer().print("    {s} = alloc {}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
         self.out.writer().print("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
         self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ async_state, join_state }) catch return CodegenError.CodegenError;
+        try self.emitRelease(join_state);
+        for (f.params) |param| try self.emitRelease(param.name);
         try self.future_state_vtables.put(async_state, try self.asyncJoin2AwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
@@ -9010,8 +8992,6 @@ pub const Codegen = struct {
                         try self.emitRelease(c_var);
                     }
                 }
-                try self.emitActiveRefCellBorrowReleases();
-
                 if (val_reg) |vr| {
                     self.out.writer().print("    return {s}\n", .{vr}) catch return CodegenError.CodegenError;
                 } else {

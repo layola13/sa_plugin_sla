@@ -1644,6 +1644,144 @@ test "sla typechecker cleans borrow locals on try propagation" {
     try std.testing.expect(saw_try_cleanup);
 }
 
+test "sla typechecker plans exact explicit return cleanup" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\struct Item { value: i64 }
+        \\
+        \\fn read(value: &Item) -> i64 {
+        \\    let borrowed: &Item = value;
+        \\    return borrowed.value;
+        \\}
+        \\
+        \\fn transfer(value: &Item) -> &Item {
+        \\    let borrowed: &Item = value;
+        \\    return borrowed;
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    const read_return = prog.program.decls[1].func_decl.body[1];
+    const transfer_return = prog.program.decls[2].func_decl.body[1];
+    const read_cleanup = tc.cleanups.get(read_return) orelse return error.TestUnexpectedResult;
+    var read_releases_borrowed = false;
+    for (read_cleanup.items) |name| {
+        if (std.mem.eql(u8, name, "borrowed")) read_releases_borrowed = true;
+    }
+    try std.testing.expect(read_releases_borrowed);
+
+    if (tc.cleanups.get(transfer_return)) |transfer_cleanup| {
+        for (transfer_cleanup.items) |name| {
+            try std.testing.expect(!std.mem.eql(u8, name, "borrowed"));
+            try std.testing.expect(!std.mem.eql(u8, name, "value"));
+        }
+    }
+}
+
+test "sla generated async exits release stored state inputs" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const source =
+        \\@import "sa_std/future.sa"
+        \\@import "sa_std/core/task.sa"
+        \\
+        \\async fn generated_exit(unused: i64) -> i64 {
+        \\    let value = future::defer_ready(41).await;
+        \\    return value + 1;
+        \\}
+        \\
+        \\@test "generated async exit"() {
+        \\    let fut = generated_exit(7);
+        \\    let task = task::new(fut);
+        \\    task::poll(task);
+        \\    task::poll(task);
+        \\    if task::result(task) != 42 { panic(30948); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    const function_start = std.mem.indexOf(u8, sa_code, "@sla__generated_exit(unused: i64) -> ptr:") orelse return error.TestUnexpectedResult;
+    const function_tail = sa_code[function_start..];
+    const function_end = std.mem.indexOfPos(u8, function_tail, 1, "\n@") orelse function_tail.len;
+    const function_body = function_tail[0..function_end];
+    const state_store = std.mem.indexOf(u8, function_body, " as ptr\n") orelse return error.TestUnexpectedResult;
+    const store_line_start = std.mem.lastIndexOfScalar(u8, function_body[0..state_store], '\n') orelse return error.TestUnexpectedResult;
+    const store_line = function_body[store_line_start + 1 .. state_store];
+    const comma = std.mem.lastIndexOfScalar(u8, store_line, ',') orelse return error.TestUnexpectedResult;
+    const stored_state = std.mem.trim(u8, store_line[comma + 1 ..], " \t");
+    const release_line = try std.fmt.allocPrint(arena.allocator(), "    !{s}\n", .{stored_state});
+    try std.testing.expect(std.mem.indexOfPos(u8, function_body, state_store, release_line) != null);
+    try std.testing.expect(std.mem.indexOf(u8, function_body, "    !unused\n") != null);
+}
+
+test "sla sab borrow alias return keeps source register" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_explicit_borrow_return_direct.sla",
+        ".sla-cache/sab/borrow_alias_return_test.sab",
+        stderr_buf.writer().any(),
+        .{},
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    var function_index: ?usize = null;
+    for (module.function_sigs, 0..) |fsig, idx| {
+        if (std.mem.eql(u8, fsig.name, "sla__explicit_borrow_alias")) {
+            function_index = idx;
+            break;
+        }
+    }
+    const idx = function_index orelse return error.TestUnexpectedResult;
+    const fsig = module.function_sigs[idx];
+    try std.testing.expectEqual(@as(usize, 1), fsig.param_ids.len);
+    const body_end = if (idx + 1 < module.function_sigs.len) module.function_sigs[idx + 1].entry_inst_idx else module.instructions.len;
+    var saw_return = false;
+    for (module.instructions[fsig.entry_inst_idx..body_end]) |item| {
+        try std.testing.expect(item.kind != .move_);
+        if (item.kind != .return_) continue;
+        try std.testing.expect(item.operands[0] == .reg);
+        try std.testing.expectEqual(fsig.param_ids[0], item.operands[0].reg);
+        saw_return = true;
+    }
+    try std.testing.expect(saw_return);
+}
+
 test "sla reachability merges only call facts shared by every caller" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

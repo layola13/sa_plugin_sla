@@ -35,6 +35,7 @@ pub const Symbol = struct {
     ty: *ast.Type,
     is_const: bool,
     state: ValueState,
+    borrow_source: ?[]const u8 = null,
 };
 
 pub const InjectedScopeBinding = struct {
@@ -82,6 +83,7 @@ pub const Scope = struct {
             .ty = ty,
             .is_const = is_const,
             .state = state,
+            .borrow_source = null,
         });
     }
 
@@ -220,6 +222,35 @@ pub const TypeChecker = struct {
             TypeError.OutOfMemory => return TypeError.OutOfMemory,
             else => return err,
         };
+    }
+
+    fn directBorrowSource(expr: *const ast.Node) ?[]const u8 {
+        return switch (expr.*) {
+            .identifier => |name| name,
+            .borrow_expr => |borrow| if (borrow.expr.* == .identifier) borrow.expr.identifier else null,
+            else => null,
+        };
+    }
+
+    fn functionExitBindingEscapes(scope: *Scope, result_expr: *const ast.Node, candidate: []const u8) bool {
+        const result_name = switch (result_expr.*) {
+            .identifier => |name| name,
+            .move_expr => |move| if (move.expr.* == .identifier) move.expr.identifier else return false,
+            else => return false,
+        };
+        if (std.mem.eql(u8, candidate, result_name)) return true;
+
+        var current_name = result_name;
+        var remaining: usize = 1;
+        var current_scope: ?*Scope = scope;
+        while (current_scope) |frame| : (current_scope = frame.parent) remaining += frame.symbols.count();
+        while (remaining > 0) : (remaining -= 1) {
+            const current = scope.lookup(current_name) orelse return false;
+            const source = current.borrow_source orelse return false;
+            if (std.mem.eql(u8, candidate, source)) return true;
+            current_name = source;
+        }
+        return false;
     }
 
     fn ensureTopLevelNameUnused(self: *TypeChecker, name: []const u8, kind: []const u8) TypeError!void {
@@ -2845,6 +2876,11 @@ pub const TypeChecker = struct {
                 }
                 if (!isDiscardName(let.name)) {
                     try self.defineSymbol(scope, let.name, declared_ty, false);
+                    if (isBorrowLikeType(declared_ty)) {
+                        if (directBorrowSource(let.value)) |source| {
+                            scope.lookupLocal(let.name).?.borrow_source = source;
+                        }
+                    }
                 }
             },
             .let_else_stmt => |let| {
@@ -2995,9 +3031,8 @@ pub const TypeChecker = struct {
                     var iter = s.symbols.valueIterator();
                     while (iter.next()) |sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
-                            if (isBorrowLikeType(sym.ty)) continue;
                             if (ret.value) |val| {
-                                if (exprUsesIdentifierValue(val, sym.name)) continue;
+                                if (functionExitBindingEscapes(scope, val, sym.name)) continue;
                             }
                             try cleanup_list.append(sym.name);
                         }

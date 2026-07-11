@@ -2907,19 +2907,8 @@ pub fn rootIdentifier(expr: *const ast.Node) ?[]const u8 {
     };
 }
 
-pub const FunctionTailCleanupAction = enum {
-    release,
-    transfer_result,
-};
-
-pub fn planFunctionTailCleanup(cleanup_name: []const u8, tail_expr: *const ast.Node) FunctionTailCleanupAction {
-    const result_name = switch (tail_expr.*) {
-        .identifier => |name| name,
-        .move_expr => |move| if (move.expr.* == .identifier) move.expr.identifier else return .release,
-        else => return .release,
-    };
-    return if (std.mem.eql(u8, cleanup_name, result_name)) .transfer_result else .release;
-}
+pub const FunctionTailCleanupAction = control_flow_rules.FunctionExitCleanupAction;
+pub const planFunctionTailCleanup = control_flow_rules.planFunctionExitCleanup;
 
 pub fn isBorrowLikeType(ty: *const ast.Type) bool {
     return switch (ty.*) {

@@ -222,6 +222,16 @@ fn owner_release_tail_cell() -> RefCell<OwnerReleasePayload> {
     cell
 }
 
+fn owner_release_explicit_value(cell: &RefCell<OwnerReleasePayload>) -> int {
+    let borrowed: &OwnerReleasePayload = cell.borrow();
+    return borrowed.value;
+}
+
+fn owner_release_explicit_cell() -> RefCell<OwnerReleasePayload> {
+    let cell = RefCell::new(OwnerReleasePayload { value: 127 });
+    return cell;
+}
+
 @test "refcell owner release clears active borrow handle"() {
     let refcell = RefCell::new(OwnerReleasePayload { value: 17 });
     let borrowed: &OwnerReleasePayload = refcell.borrow();
@@ -407,5 +417,25 @@ fn owner_release_tail_cell() -> RefCell<OwnerReleasePayload> {
     !borrowed;
     if owner_release_borrow_count(&returned) != 0 {
         panic(30943);
+    };
+}
+
+@test "refcell explicit return releases locals and transfers result"() {
+    let source = RefCell::new(OwnerReleasePayload { value: 125 });
+    if owner_release_explicit_value(&source) != 125 {
+        panic(30944);
+    };
+    if owner_release_borrow_count(&source) != 0 {
+        panic(30945);
+    };
+
+    let returned = owner_release_explicit_cell();
+    let borrowed: &OwnerReleasePayload = returned.borrow();
+    if borrowed.value != 127 {
+        panic(30946);
+    };
+    !borrowed;
+    if owner_release_borrow_count(&returned) != 0 {
+        panic(30947);
     };
 }

@@ -6225,6 +6225,10 @@ pub const Codegen = struct {
             },
             .ordinary_binding => {},
         }
+        if (value_expr.* == .identifier and lowering_rules.isBorrowLikeType(let_ty) and self.isLocalReg(src)) {
+            try self.pushTypedLocal(name, src, false, let_ty);
+            return;
+        }
         if (self.borrowedBindingNeedsStackStorage(name, let_ty)) {
             try self.emitStackAlloc(dst, typeSize(let_ty));
             try self.emitStore(dst, 0, src, try storagePrimType(let_ty));

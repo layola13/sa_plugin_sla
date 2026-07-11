@@ -1,9 +1,26 @@
+const std = @import("std");
+const ast = @import("ast.zig");
+
 pub const BranchStateMergeAction = enum {
     restore_pre,
     restore_then,
     restore_else,
     keep_current,
 };
+
+pub const FunctionExitCleanupAction = enum {
+    release,
+    transfer_result,
+};
+
+pub fn planFunctionExitCleanup(cleanup_name: []const u8, result_expr: *const ast.Node) FunctionExitCleanupAction {
+    const result_name = switch (result_expr.*) {
+        .identifier => |name| name,
+        .move_expr => |move| if (move.expr.* == .identifier) move.expr.identifier else return .release,
+        else => return .release,
+    };
+    return if (std.mem.eql(u8, cleanup_name, result_name)) .transfer_result else .release;
+}
 
 pub const ValueState = enum {
     uninitialized,

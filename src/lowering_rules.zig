@@ -1753,6 +1753,11 @@ pub const RefCellHandleTransferAction = enum {
     move_borrow_handle,
 };
 
+pub const RefCellValueStateTransferPlan = struct {
+    handle: RefCellHandleTransferAction,
+    borrow_address_temps: BorrowAddressTempTransferAction,
+};
+
 pub const RefCellHandleReleasePlan = struct {
     release_dynamic_borrow: bool,
     consume_handle_value: bool,
@@ -1805,6 +1810,16 @@ pub fn planRefCellHandleBinding(source_has_refcell_handle: bool) RefCellHandleBi
 
 pub fn planRefCellHandleTransfer(source_has_refcell_handle: bool) RefCellHandleTransferAction {
     return if (source_has_refcell_handle) .move_borrow_handle else .transfer_value_state;
+}
+
+pub fn planRefCellValueStateTransfer(
+    source_has_refcell_handle: bool,
+    source_has_borrow_address_temps: bool,
+) RefCellValueStateTransferPlan {
+    return .{
+        .handle = planRefCellHandleTransfer(source_has_refcell_handle),
+        .borrow_address_temps = planBorrowAddressTempTransfer(source_has_borrow_address_temps),
+    };
 }
 
 pub fn planRefCellHandleRelease(has_owner_temps: bool) RefCellHandleReleasePlan {
@@ -4452,6 +4467,14 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expectEqual(RefCellHandleBindingAction.bind_borrow_handle, planRefCellHandleBinding(true));
     try std.testing.expectEqual(RefCellHandleTransferAction.transfer_value_state, planRefCellHandleTransfer(false));
     try std.testing.expectEqual(RefCellHandleTransferAction.move_borrow_handle, planRefCellHandleTransfer(true));
+
+    const plain_value_transfer = planRefCellValueStateTransfer(false, false);
+    try std.testing.expectEqual(RefCellHandleTransferAction.transfer_value_state, plain_value_transfer.handle);
+    try std.testing.expectEqual(BorrowAddressTempTransferAction.transfer_value_state, plain_value_transfer.borrow_address_temps);
+
+    const borrow_value_transfer = planRefCellValueStateTransfer(true, true);
+    try std.testing.expectEqual(RefCellHandleTransferAction.move_borrow_handle, borrow_value_transfer.handle);
+    try std.testing.expectEqual(BorrowAddressTempTransferAction.move_borrow_address_temps, borrow_value_transfer.borrow_address_temps);
 
     const plain_release = planRefCellHandleRelease(false);
     try std.testing.expect(plain_release.release_dynamic_borrow);

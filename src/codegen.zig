@@ -890,14 +890,18 @@ pub const Codegen = struct {
             _ = self.mpsc_sender_channels.remove(src);
             if (mark_consumed) try self.markConsumedBinding(src);
         }
-        switch (lowering_rules.planBorrowAddressTempTransfer(self.borrow_source_temps.contains(src))) {
+        const refcell_transfer_plan = lowering_rules.planRefCellValueStateTransfer(
+            self.refcell_borrow_handles.contains(src),
+            self.borrow_source_temps.contains(src),
+        );
+        switch (refcell_transfer_plan.borrow_address_temps) {
             .move_borrow_address_temps => if (self.borrow_source_temps.get(src)) |source_temp| {
                 self.borrow_source_temps.put(dst, source_temp) catch return CodegenError.OutOfMemory;
                 _ = self.borrow_source_temps.remove(src);
             },
             .transfer_value_state => {},
         }
-        switch (lowering_rules.planRefCellHandleTransfer(self.refcell_borrow_handles.contains(src))) {
+        switch (refcell_transfer_plan.handle) {
             .move_borrow_handle => if (self.refcell_borrow_handles.get(src)) |handle| {
                 self.refcell_borrow_handles.put(dst, handle) catch return CodegenError.OutOfMemory;
                 _ = self.refcell_borrow_handles.remove(src);
@@ -8560,7 +8564,11 @@ pub const Codegen = struct {
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
                     const refcell_handle = self.refcell_borrow_handles.get(val_reg);
-                    switch (lowering_rules.planRefCellHandleBinding(refcell_handle != null)) {
+                    const refcell_transfer_plan = lowering_rules.planRefCellValueStateTransfer(
+                        refcell_handle != null,
+                        self.borrow_source_temps.contains(val_reg),
+                    );
+                    switch (lowering_rules.planRefCellHandleBinding(refcell_transfer_plan.handle == .move_borrow_handle)) {
                         .bind_borrow_handle => {
                             const handle = refcell_handle.?;
                             self.refcell_borrow_handles.put(let.name, handle) catch return CodegenError.OutOfMemory;
@@ -8589,7 +8597,7 @@ pub const Codegen = struct {
                         _ = self.rwlock_lock_results.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
-                    switch (lowering_rules.planBorrowAddressTempTransfer(self.borrow_source_temps.contains(val_reg))) {
+                    switch (refcell_transfer_plan.borrow_address_temps) {
                         .move_borrow_address_temps => if (self.borrow_source_temps.get(val_reg)) |source_temp| {
                             self.borrow_source_temps.put(let.name, source_temp) catch return CodegenError.OutOfMemory;
                             _ = self.borrow_source_temps.remove(val_reg);

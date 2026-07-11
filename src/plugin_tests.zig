@@ -4163,6 +4163,82 @@ test "sla reachability session retries only unresolved callable roots" {
     try std.testing.expect(!leaf.parsed_function_bodies.contains("TypeOnlyCollision"));
 }
 
+test "sla reachability session refreshes exact imported macro callers" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn use_late_macro() -> i32 {
+        \\    let value = 41;
+        \\    LATE_HELPER(value);
+        \\    return value;
+        \\}
+        \\fn LATE_HELPER(value: i32) -> i32 { return value; }
+        \\fn macro_helper(value: i32) -> i32 { return value + 1; }
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\@test "late imported macro caller"() {
+        \\    if dep::use_late_macro() != 41 { panic(42052); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+    var modules = SlaModuleTable.initWithParserOptions(allocator, .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+    });
+    defer modules.deinit();
+    const root_imports = try resolveImportFiles(allocator, ".", "dep.sla", "main.sla");
+    const dep = try modules.getOrParse(root_imports[0]);
+    var reachable = std.StringHashMap(void).init(allocator);
+    defer reachable.deinit();
+    var referenced_types = std.StringHashMap(void).init(allocator);
+    defer referenced_types.deinit();
+    var imported_macros = std.StringHashMap(type_checker_mod.ImportedMacro).init(allocator);
+    defer imported_macros.deinit();
+    const options = SlaImportExpansionOptions{
+        .prune_for_test_codegen = true,
+        .test_filter = "late imported macro caller",
+        .imported_bodies_decl_only = true,
+        .load_reachable_imported_bodies_from_registry = true,
+        .lazy_transitive_sla_imports = true,
+    };
+    var session = try ReachabilitySession.init(allocator, prog, &.{dep}, &modules, options, &imported_macros, &reachable, &referenced_types);
+    defer session.deinit();
+    const initial_stats = try session.materialize(&.{dep});
+    try std.testing.expectEqual(@as(usize, 2), initial_stats.reparses);
+    try std.testing.expect(reachable.contains("dep__use_late_macro"));
+    try std.testing.expect(reachable.contains("dep__LATE_HELPER"));
+    try std.testing.expect(!reachable.contains("dep__macro_helper"));
+    try std.testing.expect(!dep.parsed_function_bodies.contains("macro_helper"));
+
+    const macro_callees = [_][]const u8{"macro_helper"};
+    try imported_macros.put("LATE_HELPER", .{
+        .arity = 1,
+        .leading_outputs = 0,
+        .direct_callees = &macro_callees,
+    });
+    try std.testing.expect(try session.refreshImportedMacros(&.{dep}));
+    const refreshed_stats = try session.materialize(&.{dep});
+    try std.testing.expectEqual(@as(usize, 1), refreshed_stats.reparses);
+    try std.testing.expect(reachable.contains("dep__macro_helper"));
+    try std.testing.expect(dep.parsed_function_bodies.contains("macro_helper"));
+    try std.testing.expect(!try session.refreshImportedMacros(&.{dep}));
+}
+
 test "sla test codegen narrows same named imported methods by symbol" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

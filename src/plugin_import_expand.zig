@@ -472,7 +472,7 @@ fn moduleExportsUnresolvedCallable(module: *const SlaModule, unresolved: ?*const
     const records = unresolved orelse return false;
     for (records.records.items) |record| {
         if (record.resolved) continue;
-        if (module.exports.function_decls.contains(record.name)) return true;
+        if (record.kind == .direct and module.exports.function_decls.contains(record.name)) return true;
         if (record.kind != .associated) continue;
         var associated_iter = module.exports.associated_function_decls.keyIterator();
         while (associated_iter.next()) |symbol_ptr| {
@@ -523,7 +523,26 @@ fn discoverContributingChildSlaModules(
     return changed;
 }
 
-fn buildReachableWithLazyModuleDiscovery(
+fn advanceReachabilitySessionWithLazyModuleDiscovery(
+    allocator: std.mem.Allocator,
+    session: *ReachabilitySession,
+    modules: *SlaModuleTable,
+    ordered_modules: *std.ArrayList(*SlaModule),
+    visited_modules: *std.StringHashMap(void),
+    options: SlaImportExpansionOptions,
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+) !void {
+    while (true) {
+        _ = try session.materialize(ordered_modules.items);
+        if (!options.lazy_transitive_sla_imports) break;
+        const previous_module_count = ordered_modules.items.len;
+        if (!try discoverContributingChildSlaModules(allocator, modules, visited_modules, ordered_modules, reachable, referenced_types, session.unresolvedCallables())) break;
+        try session.addModules(ordered_modules.items[previous_module_count..], ordered_modules.items);
+    }
+}
+
+fn buildReachableWithoutMaterializedSession(
     allocator: std.mem.Allocator,
     program: *ast.Node,
     modules: *SlaModuleTable,
@@ -534,28 +553,6 @@ fn buildReachableWithLazyModuleDiscovery(
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
 ) !void {
-    if (shouldKeepReachableImportedBody(options)) {
-        var session = try ReachabilitySession.init(
-            allocator,
-            program,
-            ordered_modules.items,
-            modules,
-            options,
-            imported_macros,
-            reachable,
-            referenced_types,
-        );
-        defer session.deinit();
-        while (true) {
-            _ = try session.materialize(ordered_modules.items);
-            if (!options.lazy_transitive_sla_imports) break;
-            const previous_module_count = ordered_modules.items.len;
-            if (!try discoverContributingChildSlaModules(allocator, modules, visited_modules, ordered_modules, reachable, referenced_types, session.unresolvedCallables())) break;
-            try session.addModules(ordered_modules.items[previous_module_count..], ordered_modules.items);
-        }
-        return;
-    }
-
     while (true) {
         try buildReachableSymbols(allocator, program, ordered_modules.items, modules, options, imported_macros, reachable, referenced_types);
         if (!options.lazy_transitive_sla_imports) break;
@@ -830,17 +827,42 @@ pub fn expandSlaImportsWithModuleTable(
     }
     const imported_macros = if (options.prune_for_test_codegen) &imported_macro_tc.imported_macros else null;
 
-    try buildReachableWithLazyModuleDiscovery(
-        allocator,
-        program,
-        modules,
-        &ordered_modules,
-        &visited_modules,
-        effective_options,
-        imported_macros,
-        &reachable,
-        &referenced_types,
-    );
+    var reachability_session: ?ReachabilitySession = null;
+    defer if (reachability_session) |*session| session.deinit();
+    if (shouldKeepReachableImportedBody(effective_options)) {
+        reachability_session = try ReachabilitySession.init(
+            allocator,
+            program,
+            ordered_modules.items,
+            modules,
+            effective_options,
+            imported_macros,
+            &reachable,
+            &referenced_types,
+        );
+        try advanceReachabilitySessionWithLazyModuleDiscovery(
+            allocator,
+            &reachability_session.?,
+            modules,
+            &ordered_modules,
+            &visited_modules,
+            effective_options,
+            &reachable,
+            &referenced_types,
+        );
+    } else {
+        try buildReachableWithoutMaterializedSession(
+            allocator,
+            program,
+            modules,
+            &ordered_modules,
+            &visited_modules,
+            effective_options,
+            imported_macros,
+            &reachable,
+            &referenced_types,
+        );
+    }
     profileImportExpandStage(profile_enabled, "reachable materialize", profile_start);
     profile_start = std.time.nanoTimestamp();
     if (options.prune_for_test_codegen) {
@@ -857,17 +879,31 @@ pub fn expandSlaImportsWithModuleTable(
             );
             if (imported_macro_contract_imports.items.len == 0) break;
             try loadImportedContractsFromResolvedImports(&imported_macro_tc, allocator, imported_macro_contract_imports.items);
-            try buildReachableWithLazyModuleDiscovery(
-                allocator,
-                program,
-                modules,
-                &ordered_modules,
-                &visited_modules,
-                effective_options,
-                imported_macros,
-                &reachable,
-                &referenced_types,
-            );
+            if (reachability_session) |*session| {
+                _ = try session.refreshImportedMacros(ordered_modules.items);
+                try advanceReachabilitySessionWithLazyModuleDiscovery(
+                    allocator,
+                    session,
+                    modules,
+                    &ordered_modules,
+                    &visited_modules,
+                    effective_options,
+                    &reachable,
+                    &referenced_types,
+                );
+            } else {
+                try buildReachableWithoutMaterializedSession(
+                    allocator,
+                    program,
+                    modules,
+                    &ordered_modules,
+                    &visited_modules,
+                    effective_options,
+                    imported_macros,
+                    &reachable,
+                    &referenced_types,
+                );
+            }
         }
     }
     profileImportExpandStage(profile_enabled, "macro contracts", profile_start);

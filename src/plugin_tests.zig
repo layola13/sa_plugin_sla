@@ -138,6 +138,7 @@ const isProjectShortcutRetainedHelperName = plugin_project_shortcuts.isProjectSh
 const pruneKnownFalseBranchesInReachableDecls = plugin_reachability.pruneKnownFalseBranchesInReachableDecls;
 const scanReferencedSymbolRoots = plugin_reachability.scanReferencedSymbolRoots;
 const buildReachableSymbols = plugin_reachability.buildReachableSymbols;
+const buildAndMaterializeReachableImportedModuleBodies = plugin_reachability.buildAndMaterializeReachableImportedModuleBodies;
 const collectReachableModuleBodyNames = plugin_reachability.collectReachableModuleBodyNames;
 const materializeReachableImportedModuleBodies = plugin_reachability.materializeReachableImportedModuleBodies;
 const testMatchesFilter = plugin_reachability.testMatchesFilter;
@@ -4003,6 +4004,82 @@ test "sla test codegen materializes reachable macro bodies in contributing modul
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "add value,") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "UNUSED_BAD") == null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla reachability incrementally extends newly materialized body chains" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\fn first() -> i32 {
+        \\    return second();
+        \\}
+        \\fn second() -> i32 {
+        \\    return third();
+        \\}
+        \\fn third() -> i32 {
+        \\    return 42;
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "incremental materialized chain"() {
+        \\    if dep::first() != 42 { panic(42048); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+
+    var modules = SlaModuleTable.initWithParserOptions(allocator, .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+    });
+    defer modules.deinit();
+    const resolved_imports = try resolveImportFiles(allocator, ".", "dep.sla", "main.sla");
+    const module = try modules.getOrParse(resolved_imports[0]);
+    var reachable = std.StringHashMap(void).init(allocator);
+    defer reachable.deinit();
+    var referenced_types = std.StringHashMap(void).init(allocator);
+    defer referenced_types.deinit();
+
+    const stats = try buildAndMaterializeReachableImportedModuleBodies(
+        allocator,
+        prog,
+        &.{module},
+        &modules,
+        .{
+            .prune_for_test_codegen = true,
+            .test_filter = "incremental materialized chain",
+            .imported_bodies_decl_only = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+        null,
+        &reachable,
+        &referenced_types,
+    );
+    try std.testing.expectEqual(@as(usize, 3), stats.reparses);
+    try std.testing.expectEqual(@as(usize, 3), stats.incremental_extensions);
+    try std.testing.expectEqual(@as(usize, 4), stats.passes);
+    try std.testing.expect(module.parsed_function_bodies.contains("first"));
+    try std.testing.expect(module.parsed_function_bodies.contains("second"));
+    try std.testing.expect(module.parsed_function_bodies.contains("third"));
+    try std.testing.expect(reachable.contains("dep__first"));
+    try std.testing.expect(reachable.contains("dep__second"));
+    try std.testing.expect(reachable.contains("dep__third"));
 }
 
 test "sla test codegen narrows same named imported methods by symbol" {

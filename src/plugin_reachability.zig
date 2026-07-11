@@ -142,6 +142,75 @@ pub const SlaCallableIndex = struct {
             }
         }
     }
+
+    fn refreshFunctionDecl(self: *SlaCallableIndex, name: []const u8, fd: *ast.FuncDecl, module_path: ?[]const u8) !void {
+        if (self.decls.getPtr(name)) |decl_ptr| {
+            decl_ptr.* = fd;
+            return;
+        }
+        try self.recordFunction(name, fd, module_path);
+    }
+
+    /// A selected-body reparse replaces a module's AST while preserving its
+    /// declaration surface. Refresh only the declaration pointers: names,
+    /// module ownership, and associated-candidate indexes were already built
+    /// from the decl-only parse and do not need to be rebuilt.
+    pub fn refreshDeclsFromModule(self: *SlaCallableIndex, module: *const SlaModule) !void {
+        const namespace = try moduleNamespaceFromImportPath(self.allocator, module.output_path);
+        defer self.allocator.free(namespace);
+        for (module.program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => {
+                    try self.refreshFunctionDecl(decl.func_decl.name, &decl.func_decl, module.path);
+                    const alias = try std.fmt.allocPrint(self.allocator, "{s}__{s}", .{ namespace, decl.func_decl.name });
+                    if (self.decls.getPtr(alias)) |decl_ptr| {
+                        decl_ptr.* = &decl.func_decl;
+                        self.allocator.free(alias);
+                    } else {
+                        try self.recordFunction(alias, &decl.func_decl, module.path);
+                    }
+                },
+                .const_stmt => {
+                    if (self.const_decls.getPtr(decl.const_stmt.name)) |decl_ptr| {
+                        decl_ptr.* = &decl.const_stmt;
+                    } else {
+                        try self.const_decls.put(decl.const_stmt.name, &decl.const_stmt);
+                    }
+                },
+                .macro_decl => {
+                    if (self.macro_decls.getPtr(decl.macro_decl.name)) |decl_ptr| {
+                        decl_ptr.* = &decl.macro_decl;
+                    } else {
+                        try self.macro_decls.put(decl.macro_decl.name, &decl.macro_decl);
+                    }
+                },
+                .impl_decl => |impl_decl| {
+                    const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                    for (impl_decl.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const symbol = if (impl_decl.trait_name) |trait_name|
+                            try lowering_rules.mangleTraitMethodName(self.allocator, type_name, trait_name, method.func_decl.name)
+                        else
+                            try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
+                        defer self.allocator.free(symbol);
+                        const decl_ptr = self.decls.getPtr(symbol) orelse return error.InvalidModuleReparseSurface;
+                        decl_ptr.* = &method.func_decl;
+                    }
+                },
+                .overload_decl => |overload_decl| {
+                    const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                    for (overload_decl.methods) |method| {
+                        if (method.* != .func_decl) continue;
+                        const symbol = try lowering_rules.mangleMethodName(self.allocator, type_name, method.func_decl.name);
+                        defer self.allocator.free(symbol);
+                        const decl_ptr = self.decls.getPtr(symbol) orelse return error.InvalidModuleReparseSurface;
+                        decl_ptr.* = &method.func_decl;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
 };
 
 pub const SyntacticFactSet = struct {
@@ -1158,6 +1227,147 @@ pub fn scanReferencedSymbolRoots(
     return pending.items.len != 0;
 }
 
+const ReachabilityBuildState = struct {
+    allocator: std.mem.Allocator,
+    callable_index: SlaCallableIndex,
+    worklist: std.ArrayList([]const u8),
+    scanned_symbol_roots: std.StringHashMap(void),
+    scanned_type_roots: std.StringHashMap(void),
+    analysis: ReachabilityAnalysis,
+    worklist_index: usize = 0,
+
+    fn init(allocator: std.mem.Allocator) ReachabilityBuildState {
+        return .{
+            .allocator = allocator,
+            .callable_index = SlaCallableIndex.init(allocator),
+            .worklist = std.ArrayList([]const u8).init(allocator),
+            .scanned_symbol_roots = std.StringHashMap(void).init(allocator),
+            .scanned_type_roots = std.StringHashMap(void).init(allocator),
+            .analysis = ReachabilityAnalysis.init(allocator, false),
+        };
+    }
+
+    fn deinit(self: *ReachabilityBuildState) void {
+        self.analysis.deinit();
+        self.scanned_type_roots.deinit();
+        self.scanned_symbol_roots.deinit();
+        self.worklist.deinit();
+        self.callable_index.deinit();
+    }
+};
+
+fn collectInitialReachabilityRoots(
+    state: *ReachabilityBuildState,
+    root_program: *ast.Node,
+    module_table: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    out_reachable: *std.StringHashMap(void),
+    out_referenced_types: *std.StringHashMap(void),
+) !void {
+    if (options.prune_for_test_codegen) {
+        var saw_test = false;
+        try collectSyntacticReachableRootsFromDecls(&state.callable_index, module_table, imported_macros, &state.analysis, out_reachable, out_referenced_types, &state.worklist, root_program.program.decls, options.test_filter, &saw_test);
+    } else {
+        // If not pruning for test, everything in the root program is a root!
+        for (root_program.program.decls) |decl| {
+            switch (decl.*) {
+                .test_decl => |test_decl| {
+                    try collectSyntacticReachableBlock(&state.callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &state.worklist, test_decl.body);
+                },
+                .func_decl => |fd| {
+                    try markSyntacticReachableFunc(&state.callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &state.worklist, fd.name);
+                },
+                .const_stmt => |c| {
+                    if (c.ty) |ty| try recordReferencedType(out_referenced_types, ty);
+                    try collectSyntacticReachableExpr(&state.callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &state.worklist, c.value);
+                },
+                .macro_decl => |m| {
+                    try collectSyntacticReachableBlock(&state.callable_index, module_table, null, null, m.name, out_reachable, out_referenced_types, &state.worklist, m.body);
+                },
+                .impl_decl => |impl_decl| {
+                    try recordReferencedType(out_referenced_types, impl_decl.target_ty);
+                    if (impl_decl.trait_name) |tn| try out_referenced_types.put(tn, {});
+                    for (impl_decl.methods) |method| {
+                        if (method.* == .func_decl) {
+                            const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                            const symbol = if (impl_decl.trait_name) |trait_name|
+                                try lowering_rules.mangleTraitMethodName(state.allocator, type_name, trait_name, method.func_decl.name)
+                            else
+                                try lowering_rules.mangleMethodName(state.allocator, type_name, method.func_decl.name);
+                            defer state.allocator.free(symbol);
+                            try markSyntacticReachableFunc(&state.callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &state.worklist, symbol);
+                        }
+                    }
+                },
+                .overload_decl => |overload_decl| {
+                    try recordReferencedType(out_referenced_types, overload_decl.target_ty);
+                    for (overload_decl.methods) |method| {
+                        if (method.* == .func_decl) {
+                            const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                            const symbol = try lowering_rules.mangleMethodName(state.allocator, type_name, method.func_decl.name);
+                            defer state.allocator.free(symbol);
+                            try markSyntacticReachableFunc(&state.callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &state.worklist, symbol);
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+}
+
+fn drainReachabilityBuildState(
+    state: *ReachabilityBuildState,
+    modules: []const *SlaModule,
+    module_table: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    out_reachable: *std.StringHashMap(void),
+    out_referenced_types: *std.StringHashMap(void),
+) !void {
+    while (true) {
+        while (state.worklist_index < state.worklist.items.len) : (state.worklist_index += 1) {
+            const name = state.worklist.items[state.worklist_index];
+            const fd = state.callable_index.decls.get(name) orelse continue;
+            for (fd.params) |param| {
+                try recordReferencedType(out_referenced_types, param.ty);
+            }
+            try recordReferencedType(out_referenced_types, fd.ret_ty);
+            const prev_facts = state.analysis.current_facts;
+            if (options.prune_for_test_codegen) {
+                if (state.analysis.function_facts.get(name)) |entry| {
+                    state.analysis.current_facts = &entry.facts;
+                } else {
+                    state.analysis.current_facts = null;
+                }
+            }
+            try collectSyntacticReachableBlock(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, name, out_reachable, out_referenced_types, &state.worklist, fd.body);
+            state.analysis.current_facts = prev_facts;
+        }
+        const scanned_symbols = try scanReferencedSymbolRoots(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, out_reachable, out_referenced_types, &state.scanned_symbol_roots, &state.worklist);
+        const scanned_types = try scanReferencedExportedTypeSignatures(state.allocator, modules, out_referenced_types, &state.scanned_type_roots);
+        if (!scanned_symbols and !scanned_types) break;
+    }
+}
+
+fn initializeReachabilityBuildState(
+    state: *ReachabilityBuildState,
+    root_program: *ast.Node,
+    modules: []const *SlaModule,
+    module_table: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    out_reachable: *std.StringHashMap(void),
+    out_referenced_types: *std.StringHashMap(void),
+) !void {
+    if (root_program.* != .program) return error.InvalidProgram;
+    try state.callable_index.addDecls(root_program.program.decls);
+    for (modules) |module| try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
+    try collectInitialReachabilityRoots(state, root_program, module_table, options, imported_macros, out_reachable, out_referenced_types);
+    try drainReachabilityBuildState(state, modules, module_table, options, imported_macros, out_reachable, out_referenced_types);
+}
+
 pub fn buildReachableSymbols(
     allocator: std.mem.Allocator,
     root_program: *ast.Node,
@@ -1168,104 +1378,9 @@ pub fn buildReachableSymbols(
     out_reachable: *std.StringHashMap(void),
     out_referenced_types: *std.StringHashMap(void),
 ) !void {
-    if (root_program.* != .program) return error.InvalidProgram;
-
-    var callable_index = SlaCallableIndex.init(allocator);
-    defer callable_index.deinit();
-    try callable_index.addDecls(root_program.program.decls);
-    for (modules) |module| {
-        try callable_index.addDeclsFromModule(module.program.program.decls, module);
-    }
-
-    var worklist = std.ArrayList([]const u8).init(allocator);
-    defer worklist.deinit();
-    var scanned_symbol_roots = std.StringHashMap(void).init(allocator);
-    defer scanned_symbol_roots.deinit();
-    var scanned_type_roots = std.StringHashMap(void).init(allocator);
-    defer scanned_type_roots.deinit();
-    var analysis = ReachabilityAnalysis.init(allocator, false);
-    defer analysis.deinit();
-
-    // 1. Collect roots
-    if (options.prune_for_test_codegen) {
-        var saw_test = false;
-        try collectSyntacticReachableRootsFromDecls(&callable_index, module_table, imported_macros, &analysis, out_reachable, out_referenced_types, &worklist, root_program.program.decls, options.test_filter, &saw_test);
-    } else {
-        // If not pruning for test, everything in the root program is a root!
-        for (root_program.program.decls) |decl| {
-            switch (decl.*) {
-                .test_decl => |test_decl| {
-                    try collectSyntacticReachableBlock(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, test_decl.body);
-                },
-                .func_decl => |fd| {
-                    try markSyntacticReachableFunc(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, fd.name);
-                },
-                .const_stmt => |c| {
-                    if (c.ty) |ty| try recordReferencedType(out_referenced_types, ty);
-                    try collectSyntacticReachableExpr(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, c.value);
-                },
-                .macro_decl => |m| {
-                    try collectSyntacticReachableBlock(&callable_index, module_table, null, null, m.name, out_reachable, out_referenced_types, &worklist, m.body);
-                },
-                .impl_decl => |impl_decl| {
-                    try recordReferencedType(out_referenced_types, impl_decl.target_ty);
-                    if (impl_decl.trait_name) |tn| try out_referenced_types.put(tn, {});
-                    for (impl_decl.methods) |method| {
-                        if (method.* == .func_decl) {
-                            const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
-                            const symbol = if (impl_decl.trait_name) |trait_name|
-                                try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
-                            else
-                                try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                            defer allocator.free(symbol);
-                            try markSyntacticReachableFunc(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, symbol);
-                        }
-                    }
-                },
-                .overload_decl => |overload_decl| {
-                    try recordReferencedType(out_referenced_types, overload_decl.target_ty);
-                    for (overload_decl.methods) |method| {
-                        if (method.* == .func_decl) {
-                            const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
-                            const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-                            defer allocator.free(symbol);
-                            try markSyntacticReachableFunc(&callable_index, module_table, null, null, null, out_reachable, out_referenced_types, &worklist, symbol);
-                        }
-                    }
-                },
-                else => {},
-            }
-        }
-    }
-
-    // 2. Traverse callable and exported-symbol worklists. `out_referenced_types`
-    // also carries bare identifier references that can name imported consts or
-    // macros, so scan those roots until no new initializer/body references are
-    // discovered.
-    var index: usize = 0;
-    while (true) {
-        while (index < worklist.items.len) : (index += 1) {
-            const name = worklist.items[index];
-            const fd = callable_index.decls.get(name) orelse continue;
-            for (fd.params) |param| {
-                try recordReferencedType(out_referenced_types, param.ty);
-            }
-            try recordReferencedType(out_referenced_types, fd.ret_ty);
-            const prev_facts = analysis.current_facts;
-            if (options.prune_for_test_codegen) {
-                if (analysis.function_facts.get(name)) |entry| {
-                    analysis.current_facts = &entry.facts;
-                } else {
-                    analysis.current_facts = null;
-                }
-            }
-            try collectSyntacticReachableBlock(&callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &analysis else null, name, out_reachable, out_referenced_types, &worklist, fd.body);
-            analysis.current_facts = prev_facts;
-        }
-        const scanned_symbols = try scanReferencedSymbolRoots(&callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &analysis else null, out_reachable, out_referenced_types, &scanned_symbol_roots, &worklist);
-        const scanned_types = try scanReferencedExportedTypeSignatures(allocator, modules, out_referenced_types, &scanned_type_roots);
-        if (!scanned_symbols and !scanned_types) break;
-    }
+    var state = ReachabilityBuildState.init(allocator);
+    defer state.deinit();
+    try initializeReachabilityBuildState(&state, root_program, modules, module_table, options, imported_macros, out_reachable, out_referenced_types);
 }
 
 pub fn collectReachableModuleBodyNames(
@@ -1313,24 +1428,46 @@ pub fn stringSetsEqual(a: *const std.StringHashMap(void), b: *const std.StringHa
     return a.count() == b.count() and stringSetContainsAll(a, b);
 }
 
-pub fn materializeReachableImportedModuleBodies(
+pub const ReachabilityMaterializationStats = struct {
+    passes: usize = 0,
+    reparses: usize = 0,
+    incremental_extensions: usize = 0,
+};
+
+fn enqueueMaterializedFunctionBodies(
+    state: *ReachabilityBuildState,
+    module: *const SlaModule,
+    names: []const []const u8,
+    reachable: *const std.StringHashMap(void),
+) !void {
+    const namespace = try moduleNamespaceFromImportPath(state.allocator, module.output_path);
+    defer state.allocator.free(namespace);
+    for (names) |name| {
+        if (reachable.getKey(name)) |reachable_name| try state.worklist.append(reachable_name);
+        if (!module.exports.function_decls.contains(name)) continue;
+        const alias = try std.fmt.allocPrint(state.allocator, "{s}__{s}", .{ namespace, name });
+        defer state.allocator.free(alias);
+        if (reachable.getKey(alias)) |reachable_alias| try state.worklist.append(reachable_alias);
+    }
+}
+
+fn materializeReachableImportedModuleBodiesWithState(
+    state: *ReachabilityBuildState,
     allocator: std.mem.Allocator,
-    root_program: *ast.Node,
     ordered_modules: []const *SlaModule,
     modules: *SlaModuleTable,
     options: SlaImportExpansionOptions,
     imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-) !void {
+) !ReachabilityMaterializationStats {
     const profile_enabled = plugin_compile_options.slaProfileEnabled(allocator);
-    var pass_count: usize = 0;
-    var reparse_count: usize = 0;
+    var stats = ReachabilityMaterializationStats{};
     var select_ns: i128 = 0;
     var reparse_ns: i128 = 0;
-    var rebuild_ns: i128 = 0;
+    var extend_ns: i128 = 0;
     while (true) {
-        pass_count += 1;
+        stats.passes += 1;
         var changed = false;
         for (ordered_modules) |module| {
             if (module.has_function_bodies and module.has_macro_bodies) continue;
@@ -1349,33 +1486,92 @@ pub fn materializeReachableImportedModuleBodies(
                     stringSetsEqual(&selected_macros, &module.parsed_macro_bodies);
                 select_ns += std.time.nanoTimestamp() - select_start;
                 if (unchanged) continue;
+
+                var newly_materialized_functions = std.ArrayList([]const u8).init(allocator);
+                defer {
+                    for (newly_materialized_functions.items) |name| allocator.free(name);
+                    newly_materialized_functions.deinit();
+                }
+                var selected_func_iter = selected_functions.keyIterator();
+                while (selected_func_iter.next()) |name_ptr| {
+                    if (!module.parsed_function_bodies.contains(name_ptr.*)) {
+                        try newly_materialized_functions.append(try allocator.dupe(u8, name_ptr.*));
+                    }
+                }
+                var newly_materialized_macros = std.ArrayList([]const u8).init(allocator);
+                defer {
+                    for (newly_materialized_macros.items) |name| allocator.free(name);
+                    newly_materialized_macros.deinit();
+                }
+                var selected_macro_iter = selected_macros.keyIterator();
+                while (selected_macro_iter.next()) |name_ptr| {
+                    if (!module.parsed_macro_bodies.contains(name_ptr.*)) {
+                        try newly_materialized_macros.append(try allocator.dupe(u8, name_ptr.*));
+                    }
+                }
+
                 const reparse_start = std.time.nanoTimestamp();
                 try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
                 reparse_ns += std.time.nanoTimestamp() - reparse_start;
-                reparse_count += 1;
+                stats.reparses += 1;
+                try state.callable_index.refreshDeclsFromModule(module);
+                try enqueueMaterializedFunctionBodies(state, module, newly_materialized_functions.items, reachable);
+                for (newly_materialized_macros.items) |name| _ = state.scanned_symbol_roots.remove(name);
             }
             changed = true;
         }
         if (!changed) break;
 
-        reachable.clearRetainingCapacity();
-        referenced_types.clearRetainingCapacity();
-        const rebuild_start = std.time.nanoTimestamp();
-        try buildReachableSymbols(allocator, root_program, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
-        rebuild_ns += std.time.nanoTimestamp() - rebuild_start;
+        const extend_start = std.time.nanoTimestamp();
+        try drainReachabilityBuildState(state, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
+        extend_ns += std.time.nanoTimestamp() - extend_start;
+        stats.incremental_extensions += 1;
     }
     if (profile_enabled) {
         std.debug.print(
-            "[sla-profile] import materialize passes={d} reparses={d} select={d}ms reparse={d}ms rebuild={d}ms\n",
+            "[sla-profile] import materialize passes={d} reparses={d} extensions={d} select={d}ms reparse={d}ms extend={d}ms\n",
             .{
-                pass_count,
-                reparse_count,
+                stats.passes,
+                stats.reparses,
+                stats.incremental_extensions,
                 @divTrunc(select_ns, std.time.ns_per_ms),
                 @divTrunc(reparse_ns, std.time.ns_per_ms),
-                @divTrunc(rebuild_ns, std.time.ns_per_ms),
+                @divTrunc(extend_ns, std.time.ns_per_ms),
             },
         );
     }
+    return stats;
+}
+
+pub fn buildAndMaterializeReachableImportedModuleBodies(
+    allocator: std.mem.Allocator,
+    root_program: *ast.Node,
+    ordered_modules: []const *SlaModule,
+    modules: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+) !ReachabilityMaterializationStats {
+    reachable.clearRetainingCapacity();
+    referenced_types.clearRetainingCapacity();
+    var state = ReachabilityBuildState.init(allocator);
+    defer state.deinit();
+    try initializeReachabilityBuildState(&state, root_program, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
+    return try materializeReachableImportedModuleBodiesWithState(&state, allocator, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
+}
+
+pub fn materializeReachableImportedModuleBodies(
+    allocator: std.mem.Allocator,
+    root_program: *ast.Node,
+    ordered_modules: []const *SlaModule,
+    modules: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+) !void {
+    _ = try buildAndMaterializeReachableImportedModuleBodies(allocator, root_program, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
 }
 
 pub fn testMatchesFilter(test_decl: *const ast.TestDecl, filter: ?[]const u8) bool {

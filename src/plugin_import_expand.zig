@@ -19,8 +19,8 @@ const SlaModuleTable = plugin_module_table.SlaModuleTable;
 const SlaImportExpansionOptions = plugin_module_table.SlaImportExpansionOptions;
 const SlaResolvedImportGroup = plugin_module_table.SlaResolvedImportGroup;
 const buildReachableSymbols = plugin_reachability.buildReachableSymbols;
+const buildAndMaterializeReachableImportedModuleBodies = plugin_reachability.buildAndMaterializeReachableImportedModuleBodies;
 const collectReachableModuleBodyNames = plugin_reachability.collectReachableModuleBodyNames;
-const materializeReachableImportedModuleBodies = plugin_reachability.materializeReachableImportedModuleBodies;
 const loadImportedMacrosFromExpandedSource = plugin_imported_macros.loadImportedMacrosFromExpandedSource;
 
 fn profileImportExpandStage(enabled: bool, label: []const u8, start_ns: i128) void {
@@ -298,6 +298,18 @@ pub fn appendModuleDeclsSelective(
         }
     }
 
+    // A non-contributing wrapper module can still lead to an already-discovered
+    // contributing child through a bare transitive reference. Walk discovered
+    // children before deciding whether this module contributes declarations;
+    // each child applies its own contribution filter.
+    if (options.lazy_transitive_sla_imports) {
+        for (module.resolved_imports) |child_resolved| {
+            if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
+            const child_module = modules.modules.get(child_resolved.path) orelse continue;
+            try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types, options, contract_imports);
+        }
+    }
+
     const is_contributing = try isModuleContributing(allocator, module, reachable, referenced_types);
     if (!is_contributing) {
         for (module.resolved_imports) |child_resolved| {
@@ -311,14 +323,6 @@ pub fn appendModuleDeclsSelective(
     const module_namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
     defer allocator.free(module_namespace);
     const needs_contract_imports = try moduleNeedsContractImportsForReachability(allocator, module, reachable, referenced_types);
-
-    if (options.lazy_transitive_sla_imports) {
-        for (module.resolved_imports) |child_resolved| {
-            if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
-            const child_module = modules.modules.get(child_resolved.path) orelse continue;
-            try appendModuleDeclsSelective(allocator, modules, child_module, emitted, primary_decls, out_decls, reachable, referenced_types, options, contract_imports);
-        }
-    }
 
     for (module.program.program.decls) |decl| {
         if (decl.* == .import_decl) {
@@ -468,7 +472,6 @@ fn discoverContributingChildSlaModules(
     var module_index: usize = 0;
     while (module_index < ordered.items.len) : (module_index += 1) {
         const module = ordered.items[module_index];
-        if (!try isModuleContributing(allocator, module, reachable, referenced_types)) continue;
         for (module.resolved_imports) |child_resolved| {
             if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
             if (try resolvedSlaImportNamespaceIsReferenced(allocator, child_resolved, reachable, referenced_types)) {
@@ -478,11 +481,12 @@ fn discoverContributingChildSlaModules(
             }
             // Namespace not referenced. The child may still be needed through a
             // bare (unqualified) cross-module call, which requires inspecting its
-            // exports — but that means parsing it. Parse defensively: a genuinely
-            // dead child can be syntactically invalid (the lazy path exists partly
-            // to skip such files), so on any parse failure we skip it rather than
-            // failing the whole compile. Only pull it in when it actually exports
-            // a bare symbol that is already referenced.
+            // exports even when the parent itself contributes no declaration.
+            // Parse defensively: a genuinely dead child can be syntactically
+            // invalid (the lazy path exists partly to skip such files), so on any
+            // parse failure we skip it rather than failing the whole compile.
+            // Only pull it in when it actually exports a bare symbol that is
+            // already referenced.
             const child_module = modules.getOrParse(child_resolved) catch continue;
             if (!moduleExportsReferencedBareSymbol(child_module, reachable, referenced_types)) continue;
             changed = (try appendSlaModuleIfNew(child_module, visited, ordered)) or changed;
@@ -757,9 +761,10 @@ pub fn expandSlaImportsWithModuleTable(
     const imported_macros = if (options.prune_for_test_codegen) &imported_macro_tc.imported_macros else null;
 
     while (true) {
-        try buildReachableSymbols(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
         if (shouldKeepReachableImportedBody(effective_options)) {
-            try materializeReachableImportedModuleBodies(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
+            _ = try buildAndMaterializeReachableImportedModuleBodies(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
+        } else {
+            try buildReachableSymbols(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
         }
         if (!effective_options.lazy_transitive_sla_imports) break;
         if (!try discoverContributingChildSlaModules(allocator, modules, &visited_modules, &ordered_modules, &reachable, &referenced_types)) break;
@@ -785,9 +790,10 @@ pub fn expandSlaImportsWithModuleTable(
             reachable.clearRetainingCapacity();
             referenced_types.clearRetainingCapacity();
             while (true) {
-                try buildReachableSymbols(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
                 if (shouldKeepReachableImportedBody(effective_options)) {
-                    try materializeReachableImportedModuleBodies(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
+                    _ = try buildAndMaterializeReachableImportedModuleBodies(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
+                } else {
+                    try buildReachableSymbols(allocator, program, ordered_modules.items, modules, effective_options, imported_macros, &reachable, &referenced_types);
                 }
                 if (!effective_options.lazy_transitive_sla_imports) break;
                 if (!try discoverContributingChildSlaModules(allocator, modules, &visited_modules, &ordered_modules, &reachable, &referenced_types)) break;

@@ -3097,6 +3097,13 @@ pub const Codegen = struct {
         if (self.refcell_borrow_values.fetchRemove(reg)) |entry| {
             try self.emitRefCellBorrowRelease(entry.value);
         }
+        if (self.stack_alloc_emitted.contains(reg)) {
+            _ = self.non_owning_regs.remove(reg);
+            _ = self.future_state_vtables.remove(reg);
+            _ = self.future_readiness.remove(reg);
+            try self.released_regs.put(reg, {});
+            return;
+        }
         if (self.non_owning_regs.fetchRemove(reg)) |_| {
             var item = self.makeInst(.move_);
             item.operands[0] = .{ .reg = reg };
@@ -11115,7 +11122,7 @@ pub const Codegen = struct {
 
         return .{
             .operand = self.symbols.items[slice_reg],
-            .release_reg = if (release_after_call) slice_reg else null,
+            .release_reg = null,
             .release_regs = try self.ownedReleaseRegs(extra_releases.items),
         };
     }

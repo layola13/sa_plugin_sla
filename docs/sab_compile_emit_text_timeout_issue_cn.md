@@ -3,12 +3,33 @@
 ## 状态
 
 - 日期：2026-07-07
+- 修复：2026-07-11，编译器侧 direct-SAB register trap 已关闭
 - 触发仓库：`/home/vscode/projects/mnt/sla_tsgo`
 - 测试文件：
   - `tests/test_compile_ts_to_js_text_contract.sla`
   - `tests/test_program_emit_text_contract.sla`
 - 后端：`sab`
 - 约束：`SLA_SAB_NO_FALLBACK=1`
+
+## 修复结论（2026-07-11）
+
+本问题的编译器 trap 已修复。前一层 `str_end` 可变 stack-slot 重定义修复后，Program 路径先暴露 `UseAfterMove ti`，随后收窄为 `scan_ident` 中的 `UnknownRegister id_len`。根因是 direct SAB 把寄存器 id 按源码名字在整个函数内驻留：循环内早退分支的 `let id_len` 与循环后的 `let id_len` 是两个词法绑定，却共享一个寄存器；前一个绑定的 move/release 状态污染了后一个绑定。
+
+`src/sab_codegen.zig` 现在按每个正在生成的函数/测试体扫描重复 `let` 名称，并为每次声明分配独立寄存器；源码标识符解析仍通过 `locals` 栈选择最内层绑定。没有把两个绑定强制塞进同一个 stack slot，因为首次声明可能只在条件路径执行，零次进入该路径时共享 slot 未声明；重复名集合也不能跨函数合并，否则会改写无关函数。
+
+新增回归：`tests/test_unit_sibling_scope_plain_let_direct.sla`。
+
+dev 模式验证：
+
+```sh
+sa plugin install --dev .
+SA_PLUGIN_DEV=1 sa sla help
+SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_sibling_scope_plain_let_direct.sla --test-backend sab --jobs 1
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_sibling_scope_plain_let_direct.sla --test-backend sa --jobs 1
+SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test /home/vscode/projects/mnt/sla_tsgo/tests/test_program_emit_text_contract.sla --test-backend sab --jobs 1
+```
+
+结果分别为 2/2、2/2、1/1；完整 Zig 分批套件 166/166。较大的 `test_compile_ts_to_js_text_contract.sla` 已可完整执行，不再出现 `ti`/`id_len` verifier trap；当前 14/17，通过数和 3 个业务断言失败与 SA-text 完全一致，因此不属于本编译器问题。
 
 ## 复现命令
 

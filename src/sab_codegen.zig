@@ -263,6 +263,12 @@ pub const Codegen = struct {
     closure_param_regs: std.StringHashMap(u32),
     borrowed_bindings: std.StringHashMap(void),
     assigned_bindings: std.StringHashMap(void),
+    // Names bound by `let` two or more times within one function. Register
+    // identity is otherwise name-keyed and function-global, so sibling-scope
+    // bindings such as the two `id_len` locals in `scan_ident` would alias one
+    // register even though they have distinct lexical lifetimes. Each occurrence
+    // of a name in this set receives a fresh register id when it is lowered.
+    multi_let_bindings: std.StringHashMap(void),
     std_surface_rules: std.ArrayList(StdSurfaceRule),
     included_imports: std.StringHashMap(void),
     pending_std_deps: std.ArrayList(PendingStdDep),
@@ -338,6 +344,7 @@ pub const Codegen = struct {
             .closure_param_regs = std.StringHashMap(u32).init(allocator),
             .borrowed_bindings = std.StringHashMap(void).init(allocator),
             .assigned_bindings = std.StringHashMap(void).init(allocator),
+            .multi_let_bindings = std.StringHashMap(void).init(allocator),
             .std_surface_rules = std.ArrayList(StdSurfaceRule).init(allocator),
             .included_imports = std.StringHashMap(void).init(allocator),
             .pending_std_deps = std.ArrayList(PendingStdDep).init(allocator),
@@ -380,6 +387,7 @@ pub const Codegen = struct {
         self.closure_param_regs.deinit();
         self.borrowed_bindings.deinit();
         self.assigned_bindings.deinit();
+        self.multi_let_bindings.deinit();
         for (self.std_surface_rules.items) |rule| {
             self.allocator.free(rule.type_name);
             if (rule.member_name) |name| self.allocator.free(name);
@@ -563,6 +571,96 @@ pub const Codegen = struct {
         for (program.program.decls) |decl| try self.collectAssignedBindingsInNode(decl);
     }
 
+    // Populate `multi_let_bindings` with names bound by `let` two or more times
+    // within a single function body. Such names would otherwise collide on one
+    // function-global register id. Counting is per-function so a name bound once
+    // in each of two different functions does not trigger fresh binding ids.
+    fn prepareMultiLetBindings(self: *Codegen, body: []const *ast.Node) !void {
+        self.multi_let_bindings.clearRetainingCapacity();
+        var counts = std.StringHashMap(u32).init(self.allocator);
+        defer counts.deinit();
+        try self.countLetBindingsInBlock(body, &counts);
+        var it = counts.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* >= 2) try self.multi_let_bindings.put(entry.key_ptr.*, {});
+        }
+    }
+
+    fn countLetBindingsInBlock(self: *Codegen, body: []const *ast.Node, counts: *std.StringHashMap(u32)) anyerror!void {
+        for (body) |node| try self.countLetBindingsInNode(node, counts);
+    }
+
+    fn countLetBindingsInNode(self: *Codegen, node: *const ast.Node, counts: *std.StringHashMap(u32)) anyerror!void {
+        switch (node.*) {
+            .let_stmt => |let| {
+                const gop = try counts.getOrPut(let.name);
+                if (!gop.found_existing) gop.value_ptr.* = 0;
+                gop.value_ptr.* += 1;
+                try self.countLetBindingsInNode(let.value, counts);
+            },
+            .let_else_stmt => |let| {
+                // `let ... else` binds via an enum pattern, not a simple name,
+                // so it does not create a name-keyed register collision; just
+                // recurse into its subexpressions.
+                try self.countLetBindingsInNode(let.value, counts);
+                try self.countLetBindingsInBlock(let.else_block, counts);
+            },
+            .let_destructure_stmt => |let| try self.countLetBindingsInNode(let.value, counts),
+            .const_stmt => |c| try self.countLetBindingsInNode(c.value, counts),
+            .assign_stmt => |assign| {
+                try self.countLetBindingsInNode(assign.target, counts);
+                try self.countLetBindingsInNode(assign.value, counts);
+            },
+            .expr_stmt => |expr| try self.countLetBindingsInNode(expr, counts),
+            .return_stmt => |ret| if (ret.value) |value| try self.countLetBindingsInNode(value, counts),
+            .block_stmt => |block| try self.countLetBindingsInBlock(block.body, counts),
+            .binary_expr => |bin| {
+                try self.countLetBindingsInNode(bin.left, counts);
+                try self.countLetBindingsInNode(bin.right, counts);
+            },
+            .call_expr => |call| for (call.args) |arg| try self.countLetBindingsInNode(arg, counts),
+            .field_expr => |field| try self.countLetBindingsInNode(field.expr, counts),
+            .struct_literal => |lit| {
+                for (lit.fields) |field| try self.countLetBindingsInNode(field.value, counts);
+                if (lit.update_expr) |update| try self.countLetBindingsInNode(update, counts);
+            },
+            .tuple_literal => |lit| for (lit.elements) |elem| try self.countLetBindingsInNode(elem, counts),
+            .array_literal => |lit| for (lit.elements) |elem| try self.countLetBindingsInNode(elem, counts),
+            .repeat_array_literal => |lit| try self.countLetBindingsInNode(lit.value, counts),
+            .index_expr => |idx| {
+                try self.countLetBindingsInNode(idx.target, counts);
+                try self.countLetBindingsInNode(idx.index, counts);
+            },
+            .if_expr => |ife| {
+                try self.countLetBindingsInNode(ife.cond, counts);
+                if (ife.let_chain) |chain| for (chain) |cond| try self.countLetBindingsInNode(cond.value, counts);
+                try self.countLetBindingsInBlock(ife.then_block, counts);
+                if (ife.else_block) |else_block| try self.countLetBindingsInBlock(else_block, counts);
+            },
+            .while_stmt => |w| {
+                try self.countLetBindingsInNode(w.cond, counts);
+                try self.countLetBindingsInBlock(w.body, counts);
+            },
+            .for_stmt => |f| {
+                try self.countLetBindingsInNode(f.start, counts);
+                if (f.end) |end| try self.countLetBindingsInNode(end, counts);
+                try self.countLetBindingsInBlock(f.body, counts);
+            },
+            .match_expr => |mat| {
+                try self.countLetBindingsInNode(mat.val, counts);
+                for (mat.cases) |case| try self.countLetBindingsInBlock(case.body, counts);
+            },
+            .borrow_expr => |borrow| try self.countLetBindingsInNode(borrow.expr, counts),
+            .move_expr => |move| try self.countLetBindingsInNode(move.expr, counts),
+            .deref_expr => |deref| try self.countLetBindingsInNode(deref.expr, counts),
+            .cast_expr => |cast| try self.countLetBindingsInNode(cast.expr, counts),
+            .unsafe_expr => |unsafe_expr| try self.countLetBindingsInBlock(unsafe_expr.body, counts),
+            .await_expr => |aw| try self.countLetBindingsInNode(aw.expr, counts),
+            .closure_literal => |closure| try self.countLetBindingsInNode(closure.body, counts),
+            else => {},
+        }
+    }
+
     fn collectAssignedBindingsInBlock(self: *Codegen, body: []const *ast.Node) !void {
         for (body) |node| try self.collectAssignedBindingsInNode(node);
     }
@@ -644,7 +742,7 @@ pub const Codegen = struct {
     }
 
     fn bindingNeedsScalarReassignSlot(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {
-        return self.assigned_bindings.contains(name) and typeCanUseScalarReassignSlot(ty);
+        return typeCanUseScalarReassignSlot(ty) and self.assigned_bindings.contains(name);
     }
 
     fn bindingNeedsCopyScalarReuseSlot(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {
@@ -662,6 +760,11 @@ pub const Codegen = struct {
     fn internStable(self: *Codegen, name: []const u8) !u32 {
         if (self.symbol_ids.get(name)) |id| return id;
         return try self.intern(try self.allocator.dupe(u8, name));
+    }
+
+    fn bindingReg(self: *Codegen, name: []const u8) !u32 {
+        if (!self.multi_let_bindings.contains(name)) return try self.intern(name);
+        return try self.intern(try self.newTmp());
     }
 
     fn loweredFuncSymbol(self: *Codegen, name: []const u8) ![]const u8 {
@@ -2102,6 +2205,7 @@ pub const Codegen = struct {
         self.current_reg_seen.clearRetainingCapacity();
         self.released_regs.clearRetainingCapacity();
         self.stack_alloc_emitted.clearRetainingCapacity();
+        self.multi_let_bindings.clearRetainingCapacity();
         self.loop_continue_labels.clearRetainingCapacity();
         self.loop_break_labels.clearRetainingCapacity();
         self.closure_bindings.clearRetainingCapacity();
@@ -5101,6 +5205,7 @@ pub const Codegen = struct {
         try self.emitAsyncSingleAwaitPollHelper(name, plan);
 
         self.beginFunction();
+        try self.prepareMultiLetBindings(f.body);
         try self.collectBorrowedBindingsInBlock(f.body);
         const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
         const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
@@ -5157,6 +5262,7 @@ pub const Codegen = struct {
         try self.emitAsyncTwoAwaitPollHelper(name, plan);
 
         self.beginFunction();
+        try self.prepareMultiLetBindings(f.body);
         try self.collectBorrowedBindingsInBlock(f.body);
         const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
         const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
@@ -5191,6 +5297,7 @@ pub const Codegen = struct {
         try self.emitAsyncJoin2AwaitPollHelper(name, plan);
 
         self.beginFunction();
+        try self.prepareMultiLetBindings(f.body);
         try self.collectBorrowedBindingsInBlock(f.body);
         const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
         const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
@@ -5236,6 +5343,7 @@ pub const Codegen = struct {
             return try self.genAsyncSingleAwaitFuncDeclNamed(name, f, plan);
         }
         self.beginFunction();
+        try self.prepareMultiLetBindings(f.body);
         try self.collectBorrowedBindingsInBlock(f.body);
         const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
         const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
@@ -5494,6 +5602,7 @@ pub const Codegen = struct {
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
         self.beginFunction();
+        try self.prepareMultiLetBindings(t.body);
         try self.collectBorrowedBindingsInBlock(t.body);
         const fsig = try self.genFuncSig(t.name, .test_func, &.{}, self.voidType(), false, t.is_ignored, t.should_panic);
         const sig_idx = self.function_sigs.items.len;
@@ -5925,7 +6034,7 @@ pub const Codegen = struct {
     }
 
     fn genLetFromValue(self: *Codegen, name: []const u8, explicit_ty: ?*const ast.Type, value_expr: *ast.Node, src: u32) anyerror!void {
-        const dst = try self.intern(name);
+        const dst = try self.bindingReg(name);
         _ = self.future_readiness_by_name.remove(name);
         if (value_expr.* == .borrow_expr) {
             try self.pushLocal(name, src, false);
@@ -5975,14 +6084,15 @@ pub const Codegen = struct {
     }
 
     fn genLet(self: *Codegen, let: ast.LetStmt) anyerror!void {
-        const dst = try self.intern(let.name);
         _ = self.future_readiness_by_name.remove(let.name);
         if (let.value.* == .call_expr and let.value.call_expr.associated_target == null and std.mem.eql(u8, let.value.call_expr.func_name, "stack_alloc")) {
+            const dst = try self.bindingReg(let.name);
             try self.emitStackAlloc(dst, try stackAllocSize(let.value.call_expr));
             try self.pushStackAllocLocal(let.name, dst);
             return;
         }
         if (closureLiteralFromExpr(let.value)) |closure| {
+            const dst = try self.bindingReg(let.name);
             try self.closure_bindings.put(let.name, closure);
             try self.emitAssignImm(dst, 0);
             try self.pushLocal(let.name, dst, false);

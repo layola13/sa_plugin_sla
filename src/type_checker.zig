@@ -2789,6 +2789,11 @@ pub const TypeChecker = struct {
                         return TypeError.TypeMismatch;
                     }
                 }
+                if (let.value.* == .identifier) {
+                    if (scope.lookup(let.value.identifier)) |source| {
+                        if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) source.state = .consumed;
+                    }
+                }
                 if (!isDiscardName(let.name)) {
                     try self.defineSymbol(scope, let.name, declared_ty, false);
                 }

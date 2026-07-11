@@ -889,6 +889,7 @@ pub fn reachabilityNodeUsesIdentifier(node: *const ast.Node, name: []const u8) b
         .let_destructure_stmt => |let| reachabilityNodeUsesIdentifier(let.value, name),
         .const_stmt => |constant| reachabilityNodeUsesIdentifier(constant.value, name),
         .assign_stmt => |assign| reachabilityNodeUsesIdentifier(assign.target, name) or reachabilityNodeUsesIdentifier(assign.value, name),
+        .release_stmt => |release| std.mem.eql(u8, release.var_name, name),
         .block_stmt => |block| reachabilityBlockUsesIdentifier(block.body, name),
         .expr_stmt => |expr| reachabilityNodeUsesIdentifier(expr, name),
         .return_stmt => |ret| if (ret.value) |value| reachabilityNodeUsesIdentifier(value, name) else false,

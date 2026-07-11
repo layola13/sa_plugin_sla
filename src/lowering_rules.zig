@@ -1777,6 +1777,11 @@ pub const RefCellHandleCellReleaseAction = enum {
     release_handle,
 };
 
+pub const RefCellHandleOwnerTransferAction = enum {
+    keep_owner,
+    rebind_owner,
+};
+
 pub const RefCellCallArgLifecycleAction = enum {
     keep,
     release_value,
@@ -1848,6 +1853,10 @@ pub fn planRefCellHandleCellRelease(handle_cell_matches_release_target: bool, ha
     if (!handle_cell_matches_release_target) return .skip;
     if (handle_is_release_target) return .skip;
     return .release_handle;
+}
+
+pub fn planRefCellHandleOwnerTransfer(handle_cell_matches_source: bool) RefCellHandleOwnerTransferAction {
+    return if (handle_cell_matches_source) .rebind_owner else .keep_owner;
 }
 
 pub fn planRefCellCallArgLifecycle(release_after_call: bool, carries_refcell_borrow_handle: bool) RefCellCallArgLifecycleAction {
@@ -4510,6 +4519,8 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expectEqual(RefCellHandleCellReleaseAction.skip, planRefCellHandleCellRelease(false, false));
     try std.testing.expectEqual(RefCellHandleCellReleaseAction.skip, planRefCellHandleCellRelease(true, true));
     try std.testing.expectEqual(RefCellHandleCellReleaseAction.release_handle, planRefCellHandleCellRelease(true, false));
+    try std.testing.expectEqual(RefCellHandleOwnerTransferAction.keep_owner, planRefCellHandleOwnerTransfer(false));
+    try std.testing.expectEqual(RefCellHandleOwnerTransferAction.rebind_owner, planRefCellHandleOwnerTransfer(true));
 
     try std.testing.expectEqual(RefCellCallArgLifecycleAction.keep, planRefCellCallArgLifecycle(false, true));
     try std.testing.expectEqual(RefCellCallArgLifecycleAction.release_value, planRefCellCallArgLifecycle(true, false));

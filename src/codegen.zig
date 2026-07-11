@@ -855,6 +855,22 @@ pub const Codegen = struct {
         self.consumed_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
     }
 
+    fn rebindRefCellBorrowHandleOwners(self: *Codegen, src: []const u8, dst: []const u8) void {
+        if (std.mem.eql(u8, src, dst)) return;
+        var iter = self.refcell_borrow_handles.valueIterator();
+        while (iter.next()) |handle| {
+            switch (lowering_rules.planRefCellHandleOwnerTransfer(std.mem.eql(u8, handle.cell_reg, src))) {
+                .keep_owner => {},
+                .rebind_owner => {
+                    handle.cell_reg = dst;
+                    if (handle.cell_release_temp) |temp| {
+                        if (std.mem.eql(u8, temp, src)) handle.cell_release_temp = dst;
+                    }
+                },
+            }
+        }
+    }
+
     fn emitLexicalCleanupRelease(self: *Codegen, name: []const u8) CodegenError!void {
         const resolved_name = self.resolveBindingName(name);
         const was_consumed = self.consumed_bindings.contains(resolved_name);
@@ -864,6 +880,8 @@ pub const Codegen = struct {
 
     fn transferResultSlotValueState(self: *Codegen, dst: []const u8, src: []const u8, mark_consumed: bool) CodegenError!void {
         if (std.mem.eql(u8, dst, src)) return;
+
+        self.rebindRefCellBorrowHandleOwners(src, dst);
 
         if (self.task_future_objects.get(src)) |future_obj| {
             self.task_future_objects.put(dst, future_obj) catch return CodegenError.OutOfMemory;
@@ -8615,6 +8633,11 @@ pub const Codegen = struct {
                             _ = self.borrow_source_temps.remove(val_reg);
                         },
                         .transfer_value_state => {},
+                    }
+                    const let_value_is_copy = let_ty.* == .primitive or let_ty.* == .fn_ptr or self.typeIsCopyStruct(let_ty);
+                    if (lowering_rules.storedValueMovesIdentifier(let.value, let_ty, let_value_is_copy) != null) {
+                        self.rebindRefCellBorrowHandleOwners(val_reg, let.name);
+                        try self.markConsumedBinding(val_reg);
                     }
                     if (self.file_bindings.contains(val_reg)) {
                         self.file_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;

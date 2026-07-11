@@ -79,3 +79,27 @@ fn owner_release_if_borrow_call_count(flag: bool) -> i64 {
         i = i + 1;
     }
 }
+
+@test "refcell owner release clears multiple active handles"() {
+    let cell = RefCell::new(OwnerReleasePayload { value: 53 });
+    let first: &OwnerReleasePayload = cell.borrow();
+    let second: &OwnerReleasePayload = cell.borrow();
+    if first.value + second.value != 106 {
+        panic(30909);
+    };
+    if owner_release_borrow_count(&cell) != 2 {
+        panic(30910);
+    };
+    !cell;
+}
+
+@test "refcell moved owner release clears source attached handles"() {
+    let cell = RefCell::new(OwnerReleasePayload { value: 59 });
+    let first: &OwnerReleasePayload = cell.borrow();
+    let second: &OwnerReleasePayload = cell.borrow();
+    if first.value + second.value != 118 {
+        panic(30911);
+    };
+    let moved_cell = cell;
+    !moved_cell;
+}

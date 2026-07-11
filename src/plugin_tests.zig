@@ -1276,6 +1276,48 @@ test "sla pre-typecheck pruning keeps local function pointer callees" {
     try tc.checkProgram(prog);
 }
 
+test "sla pre-typecheck pruning keeps release-only bindings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\struct Item { value: i64 }
+        \\
+        \\@test "release"() {
+        \\    let value = Item { value: 1 };
+        \\    let moved = value;
+        \\    !moved;
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    try pruneTestsByFilter(allocator, prog, "release");
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true);
+
+    var saw_binding = false;
+    for (prog.program.decls) |decl| {
+        if (decl.* != .test_decl) continue;
+        for (decl.test_decl.body) |stmt| {
+            if (stmt.* == .let_stmt and std.mem.eql(u8, stmt.let_stmt.name, "moved")) saw_binding = true;
+        }
+    }
+    try std.testing.expect(saw_binding);
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    for (prog.program.decls) |decl| {
+        if (decl.* != .test_decl or decl.test_decl.body.len == 0) continue;
+        const last = decl.test_decl.body[decl.test_decl.body.len - 1];
+        if (tc.cleanups.get(last)) |cleanup| {
+            for (cleanup.items) |name| try std.testing.expect(!std.mem.eql(u8, name, "value"));
+        }
+    }
+}
+
 test "sla reachability merges only call facts shared by every caller" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

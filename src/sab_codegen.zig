@@ -2361,8 +2361,20 @@ pub const Codegen = struct {
         try self.borrow_address_temps.put(borrow_reg, try regs.toOwnedSlice());
     }
 
+    fn rebindRefCellBorrowValueOwners(self: *Codegen, src: u32, dst: u32) void {
+        if (src == dst) return;
+        var iter = self.refcell_borrow_values.valueIterator();
+        while (iter.next()) |handle| {
+            switch (lowering_rules.planRefCellHandleOwnerTransfer(handle.cell_reg == src)) {
+                .keep_owner => {},
+                .rebind_owner => handle.cell_reg = dst,
+            }
+        }
+    }
+
     fn transferReleaseMetadata(self: *Codegen, dst: u32, src: u32) !void {
         if (dst == src) return;
+        self.rebindRefCellBorrowValueOwners(src, dst);
         const refcell_transfer_plan = lowering_rules.planRefCellValueStateTransfer(
             self.refcell_borrow_values.contains(src),
             self.borrow_address_temps.contains(src),

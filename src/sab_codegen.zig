@@ -76,6 +76,12 @@ const RefCellBorrowValue = struct {
     release_regs: []const u32 = &.{},
 };
 
+const BranchEmitterStateSnapshot = struct {
+    released: std.AutoHashMap(u32, void),
+    refcell_values: std.AutoHashMap(u32, RefCellBorrowValue),
+    borrow_temps: std.AutoHashMap(u32, []const u32),
+};
+
 const ResultSlotRefCellHandle = struct {
     cell_slot: u32,
     kind: lowering_rules.RefCellBorrowKind,
@@ -2297,6 +2303,116 @@ pub const Codegen = struct {
     fn deinitRefCellBorrowValueSnapshot(self: *Codegen, snapshot: *std.AutoHashMap(u32, RefCellBorrowValue)) void {
         self.freeRefCellBorrowValueSlices(snapshot);
         snapshot.deinit();
+    }
+
+    fn cloneBranchEmitterState(self: *Codegen) !BranchEmitterStateSnapshot {
+        var released = try self.released_regs.clone();
+        errdefer released.deinit();
+        var refcell_values = try self.cloneRefCellBorrowValues();
+        errdefer self.deinitRefCellBorrowValueSnapshot(&refcell_values);
+        var borrow_temps = try self.cloneBorrowAddressTemps();
+        errdefer self.deinitBorrowAddressTempSnapshot(&borrow_temps);
+        return .{
+            .released = released,
+            .refcell_values = refcell_values,
+            .borrow_temps = borrow_temps,
+        };
+    }
+
+    fn deinitBranchEmitterStateSnapshot(self: *Codegen, snapshot: *BranchEmitterStateSnapshot) void {
+        snapshot.released.deinit();
+        self.deinitRefCellBorrowValueSnapshot(&snapshot.refcell_values);
+        self.deinitBorrowAddressTempSnapshot(&snapshot.borrow_temps);
+    }
+
+    fn appendCurrentBranchEmitterState(self: *Codegen, snapshots: *std.ArrayList(BranchEmitterStateSnapshot)) !void {
+        var snapshot = try self.cloneBranchEmitterState();
+        errdefer self.deinitBranchEmitterStateSnapshot(&snapshot);
+        try snapshots.append(snapshot);
+    }
+
+    fn refCellBorrowValueEqual(left: RefCellBorrowValue, right: RefCellBorrowValue) bool {
+        return left.cell_reg == right.cell_reg and left.kind == right.kind and std.mem.eql(u32, left.release_regs, right.release_regs);
+    }
+
+    fn setMergeBranchEmitterState(
+        self: *Codegen,
+        live_snapshots: []const BranchEmitterStateSnapshot,
+        pre_snapshot: *const BranchEmitterStateSnapshot,
+    ) !void {
+        switch (lowering_rules.planMultiBranchStateMerge(live_snapshots.len)) {
+            .restore_pre => {
+                try self.restoreReleased(&pre_snapshot.released);
+                try self.restoreRefCellBranchState(&pre_snapshot.refcell_values, &pre_snapshot.borrow_temps);
+            },
+            .restore_single => {
+                try self.restoreReleased(&live_snapshots[0].released);
+                try self.restoreRefCellBranchState(&live_snapshots[0].refcell_values, &live_snapshots[0].borrow_temps);
+            },
+            .intersect_live => {
+                self.released_regs.clearRetainingCapacity();
+                var released_iter = live_snapshots[0].released.iterator();
+                while (released_iter.next()) |entry| {
+                    const reg = entry.key_ptr.*;
+                    var shared = true;
+                    for (live_snapshots[1..]) |snapshot| {
+                        if (!snapshot.released.contains(reg)) {
+                            shared = false;
+                            break;
+                        }
+                    }
+                    if (shared) try self.released_regs.put(reg, {});
+                }
+
+                self.clearRefCellBorrowValues();
+                var value_iter = live_snapshots[0].refcell_values.iterator();
+                while (value_iter.next()) |entry| {
+                    const reg = entry.key_ptr.*;
+                    const value = entry.value_ptr.*;
+                    var shared = true;
+                    for (live_snapshots[1..]) |snapshot| {
+                        const other = snapshot.refcell_values.get(reg) orelse {
+                            shared = false;
+                            break;
+                        };
+                        if (!refCellBorrowValueEqual(value, other)) {
+                            shared = false;
+                            break;
+                        }
+                    }
+                    if (shared) {
+                        const copied_release_regs = if (value.release_regs.len == 0) &.{} else try self.allocator.dupe(u32, value.release_regs);
+                        try self.refcell_borrow_values.put(reg, .{
+                            .cell_reg = value.cell_reg,
+                            .kind = value.kind,
+                            .release_regs = copied_release_regs,
+                        });
+                    }
+                }
+
+                self.clearBorrowAddressTemps();
+                var temp_iter = live_snapshots[0].borrow_temps.iterator();
+                while (temp_iter.next()) |entry| {
+                    const reg = entry.key_ptr.*;
+                    const temps = entry.value_ptr.*;
+                    var shared = true;
+                    for (live_snapshots[1..]) |snapshot| {
+                        const other = snapshot.borrow_temps.get(reg) orelse {
+                            shared = false;
+                            break;
+                        };
+                        if (!std.mem.eql(u32, temps, other)) {
+                            shared = false;
+                            break;
+                        }
+                    }
+                    if (shared) {
+                        const copied = if (temps.len == 0) &.{} else try self.allocator.dupe(u32, temps);
+                        try self.borrow_address_temps.put(reg, copied);
+                    }
+                }
+            },
+        }
     }
 
     fn restoreRefCellBorrowValues(self: *Codegen, snapshot: *const std.AutoHashMap(u32, RefCellBorrowValue)) !void {
@@ -12310,10 +12426,22 @@ pub const Codegen = struct {
         for (mat.cases) |_| {
             try check_labels.append(try self.newLabel("L_MATCH_CHECK"));
         }
+        var case_cond_regs = std.ArrayList(u32).init(self.allocator);
+        defer case_cond_regs.deinit();
+        for (mat.cases) |_| {
+            const cond = try self.intern(try self.newTmp());
+            try self.emitAssignImm(cond, 0);
+            try case_cond_regs.append(cond);
+        }
 
         const branch_locals_len = self.locals.items.len;
-        var pre_released = try self.released_regs.clone();
-        defer pre_released.deinit();
+        var pre_branch_state = try self.cloneBranchEmitterState();
+        defer self.deinitBranchEmitterStateSnapshot(&pre_branch_state);
+        var live_branch_states = std.ArrayList(BranchEmitterStateSnapshot).init(self.allocator);
+        defer {
+            for (live_branch_states.items) |*snapshot| self.deinitBranchEmitterStateSnapshot(snapshot);
+            live_branch_states.deinit();
+        }
 
         var any_fallthrough = false;
 
@@ -12321,6 +12449,7 @@ pub const Codegen = struct {
 
         for (mat.cases, 0..) |case, i| {
             try self.emitLabel(check_labels.items[i]);
+            if (i > 0) try self.emitBranchRelease(case_cond_regs.items[i - 1]);
             const tag = lowering_rules.enumVariantIndex(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
             const variant = lowering_rules.enumVariant(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
             if (case.guard != null) return Error.UnsupportedSabDirectFeature;
@@ -12328,7 +12457,8 @@ pub const Codegen = struct {
 
             const tag_reg = try self.intern(try self.newTmp());
             try self.emitLoad(tag_reg, val_reg, lowering_rules.enum_tag_offset, .i64);
-            const cond = try self.intern(try self.newTmp());
+            const cond = case_cond_regs.items[i];
+            try self.emitBranchRelease(cond);
             try self.emitOp(cond, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = @intCast(tag) });
             try self.emitRelease(tag_reg);
 
@@ -12337,7 +12467,7 @@ pub const Codegen = struct {
             try self.emitBranch(cond, body_label, next_label);
 
             try self.emitLabel(body_label);
-            try self.emitBranchRelease(cond);
+            for (case_cond_regs.items[i..]) |remaining_cond| try self.emitBranchRelease(remaining_cond);
 
             // Load pattern bindings from the payload at shared offsets.
             for (case.pattern.bindings, variant.fields) |binding, field| {
@@ -12348,30 +12478,30 @@ pub const Codegen = struct {
                 try self.pushTypedLocal(binding, binding_reg, false, field.ty);
             }
 
-            if (value_match) {
-                const terminated = try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty);
-                if (!terminated) {
-                    try self.releaseLocalsFrom(branch_locals_len, null);
-                    try self.emitJmp(merge_label);
-                    any_fallthrough = true;
-                }
-            } else {
+            const terminated = if (value_match)
+                try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty)
+            else blk: {
                 try self.genBlock(case.body);
-                if (!self.lastIsTerminator()) {
-                    try self.releaseLocalsFrom(branch_locals_len, null);
-                    try self.emitJmp(merge_label);
-                    any_fallthrough = true;
-                }
+                break :blk self.lastIsTerminator();
+            };
+            if (!terminated) {
+                try self.releaseLocalsFrom(branch_locals_len, null);
+                try self.emitJmp(merge_label);
+                any_fallthrough = true;
+                try self.appendCurrentBranchEmitterState(&live_branch_states);
             }
 
             self.popLocalsTo(branch_locals_len);
-            try self.restoreReleased(&pre_released);
+            try self.restoreReleased(&pre_branch_state.released);
+            try self.restoreRefCellBranchState(&pre_branch_state.refcell_values, &pre_branch_state.borrow_temps);
         }
 
         // Exhausted the ladder without a match: release the scrutinee and panic.
         try self.emitLabel(panic_label);
+        try self.emitBranchRelease(case_cond_regs.items[case_cond_regs.items.len - 1]);
         if (!val_is_local) try self.emitBranchRelease(val_reg);
         try self.emitPanicCode(1);
+        try self.setMergeBranchEmitterState(live_branch_states.items, &pre_branch_state);
 
         if (any_fallthrough) {
             try self.emitLabel(merge_label);
@@ -12389,7 +12519,7 @@ pub const Codegen = struct {
         }
 
         const result = try self.intern(try self.newTmp());
-        try self.recordReg(result);
+        try self.emitAssignImm(result, 0);
         return result;
     }
 

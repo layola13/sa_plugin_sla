@@ -14,6 +14,7 @@ const stability_metadata = @import("stability_metadata.zig");
 const source_expand = @import("source_expand.zig");
 const sla_workspace = @import("workspace.zig");
 const lowering_rules = @import("lowering_rules.zig");
+const control_flow_rules = @import("control_flow_rules.zig");
 const sci_bridge = @import("sci_bridge");
 pub const handler_bridge = @import("handler_bridge.zig");
 const plugin_handler = @import("plugin_handler.zig");
@@ -1370,6 +1371,75 @@ test "sla typechecker merges if let ownership using live branches" {
         \\        let moved = value;
         \\        !moved;
         \\        return;
+        \\    };
+        \\    !value;
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+}
+
+test "shared multi-branch ownership state intersects live arms" {
+    const active_consumed = [_]control_flow_rules.ValueState{ .active, .consumed, .active };
+    const active_uninitialized = [_]control_flow_rules.ValueState{ .active, .uninitialized };
+    const all_consumed = [_]control_flow_rules.ValueState{ .consumed, .consumed };
+    try std.testing.expectEqual(control_flow_rules.MultiBranchStateMergeAction.restore_pre, control_flow_rules.planMultiBranchStateMerge(0));
+    try std.testing.expectEqual(control_flow_rules.MultiBranchStateMergeAction.restore_single, control_flow_rules.planMultiBranchStateMerge(1));
+    try std.testing.expectEqual(control_flow_rules.MultiBranchStateMergeAction.intersect_live, control_flow_rules.planMultiBranchStateMerge(2));
+    try std.testing.expectEqual(control_flow_rules.ValueState.consumed, control_flow_rules.intersectLiveBranchValueStates(&active_consumed));
+    try std.testing.expectEqual(control_flow_rules.ValueState.uninitialized, control_flow_rules.intersectLiveBranchValueStates(&active_uninitialized));
+    try std.testing.expectEqual(control_flow_rules.ValueState.consumed, control_flow_rules.intersectLiveBranchValueStates(&all_consumed));
+}
+
+test "sla typechecker merges match and switch ownership using live arms" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\@import "sa_std/core/option.sa"
+        \\enum Choice { Keep, Stop }
+        \\struct Item { value: i64 }
+        \\
+        \\fn match_owner(choice: Choice) -> void {
+        \\    let value = Item { value: 1 };
+        \\    match choice {
+        \\        Choice::Keep => {},
+        \\        Choice::Stop => {
+        \\            let moved = value;
+        \\            !moved;
+        \\            return;
+        \\        },
+        \\    };
+        \\    !value;
+        \\}
+        \\
+        \\fn option_match_owner(choice: Option<i64>) -> void {
+        \\    let value = Item { value: 1 };
+        \\    match choice {
+        \\        Some(item) => {},
+        \\        None => {
+        \\            let moved = value;
+        \\            !moved;
+        \\            return;
+        \\        },
+        \\    };
+        \\    !value;
+        \\}
+        \\
+        \\fn switch_owner(flag: bool) -> void {
+        \\    let value = Item { value: 1 };
+        \\    switch flag {
+        \\        true => {},
+        \\        false => {
+        \\            let moved = value;
+        \\            !moved;
+        \\            return;
+        \\        },
         \\    };
         \\    !value;
         \\}

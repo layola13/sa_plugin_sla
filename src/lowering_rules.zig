@@ -1802,6 +1802,7 @@ pub const RefCellCompanionRestorePlan = struct {
 };
 
 pub const RefCellBranchStateMergeAction = control_flow_rules.BranchStateMergeAction;
+pub const MultiBranchStateMergeAction = control_flow_rules.MultiBranchStateMergeAction;
 
 pub fn planResultSlotRefCellStore(transfer_plan: ResultSlotTransferPlan, source_has_refcell_handle: bool) ResultSlotRefCellStoreAction {
     if (transfer_plan.transfers_value and source_has_refcell_handle) return .store_borrow_handle_companion;
@@ -1953,6 +1954,10 @@ pub fn planRefCellCompanionRestore() RefCellCompanionRestorePlan {
 
 pub fn planRefCellBranchStateMerge(then_terminated: bool, else_terminated: bool) RefCellBranchStateMergeAction {
     return control_flow_rules.planBranchStateMerge(then_terminated, else_terminated);
+}
+
+pub fn planMultiBranchStateMerge(live_branch_count: usize) MultiBranchStateMergeAction {
+    return control_flow_rules.planMultiBranchStateMerge(live_branch_count);
 }
 
 pub fn refCellBorrowReleaseMacroName(kind: RefCellBorrowKind) []const u8 {

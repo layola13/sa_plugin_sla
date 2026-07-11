@@ -19,11 +19,7 @@ pub const TypeError = error{
     OutOfMemory,
 };
 
-pub const ValueState = enum {
-    uninitialized,
-    active,
-    consumed,
-};
+pub const ValueState = control_flow_rules.ValueState;
 
 pub const ImportedMacro = struct {
     arity: usize,
@@ -2739,6 +2735,47 @@ pub const TypeChecker = struct {
         }
     }
 
+    fn mergeMultiBranchScopeStates(
+        self: *TypeChecker,
+        scope: *Scope,
+        saved_states: *const std.StringHashMap(ValueState),
+        live_states: []const std.StringHashMap(ValueState),
+        live_bodies: []const []const *ast.Node,
+    ) TypeError!void {
+        switch (control_flow_rules.planMultiBranchStateMerge(live_states.len)) {
+            .restore_pre => self.restoreScopeStates(scope, saved_states),
+            .restore_single => self.restoreScopeStates(scope, &live_states[0]),
+            .intersect_live => {
+                var branch_values = try self.allocator.alloc(ValueState, live_states.len);
+                defer self.allocator.free(branch_values);
+
+                var curr: ?*Scope = scope;
+                while (curr) |s| {
+                    var iter = s.symbols.iterator();
+                    while (iter.next()) |entry| {
+                        const name = entry.key_ptr.*;
+                        if (isInternalSymbol(name)) continue;
+                        for (live_states, 0..) |states, idx| {
+                            branch_values[idx] = states.get(name) orelse .active;
+                        }
+                        const merged = control_flow_rules.intersectLiveBranchValueStates(branch_values);
+                        entry.value_ptr.state = merged;
+                        if (merged != .consumed) continue;
+
+                        for (branch_values, live_bodies) |state, body| {
+                            if (state != .active or body.len == 0) continue;
+                            const last = body[body.len - 1];
+                            var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                            try list.append(name);
+                            try self.phi_cleanups.put(last, list);
+                        }
+                    }
+                    curr = s.parent;
+                }
+            },
+        }
+    }
+
     fn restoreUninitializedFromSaved(self: *TypeChecker, scope: *Scope, saved: *const std.StringHashMap(ValueState)) void {
         _ = self;
         var curr: ?*Scope = scope;
@@ -5344,11 +5381,27 @@ pub const TypeChecker = struct {
                 const val_ty = try self.checkExpr(swe.val, scope);
                 _ = val_ty;
 
-                // For simplicity, switch patterns are literal/identifiers.
-                // We return void or default case type.
-                for (swe.cases) |case| {
-                    try self.checkBlock(case.body, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                var saved_states = try self.saveScopeStates(scope);
+                defer saved_states.deinit();
+                var live_states = std.ArrayList(std.StringHashMap(ValueState)).init(self.allocator);
+                defer {
+                    for (live_states.items) |*states| states.deinit();
+                    live_states.deinit();
                 }
+                var live_bodies = std.ArrayList([]const *ast.Node).init(self.allocator);
+                defer live_bodies.deinit();
+
+                for (swe.cases) |case| {
+                    self.restoreScopeStates(scope, &saved_states);
+                    try self.checkBlock(case.body, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                    if (!blockTerminates(case.body)) {
+                        var states = try self.saveScopeStates(scope);
+                        errdefer states.deinit();
+                        try live_bodies.append(case.body);
+                        try live_states.append(states);
+                    }
+                }
+                try self.mergeMultiBranchScopeStates(scope, &saved_states, live_states.items, live_bodies.items);
 
                 const ty = try self.allocator.create(ast.Type);
                 ty.* = .{ .primitive = .void_type };
@@ -5357,29 +5410,20 @@ pub const TypeChecker = struct {
             .match_expr => |*mat| {
                 const val_ty = try self.checkExpr(mat.val, scope);
                 if (optionInnerType(val_ty) != null or resultOkType(val_ty) != null) {
-                    var saved_states = std.StringHashMap(ValueState).init(self.allocator);
+                    var saved_states = try self.saveScopeStates(scope);
                     defer saved_states.deinit();
-                    var curr: ?*Scope = scope;
-                    while (curr) |s| {
-                        var iter = s.symbols.iterator();
-                        while (iter.next()) |entry| {
-                            try saved_states.put(entry.key_ptr.*, entry.value_ptr.state);
-                        }
-                        curr = s.parent;
+                    var live_states = std.ArrayList(std.StringHashMap(ValueState)).init(self.allocator);
+                    defer {
+                        for (live_states.items) |*states| states.deinit();
+                        live_states.deinit();
                     }
+                    var live_bodies = std.ArrayList([]const *ast.Node).init(self.allocator);
+                    defer live_bodies.deinit();
 
                     var result_ty: ?*ast.Type = null;
+                    var has_value_cases = true;
                     for (mat.cases) |case| {
-                        curr = scope;
-                        while (curr) |s| {
-                            var iter = s.symbols.iterator();
-                            while (iter.next()) |entry| {
-                                if (saved_states.get(entry.key_ptr.*)) |st| {
-                                    entry.value_ptr.state = st;
-                                }
-                            }
-                            curr = s.parent;
-                        }
+                        self.restoreScopeStates(scope, &saved_states);
 
                         const pattern_scope = try Scope.init(self.allocator, scope);
                         try self.scope_pool.append(pattern_scope);
@@ -5397,21 +5441,30 @@ pub const TypeChecker = struct {
                         }
 
                         try self.checkBlock(case.body, pattern_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
+                        const terminated = blockTerminates(case.body);
+                        if (!terminated) {
+                            var states = try self.saveScopeStates(scope);
+                            errdefer states.deinit();
+                            try live_bodies.append(case.body);
+                            try live_states.append(states);
+                        }
                         if (self.blockTailExprType(case.body)) |case_ty| {
-                            if (blockTerminates(case.body)) continue;
+                            if (terminated) continue;
                             if (result_ty) |existing| {
                                 if (!self.typesEqual(existing, case_ty)) return TypeError.TypeMismatch;
                             } else {
                                 result_ty = case_ty;
                             }
-                        } else if (!blockTerminates(case.body)) {
-                            const ty = try self.allocator.create(ast.Type);
-                            ty.* = .{ .primitive = .void_type };
-                            return ty;
+                        } else if (!terminated) {
+                            has_value_cases = false;
                         }
                     }
 
-                    if (result_ty) |ty| return ty;
+                    try self.mergeMultiBranchScopeStates(scope, &saved_states, live_states.items, live_bodies.items);
+
+                    if (has_value_cases) {
+                        if (result_ty) |ty| return ty;
+                    }
                     const ty = try self.allocator.create(ast.Type);
                     ty.* = .{ .primitive = .void_type };
                     return ty;
@@ -5420,30 +5473,20 @@ pub const TypeChecker = struct {
                 if (val_ty.* != .user_defined) return TypeError.TypeMismatch;
                 const decl = self.enums.get(val_ty.user_defined.name) orelse return TypeError.NotAStruct;
 
-                var saved_states = std.StringHashMap(ValueState).init(self.allocator);
+                var saved_states = try self.saveScopeStates(scope);
                 defer saved_states.deinit();
-                var curr: ?*Scope = scope;
-                while (curr) |s| {
-                    var iter = s.symbols.iterator();
-                    while (iter.next()) |entry| {
-                        try saved_states.put(entry.key_ptr.*, entry.value_ptr.state);
-                    }
-                    curr = s.parent;
+                var live_states = std.ArrayList(std.StringHashMap(ValueState)).init(self.allocator);
+                defer {
+                    for (live_states.items) |*states| states.deinit();
+                    live_states.deinit();
                 }
+                var live_bodies = std.ArrayList([]const *ast.Node).init(self.allocator);
+                defer live_bodies.deinit();
 
                 var result_ty: ?*ast.Type = null;
                 var has_value_cases = true;
                 for (mat.cases) |case| {
-                    curr = scope;
-                    while (curr) |s| {
-                        var iter = s.symbols.iterator();
-                        while (iter.next()) |entry| {
-                            if (saved_states.get(entry.key_ptr.*)) |st| {
-                                entry.value_ptr.state = st;
-                            }
-                        }
-                        curr = s.parent;
-                    }
+                    self.restoreScopeStates(scope, &saved_states);
 
                     if (!enumNameMatchesDecl(case.pattern.enum_name, decl.name)) return TypeError.TypeMismatch;
                     const variant = findEnumVariant(decl, case.pattern.variant_name) orelse return TypeError.FieldNotFound;
@@ -5464,18 +5507,27 @@ pub const TypeChecker = struct {
                     }
                     try self.checkBlock(case.body, pattern_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
 
+                    const terminated = blockTerminates(case.body);
+                    if (!terminated) {
+                        var states = try self.saveScopeStates(scope);
+                        errdefer states.deinit();
+                        try live_bodies.append(case.body);
+                        try live_states.append(states);
+                    }
                     const case_ty = self.blockTailExprType(case.body);
                     if (case_ty) |ty| {
-                        if (blockTerminates(case.body)) continue;
+                        if (terminated) continue;
                         if (result_ty) |existing| {
                             if (!self.typesEqual(existing, ty)) return TypeError.TypeMismatch;
                         } else {
                             result_ty = ty;
                         }
                     } else {
-                        if (!blockTerminates(case.body)) has_value_cases = false;
+                        if (!terminated) has_value_cases = false;
                     }
                 }
+
+                try self.mergeMultiBranchScopeStates(scope, &saved_states, live_states.items, live_bodies.items);
 
                 if (has_value_cases and result_ty != null) {
                     return result_ty.?;

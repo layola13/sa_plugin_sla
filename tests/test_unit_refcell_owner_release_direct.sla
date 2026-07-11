@@ -6,6 +6,11 @@ struct OwnerReleasePayload {
     value: int,
 }
 
+enum OwnerReleaseChoice {
+    Keep,
+    Stop,
+}
+
 fn owner_release_payload_value(payload: &OwnerReleasePayload) -> int {
     payload.value
 }
@@ -90,6 +95,41 @@ fn owner_release_if_let_else_move_value(first_match: bool, second_match: bool) -
         return value;
     };
     !cell;
+    value
+}
+
+fn owner_release_match_move_value(choice: OwnerReleaseChoice) -> int {
+    let cell = RefCell::new(OwnerReleasePayload { value: 79 });
+    let first: &OwnerReleasePayload = cell.borrow();
+    let second: &OwnerReleasePayload = cell.borrow();
+    let value = first.value + second.value;
+    match choice {
+        OwnerReleaseChoice::Keep => {},
+        OwnerReleaseChoice::Stop => {
+            let moved_cell = cell;
+            !moved_cell;
+            return value;
+        },
+    };
+    !cell;
+    value
+}
+
+fn owner_release_match_all_arms_move_value(choice: OwnerReleaseChoice) -> int {
+    let cell = RefCell::new(OwnerReleasePayload { value: 83 });
+    let first: &OwnerReleasePayload = cell.borrow();
+    let second: &OwnerReleasePayload = cell.borrow();
+    let value = first.value + second.value;
+    match choice {
+        OwnerReleaseChoice::Keep => {
+            let kept_cell = cell;
+            !kept_cell;
+        },
+        OwnerReleaseChoice::Stop => {
+            let stopped_cell = cell;
+            !stopped_cell;
+        },
+    };
     value
 }
 
@@ -195,5 +235,20 @@ fn owner_release_if_let_else_move_value(first_match: bool, second_match: bool) -
     };
     if owner_release_if_let_else_move_value(false, true) != 146 {
         panic(30919);
+    };
+}
+
+@test "refcell match owner move preserves live arm state"() {
+    if owner_release_match_move_value(OwnerReleaseChoice::Keep) != 158 {
+        panic(30920);
+    };
+    if owner_release_match_move_value(OwnerReleaseChoice::Stop) != 158 {
+        panic(30921);
+    };
+    if owner_release_match_all_arms_move_value(OwnerReleaseChoice::Keep) != 166 {
+        panic(30922);
+    };
+    if owner_release_match_all_arms_move_value(OwnerReleaseChoice::Stop) != 166 {
+        panic(30923);
     };
 }

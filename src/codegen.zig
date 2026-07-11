@@ -8168,7 +8168,7 @@ pub const Codegen = struct {
         };
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg);
         const address_shape = try self.importedMacroArgAddressShape(arg);
-        switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null)) {
+        switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null, arg_ty)) {
             .pass_value => {
                 const reg = try self.genExpr(arg, hoisted_allocs);
                 return .{ .reg = reg, .release_after_call = self.importedMacroValueArgNeedsRelease(arg, reg) };

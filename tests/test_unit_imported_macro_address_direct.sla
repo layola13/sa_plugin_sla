@@ -50,6 +50,18 @@ fn imported_macro_whole_pair_identifier_address() -> i64 {
     SLA_IMPORTED_READ_PAIR_SUM(pair)
 }
 
+fn imported_macro_whole_pair_moved_alias_address() -> i64 {
+    let pair = ImportedMacroAddressPair { left: 29, right: 13 };
+    let alias = pair;
+    SLA_IMPORTED_READ_PAIR_SUM(alias)
+}
+
+fn imported_macro_whole_pair_borrowed_alias_address() -> i64 {
+    let pair = ImportedMacroAddressPair { left: 23, right: 19 };
+    let alias: &ImportedMacroAddressPair = &pair;
+    SLA_IMPORTED_READ_PAIR_SUM(*alias)
+}
+
 @test "imported macro borrowed field address"() {
     if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
     if imported_macro_field_address() != 11 { panic(31901); };
@@ -76,4 +88,12 @@ fn imported_macro_whole_pair_identifier_address() -> i64 {
 
 @test "imported macro borrowed whole aggregate address"() {
     if imported_macro_whole_pair_identifier_address() != 42 { panic(31906); };
+}
+
+@test "imported macro borrowed moved aggregate alias address"() {
+    if imported_macro_whole_pair_moved_alias_address() != 42 { panic(31907); };
+}
+
+@test "imported macro borrowed aggregate alias deref address"() {
+    if imported_macro_whole_pair_borrowed_alias_address() != 42 { panic(31908); };
 }

@@ -6099,6 +6099,13 @@ pub const Codegen = struct {
             return;
         }
         try self.emitAssignReg(dst, src);
+        if (lowering_rules.storedValueMovesIdentifier(value_expr, let_ty, self.typeIsCopyValue(let_ty)) != null and self.isLocalReg(src)) {
+            // `assign` gives the destination the same pointer-backed value. The
+            // destination is now the sole cleanup owner, so suppress source
+            // cleanup without emitting `move_`, which would invalidate both
+            // verifier aliases of the same allocation.
+            try self.markConsumed(src);
+        }
         try self.transferFutureStateVTable(src, dst);
         try self.transferFutureReadiness(src, dst);
         if (self.futureReadinessForState(dst) != .unknown) {
@@ -10563,7 +10570,7 @@ pub const Codegen = struct {
         };
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg, ctx);
         const address_shape = try self.importedMacroArgAddressShape(arg, ctx);
-        switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null)) {
+        switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null, arg_ty)) {
             .pass_value => return self.genImportedMacroValueArg(arg, ctx),
             .pass_raw_pointer_value => unreachable,
             .pass_address_expression => return self.genImportedMacroAddressExpressionArg(arg, ctx),

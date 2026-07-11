@@ -1344,6 +1344,44 @@ test "sla typechecker restores fallthrough ownership after terminating move bran
     try tc.checkProgram(prog);
 }
 
+test "sla typechecker merges if let ownership using live branches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\@import "sa_std/core/option.sa"
+        \\struct Item { value: i64 }
+        \\
+        \\fn then_terminates(first: Option<i64>, second: Option<i64>) -> void {
+        \\    let value = Item { value: 1 };
+        \\    if let Some(first_value) = first && let Some(second_value) = second {
+        \\        let moved = value;
+        \\        !moved;
+        \\        return;
+        \\    } else {};
+        \\    !value;
+        \\}
+        \\
+        \\fn else_terminates(first: Option<i64>, second: Option<i64>) -> void {
+        \\    let value = Item { value: 1 };
+        \\    if let Some(first_value) = first && let Some(second_value) = second {
+        \\    } else {
+        \\        let moved = value;
+        \\        !moved;
+        \\        return;
+        \\    };
+        \\    !value;
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+}
+
 test "sla reachability merges only call facts shared by every caller" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

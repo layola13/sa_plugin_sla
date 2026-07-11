@@ -5128,17 +5128,8 @@ pub const TypeChecker = struct {
             },
             .if_expr => |*ife| {
                 if (ife.let_chain) |chain| {
-                    var saved_states = std.StringHashMap(ValueState).init(self.allocator);
+                    var saved_states = try self.saveScopeStates(scope);
                     defer saved_states.deinit();
-
-                    var curr: ?*Scope = scope;
-                    while (curr) |s| {
-                        var iter = s.symbols.iterator();
-                        while (iter.next()) |entry| {
-                            try saved_states.put(entry.key_ptr.*, entry.value_ptr.state);
-                        }
-                        curr = s.parent;
-                    }
 
                     const chain_scope = try Scope.init(self.allocator, scope);
                     try self.scope_pool.append(chain_scope);
@@ -5150,67 +5141,58 @@ pub const TypeChecker = struct {
 
                     try self.checkBlock(ife.then_block, chain_scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
 
-                    var then_states = std.StringHashMap(ValueState).init(self.allocator);
+                    var then_states = try self.saveScopeStates(scope);
                     defer then_states.deinit();
-                    curr = scope;
-                    while (curr) |s| {
-                        var iter = s.symbols.iterator();
-                        while (iter.next()) |entry| {
-                            try then_states.put(entry.key_ptr.*, entry.value_ptr.state);
-                        }
-                        curr = s.parent;
-                    }
-
-                    curr = scope;
-                    while (curr) |s| {
-                        var iter = s.symbols.iterator();
-                        while (iter.next()) |entry| {
-                            if (saved_states.get(entry.key_ptr.*)) |st| {
-                                entry.value_ptr.state = st;
-                            }
-                        }
-                        curr = s.parent;
-                    }
+                    self.restoreScopeStates(scope, &saved_states);
 
                     if (ife.else_block) |eb| {
                         try self.checkBlock(eb, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                     }
 
-                    curr = scope;
-                    while (curr) |s| {
-                        var iter = s.symbols.iterator();
-                        while (iter.next()) |entry| {
-                            const name = entry.key_ptr.*;
-                            if (isInternalSymbol(name)) continue;
-                            const else_state = entry.value_ptr.state;
-                            const then_state = then_states.get(name) orelse .active;
+                    const merge_action = control_flow_rules.planBranchStateMerge(
+                        blockTerminates(ife.then_block),
+                        if (ife.else_block) |eb| blockTerminates(eb) else false,
+                    );
+                    switch (merge_action) {
+                        .restore_pre => self.restoreScopeStates(scope, &saved_states),
+                        .restore_then => self.restoreScopeStates(scope, &then_states),
+                        .restore_else => {},
+                        .keep_current => {
+                            var curr: ?*Scope = scope;
+                            while (curr) |s| {
+                                var iter = s.symbols.iterator();
+                                while (iter.next()) |entry| {
+                                    const name = entry.key_ptr.*;
+                                    if (isInternalSymbol(name)) continue;
+                                    const else_state = entry.value_ptr.state;
+                                    const then_state = then_states.get(name) orelse .active;
 
-                            if (then_state != else_state) {
-                                if (then_state == .uninitialized or else_state == .uninitialized) {
-                                    entry.value_ptr.state = .uninitialized;
-                                    continue;
-                                }
-                                entry.value_ptr.state = .consumed;
-                                if (then_state == .active) {
-                                    if (ife.then_block.len > 0) {
-                                        const last = ife.then_block[ife.then_block.len - 1];
-                                        var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
-                                        try list.append(name);
-                                        try self.phi_cleanups.put(last, list);
-                                    }
-                                } else {
-                                    if (ife.else_block) |eb| {
-                                        if (eb.len > 0) {
-                                            const last = eb[eb.len - 1];
-                                            var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
-                                            try list.append(name);
-                                            try self.phi_cleanups.put(last, list);
+                                    if (then_state != else_state) {
+                                        if (then_state == .uninitialized or else_state == .uninitialized) {
+                                            entry.value_ptr.state = .uninitialized;
+                                            continue;
+                                        }
+                                        entry.value_ptr.state = .consumed;
+                                        if (then_state == .active) {
+                                            if (ife.then_block.len > 0) {
+                                                const last = ife.then_block[ife.then_block.len - 1];
+                                                var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                                try list.append(name);
+                                                try self.phi_cleanups.put(last, list);
+                                            }
+                                        } else if (ife.else_block) |eb| {
+                                            if (eb.len > 0) {
+                                                const last = eb[eb.len - 1];
+                                                var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                                try list.append(name);
+                                                try self.phi_cleanups.put(last, list);
+                                            }
                                         }
                                     }
                                 }
+                                curr = s.parent;
                             }
-                        }
-                        curr = s.parent;
+                        },
                     }
 
                     const then_ty = self.blockTailExprType(ife.then_block);

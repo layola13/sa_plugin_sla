@@ -60,6 +60,39 @@ fn owner_release_if_result_move_value(flag: bool) -> int {
     value
 }
 
+fn owner_release_if_let_then_move_value(first_match: bool, second_match: bool) -> int {
+    let cell = RefCell::new(OwnerReleasePayload { value: 71 });
+    let first_borrow: &OwnerReleasePayload = cell.borrow();
+    let second_borrow: &OwnerReleasePayload = cell.borrow();
+    let value = first_borrow.value + second_borrow.value;
+    let first: Option<int> = if first_match { Some(1) } else { None };
+    let second: Option<int> = if second_match { Some(2) } else { None };
+    if let Some(first_value) = first && let Some(second_value) = second {
+        let moved_cell = cell;
+        !moved_cell;
+        return value;
+    } else {};
+    !cell;
+    value
+}
+
+fn owner_release_if_let_else_move_value(first_match: bool, second_match: bool) -> int {
+    let cell = RefCell::new(OwnerReleasePayload { value: 73 });
+    let first_borrow: &OwnerReleasePayload = cell.borrow();
+    let second_borrow: &OwnerReleasePayload = cell.borrow();
+    let value = first_borrow.value + second_borrow.value;
+    let first: Option<int> = if first_match { Some(1) } else { None };
+    let second: Option<int> = if second_match { Some(2) } else { None };
+    if let Some(first_value) = first && let Some(second_value) = second {
+    } else {
+        let moved_cell = cell;
+        !moved_cell;
+        return value;
+    };
+    !cell;
+    value
+}
+
 @test "refcell owner release clears active borrow handle"() {
     let refcell = RefCell::new(OwnerReleasePayload { value: 17 });
     let borrowed: &OwnerReleasePayload = refcell.borrow();
@@ -147,5 +180,20 @@ fn owner_release_if_result_move_value(flag: bool) -> int {
     };
     if owner_release_if_result_move_value(false) != 134 {
         panic(30915);
+    };
+}
+
+@test "refcell if-let chain owner moves preserve live branch state"() {
+    if owner_release_if_let_then_move_value(true, true) != 142 {
+        panic(30916);
+    };
+    if owner_release_if_let_then_move_value(true, false) != 142 {
+        panic(30917);
+    };
+    if owner_release_if_let_else_move_value(true, true) != 146 {
+        panic(30918);
+    };
+    if owner_release_if_let_else_move_value(false, true) != 146 {
+        panic(30919);
     };
 }

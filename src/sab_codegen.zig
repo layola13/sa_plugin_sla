@@ -7858,7 +7858,7 @@ pub const Codegen = struct {
             const sibling_mark = try self.pushMacroCallSiblingArgExprs(ctx, call.args, i);
             defer self.popExprLaterNodesTo(sibling_mark);
             const lowered_arg = try self.genPlannedSabMacroCallArg(arg, effective, ctx, call_plan, param, i, call.associated_target == null);
-            if (lowered_arg.release_reg) |reg| try release_regs.append(reg);
+            if (self.plannedCallArgReleaseReg(lowered_arg.release_reg)) |reg| try release_regs.append(reg);
             if (lowered_arg.release_regs.len != 0) {
                 try release_regs.appendSlice(lowered_arg.release_regs);
                 self.allocator.free(lowered_arg.release_regs);
@@ -10889,7 +10889,7 @@ pub const Codegen = struct {
                 return err;
             };
             try arg_names.append(lowered_arg.operand);
-            if (lowered_arg.release_reg) |reg| try release_regs.append(reg);
+            if (self.plannedCallArgReleaseReg(lowered_arg.release_reg)) |reg| try release_regs.append(reg);
             if (lowered_arg.release_regs.len != 0) {
                 try release_regs.appendSlice(lowered_arg.release_regs);
                 self.allocator.free(lowered_arg.release_regs);
@@ -11025,7 +11025,7 @@ pub const Codegen = struct {
             const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
             defer self.popExprLaterNodesTo(sibling_mark);
             const lowered_arg = try self.genPlannedSabCallArg(arg, call_plan, param, i, call.associated_target == null);
-            if (lowered_arg.release_reg) |reg| try release_regs.append(reg);
+            if (self.plannedCallArgReleaseReg(lowered_arg.release_reg)) |reg| try release_regs.append(reg);
             if (lowered_arg.release_regs.len != 0) {
                 try release_regs.appendSlice(lowered_arg.release_regs);
                 self.allocator.free(lowered_arg.release_regs);
@@ -11071,6 +11071,17 @@ pub const Codegen = struct {
         release_regs: []const u32 = &.{},
         consume_reg: ?u32 = null,
     };
+
+    fn plannedCallArgReleaseReg(self: *Codegen, candidate: ?u32) ?u32 {
+        const carries_refcell_borrow_handle = if (candidate) |reg| self.refcell_borrow_values.contains(reg) else false;
+        return switch (lowering_rules.planRefCellCallArgLifecycle(
+            candidate != null,
+            carries_refcell_borrow_handle,
+        )) {
+            .keep => null,
+            .release_value, .release_borrow_handle => candidate.?,
+        };
+    }
 
     fn borrowAddressCallArgReleaseRegs(self: *Codegen, source: AddressSource, prefix: u8) ![]const u32 {
         const plan = lowering_rules.planPrefixedBorrowAddressCallArgRelease(prefix, !self.isLocalReg(source.reg), source.release_regs.len != 0);

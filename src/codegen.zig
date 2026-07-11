@@ -1569,13 +1569,13 @@ pub const Codegen = struct {
                         .arg_index = i,
                     });
                     arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
-                    arg_release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
+                    arg_release_regs.append(self.plannedCallArgReleaseReg(lowered_arg)) catch return CodegenError.OutOfMemory;
                     continue;
                 }
             }
             const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
             arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
-            arg_release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
+            arg_release_regs.append(self.plannedCallArgReleaseReg(lowered_arg)) catch return CodegenError.OutOfMemory;
         }
 
         const lowered_name = try self.loweredFuncSymbol(resolved_func_name);
@@ -7876,6 +7876,18 @@ pub const Codegen = struct {
         release_reg: ?[]const u8 = null,
     };
 
+    fn plannedCallArgReleaseReg(self: *Codegen, lowered_arg: LoweredCallArg) ?[]const u8 {
+        const release_after_call = lowered_arg.release_reg != null or lowered_arg.release_after_call;
+        const candidate = lowered_arg.release_reg orelse lowered_arg.reg;
+        return switch (lowering_rules.planRefCellCallArgLifecycle(
+            release_after_call,
+            self.refcell_borrow_handles.contains(candidate),
+        )) {
+            .keep => null,
+            .release_value, .release_borrow_handle => candidate,
+        };
+    }
+
     const CallArgLoweringOptions = struct {
         param: ?ast.Param = null,
         arg_index: usize = 0,
@@ -8007,7 +8019,7 @@ pub const Codegen = struct {
                 .auto_borrow_receiver = auto_borrow_receiver,
             });
             arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
-            release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
+            release_regs.append(self.plannedCallArgReleaseReg(lowered_arg)) catch return CodegenError.OutOfMemory;
         }
 
         const reg = try self.newTmp();

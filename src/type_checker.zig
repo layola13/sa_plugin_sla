@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const control_flow_rules = @import("control_flow_rules.zig");
 const contract_parser = @import("contract_parser.zig");
 
 pub const TypeError = error{
@@ -2727,6 +2728,17 @@ pub const TypeChecker = struct {
         return states;
     }
 
+    fn restoreScopeStates(_: *TypeChecker, scope: *Scope, saved: *const std.StringHashMap(ValueState)) void {
+        var curr: ?*Scope = scope;
+        while (curr) |s| {
+            var iter = s.symbols.iterator();
+            while (iter.next()) |entry| {
+                if (saved.get(entry.key_ptr.*)) |state| entry.value_ptr.state = state;
+            }
+            curr = s.parent;
+        }
+    }
+
     fn restoreUninitializedFromSaved(self: *TypeChecker, scope: *Scope, saved: *const std.StringHashMap(ValueState)) void {
         _ = self;
         var curr: ?*Scope = scope;
@@ -5277,47 +5289,54 @@ pub const TypeChecker = struct {
                     try self.checkBlock(eb, scope, scope.lookup("return_ty_sentinel").?.ty, null, self.current_loop_scope);
                 }
 
-                // Re-align states at merge point (Phi Resolution)
-                // If a variable is active in one branch but consumed in another, we release it in the active branch.
-                curr = scope;
-                while (curr) |s| {
-                    var iter = s.symbols.iterator();
-                    while (iter.next()) |entry| {
-                        const name = entry.key_ptr.*;
-                        if (isInternalSymbol(name)) continue;
-                        const else_state = entry.value_ptr.state;
-                        const then_state = then_states.get(name) orelse .active;
+                const merge_action = control_flow_rules.planBranchStateMerge(
+                    blockTerminates(ife.then_block),
+                    if (ife.else_block) |eb| blockTerminates(eb) else false,
+                );
+                switch (merge_action) {
+                    .restore_pre => self.restoreScopeStates(scope, &saved_states),
+                    .restore_then => self.restoreScopeStates(scope, &then_states),
+                    .restore_else => {},
+                    .keep_current => {
+                        // Re-align states at merge point (Phi Resolution).
+                        // If a variable is active in one branch but consumed in another,
+                        // release it in the active branch.
+                        curr = scope;
+                        while (curr) |s| {
+                            var iter = s.symbols.iterator();
+                            while (iter.next()) |entry| {
+                                const name = entry.key_ptr.*;
+                                if (isInternalSymbol(name)) continue;
+                                const else_state = entry.value_ptr.state;
+                                const then_state = then_states.get(name) orelse .active;
 
-                        if (then_state != else_state) {
-                            if (then_state == .uninitialized or else_state == .uninitialized) {
-                                entry.value_ptr.state = .uninitialized;
-                                continue;
-                            }
-                            // Phi conflict! We must demote the active one to consumed
-                            entry.value_ptr.state = .consumed;
+                                if (then_state != else_state) {
+                                    if (then_state == .uninitialized or else_state == .uninitialized) {
+                                        entry.value_ptr.state = .uninitialized;
+                                        continue;
+                                    }
+                                    entry.value_ptr.state = .consumed;
 
-                            if (then_state == .active) {
-                                // Add to then branch's phi cleanups
-                                if (ife.then_block.len > 0) {
-                                    const last = ife.then_block[ife.then_block.len - 1];
-                                    var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
-                                    try list.append(name);
-                                    try self.phi_cleanups.put(last, list);
-                                }
-                            } else {
-                                // Add to else branch's phi cleanups
-                                if (ife.else_block) |eb| {
-                                    if (eb.len > 0) {
-                                        const last = eb[eb.len - 1];
-                                        var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
-                                        try list.append(name);
-                                        try self.phi_cleanups.put(last, list);
+                                    if (then_state == .active) {
+                                        if (ife.then_block.len > 0) {
+                                            const last = ife.then_block[ife.then_block.len - 1];
+                                            var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                            try list.append(name);
+                                            try self.phi_cleanups.put(last, list);
+                                        }
+                                    } else if (ife.else_block) |eb| {
+                                        if (eb.len > 0) {
+                                            const last = eb[eb.len - 1];
+                                            var list = self.phi_cleanups.get(last) orelse std.ArrayList([]const u8).init(self.allocator);
+                                            try list.append(name);
+                                            try self.phi_cleanups.put(last, list);
+                                        }
                                     }
                                 }
                             }
+                            curr = s.parent;
                         }
-                    }
-                    curr = s.parent;
+                    },
                 }
 
                 const then_ty = self.blockTailExprType(ife.then_block);

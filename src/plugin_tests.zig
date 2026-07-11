@@ -1318,6 +1318,32 @@ test "sla pre-typecheck pruning keeps release-only bindings" {
     }
 }
 
+test "sla typechecker restores fallthrough ownership after terminating move branch" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\struct Item { value: i64 }
+        \\
+        \\fn release_branch(flag: bool) -> void {
+        \\    let value = Item { value: 1 };
+        \\    if flag {
+        \\        let moved = value;
+        \\        !moved;
+        \\        return;
+        \\    };
+        \\    !value;
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+}
+
 test "sla reachability merges only call facts shared by every caller" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const control_flow_rules = @import("control_flow_rules.zig");
 const type_checker = @import("type_checker.zig");
 
 pub fn deriveNameMatches(actual: []const u8, wanted: []const u8) bool {
@@ -1800,12 +1801,7 @@ pub const RefCellCompanionRestorePlan = struct {
     release_companion_slot_after_restore: bool,
 };
 
-pub const RefCellBranchStateMergeAction = enum {
-    restore_pre,
-    restore_then,
-    restore_else,
-    keep_current,
-};
+pub const RefCellBranchStateMergeAction = control_flow_rules.BranchStateMergeAction;
 
 pub fn planResultSlotRefCellStore(transfer_plan: ResultSlotTransferPlan, source_has_refcell_handle: bool) ResultSlotRefCellStoreAction {
     if (transfer_plan.transfers_value and source_has_refcell_handle) return .store_borrow_handle_companion;
@@ -1956,10 +1952,7 @@ pub fn planRefCellCompanionRestore() RefCellCompanionRestorePlan {
 }
 
 pub fn planRefCellBranchStateMerge(then_terminated: bool, else_terminated: bool) RefCellBranchStateMergeAction {
-    if (then_terminated and else_terminated) return .restore_pre;
-    if (then_terminated) return .restore_else;
-    if (else_terminated) return .restore_then;
-    return .keep_current;
+    return control_flow_rules.planBranchStateMerge(then_terminated, else_terminated);
 }
 
 pub fn refCellBorrowReleaseMacroName(kind: RefCellBorrowKind) []const u8 {

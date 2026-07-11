@@ -32,6 +32,34 @@ fn owner_release_if_borrow_call_count(flag: bool) -> i64 {
     owner_release_borrow_count(&left) + owner_release_borrow_count(&right)
 }
 
+fn owner_release_branch_move_value(flag: bool) -> int {
+    let cell = RefCell::new(OwnerReleasePayload { value: 61 });
+    let first: &OwnerReleasePayload = cell.borrow();
+    let second: &OwnerReleasePayload = cell.borrow();
+    let value = first.value + second.value;
+    if flag {
+        let moved_cell = cell;
+        !moved_cell;
+        return value;
+    };
+    !cell;
+    value
+}
+
+fn owner_release_if_result_move_value(flag: bool) -> int {
+    let cell = RefCell::new(OwnerReleasePayload { value: 67 });
+    let first: &OwnerReleasePayload = cell.borrow();
+    let second: &OwnerReleasePayload = cell.borrow();
+    let value = first.value + second.value;
+    let moved_cell = if flag {
+        cell
+    } else {
+        cell
+    };
+    !moved_cell;
+    value
+}
+
 @test "refcell owner release clears active borrow handle"() {
     let refcell = RefCell::new(OwnerReleasePayload { value: 17 });
     let borrowed: &OwnerReleasePayload = refcell.borrow();
@@ -102,4 +130,22 @@ fn owner_release_if_borrow_call_count(flag: bool) -> i64 {
     };
     let moved_cell = cell;
     !moved_cell;
+}
+
+@test "refcell terminating branch owner move restores fallthrough state"() {
+    if owner_release_branch_move_value(true) != 122 {
+        panic(30912);
+    };
+    if owner_release_branch_move_value(false) != 122 {
+        panic(30913);
+    };
+}
+
+@test "refcell if-result owner move merges attached handles"() {
+    if owner_release_if_result_move_value(true) != 134 {
+        panic(30914);
+    };
+    if owner_release_if_result_move_value(false) != 134 {
+        panic(30915);
+    };
 }

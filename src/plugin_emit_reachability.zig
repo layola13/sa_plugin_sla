@@ -58,6 +58,16 @@ fn markReachableCallTarget(
         }
         return;
     }
+    if (tc.macros.get(call.func_name)) |macro| {
+        const scan_key = try std.fmt.allocPrint(tc.allocator, "__sla_reachable_macro__{s}", .{call.func_name});
+        if (reachable.contains(scan_key)) {
+            tc.allocator.free(scan_key);
+            return;
+        }
+        try reachable.put(scan_key, {});
+        try collectReachableBlock(tc, reachable, worklist, macro.body);
+        return;
+    }
     if (tc.imported_macros.get(call.func_name)) |macro| {
         for (macro.direct_callees) |callee| try markReachableFunc(tc, reachable, worklist, callee);
         return;

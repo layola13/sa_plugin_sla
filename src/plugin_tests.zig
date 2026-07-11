@@ -1081,6 +1081,52 @@ test "sla test codegen keeps imported macro direct callee" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla emit reachability keeps user macro direct callee" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\fn helper(value: i32) -> i32 {
+        \\    return value + 1;
+        \\}
+        \\
+        \\macro apply_helper(out) {
+        \\    out = helper(out);
+        \\}
+        \\
+        \\fn run() -> i32 {
+        \\    let value = 1;
+        \\    apply_helper(value);
+        \\    return value;
+        \\}
+        \\
+        \\@test "user macro callee"() {
+        \\    if run() != 2 { panic(1); };
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    var reachable = std.StringHashMap(void).init(allocator);
+    defer reachable.deinit();
+    var worklist = std.ArrayList([]const u8).init(allocator);
+    defer worklist.deinit();
+    for (prog.program.decls) |decl| {
+        if (decl.* == .test_decl) try collectReachableBlock(&tc, &reachable, &worklist, decl.test_decl.body);
+    }
+    var index: usize = 0;
+    while (index < worklist.items.len) : (index += 1) {
+        const func = tc.funcs.get(worklist.items[index]) orelse continue;
+        try collectReachableBlock(&tc, &reachable, &worklist, func.body);
+    }
+    try std.testing.expect(reachable.contains("helper"));
+}
+
 test "sla test codegen prunes unreferenced sla macro bodies" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

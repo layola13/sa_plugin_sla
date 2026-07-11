@@ -133,6 +133,69 @@ fn owner_release_match_all_arms_move_value(choice: OwnerReleaseChoice) -> int {
     value
 }
 
+fn owner_release_loop_continue_borrow_count() -> i64 {
+    let cell = RefCell::new(OwnerReleasePayload { value: 89 });
+    let i: int = 0;
+    while i < 3 {
+        let borrowed: &OwnerReleasePayload = cell.borrow();
+        if borrowed.value != 89 {
+            panic(30924);
+        };
+        i = i + 1;
+        if i < 3 {
+            continue;
+        };
+        break;
+    }
+    owner_release_borrow_count(&cell)
+}
+
+fn owner_release_loop_break_borrow_count() -> i64 {
+    let cell = RefCell::new(OwnerReleasePayload { value: 97 });
+    let i: int = 0;
+    while i < 3 {
+        let borrowed: &OwnerReleasePayload = cell.borrow();
+        if borrowed.value != 97 {
+            panic(30927);
+        };
+        break;
+    }
+    owner_release_borrow_count(&cell)
+}
+
+fn owner_release_loop_return_move_value(move_on_return: bool) -> int {
+    let cell = RefCell::new(OwnerReleasePayload { value: 101 });
+    let first: &OwnerReleasePayload = cell.borrow();
+    let second: &OwnerReleasePayload = cell.borrow();
+    let value = first.value + second.value;
+    let i: int = 0;
+    while i < 1 {
+        if move_on_return {
+            let moved_cell = cell;
+            !moved_cell;
+            return value;
+        };
+        break;
+    }
+    !cell;
+    value
+}
+
+fn owner_release_for_jump_borrow_count() -> i64 {
+    let cell = RefCell::new(OwnerReleasePayload { value: 103 });
+    for i in 0..3 {
+        let borrowed: &OwnerReleasePayload = cell.borrow();
+        if borrowed.value != 103 {
+            panic(30930);
+        };
+        if i < 2 {
+            continue;
+        };
+        break;
+    }
+    owner_release_borrow_count(&cell)
+}
+
 @test "refcell owner release clears active borrow handle"() {
     let refcell = RefCell::new(OwnerReleasePayload { value: 17 });
     let borrowed: &OwnerReleasePayload = refcell.borrow();
@@ -250,5 +313,23 @@ fn owner_release_match_all_arms_move_value(choice: OwnerReleaseChoice) -> int {
     };
     if owner_release_match_all_arms_move_value(OwnerReleaseChoice::Stop) != 166 {
         panic(30923);
+    };
+}
+
+@test "refcell loop jumps release active borrow handles"() {
+    if owner_release_loop_continue_borrow_count() != 0 {
+        panic(30925);
+    };
+    if owner_release_loop_break_borrow_count() != 0 {
+        panic(30926);
+    };
+    if owner_release_loop_return_move_value(true) != 202 {
+        panic(30928);
+    };
+    if owner_release_loop_return_move_value(false) != 202 {
+        panic(30929);
+    };
+    if owner_release_for_jump_borrow_count() != 0 {
+        panic(30931);
     };
 }

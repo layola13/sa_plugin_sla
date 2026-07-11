@@ -1452,6 +1452,97 @@ test "sla typechecker merges match and switch ownership using live arms" {
     try tc.checkProgram(prog);
 }
 
+test "sla typechecker cleans borrow locals on loop jumps" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\struct Item { value: i64 }
+        \\
+        \\fn jump_cleanup(value: &Item, flag: bool) -> void {
+        \\    while flag {
+        \\        let borrowed: &Item = value;
+        \\        if borrowed.value == 0 {
+        \\            continue;
+        \\        };
+        \\        break;
+        \\    }
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    var saw_break_cleanup = false;
+    var saw_continue_cleanup = false;
+    var iter = tc.cleanups.iterator();
+    while (iter.next()) |entry| {
+        const jump = entry.key_ptr.*.*;
+        if (jump != .break_stmt and jump != .continue_stmt) continue;
+        for (entry.value_ptr.items) |name| {
+            if (!std.mem.eql(u8, name, "borrowed")) continue;
+            if (jump == .break_stmt) saw_break_cleanup = true;
+            if (jump == .continue_stmt) saw_continue_cleanup = true;
+        }
+    }
+    try std.testing.expect(saw_break_cleanup);
+    try std.testing.expect(saw_continue_cleanup);
+}
+
+test "sla sa loop backedges require live body fallthrough" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn while_break() -> i64 {
+        \\    let value: i64 = 1;
+        \\    while value > 0 {
+        \\        break;
+        \\    }
+        \\    return value;
+        \\}
+        \\
+        \\fn for_break() -> i64 {
+        \\    for i in 0..1 {
+        \\        break;
+        \\    }
+        \\    return 1;
+        \\}
+        \\
+        \\@test "terminated loops"() {
+        \\    if while_break() != 1 { panic(30932); };
+        \\    if for_break() != 1 { panic(30933); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, sa_code, "jmp L_WHILE_HEAD"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, sa_code, "jmp L_LOOP_HEAD"));
+}
+
 test "sla reachability merges only call facts shared by every caller" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

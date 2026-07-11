@@ -9082,14 +9082,16 @@ pub const Codegen = struct {
                 _ = self.loop_continue_labels.pop();
                 _ = self.loop_break_labels.pop();
 
-                self.out.writer().print("{s}:\n", .{loop_continue}) catch return CodegenError.CodegenError;
-                const next_i = try self.newTmp();
-                self.out.writer().print("    {s} = add {s}, 1\n", .{ next_i, index_reg }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+0, {s} as i64\n", .{ counter_slot, next_i }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{next_i}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    !{s}\n", .{f.var_name}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                if (!blockTerminates(f.body)) {
+                    self.out.writer().print("{s}:\n", .{loop_continue}) catch return CodegenError.CodegenError;
+                    const next_i = try self.newTmp();
+                    self.out.writer().print("    {s} = add {s}, 1\n", .{ next_i, index_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    store {s}+0, {s} as i64\n", .{ counter_slot, next_i }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    !{s}\n", .{next_i}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    !{s}\n", .{index_reg}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    !{s}\n", .{f.var_name}) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                }
 
                 if (loop_control.has_continue) {
                     self.out.writer().print("{s}:\n", .{loop_continue_from_stmt}) catch return CodegenError.CodegenError;
@@ -9213,8 +9215,10 @@ pub const Codegen = struct {
                 try self.genBlock(w.body, hoisted_allocs);
                 _ = self.loop_continue_labels.pop();
                 _ = self.loop_break_labels.pop();
-                if (!blockTerminates(w.body)) try self.emitLoopBodyTopLevelLocalCleanups(w.body);
-                self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                if (!blockTerminates(w.body)) {
+                    try self.emitLoopBodyTopLevelLocalCleanups(w.body);
+                    self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
+                }
 
                 self.out.writer().print("{s}:\n", .{loop_cond_false}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;

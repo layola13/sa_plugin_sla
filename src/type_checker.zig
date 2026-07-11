@@ -3080,7 +3080,6 @@ pub const TypeChecker = struct {
                     var iter = s.symbols.valueIterator();
                     while (iter.next()) |sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
-                            if (isBorrowLikeType(sym.ty)) continue;
                             try cleanup_list.append(sym.name);
                         }
                     }

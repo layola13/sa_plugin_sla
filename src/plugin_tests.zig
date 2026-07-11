@@ -4083,6 +4083,52 @@ test "sla reachability incrementally extends newly materialized body chains" {
     try std.testing.expect(reachable.contains("dep__third"));
 }
 
+test "sla module table reparses with cached imported type names" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const child_source =
+        \\struct ImportedThing { value: i32 }
+    ;
+    const dep_source =
+        \\@import "child.sla"
+        \\fn make_imported() -> ImportedThing {
+        \\    return ImportedThing { value: 42 };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var modules = SlaModuleTable.initWithParserOptions(allocator, .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+    });
+    defer modules.deinit();
+    const imports = try resolveImportFiles(allocator, ".", "dep.sla", "main.sla");
+    const dep = try modules.getOrParse(imports[0]);
+    try std.testing.expect(dep.known_types.len != 0);
+
+    // A selected-body reparse must consume the type names cached by the first
+    // module parse, not read and recursively prescan the import again.
+    try tmp.dir.deleteFile("child.sla");
+    var selected_functions = std.StringHashMap(void).init(allocator);
+    defer selected_functions.deinit();
+    try selected_functions.put("make_imported", {});
+    _ = try modules.reparseModuleWithSelectedBodies(dep, &selected_functions, null);
+
+    const make_decl = dep.exports.function_decls.get("make_imported") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!make_decl.func_decl.is_decl_only);
+    try std.testing.expect(make_decl.func_decl.body.len != 0);
+}
+
 test "sla reachability session retries only unresolved callable roots" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

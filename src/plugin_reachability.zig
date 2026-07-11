@@ -1753,9 +1753,28 @@ fn materializeReachableImportedModuleBodiesWithState(
                 }
 
                 const reparse_start = std.time.nanoTimestamp();
-                try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
-                reparse_ns += std.time.nanoTimestamp() - reparse_start;
+                const reparse_stats = try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
+                const reparse_elapsed_ns = std.time.nanoTimestamp() - reparse_start;
+                reparse_ns += reparse_elapsed_ns;
                 stats.reparses += 1;
+                if (profile_enabled) {
+                    std.debug.print(
+                        "[sla-profile] import reparse module={s} source={d} pass={d} new_functions={d} new_macros={d} selected_functions={d} selected_macros={d} parse={d}ms exports={d}ms commit={d}ms elapsed={d}ms\n",
+                        .{
+                            module.output_path,
+                            module.expanded_source.len,
+                            stats.passes,
+                            newly_materialized_functions.items.len,
+                            newly_materialized_macros.items.len,
+                            selected_functions.count(),
+                            selected_macros.count(),
+                            @divTrunc(reparse_stats.parse_ns, std.time.ns_per_ms),
+                            @divTrunc(reparse_stats.exports_ns, std.time.ns_per_ms),
+                            @divTrunc(reparse_stats.commit_ns, std.time.ns_per_ms),
+                            @divTrunc(reparse_elapsed_ns, std.time.ns_per_ms),
+                        },
+                    );
+                }
                 try state.callable_index.refreshDeclsFromModule(module);
                 try enqueueMaterializedFunctionBodies(state, module, newly_materialized_functions.items, reachable);
                 for (newly_materialized_macros.items) |name| _ = state.scanned_symbol_roots.remove(name);

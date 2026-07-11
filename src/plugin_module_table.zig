@@ -260,6 +260,8 @@ pub const SlaModule = struct {
     base_dir: []const u8,
     source: []const u8,
     expanded_source: []const u8,
+    known_types: []const []const u8,
+    known_enums: []const []const u8,
     program: *ast.Node,
     exports: SlaModuleExports,
     resolved_imports: []const ResolvedImport,
@@ -281,6 +283,12 @@ pub const SlaImportExpansionOptions = struct {
 pub const SlaResolvedImportGroup = struct {
     decl: *const ast.Node,
     imports: []const ResolvedImport,
+};
+
+pub const SlaModuleReparseStats = struct {
+    parse_ns: i128 = 0,
+    exports_ns: i128 = 0,
+    commit_ns: i128 = 0,
 };
 
 pub const SlaModuleTable = struct {
@@ -311,6 +319,8 @@ pub const SlaModuleTable = struct {
             }
             self.allocator.free(module.resolved_module_imports);
             self.allocator.free(module.resolved_imports);
+            self.allocator.free(module.known_enums);
+            self.allocator.free(module.known_types);
             module.parsed_macro_bodies.deinit();
             module.parsed_function_bodies.deinit();
             module.exports.deinit();
@@ -362,6 +372,8 @@ pub const SlaModuleTable = struct {
             .base_dir = base_dir,
             .source = resolved.source,
             .expanded_source = expanded_source,
+            .known_types = try self.allocator.dupe([]const u8, parser.knownTypeNames()),
+            .known_enums = try self.allocator.dupe([]const u8, parser.knownEnumNames()),
             .program = parsed,
             .exports = exports,
             .resolved_imports = resolved_imports,
@@ -392,22 +404,29 @@ pub const SlaModuleTable = struct {
         module: *SlaModule,
         selected_function_bodies: ?*const std.StringHashMap(void),
         selected_macro_bodies: ?*const std.StringHashMap(void),
-    ) !void {
-        if (module.has_function_bodies and module.has_macro_bodies) return;
+    ) !SlaModuleReparseStats {
+        if (module.has_function_bodies and module.has_macro_bodies) return .{};
 
+        const parse_start = std.time.nanoTimestamp();
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, module.expanded_source, module.base_dir, .{
             .parse_function_bodies = true,
             .function_body_names = selected_function_bodies,
             .parse_macro_bodies = true,
             .macro_body_names = selected_macro_bodies,
             .parse_test_bodies = self.parse_options.parse_test_bodies,
+            .prescan_sla_import_types = false,
         });
+        try parser.seedKnownTypeNames(module.known_types, module.known_enums);
         const parsed = try parser.parseProgram();
         if (parsed.* != .program) return error.InvalidProgram;
+        const parse_ns = std.time.nanoTimestamp() - parse_start;
 
+        const exports_start = std.time.nanoTimestamp();
         var exports = SlaModuleExports.init(self.allocator, module.path);
         try exports.buildFromDecls(parsed.program.decls);
+        const exports_ns = std.time.nanoTimestamp() - exports_start;
 
+        const commit_start = std.time.nanoTimestamp();
         // Record the selected body-name sets into the module's persistent
         // tracking maps BEFORE freeing the old exports. Some selected names
         // (mangled method symbols such as `Type_method`) are strings owned by
@@ -439,6 +458,11 @@ pub const SlaModuleTable = struct {
         module.exports = exports;
         module.has_function_bodies = selected_function_bodies == null;
         module.has_macro_bodies = selected_macro_bodies == null;
+        return .{
+            .parse_ns = parse_ns,
+            .exports_ns = exports_ns,
+            .commit_ns = std.time.nanoTimestamp() - commit_start,
+        };
     }
 
     pub fn moduleImportByNamespace(self: *const SlaModuleTable, module_path: []const u8, namespace: []const u8) ?ResolvedModuleImport {

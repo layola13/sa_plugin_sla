@@ -26,6 +26,7 @@ pub const Parser = struct {
         parse_macro_bodies: bool = true,
         macro_body_names: ?*const std.StringHashMap(void) = null,
         parse_test_bodies: bool = true,
+        prescan_sla_import_types: bool = true,
     };
 
     allocator: std.mem.Allocator,
@@ -64,6 +65,19 @@ pub const Parser = struct {
         };
         p.tok = p.lex.next();
         return p;
+    }
+
+    pub fn knownTypeNames(self: *const Parser) []const []const u8 {
+        return self.known_types.items;
+    }
+
+    pub fn knownEnumNames(self: *const Parser) []const []const u8 {
+        return self.known_enums.items;
+    }
+
+    pub fn seedKnownTypeNames(self: *Parser, type_names: []const []const u8, enum_names: []const []const u8) !void {
+        try self.known_types.appendSlice(type_names);
+        try self.known_enums.appendSlice(enum_names);
     }
 
     fn advance(self: *Parser) void {
@@ -1190,7 +1204,7 @@ pub const Parser = struct {
         // `Name { ... }` from a block during its single forward pass.
         if (std.mem.endsWith(u8, import_path, ".sla")) {
             try self.recordImportModuleName(import_path);
-            self.prescanSlaImportTypes(import_path) catch {};
+            if (self.options.prescan_sla_import_types) self.prescanSlaImportTypes(import_path) catch {};
         }
 
         const node = try self.allocator.create(ast.Node);

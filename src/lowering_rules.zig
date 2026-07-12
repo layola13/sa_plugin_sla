@@ -1578,6 +1578,7 @@ pub const CallArgMaterializationKind = enum {
     copy_struct_value,
     generated_fn_ptr_value_slot,
     borrow_local_fn_ptr_value,
+    shallow_copy_preserved_value,
     value,
 };
 
@@ -1599,6 +1600,8 @@ pub const CallArgMaterializationInput = struct {
     copy_struct_value: bool = false,
     generated_fn_ptr_identifier: bool = false,
     local_fn_ptr_identifier: bool = false,
+    preserve_identifier_for_later_use: bool = false,
+    shallow_copy_value: bool = false,
     generated_scalar_const_identifier: bool = false,
 };
 
@@ -3096,6 +3099,9 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
         if (input.local_fn_ptr_identifier) {
             return .{ .kind = .borrow_local_fn_ptr_value, .release_after_call = false };
         }
+        if (input.preserve_identifier_for_later_use and input.shallow_copy_value) {
+            return .{ .kind = .shallow_copy_preserved_value, .release_after_call = false };
+        }
     }
     return .{
         .kind = .value,
@@ -3520,6 +3526,20 @@ test "shared lowering rules classify call materialization decisions" {
     });
     try std.testing.expectEqual(CallArgMaterializationKind.borrow_local_fn_ptr_value, local_fnptr_sab_plan.kind);
     try std.testing.expect(!local_fnptr_sab_plan.release_after_call);
+
+    const preserved_sab_plan = planCallArgMaterialization(&value, .{
+        .target = .direct_sab,
+        .preserve_identifier_for_later_use = true,
+        .shallow_copy_value = true,
+    });
+    try std.testing.expectEqual(CallArgMaterializationKind.shallow_copy_preserved_value, preserved_sab_plan.kind);
+    try std.testing.expect(!preserved_sab_plan.release_after_call);
+
+    const preserved_sa_plan = planCallArgMaterialization(&value, .{
+        .preserve_identifier_for_later_use = true,
+        .shallow_copy_value = true,
+    });
+    try std.testing.expectEqual(CallArgMaterializationKind.value, preserved_sa_plan.kind);
 }
 
 test "shared lowering rules classify result-slot value transfer" {

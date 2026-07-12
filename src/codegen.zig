@@ -7968,7 +7968,7 @@ pub const Codegen = struct {
                 try self.genCopyValueInto(copied, source_reg, target_param.ty);
                 break :blk .{ .reg = copied, .release_after_call = materialization.release_after_call };
             },
-            .generated_fn_ptr_value_slot, .borrow_local_fn_ptr_value => return CodegenError.CodegenError,
+            .generated_fn_ptr_value_slot, .borrow_local_fn_ptr_value, .shallow_copy_preserved_value => return CodegenError.CodegenError,
             .value => blk: {
                 if (lowering_rules.borrowedIdentifierName(arg)) |borrowed_name| {
                     if (self.addressable_bindings.contains(borrowed_name)) {

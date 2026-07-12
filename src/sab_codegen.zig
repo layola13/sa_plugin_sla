@@ -11526,11 +11526,10 @@ pub const Codegen = struct {
         return true;
     }
 
-    fn shouldShallowCopyPreservedValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
+    fn isShallowCopyValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
         const target_param = param orelse return false;
         if (target_param.is_borrow or target_param.is_move) return false;
         if (arg.* != .identifier) return false;
-        if (!self.identifierMustStayLiveForLaterUse(arg.identifier)) return false;
         const ty = arg_ty orelse return false;
         if (ty.* != .user_defined) return false;
         if (self.typeIsCopyValue(ty) or lowering_rules.isBorrowLikeType(ty)) return false;
@@ -11556,6 +11555,8 @@ pub const Codegen = struct {
             .copy_struct_value = if (param) |p| !p.is_borrow and !p.is_move and arg.* == .identifier and self.typeIsCopyStruct(p.ty) else false,
             .generated_fn_ptr_identifier = self.isGeneratedFnPtrValueArg(arg, param),
             .local_fn_ptr_identifier = self.isLocalFnPtrValueArg(arg, param),
+            .preserve_identifier_for_later_use = arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier),
+            .shallow_copy_value = self.isShallowCopyValueArg(arg, param, self.tc.expr_types.get(arg)),
             .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(arg),
         });
 
@@ -11592,6 +11593,16 @@ pub const Codegen = struct {
                     .release_reg = null,
                 };
             },
+            .shallow_copy_preserved_value => blk: {
+                const arg_ty = self.tc.expr_types.get(arg) orelse return Error.UnsupportedSabDirectFeature;
+                const arg_reg = try self.genExpr(@constCast(arg));
+                const copied = try self.genShallowCopyCallArgValue(arg_reg, arg_ty);
+                break :blk .{
+                    .operand = self.symbols.items[copied],
+                    .release_reg = null,
+                    .consume_reg = copied,
+                };
+            },
             .auto_borrow => blk: {
                 const arg_reg = try self.genExpr(@constCast(arg));
                 break :blk .{
@@ -11611,14 +11622,6 @@ pub const Codegen = struct {
                 }
                 const arg_reg = try self.genExpr(@constCast(arg));
                 const arg_ty = self.tc.expr_types.get(arg);
-                if (self.shouldShallowCopyPreservedValueArg(arg, param, arg_ty)) {
-                    const copied = try self.genShallowCopyCallArgValue(arg_reg, arg_ty.?);
-                    break :blk .{
-                        .operand = self.symbols.items[copied],
-                        .release_reg = null,
-                        .consume_reg = copied,
-                    };
-                }
                 const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                 const consumption = lowering_rules.planValueCallArgConsumption(
                     arg,
@@ -11652,6 +11655,7 @@ pub const Codegen = struct {
         auto_borrow_receiver: bool,
     ) anyerror!SabLoweredCallArg {
         const materialization = lowering_rules.planCallArgMaterialization(effective_arg, .{
+            .target = .direct_sab,
             .param = param,
             .arg_ty = self.tc.expr_types.get(effective_arg),
             .arg_index = arg_index,
@@ -11661,6 +11665,8 @@ pub const Codegen = struct {
             .copy_struct_value = if (param) |p| !p.is_borrow and !p.is_move and effective_arg.* == .identifier and self.typeIsCopyStruct(p.ty) else false,
             .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(effective_arg),
             .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(effective_arg),
+            .preserve_identifier_for_later_use = effective_arg.* == .identifier and self.identifierMustStayLiveForLaterUse(effective_arg.identifier),
+            .shallow_copy_value = self.isShallowCopyValueArg(effective_arg, param, self.tc.expr_types.get(effective_arg)),
         });
 
         return switch (materialization.kind) {
@@ -11683,7 +11689,29 @@ pub const Codegen = struct {
                 const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
                 break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
             },
-            .generated_fn_ptr_value_slot, .borrow_local_fn_ptr_value => return Error.UnsupportedSabDirectFeature,
+            .generated_fn_ptr_value_slot => blk: {
+                const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
+                var fnptr_slot = try self.materializeFnPtrValueArgSlot(arg_reg, materialization.release_after_call);
+                fnptr_slot.operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{fnptr_slot.operand});
+                break :blk fnptr_slot;
+            },
+            .borrow_local_fn_ptr_value => blk: {
+                const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
+                break :blk .{
+                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[arg_reg]}),
+                    .release_reg = null,
+                };
+            },
+            .shallow_copy_preserved_value => blk: {
+                const effective_ty = self.tc.expr_types.get(effective_arg) orelse return Error.UnsupportedSabDirectFeature;
+                const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
+                const copied = try self.genShallowCopyCallArgValue(arg_reg, effective_ty);
+                break :blk .{
+                    .operand = self.symbols.items[copied],
+                    .release_reg = null,
+                    .consume_reg = copied,
+                };
+            },
             .auto_borrow => blk: {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 break :blk .{
@@ -11704,14 +11732,6 @@ pub const Codegen = struct {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                 const effective_ty = self.tc.expr_types.get(effective_arg);
-                if (self.shouldShallowCopyPreservedValueArg(effective_arg, param, effective_ty)) {
-                    const copied = try self.genShallowCopyCallArgValue(arg_reg, effective_ty.?);
-                    break :blk .{
-                        .operand = self.symbols.items[copied],
-                        .release_reg = null,
-                        .consume_reg = copied,
-                    };
-                }
                 const consumption = lowering_rules.planValueCallArgConsumption(
                     effective_arg,
                     param,

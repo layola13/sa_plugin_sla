@@ -2604,6 +2604,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 # 2026-07-12: Folded empty project guard cleanup
 
+# 2026-07-12: Dual loose inferred-root state folding
+
+- [done] Added a narrow pre-reachability state model for the explicit clean collection + two loose open files path.
+  - Tracks known configured files, dual opens, inferred presence, secondary close, root count, and contains queries.
+  - Exact Zig state-transition regression passes; existing inferred/two-open guards and build 7/7 pass.
+  - Real multi-configured remains 3/3 and improves about 10.70s -> 10.46s, while strict 10s remains open at the boundary.
+
 - [done] Removed no-else constant `if false {}` statements created by root project-result folding.
   - Handles direct and expression-statement AST shapes.
   - Focused inferred invalid-body and cached inferred lookup regressions plus build 7/7 pass.

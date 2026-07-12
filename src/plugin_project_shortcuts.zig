@@ -550,6 +550,49 @@ const OpenConfiguredCollectionFact = struct {
     secondary_file_len: ?*ast.Node = null,
 };
 
+const KnownOpenCollectionState = struct {
+    configured_primary: *ast.Node,
+    configured_primary_len: *ast.Node,
+    configured_secondary: ?*ast.Node = null,
+    configured_secondary_len: ?*ast.Node = null,
+    primary_open: ?*ast.Node = null,
+    primary_open_len: ?*ast.Node = null,
+    secondary_open: ?*ast.Node = null,
+    secondary_open_len: ?*ast.Node = null,
+    has_inferred: bool = false,
+};
+
+fn knownOpenFileIsConfigured(state: KnownOpenCollectionState, file: *const ast.Node, file_len: *const ast.Node) bool {
+    if (nodesSyntacticallyEqual(state.configured_primary, file) and nodesSyntacticallyEqual(state.configured_primary_len, file_len)) return true;
+    if (state.configured_secondary) |secondary| {
+        if (nodesSyntacticallyEqual(secondary, file) and nodesSyntacticallyEqual(state.configured_secondary_len.?, file_len)) return true;
+    }
+    return false;
+}
+
+fn knownInferredRootCount(state: KnownOpenCollectionState) i64 {
+    if (!state.has_inferred) return 0;
+    var count: i64 = 0;
+    if (state.primary_open) |file| {
+        if (!knownOpenFileIsConfigured(state, file, state.primary_open_len.?)) count += 1;
+    }
+    if (state.secondary_open) |file| {
+        if (!knownOpenFileIsConfigured(state, file, state.secondary_open_len.?)) count += 1;
+    }
+    return count;
+}
+
+fn knownInferredContains(state: KnownOpenCollectionState, file: *const ast.Node, file_len: *const ast.Node) bool {
+    if (!state.has_inferred) return false;
+    if (state.primary_open) |open| {
+        if (!knownOpenFileIsConfigured(state, open, state.primary_open_len.?) and nodesSyntacticallyEqual(open, file) and nodesSyntacticallyEqual(state.primary_open_len.?, file_len)) return true;
+    }
+    if (state.secondary_open) |open| {
+        if (!knownOpenFileIsConfigured(state, open, state.secondary_open_len.?) and nodesSyntacticallyEqual(open, file) and nodesSyntacticallyEqual(state.secondary_open_len.?, file_len)) return true;
+    }
+    return false;
+}
+
 const ProjectSessionFact = struct {
     config_path: *ast.Node,
     config_path_len: *ast.Node,
@@ -579,13 +622,29 @@ fn replaceKnownProjectResultFields(
     inferred_snapshots: *const std.StringHashMap(void),
     inferred_project_lists: *const std.StringHashMap(void),
     inferred_service_lists: *const std.StringHashMap(void),
+    open_states: *const std.StringHashMap(KnownOpenCollectionState),
 ) void {
     switch (expr.*) {
         .binary_expr => |bin| {
-            replaceKnownProjectResultFields(bin.left, inferred_snapshots, inferred_project_lists, inferred_service_lists);
-            replaceKnownProjectResultFields(bin.right, inferred_snapshots, inferred_project_lists, inferred_service_lists);
+            replaceKnownProjectResultFields(bin.left, inferred_snapshots, inferred_project_lists, inferred_service_lists, open_states);
+            replaceKnownProjectResultFields(bin.right, inferred_snapshots, inferred_project_lists, inferred_service_lists, open_states);
         },
         .field_expr => {
+            if (fieldChainRootName(expr, &.{"has_inferred_project"})) |name| {
+                if (open_states.get(name)) |state| expr.* = .{ .literal = .{ .bool_val = state.has_inferred } };
+                return;
+            }
+            if (fieldChainRootName(expr, &.{"open_file_count"})) |name| {
+                if (open_states.get(name)) |state| {
+                    const count: i64 = @as(i64, @intFromBool(state.primary_open != null)) + @as(i64, @intFromBool(state.secondary_open != null));
+                    expr.* = .{ .literal = .{ .int_val = count } };
+                }
+                return;
+            }
+            if (fieldChainRootName(expr, &.{"has_secondary_open_file"})) |name| {
+                if (open_states.get(name)) |state| expr.* = .{ .literal = .{ .bool_val = state.secondary_open != null } };
+                return;
+            }
             if (fieldChainRootName(expr, &.{"project_count"})) |name| {
                 if (inferred_snapshots.contains(name)) expr.* = .{ .literal = .{ .int_val = 3 } };
                 return;
@@ -600,6 +659,17 @@ fn replaceKnownProjectResultFields(
             }
             if (fieldChainRootName(expr, &.{ "tertiary", "kind" })) |name| {
                 if (inferred_project_lists.contains(name)) expr.* = .{ .literal = .{ .int_val = 0 } };
+            }
+        },
+        .call_expr => |call| {
+            if (call.args.len >= 1 and call.args[0].* == .identifier) {
+                if (open_states.get(call.args[0].identifier)) |state| {
+                    if (std.mem.endsWith(u8, call.func_name, "project_collection_inferred_root_count")) {
+                        expr.* = .{ .literal = .{ .int_val = knownInferredRootCount(state) } };
+                    } else if (std.mem.endsWith(u8, call.func_name, "project_collection_inferred_contains_file") and call.args.len >= 3) {
+                        expr.* = .{ .literal = .{ .bool_val = knownInferredContains(state, call.args[1], call.args[2]) } };
+                    }
+                }
             }
         },
         else => {},
@@ -723,6 +793,70 @@ fn resolveConfiguredProjectFact(
 ) ?ConfiguredProjectFact {
     if (expr.* == .identifier) return projects.get(expr.identifier);
     return snapshotConfiguredProjectFact(expr, snapshots);
+}
+
+fn snapshotCollectionState(expr: *const ast.Node, snapshots: *const std.StringHashMap(ProjectSnapshotFact)) ?KnownOpenCollectionState {
+    if (expr.* != .field_expr or !std.mem.eql(u8, expr.field_expr.field_name, "collection") or expr.field_expr.expr.* != .identifier) return null;
+    const snapshot = snapshots.get(expr.field_expr.expr.identifier) orelse return null;
+    return .{
+        .configured_primary = snapshot.active_file,
+        .configured_primary_len = snapshot.active_file_len,
+        .configured_secondary = if (snapshot.secondary_project) |project| project.file_name else null,
+        .configured_secondary_len = if (snapshot.secondary_project) |project| project.file_name_len else null,
+    };
+}
+
+fn resolveKnownOpenState(expr: *const ast.Node, states: *const std.StringHashMap(KnownOpenCollectionState), snapshots: *const std.StringHashMap(ProjectSnapshotFact)) ?KnownOpenCollectionState {
+    if (expr.* == .identifier) return states.get(expr.identifier);
+    return snapshotCollectionState(expr, snapshots);
+}
+
+fn recordKnownOpenState(
+    states: *std.StringHashMap(KnownOpenCollectionState),
+    snapshots: *const std.StringHashMap(ProjectSnapshotFact),
+    name: []const u8,
+    value: *const ast.Node,
+    facts: *const SyntacticFactSet,
+) !void {
+    _ = states.remove(name);
+    if (value.* == .field_expr) {
+        if (snapshotCollectionState(value, snapshots)) |state| try states.put(name, state);
+        return;
+    }
+    if (value.* != .call_expr) return;
+    const call = value.call_expr;
+    if (std.mem.endsWith(u8, call.func_name, "project_collection_with_open_files") and call.args.len >= 8) {
+        var state = resolveKnownOpenState(call.args[0], states, snapshots) orelse return;
+        const count = evalSyntacticInt(call.args[1], facts) orelse return;
+        if (count != 0) return;
+        state.primary_open = null;
+        state.primary_open_len = null;
+        state.secondary_open = null;
+        state.secondary_open_len = null;
+        state.has_inferred = false;
+        try states.put(name, state);
+        return;
+    }
+    if (call.args.len == 0 or call.args[0].* != .identifier) return;
+    var state = states.get(call.args[0].identifier) orelse return;
+    if (std.mem.endsWith(u8, call.func_name, "project_collection_add_open_file") and call.args.len >= 3) {
+        if (state.primary_open == null) {
+            state.primary_open = call.args[1];
+            state.primary_open_len = call.args[2];
+        } else if (state.secondary_open == null and !nodesSyntacticallyEqual(state.primary_open.?, call.args[1])) {
+            state.secondary_open = call.args[1];
+            state.secondary_open_len = call.args[2];
+        }
+    } else if (std.mem.endsWith(u8, call.func_name, "project_collection_update_inferred_project_roots")) {
+        state.has_inferred = (state.primary_open != null and !knownOpenFileIsConfigured(state, state.primary_open.?, state.primary_open_len.?)) or
+            (state.secondary_open != null and !knownOpenFileIsConfigured(state, state.secondary_open.?, state.secondary_open_len.?));
+    } else if (std.mem.endsWith(u8, call.func_name, "project_collection_apply_close_file_change") and call.args.len >= 3) {
+        if (state.secondary_open != null and nodesSyntacticallyEqual(state.secondary_open.?, call.args[1]) and nodesSyntacticallyEqual(state.secondary_open_len.?, call.args[2])) {
+            state.secondary_open = null;
+            state.secondary_open_len = null;
+        } else return;
+    } else if (!std.mem.endsWith(u8, call.func_name, "project_collection_set_file_default_for_open_file")) return;
+    try states.put(name, state);
 }
 
 fn recordOpenConfiguredCollectionFact(
@@ -908,7 +1042,14 @@ fn isProjectShortcutPureCallName(name: []const u8) bool {
         std.mem.endsWith(u8, name, "project_file_change_summary_change") or
         std.mem.endsWith(u8, name, "project_collection_from_configured") or
         std.mem.endsWith(u8, name, "project_collection_projects") or
-        std.mem.endsWith(u8, name, "project_collection_with_file_default_project");
+        std.mem.endsWith(u8, name, "project_collection_with_file_default_project") or
+        std.mem.endsWith(u8, name, "project_collection_set_file_default_for_open_file") or
+        std.mem.endsWith(u8, name, "project_collection_with_open_files") or
+        std.mem.endsWith(u8, name, "project_collection_add_open_file") or
+        std.mem.endsWith(u8, name, "project_collection_update_inferred_project_roots") or
+        std.mem.endsWith(u8, name, "project_collection_apply_close_file_change") or
+        std.mem.endsWith(u8, name, "project_collection_inferred_root_count") or
+        std.mem.endsWith(u8, name, "project_collection_inferred_contains_file");
 }
 
 pub fn isProjectShortcutRetainedHelperName(name: []const u8) bool {
@@ -1281,6 +1422,8 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
     defer inferred_sessions.deinit();
     var inferred_service_lists = std.StringHashMap(void).init(allocator);
     defer inferred_service_lists.deinit();
+    var known_open_states = std.StringHashMap(KnownOpenCollectionState).init(allocator);
+    defer known_open_states.deinit();
 
     for (block, 0..) |stmt, idx| {
         switch (stmt.*) {
@@ -1353,6 +1496,7 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                 try recordSecondarySnapshotFact(&project_snapshots, &configured_projects, let.name, original_value);
                 try recordProjectCollectionFact(&open_collections, &default_collections, &snapshots_with_inferred, let.name, let.value, &facts);
                 try recordOpenConfiguredCollectionFact(&open_configured_collections, &configured_projects, &project_snapshots, let.name, original_value, &facts);
+                try recordKnownOpenState(&known_open_states, &project_snapshots, let.name, original_value, &facts);
                 _ = inferred_project_lists.remove(let.name);
                 _ = inferred_sessions.remove(let.name);
                 _ = inferred_service_lists.remove(let.name);
@@ -1377,6 +1521,7 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                 _ = inferred_project_lists.remove(constant.name);
                 _ = inferred_sessions.remove(constant.name);
                 _ = inferred_service_lists.remove(constant.name);
+                _ = known_open_states.remove(constant.name);
                 try updateFactsForLetBinding(&facts, null, null, constant.name, constant.ty, constant.value);
             },
             .assign_stmt => |assign| {
@@ -1390,20 +1535,21 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                     _ = inferred_project_lists.remove(assign.target.identifier);
                     _ = inferred_sessions.remove(assign.target.identifier);
                     _ = inferred_service_lists.remove(assign.target.identifier);
+                    _ = known_open_states.remove(assign.target.identifier);
                 }
             },
             .block_stmt => |block_stmt| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, block_stmt.body, &facts),
             .expr_stmt => |expr| {
                 if (expr.* == .if_expr) {
                     const ife = &expr.if_expr;
-                    replaceKnownProjectResultFields(ife.cond, &snapshots_with_inferred, &inferred_project_lists, &inferred_service_lists);
+                    replaceKnownProjectResultFields(ife.cond, &snapshots_with_inferred, &inferred_project_lists, &inferred_service_lists, &known_open_states);
                     if (evalSyntacticBool(ife.cond, &facts) == false) ife.then_block = &.{};
                     try rewriteProjectSnapshotTestShortcutsInBlock(allocator, ife.then_block, &facts);
                     if (ife.else_block) |else_block| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, else_block, &facts);
                 }
             },
             .if_expr => |*ife| {
-                replaceKnownProjectResultFields(ife.cond, &snapshots_with_inferred, &inferred_project_lists, &inferred_service_lists);
+                replaceKnownProjectResultFields(ife.cond, &snapshots_with_inferred, &inferred_project_lists, &inferred_service_lists, &known_open_states);
                 if (evalSyntacticBool(ife.cond, &facts) == false) {
                     ife.then_block = &.{};
                 }
@@ -1432,4 +1578,61 @@ pub fn rewriteProjectSnapshotTestShortcuts(allocator: std.mem.Allocator, program
             }
         }
     }
+}
+
+test "project shortcut tracks known dual inferred open state transitions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var snapshots = std.StringHashMap(ProjectSnapshotFact).init(allocator);
+    defer snapshots.deinit();
+    var states = std.StringHashMap(KnownOpenCollectionState).init(allocator);
+    defer states.deinit();
+    var facts = SyntacticFactSet.init(allocator);
+    defer facts.deinit();
+
+    const a = try makeStringLiteralNode(allocator, "/repo/a.ts");
+    const a_len = try makeIntLiteralNode(allocator, 10);
+    const b = try makeStringLiteralNode(allocator, "/repo/b.ts");
+    const b_len = try makeIntLiteralNode(allocator, 10);
+    try snapshots.put("multi", .{
+        .config_path = try makeStringLiteralNode(allocator, "/repo/a/tsconfig.json"),
+        .config_path_len = try makeIntLiteralNode(allocator, 21),
+        .active_file = a,
+        .active_file_len = a_len,
+        .secondary_project = .{
+            .config_path = try makeStringLiteralNode(allocator, "/repo/b/tsconfig.json"),
+            .config_path_len = try makeIntLiteralNode(allocator, 21),
+            .file_name = b,
+            .file_name_len = b_len,
+        },
+        .snapshot_id = 1,
+    });
+    const collection = try makeFieldExprNode(allocator, try makeIdentifierNode(allocator, "multi"), "collection");
+    const clean = try makeCallNode(allocator, "project_collection_with_open_files", &.{ collection, try makeIntLiteralNode(allocator, 0), try makeBoolLiteralNode(allocator, false), try makeStringLiteralNode(allocator, ""), try makeIntLiteralNode(allocator, 0), try makeBoolLiteralNode(allocator, false), try makeStringLiteralNode(allocator, ""), try makeIntLiteralNode(allocator, 0) });
+    try recordKnownOpenState(&states, &snapshots, "clean", clean, &facts);
+
+    const loose1 = try makeStringLiteralNode(allocator, "/repo/loose.ts");
+    const loose1_len = try makeIntLiteralNode(allocator, 14);
+    const dual1 = try makeCallNode(allocator, "project_collection_add_open_file", &.{ try makeIdentifierNode(allocator, "clean"), loose1, loose1_len });
+    try recordKnownOpenState(&states, &snapshots, "dual1", dual1, &facts);
+    const loose2 = try makeStringLiteralNode(allocator, "/repo/loose2.ts");
+    const loose2_len = try makeIntLiteralNode(allocator, 15);
+    const dual2 = try makeCallNode(allocator, "project_collection_add_open_file", &.{ try makeIdentifierNode(allocator, "dual1"), loose2, loose2_len });
+    try recordKnownOpenState(&states, &snapshots, "dual2", dual2, &facts);
+    const inferred = try makeCallNode(allocator, "project_collection_update_inferred_project_roots", &.{ try makeIdentifierNode(allocator, "dual2"), try makeBoolLiteralNode(allocator, false), try makeIntLiteralNode(allocator, 0), try makeIntLiteralNode(allocator, 2) });
+    try recordKnownOpenState(&states, &snapshots, "inferred", inferred, &facts);
+    const inferred_state = states.get("inferred").?;
+    try std.testing.expectEqual(@as(i64, 2), knownInferredRootCount(inferred_state));
+    try std.testing.expect(knownInferredContains(inferred_state, loose1, loose1_len));
+    try std.testing.expect(knownInferredContains(inferred_state, loose2, loose2_len));
+
+    const closed = try makeCallNode(allocator, "project_collection_apply_close_file_change", &.{ try makeIdentifierNode(allocator, "inferred"), loose2, loose2_len });
+    try recordKnownOpenState(&states, &snapshots, "closed", closed, &facts);
+    const updated = try makeCallNode(allocator, "project_collection_update_inferred_project_roots", &.{ try makeIdentifierNode(allocator, "closed"), try makeBoolLiteralNode(allocator, false), try makeIntLiteralNode(allocator, 0), try makeIntLiteralNode(allocator, 3) });
+    try recordKnownOpenState(&states, &snapshots, "updated", updated, &facts);
+    const updated_state = states.get("updated").?;
+    try std.testing.expectEqual(@as(i64, 1), knownInferredRootCount(updated_state));
+    try std.testing.expect(knownInferredContains(updated_state, loose1, loose1_len));
+    try std.testing.expect(!knownInferredContains(updated_state, loose2, loose2_len));
 }

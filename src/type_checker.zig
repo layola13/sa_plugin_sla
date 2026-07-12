@@ -3689,7 +3689,7 @@ pub const TypeChecker = struct {
                 if (rootIdentifier(aw.expr)) |name| {
                     const sym = scope.lookup(name) orelse return TypeError.UndefinedVariable;
                     if (sym.state == .consumed) return TypeError.UseAfterMove;
-                    sym.state = .consumed;
+                    try self.consumeBinding(scope, name, sym, "await");
                 }
                 return inner_ty;
             },
@@ -3960,7 +3960,7 @@ pub const TypeChecker = struct {
                         if (rootIdentifier(call.args[0])) |name| {
                             const sym = scope.lookup(name) orelse return TypeError.UndefinedVariable;
                             if (sym.state == .consumed) return TypeError.UseAfterMove;
-                            sym.state = .consumed;
+                            try self.consumeBinding(scope, name, sym, "mem::forget");
                         }
                         const ty = try self.allocator.create(ast.Type);
                         ty.* = .{ .primitive = .void_type };
@@ -3978,7 +3978,7 @@ pub const TypeChecker = struct {
                         if (call.args[0].* == .identifier) {
                             const sym = scope.lookup(call.args[0].identifier) orelse return TypeError.UndefinedVariable;
                             if (sym.state == .consumed) return TypeError.UseAfterMove;
-                            sym.state = .consumed;
+                            try self.consumeBinding(scope, call.args[0].identifier, sym, "ManuallyDrop::into_inner");
                         }
                         return inner_ty;
                     }
@@ -4125,7 +4125,7 @@ pub const TypeChecker = struct {
                         if (rootIdentifier(call.args[0])) |name| {
                             const sym = scope.lookup(name) orelse return TypeError.UndefinedVariable;
                             if (sym.state == .consumed) return TypeError.UseAfterMove;
-                            sym.state = .consumed;
+                            try self.consumeBinding(scope, name, sym, "Box::into_raw");
                         }
                         return try self.makePointerType(inner_ty);
                     }
@@ -5649,7 +5649,7 @@ pub const TypeChecker = struct {
                 const inner_ty = try self.checkExpr(trye.expr, scope);
                 if (trye.expr.* == .identifier) {
                     if (scope.lookup(trye.expr.identifier)) |source| {
-                        if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) source.state = .consumed;
+                        if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) try self.consumeBinding(scope, trye.expr.identifier, source, "try propagation");
                     }
                 }
 

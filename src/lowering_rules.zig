@@ -492,6 +492,12 @@ pub fn planWhileLetPattern(pattern: ast.EnumPattern, has_user_enum_decl: bool) ?
 }
 
 pub fn scalarMatchGuardTempCount(guard: *const ast.Node) ?usize {
+    if (guard.* == .call_expr) {
+        const call = guard.call_expr;
+        if (call.associated_target != null) return null;
+        for (call.args) |arg| if (arg.* != .identifier) return null;
+        return 1;
+    }
     if (guard.* != .binary_expr) return null;
     const bin = guard.binary_expr;
     return switch (bin.op) {
@@ -3902,7 +3908,7 @@ test "shared scalar match guard scratch planning" {
     try std.testing.expect(supportsScalarMatchGuard(&compound));
 
     var call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &.{} } };
-    try std.testing.expectEqual(@as(?usize, null), scalarMatchGuardTempCount(&call));
+    try std.testing.expectEqual(@as(?usize, 1), scalarMatchGuardTempCount(&call));
 }
 
 test "shared executor task buffer classification" {

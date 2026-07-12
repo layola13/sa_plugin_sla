@@ -11461,6 +11461,16 @@ pub const Codegen = struct {
         call_plan: lowering_rules.StaticCallPlan,
         call: ast.CallExpr,
     ) anyerror!u32 {
+        return try self.emitPlannedStaticCallTo(expr_ty, call_plan, call, null);
+    }
+
+    fn emitPlannedStaticCallTo(
+        self: *Codegen,
+        expr_ty: ?*const ast.Type,
+        call_plan: lowering_rules.StaticCallPlan,
+        call: ast.CallExpr,
+        dst_override: ?u32,
+    ) anyerror!u32 {
         const emit_symbol = lowering_rules.staticCallEmitSymbol(call_plan);
         const lowered = try self.loweredFuncSymbol(emit_symbol);
         var text = std.ArrayList(u8).init(self.allocator);
@@ -11485,7 +11495,13 @@ pub const Codegen = struct {
             try text.appendSlice(lowered_arg.operand);
         }
         try text.append(')');
-        const dst = try self.emitPlannedCallBody(lowering_rules.planStaticCallResult(self.tc, call_plan, expr_ty), try text.toOwnedSlice());
+        const result_plan = lowering_rules.planStaticCallResult(self.tc, call_plan, expr_ty);
+        const body = try text.toOwnedSlice();
+        const dst = if (dst_override) |dst| blk: {
+            if (result_plan.returns_void) return Error.UnsupportedSabDirectFeature;
+            try self.emitCallBody(dst, body);
+            break :blk dst;
+        } else try self.emitPlannedCallBody(result_plan, body);
         try self.releaseNonLocalTemps(release_regs.items);
         for (consume_regs.items) |reg| try self.emitMove(reg);
         if (maybe_func) |func| {
@@ -12969,6 +12985,13 @@ pub const Codegen = struct {
 
     fn genScalarMatchGuard(self: *Codegen, guard: *ast.Node, scratch: []const u32, cursor: *usize) anyerror!u32 {
         if (!lowering_rules.supportsScalarMatchGuard(guard)) return Error.UnsupportedSabDirectFeature;
+        if (guard.* == .call_expr) {
+            if (cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;
+            const dst = scratch[cursor.*];
+            cursor.* += 1;
+            const call_plan = lowering_rules.planStaticCall(self.tc, guard, guard.call_expr) orelse return Error.UnsupportedSabDirectFeature;
+            return try self.emitPlannedStaticCallTo(self.tc.expr_types.get(guard), call_plan, guard.call_expr, dst);
+        }
         const bin = guard.binary_expr;
         const lhs: inst.Operand = if (bin.op == .logical_and or bin.op == .logical_or)
             .{ .reg = try self.genScalarMatchGuard(bin.left, scratch, cursor) }

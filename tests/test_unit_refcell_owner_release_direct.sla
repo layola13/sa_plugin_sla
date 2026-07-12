@@ -449,3 +449,19 @@ fn owner_release_explicit_cell() -> RefCell<OwnerReleasePayload> {
     };
     !borrowed;
 }
+
+@test "refcell local deref assignment keeps borrow handle"() {
+    let cell = RefCell::new(1i64);
+    let borrowed: &i64 = cell.borrow_mut();
+    *borrowed = 21i64;
+    *borrowed = 42i64;
+    if *borrowed != 42 {
+        panic(30949);
+    };
+    !borrowed;
+    let checked: &i64 = cell.borrow();
+    if *checked != 42 {
+        panic(30950);
+    };
+    !checked;
+}

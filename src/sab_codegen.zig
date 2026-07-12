@@ -2551,9 +2551,10 @@ pub const Codegen = struct {
 
     fn storeResultSlotTransferredValue(self: *Codegen, slot: u32, src: u32, target_ty: *const ast.Type) !void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
-        if (!plan.transfers_value) {
-            if (!self.isLocalReg(src)) try self.emitRelease(src);
-            return;
+        switch (lowering_rules.planResultSlotStoreLifecycle(plan, !self.isLocalReg(src))) {
+            .release_source => return self.emitRelease(src),
+            .keep_source => return,
+            .transfer_value_state => {},
         }
 
         switch (lowering_rules.planResultSlotRefCellStore(plan, self.refcell_borrow_values.contains(src))) {

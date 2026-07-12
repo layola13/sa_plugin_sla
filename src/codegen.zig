@@ -969,8 +969,13 @@ pub const Codegen = struct {
         _ = try self.ensureResultSlotRefCellSlot(slot);
     }
 
-    fn storeResultSlotTransferredValueState(self: *Codegen, slot: []const u8, src: []const u8, target_ty: *const ast.Type) CodegenError!void {
+    fn storeResultSlotTransferredValueState(self: *Codegen, slot: []const u8, src: []const u8, target_ty: *const ast.Type, source_needs_release: bool) CodegenError!void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
+        switch (lowering_rules.planResultSlotStoreLifecycle(plan, source_needs_release)) {
+            .release_source => return self.emitRelease(src),
+            .keep_source => return,
+            .transfer_value_state => {},
+        }
         const refcell_handle = self.refcell_borrow_handles.get(src);
         switch (lowering_rules.planResultSlotRefCellStore(plan, refcell_handle != null)) {
             .store_borrow_handle_companion => {
@@ -7009,7 +7014,6 @@ pub const Codegen = struct {
         const value_expr = last.expr_stmt;
         const value_reg = try self.genExpr(value_expr, hoisted_allocs);
         const value_ty = self.tc.expr_types.get(value_expr) orelse return CodegenError.CodegenError;
-        const transfer_value = lowering_rules.planResultSlotTransfer(target_ty).transfers_value;
 
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
             const copied = try self.newTmp();
@@ -7023,11 +7027,7 @@ pub const Codegen = struct {
         } else {
             self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_ptr, value_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
         }
-        if (transfer_value) {
-            try self.storeResultSlotTransferredValueState(target_ptr, value_reg, target_ty);
-        } else if (callArgNeedsRelease(value_expr)) {
-            try self.emitRelease(value_reg);
-        }
+        try self.storeResultSlotTransferredValueState(target_ptr, value_reg, target_ty, callArgNeedsRelease(value_expr));
 
         if (!stmtTerminates(last)) {
             if (self.tc.cleanups.get(last)) |list| {
@@ -11967,7 +11967,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 const chained_reg = try self.genInlineClosureUnary(&call.args[1].closure_literal, value_reg, hoisted_allocs);
                                 self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ result_slot, chained_reg }) catch return CodegenError.CodegenError;
-                                try self.storeResultSlotTransferredValueState(result_slot, chained_reg, ty);
+                                try self.storeResultSlotTransferredValueState(result_slot, chained_reg, ty, true);
                                 try self.emitRelease(value_reg);
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
@@ -11976,7 +11976,7 @@ pub const Codegen = struct {
                                 const none_reg = try self.newTmp();
                                 self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{none_reg}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ result_slot, none_reg }) catch return CodegenError.CodegenError;
-                                try self.storeResultSlotTransferredValueState(result_slot, none_reg, ty);
+                                try self.storeResultSlotTransferredValueState(result_slot, none_reg, ty, true);
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
@@ -12023,22 +12023,14 @@ pub const Codegen = struct {
                                 const value_reg = try self.newTmp();
                                 self.out.writer().print("    EXPAND OPTION_GET {s}, {s}\n", .{ value_reg, recv_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, value_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                if (lowering_rules.planResultSlotTransfer(inner_ty).transfers_value) {
-                                    try self.storeResultSlotTransferredValueState(result_slot, value_reg, inner_ty);
-                                } else {
-                                    try self.emitRelease(value_reg);
-                                }
+                                try self.storeResultSlotTransferredValueState(result_slot, value_reg, inner_ty, true);
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
                                 self.out.writer().print("{s}:\n", .{none_label}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    !{s}\n", .{is_some}) catch return CodegenError.CodegenError;
                                 const default_reg = try self.genInlineClosureNullary(&call.args[1].closure_literal, hoisted_allocs);
                                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ result_slot, default_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                if (lowering_rules.planResultSlotTransfer(inner_ty).transfers_value) {
-                                    try self.storeResultSlotTransferredValueState(result_slot, default_reg, inner_ty);
-                                } else {
-                                    try self.emitRelease(default_reg);
-                                }
+                                try self.storeResultSlotTransferredValueState(result_slot, default_reg, inner_ty, true);
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
 
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;

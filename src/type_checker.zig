@@ -30,6 +30,11 @@ pub const ImportedMacro = struct {
     direct_callees: []const []const u8 = &.{},
 };
 
+const MacroConsumptionKey = struct {
+    macro_decl: *const ast.MacroDecl,
+    param_index: usize,
+};
+
 pub const Symbol = struct {
     name: []const u8,
     ty: *ast.Type,
@@ -2658,6 +2663,92 @@ pub const TypeChecker = struct {
         try self.checkBlock(macro_decl.body, scope, void_ty, null, null);
     }
 
+    fn macroParamConsumesValue(self: *TypeChecker, macro_decl: *const ast.MacroDecl, param_index: usize) TypeError!bool {
+        var visiting = std.AutoHashMap(MacroConsumptionKey, void).init(self.allocator);
+        defer visiting.deinit();
+        return try self.macroParamConsumesValueRecursive(macro_decl, param_index, &visiting);
+    }
+
+    fn macroParamConsumesValueRecursive(
+        self: *TypeChecker,
+        macro_decl: *const ast.MacroDecl,
+        param_index: usize,
+        visiting: *std.AutoHashMap(MacroConsumptionKey, void),
+    ) TypeError!bool {
+        if (param_index >= macro_decl.params.len) return false;
+        const key = MacroConsumptionKey{ .macro_decl = macro_decl, .param_index = param_index };
+        if (visiting.contains(key)) return false;
+        try visiting.put(key, {});
+        defer _ = visiting.remove(key);
+
+        const name = macro_decl.params[param_index];
+        if (control_flow_rules.macroParamConsumesValue(macro_decl.body, name)) return true;
+        for (macro_decl.body) |node| {
+            if (try self.macroNodeForwardsConsumption(node, name, visiting)) return true;
+        }
+        return false;
+    }
+
+    fn macroNodeForwardsConsumption(
+        self: *TypeChecker,
+        node: *const ast.Node,
+        name: []const u8,
+        visiting: *std.AutoHashMap(MacroConsumptionKey, void),
+    ) TypeError!bool {
+        return switch (node.*) {
+            .call_expr => |call| blk: {
+                if (self.macros.get(call.func_name)) |nested| {
+                    for (nested.params, call.args, 0..) |_, arg, index| {
+                        const root = rootIdentifier(arg) orelse continue;
+                        if (!std.mem.eql(u8, root, name)) continue;
+                        if (try self.macroParamConsumesValueRecursive(nested, index, visiting)) break :blk true;
+                    }
+                }
+                for (call.args) |arg| if (try self.macroNodeForwardsConsumption(arg, name, visiting)) break :blk true;
+                break :blk false;
+            },
+            .expr_stmt => |expr| self.macroNodeForwardsConsumption(expr, name, visiting),
+            .assign_stmt => |assign| self.macroNodeForwardsConsumption(assign.value, name, visiting),
+            .let_stmt => |let| self.macroNodeForwardsConsumption(let.value, name, visiting),
+            .return_stmt => |ret| if (ret.value) |value| self.macroNodeForwardsConsumption(value, name, visiting) else false,
+            .block_stmt => |block| blk: {
+                for (block.body) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
+                break :blk false;
+            },
+            .if_expr => |ife| blk: {
+                if (try self.macroNodeForwardsConsumption(ife.cond, name, visiting)) break :blk true;
+                for (ife.then_block) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
+                if (ife.else_block) |else_block| {
+                    for (else_block) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
+                }
+                break :blk false;
+            },
+            .binary_expr => |binary| try self.macroNodeForwardsConsumption(binary.left, name, visiting) or
+                try self.macroNodeForwardsConsumption(binary.right, name, visiting),
+            .field_expr => |field| self.macroNodeForwardsConsumption(field.expr, name, visiting),
+            .index_expr => |index| try self.macroNodeForwardsConsumption(index.target, name, visiting) or
+                try self.macroNodeForwardsConsumption(index.index, name, visiting),
+            .cast_expr => |cast| self.macroNodeForwardsConsumption(cast.expr, name, visiting),
+            .borrow_expr => |borrow| self.macroNodeForwardsConsumption(borrow.expr, name, visiting),
+            .move_expr => |move| self.macroNodeForwardsConsumption(move.expr, name, visiting),
+            .deref_expr => |deref| self.macroNodeForwardsConsumption(deref.expr, name, visiting),
+            .try_expr => |try_expr| self.macroNodeForwardsConsumption(try_expr.expr, name, visiting),
+            .await_expr => |await_expr| self.macroNodeForwardsConsumption(await_expr.expr, name, visiting),
+            .for_stmt => |for_stmt| blk: {
+                if (try self.macroNodeForwardsConsumption(for_stmt.start, name, visiting)) break :blk true;
+                if (for_stmt.end) |end| if (try self.macroNodeForwardsConsumption(end, name, visiting)) break :blk true;
+                for (for_stmt.body) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
+                break :blk false;
+            },
+            .while_stmt => |while_stmt| blk: {
+                if (try self.macroNodeForwardsConsumption(while_stmt.cond, name, visiting)) break :blk true;
+                for (while_stmt.body) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
     fn checkTest(self: *TypeChecker, test_decl: *ast.TestDecl) !void {
         var scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
@@ -5125,8 +5216,8 @@ pub const TypeChecker = struct {
                     for (call.args) |arg| {
                         _ = try self.checkExpr(arg, scope);
                     }
-                    for (mac.params, call.args) |param, arg| {
-                        if (!control_flow_rules.macroParamConsumesValue(mac.body, param)) continue;
+                    for (mac.params, call.args, 0..) |_, arg, index| {
+                        if (!try self.macroParamConsumesValue(mac, index)) continue;
                         if (arg.* != .identifier) continue;
                         const sym = scope.lookup(arg.identifier) orelse return TypeError.UndefinedVariable;
                         if (sym.state == .consumed) return TypeError.UseAfterMove;

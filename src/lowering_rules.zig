@@ -515,6 +515,10 @@ pub fn scalarMatchGuardTempCount(guard: *const ast.Node) ?usize {
 
 fn scalarMatchGuardValueTempCount(value: *const ast.Node) ?usize {
     if (value.* == .identifier or (value.* == .literal and value.literal == .int_val)) return 0;
+    if (value.* == .field_expr) {
+        if (value.field_expr.expr.* != .identifier) return null;
+        return 1;
+    }
     if (value.* == .cast_expr) {
         if (value.cast_expr.ty.* != .primitive) return null;
         return (scalarMatchGuardValueTempCount(value.cast_expr.expr) orelse return null) + 1;
@@ -3937,6 +3941,11 @@ test "shared scalar match guard scratch planning" {
     const cast_call_args = [_]*ast.Node{&adjusted_cast};
     var cast_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &cast_call_args } };
     try std.testing.expectEqual(@as(?usize, 3), scalarMatchGuardTempCount(&cast_call));
+    var limits = ast.Node{ .identifier = "limits" };
+    var floor_field = ast.Node{ .field_expr = .{ .expr = &limits, .field_name = "floor" } };
+    const field_call_args = [_]*ast.Node{ &value, &floor_field };
+    var field_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &field_call_args } };
+    try std.testing.expectEqual(@as(?usize, 2), scalarMatchGuardTempCount(&field_call));
 }
 
 test "shared executor task buffer classification" {

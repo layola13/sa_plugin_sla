@@ -8534,7 +8534,13 @@ pub const Codegen = struct {
                 .evaluated_reg = evaluated_reg,
                 .release_evaluated_reg = release_evaluated_reg,
             };
-            if (evaluated_reg) |reg| try self.pushLocal(param, reg, true);
+            if (evaluated_reg) |reg| {
+                const arg_ty = if (parent_ctx) |arg_ctx|
+                    try self.macroExprType(arg, arg_ctx)
+                else
+                    try self.exprTypeOrFallback(arg);
+                if (arg_ty) |ty| try self.pushTypedLocal(param, reg, true, ty) else try self.pushLocal(param, reg, true);
+            }
         }
 
         const invocation = self.macro_call_idx;
@@ -13033,6 +13039,17 @@ pub const Codegen = struct {
     }
 
     fn genScalarMatchGuardValue(self: *Codegen, value: *ast.Node, scratch: []const u32, cursor: *usize) anyerror!u32 {
+        if (value.* == .field_expr) {
+            const field = value.field_expr;
+            if (field.expr.* != .identifier or cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;
+            const base = self.localReg(field.expr.identifier) orelse return Error.UnsupportedSabDirectFeature;
+            const base_ty = self.localType(field.expr.identifier) orelse return Error.UnsupportedSabDirectFeature;
+            const layout = try self.fieldLayout(base_ty, field.field_name);
+            const dst = scratch[cursor.*];
+            cursor.* += 1;
+            try self.emitLoad(dst, base, layout.offset, layout.ty);
+            return dst;
+        }
         if (value.* == .cast_expr) {
             const cast = value.cast_expr;
             if (cast.expr.* == .literal and cast.expr.literal == .int_val) {

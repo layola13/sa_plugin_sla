@@ -58,6 +58,28 @@ pub fn macroParamIsTrySource(body: []const *ast.Node, name: []const u8) bool {
     return false;
 }
 
+pub fn macroBodyHasTry(body: []const *ast.Node) bool {
+    for (body) |node| if (macroNodeHasTry(node)) return true;
+    return false;
+}
+
+fn macroNodeHasTry(node: *const ast.Node) bool {
+    return switch (node.*) {
+        .try_expr => true,
+        .block_stmt => |block| macroBodyHasTry(block.body),
+        .unsafe_expr => |unsafe_expr| macroBodyHasTry(unsafe_expr.body),
+        .if_expr => |ife| macroNodeHasTry(ife.cond) or macroBodyHasTry(ife.then_block) or
+            (if (ife.else_block) |else_block| macroBodyHasTry(else_block) else false),
+        .for_stmt => |for_stmt| macroBodyHasTry(for_stmt.body),
+        .while_stmt => |while_stmt| macroBodyHasTry(while_stmt.body),
+        .expr_stmt => |expr| macroNodeHasTry(expr),
+        .assign_stmt => |assign| macroNodeHasTry(assign.value),
+        .let_stmt => |let| macroNodeHasTry(let.value),
+        .return_stmt => |ret| if (ret.value) |value| macroNodeHasTry(value) else false,
+        else => false,
+    };
+}
+
 fn macroNodeHasTrySource(node: *const ast.Node, name: []const u8) bool {
     return switch (node.*) {
         .try_expr => |try_expr| try_expr.expr.* == .identifier and std.mem.eql(u8, try_expr.expr.identifier, name),

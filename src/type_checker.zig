@@ -2681,6 +2681,63 @@ pub const TypeChecker = struct {
         return try self.macroParamIsTrySourceRecursive(macro_decl, param_index, &visiting);
     }
 
+    fn macroHasTry(self: *TypeChecker, macro_decl: *const ast.MacroDecl) TypeError!bool {
+        var visiting = std.AutoHashMap(*const ast.MacroDecl, void).init(self.allocator);
+        defer visiting.deinit();
+        return try self.macroHasTryRecursive(macro_decl, &visiting);
+    }
+
+    fn macroHasTryRecursive(
+        self: *TypeChecker,
+        macro_decl: *const ast.MacroDecl,
+        visiting: *std.AutoHashMap(*const ast.MacroDecl, void),
+    ) TypeError!bool {
+        if (visiting.contains(macro_decl)) return false;
+        try visiting.put(macro_decl, {});
+        defer _ = visiting.remove(macro_decl);
+        if (control_flow_rules.macroBodyHasTry(macro_decl.body)) return true;
+        for (macro_decl.body) |node| {
+            if (try self.macroNodeCallsTryMacro(node, visiting)) return true;
+        }
+        return false;
+    }
+
+    fn macroNodeCallsTryMacro(
+        self: *TypeChecker,
+        node: *const ast.Node,
+        visiting: *std.AutoHashMap(*const ast.MacroDecl, void),
+    ) TypeError!bool {
+        return switch (node.*) {
+            .call_expr => |call| if (self.macros.get(call.func_name)) |nested| self.macroHasTryRecursive(nested, visiting) else false,
+            .expr_stmt => |expr| self.macroNodeCallsTryMacro(expr, visiting),
+            .assign_stmt => |assign| self.macroNodeCallsTryMacro(assign.value, visiting),
+            .let_stmt => |let| self.macroNodeCallsTryMacro(let.value, visiting),
+            .return_stmt => |ret| if (ret.value) |value| self.macroNodeCallsTryMacro(value, visiting) else false,
+            .block_stmt => |block| blk: {
+                for (block.body) |child| if (try self.macroNodeCallsTryMacro(child, visiting)) break :blk true;
+                break :blk false;
+            },
+            .unsafe_expr => |unsafe_expr| blk: {
+                for (unsafe_expr.body) |child| if (try self.macroNodeCallsTryMacro(child, visiting)) break :blk true;
+                break :blk false;
+            },
+            .if_expr => |ife| blk: {
+                for (ife.then_block) |child| if (try self.macroNodeCallsTryMacro(child, visiting)) break :blk true;
+                if (ife.else_block) |else_block| for (else_block) |child| if (try self.macroNodeCallsTryMacro(child, visiting)) break :blk true;
+                break :blk false;
+            },
+            .for_stmt => |for_stmt| blk: {
+                for (for_stmt.body) |child| if (try self.macroNodeCallsTryMacro(child, visiting)) break :blk true;
+                break :blk false;
+            },
+            .while_stmt => |while_stmt| blk: {
+                for (while_stmt.body) |child| if (try self.macroNodeCallsTryMacro(child, visiting)) break :blk true;
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
     fn macroParamIsTrySourceRecursive(
         self: *TypeChecker,
         macro_decl: *const ast.MacroDecl,
@@ -5303,10 +5360,9 @@ pub const TypeChecker = struct {
                     }
                     var propagated_args = std.StringHashMap(void).init(self.allocator);
                     defer propagated_args.deinit();
-                    var has_macro_try = false;
+                    const has_macro_try = try self.macroHasTry(mac);
                     for (mac.params, call.args, 0..) |_, arg, index| {
                         if (!try self.macroParamIsTrySource(mac, index)) continue;
-                        has_macro_try = true;
                         if (rootIdentifier(arg)) |name| try propagated_args.put(name, {});
                     }
                     if (has_macro_try) {

@@ -42,6 +42,10 @@ fn direct_macro_consume_box(^value: Box<i64>) -> i64 {
     *value
 }
 
+fn direct_macro_make_option(value: i64, succeed: bool) -> Option<i64> {
+    if succeed { Some(value) } else { None }
+}
+
 macro scoped_shadow_macro(var_ref) {
     let temp = 1;
     {
@@ -177,6 +181,10 @@ macro try_option_macro(out, value) {
 
 macro forwarding_try_macro(out, value) {
     try_option_macro(out, value);
+}
+
+macro try_call_option_macro(out, value, succeed) {
+    out = direct_macro_make_option(value, succeed)?;
 }
 
 fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
@@ -363,6 +371,13 @@ fn macro_try_custom_result_direct(^value: DirectMacroTryResult) -> DirectMacroTr
     DirectMacroTryResult { is_err: false, value: result + *cleanup, error: 0 }
 }
 
+fn macro_try_call_option_direct(value: i64, succeed: bool) -> Option<i64> {
+    let cleanup = Box::new(6i64);
+    let result = 0i64;
+    try_call_option_macro(result, value, succeed);
+    Some(result + *cleanup)
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -405,4 +420,8 @@ fn macro_try_custom_result_direct(^value: DirectMacroTryResult) -> DirectMacroTr
     let macro_try_custom_err_input = DirectMacroTryResult { is_err: true, value: 0, error: 6 };
     let macro_try_custom_err = macro_try_custom_result_direct(^macro_try_custom_err_input);
     if !macro_try_custom_err.is_err || macro_try_custom_err.error != 6 { panic(31833); };
+    let macro_try_call_some = macro_try_call_option_direct(36i64, true);
+    if !macro_try_call_some.is_some() || macro_try_call_some.unwrap() != 42 { panic(31834); };
+    let macro_try_call_none = macro_try_call_option_direct(36i64, false);
+    if !macro_try_call_none.is_none() { panic(31835); };
 }

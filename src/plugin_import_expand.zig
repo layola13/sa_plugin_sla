@@ -910,6 +910,12 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
     }
     profileImportExpandStage(profile_enabled, "macro contracts", profile_start);
     profile_start = std.time.nanoTimestamp();
+    if (profile_enabled) {
+        std.debug.print(
+            "[sla-profile] import type scan cache entries={d} hits={d}\n",
+            .{ modules.importTypeScanCacheCount(), modules.importTypeScanCacheHitCount() },
+        );
+    }
 
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {

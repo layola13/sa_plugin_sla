@@ -19,6 +19,13 @@ pub const ParserError = error{
     InvalidCharacter,
 };
 
+pub const ImportTypeSurface = struct {
+    types: []const []const u8,
+    enums: []const []const u8,
+};
+
+pub const ImportTypeScanCache = std.StringHashMap(ImportTypeSurface);
+
 pub const Parser = struct {
     pub const Options = struct {
         parse_function_bodies: bool = true,
@@ -39,6 +46,11 @@ pub const Parser = struct {
     current_impl_target: ?*ast.Type,
     base_dir: []const u8,
     import_scan_depth: usize,
+    /// Canonical `.sla` paths already visited by recursive type prescanning.
+    /// Nested parsers copy this map state and return the updated state to their
+    /// parent, so diamond imports and cycles are scanned once per root Parser.
+    import_type_scan_cache: ImportTypeScanCache,
+    import_type_scan_cache_hits: usize,
     options: Options,
     /// Exact `{ ... }` source slices for function bodies that were skipped
     /// during the current parse. Keys are the created `func_decl` nodes and
@@ -65,6 +77,8 @@ pub const Parser = struct {
             .current_impl_target = null,
             .base_dir = base_dir,
             .import_scan_depth = 0,
+            .import_type_scan_cache = ImportTypeScanCache.init(allocator),
+            .import_type_scan_cache_hits = 0,
             .options = options,
             .function_body_spans = std.AutoHashMap(*ast.Node, []const u8).init(allocator),
         };
@@ -78,6 +92,22 @@ pub const Parser = struct {
 
     pub fn knownEnumNames(self: *const Parser) []const []const u8 {
         return self.known_enums.items;
+    }
+
+    pub fn prescannedImportPathCount(self: *const Parser) usize {
+        return self.import_type_scan_cache.count();
+    }
+
+    pub fn seedImportTypeScanCache(self: *Parser, cache: ImportTypeScanCache) void {
+        self.import_type_scan_cache = cache;
+    }
+
+    pub fn importTypeScanCache(self: *const Parser) ImportTypeScanCache {
+        return self.import_type_scan_cache;
+    }
+
+    pub fn importTypeScanCacheHitCount(self: *const Parser) usize {
+        return self.import_type_scan_cache_hits;
     }
 
     pub fn seedKnownTypeNames(self: *Parser, type_names: []const []const u8, enum_names: []const []const u8) !void {
@@ -1288,10 +1318,20 @@ pub const Parser = struct {
     }
 
     fn prescanResolvedSlaImportTypes(self: *Parser, resolved_path: []const u8) !void {
-        const source = std.fs.cwd().readFileAlloc(self.allocator, resolved_path, 16 * 1024 * 1024) catch return;
+        const canonical_path = std.fs.cwd().realpathAlloc(self.allocator, resolved_path) catch resolved_path;
+        if (self.import_type_scan_cache.get(canonical_path)) |surface| {
+            self.import_type_scan_cache_hits += 1;
+            try self.mergeKnownTypeSurface(surface);
+            return;
+        }
+        // Insert a cycle guard before parsing. The completed surface replaces it
+        // below; recursive imports of this path observe an empty surface.
+        try self.import_type_scan_cache.put(canonical_path, .{ .types = &.{}, .enums = &.{} });
+
+        const source = std.fs.cwd().readFileAlloc(self.allocator, canonical_path, 16 * 1024 * 1024) catch return;
         const expanded_source = source_expand.expand(self.allocator, source) catch return;
 
-        const import_dir = std.fs.path.dirname(resolved_path) orelse ".";
+        const import_dir = std.fs.path.dirname(canonical_path) orelse ".";
 
         var sub = initWithDirAndOptions(self.allocator, expanded_source, import_dir, .{
             .parse_function_bodies = false,
@@ -1299,15 +1339,32 @@ pub const Parser = struct {
             .parse_test_bodies = false,
         });
         sub.import_scan_depth = self.import_scan_depth + 1;
-        const prog = sub.parseProgram() catch return;
+        sub.import_type_scan_cache = self.import_type_scan_cache;
+        sub.import_type_scan_cache_hits = self.import_type_scan_cache_hits;
+        const prog = sub.parseProgram() catch {
+            self.import_type_scan_cache = sub.import_type_scan_cache;
+            self.import_type_scan_cache_hits = sub.import_type_scan_cache_hits;
+            return;
+        };
+        self.import_type_scan_cache = sub.import_type_scan_cache;
+        self.import_type_scan_cache_hits = sub.import_type_scan_cache_hits;
         if (prog.* != .program) return;
 
-        // Merge the names the sub-parser collected (it recursively pre-scans its
-        // own .sla imports too, so transitive types come along).
-        for (sub.known_types.items) |name| {
+        const surface = ImportTypeSurface{
+            .types = try self.allocator.dupe([]const u8, sub.known_types.items),
+            .enums = try self.allocator.dupe([]const u8, sub.known_enums.items),
+        };
+        try self.import_type_scan_cache.put(canonical_path, surface);
+        try self.mergeKnownTypeSurface(surface);
+    }
+
+    fn mergeKnownTypeSurface(self: *Parser, surface: ImportTypeSurface) !void {
+        // Cached surfaces include transitive imports, matching the original
+        // recursive parser behavior without rereading or reparsing the file.
+        for (surface.types) |name| {
             if (!self.isKnownTypeName(name)) try self.known_types.append(name);
         }
-        for (sub.known_enums.items) |name| {
+        for (surface.enums) |name| {
             if (!self.isKnownEnumName(name)) try self.known_enums.append(name);
         }
     }
@@ -3286,6 +3343,63 @@ test "sla import type prescan skips imported function bodies" {
 
     try std.testing.expect(prog.* == .program);
     try std.testing.expect(p.isKnownTypeName("ImportedThing"));
+}
+
+test "sla import type prescan visits diamond dependencies once" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "common.sla",
+        .data =
+        \\struct SharedThing {
+        \\    value: i32,
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "left.sla",
+        .data =
+        \\@import "common.sla"
+        \\struct LeftThing { shared: SharedThing }
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "right.sla",
+        .data =
+        \\@import "common.sla"
+        \\struct RightThing { shared: SharedThing }
+        ,
+    });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    const source =
+        \\@import "left.sla"
+        \\@import "right.sla"
+        \\@import "left.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    let item = SharedThing { value: 42 };
+        \\    return item.value;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.initWithDir(allocator, source, ".");
+    const prog = try p.parseProgram();
+
+    try std.testing.expect(prog.* == .program);
+    try std.testing.expect(p.isKnownTypeName("SharedThing"));
+    try std.testing.expect(p.isKnownTypeName("LeftThing"));
+    try std.testing.expect(p.isKnownTypeName("RightThing"));
+    try std.testing.expectEqual(@as(usize, 3), p.prescannedImportPathCount());
 }
 
 test "sla parser selectively parses named function bodies" {

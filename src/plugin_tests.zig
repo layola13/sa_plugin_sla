@@ -4215,6 +4215,61 @@ test "sla module table reparses with cached imported type names" {
     try std.testing.expect(make_decl.func_decl.body.len != 0);
 }
 
+test "sla module table shares imported type scan surfaces across modules" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const common_source =
+        \\struct SharedThing { value: i32 }
+    ;
+    const left_source =
+        \\@import "common.sla"
+        \\fn left_value() -> i32 {
+        \\    let item = SharedThing { value: 41 };
+        \\    return item.value;
+        \\}
+    ;
+    const right_source =
+        \\@import "common.sla"
+        \\fn right_value() -> i32 {
+        \\    let item = SharedThing { value: 42 };
+        \\    return item.value;
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "common.sla", .data = common_source });
+    try tmp.dir.writeFile(.{ .sub_path = "left.sla", .data = left_source });
+    try tmp.dir.writeFile(.{ .sub_path = "right.sla", .data = right_source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var modules = SlaModuleTable.initWithParserOptions(allocator, .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+    });
+    defer modules.deinit();
+
+    const left_imports = try resolveImportFiles(allocator, ".", "left.sla", "main.sla");
+    const left = try modules.getOrParse(left_imports[0]);
+    try std.testing.expectEqual(@as(usize, 1), modules.importTypeScanCacheCount());
+    var left_has_shared = false;
+    for (left.known_types) |name| left_has_shared = left_has_shared or std.mem.eql(u8, name, "SharedThing");
+    try std.testing.expect(left_has_shared);
+
+    const right_imports = try resolveImportFiles(allocator, ".", "right.sla", "main.sla");
+    const right = try modules.getOrParse(right_imports[0]);
+    try std.testing.expectEqual(@as(usize, 1), modules.importTypeScanCacheCount());
+    try std.testing.expectEqual(@as(usize, 1), modules.importTypeScanCacheHitCount());
+    var right_has_shared = false;
+    for (right.known_types) |name| right_has_shared = right_has_shared or std.mem.eql(u8, name, "SharedThing");
+    try std.testing.expect(right_has_shared);
+}
+
 test "sla module table materializes function bodies from cached spans" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

@@ -297,6 +297,8 @@ pub const SlaModuleReparseStats = struct {
 pub const SlaModuleTable = struct {
     allocator: std.mem.Allocator,
     modules: std.StringHashMap(*SlaModule),
+    import_type_scan_cache: parser_mod.ImportTypeScanCache,
+    import_type_scan_cache_hits: usize,
     parse_options: parser_mod.Parser.Options,
 
     pub fn init(allocator: std.mem.Allocator) SlaModuleTable {
@@ -309,6 +311,8 @@ pub const SlaModuleTable = struct {
         return .{
             .allocator = allocator,
             .modules = std.StringHashMap(*SlaModule).init(allocator),
+            .import_type_scan_cache = parser_mod.ImportTypeScanCache.init(allocator),
+            .import_type_scan_cache_hits = 0,
             .parse_options = parse_options,
         };
     }
@@ -333,6 +337,7 @@ pub const SlaModuleTable = struct {
             self.allocator.destroy(module);
         }
         self.modules.deinit();
+        self.import_type_scan_cache.deinit();
     }
 
     pub fn buildModuleImportNamespaces(self: *SlaModuleTable, resolved_imports: []const ResolvedImport) ![]const ResolvedModuleImport {
@@ -345,6 +350,14 @@ pub const SlaModuleTable = struct {
             });
         }
         return try imports.toOwnedSlice();
+    }
+
+    pub fn importTypeScanCacheCount(self: *const SlaModuleTable) usize {
+        return self.import_type_scan_cache.count();
+    }
+
+    pub fn importTypeScanCacheHitCount(self: *const SlaModuleTable) usize {
+        return self.import_type_scan_cache_hits;
     }
 
     pub fn resolveModuleImports(self: *SlaModuleTable, module_path: []const u8, base_dir: []const u8, decls: []const *ast.Node) ![]const ResolvedImport {
@@ -363,7 +376,10 @@ pub const SlaModuleTable = struct {
         const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
         const expanded_source = try source_expand.expand(self.allocator, resolved.source);
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, base_dir, self.parse_options);
+        parser.seedImportTypeScanCache(self.import_type_scan_cache);
         const parsed = try parser.parseProgram();
+        self.import_type_scan_cache = parser.importTypeScanCache();
+        self.import_type_scan_cache_hits += parser.importTypeScanCacheHitCount();
         if (parsed.* != .program) return error.InvalidProgram;
 
         var exports = SlaModuleExports.init(self.allocator, resolved.path);

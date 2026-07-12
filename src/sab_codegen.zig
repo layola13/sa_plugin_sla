@@ -7924,6 +7924,31 @@ pub const Codegen = struct {
         return dst;
     }
 
+    fn genMacroEnumLiteral(self: *Codegen, lit: ast.EnumLiteral, ctx: *MacroExpansionContext) anyerror!u32 {
+        const decl = self.tc.enums.get(lit.enum_name) orelse return Error.UnsupportedSabDirectFeature;
+        const tag = lowering_rules.enumVariantIndex(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+        const variant = lowering_rules.enumVariant(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, lowering_rules.enumAbiSize(decl));
+
+        const tag_reg = try self.intern(try self.newTmp());
+        try self.emitAssignImm(tag_reg, @intCast(tag));
+        try self.emitStore(dst, lowering_rules.enum_tag_offset, tag_reg, .i64);
+        try self.emitRelease(tag_reg);
+
+        for (variant.fields) |field| {
+            const value = lowering_rules.enumLiteralFieldValue(&lit, field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const layout = lowering_rules.enumFieldLayout(variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            const value_reg = try self.genMacroExpr(value, ctx);
+            try self.emitStore(dst, layout.offset, value_reg, prim);
+            try self.releaseExprResultIfNeeded(value, value_reg);
+        }
+
+        return dst;
+    }
+
     fn genMacroArrayLiteralWithType(self: *Codegen, arr_ty: *const ast.Type, lit: ast.ArrayLiteral, ctx: *MacroExpansionContext) anyerror!u32 {
         if (arr_ty.* != .array or arr_ty.array.len != lit.elements.len) return Error.UnsupportedSabDirectFeature;
 
@@ -8138,6 +8163,7 @@ pub const Codegen = struct {
             .call_expr => |call| try self.genMacroCall(expr, call, ctx),
             .field_expr => |field| try self.genMacroField(field, ctx),
             .struct_literal => |lit| try self.genMacroStructLiteral(lit, ctx),
+            .enum_literal => |lit| try self.genMacroEnumLiteral(lit, ctx),
             .tuple_literal => |lit| try self.genMacroTupleLiteral(lit, ctx),
             .array_literal => |lit| blk: {
                 const ty = (try self.macroExprType(expr, ctx)) orelse return Error.MissingType;

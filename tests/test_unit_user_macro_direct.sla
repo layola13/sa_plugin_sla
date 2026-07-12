@@ -21,6 +21,11 @@ struct DirectMacroPoint { left: i64, right: i64 }
 struct DirectMacroBorrowPoint { left: i64, right: i64 }
 struct DirectMacroCounter { value: i64 }
 
+enum DirectMacroMessage {
+    Empty,
+    Pair { left: i64, right: i64 },
+}
+
 fn direct_macro_add(value: i64, delta: i64) -> i64 {
     value + delta
 }
@@ -106,6 +111,14 @@ macro loop_control_macro(out) {
         };
         out = out + i;
     }
+}
+
+macro enum_literal_macro(out, left, right) {
+    out = DirectMacroMessage::Pair { left: left, right: right };
+}
+
+macro enum_unit_literal_macro(out) {
+    out = DirectMacroMessage::Empty;
 }
 
 fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
@@ -197,6 +210,24 @@ fn macro_loop_control_direct() -> i64 {
     total
 }
 
+fn macro_enum_literal_direct() -> i64 {
+    let msg = DirectMacroMessage::Empty;
+    enum_literal_macro(msg, 19, 23);
+    match msg {
+        DirectMacroMessage::Empty => { 0 },
+        DirectMacroMessage::Pair { left, right } => { left + right },
+    }
+}
+
+fn macro_enum_unit_literal_direct() -> i64 {
+    let msg = DirectMacroMessage::Pair { left: 1, right: 2 };
+    enum_unit_literal_macro(msg);
+    match msg {
+        DirectMacroMessage::Empty => { 7 },
+        DirectMacroMessage::Pair { left, right } => { left + right },
+    }
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -208,4 +239,6 @@ fn macro_loop_control_direct() -> i64 {
     if macro_value_arg_evaluated_once() != 2 { panic(31811); };
     if macro_call_value_arg_evaluated_once() != 2 { panic(31813); };
     if macro_loop_control_direct() != 5 { panic(31814); };
+    if macro_enum_literal_direct() != 42 { panic(31815); };
+    if macro_enum_unit_literal_direct() != 7 { panic(31816); };
 }

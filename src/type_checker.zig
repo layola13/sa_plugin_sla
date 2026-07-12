@@ -5612,7 +5612,18 @@ pub const TypeChecker = struct {
                 return ty;
             },
             .match_expr => |*mat| {
-                const val_ty = try self.checkExpr(mat.val, scope);
+                var val_ty = try self.checkExpr(mat.val, scope);
+                if (val_ty.* == .infer and mat.cases.len != 0) {
+                    const enum_decl = self.enums.get(mat.cases[0].pattern.enum_name) orelse return TypeError.TypeMismatch;
+                    const inferred = try self.allocator.create(ast.Type);
+                    inferred.* = .{ .user_defined = .{ .name = enum_decl.name, .generics = &.{} } };
+                    if (mat.val.* == .identifier) {
+                        const sym = scope.lookup(mat.val.identifier) orelse return TypeError.UndefinedVariable;
+                        sym.ty = inferred;
+                    }
+                    self.expr_types.put(mat.val, inferred) catch return TypeError.OutOfMemory;
+                    val_ty = inferred;
+                }
                 if (optionInnerType(val_ty) != null or resultOkType(val_ty) != null) {
                     var saved_states = try self.saveScopeStates(scope);
                     defer saved_states.deinit();

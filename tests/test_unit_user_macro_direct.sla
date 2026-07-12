@@ -154,6 +154,13 @@ macro deref_move_box_macro(out, value) {
     out = *^value;
 }
 
+macro match_enum_macro(out, value) {
+    out = match value {
+        DirectMacroMessage::Empty => { 5 },
+        DirectMacroMessage::Pair { left, right } => { left + right },
+    };
+}
+
 fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
     let borrowed: &DirectMacroCounter = cell.borrow_mut();
     borrowed.value = borrowed.value + 1;
@@ -303,6 +310,13 @@ fn macro_deref_move_box_direct() -> i64 {
     result
 }
 
+fn macro_match_enum_direct() -> i64 {
+    let message = DirectMacroMessage::Pair { left: 17, right: 19 };
+    let result = 0i64;
+    match_enum_macro(result, message);
+    result
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -323,4 +337,5 @@ fn macro_deref_move_box_direct() -> i64 {
     if macro_call_move_box_direct() != 39 { panic(31821); };
     if macro_aggregate_move_box_direct() != 38 { panic(31822); };
     if macro_deref_move_box_direct() != 37 { panic(31823); };
+    if macro_match_enum_direct() != 36 { panic(31824); };
 }

@@ -1888,6 +1888,16 @@ pub const RefCellCallArgLifecycleAction = enum {
     }
 };
 
+pub const DerefAssignmentTargetLifecycleAction = enum {
+    keep,
+    release_value,
+    release_borrow_handle,
+
+    pub fn shouldRelease(self: DerefAssignmentTargetLifecycleAction) bool {
+        return self != .keep;
+    }
+};
+
 pub const RefCellCompanionStoreCleanupPlan = struct {
     consume_handle_value: bool,
     release_owner_temps: bool,
@@ -1970,6 +1980,12 @@ pub fn planRefCellHandleOwnerTransfer(handle_cell_matches_source: bool) RefCellH
 
 pub fn planRefCellCallArgLifecycle(release_after_call: bool, carries_refcell_borrow_handle: bool) RefCellCallArgLifecycleAction {
     if (!release_after_call) return .keep;
+    if (carries_refcell_borrow_handle) return .release_borrow_handle;
+    return .release_value;
+}
+
+pub fn planDerefAssignmentTargetLifecycle(target_is_temporary: bool, carries_refcell_borrow_handle: bool) DerefAssignmentTargetLifecycleAction {
+    if (!target_is_temporary) return .keep;
     if (carries_refcell_borrow_handle) return .release_borrow_handle;
     return .release_value;
 }
@@ -4817,6 +4833,9 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expect(planRefCellCallArgLifecycle(true, false).shouldRelease());
     try std.testing.expect(!planRefCellCallArgLifecycle(true, false).releasesBorrowHandle());
     try std.testing.expect(planRefCellCallArgLifecycle(true, true).releasesBorrowHandle());
+    try std.testing.expectEqual(DerefAssignmentTargetLifecycleAction.keep, planDerefAssignmentTargetLifecycle(false, true));
+    try std.testing.expectEqual(DerefAssignmentTargetLifecycleAction.release_value, planDerefAssignmentTargetLifecycle(true, false));
+    try std.testing.expectEqual(DerefAssignmentTargetLifecycleAction.release_borrow_handle, planDerefAssignmentTargetLifecycle(true, true));
 
     const companion_plain = planRefCellCompanionStoreCleanup(false, false, false);
     try std.testing.expect(companion_plain.consume_handle_value);

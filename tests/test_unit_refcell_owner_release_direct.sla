@@ -439,3 +439,13 @@ fn owner_release_explicit_cell() -> RefCell<OwnerReleasePayload> {
         panic(30947);
     };
 }
+
+@test "refcell temporary deref assignment releases borrow handle"() {
+    let cell = RefCell::new(1i64);
+    *cell.borrow_mut() = 42i64;
+    let borrowed: &i64 = cell.borrow();
+    if *borrowed != 42 {
+        panic(30948);
+    };
+    !borrowed;
+}

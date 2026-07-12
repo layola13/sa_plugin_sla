@@ -8989,7 +8989,11 @@ pub const Codegen = struct {
                     const target_reg = try self.genExpr(assign.target.deref_expr.expr, hoisted_allocs);
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
                     self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_reg, val_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                    if (self.refcell_borrow_handles.contains(target_reg)) try self.emitRelease(target_reg);
+                    const target_lifecycle = lowering_rules.planDerefAssignmentTargetLifecycle(
+                        assign.target.deref_expr.expr.* != .identifier,
+                        self.refcell_borrow_handles.contains(target_reg),
+                    );
+                    if (target_lifecycle.shouldRelease()) try self.emitRelease(target_reg);
                     if (assign.target.deref_expr.expr.* != .identifier and self.mutex_guard_handles.contains(target_reg)) try self.emitRelease(target_reg);
                     if (assign.target.deref_expr.expr.* != .identifier and self.rwlock_guard_handles.contains(target_reg)) try self.emitRelease(target_reg);
                     if (callArgNeedsRelease(assign.value) or self.storedIdentifierNeedsRelease(assign.value, inner_ty)) try self.emitRelease(val_reg);

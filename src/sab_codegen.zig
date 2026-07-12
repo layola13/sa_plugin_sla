@@ -8755,6 +8755,25 @@ pub const Codegen = struct {
     }
 
     fn genAssign(self: *Codegen, assign: ast.AssignStmt) anyerror!void {
+        if (assign.target.* == .deref_expr) {
+            const source_expr = assign.target.deref_expr.expr;
+            const source_ty = self.tc.expr_types.get(source_expr) orelse return Error.MissingType;
+            const inner_ty = switch (source_ty.*) {
+                .borrow => |inner| inner,
+                .pointer => |inner| inner,
+                else => return Error.UnsupportedSabDirectFeature,
+            };
+            const target = try self.genExpr(source_expr);
+            const value = try self.genExpr(assign.value);
+            try self.emitStore(target, 0, value, try storagePrimType(inner_ty));
+            const target_lifecycle = lowering_rules.planDerefAssignmentTargetLifecycle(
+                source_expr.* != .identifier,
+                self.refcell_borrow_values.contains(target),
+            );
+            if (target_lifecycle.shouldRelease()) try self.emitRelease(target);
+            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            return;
+        }
         if (assign.target.* == .field_expr) {
             const field = assign.target.field_expr;
             const expr_ty = self.tc.expr_types.get(field.expr) orelse return Error.MissingType;

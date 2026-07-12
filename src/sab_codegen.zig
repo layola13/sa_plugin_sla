@@ -8284,8 +8284,11 @@ pub const Codegen = struct {
             return;
         }
 
-        const value = try self.genMacroExpr(assign.value, ctx);
         if (self.macroAssignTargetName(assign.target, ctx)) |name| {
+            const value = if (assign.value.* == .match_expr)
+                try self.genMatchWithExpected(assign.value, &assign.value.match_expr, self.localType(name))
+            else
+                try self.genMacroExpr(assign.value, ctx);
             try self.assignToIdentifier(name, value);
             return;
         }
@@ -12765,12 +12768,20 @@ pub const Codegen = struct {
     /// here (they flow through their std-surface paths); this returns
     /// `UnsupportedSabDirectFeature` for non-enum match values.
     fn genMatch(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr) anyerror!u32 {
-        if (mat.cases.len == 0) return Error.UnsupportedSabDirectFeature;
-        const val_ty = self.tc.expr_types.get(mat.val) orelse return Error.MissingType;
-        if (val_ty.* != .user_defined) return Error.UnsupportedSabDirectFeature;
-        const decl = self.tc.enums.get(val_ty.user_defined.name) orelse return Error.UnsupportedSabDirectFeature;
+        return try self.genMatchWithExpected(expr, mat, null);
+    }
 
-        const expr_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+    fn genMatchWithExpected(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, expected_ty: ?*const ast.Type) anyerror!u32 {
+        if (mat.cases.len == 0) return Error.UnsupportedSabDirectFeature;
+        const val_ty = if (mat.val.* == .identifier)
+            self.localType(mat.val.identifier) orelse self.tc.expr_types.get(mat.val) orelse return Error.MissingType
+        else
+            self.tc.expr_types.get(mat.val) orelse return Error.MissingType;
+        const decl = if (val_ty.* == .user_defined) self.tc.enums.get(val_ty.user_defined.name) else null;
+        if (decl == null and lowering_rules.optionInnerType(val_ty) == null and lowering_rules.resultOkType(val_ty) == null)
+            return Error.UnsupportedSabDirectFeature;
+
+        const expr_ty = expected_ty orelse self.tc.expr_types.get(expr) orelse return Error.MissingType;
         const value_match = !isVoidType(expr_ty);
 
         const val_reg = try self.genExpr(mat.val);
@@ -12835,37 +12846,40 @@ pub const Codegen = struct {
         for (mat.cases, 0..) |case, i| {
             try self.emitLabel(check_labels.items[i]);
             if (i > 0) try self.emitBranchRelease(case_cond_regs.items[i - 1]);
-            const tag = lowering_rules.enumVariantIndex(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
-            const variant = lowering_rules.enumVariant(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
-            if (case.pattern.bindings.len != variant.fields.len) return Error.UnsupportedSabDirectFeature;
+            const plan = lowering_rules.planLetPattern(case.pattern, decl != null) orelse return Error.UnsupportedSabDirectFeature;
+            const variant = if (decl) |enum_decl|
+                lowering_rules.enumVariant(enum_decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature
+            else
+                null;
+            if (variant) |enum_variant| {
+                if (case.pattern.bindings.len != enum_variant.fields.len) return Error.UnsupportedSabDirectFeature;
+            } else if (case.pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
+            if (case.guard != null and variant == null) return Error.UnsupportedSabDirectFeature;
 
-            const tag_reg = try self.intern(try self.newTmp());
-            try self.emitLoad(tag_reg, val_reg, lowering_rules.enum_tag_offset, .i64);
             const cond = case_cond_regs.items[i];
             try self.emitBranchRelease(cond);
-            try self.emitOp(cond, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = @intCast(tag) });
-            try self.emitRelease(tag_reg);
+            try self.emitLetPatternCheck(case.pattern, val_reg, decl, plan, cond);
 
             const body_label = try self.newLabel("L_MATCH_CASE");
             const next_label = if (i + 1 < mat.cases.len) check_labels.items[i + 1] else panic_label;
-            try self.emitBranch(cond, body_label, next_label);
+            try self.emitBranch(cond, if (plan.success_on_true) body_label else next_label, if (plan.success_on_true) next_label else body_label);
 
             try self.emitLabel(body_label);
 
             // Load pattern bindings from the payload at shared offsets.
-            for (case.pattern.bindings, variant.fields, 0..) |binding, field, binding_idx| {
-                const layout = lowering_rules.enumFieldLayout(variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
-                const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
-                if (prim == .ptr and case.guard != null) return Error.UnsupportedSabDirectFeature;
-                const binding_reg = if (case.guard != null)
-                    case_binding_regs.items[i][binding_idx]
-                else
-                    try self.intern(try self.newTmp());
-                try self.emitLoad(binding_reg, val_reg, layout.offset, prim);
-                if (case.guard != null) {
+            if (case.guard != null) {
+                const enum_variant = variant.?;
+                for (case.pattern.bindings, enum_variant.fields, 0..) |binding, field, binding_idx| {
+                    const layout = lowering_rules.enumFieldLayout(enum_variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
+                    const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+                    if (prim == .ptr) return Error.UnsupportedSabDirectFeature;
+                    const binding_reg = case_binding_regs.items[i][binding_idx];
+                    try self.emitLoad(binding_reg, val_reg, layout.offset, prim);
                     try self.recordReg(binding_reg);
                     try self.locals.append(.{ .name = binding, .reg = binding_reg, .is_param = false, .ty = field.ty, .is_stack_alloc = true });
-                } else try self.pushTypedLocal(binding, binding_reg, false, field.ty);
+                }
+            } else {
+                try self.bindLetPatternPayload(case.pattern, val_reg, val_ty, decl, plan);
             }
 
             if (case.guard) |guard| {

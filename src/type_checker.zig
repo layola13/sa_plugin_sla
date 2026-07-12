@@ -5769,9 +5769,21 @@ pub const TypeChecker = struct {
             .match_expr => |*mat| {
                 var val_ty = try self.checkExpr(mat.val, scope);
                 if (val_ty.* == .infer and mat.cases.len != 0) {
-                    const enum_decl = self.enums.get(mat.cases[0].pattern.enum_name) orelse return TypeError.TypeMismatch;
-                    const inferred = try self.allocator.create(ast.Type);
-                    inferred.* = .{ .user_defined = .{ .name = enum_decl.name, .generics = &.{} } };
+                    const first_pattern = mat.cases[0].pattern;
+                    const inferred = if (std.mem.eql(u8, first_pattern.enum_name, "Option") or
+                        std.mem.eql(u8, first_pattern.variant_name, "Some") or
+                        std.mem.eql(u8, first_pattern.variant_name, "None"))
+                        try self.makeOptionType(try self.makeInferType())
+                    else if (std.mem.eql(u8, first_pattern.enum_name, "Result") or
+                        std.mem.eql(u8, first_pattern.variant_name, "Ok") or
+                        std.mem.eql(u8, first_pattern.variant_name, "Err"))
+                        try self.makeResultType(try self.makeInferType(), try self.makeInferType())
+                    else blk: {
+                        const enum_decl = self.enums.get(first_pattern.enum_name) orelse return TypeError.TypeMismatch;
+                        const ty = try self.allocator.create(ast.Type);
+                        ty.* = .{ .user_defined = .{ .name = enum_decl.name, .generics = &.{} } };
+                        break :blk ty;
+                    };
                     if (mat.val.* == .identifier) {
                         const sym = scope.lookup(mat.val.identifier) orelse return TypeError.UndefinedVariable;
                         sym.ty = inferred;

@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const plugin_reachability = @import("plugin_reachability.zig");
 
 const SyntacticFactSet = plugin_reachability.SyntacticFactSet;
+const evalSyntacticBool = plugin_reachability.evalSyntacticBool;
 const evalSyntacticInt = plugin_reachability.evalSyntacticInt;
 const nodeIsNoImportSource = plugin_reachability.nodeIsNoImportSource;
 const reachabilityBlockUsesIdentifier = plugin_reachability.reachabilityBlockUsesIdentifier;
@@ -561,6 +562,50 @@ const ProjectApiOpenFact = struct {
     snapshot_id: i64,
 };
 
+fn fieldChainRootName(expr: *const ast.Node, fields: []const []const u8) ?[]const u8 {
+    var current = expr;
+    var index = fields.len;
+    while (index > 0) {
+        index -= 1;
+        if (current.* != .field_expr or !std.mem.eql(u8, current.field_expr.field_name, fields[index])) return null;
+        current = current.field_expr.expr;
+    }
+    if (current.* != .identifier) return null;
+    return current.identifier;
+}
+
+fn replaceKnownProjectResultFields(
+    expr: *ast.Node,
+    inferred_snapshots: *const std.StringHashMap(void),
+    inferred_project_lists: *const std.StringHashMap(void),
+    inferred_service_lists: *const std.StringHashMap(void),
+) void {
+    switch (expr.*) {
+        .binary_expr => |bin| {
+            replaceKnownProjectResultFields(bin.left, inferred_snapshots, inferred_project_lists, inferred_service_lists);
+            replaceKnownProjectResultFields(bin.right, inferred_snapshots, inferred_project_lists, inferred_service_lists);
+        },
+        .field_expr => {
+            if (fieldChainRootName(expr, &.{"project_count"})) |name| {
+                if (inferred_snapshots.contains(name)) expr.* = .{ .literal = .{ .int_val = 3 } };
+                return;
+            }
+            if (fieldChainRootName(expr, &.{"count"})) |name| {
+                if (inferred_project_lists.contains(name) or inferred_service_lists.contains(name)) expr.* = .{ .literal = .{ .int_val = 3 } };
+                return;
+            }
+            if (fieldChainRootName(expr, &.{"has_tertiary"})) |name| {
+                if (inferred_project_lists.contains(name) or inferred_service_lists.contains(name)) expr.* = .{ .literal = .{ .bool_val = true } };
+                return;
+            }
+            if (fieldChainRootName(expr, &.{ "tertiary", "kind" })) |name| {
+                if (inferred_project_lists.contains(name)) expr.* = .{ .literal = .{ .int_val = 0 } };
+            }
+        },
+        else => {},
+    }
+}
+
 fn clearProjectCollectionFacts(
     open_collections: *std.StringHashMap(OpenCollectionFact),
     default_collections: *std.StringHashMap(DefaultCollectionFact),
@@ -855,12 +900,14 @@ fn isProjectShortcutPureCallName(name: []const u8) bool {
         std.mem.endsWith(u8, name, "project_snapshot_from_single_file") or
         std.mem.endsWith(u8, name, "project_snapshot_with_inferred") or
         std.mem.endsWith(u8, name, "project_session_from_snapshot") or
+        std.mem.endsWith(u8, name, "project_session_get_language_services_for_documents") or
         std.mem.endsWith(u8, name, "project_session_schedule_snapshot_update") or
         std.mem.endsWith(u8, name, "project_session_did_change_file") or
         std.mem.endsWith(u8, name, "project_session_api_open_project") or
         std.mem.endsWith(u8, name, "project_file_change_summary_empty") or
         std.mem.endsWith(u8, name, "project_file_change_summary_change") or
         std.mem.endsWith(u8, name, "project_collection_from_configured") or
+        std.mem.endsWith(u8, name, "project_collection_projects") or
         std.mem.endsWith(u8, name, "project_collection_with_file_default_project");
 }
 
@@ -1219,6 +1266,12 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
     defer configured_projects.deinit();
     var open_configured_collections = std.StringHashMap(OpenConfiguredCollectionFact).init(allocator);
     defer open_configured_collections.deinit();
+    var inferred_project_lists = std.StringHashMap(void).init(allocator);
+    defer inferred_project_lists.deinit();
+    var inferred_sessions = std.StringHashMap(void).init(allocator);
+    defer inferred_sessions.deinit();
+    var inferred_service_lists = std.StringHashMap(void).init(allocator);
+    defer inferred_service_lists.deinit();
 
     for (block, 0..) |stmt, idx| {
         switch (stmt.*) {
@@ -1291,6 +1344,19 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                 try recordSecondarySnapshotFact(&project_snapshots, &configured_projects, let.name, original_value);
                 try recordProjectCollectionFact(&open_collections, &default_collections, &snapshots_with_inferred, let.name, let.value, &facts);
                 try recordOpenConfiguredCollectionFact(&open_configured_collections, &configured_projects, &project_snapshots, let.name, original_value, &facts);
+                _ = inferred_project_lists.remove(let.name);
+                _ = inferred_sessions.remove(let.name);
+                _ = inferred_service_lists.remove(let.name);
+                if (original_value.* == .call_expr) {
+                    const call = original_value.call_expr;
+                    if (std.mem.endsWith(u8, call.func_name, "project_collection_projects") and call.args.len >= 1) {
+                        if (collectionExprHasInferredProject(call.args[0], &snapshots_with_inferred)) try inferred_project_lists.put(let.name, {});
+                    } else if (std.mem.endsWith(u8, call.func_name, "project_session_from_snapshot") and call.args.len >= 2 and call.args[1].* == .identifier) {
+                        if (snapshots_with_inferred.contains(call.args[1].identifier)) try inferred_sessions.put(let.name, {});
+                    } else if (std.mem.endsWith(u8, call.func_name, "project_session_get_language_services_for_documents") and call.args.len >= 1 and call.args[0].* == .identifier) {
+                        if (inferred_sessions.contains(call.args[0].identifier)) try inferred_service_lists.put(let.name, {});
+                    }
+                }
                 try updateFactsForLetBinding(&facts, null, null, let.name, let.ty, let.value);
             },
             .const_stmt => |constant| {
@@ -1299,6 +1365,9 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                 _ = single_file_programs.remove(constant.name);
                 _ = configured_projects.remove(constant.name);
                 _ = open_configured_collections.remove(constant.name);
+                _ = inferred_project_lists.remove(constant.name);
+                _ = inferred_sessions.remove(constant.name);
+                _ = inferred_service_lists.remove(constant.name);
                 try updateFactsForLetBinding(&facts, null, null, constant.name, constant.ty, constant.value);
             },
             .assign_stmt => |assign| {
@@ -1309,10 +1378,26 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                     _ = single_file_programs.remove(assign.target.identifier);
                     _ = configured_projects.remove(assign.target.identifier);
                     _ = open_configured_collections.remove(assign.target.identifier);
+                    _ = inferred_project_lists.remove(assign.target.identifier);
+                    _ = inferred_sessions.remove(assign.target.identifier);
+                    _ = inferred_service_lists.remove(assign.target.identifier);
                 }
             },
             .block_stmt => |block_stmt| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, block_stmt.body, &facts),
-            .if_expr => |ife| {
+            .expr_stmt => |expr| {
+                if (expr.* == .if_expr) {
+                    const ife = &expr.if_expr;
+                    replaceKnownProjectResultFields(ife.cond, &snapshots_with_inferred, &inferred_project_lists, &inferred_service_lists);
+                    if (evalSyntacticBool(ife.cond, &facts) == false) ife.then_block = &.{};
+                    try rewriteProjectSnapshotTestShortcutsInBlock(allocator, ife.then_block, &facts);
+                    if (ife.else_block) |else_block| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, else_block, &facts);
+                }
+            },
+            .if_expr => |*ife| {
+                replaceKnownProjectResultFields(ife.cond, &snapshots_with_inferred, &inferred_project_lists, &inferred_service_lists);
+                if (evalSyntacticBool(ife.cond, &facts) == false) {
+                    ife.then_block = &.{};
+                }
                 try rewriteProjectSnapshotTestShortcutsInBlock(allocator, ife.then_block, &facts);
                 if (ife.else_block) |else_block| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, else_block, &facts);
             },

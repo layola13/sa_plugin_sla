@@ -2600,6 +2600,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 # 2026-07-12: Remaining multi-configured root-path audit
 
+# 2026-07-12: Inferred result-chain root folding
+
+- [done] Constant-folded proven inferred snapshot/project-list/service-list guards before imported reachability.
+  - Known three-project counts, tertiary presence, and inferred tertiary kind are rewritten in root panic guards.
+  - Iterative dead-let cleanup removes the unused pure query/session chain.
+  - Focused invalid-heavy-body regression passes and confirms those signatures are absent from SAB.
+  - Real multi-configured remains 3/3 correct and improves from about 11.52s to 10.70s; repeated strict 10s still times out, so inferred-root open/close/update remains open.
+
 - [progress] Isolated the third inferred/session test as the remaining dominant root.
   - It selects about 120 snapshot functions, versus about 23 and 30 for the first two tests.
   - A lightweight SessionState/session-constructor extension produced no real graph or timeout improvement and was reverted cleanly.

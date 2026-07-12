@@ -5841,6 +5841,68 @@ test "sla sab test codegen uses lightweight project snapshot for primary configu
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab test codegen prunes known inferred snapshot result chains before reachability" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\struct Project { kind: int }
+        \\struct ProjectCollection { has_inferred_project: bool }
+        \\struct ProjectSnapshot { project_count: int, collection: ProjectCollection }
+        \\struct ProjectList { count: int, has_tertiary: bool, tertiary: Project }
+        \\struct ProjectSession { snapshot: ProjectSnapshot }
+        \\struct ProjectLanguageServiceList { count: int, has_tertiary: bool }
+        \\
+        \\fn project_snapshot_with_inferred(snapshot: ProjectSnapshot, program: int) -> ProjectSnapshot { return missing_inferred_snapshot_surface(); }
+        \\fn project_collection_projects(collection: ProjectCollection) -> ProjectList { return missing_project_list_surface(); }
+        \\fn project_session_from_snapshot(state: int, snapshot: ProjectSnapshot) -> ProjectSession { return ProjectSession { snapshot: snapshot }; }
+        \\fn project_session_get_language_services_for_documents(session: ProjectSession, file_name: ptr, file_name_len: int) -> ProjectLanguageServiceList { return missing_service_list_surface(); }
+        \\
+        \\@test "known inferred result chains disappear"() {
+        \\    let base = ProjectSnapshot { project_count: 2, collection: ProjectCollection { has_inferred_project: false } };
+        \\    let with_inferred = project_snapshot_with_inferred(base, 0);
+        \\    if with_inferred.project_count != 3 { panic(24120); };
+        \\    let projects = project_collection_projects(with_inferred.collection);
+        \\    if projects.count != 3 { panic(24121); };
+        \\    if projects.has_tertiary != true { panic(24122); };
+        \\    if projects.tertiary.kind != 0 { panic(24123); };
+        \\    let session = project_session_from_snapshot(0, with_inferred);
+        \\    let services = project_session_get_language_services_for_documents(session, "/repo/a.ts", 10);
+        \\    if services.count != 3 { panic(24124); };
+        \\    if services.has_tertiary != true { panic(24125); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "known_inferred_result_chains.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "known_inferred_result_chains.sla",
+        ".sla-cache/sab/known_inferred_result_chains.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    for (module.function_sigs) |fsig| {
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_snapshot_with_inferred") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_collection_projects") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_session_get_language_services_for_documents") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "missing_") == null);
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab test codegen folds cached default open configured projects" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

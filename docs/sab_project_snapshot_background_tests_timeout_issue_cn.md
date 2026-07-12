@@ -602,3 +602,7 @@ root shortcut 新增一个窄 `KnownOpenCollectionState`：只从已知 snapshot
 该状态在 reachability 前折叠 `has_inferred_project`、`open_file_count`、`has_secondary_open_file`、`project_collection_inferred_root_count` 和 `project_collection_inferred_contains_file`。新增 Zig 回归 `project shortcut tracks known dual inferred open state transitions`，验证双 loose root count 2、contains 两文件，以及关闭 secondary 后 root count 1/contains 只剩 primary。
 
 聚焦状态机/inferred-result/two-open 回归、build 7/7、官方 dev install 和 collection-open/default-cache strict 10 秒均通过。真实 multi-configured 全文件保持 3/3 正确，长窗口代表值约 10.46 秒（上一稳定值约 10.70 秒）；strict 10 秒仍处于约 10.04-10.07 秒边界并未关闭。下一步扩展同一状态模型到 base collection 单-loose 路径，随后复用于 session open/close。
+
+随后 snapshot-derived base collection state 明确保留 primary active/open file，使 `base -> add loose -> update inferred -> close loose -> update` 复用同一状态机；状态单测新增 root count `1 -> 0` 及 loose contains 断言。`set_file_default_for_open_file(..., "/dev/null/inferred")` 在 state 已证明该 open file 属于 inferred roots 时也记录 inferred default fact，复用既有 `ProjectLookup` 字面量折叠。未知 snapshot-id 仍不参与字段替换。
+
+聚焦状态机和 cached inferred lookup 回归、build 7/7、官方 dev install 均通过，真实全文件保持 3/3。连续 strict 10 秒仍约 10.02-10.03 秒，因此整个 issue 继续打开；此子切片只声明 base 单-loose/default 事实覆盖，不使用噪声较大的长窗口作性能收益声明。

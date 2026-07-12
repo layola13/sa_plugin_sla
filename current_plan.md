@@ -16,6 +16,8 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Current base single-loose inferred state (2026-07-12): snapshot-derived collection facts now retain the primary active/open file, allowing the same exact state model to cover base + loose add/update/close (`root_count 1 -> 0`). Proven inferred defaults set through `set_file_default_for_open_file` reuse the existing lookup literal. State and cached-inferred regressions pass; real full file remains 3/3, while repeated strict 10s stays around 10.02-10.03s, so no stable timing claim is made.
+
 - Current dual-loose inferred-root state (2026-07-12): a narrow root `KnownOpenCollectionState` starts only from known snapshot configured files plus an explicit clean-open collection, propagates two added open files, inferred update/default passthrough, and known secondary close, and folds root-count/contains/open-count/inferred guards before reachability. Exact state-machine regression passes. Real multi-configured remains 3/3 and improves about 10.70s -> 10.46s long-window; strict 10s remains marginally open. Next extend the same model to the base single-loose and session paths.
 
 - Current folded-empty-guard cleanup state (2026-07-12): root project shortcut cleanup removes no-else constant `if false {}` statements after inferred result guards are folded, for both direct and expression-statement AST shapes. Focused inferred/cached regressions and build pass. This is a verified AST cleanup only; repeated real multi-configured strict 10s remains open.

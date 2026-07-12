@@ -803,6 +803,8 @@ fn snapshotCollectionState(expr: *const ast.Node, snapshots: *const std.StringHa
         .configured_primary_len = snapshot.active_file_len,
         .configured_secondary = if (snapshot.secondary_project) |project| project.file_name else null,
         .configured_secondary_len = if (snapshot.secondary_project) |project| project.file_name_len else null,
+        .primary_open = snapshot.active_file,
+        .primary_open_len = snapshot.active_file_len,
     };
 }
 
@@ -1497,6 +1499,27 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                 try recordProjectCollectionFact(&open_collections, &default_collections, &snapshots_with_inferred, let.name, let.value, &facts);
                 try recordOpenConfiguredCollectionFact(&open_configured_collections, &configured_projects, &project_snapshots, let.name, original_value, &facts);
                 try recordKnownOpenState(&known_open_states, &project_snapshots, let.name, original_value, &facts);
+                if (original_value.* == .call_expr) {
+                    const state_call = original_value.call_expr;
+                    if (std.mem.endsWith(u8, state_call.func_name, "project_collection_set_file_default_for_open_file") and
+                        state_call.args.len >= 5 and
+                        state_call.args[0].* == .identifier and
+                        nodeStringLiteralValue(state_call.args[3]) != null and
+                        std.mem.eql(u8, nodeStringLiteralValue(state_call.args[3]).?, "/dev/null/inferred"))
+                    {
+                        if (known_open_states.get(state_call.args[0].identifier)) |state| {
+                            if (knownInferredContains(state, state_call.args[1], state_call.args[2])) {
+                                try default_collections.put(let.name, .{
+                                    .cached_file = state_call.args[1],
+                                    .cached_file_len = state_call.args[2],
+                                    .project_path = state_call.args[3],
+                                    .project_path_len = state_call.args[4],
+                                    .selects_inferred = true,
+                                });
+                            }
+                        }
+                    }
+                }
                 _ = inferred_project_lists.remove(let.name);
                 _ = inferred_sessions.remove(let.name);
                 _ = inferred_service_lists.remove(let.name);
@@ -1609,6 +1632,21 @@ test "project shortcut tracks known dual inferred open state transitions" {
         .snapshot_id = 1,
     });
     const collection = try makeFieldExprNode(allocator, try makeIdentifierNode(allocator, "multi"), "collection");
+    try recordKnownOpenState(&states, &snapshots, "base", collection, &facts);
+    const loose0 = try makeStringLiteralNode(allocator, "/repo/base-loose.ts");
+    const loose0_len = try makeIntLiteralNode(allocator, 19);
+    const base_opened = try makeCallNode(allocator, "project_collection_add_open_file", &.{ try makeIdentifierNode(allocator, "base"), loose0, loose0_len });
+    try recordKnownOpenState(&states, &snapshots, "base_opened", base_opened, &facts);
+    const base_inferred = try makeCallNode(allocator, "project_collection_update_inferred_project_roots", &.{ try makeIdentifierNode(allocator, "base_opened"), try makeBoolLiteralNode(allocator, false), try makeIntLiteralNode(allocator, 0), try makeIntLiteralNode(allocator, 2) });
+    try recordKnownOpenState(&states, &snapshots, "base_inferred", base_inferred, &facts);
+    try std.testing.expectEqual(@as(i64, 1), knownInferredRootCount(states.get("base_inferred").?));
+    try std.testing.expect(knownInferredContains(states.get("base_inferred").?, loose0, loose0_len));
+    const base_closed = try makeCallNode(allocator, "project_collection_apply_close_file_change", &.{ try makeIdentifierNode(allocator, "base_inferred"), loose0, loose0_len });
+    try recordKnownOpenState(&states, &snapshots, "base_closed", base_closed, &facts);
+    const base_after_close = try makeCallNode(allocator, "project_collection_update_inferred_project_roots", &.{ try makeIdentifierNode(allocator, "base_closed"), try makeBoolLiteralNode(allocator, false), try makeIntLiteralNode(allocator, 0), try makeIntLiteralNode(allocator, 3) });
+    try recordKnownOpenState(&states, &snapshots, "base_after_close", base_after_close, &facts);
+    try std.testing.expectEqual(@as(i64, 0), knownInferredRootCount(states.get("base_after_close").?));
+
     const clean = try makeCallNode(allocator, "project_collection_with_open_files", &.{ collection, try makeIntLiteralNode(allocator, 0), try makeBoolLiteralNode(allocator, false), try makeStringLiteralNode(allocator, ""), try makeIntLiteralNode(allocator, 0), try makeBoolLiteralNode(allocator, false), try makeStringLiteralNode(allocator, ""), try makeIntLiteralNode(allocator, 0) });
     try recordKnownOpenState(&states, &snapshots, "clean", clean, &facts);
 

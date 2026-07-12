@@ -2606,6 +2606,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 # 2026-07-12: Dual loose inferred-root state folding
 
+# 2026-07-12: Base single-loose inferred state folding
+
+- [done] Extended known collection state to snapshot primary active/open plus one loose secondary open.
+  - State regression now proves inferred root count `1 -> 0` across add/update/close/update.
+  - Proven `/dev/null/inferred` defaults set through the open-file API reuse the existing inferred lookup fold.
+  - Real multi-configured remains 3/3; repeated strict 10s remains marginally open at about 10.02-10.03s.
+
 - [done] Added a narrow pre-reachability state model for the explicit clean collection + two loose open files path.
   - Tracks known configured files, dual opens, inferred presence, secondary close, root count, and contains queries.
   - Exact Zig state-transition regression passes; existing inferred/two-open guards and build 7/7 pass.

@@ -4332,6 +4332,9 @@ test "sla module table shares imported type scan surfaces across modules" {
     var right_has_shared = false;
     for (right.known_types) |name| right_has_shared = right_has_shared or std.mem.eql(u8, name, "SharedThing");
     try std.testing.expect(right_has_shared);
+
+    _ = try modules.getOrParse(left.resolved_imports[0]);
+    try std.testing.expectEqual(@as(usize, 1), modules.expandedSourceCacheHitCount());
 }
 
 test "sla module table materializes function bodies from cached spans" {

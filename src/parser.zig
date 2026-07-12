@@ -23,6 +23,7 @@ pub const ImportTypeSurface = struct {
     types: []const []const u8,
     enums: []const []const u8,
     source: []const u8,
+    expanded_source: []const u8,
     complete: bool,
 };
 
@@ -1332,6 +1333,7 @@ pub const Parser = struct {
             .types = &.{},
             .enums = &.{},
             .source = &.{},
+            .expanded_source = &.{},
             .complete = false,
         });
 
@@ -1361,6 +1363,7 @@ pub const Parser = struct {
             .types = try self.allocator.dupe([]const u8, sub.known_types.items),
             .enums = try self.allocator.dupe([]const u8, sub.known_enums.items),
             .source = source,
+            .expanded_source = expanded_source,
             .complete = true,
         };
         try self.import_type_scan_cache.put(canonical_path, surface);

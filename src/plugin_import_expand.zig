@@ -919,6 +919,10 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
             "[sla-profile] import source reuse hits={d}\n",
             .{modules.resolvedImportSourceCacheHitCount()},
         );
+        std.debug.print(
+            "[sla-profile] import expanded source reuse hits={d}\n",
+            .{modules.expandedSourceCacheHitCount()},
+        );
     }
 
     for (program.program.decls) |decl| {

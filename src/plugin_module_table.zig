@@ -300,6 +300,7 @@ pub const SlaModuleTable = struct {
     import_type_scan_cache: parser_mod.ImportTypeScanCache,
     import_type_scan_cache_hits: usize,
     resolved_import_source_cache_hits: usize,
+    expanded_source_cache_hits: usize,
     parse_options: parser_mod.Parser.Options,
 
     pub fn init(allocator: std.mem.Allocator) SlaModuleTable {
@@ -315,6 +316,7 @@ pub const SlaModuleTable = struct {
             .import_type_scan_cache = parser_mod.ImportTypeScanCache.init(allocator),
             .import_type_scan_cache_hits = 0,
             .resolved_import_source_cache_hits = 0,
+            .expanded_source_cache_hits = 0,
             .parse_options = parse_options,
         };
     }
@@ -366,6 +368,10 @@ pub const SlaModuleTable = struct {
         return self.resolved_import_source_cache_hits;
     }
 
+    pub fn expandedSourceCacheHitCount(self: *const SlaModuleTable) usize {
+        return self.expanded_source_cache_hits;
+    }
+
     fn cachedPlainSlaImport(self: *SlaModuleTable, base_dir: []const u8, import_path: []const u8, exclude_path: []const u8) !?ResolvedImport {
         if (!std.mem.endsWith(u8, import_path, ".sla") or
             plugin_imports.isGlobImportPath(import_path) or
@@ -406,7 +412,11 @@ pub const SlaModuleTable = struct {
         if (self.modules.get(resolved.path)) |module| return module;
 
         const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
-        const expanded_source = try source_expand.expand(self.allocator, resolved.source);
+        const expanded_source = if (self.import_type_scan_cache.get(resolved.path)) |surface| blk: {
+            if (!surface.complete) break :blk try source_expand.expand(self.allocator, resolved.source);
+            self.expanded_source_cache_hits += 1;
+            break :blk surface.expanded_source;
+        } else try source_expand.expand(self.allocator, resolved.source);
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, base_dir, self.parse_options);
         parser.seedImportTypeScanCache(self.import_type_scan_cache);
         const parsed = try parser.parseProgram();

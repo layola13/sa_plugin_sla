@@ -103,6 +103,15 @@ pub const Scope = struct {
     }
 };
 
+fn bindingIsLocalToLoop(scope: *Scope, loop_scope: *Scope, name: []const u8) bool {
+    var curr: ?*Scope = scope;
+    while (curr) |frame| : (curr = frame.parent) {
+        if (frame.lookupLocal(name) != null) return true;
+        if (frame == loop_scope) return false;
+    }
+    return false;
+}
+
 pub const TypeChecker = struct {
     pub const FunctionSignature = struct {
         params: []const ast.Param,
@@ -3157,6 +3166,12 @@ pub const TypeChecker = struct {
             },
             .release_stmt => |rel| {
                 const sym = scope.lookup(rel.var_name) orelse return TypeError.UndefinedVariable;
+                if (current_loop_scope) |loop_scope| {
+                    if (!bindingIsLocalToLoop(scope, loop_scope, rel.var_name)) {
+                        self.setError("LoopConditionalConsume: binding `{s}` declared before the loop cannot be explicitly released inside the loop body", .{rel.var_name});
+                        return TypeError.CompileError;
+                    }
+                }
                 if (sym.state == .consumed) return TypeError.UseAfterMove;
                 if (sym.state == .uninitialized) {
                     self.setError("UseBeforeInit: var `{s}` cannot be released before assignment", .{rel.var_name});
@@ -5863,6 +5878,23 @@ pub const TypeChecker = struct {
 test "type checker basic validation" {
     // We can write tests here if we want to build it, but user requested 'no rushing to compile'.
     // Let's ensure the semantic correctness.
+}
+
+test "type checker classifies loop local release ownership" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var int_ty = ast.Type{ .primitive = .i64 };
+    const function_scope = try Scope.init(arena.allocator(), null);
+    try function_scope.define("outer", &int_ty, false);
+    const loop_scope = try Scope.init(arena.allocator(), function_scope);
+    try loop_scope.define("item", &int_ty, false);
+    const nested_scope = try Scope.init(arena.allocator(), loop_scope);
+    try nested_scope.define("inner", &int_ty, false);
+
+    try std.testing.expect(!bindingIsLocalToLoop(nested_scope, loop_scope, "outer"));
+    try std.testing.expect(bindingIsLocalToLoop(nested_scope, loop_scope, "item"));
+    try std.testing.expect(bindingIsLocalToLoop(nested_scope, loop_scope, "inner"));
 }
 
 test "type checker resolves registered function alias" {

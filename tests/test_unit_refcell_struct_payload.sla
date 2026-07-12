@@ -91,6 +91,7 @@ fn refcell_loop_local_borrows_release(cell: &RefCell<RefCellPayload>) -> int {
         if borrowed.value != 90 {
             panic(17);
         };
+        !borrowed;
         i = i + 1;
     }
     for n in 0..2 {
@@ -98,6 +99,7 @@ fn refcell_loop_local_borrows_release(cell: &RefCell<RefCellPayload>) -> int {
         if borrowed.value + n < 90 {
             panic(18);
         };
+        !borrowed;
     }
     let after: &RefCellPayload = cell.borrow();
     return after.value;

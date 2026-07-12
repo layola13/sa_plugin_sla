@@ -9055,7 +9055,10 @@ pub const Codegen = struct {
                         } else {
                             self.out.writer().print("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
                         }
-                        if (self.storedIdentifierNeedsRelease(assign.value, target_ty)) {
+                        if (self.refcell_borrow_handles.contains(stored_val_reg)) {
+                            try self.transferResultSlotValueState(target_name, stored_val_reg, true);
+                            try self.markConsumedBinding(stored_val_reg);
+                        } else if (self.storedIdentifierNeedsRelease(assign.value, target_ty)) {
                             try self.transferResultSlotValueState(target_name, stored_val_reg, true);
                             try self.markConsumedBinding(stored_val_reg);
                         }

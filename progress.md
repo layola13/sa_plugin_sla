@@ -2594,6 +2594,14 @@ Update this file every time a compiler feature or demo milestone is completed an
   - Current sweep: full local direct SAB no-fallback `tests/test_unit_*.sla` is 50/64. Remaining failures are listed in `tasks.md`; this fixed slice moves the feature to 100%, broader Y/shared-lowering to approximately 66%, and direct SAB fallback-removal to approximately 85%.
 # 2026-07-09: SAB collection helper direct lowering progress
 
+# 2026-07-12: Project open-configured result layout compatibility
+
+- [done] `ProjectOpenConfiguredProjects` shortcut now matches the current seven-field downstream structure.
+  - Added explicit empty secondary-project fields to the compiler-generated single-project literal.
+  - Extended the focused codegen fixture to assert `has_secondary == false` and zero secondary path length.
+  - Verified focused Zig 2/2, build 7/7, official dev install, and downstream collection-open/default-cache strict SAB 10s.
+  - The broader multi-configured test remains open: a 60s diagnostic build finishes in 12.27s with a 3.1MiB SAB; typecheck and direct codegen dominate because the two-project collection path is not yet shortcut-folded.
+
 - [progress] Project snapshot/background timeout issue is now about 78% complete.
   - Background strict 10s path remains closed from the earlier direct string Slice work.
   - Added direct SAB lowering for small imported platform helpers in `src/sab_codegen.zig`: byte pointer helpers, JSON single-output wrappers, FS single-output wrappers, plus literal-only `STR_PTR`/`STR_LEN`.

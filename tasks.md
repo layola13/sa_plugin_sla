@@ -806,3 +806,4 @@ This document tracks the tasks and implementation progress of the Sla compiler p
 - [x] `sa sla sab disasm` 的 tracked artifacts 不再显示 `@func(arg)` 作为 call target；SCI disasm 会把 target 和 args 分开显示，同时保留现有 runtime parser 兼容性。
 - [x] Feature completion: smart-pointer / borrow / RefCell focused convergence 100%; Y/shared-lowering approximately 66%; direct SAB fallback-removal approximately 85%; current local full no-fallback sweep 50/64.
 - [ ] 历史下一阶段优先级已被顶部 63/69 当前矩阵取代：继续推进 Phase 5 aggregate/enum/derive/operator、Phase 6 protocol、Phase 7 import/pkg、Phase 8 async，最后 Phase 9 69/69 gate。
+- [ ] 2026-07-12 project snapshot issue checkpoint: the single-project `ProjectOpenConfiguredProjects` shortcut now emits the current seven-field layout and collection-open/default-cache pass strict SAB 10s. `test_project_collection_multi_configured_contract.sla` remains open; diagnostic build is 12.27s / 3.1MiB and needs two-project collection fact folding.

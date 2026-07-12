@@ -548,3 +548,16 @@ timeout 90s /usr/bin/time -f 'elapsed %e maxrss %M' env SLA_PROFILE=1 SLA_SAB_NO
 - `parse_tokens`、`scanner_`、`session_parse_file`、`program_new_single_file`、`project_snapshot_from_single_file`、`project_snapshot_with_inferred`、`project_collection_get_default_project`、`project_contains_file`、`program_get_source_file_by_path` 均无命中。
 
 判断：`collection_default_cache` 代表目标已从 strict 10s timeout 收口为通过，且真实 SAB surface 大幅缩小。整个 project snapshot/collection/config/API issue 仍打开，因为 broader collection/API strict 10s 代表还未全部收敛。总体完成度从约 90% 上调为约 91%，下一步继续处理 API / broader collection cache-surface，而不是回到已回退的 `STR_PTR(identifier)` / `STR_LEN(identifier)` direct Slice 字段读取 fast path。
+
+## 2026-07-12 open-configured result layout compatibility checkpoint
+
+重新串行审计 project background/collection/config 代表门禁时，6 个现存 background/config/default-cache 目标均在 strict SAB 10 秒内通过；历史 `test_project_api_open_contract.sla` 与 `test_project_api_update_contract.sla` 已不在下游测试树中。`test_project_collection_open_contract.sla` 暴露了一个独立正确性回归：编译器 shortcut 仍生成旧的四字段 `ProjectOpenConfiguredProjects` 字面量，而当前下游结构已经扩展为七字段。
+
+本轮修复 `src/plugin_project_shortcuts.zig::makeOpenConfiguredProjectsLiteralNode()`，使单 configured-project shortcut 明确生成：
+
+- `count = 1`、`has_primary = true`、primary path/len；
+- `has_secondary = false`、`secondary_project_path = ""`、`secondary_project_path_len = 0`。
+
+聚焦 Zig fixture 同步采用七字段结构并断言 secondary 空状态。验证通过：聚焦测试 2/2、`zig build --summary all` 7/7、官方 `SA_PLUGIN_DEV=1 sa plugin install --dev .`，以及下游 `test_project_collection_open_contract.sla` 和 `test_project_collection_default_cache_contract.sla` strict SAB 10 秒门禁。
+
+broader `test_project_collection_multi_configured_contract.sla` 仍未关闭。长窗口 `sla sab build` 可完成，代表值为 12.27 秒、MaxRSS 约 527 MiB、SAB 约 3.1 MiB；profile 中 type check 约 5.9 秒、direct SAB codegen 约 4.9 秒。该路径没有命中现有单 cached-default collection shortcut，仍保留 project/compiler/parser 大子图。下一步是为双 configured collection 建立可审计的事实追踪和聚焦回归，而不是把这个性能问题混入七字段布局兼容修复。

@@ -93,11 +93,14 @@ fn makeOpenConfiguredProjectsLiteralNode(
     project_path: *ast.Node,
     project_path_len: *ast.Node,
 ) !*ast.Node {
-    const fields = try allocator.alloc(ast.StructLiteralField, 4);
+    const fields = try allocator.alloc(ast.StructLiteralField, 7);
     fields[0] = .{ .name = "count", .value = try makeIntLiteralNode(allocator, 1) };
     fields[1] = .{ .name = "has_primary", .value = try makeBoolLiteralNode(allocator, true) };
     fields[2] = .{ .name = "primary_project_path", .value = project_path };
     fields[3] = .{ .name = "primary_project_path_len", .value = project_path_len };
+    fields[4] = .{ .name = "has_secondary", .value = try makeBoolLiteralNode(allocator, false) };
+    fields[5] = .{ .name = "secondary_project_path", .value = try makeStringLiteralNode(allocator, "") };
+    fields[6] = .{ .name = "secondary_project_path_len", .value = try makeIntLiteralNode(allocator, 0) };
 
     const node = try allocator.create(ast.Node);
     node.* = .{ .struct_literal = .{

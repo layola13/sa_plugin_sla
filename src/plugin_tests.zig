@@ -5870,7 +5870,7 @@ test "sla sab test codegen folds cached default open configured projects" {
         \\struct Project { config_file_path: ptr, config_file_path_len: int, program: Program }
         \\struct ProjectCollection { primary_configured_project: Project }
         \\struct ProjectSnapshot { collection: ProjectCollection }
-        \\struct ProjectOpenConfiguredProjects { count: int, has_primary: bool, primary_project_path: ptr, primary_project_path_len: int }
+        \\struct ProjectOpenConfiguredProjects { count: int, has_primary: bool, primary_project_path: ptr, primary_project_path_len: int, has_secondary: bool, secondary_project_path: ptr, secondary_project_path_len: int }
         \\
         \\fn empty_session() -> SessionState {
         \\    return SessionState { snapshot_id: 0, project_count: 0, open_file_count: 0, overlay_count: 0, tsconfig_found: false, tsconfig_parse_ok: false, tsconfig_file_count: 0, tsconfig_ref_count: 0, total_nodes: 0, total_statements: 0, total_declarations: 0, total_errors: 0 };
@@ -5929,6 +5929,8 @@ test "sla sab test codegen folds cached default open configured projects" {
         \\    if open_projects.count != 1 { panic(24051); };
         \\    if open_projects.has_primary != true { panic(24052); };
         \\    if open_projects.primary_project_path_len != 19 { panic(24053); };
+        \\    if open_projects.has_secondary != false { panic(24054); };
+        \\    if open_projects.secondary_project_path_len != 0 { panic(24055); };
         \\}
     ;
     try tmp.dir.writeFile(.{ .sub_path = "cached_default_open_projects.sla", .data = source });

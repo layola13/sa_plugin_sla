@@ -12990,7 +12990,21 @@ pub const Codegen = struct {
             const dst = scratch[cursor.*];
             cursor.* += 1;
             const call_plan = lowering_rules.planStaticCall(self.tc, guard, guard.call_expr) orelse return Error.UnsupportedSabDirectFeature;
-            return try self.emitPlannedStaticCallTo(self.tc.expr_types.get(guard), call_plan, guard.call_expr, dst);
+            const lowered = try self.loweredFuncSymbol(lowering_rules.staticCallEmitSymbol(call_plan));
+            var body = std.ArrayList(u8).init(self.allocator);
+            try body.writer().print("@{s}(", .{lowered});
+            for (guard.call_expr.args, 0..) |arg, arg_idx| {
+                if (arg_idx > 0) try body.appendSlice(", ");
+                if (arg.* == .identifier) {
+                    const reg = self.localReg(arg.identifier) orelse return Error.UnsupportedSabDirectFeature;
+                    try body.appendSlice(self.symbols.items[reg]);
+                } else if (arg.* == .literal and arg.literal == .int_val) {
+                    try body.writer().print("{}", .{arg.literal.int_val});
+                } else return Error.UnsupportedSabDirectFeature;
+            }
+            try body.append(')');
+            try self.emitCallBody(dst, try body.toOwnedSlice());
+            return dst;
         }
         const bin = guard.binary_expr;
         const lhs: inst.Operand = if (bin.op == .logical_and or bin.op == .logical_or)

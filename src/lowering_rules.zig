@@ -495,7 +495,7 @@ pub fn scalarMatchGuardTempCount(guard: *const ast.Node) ?usize {
     if (guard.* == .call_expr) {
         const call = guard.call_expr;
         if (call.associated_target != null) return null;
-        for (call.args) |arg| if (arg.* != .identifier) return null;
+        for (call.args) |arg| if (!(arg.* == .identifier or (arg.* == .literal and arg.literal == .int_val))) return null;
         return 1;
     }
     if (guard.* != .binary_expr) return null;

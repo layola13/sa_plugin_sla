@@ -188,9 +188,9 @@ macro match_option_macro(out, value, floor, ceiling) {
     };
 }
 
-macro match_result_macro(out, value, floor, ceiling) {
+macro match_result_macro(out, value) {
     out = match value {
-        Ok(inner) if direct_macro_guard_between(inner, floor, ceiling) => { inner + 2 },
+        Ok(inner) if direct_macro_guard_between(inner, 39, 41) => { inner + 2 },
         Ok(inner) => { 0 - inner },
         Err(error) => { 0 - error },
     };
@@ -384,9 +384,9 @@ fn macro_match_option_direct(^value: Option<i64>, floor: i64, ceiling: i64) -> i
     result
 }
 
-fn macro_match_result_direct(^value: Result<i64, i64>, floor: i64, ceiling: i64) -> i64 {
+fn macro_match_result_direct(^value: Result<i64, i64>) -> i64 {
     let result = 0i64;
-    match_result_macro(result, value, floor, ceiling);
+    match_result_macro(result, value);
     result
 }
 
@@ -457,13 +457,13 @@ fn macro_try_call_option_direct(value: i64, succeed: bool) -> Option<i64> {
     let macro_match_none_input: Option<i64> = None;
     if macro_match_option_direct(^macro_match_none_input, 10, 20) != 0 { panic(31839); };
     let macro_match_ok_input: Result<i64, i64> = Ok(40i64);
-    if macro_match_result_direct(^macro_match_ok_input, 39, 41) != 42 { panic(31840); };
+    if macro_match_result_direct(^macro_match_ok_input) != 42 { panic(31840); };
     let macro_match_low_ok_input: Result<i64, i64> = Ok(8i64);
-    if macro_match_result_direct(^macro_match_low_ok_input, 9, 20) != -8 { panic(31843); };
+    if macro_match_result_direct(^macro_match_low_ok_input) != -8 { panic(31843); };
     let macro_match_high_ok_input: Result<i64, i64> = Ok(21i64);
-    if macro_match_result_direct(^macro_match_high_ok_input, 9, 20) != -21 { panic(31845); };
+    if macro_match_result_direct(^macro_match_high_ok_input) != -21 { panic(31845); };
     let macro_match_err_input: Result<i64, i64> = Err(7i64);
-    if macro_match_result_direct(^macro_match_err_input, 9, 20) != -7 { panic(31841); };
+    if macro_match_result_direct(^macro_match_err_input) != -7 { panic(31841); };
     if macro_unsafe_block_direct() != 135 { panic(31825); };
     let macro_try_some_input: Option<i64> = Some(33i64);
     let macro_try_some = macro_try_option_direct(^macro_try_some_input);

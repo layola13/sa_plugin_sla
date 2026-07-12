@@ -139,6 +139,7 @@ const rewriteProjectSnapshotTestShortcuts = plugin_project_shortcuts.rewriteProj
 const isProjectShortcutRetainedHelperName = plugin_project_shortcuts.isProjectShortcutRetainedHelperName;
 const pruneKnownFalseBranchesInReachableDecls = plugin_reachability.pruneKnownFalseBranchesInReachableDecls;
 const scanReferencedSymbolRoots = plugin_reachability.scanReferencedSymbolRoots;
+const scanReferencedExportedTypeSignatures = plugin_reachability.scanReferencedExportedTypeSignatures;
 const buildReachableSymbols = plugin_reachability.buildReachableSymbols;
 const buildAndMaterializeReachableImportedModuleBodies = plugin_reachability.buildAndMaterializeReachableImportedModuleBodies;
 const collectReachableModuleBodyNames = plugin_reachability.collectReachableModuleBodyNames;
@@ -2105,6 +2106,43 @@ test "sla callable index records exported type declarations" {
     try std.testing.expect(index.type_decls.contains("IndexedEnum"));
     try std.testing.expect(index.type_decls.contains("IndexedTrait"));
     try std.testing.expect(index.type_decls.contains("IndexedAlias"));
+}
+
+test "sla reachability root scanners skip unchanged sets and honor invalidation" {
+    const source =
+        \\struct IndexedRoot { value: i32 }
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var parser = parser_mod.Parser.init(allocator, source);
+    const prog = try parser.parseProgram();
+
+    var index = SlaCallableIndex.init(allocator);
+    defer index.deinit();
+    try index.addDecls(prog.program.decls);
+    var referenced = std.StringHashMap(void).init(allocator);
+    defer referenced.deinit();
+    try referenced.put("IndexedRoot", {});
+    var scanned_symbols = std.StringHashMap(void).init(allocator);
+    defer scanned_symbols.deinit();
+    var scanned_types = std.StringHashMap(void).init(allocator);
+    defer scanned_types.deinit();
+    var reachable = std.StringHashMap(void).init(allocator);
+    defer reachable.deinit();
+    var worklist = std.ArrayList([]const u8).init(allocator);
+    defer worklist.deinit();
+
+    try std.testing.expect(try scanReferencedSymbolRoots(&index, null, null, null, &reachable, &referenced, &scanned_symbols, &worklist));
+    try std.testing.expect(!(try scanReferencedSymbolRoots(&index, null, null, null, &reachable, &referenced, &scanned_symbols, &worklist)));
+    _ = scanned_symbols.remove("IndexedRoot");
+    try std.testing.expect(try scanReferencedSymbolRoots(&index, null, null, null, &reachable, &referenced, &scanned_symbols, &worklist));
+
+    try std.testing.expect(try scanReferencedExportedTypeSignatures(&index, &referenced, &scanned_types));
+    try std.testing.expect(!(try scanReferencedExportedTypeSignatures(&index, &referenced, &scanned_types)));
+    _ = scanned_types.remove("IndexedRoot");
+    try std.testing.expect(try scanReferencedExportedTypeSignatures(&index, &referenced, &scanned_types));
 }
 
 test "sla load imported macros parses already expanded source" {

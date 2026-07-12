@@ -1310,6 +1310,11 @@ pub fn scanReferencedSymbolRoots(
     scanned_symbol_roots: *std.StringHashMap(void),
     worklist: *std.ArrayList([]const u8),
 ) !bool {
+    // Every referenced root is inserted into this set when scanned. If counts
+    // match, no root can be pending and we can avoid walking the whole hash map.
+    // Explicit invalidation removes entries, making the counts differ again.
+    if (referenced_types.count() == scanned_symbol_roots.count()) return false;
+
     var pending = std.ArrayList([]const u8).init(funcs.allocator);
     defer pending.deinit();
 
@@ -1935,6 +1940,8 @@ pub fn scanReferencedExportedTypeSignatures(
     referenced_types: *std.StringHashMap(void),
     scanned_type_roots: *std.StringHashMap(void),
 ) !bool {
+    if (referenced_types.count() == scanned_type_roots.count()) return false;
+
     var pending = std.ArrayList(*ast.Node).init(funcs.allocator);
     defer pending.deinit();
 

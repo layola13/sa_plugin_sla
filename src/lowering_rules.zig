@@ -2964,6 +2964,46 @@ pub fn rootIdentifier(expr: *const ast.Node) ?[]const u8 {
     };
 }
 
+pub fn macroParamRequiresLvalue(body: []const *ast.Node, name: []const u8) bool {
+    for (body) |node| {
+        if (macroNodeRequiresLvalue(node, name)) return true;
+    }
+    return false;
+}
+
+fn macroNodeRequiresLvalue(node: *const ast.Node, name: []const u8) bool {
+    return switch (node.*) {
+        .assign_stmt => |assign| if (rootIdentifier(assign.target)) |root| std.mem.eql(u8, root, name) else false,
+        .release_stmt => |release| std.mem.eql(u8, release.var_name, name),
+        .borrow_expr => |borrow| if (rootIdentifier(borrow.expr)) |root| std.mem.eql(u8, root, name) else false,
+        .move_expr => |move| if (rootIdentifier(move.expr)) |root| std.mem.eql(u8, root, name) else false,
+        .call_expr => |call| blk: {
+            for (call.args) |arg| {
+                if (rootIdentifier(arg)) |root| {
+                    if (std.mem.eql(u8, root, name)) break :blk true;
+                }
+            }
+            break :blk false;
+        },
+        .block_stmt => |block| macroParamRequiresLvalue(block.body, name),
+        .if_expr => |ife| macroParamRequiresLvalue(ife.then_block, name) or
+            (if (ife.else_block) |else_block| macroParamRequiresLvalue(else_block, name) else false),
+        .switch_expr => |swe| blk: {
+            for (swe.cases) |case| if (macroParamRequiresLvalue(case.body, name)) break :blk true;
+            break :blk false;
+        },
+        .match_expr => |mat| blk: {
+            for (mat.cases) |case| if (macroParamRequiresLvalue(case.body, name)) break :blk true;
+            break :blk false;
+        },
+        .unsafe_expr => |unsafe_expr| macroParamRequiresLvalue(unsafe_expr.body, name),
+        .for_stmt => |for_stmt| macroParamRequiresLvalue(for_stmt.body, name),
+        .while_stmt => |while_stmt| macroParamRequiresLvalue(while_stmt.body, name),
+        .expr_stmt => |expr| macroNodeRequiresLvalue(expr, name),
+        else => false,
+    };
+}
+
 pub const FunctionTailCleanupAction = control_flow_rules.FunctionExitCleanupAction;
 pub const planFunctionTailCleanup = control_flow_rules.planFunctionExitCleanup;
 
@@ -3560,6 +3600,18 @@ test "shared lowering rules classify call materialization decisions" {
         .shallow_copy_value = true,
     });
     try std.testing.expectEqual(CallArgMaterializationKind.value, preserved_sa_plan.kind);
+}
+
+test "shared lowering rules classify user macro lvalue parameters" {
+    var value_ident = ast.Node{ .identifier = "value" };
+    var one = ast.Node{ .literal = .{ .int_val = 1 } };
+    var sum = ast.Node{ .binary_expr = .{ .op = .add, .left = &value_ident, .right = &one } };
+    var value_stmt = ast.Node{ .expr_stmt = &sum };
+    try std.testing.expect(!macroParamRequiresLvalue(&.{&value_stmt}, "value"));
+
+    var out_ident = ast.Node{ .identifier = "out" };
+    var assign = ast.Node{ .assign_stmt = .{ .target = &out_ident, .value = &sum } };
+    try std.testing.expect(macroParamRequiresLvalue(&.{&assign}, "out"));
 }
 
 test "shared lowering rules classify result-slot value transfer" {

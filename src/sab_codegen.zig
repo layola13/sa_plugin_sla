@@ -96,6 +96,8 @@ const MacroArgBinding = struct {
     name: []const u8,
     arg: *const ast.Node,
     ctx: ?*MacroExpansionContext = null,
+    evaluated_reg: ?u32 = null,
+    release_evaluated_reg: bool = false,
 };
 
 const MacroLocalBinding = struct {
@@ -7447,6 +7449,7 @@ pub const Codegen = struct {
     fn genMacroIdentifier(self: *Codegen, name: []const u8, ctx: *MacroExpansionContext) anyerror!u32 {
         if (macroIdentifierName(ctx, name)) |mapped| return try self.genIdentifierByName(mapped);
         if (macroArgBinding(ctx, name)) |binding| {
+            if (binding.evaluated_reg) |reg| return reg;
             if (binding.ctx) |arg_ctx| return try self.genMacroExpr(@constCast(binding.arg), arg_ctx);
             return try self.genExpr(@constCast(binding.arg));
         }
@@ -8373,10 +8376,27 @@ pub const Codegen = struct {
 
     fn genUserMacroCallWithParent(self: *Codegen, macro_decl: *const ast.MacroDecl, call: ast.CallExpr, parent_ctx: ?*MacroExpansionContext) anyerror!void {
         if (macro_decl.params.len != call.args.len) return Error.UnsupportedSabDirectFeature;
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
         const bindings = try self.allocator.alloc(MacroArgBinding, call.args.len);
         defer self.allocator.free(bindings);
         for (macro_decl.params, call.args, 0..) |param, arg, idx| {
-            bindings[idx] = .{ .name = param, .arg = arg, .ctx = parent_ctx };
+            const requires_lvalue = lowering_rules.macroParamRequiresLvalue(macro_decl.body, param);
+            const evaluated_reg = if (requires_lvalue)
+                null
+            else if (parent_ctx) |arg_ctx|
+                try self.genMacroExpr(@constCast(arg), arg_ctx)
+            else
+                try self.genExpr(@constCast(arg));
+            const release_evaluated_reg = if (evaluated_reg) |reg| !self.isLocalReg(reg) else false;
+            bindings[idx] = .{
+                .name = param,
+                .arg = arg,
+                .ctx = parent_ctx,
+                .evaluated_reg = evaluated_reg,
+                .release_evaluated_reg = release_evaluated_reg,
+            };
+            if (evaluated_reg) |reg| try self.pushLocal(param, reg, true);
         }
 
         const invocation = self.macro_call_idx;
@@ -8395,9 +8415,12 @@ pub const Codegen = struct {
             ctx.locals.deinit();
         }
 
-        const old_locals = self.locals.items.len;
-        defer self.popLocalsTo(old_locals);
         try self.genMacroBlock(macro_decl.body, &ctx, false);
+        for (bindings) |binding| {
+            if (binding.evaluated_reg) |reg| {
+                if (binding.release_evaluated_reg and !self.released_regs.contains(reg)) try self.emitRelease(reg);
+            }
+        }
         var i = self.locals.items.len;
         while (i > old_locals) {
             i -= 1;

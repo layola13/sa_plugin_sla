@@ -1,4 +1,5 @@
 @import "sa_std/core/box.sa"
+@import "sa_std/core/refcell.sa"
 
 macro add_one_macro(var_ref) {
     let temp = 1;
@@ -18,6 +19,7 @@ macro add_two_macro(var_ref) {
 
 struct DirectMacroPoint { left: i64, right: i64 }
 struct DirectMacroBorrowPoint { left: i64, right: i64 }
+struct DirectMacroCounter { value: i64 }
 
 fn direct_macro_add(value: i64, delta: i64) -> i64 {
     value + delta
@@ -85,6 +87,16 @@ macro borrow_smart_address_macro(out, boxed, nested_box) {
     }
 }
 
+macro evaluate_value_once_macro(out, value) {
+    out = value + value;
+}
+
+fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
+    let borrowed: &DirectMacroCounter = cell.borrow_mut();
+    borrowed.value = borrowed.value + 1;
+    borrowed.value
+}
+
 fn macro_hygiene_direct(value: i64) -> i64 {
     let temp = value;
     add_one_macro(temp);
@@ -144,6 +156,15 @@ fn macro_smart_address_direct() -> i64 {
     total
 }
 
+fn macro_value_arg_evaluated_once() -> i64 {
+    let cell = RefCell::new(DirectMacroCounter { value: 0 });
+    let total = 0i64;
+    evaluate_value_once_macro(total, macro_next_value(&cell));
+    let borrowed: &DirectMacroCounter = cell.borrow();
+    if borrowed.value != 1 { panic(31810); };
+    total
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -152,4 +173,5 @@ fn macro_smart_address_direct() -> i64 {
     if macro_nested_call_direct(7) != 10 { panic(31807); };
     if macro_address_direct() != 33 { panic(31808); };
     if macro_smart_address_direct() != 42 { panic(31809); };
+    if macro_value_arg_evaluated_once() != 2 { panic(31811); };
 }

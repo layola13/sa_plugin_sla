@@ -10,3 +10,7 @@
 [MACRO] SLA_IMPORTED_READ_PAIR_SUM %out, %value
     %out = call @sla__imported_macro_read_pair_sum(&%value)
 [END_MACRO]
+
+[MACRO] SLA_IMPORTED_WRITE_PAIR_LEFT %out, %value
+    %out = call @sla__imported_macro_write_pair_left(&%value)
+[END_MACRO]

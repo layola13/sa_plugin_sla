@@ -8220,6 +8220,10 @@ pub const Codegen = struct {
             },
             .pass_raw_pointer_value => unreachable,
             .pass_address_expression => return self.genImportedMacroAddressExpressionArg(arg, hoisted_allocs),
+            .pass_pointer_backed_projection => {
+                const reg = try self.genExpr(arg, hoisted_allocs);
+                return .{ .reg = reg, .release_after_call = self.importedMacroValueArgNeedsRelease(arg, reg) };
+            },
             .reuse_existing_addressable => return .{ .reg = existing_symbol.?, .release_after_call = false },
             .materialize_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, hoisted_allocs),
             .materialize_address_expression_stack_slot => return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, hoisted_allocs),

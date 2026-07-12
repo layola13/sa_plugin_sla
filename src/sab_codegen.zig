@@ -10854,6 +10854,7 @@ pub const Codegen = struct {
             .pass_value => return self.genImportedMacroValueArg(arg, ctx),
             .pass_raw_pointer_value => unreachable,
             .pass_address_expression => return self.genImportedMacroAddressExpressionArg(arg, ctx),
+            .pass_pointer_backed_projection => return self.genImportedMacroValueArg(arg, ctx),
             .reuse_existing_addressable => return .{ .operand = existing_symbol.?, .release_reg = null },
             .materialize_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, ctx),
             .materialize_address_expression_stack_slot => return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, ctx),

@@ -268,6 +268,7 @@ pub const ImportedMacroArgLoweringAction = enum {
     pass_value,
     pass_raw_pointer_value,
     pass_address_expression,
+    pass_pointer_backed_projection,
     reuse_existing_addressable,
     materialize_stack_slot,
     materialize_address_expression_stack_slot,
@@ -354,6 +355,13 @@ pub const ImportedMacroCallPlan = struct {
         has_existing_addressable_symbol: bool,
         arg_ty: *const ast.Type,
     ) ImportedMacroArgLoweringAction {
+        if (self.callArgNeedsAddressableSlot(call_arg_index) and
+            !self.callArgNeedsDirectAddressSlot(call_arg_index) and
+            abiPassesAsPointer(arg_ty) and
+            (address_shape == .field or address_shape == .index))
+        {
+            return .pass_pointer_backed_projection;
+        }
         if (self.callArgNeedsAddressableSlot(call_arg_index) and
             !self.callArgNeedsDirectAddressSlot(call_arg_index) and
             abiPassesAsPointer(arg_ty) and
@@ -3254,7 +3262,8 @@ test "shared imported macro address-expression args materialize stack slots" {
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_value, plan.planArgValueBypassAction(1, &ident, &aggregate_ty).?);
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.reuse_existing_addressable, plan.planAddressableArgLoweringAction(1, .identifier, true, &aggregate_ty));
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.materialize_stack_slot, plan.planAddressableArgLoweringAction(1, .identifier, false, &aggregate_ty));
-    try std.testing.expectEqual(ImportedMacroArgLoweringAction.materialize_address_expression_stack_slot, plan.planAddressableArgLoweringAction(1, .field, false, &aggregate_ty));
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_pointer_backed_projection, plan.planAddressableArgLoweringAction(1, .field, false, &aggregate_ty));
+    try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_pointer_backed_projection, plan.planAddressableArgLoweringAction(1, .index, false, &aggregate_ty));
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_address_expression, plan.planAddressableArgLoweringAction(1, .deref_borrow_or_pointer, false, &aggregate_ty));
 
     const address_slot_plan = ImportedMacroCallPlan{

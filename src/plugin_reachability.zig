@@ -83,6 +83,7 @@ pub const SlaCallableIndex = struct {
     decls: std.StringHashMap(*ast.FuncDecl),
     const_decls: std.StringHashMap(*ast.ConstStmt),
     macro_decls: std.StringHashMap(*ast.MacroDecl),
+    type_decls: std.StringHashMap(*ast.Node),
     module_sources: std.StringHashMap([]const u8),
     associated_candidates: std.StringHashMap(std.ArrayList([]const u8)),
     unresolved_callables: ?*UnresolvedCallableSet,
@@ -94,6 +95,7 @@ pub const SlaCallableIndex = struct {
             .decls = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .const_decls = std.StringHashMap(*ast.ConstStmt).init(allocator),
             .macro_decls = std.StringHashMap(*ast.MacroDecl).init(allocator),
+            .type_decls = std.StringHashMap(*ast.Node).init(allocator),
             .module_sources = std.StringHashMap([]const u8).init(allocator),
             .associated_candidates = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
             .unresolved_callables = null,
@@ -105,6 +107,7 @@ pub const SlaCallableIndex = struct {
         while (candidates.next()) |list| list.deinit();
         self.associated_candidates.deinit();
         self.module_sources.deinit();
+        self.type_decls.deinit();
         self.macro_decls.deinit();
         self.const_decls.deinit();
         self.decls.deinit();
@@ -195,6 +198,22 @@ pub const SlaCallableIndex = struct {
                     const entry = try self.macro_decls.getOrPut(decl.macro_decl.name);
                     if (!entry.found_existing) entry.value_ptr.* = &decl.macro_decl;
                 },
+                .struct_decl => {
+                    const entry = try self.type_decls.getOrPut(decl.struct_decl.name);
+                    if (!entry.found_existing) entry.value_ptr.* = decl;
+                },
+                .enum_decl => {
+                    const entry = try self.type_decls.getOrPut(decl.enum_decl.name);
+                    if (!entry.found_existing) entry.value_ptr.* = decl;
+                },
+                .trait_decl => {
+                    const entry = try self.type_decls.getOrPut(decl.trait_decl.name);
+                    if (!entry.found_existing) entry.value_ptr.* = decl;
+                },
+                .type_alias_decl => {
+                    const entry = try self.type_decls.getOrPut(decl.type_alias_decl.name);
+                    if (!entry.found_existing) entry.value_ptr.* = decl;
+                },
                 .impl_decl => |impl_decl| {
                     const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
                     for (impl_decl.methods) |method| {
@@ -260,6 +279,10 @@ pub const SlaCallableIndex = struct {
                         try self.macro_decls.put(decl.macro_decl.name, &decl.macro_decl);
                     }
                 },
+                .struct_decl => try self.refreshTypeDecl(decl.struct_decl.name, decl),
+                .enum_decl => try self.refreshTypeDecl(decl.enum_decl.name, decl),
+                .trait_decl => try self.refreshTypeDecl(decl.trait_decl.name, decl),
+                .type_alias_decl => try self.refreshTypeDecl(decl.type_alias_decl.name, decl),
                 .impl_decl => |impl_decl| {
                     const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
                     for (impl_decl.methods) |method| {
@@ -285,6 +308,14 @@ pub const SlaCallableIndex = struct {
                 },
                 else => {},
             }
+        }
+    }
+
+    fn refreshTypeDecl(self: *SlaCallableIndex, name: []const u8, decl: *ast.Node) !void {
+        if (self.type_decls.getPtr(name)) |decl_ptr| {
+            decl_ptr.* = decl;
+        } else {
+            try self.type_decls.put(name, decl);
         }
     }
 };
@@ -1398,7 +1429,6 @@ fn collectInitialReachabilityRoots(
 
 fn drainReachabilityBuildState(
     state: *ReachabilityBuildState,
-    modules: []const *SlaModule,
     module_table: *SlaModuleTable,
     options: SlaImportExpansionOptions,
     imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
@@ -1425,7 +1455,7 @@ fn drainReachabilityBuildState(
             state.analysis.current_facts = prev_facts;
         }
         const scanned_symbols = try scanReferencedSymbolRoots(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, out_reachable, out_referenced_types, &state.scanned_symbol_roots, &state.worklist);
-        const scanned_types = try scanReferencedExportedTypeSignatures(state.allocator, modules, out_referenced_types, &state.scanned_type_roots);
+        const scanned_types = try scanReferencedExportedTypeSignatures(&state.callable_index, out_referenced_types, &state.scanned_type_roots);
         if (!scanned_symbols and !scanned_types) break;
     }
 }
@@ -1445,7 +1475,7 @@ fn initializeReachabilityBuildState(
     try state.callable_index.addDecls(root_program.program.decls);
     for (modules) |module| try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
     try collectInitialReachabilityRoots(state, root_program, module_table, options, imported_macros, out_reachable, out_referenced_types);
-    try drainReachabilityBuildState(state, modules, module_table, options, imported_macros, out_reachable, out_referenced_types);
+    try drainReachabilityBuildState(state, module_table, options, imported_macros, out_reachable, out_referenced_types);
 }
 
 fn unresolvedCallableCanResolve(
@@ -1528,6 +1558,7 @@ pub const ReachabilitySession = struct {
         all_modules: []const *SlaModule,
         rescan_roots: bool,
     ) !void {
+        _ = all_modules;
         if (rescan_roots) {
             try collectInitialReachabilityRoots(
                 &self.state,
@@ -1541,7 +1572,6 @@ pub const ReachabilitySession = struct {
         }
         try drainReachabilityBuildState(
             &self.state,
-            all_modules,
             self.module_table,
             self.options,
             self.imported_macros,
@@ -1784,7 +1814,7 @@ fn materializeReachableImportedModuleBodiesWithState(
         if (!changed) break;
 
         const extend_start = std.time.nanoTimestamp();
-        try drainReachabilityBuildState(state, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
+        try drainReachabilityBuildState(state, modules, options, imported_macros, reachable, referenced_types);
         extend_ns += std.time.nanoTimestamp() - extend_start;
         stats.incremental_extensions += 1;
     }
@@ -1901,12 +1931,11 @@ pub fn recordReferencedTypesFromTypeDecl(referenced_types: *std.StringHashMap(vo
 }
 
 pub fn scanReferencedExportedTypeSignatures(
-    allocator: std.mem.Allocator,
-    modules: []const *SlaModule,
+    funcs: *const SlaCallableIndex,
     referenced_types: *std.StringHashMap(void),
     scanned_type_roots: *std.StringHashMap(void),
 ) !bool {
-    var pending = std.ArrayList(*ast.Node).init(allocator);
+    var pending = std.ArrayList(*ast.Node).init(funcs.allocator);
     defer pending.deinit();
 
     var referenced_iter = referenced_types.keyIterator();
@@ -1914,12 +1943,7 @@ pub fn scanReferencedExportedTypeSignatures(
         const name = name_ptr.*;
         if (scanned_type_roots.contains(name)) continue;
         try scanned_type_roots.put(name, {});
-        for (modules) |module| {
-            if (module.exports.type_decls.get(name)) |decl| {
-                try pending.append(decl);
-                break;
-            }
-        }
+        if (funcs.type_decls.get(name)) |decl| try pending.append(decl);
     }
 
     for (pending.items) |decl| try recordReferencedTypesFromTypeDecl(referenced_types, decl);

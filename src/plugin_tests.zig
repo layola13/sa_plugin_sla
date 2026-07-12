@@ -2083,6 +2083,30 @@ test "sla test codegen prunes known struct field branches" {
     try std.testing.expect(saw_true_broken);
 }
 
+test "sla callable index records exported type declarations" {
+    const source =
+        \\struct IndexedStruct { value: i32 }
+        \\enum IndexedEnum { Ready }
+        \\trait IndexedTrait { fn value(self) -> i32; }
+        \\type IndexedAlias = IndexedStruct;
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var parser = parser_mod.Parser.init(allocator, source);
+    const prog = try parser.parseProgram();
+
+    var index = SlaCallableIndex.init(allocator);
+    defer index.deinit();
+    try index.addDecls(prog.program.decls);
+
+    try std.testing.expect(index.type_decls.contains("IndexedStruct"));
+    try std.testing.expect(index.type_decls.contains("IndexedEnum"));
+    try std.testing.expect(index.type_decls.contains("IndexedTrait"));
+    try std.testing.expect(index.type_decls.contains("IndexedAlias"));
+}
+
 test "sla load imported macros parses already expanded source" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

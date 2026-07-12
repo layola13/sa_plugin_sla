@@ -521,10 +521,15 @@ fn scalarMatchGuardValueTempCount(value: *const ast.Node) ?usize {
     }
     if (value.* == .index_expr) {
         const index = value.index_expr;
-        if (index.target.* != .identifier) return null;
-        if (index.index.* == .literal and index.index.literal == .int_val and index.index.literal.int_val >= 0) return 1;
-        if (index.index.* == .identifier) return 3;
-        return (scalarMatchGuardValueTempCount(index.index) orelse return null) + 3;
+        const target_count: usize = if (index.target.* == .identifier)
+            0
+        else if (index.target.* == .field_expr and index.target.field_expr.expr.* == .identifier)
+            1
+        else
+            return null;
+        if (index.index.* == .literal and index.index.literal == .int_val and index.index.literal.int_val >= 0) return target_count + 1;
+        if (index.index.* == .identifier) return target_count + 3;
+        return target_count + (scalarMatchGuardValueTempCount(index.index) orelse return null) + 3;
     }
     if (value.* == .cast_expr) {
         if (value.cast_expr.ty.* != .primitive) return null;
@@ -3968,6 +3973,11 @@ test "shared scalar match guard scratch planning" {
     const arithmetic_index_args = [_]*ast.Node{ &value, &arithmetic_limit };
     var arithmetic_index_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &arithmetic_index_args } };
     try std.testing.expectEqual(@as(?usize, 5), scalarMatchGuardTempCount(&arithmetic_index_call));
+    var limits_field = ast.Node{ .field_expr = .{ .expr = &limits, .field_name = "values" } };
+    var nested_limit = ast.Node{ .index_expr = .{ .target = &limits_field, .index = &index_name } };
+    const nested_index_args = [_]*ast.Node{ &value, &nested_limit };
+    var nested_index_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &nested_index_args } };
+    try std.testing.expectEqual(@as(?usize, 5), scalarMatchGuardTempCount(&nested_index_call));
 }
 
 test "shared executor task buffer classification" {

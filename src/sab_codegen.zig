@@ -13041,10 +13041,18 @@ pub const Codegen = struct {
     fn genScalarMatchGuardValue(self: *Codegen, value: *ast.Node, scratch: []const u32, cursor: *usize) anyerror!u32 {
         if (value.* == .index_expr) {
             const index = value.index_expr;
-            if (index.target.* != .identifier or cursor.* >= scratch.len)
-                return Error.UnsupportedSabDirectFeature;
-            const base = self.localReg(index.target.identifier) orelse return Error.UnsupportedSabDirectFeature;
-            const base_ty = self.localType(index.target.identifier) orelse return Error.UnsupportedSabDirectFeature;
+            if (cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;
+            const base: u32, const base_ty: *const ast.Type = if (index.target.* == .identifier) .{
+                self.localReg(index.target.identifier) orelse return Error.UnsupportedSabDirectFeature,
+                self.localType(index.target.identifier) orelse return Error.UnsupportedSabDirectFeature,
+            } else if (index.target.* == .field_expr and index.target.field_expr.expr.* == .identifier) blk: {
+                const field = index.target.field_expr;
+                const owner_ty = self.localType(field.expr.identifier) orelse return Error.UnsupportedSabDirectFeature;
+                break :blk .{
+                    try self.genScalarMatchGuardValue(index.target, scratch, cursor),
+                    self.fieldType(owner_ty, field.field_name) orelse return Error.UnsupportedSabDirectFeature,
+                };
+            } else return Error.UnsupportedSabDirectFeature;
             if (base_ty.* != .array) return Error.UnsupportedSabDirectFeature;
             if (index.index.* == .literal and index.index.literal == .int_val and index.index.literal.int_val >= 0) {
                 const layout = arrayElementLayout(base_ty.array, @intCast(index.index.literal.int_val)) orelse return Error.UnsupportedSabDirectFeature;

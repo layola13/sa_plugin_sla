@@ -758,7 +758,7 @@ fn resolvedImportGroupForDecl(groups: []const SlaResolvedImportGroup, decl: *con
     return null;
 }
 
-pub fn expandSlaImportsWithModuleTable(
+pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
     allocator: std.mem.Allocator,
     program: *ast.Node,
     source_file: []const u8,
@@ -767,6 +767,7 @@ pub fn expandSlaImportsWithModuleTable(
     modules: *SlaModuleTable,
     root_import_groups: *std.ArrayList(SlaResolvedImportGroup),
     contract_imports: *std.ArrayList(ResolvedImport),
+    contract_type_checker: ?*type_checker_mod.TypeChecker,
 ) !*ast.Node {
     if (program.* != .program) return error.InvalidProgram;
     const profile_enabled = plugin_compile_options.slaProfileEnabled(allocator);
@@ -815,15 +816,16 @@ pub fn expandSlaImportsWithModuleTable(
     var referenced_types = std.StringHashMap(void).init(allocator);
     defer referenced_types.deinit();
 
-    var imported_macro_tc = type_checker_mod.TypeChecker.init(allocator);
-    defer imported_macro_tc.deinit();
+    var owned_imported_macro_tc = type_checker_mod.TypeChecker.init(allocator);
+    defer owned_imported_macro_tc.deinit();
+    const imported_macro_tc = contract_type_checker orelse &owned_imported_macro_tc;
     var imported_macro_contract_paths = std.StringHashMap(void).init(allocator);
     defer imported_macro_contract_paths.deinit();
     if (options.prune_for_test_codegen) {
         var imported_macro_contract_imports = std.ArrayList(ResolvedImport).init(allocator);
         defer imported_macro_contract_imports.deinit();
         _ = try appendRootResolvedContractImports(&imported_macro_contract_imports, &imported_macro_contract_paths, root_import_groups.items);
-        try loadImportedContractsFromResolvedImports(&imported_macro_tc, allocator, imported_macro_contract_imports.items);
+        try loadImportedContractsFromResolvedImports(imported_macro_tc, allocator, imported_macro_contract_imports.items);
     }
     const imported_macros = if (options.prune_for_test_codegen) &imported_macro_tc.imported_macros else null;
 
@@ -878,7 +880,7 @@ pub fn expandSlaImportsWithModuleTable(
                 &referenced_types,
             );
             if (imported_macro_contract_imports.items.len == 0) break;
-            try loadImportedContractsFromResolvedImports(&imported_macro_tc, allocator, imported_macro_contract_imports.items);
+            try loadImportedContractsFromResolvedImports(imported_macro_tc, allocator, imported_macro_contract_imports.items);
             if (reachability_session) |*session| {
                 _ = try session.refreshImportedMacros(ordered_modules.items);
                 try advanceReachabilitySessionWithLazyModuleDiscovery(
@@ -935,6 +937,29 @@ pub fn expandSlaImportsWithModuleTable(
     const expanded = try allocator.create(ast.Node);
     expanded.* = .{ .program = .{ .decls = try decls.toOwnedSlice() } };
     return expanded;
+}
+
+pub fn expandSlaImportsWithModuleTable(
+    allocator: std.mem.Allocator,
+    program: *ast.Node,
+    source_file: []const u8,
+    primary_decls: *std.AutoHashMap(*const ast.Node, void),
+    options: SlaImportExpansionOptions,
+    modules: *SlaModuleTable,
+    root_import_groups: *std.ArrayList(SlaResolvedImportGroup),
+    contract_imports: *std.ArrayList(ResolvedImport),
+) !*ast.Node {
+    return try expandSlaImportsWithModuleTableUsingContractTypeChecker(
+        allocator,
+        program,
+        source_file,
+        primary_decls,
+        options,
+        modules,
+        root_import_groups,
+        contract_imports,
+        null,
+    );
 }
 
 pub fn expandSlaImports(

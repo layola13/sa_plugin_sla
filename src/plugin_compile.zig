@@ -42,6 +42,7 @@ const scanReferencedSymbolRoots = plugin_reachability.scanReferencedSymbolRoots;
 const testMatchesFilter = plugin_reachability.testMatchesFilter;
 const expandSlaImports = plugin_import_expand.expandSlaImports;
 const expandSlaImportsWithModuleTable = plugin_import_expand.expandSlaImportsWithModuleTable;
+const expandSlaImportsWithModuleTableUsingContractTypeChecker = plugin_import_expand.expandSlaImportsWithModuleTableUsingContractTypeChecker;
 const loadImportedContractsFromResolvedImports = plugin_import_expand.loadImportedContractsFromResolvedImports;
 const registerImportedFunctionAliasesFromResolvedImports = plugin_import_expand.registerImportedFunctionAliasesFromResolvedImports;
 const isProjectShortcutRetainedHelperName = plugin_project_shortcuts.isProjectShortcutRetainedHelperName;
@@ -484,12 +485,12 @@ fn runSlaFrontend(
     defer root_import_groups.deinit();
     var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
     defer contract_imports.deinit();
-    const expanded_prog = expandSlaImportsWithModuleTable(allocator, prog, file, &primary_decls, .{
+    const expanded_prog = expandSlaImportsWithModuleTableUsingContractTypeChecker(allocator, prog, file, &primary_decls, .{
         .prune_for_test_codegen = options.prune_for_test_codegen,
         .test_filter = options.test_filter,
         .imported_bodies_decl_only = options.load_reachable_imported_bodies_from_registry,
         .load_reachable_imported_bodies_from_registry = options.load_reachable_imported_bodies_from_registry,
-    }, &import_modules, &root_import_groups, &contract_imports) catch |err| {
+    }, &import_modules, &root_import_groups, &contract_imports, if (options.prune_for_test_codegen) tc else null) catch |err| {
         try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
         return null;
     };
@@ -519,10 +520,12 @@ fn runSlaFrontend(
     slaProfileStage(stderr, profile, "monomorphize", stage_start);
 
     stage_start = std.time.nanoTimestamp();
-    loadImportedContractsFromResolvedImports(tc, allocator, contract_imports.items) catch |err| {
-        try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
-        return null;
-    };
+    if (!options.prune_for_test_codegen) {
+        loadImportedContractsFromResolvedImports(tc, allocator, contract_imports.items) catch |err| {
+            try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
+            return null;
+        };
+    }
     slaProfileStage(stderr, profile, "load contracts", stage_start);
 
     stage_start = std.time.nanoTimestamp();

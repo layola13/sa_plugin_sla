@@ -79,6 +79,7 @@ const plugin_import_expand = @import("plugin_import_expand.zig");
 const appendModuleDeclsSelective = plugin_import_expand.appendModuleDeclsSelective;
 const expandSlaImports = plugin_import_expand.expandSlaImports;
 const expandSlaImportsWithModuleTable = plugin_import_expand.expandSlaImportsWithModuleTable;
+const expandSlaImportsWithModuleTableUsingContractTypeChecker = plugin_import_expand.expandSlaImportsWithModuleTableUsingContractTypeChecker;
 const loadImportedContracts = plugin_import_expand.loadImportedContracts;
 const loadImportedContractsFromResolvedImports = plugin_import_expand.loadImportedContractsFromResolvedImports;
 const registerImportedFunctionAliases = plugin_import_expand.registerImportedFunctionAliases;
@@ -2211,6 +2212,91 @@ test "sla load contracts reuses resolved non-sla imports" {
 
     try std.testing.expect(tc.imported_macros.get("RESOLVED_IMPORT_MACRO") != null);
     try std.testing.expect(tc.extern_funcs.get("resolved_import_external") != null);
+}
+
+test "sla test import expansion reuses reachable contracts in final type checker" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const macro_source =
+        \\[MACRO] REUSED_REACHABLE_MACRO %out, %value
+        \\    %out = add %value, 1
+        \\[END_MACRO]
+    ;
+    const contract_source =
+        \\@extern reused_reachable_external(value: i32) -> i32
+    ;
+    const dep_source =
+        \\@import "reachable_macros.sa"
+        \\@import "reachable_contract.sai"
+        \\
+        \\fn reachable_value(value: i32) -> i32 {
+        \\    return reused_reachable_external(REUSED_REACHABLE_MACRO(value));
+        \\}
+    ;
+    const main_source =
+        \\@import "dep.sla"
+        \\
+        \\@test "reachable contract reuse"() {
+        \\    if reachable_value(40) != 42 { panic(24046); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "reachable_macros.sa", .data = macro_source });
+    try tmp.dir.writeFile(.{ .sub_path = "reachable_contract.sai", .data = contract_source });
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+
+    var import_modules = SlaModuleTable.initWithParserOptions(allocator, .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+    });
+    defer import_modules.deinit();
+    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    defer root_import_groups.deinit();
+    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    defer contract_imports.deinit();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+
+    const expanded_prog = try expandSlaImportsWithModuleTableUsingContractTypeChecker(
+        allocator,
+        prog,
+        "main.sla",
+        &primary_decls,
+        .{
+            .prune_for_test_codegen = true,
+            .test_filter = "reachable contract reuse",
+            .imported_bodies_decl_only = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+        &import_modules,
+        &root_import_groups,
+        &contract_imports,
+        &tc,
+    );
+    try std.testing.expect(expanded_prog.program.decls.len > 0);
+    try std.testing.expect(contract_imports.items.len >= 2);
+    try std.testing.expect(tc.imported_macros.get("REUSED_REACHABLE_MACRO") != null);
+    try std.testing.expect(tc.extern_funcs.get("reused_reachable_external") != null);
+
+    try tmp.dir.deleteFile("reachable_macros.sa");
+    try tmp.dir.deleteFile("reachable_contract.sai");
+    try tc.checkProgram(expanded_prog);
 }
 
 test "sla test codegen skips contract loading for non contributing imported modules" {

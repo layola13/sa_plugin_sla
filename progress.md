@@ -2596,6 +2596,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 # 2026-07-12: Project open-configured result layout compatibility
 
+# 2026-07-12: Two configured-project open query folding
+
+- [done] Safely folded `project_collection_get_open_configured_projects` for two known single-file configured projects.
+  - Tracks single-file programs, configured-project paths/files, and primary/secondary snapshot propagation.
+  - Applies only when the collection open file syntactically matches both known project files.
+  - Focused regression proves the heavy query surface is absent from direct SAB.
+  - Real multi-configured test passes 3/3 in 11.52s; strict 10s remains open, while standalone SAB build improved from 12.27s to 10.50s.
+
 - [done] `ProjectOpenConfiguredProjects` shortcut now matches the current seven-field downstream structure.
   - Added explicit empty secondary-project fields to the compiler-generated single-project literal.
   - Extended the focused codegen fixture to assert `has_secondary == false` and zero secondary path length.

@@ -561,3 +561,18 @@ timeout 90s /usr/bin/time -f 'elapsed %e maxrss %M' env SLA_PROFILE=1 SLA_SAB_NO
 聚焦 Zig fixture 同步采用七字段结构并断言 secondary 空状态。验证通过：聚焦测试 2/2、`zig build --summary all` 7/7、官方 `SA_PLUGIN_DEV=1 sa plugin install --dev .`，以及下游 `test_project_collection_open_contract.sla` 和 `test_project_collection_default_cache_contract.sla` strict SAB 10 秒门禁。
 
 broader `test_project_collection_multi_configured_contract.sla` 仍未关闭。长窗口 `sla sab build` 可完成，代表值为 12.27 秒、MaxRSS 约 527 MiB、SAB 约 3.1 MiB；profile 中 type check 约 5.9 秒、direct SAB codegen 约 4.9 秒。该路径没有命中现有单 cached-default collection shortcut，仍保留 project/compiler/parser 大子图。下一步是为双 configured collection 建立可审计的事实追踪和聚焦回归，而不是把这个性能问题混入七字段布局兼容修复。
+
+## 2026-07-12 two configured-project open query checkpoint
+
+编译器 project shortcut 事实现在安全追踪 `program_new_single_file` 的单文件、`configured_project_new` 的配置路径、snapshot primary/secondary project，以及 `project_snapshot_with_secondary_configured` 的传播。只有 collection 的 open file 与两个 configured project 的已知单文件均语法一致时，`project_collection_get_open_configured_projects` 才折叠为 count=2 的七字段字面量；未知 containment 继续保留普通运行时路径。
+
+新增 `sla sab test codegen folds two open configured projects`，使用与真实下游相同的 `multi_snapshot.collection.primary_configured_project` / `secondary_configured_project` 形状，并证明重查询函数不进入 SAB。聚焦双项目和既有单项目回归均通过。
+
+真实下游结果：
+
+- collection-open/default-cache strict SAB 10 秒守卫继续通过。
+- multi-configured 30 秒窗口完整通过 3/3，代表值 11.52 秒、MaxRSS 约 263 MiB。
+- strict 10 秒仍为 124，但 profile 改善到 import expand 约 1.22 秒、typecheck 约 1.33 秒、direct codegen 约 2.95 秒。
+- 单独 `sla sab build` 从前一代表值 12.27 秒降到 10.50 秒；产物仍约 3.1 MiB，说明同文件其余 project/session 查询仍保留主要子图。
+
+因此双 configured open-query 子切片完成，但整个 timeout issue 保持打开；下一步应针对同文件第一、第三测试中的 projects/default/inferred/session 查询继续做事实驱动裁剪。

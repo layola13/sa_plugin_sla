@@ -5967,6 +5967,76 @@ test "sla sab test codegen folds cached default open configured projects" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab test codegen folds two open configured projects" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\struct SessionState { snapshot_id: int, project_count: int, open_file_count: int, overlay_count: int, tsconfig_found: bool, tsconfig_parse_ok: bool, tsconfig_file_count: int, tsconfig_ref_count: int, total_nodes: int, total_statements: int, total_declarations: int, total_errors: int }
+        \\struct Program { file_name: ptr, file_name_len: int }
+        \\struct Project { config_file_path: ptr, config_file_path_len: int, program: Program }
+        \\struct ProjectCollection { primary_configured_project: Project, secondary_configured_project: Project }
+        \\struct ProjectSnapshot { collection: ProjectCollection }
+        \\struct ProjectOpenConfiguredProjects { count: int, has_primary: bool, primary_project_path: ptr, primary_project_path_len: int, has_secondary: bool, secondary_project_path: ptr, secondary_project_path_len: int }
+        \\
+        \\fn empty_session() -> SessionState { return SessionState { snapshot_id: 0, project_count: 0, open_file_count: 0, overlay_count: 0, tsconfig_found: false, tsconfig_parse_ok: false, tsconfig_file_count: 0, tsconfig_ref_count: 0, total_nodes: 0, total_statements: 0, total_declarations: 0, total_errors: 0 }; }
+        \\fn session_parse_file(state: SessionState, text: ptr, text_len: int) -> SessionState { return state; }
+        \\fn program_new_single_file(options: int, file_name: ptr, file_name_len: int, text: ptr, text_len: int) -> Program { return Program { file_name: file_name, file_name_len: file_name_len }; }
+        \\fn configured_project_new(config_path: ptr, config_path_len: int, current_dir: ptr, current_dir_len: int, program: Program, snapshot_id: int) -> Project { return Project { config_file_path: config_path, config_file_path_len: config_path_len, program: program }; }
+        \\fn project_snapshot_from_program(state: SessionState, config_path: ptr, config_path_len: int, active_file: ptr, active_file_len: int, program: Program) -> ProjectSnapshot {
+        \\    let primary = configured_project_new(config_path, config_path_len, "", 0, program, state.snapshot_id);
+        \\    return ProjectSnapshot { collection: ProjectCollection { primary_configured_project: primary, secondary_configured_project: primary } };
+        \\}
+        \\fn project_snapshot_with_secondary_configured(snapshot: ProjectSnapshot, project: Project) -> ProjectSnapshot { return ProjectSnapshot { collection: ProjectCollection { primary_configured_project: snapshot.collection.primary_configured_project, secondary_configured_project: project } }; }
+        \\fn project_collection_from_configured(project: Project, open_count: int, open_file: ptr, open_file_len: int) -> ProjectCollection { return ProjectCollection { primary_configured_project: project, secondary_configured_project: project }; }
+        \\fn project_collection_with_secondary_configured_project(collection: ProjectCollection, project: Project) -> ProjectCollection { return ProjectCollection { primary_configured_project: collection.primary_configured_project, secondary_configured_project: project }; }
+        \\fn project_collection_get_open_configured_projects(collection: ProjectCollection) -> ProjectOpenConfiguredProjects { return missing_heavy_project_collection_surface(); }
+        \\
+        \\@test "two configured projects fold to literal"() {
+        \\    let state = session_parse_file(empty_session(), "", 0);
+        \\    let primary_program = program_new_single_file(0, "/repo/shared.ts", 15, "", 0);
+        \\    let snapshot = project_snapshot_from_program(state, "/repo/a/tsconfig.json", 21, "/repo/shared.ts", 15, primary_program);
+        \\    let secondary_program = program_new_single_file(0, "/repo/shared.ts", 15, "", 0);
+        \\    let secondary = configured_project_new("/repo/b/tsconfig.json", 21, "/repo", 5, secondary_program, snapshot.collection.primary_configured_project.config_file_path_len);
+        \\    let multi_snapshot = project_snapshot_with_secondary_configured(snapshot, secondary);
+        \\    let collection = project_collection_from_configured(multi_snapshot.collection.primary_configured_project, 1, "/repo/shared.ts", 15);
+        \\    let multi = project_collection_with_secondary_configured_project(collection, multi_snapshot.collection.secondary_configured_project);
+        \\    let open_projects = project_collection_get_open_configured_projects(multi);
+        \\    if open_projects.count != 2 { panic(24101); };
+        \\    if open_projects.has_secondary != true { panic(24102); };
+        \\    if open_projects.primary_project_path_len != 21 { panic(24103); };
+        \\    if open_projects.secondary_project_path_len != 21 { panic(24104); };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "two_open_configured_projects.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "two_open_configured_projects.sla",
+        ".sla-cache/sab/two_open_configured_projects.sab",
+        stderr_buf.writer().any(),
+        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    for (module.function_sigs) |fsig| {
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_collection_get_open_configured_projects") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fsig.name, "missing_heavy_project_collection_surface") == null);
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab test codegen folds cached default inferred project lookup" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

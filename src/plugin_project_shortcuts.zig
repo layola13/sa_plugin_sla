@@ -110,6 +110,30 @@ fn makeOpenConfiguredProjectsLiteralNode(
     return node;
 }
 
+fn makeTwoOpenConfiguredProjectsLiteralNode(
+    allocator: std.mem.Allocator,
+    primary_path: *ast.Node,
+    primary_path_len: *ast.Node,
+    secondary_path: *ast.Node,
+    secondary_path_len: *ast.Node,
+) !*ast.Node {
+    const fields = try allocator.alloc(ast.StructLiteralField, 7);
+    fields[0] = .{ .name = "count", .value = try makeIntLiteralNode(allocator, 2) };
+    fields[1] = .{ .name = "has_primary", .value = try makeBoolLiteralNode(allocator, true) };
+    fields[2] = .{ .name = "primary_project_path", .value = primary_path };
+    fields[3] = .{ .name = "primary_project_path_len", .value = primary_path_len };
+    fields[4] = .{ .name = "has_secondary", .value = try makeBoolLiteralNode(allocator, true) };
+    fields[5] = .{ .name = "secondary_project_path", .value = secondary_path };
+    fields[6] = .{ .name = "secondary_project_path_len", .value = secondary_path_len };
+
+    const node = try allocator.create(ast.Node);
+    node.* = .{ .struct_literal = .{
+        .ty = try makeUserDefinedTypeNode(allocator, "ProjectOpenConfiguredProjects"),
+        .fields = fields,
+    } };
+    return node;
+}
+
 fn makeInferredProjectLookupLiteralNode(allocator: std.mem.Allocator) !*ast.Node {
     const program_call = try makeCallNode(allocator, "project_empty_program", &.{});
 
@@ -494,7 +518,35 @@ const ProjectSessionStateFact = struct {
 const ProjectSnapshotFact = struct {
     config_path: *ast.Node,
     config_path_len: *ast.Node,
+    active_file: *ast.Node,
+    active_file_len: *ast.Node,
+    secondary_project: ?ConfiguredProjectFact = null,
     snapshot_id: i64,
+};
+
+const SingleFileProgramFact = struct {
+    file_name: *ast.Node,
+    file_name_len: *ast.Node,
+};
+
+const ConfiguredProjectFact = struct {
+    config_path: *ast.Node,
+    config_path_len: *ast.Node,
+    file_name: *ast.Node,
+    file_name_len: *ast.Node,
+};
+
+const OpenConfiguredCollectionFact = struct {
+    open_file: *ast.Node,
+    open_file_len: *ast.Node,
+    primary_path: *ast.Node,
+    primary_path_len: *ast.Node,
+    primary_file: *ast.Node,
+    primary_file_len: *ast.Node,
+    secondary_path: ?*ast.Node = null,
+    secondary_path_len: ?*ast.Node = null,
+    secondary_file: ?*ast.Node = null,
+    secondary_file_len: ?*ast.Node = null,
 };
 
 const ProjectSessionFact = struct {
@@ -598,6 +650,73 @@ fn recordProjectCollectionFact(
     }
 }
 
+fn snapshotConfiguredProjectFact(
+    expr: *const ast.Node,
+    snapshots: *const std.StringHashMap(ProjectSnapshotFact),
+) ?ConfiguredProjectFact {
+    if (expr.* != .field_expr) return null;
+    const is_primary = std.mem.eql(u8, expr.field_expr.field_name, "primary_configured_project");
+    const is_secondary = std.mem.eql(u8, expr.field_expr.field_name, "secondary_configured_project");
+    if (!is_primary and !is_secondary) return null;
+    const collection = expr.field_expr.expr;
+    if (collection.* != .field_expr or !std.mem.eql(u8, collection.field_expr.field_name, "collection")) return null;
+    if (collection.field_expr.expr.* != .identifier) return null;
+    const snapshot = snapshots.get(collection.field_expr.expr.identifier) orelse return null;
+    if (is_secondary) return snapshot.secondary_project;
+    return .{
+        .config_path = snapshot.config_path,
+        .config_path_len = snapshot.config_path_len,
+        .file_name = snapshot.active_file,
+        .file_name_len = snapshot.active_file_len,
+    };
+}
+
+fn resolveConfiguredProjectFact(
+    expr: *const ast.Node,
+    projects: *const std.StringHashMap(ConfiguredProjectFact),
+    snapshots: *const std.StringHashMap(ProjectSnapshotFact),
+) ?ConfiguredProjectFact {
+    if (expr.* == .identifier) return projects.get(expr.identifier);
+    return snapshotConfiguredProjectFact(expr, snapshots);
+}
+
+fn recordOpenConfiguredCollectionFact(
+    collections: *std.StringHashMap(OpenConfiguredCollectionFact),
+    projects: *const std.StringHashMap(ConfiguredProjectFact),
+    snapshots: *const std.StringHashMap(ProjectSnapshotFact),
+    name: []const u8,
+    value: *const ast.Node,
+    facts: *const SyntacticFactSet,
+) !void {
+    _ = collections.remove(name);
+    if (value.* != .call_expr) return;
+    const call = value.call_expr;
+    if (std.mem.endsWith(u8, call.func_name, "project_collection_from_configured") and call.args.len >= 4) {
+        const open_count = evalSyntacticInt(call.args[1], facts) orelse return;
+        if (open_count <= 0) return;
+        const project = resolveConfiguredProjectFact(call.args[0], projects, snapshots) orelse return;
+        try collections.put(name, .{
+            .open_file = call.args[2],
+            .open_file_len = call.args[3],
+            .primary_path = project.config_path,
+            .primary_path_len = project.config_path_len,
+            .primary_file = project.file_name,
+            .primary_file_len = project.file_name_len,
+        });
+        return;
+    }
+    if (std.mem.endsWith(u8, call.func_name, "project_collection_with_secondary_configured_project") and call.args.len >= 2) {
+        if (call.args[0].* != .identifier) return;
+        var collection = collections.get(call.args[0].identifier) orelse return;
+        const project = resolveConfiguredProjectFact(call.args[1], projects, snapshots) orelse return;
+        collection.secondary_path = project.config_path;
+        collection.secondary_path_len = project.config_path_len;
+        collection.secondary_file = project.file_name;
+        collection.secondary_file_len = project.file_name_len;
+        try collections.put(name, collection);
+    }
+}
+
 fn recordProjectApiFact(
     session_states: *std.StringHashMap(ProjectSessionStateFact),
     snapshots: *std.StringHashMap(ProjectSnapshotFact),
@@ -625,6 +744,8 @@ fn recordProjectApiFact(
         try snapshots.put(name, .{
             .config_path = call.args[1],
             .config_path_len = call.args[2],
+            .active_file = call.args[4],
+            .active_file_len = call.args[5],
             .snapshot_id = state.snapshot_id,
         });
         return;
@@ -636,6 +757,8 @@ fn recordProjectApiFact(
         try snapshots.put(name, .{
             .config_path = call.args[1],
             .config_path_len = call.args[2],
+            .active_file = call.args[3],
+            .active_file_len = call.args[4],
             .snapshot_id = state.snapshot_id,
         });
         return;
@@ -675,6 +798,47 @@ fn recordProjectApiFact(
         });
         return;
     }
+}
+
+fn recordConfiguredProjectFact(
+    programs: *std.StringHashMap(SingleFileProgramFact),
+    projects: *std.StringHashMap(ConfiguredProjectFact),
+    name: []const u8,
+    value: *const ast.Node,
+) !void {
+    _ = programs.remove(name);
+    _ = projects.remove(name);
+    if (value.* != .call_expr) return;
+    const call = value.call_expr;
+    if (std.mem.endsWith(u8, call.func_name, "program_new_single_file") and call.args.len >= 5) {
+        try programs.put(name, .{ .file_name = call.args[1], .file_name_len = call.args[2] });
+        return;
+    }
+    if (std.mem.endsWith(u8, call.func_name, "configured_project_new") and call.args.len >= 6) {
+        if (call.args[4].* != .identifier) return;
+        const program = programs.get(call.args[4].identifier) orelse return;
+        try projects.put(name, .{
+            .config_path = call.args[0],
+            .config_path_len = call.args[1],
+            .file_name = program.file_name,
+            .file_name_len = program.file_name_len,
+        });
+    }
+}
+
+fn recordSecondarySnapshotFact(
+    snapshots: *std.StringHashMap(ProjectSnapshotFact),
+    projects: *const std.StringHashMap(ConfiguredProjectFact),
+    name: []const u8,
+    value: *const ast.Node,
+) !void {
+    if (value.* != .call_expr) return;
+    const call = value.call_expr;
+    if (!std.mem.endsWith(u8, call.func_name, "project_snapshot_with_secondary_configured") or call.args.len < 2) return;
+    if (call.args[0].* != .identifier or call.args[1].* != .identifier) return;
+    var snapshot = snapshots.get(call.args[0].identifier) orelse return;
+    snapshot.secondary_project = projects.get(call.args[1].identifier) orelse return;
+    try snapshots.put(name, snapshot);
 }
 
 fn isProjectShortcutPureCallName(name: []const u8) bool {
@@ -1049,6 +1213,12 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
     defer project_sessions.deinit();
     var project_api_open_results = std.StringHashMap(ProjectApiOpenFact).init(allocator);
     defer project_api_open_results.deinit();
+    var single_file_programs = std.StringHashMap(SingleFileProgramFact).init(allocator);
+    defer single_file_programs.deinit();
+    var configured_projects = std.StringHashMap(ConfiguredProjectFact).init(allocator);
+    defer configured_projects.deinit();
+    var open_configured_collections = std.StringHashMap(OpenConfiguredCollectionFact).init(allocator);
+    defer open_configured_collections.deinit();
 
     for (block, 0..) |stmt, idx| {
         switch (stmt.*) {
@@ -1072,6 +1242,22 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                         call.args.len == 1 and
                         call.args[0].* == .identifier)
                     {
+                        if (open_configured_collections.get(call.args[0].identifier)) |fact| {
+                            if (fact.secondary_path != null and
+                                nodesSyntacticallyEqual(fact.open_file, fact.primary_file) and
+                                nodesSyntacticallyEqual(fact.open_file_len, fact.primary_file_len) and
+                                nodesSyntacticallyEqual(fact.open_file, fact.secondary_file.?) and
+                                nodesSyntacticallyEqual(fact.open_file_len, fact.secondary_file_len.?))
+                            {
+                                let.value = try makeTwoOpenConfiguredProjectsLiteralNode(
+                                    allocator,
+                                    fact.primary_path,
+                                    fact.primary_path_len,
+                                    fact.secondary_path.?,
+                                    fact.secondary_path_len.?,
+                                );
+                            }
+                        }
                         if (default_collections.get(call.args[0].identifier)) |fact| {
                             let.value = try makeOpenConfiguredProjectsLiteralNode(allocator, fact.project_path, fact.project_path_len);
                         }
@@ -1101,12 +1287,18 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                     }
                 }
                 try recordProjectApiFact(&project_session_states, &project_snapshots, &project_sessions, &project_api_open_results, let.name, original_value);
+                try recordConfiguredProjectFact(&single_file_programs, &configured_projects, let.name, original_value);
+                try recordSecondarySnapshotFact(&project_snapshots, &configured_projects, let.name, original_value);
                 try recordProjectCollectionFact(&open_collections, &default_collections, &snapshots_with_inferred, let.name, let.value, &facts);
+                try recordOpenConfiguredCollectionFact(&open_configured_collections, &configured_projects, &project_snapshots, let.name, original_value, &facts);
                 try updateFactsForLetBinding(&facts, null, null, let.name, let.ty, let.value);
             },
             .const_stmt => |constant| {
                 clearProjectCollectionFacts(&open_collections, &default_collections, &snapshots_with_inferred, constant.name);
                 clearProjectApiFacts(&project_session_states, &project_snapshots, &project_sessions, &project_api_open_results, constant.name);
+                _ = single_file_programs.remove(constant.name);
+                _ = configured_projects.remove(constant.name);
+                _ = open_configured_collections.remove(constant.name);
                 try updateFactsForLetBinding(&facts, null, null, constant.name, constant.ty, constant.value);
             },
             .assign_stmt => |assign| {
@@ -1114,6 +1306,9 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                     facts.clearName(assign.target.identifier);
                     clearProjectCollectionFacts(&open_collections, &default_collections, &snapshots_with_inferred, assign.target.identifier);
                     clearProjectApiFacts(&project_session_states, &project_snapshots, &project_sessions, &project_api_open_results, assign.target.identifier);
+                    _ = single_file_programs.remove(assign.target.identifier);
+                    _ = configured_projects.remove(assign.target.identifier);
+                    _ = open_configured_collections.remove(assign.target.identifier);
                 }
             },
             .block_stmt => |block_stmt| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, block_stmt.body, &facts),

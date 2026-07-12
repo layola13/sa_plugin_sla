@@ -9101,9 +9101,17 @@ pub const Codegen = struct {
                 self.loop_continue_labels.append(if (loop_control.has_continue) loop_continue_from_stmt else loop_continue) catch return CodegenError.OutOfMemory;
                 self.loop_break_labels.append(if (loop_control.has_break) loop_break_cleanup else loop_exit) catch return CodegenError.OutOfMemory;
 
+                var pre_loop_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
+                defer pre_loop_borrow_sources.deinit();
+                var pre_loop_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+                defer pre_loop_refcell_handles.deinit();
+
                 try self.genBlock(f.body, hoisted_allocs);
                 _ = self.loop_continue_labels.pop();
                 _ = self.loop_break_labels.pop();
+                switch (lowering_rules.planRefCellLoopStateMerge()) {
+                    .restore_pre_loop => try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources),
+                }
 
                 if (!blockTerminates(f.body)) {
                     self.out.writer().print("{s}:\n", .{loop_continue}) catch return CodegenError.CodegenError;
@@ -9205,9 +9213,16 @@ pub const Codegen = struct {
                     try self.emitRelease(cond_reg);
                     self.loop_continue_labels.append(loop_head) catch return CodegenError.OutOfMemory;
                     self.loop_break_labels.append(loop_exit) catch return CodegenError.OutOfMemory;
+                    var pre_loop_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
+                    defer pre_loop_borrow_sources.deinit();
+                    var pre_loop_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+                    defer pre_loop_refcell_handles.deinit();
                     try self.genBlock(w.body, hoisted_allocs);
                     _ = self.loop_continue_labels.pop();
                     _ = self.loop_break_labels.pop();
+                    switch (lowering_rules.planRefCellLoopStateMerge()) {
+                        .restore_pre_loop => try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources),
+                    }
                     if (!blockTerminates(w.body)) {
                         for (pattern.bindings) |binding| {
                             if (!blockConsumesIdentifier(w.body, binding)) {
@@ -9235,9 +9250,16 @@ pub const Codegen = struct {
                 self.out.writer().print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
                 self.loop_continue_labels.append(loop_head) catch return CodegenError.OutOfMemory;
                 self.loop_break_labels.append(loop_exit) catch return CodegenError.OutOfMemory;
+                var pre_loop_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
+                defer pre_loop_borrow_sources.deinit();
+                var pre_loop_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
+                defer pre_loop_refcell_handles.deinit();
                 try self.genBlock(w.body, hoisted_allocs);
                 _ = self.loop_continue_labels.pop();
                 _ = self.loop_break_labels.pop();
+                switch (lowering_rules.planRefCellLoopStateMerge()) {
+                    .restore_pre_loop => try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources),
+                }
                 if (!blockTerminates(w.body)) {
                     try self.emitLoopBodyTopLevelLocalCleanups(w.body);
                     self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;

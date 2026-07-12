@@ -12794,10 +12794,29 @@ pub const Codegen = struct {
         }
         var case_cond_regs = std.ArrayList(u32).init(self.allocator);
         defer case_cond_regs.deinit();
-        for (mat.cases) |_| {
+        var case_guard_regs = std.ArrayList(?u32).init(self.allocator);
+        defer case_guard_regs.deinit();
+        var case_binding_regs = std.ArrayList([]u32).init(self.allocator);
+        defer {
+            for (case_binding_regs.items) |regs| self.allocator.free(regs);
+            case_binding_regs.deinit();
+        }
+        for (mat.cases) |case| {
             const cond = try self.intern(try self.newTmp());
             try self.emitAssignImm(cond, 0);
             try case_cond_regs.append(cond);
+            if (case.guard != null) {
+                const guard = try self.intern(try self.newTmp());
+                try self.emitAssignImm(guard, 0);
+                try case_guard_regs.append(guard);
+            } else try case_guard_regs.append(null);
+
+            const regs = try self.allocator.alloc(u32, if (case.guard != null) case.pattern.bindings.len else 0);
+            for (regs) |*reg| {
+                reg.* = try self.intern(try self.newTmp());
+                try self.emitAssignImm(reg.*, 0);
+            }
+            try case_binding_regs.append(regs);
         }
 
         const branch_locals_len = self.locals.items.len;
@@ -12818,7 +12837,6 @@ pub const Codegen = struct {
             if (i > 0) try self.emitBranchRelease(case_cond_regs.items[i - 1]);
             const tag = lowering_rules.enumVariantIndex(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
             const variant = lowering_rules.enumVariant(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
-            if (case.guard != null) return Error.UnsupportedSabDirectFeature;
             if (case.pattern.bindings.len != variant.fields.len) return Error.UnsupportedSabDirectFeature;
 
             const tag_reg = try self.intern(try self.newTmp());
@@ -12833,16 +12851,35 @@ pub const Codegen = struct {
             try self.emitBranch(cond, body_label, next_label);
 
             try self.emitLabel(body_label);
-            for (case_cond_regs.items[i..]) |remaining_cond| try self.emitBranchRelease(remaining_cond);
 
             // Load pattern bindings from the payload at shared offsets.
-            for (case.pattern.bindings, variant.fields) |binding, field| {
+            for (case.pattern.bindings, variant.fields, 0..) |binding, field, binding_idx| {
                 const layout = lowering_rules.enumFieldLayout(variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
                 const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
-                const binding_reg = try self.intern(try self.newTmp());
+                if (prim == .ptr and case.guard != null) return Error.UnsupportedSabDirectFeature;
+                const binding_reg = if (case.guard != null)
+                    case_binding_regs.items[i][binding_idx]
+                else
+                    try self.intern(try self.newTmp());
                 try self.emitLoad(binding_reg, val_reg, layout.offset, prim);
-                try self.pushTypedLocal(binding, binding_reg, false, field.ty);
+                if (case.guard != null) {
+                    try self.recordReg(binding_reg);
+                    try self.locals.append(.{ .name = binding, .reg = binding_reg, .is_param = false, .ty = field.ty, .is_stack_alloc = true });
+                } else try self.pushTypedLocal(binding, binding_reg, false, field.ty);
             }
+
+            if (case.guard) |guard| {
+                const guard_reg = case_guard_regs.items[i].?;
+                try self.genScalarMatchGuardInto(guard, guard_reg);
+                const guard_body_label = try self.newLabel("L_MATCH_GUARD_BODY");
+                const guard_fail_label = try self.newLabel("L_MATCH_GUARD_FAIL");
+                try self.emitBranch(guard_reg, guard_body_label, guard_fail_label);
+
+                try self.emitLabel(guard_fail_label);
+                try self.emitJmp(next_label);
+                try self.emitLabel(guard_body_label);
+            }
+            for (case_cond_regs.items[i..]) |remaining_cond| try self.emitBranchRelease(remaining_cond);
 
             const terminated = if (value_match)
                 try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty)
@@ -12865,12 +12902,16 @@ pub const Codegen = struct {
         // Exhausted the ladder without a match: release the scrutinee and panic.
         try self.emitLabel(panic_label);
         try self.emitBranchRelease(case_cond_regs.items[case_cond_regs.items.len - 1]);
+        for (case_guard_regs.items) |guard| if (guard) |reg| try self.emitBranchRelease(reg);
+        for (case_binding_regs.items) |regs| for (regs) |reg| try self.emitBranchRelease(reg);
         if (!val_is_local) try self.emitBranchRelease(val_reg);
         try self.emitPanicCode(1);
         try self.setMergeBranchEmitterState(live_branch_states.items, &pre_branch_state);
 
         if (any_fallthrough) {
             try self.emitLabel(merge_label);
+            for (case_guard_regs.items) |guard| if (guard) |reg| try self.emitRelease(reg);
+            for (case_binding_regs.items) |regs| for (regs) |reg| try self.emitRelease(reg);
             if (!val_is_local) try self.emitRelease(val_reg);
             if (result_slot) |slot| {
                 const result = try self.intern(try self.newTmp());
@@ -12887,6 +12928,22 @@ pub const Codegen = struct {
         const result = try self.intern(try self.newTmp());
         try self.emitAssignImm(result, 0);
         return result;
+    }
+
+    fn genScalarMatchGuardInto(self: *Codegen, guard: *ast.Node, dst: u32) anyerror!void {
+        if (!lowering_rules.supportsScalarMatchGuard(guard)) return Error.UnsupportedSabDirectFeature;
+        const bin = guard.binary_expr;
+        const lhs = self.localReg(bin.left.identifier) orelse return Error.UnsupportedSabDirectFeature;
+        var item = self.makeInst(.op);
+        item.op_kind = try self.opKindForBinary(bin);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = .{ .reg = lhs };
+        if (bin.right.* == .identifier) {
+            item.operands[2] = .{ .reg = self.localReg(bin.right.identifier) orelse return Error.UnsupportedSabDirectFeature };
+        } else if (bin.right.* == .literal and bin.right.literal == .int_val) {
+            item.operands[2] = .{ .imm_i64 = bin.right.literal.int_val };
+        } else return Error.UnsupportedSabDirectFeature;
+        try self.appendInst(item);
     }
 
     fn genCopyValue(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!u32 {

@@ -491,6 +491,17 @@ pub fn planWhileLetPattern(pattern: ast.EnumPattern, has_user_enum_decl: bool) ?
     return planLetPattern(pattern, has_user_enum_decl);
 }
 
+pub fn supportsScalarMatchGuard(guard: *const ast.Node) bool {
+    if (guard.* != .binary_expr) return false;
+    const bin = guard.binary_expr;
+    if (bin.left.* != .identifier) return false;
+    if (!(bin.right.* == .identifier or (bin.right.* == .literal and bin.right.literal == .int_val))) return false;
+    return switch (bin.op) {
+        .eq, .ne, .lt, .le, .gt, .ge => true,
+        else => false,
+    };
+}
+
 pub fn blockTerminates(block: []const *ast.Node) bool {
     if (block.len == 0) return false;
     return stmtTerminates(block[block.len - 1]);

@@ -168,6 +168,14 @@ macro match_enum_macro(out, value) {
     };
 }
 
+macro match_enum_guard_macro(out, value, floor) {
+    out = match value {
+        DirectMacroMessage::Empty => { 0 },
+        DirectMacroMessage::Pair { left, right } if left > floor => { left + right },
+        DirectMacroMessage::Pair { left, right } => { right - left },
+    };
+}
+
 macro unsafe_block_macro(out, value) {
     out = unsafe {
         let local: i64 = value + 1;
@@ -343,6 +351,13 @@ fn macro_match_enum_direct() -> i64 {
     result
 }
 
+fn macro_match_enum_guard_direct(floor: i64) -> i64 {
+    let message = DirectMacroMessage::Pair { left: 17, right: 25 };
+    let result = 0i64;
+    match_enum_guard_macro(result, message, floor);
+    result
+}
+
 fn macro_unsafe_block_direct() -> i64 {
     let local = 100i64;
     let result = 0i64;
@@ -399,6 +414,8 @@ fn macro_try_call_option_direct(value: i64, succeed: bool) -> Option<i64> {
     if macro_aggregate_move_box_direct() != 38 { panic(31822); };
     if macro_deref_move_box_direct() != 37 { panic(31823); };
     if macro_match_enum_direct() != 36 { panic(31824); };
+    if macro_match_enum_guard_direct(10) != 42 { panic(31836); };
+    if macro_match_enum_guard_direct(20) != 8 { panic(31837); };
     if macro_unsafe_block_direct() != 135 { panic(31825); };
     let macro_try_some_input: Option<i64> = Some(33i64);
     let macro_try_some = macro_try_option_direct(^macro_try_some_input);

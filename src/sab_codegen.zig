@@ -13053,8 +13053,11 @@ pub const Codegen = struct {
                 try self.emitLoad(dst, base, layout.offset, layout.ty);
                 return dst;
             }
-            if (index.index.* != .identifier or cursor.* + 2 >= scratch.len) return Error.UnsupportedSabDirectFeature;
-            const index_reg = self.localReg(index.index.identifier) orelse return Error.UnsupportedSabDirectFeature;
+            const index_reg = if (index.index.* == .identifier)
+                self.localReg(index.index.identifier) orelse return Error.UnsupportedSabDirectFeature
+            else
+                try self.genScalarMatchGuardValue(index.index, scratch, cursor);
+            if (cursor.* + 2 >= scratch.len) return Error.UnsupportedSabDirectFeature;
             const offset = scratch[cursor.*];
             const ptr = scratch[cursor.* + 1];
             const dst = scratch[cursor.* + 2];

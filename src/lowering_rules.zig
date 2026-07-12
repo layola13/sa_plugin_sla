@@ -524,7 +524,7 @@ fn scalarMatchGuardValueTempCount(value: *const ast.Node) ?usize {
         if (index.target.* != .identifier) return null;
         if (index.index.* == .literal and index.index.literal == .int_val and index.index.literal.int_val >= 0) return 1;
         if (index.index.* == .identifier) return 3;
-        return null;
+        return (scalarMatchGuardValueTempCount(index.index) orelse return null) + 3;
     }
     if (value.* == .cast_expr) {
         if (value.cast_expr.ty.* != .primitive) return null;
@@ -3963,6 +3963,11 @@ test "shared scalar match guard scratch planning" {
     const dynamic_index_args = [_]*ast.Node{ &value, &dynamic_limit };
     var dynamic_index_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &dynamic_index_args } };
     try std.testing.expectEqual(@as(?usize, 4), scalarMatchGuardTempCount(&dynamic_index_call));
+    var next_index = ast.Node{ .binary_expr = .{ .op = .add, .left = &index_name, .right = &one } };
+    var arithmetic_limit = ast.Node{ .index_expr = .{ .target = &limits, .index = &next_index } };
+    const arithmetic_index_args = [_]*ast.Node{ &value, &arithmetic_limit };
+    var arithmetic_index_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &arithmetic_index_args } };
+    try std.testing.expectEqual(@as(?usize, 5), scalarMatchGuardTempCount(&arithmetic_index_call));
 }
 
 test "shared executor task buffer classification" {

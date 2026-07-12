@@ -10665,7 +10665,8 @@ pub const Codegen = struct {
                 return std.fmt.allocPrint(self.allocator, "^{s}", .{inner}) catch return CodegenError.OutOfMemory;
             },
             .deref_expr => |deref| {
-                const inner = try self.genExpr(deref.expr, hoisted_allocs);
+                const generated_inner = try self.genExpr(deref.expr, hoisted_allocs);
+                const inner = if (deref.expr.* == .move_expr and std.mem.startsWith(u8, generated_inner, "^")) generated_inner[1..] else generated_inner;
                 const reg = try self.newTmp();
                 const inner_ty = self.resolvedTypeForExpr(deref.expr) orelse return CodegenError.CodegenError;
                 if (rcInnerType(inner_ty) != null) {

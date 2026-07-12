@@ -104,6 +104,18 @@ fn macroNodeConsumption(node: *const ast.Node, name: []const u8) MacroParamConsu
             break :blk effect;
         },
         .repeat_array_literal => |lit| macroNodeConsumption(lit.value, name),
+        .binary_expr => |binary| sequenceMacroParamConsumption(macroNodeConsumption(binary.left, name), macroNodeConsumption(binary.right, name)),
+        .field_expr => |field| macroNodeConsumption(field.expr, name),
+        .index_expr => |index| sequenceMacroParamConsumption(macroNodeConsumption(index.target, name), macroNodeConsumption(index.index, name)),
+        .slice_expr => |slice| sequenceMacroParamConsumption(
+            macroNodeConsumption(slice.target, name),
+            sequenceMacroParamConsumption(macroNodeConsumption(slice.start, name), macroNodeConsumption(slice.end, name)),
+        ),
+        .cast_expr => |cast| macroNodeConsumption(cast.expr, name),
+        .borrow_expr => |borrow| macroNodeConsumption(borrow.expr, name),
+        .deref_expr => |deref| macroNodeConsumption(deref.expr, name),
+        .try_expr => |try_expr| macroNodeConsumption(try_expr.expr, name),
+        .await_expr => |await_expr| macroNodeConsumption(await_expr.expr, name),
         .assign_stmt => |assign| macroNodeConsumption(assign.value, name),
         .let_stmt => |let| macroNodeConsumption(let.value, name),
         .return_stmt => |ret| if (ret.value) |value| macroNodeConsumption(value, name) else .never,
@@ -160,10 +172,12 @@ test "user macro value consumption follows nested move expressions" {
     var block = ast.Node{ .block_stmt = .{ .body = &.{&assign} } };
     var call = ast.Node{ .call_expr = .{ .func_name = "consume", .generics = &.{}, .args = &.{&moved} } };
     var tuple = ast.Node{ .tuple_literal = .{ .elements = &.{&moved} } };
+    var deref = ast.Node{ .deref_expr = .{ .expr = &moved } };
 
     try std.testing.expect(macroParamConsumesValue(&.{&block}, "value"));
     try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&call}, "value"));
     try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&tuple}, "value"));
+    try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&deref}, "value"));
     try std.testing.expect(!macroParamConsumesValue(&.{&block}, "out"));
 }
 

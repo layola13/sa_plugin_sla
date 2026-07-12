@@ -2598,6 +2598,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 # 2026-07-12: Two configured-project open query folding
 
+# 2026-07-12: Remaining multi-configured root-path audit
+
+- [progress] Isolated the third inferred/session test as the remaining dominant root.
+  - It selects about 120 snapshot functions, versus about 23 and 30 for the first two tests.
+  - A lightweight SessionState/session-constructor extension produced no real graph or timeout improvement and was reverted cleanly.
+  - Post-reachability known-field pruning is too late to reduce imported materialization; the next fix must constant-fold proven root assertions before reachability and then dead-prune the heavy inferred/session construction chain.
+
 - [done] Safely folded `project_collection_get_open_configured_projects` for two known single-file configured projects.
   - Tracks single-file programs, configured-project paths/files, and primary/secondary snapshot propagation.
   - Applies only when the collection open file syntactically matches both known project files.

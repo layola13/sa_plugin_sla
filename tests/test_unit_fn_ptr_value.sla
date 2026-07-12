@@ -94,6 +94,12 @@ fn fn_ptr_thread_bool_loop_pair(f: fn(i32) -> bool) -> i32 {
     if got != 10 { panic(1402); };
 }
 
+@test "local function pointer value can be passed as argument"() {
+    let f: fn(i32) -> i32 = fn_ptr_inc;
+    let got = fn_ptr_apply(f, 15);
+    if got != 16 { panic(1413); };
+}
+
 @test "generic function can be specialized as function pointer value"() {
     let f: fn(i32) -> i32 = fn_ptr_generic_identity<i32>;
     let got = f(12);

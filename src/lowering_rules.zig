@@ -1576,10 +1576,18 @@ pub const CallArgMaterializationKind = enum {
     dyn_borrow,
     auto_borrow,
     copy_struct_value,
+    generated_fn_ptr_value_slot,
+    borrow_local_fn_ptr_value,
     value,
 };
 
+pub const CallArgMaterializationTarget = enum {
+    sa_text,
+    direct_sab,
+};
+
 pub const CallArgMaterializationInput = struct {
+    target: CallArgMaterializationTarget = .sa_text,
     param: ?ast.Param = null,
     arg_ty: ?*const ast.Type = null,
     arg_index: usize = 0,
@@ -1590,6 +1598,7 @@ pub const CallArgMaterializationInput = struct {
     dyn_borrow_trait_name: ?[]const u8 = null,
     copy_struct_value: bool = false,
     generated_fn_ptr_identifier: bool = false,
+    local_fn_ptr_identifier: bool = false,
     generated_scalar_const_identifier: bool = false,
 };
 
@@ -3080,6 +3089,14 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
     if (input.copy_struct_value) {
         return .{ .kind = .copy_struct_value, .release_after_call = true };
     }
+    if (input.target == .direct_sab) {
+        if (input.generated_fn_ptr_identifier) {
+            return .{ .kind = .generated_fn_ptr_value_slot, .release_after_call = true };
+        }
+        if (input.local_fn_ptr_identifier) {
+            return .{ .kind = .borrow_local_fn_ptr_value, .release_after_call = false };
+        }
+    }
     return .{
         .kind = .value,
         .release_after_call = callArgNeedsRelease(arg) or
@@ -3489,6 +3506,20 @@ test "shared lowering rules classify call materialization decisions" {
     const generated_plan = planCallArgMaterialization(&value, .{ .generated_fn_ptr_identifier = true });
     try std.testing.expectEqual(CallArgMaterializationKind.value, generated_plan.kind);
     try std.testing.expect(generated_plan.release_after_call);
+
+    const generated_sab_plan = planCallArgMaterialization(&value, .{
+        .target = .direct_sab,
+        .generated_fn_ptr_identifier = true,
+    });
+    try std.testing.expectEqual(CallArgMaterializationKind.generated_fn_ptr_value_slot, generated_sab_plan.kind);
+    try std.testing.expect(generated_sab_plan.release_after_call);
+
+    const local_fnptr_sab_plan = planCallArgMaterialization(&value, .{
+        .target = .direct_sab,
+        .local_fn_ptr_identifier = true,
+    });
+    try std.testing.expectEqual(CallArgMaterializationKind.borrow_local_fn_ptr_value, local_fnptr_sab_plan.kind);
+    try std.testing.expect(!local_fnptr_sab_plan.release_after_call);
 }
 
 test "shared lowering rules classify result-slot value transfer" {

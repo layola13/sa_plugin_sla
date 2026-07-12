@@ -11507,7 +11507,7 @@ pub const Codegen = struct {
         };
     }
 
-    fn shouldMaterializeFnPtrValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param) bool {
+    fn isGeneratedFnPtrValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param) bool {
         const target_param = param orelse return false;
         if (target_param.is_borrow or target_param.is_move or target_param.ty.* != .fn_ptr) return false;
         if (arg.* != .identifier) return false;
@@ -11516,7 +11516,7 @@ pub const Codegen = struct {
         return self.tc.funcs.contains(arg.identifier);
     }
 
-    fn shouldBorrowLocalFnPtrValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param) bool {
+    fn isLocalFnPtrValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param) bool {
         const target_param = param orelse return false;
         if (target_param.is_borrow or target_param.is_move or target_param.ty.* != .fn_ptr) return false;
         if (arg.* != .identifier or self.tc.funcs.contains(arg.identifier)) return false;
@@ -11546,6 +11546,7 @@ pub const Codegen = struct {
         auto_borrow_receiver: bool,
     ) anyerror!SabLoweredCallArg {
         const materialization = lowering_rules.planCallArgMaterialization(arg, .{
+            .target = .direct_sab,
             .param = param,
             .arg_ty = self.tc.expr_types.get(arg),
             .arg_index = arg_index,
@@ -11553,7 +11554,8 @@ pub const Codegen = struct {
             .array_to_slice_borrow = self.tc.array_to_slice_borrow_args.contains(arg),
             .dyn_borrow_trait_name = self.tc.dyn_borrow_args.get(arg),
             .copy_struct_value = if (param) |p| !p.is_borrow and !p.is_move and arg.* == .identifier and self.typeIsCopyStruct(p.ty) else false,
-            .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(arg),
+            .generated_fn_ptr_identifier = self.isGeneratedFnPtrValueArg(arg, param),
+            .local_fn_ptr_identifier = self.isLocalFnPtrValueArg(arg, param),
             .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(arg),
         });
 
@@ -11577,6 +11579,19 @@ pub const Codegen = struct {
                 const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
                 break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
             },
+            .generated_fn_ptr_value_slot => blk: {
+                const arg_reg = try self.genExpr(@constCast(arg));
+                var fnptr_slot = try self.materializeFnPtrValueArgSlot(arg_reg, materialization.release_after_call);
+                fnptr_slot.operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{fnptr_slot.operand});
+                break :blk fnptr_slot;
+            },
+            .borrow_local_fn_ptr_value => blk: {
+                const arg_reg = try self.genExpr(@constCast(arg));
+                break :blk .{
+                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[arg_reg]}),
+                    .release_reg = null,
+                };
+            },
             .auto_borrow => blk: {
                 const arg_reg = try self.genExpr(@constCast(arg));
                 break :blk .{
@@ -11595,17 +11610,6 @@ pub const Codegen = struct {
                     };
                 }
                 const arg_reg = try self.genExpr(@constCast(arg));
-                if (self.shouldMaterializeFnPtrValueArg(arg, param)) {
-                    var fnptr_slot = try self.materializeFnPtrValueArgSlot(arg_reg, materialization.release_after_call);
-                    fnptr_slot.operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{fnptr_slot.operand});
-                    break :blk fnptr_slot;
-                }
-                if (self.shouldBorrowLocalFnPtrValueArg(arg, param)) {
-                    break :blk .{
-                        .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[arg_reg]}),
-                        .release_reg = null,
-                    };
-                }
                 const arg_ty = self.tc.expr_types.get(arg);
                 if (self.shouldShallowCopyPreservedValueArg(arg, param, arg_ty)) {
                     const copied = try self.genShallowCopyCallArgValue(arg_reg, arg_ty.?);
@@ -11679,6 +11683,7 @@ pub const Codegen = struct {
                 const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
                 break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
             },
+            .generated_fn_ptr_value_slot, .borrow_local_fn_ptr_value => return Error.UnsupportedSabDirectFeature,
             .auto_borrow => blk: {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 break :blk .{

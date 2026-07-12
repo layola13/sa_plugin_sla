@@ -491,15 +491,23 @@ pub fn planWhileLetPattern(pattern: ast.EnumPattern, has_user_enum_decl: bool) ?
     return planLetPattern(pattern, has_user_enum_decl);
 }
 
-pub fn supportsScalarMatchGuard(guard: *const ast.Node) bool {
-    if (guard.* != .binary_expr) return false;
+pub fn scalarMatchGuardTempCount(guard: *const ast.Node) ?usize {
+    if (guard.* != .binary_expr) return null;
     const bin = guard.binary_expr;
-    if (bin.left.* != .identifier) return false;
-    if (!(bin.right.* == .identifier or (bin.right.* == .literal and bin.right.literal == .int_val))) return false;
     return switch (bin.op) {
-        .eq, .ne, .lt, .le, .gt, .ge => true,
-        else => false,
+        .eq, .ne, .lt, .le, .gt, .ge => if (bin.left.* == .identifier and
+            (bin.right.* == .identifier or (bin.right.* == .literal and bin.right.literal == .int_val))) 1 else null,
+        .logical_and, .logical_or => blk: {
+            const left = scalarMatchGuardTempCount(bin.left) orelse break :blk null;
+            const right = scalarMatchGuardTempCount(bin.right) orelse break :blk null;
+            break :blk left + right + 1;
+        },
+        else => null,
     };
+}
+
+pub fn supportsScalarMatchGuard(guard: *const ast.Node) bool {
+    return scalarMatchGuardTempCount(guard) != null;
 }
 
 pub fn blockTerminates(block: []const *ast.Node) bool {
@@ -3880,6 +3888,21 @@ test "shared while let pattern classification" {
     const enum_plan = planWhileLetPattern(message, true).?;
     try std.testing.expectEqual(WhileLetPatternKind.enum_variant, enum_plan.kind);
     try std.testing.expect(enum_plan.success_on_true);
+}
+
+test "shared scalar match guard scratch planning" {
+    var value = ast.Node{ .identifier = "value" };
+    var floor = ast.Node{ .identifier = "floor" };
+    var ceiling = ast.Node{ .identifier = "ceiling" };
+    var lower = ast.Node{ .binary_expr = .{ .op = .gt, .left = &value, .right = &floor } };
+    var upper = ast.Node{ .binary_expr = .{ .op = .lt, .left = &value, .right = &ceiling } };
+    var compound = ast.Node{ .binary_expr = .{ .op = .logical_and, .left = &lower, .right = &upper } };
+    try std.testing.expectEqual(@as(?usize, 1), scalarMatchGuardTempCount(&lower));
+    try std.testing.expectEqual(@as(?usize, 3), scalarMatchGuardTempCount(&compound));
+    try std.testing.expect(supportsScalarMatchGuard(&compound));
+
+    var call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &.{} } };
+    try std.testing.expectEqual(@as(?usize, null), scalarMatchGuardTempCount(&call));
 }
 
 test "shared executor task buffer classification" {

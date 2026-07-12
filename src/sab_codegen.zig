@@ -12805,8 +12805,11 @@ pub const Codegen = struct {
         }
         var case_cond_regs = std.ArrayList(u32).init(self.allocator);
         defer case_cond_regs.deinit();
-        var case_guard_regs = std.ArrayList(?u32).init(self.allocator);
-        defer case_guard_regs.deinit();
+        var case_guard_regs = std.ArrayList([]u32).init(self.allocator);
+        defer {
+            for (case_guard_regs.items) |regs| self.allocator.free(regs);
+            case_guard_regs.deinit();
+        }
         var case_binding_regs = std.ArrayList([]u32).init(self.allocator);
         defer {
             for (case_binding_regs.items) |regs| self.allocator.free(regs);
@@ -12816,11 +12819,13 @@ pub const Codegen = struct {
             const cond = try self.intern(try self.newTmp());
             try self.emitAssignImm(cond, 0);
             try case_cond_regs.append(cond);
-            if (case.guard != null) {
-                const guard = try self.intern(try self.newTmp());
-                try self.emitAssignImm(guard, 0);
-                try case_guard_regs.append(guard);
-            } else try case_guard_regs.append(null);
+            const guard_count = if (case.guard) |guard| lowering_rules.scalarMatchGuardTempCount(guard) orelse return Error.UnsupportedSabDirectFeature else 0;
+            const guard_regs = try self.allocator.alloc(u32, guard_count);
+            for (guard_regs) |*guard_reg| {
+                guard_reg.* = try self.intern(try self.newTmp());
+                try self.emitAssignImm(guard_reg.*, 0);
+            }
+            try case_guard_regs.append(guard_regs);
 
             const regs = try self.allocator.alloc(u32, if (case.guard != null) case.pattern.bindings.len else 0);
             for (regs) |*reg| {
@@ -12901,8 +12906,8 @@ pub const Codegen = struct {
             }
 
             if (case.guard) |guard| {
-                const guard_reg = case_guard_regs.items[i].?;
-                try self.genScalarMatchGuardInto(guard, guard_reg);
+                var guard_cursor: usize = 0;
+                const guard_reg = try self.genScalarMatchGuard(guard, case_guard_regs.items[i], &guard_cursor);
                 const guard_body_label = try self.newLabel("L_MATCH_GUARD_BODY");
                 const guard_fail_label = try self.newLabel("L_MATCH_GUARD_FAIL");
                 try self.emitBranch(guard_reg, guard_body_label, guard_fail_label);
@@ -12934,7 +12939,7 @@ pub const Codegen = struct {
         // Exhausted the ladder without a match: release the scrutinee and panic.
         try self.emitLabel(panic_label);
         try self.emitBranchRelease(case_cond_regs.items[case_cond_regs.items.len - 1]);
-        for (case_guard_regs.items) |guard| if (guard) |reg| try self.emitBranchRelease(reg);
+        for (case_guard_regs.items) |regs| for (regs) |reg| try self.emitBranchRelease(reg);
         for (case_binding_regs.items) |regs| for (regs) |reg| try self.emitBranchRelease(reg);
         if (!val_is_local) try self.emitBranchRelease(val_reg);
         try self.emitPanicCode(1);
@@ -12942,7 +12947,7 @@ pub const Codegen = struct {
 
         if (any_fallthrough) {
             try self.emitLabel(merge_label);
-            for (case_guard_regs.items) |guard| if (guard) |reg| try self.emitRelease(reg);
+            for (case_guard_regs.items) |regs| for (regs) |reg| try self.emitRelease(reg);
             for (case_binding_regs.items) |regs| for (regs) |reg| try self.emitRelease(reg);
             if (!val_is_local) try self.emitRelease(val_reg);
             if (result_slot) |slot| {
@@ -12962,20 +12967,29 @@ pub const Codegen = struct {
         return result;
     }
 
-    fn genScalarMatchGuardInto(self: *Codegen, guard: *ast.Node, dst: u32) anyerror!void {
+    fn genScalarMatchGuard(self: *Codegen, guard: *ast.Node, scratch: []const u32, cursor: *usize) anyerror!u32 {
         if (!lowering_rules.supportsScalarMatchGuard(guard)) return Error.UnsupportedSabDirectFeature;
         const bin = guard.binary_expr;
-        const lhs = self.localReg(bin.left.identifier) orelse return Error.UnsupportedSabDirectFeature;
+        const lhs: inst.Operand = if (bin.op == .logical_and or bin.op == .logical_or)
+            .{ .reg = try self.genScalarMatchGuard(bin.left, scratch, cursor) }
+        else
+            .{ .reg = self.localReg(bin.left.identifier) orelse return Error.UnsupportedSabDirectFeature };
+        const rhs: inst.Operand = if (bin.op == .logical_and or bin.op == .logical_or)
+            .{ .reg = try self.genScalarMatchGuard(bin.right, scratch, cursor) }
+        else if (bin.right.* == .identifier)
+            .{ .reg = self.localReg(bin.right.identifier) orelse return Error.UnsupportedSabDirectFeature }
+        else
+            .{ .imm_i64 = bin.right.literal.int_val };
+        if (cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;
+        const dst = scratch[cursor.*];
+        cursor.* += 1;
         var item = self.makeInst(.op);
         item.op_kind = try self.opKindForBinary(bin);
         item.operands[0] = .{ .reg = dst };
-        item.operands[1] = .{ .reg = lhs };
-        if (bin.right.* == .identifier) {
-            item.operands[2] = .{ .reg = self.localReg(bin.right.identifier) orelse return Error.UnsupportedSabDirectFeature };
-        } else if (bin.right.* == .literal and bin.right.literal == .int_val) {
-            item.operands[2] = .{ .imm_i64 = bin.right.literal.int_val };
-        } else return Error.UnsupportedSabDirectFeature;
+        item.operands[1] = lhs;
+        item.operands[2] = rhs;
         try self.appendInst(item);
+        return dst;
     }
 
     fn genCopyValue(self: *Codegen, source: u32, ty: *const ast.Type) anyerror!u32 {

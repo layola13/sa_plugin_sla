@@ -176,9 +176,9 @@ macro match_enum_guard_macro(out, value, floor) {
     };
 }
 
-macro match_option_macro(out, value, floor) {
+macro match_option_macro(out, value, floor, ceiling) {
     out = match value {
-        Some(inner) if inner > floor => { inner + 1 },
+        Some(inner) if inner > floor && inner < ceiling => { inner + 1 },
         Some(inner) => { 0 - inner },
         None => { 0 },
     };
@@ -374,9 +374,9 @@ fn macro_match_enum_guard_direct(floor: i64) -> i64 {
     result
 }
 
-fn macro_match_option_direct(^value: Option<i64>, floor: i64) -> i64 {
+fn macro_match_option_direct(^value: Option<i64>, floor: i64, ceiling: i64) -> i64 {
     let result = 0i64;
-    match_option_macro(result, value, floor);
+    match_option_macro(result, value, floor, ceiling);
     result
 }
 
@@ -445,11 +445,13 @@ fn macro_try_call_option_direct(value: i64, succeed: bool) -> Option<i64> {
     if macro_match_enum_guard_direct(10) != 42 { panic(31836); };
     if macro_match_enum_guard_direct(20) != 8 { panic(31837); };
     let macro_match_some_input: Option<i64> = Some(41i64);
-    if macro_match_option_direct(^macro_match_some_input, 40) != 42 { panic(31838); };
+    if macro_match_option_direct(^macro_match_some_input, 40, 42) != 42 { panic(31838); };
     let macro_match_low_some_input: Option<i64> = Some(9i64);
-    if macro_match_option_direct(^macro_match_low_some_input, 10) != -9 { panic(31842); };
+    if macro_match_option_direct(^macro_match_low_some_input, 10, 20) != -9 { panic(31842); };
+    let macro_match_high_some_input: Option<i64> = Some(21i64);
+    if macro_match_option_direct(^macro_match_high_some_input, 10, 20) != -21 { panic(31844); };
     let macro_match_none_input: Option<i64> = None;
-    if macro_match_option_direct(^macro_match_none_input, 10) != 0 { panic(31839); };
+    if macro_match_option_direct(^macro_match_none_input, 10, 20) != 0 { panic(31839); };
     let macro_match_ok_input: Result<i64, i64> = Ok(40i64);
     if macro_match_result_direct(^macro_match_ok_input, 39) != 42 { panic(31840); };
     let macro_match_low_ok_input: Result<i64, i64> = Ok(8i64);

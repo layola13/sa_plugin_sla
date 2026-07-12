@@ -64,6 +64,7 @@ pub const Codegen = struct {
     string_idx: usize,
     macro_local_idx: usize,
     macro_inline_depth: usize,
+    active_inline_macro: ?*const ast.MacroDecl,
     macro_locals: std.StringHashMap([]const u8),
     macro_arg_exprs: std.StringHashMap(*const ast.Node),
     macro_arg_types: std.StringHashMap(*const ast.Type),
@@ -128,6 +129,7 @@ pub const Codegen = struct {
             .string_idx = 0,
             .macro_local_idx = 0,
             .macro_inline_depth = 0,
+            .active_inline_macro = null,
             .macro_locals = std.StringHashMap([]const u8).init(allocator),
             .macro_arg_exprs = std.StringHashMap(*const ast.Node).init(allocator),
             .macro_arg_types = std.StringHashMap(*const ast.Type).init(allocator),
@@ -386,6 +388,74 @@ pub const Codegen = struct {
         }
     }
 
+    fn genUserMacroUnsafeValueInline(
+        self: *Codegen,
+        macro_decl: *const ast.MacroDecl,
+        body: []const *ast.Node,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError![]const u8 {
+        if (body.len == 0 or body[body.len - 1].* != .expr_stmt) return CodegenError.CodegenError;
+
+        var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
+        const SavedLocalType = struct { name: []const u8, old_ty: ?*const ast.Type };
+        var scoped_types = std.ArrayList(SavedLocalType).init(self.allocator);
+        defer {
+            var type_i = scoped_types.items.len;
+            while (type_i > 0) {
+                type_i -= 1;
+                const saved = scoped_types.items[type_i];
+                if (saved.old_ty) |ty| {
+                    self.macro_arg_types.put(saved.name, ty) catch unreachable;
+                } else {
+                    _ = self.macro_arg_types.remove(saved.name);
+                }
+            }
+            scoped_types.deinit();
+            var alias_i = scoped_aliases.items.len;
+            while (alias_i > 0) {
+                alias_i -= 1;
+                self.popBindingAlias(scoped_aliases.items[alias_i]);
+            }
+            scoped_aliases.deinit();
+        }
+
+        for (body[0 .. body.len - 1]) |stmt| {
+            if (stmt.* == .let_stmt and !std.mem.eql(u8, stmt.let_stmt.name, "_")) {
+                const let = stmt.let_stmt;
+                const alias = try self.newInlineMacroLocal(macro_decl.name, let.name);
+                var let_copy = let;
+                let_copy.name = alias;
+                var node = ast.Node{ .let_stmt = let_copy };
+                try self.genStmt(&node, hoisted_allocs);
+                try self.pushBindingAliasTo(let.name, alias);
+                try scoped_aliases.append(let.name);
+                try scoped_types.append(.{ .name = let.name, .old_ty = self.macro_arg_types.get(let.name) });
+                if (let.ty) |explicit| {
+                    self.macro_arg_types.put(let.name, explicit) catch return CodegenError.OutOfMemory;
+                } else if (self.resolvedTypeForExpr(let.value)) |inferred| {
+                    self.macro_arg_types.put(let.name, inferred) catch return CodegenError.OutOfMemory;
+                }
+            } else {
+                try self.genStmt(stmt, hoisted_allocs);
+            }
+        }
+
+        const last = body[body.len - 1];
+        const value_expr = last.expr_stmt;
+        const value_reg = try self.genExpr(value_expr, hoisted_allocs);
+        const value_ty = self.resolvedTypeForExpr(value_expr) orelse return CodegenError.CodegenError;
+        const result = try self.newTmp();
+        if (value_expr.* == .identifier and value_ty.* == .primitive) {
+            try self.emitPrimitiveCopy(result, value_reg, value_ty);
+        } else {
+            self.out.writer().print("    {s} = {s}\n", .{ result, value_reg }) catch return CodegenError.CodegenError;
+        }
+        if (self.tc.cleanups.get(last)) |list| {
+            for (list.items) |name| try self.emitRelease(name);
+        }
+        return result;
+    }
+
     fn genUserMacroCallInline(
         self: *Codegen,
         macro_decl: *const ast.MacroDecl,
@@ -457,6 +527,9 @@ pub const Codegen = struct {
 
         self.macro_inline_depth += 1;
         defer self.macro_inline_depth -= 1;
+        const previous_inline_macro = self.active_inline_macro;
+        self.active_inline_macro = macro_decl;
+        defer self.active_inline_macro = previous_inline_macro;
         try self.genUserMacroBlockInline(macro_decl, macro_decl.body, hoisted_allocs);
     }
 
@@ -10845,6 +10918,9 @@ pub const Codegen = struct {
                 return try self.genMatchExpr(expr, &mat, hoisted_allocs);
             },
             .unsafe_expr => |ue| {
+                if (self.active_inline_macro) |macro_decl| {
+                    return try self.genUserMacroUnsafeValueInline(macro_decl, ue.body, hoisted_allocs);
+                }
                 const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                 if (isVoidType(expr_ty)) {
                     try self.genBlock(ue.body, hoisted_allocs);

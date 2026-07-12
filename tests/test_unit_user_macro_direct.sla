@@ -163,8 +163,8 @@ macro match_enum_macro(out, value) {
 
 macro unsafe_block_macro(out, value) {
     out = unsafe {
-        let unsafe_local: i64 = value + 1;
-        unsafe_local + 1
+        let local: i64 = value + 1;
+        local + 1
     };
 }
 

@@ -971,6 +971,15 @@ fn pruneDeadProjectShortcutLetsInBlock(allocator: std.mem.Allocator, block: []co
             .const_stmt => |constant| {
                 keep = !isProjectShortcutPureExpr(constant.value) or reachabilityBlockUsesIdentifier(block[idx + 1 ..], constant.name);
             },
+            .expr_stmt => |expr| {
+                if (expr.* == .if_expr) {
+                    const ife = expr.if_expr;
+                    keep = !(evalSyntacticBool(ife.cond, null) == false and ife.then_block.len == 0 and ife.else_block == null);
+                }
+            },
+            .if_expr => |ife| {
+                keep = !(evalSyntacticBool(ife.cond, null) == false and ife.then_block.len == 0 and ife.else_block == null);
+            },
             else => {},
         }
         if (keep) try out.append(stmt);

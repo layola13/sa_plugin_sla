@@ -8247,8 +8247,11 @@ pub const Codegen = struct {
 
     fn genMacroWhile(self: *Codegen, w: ast.WhileStmt, ctx: *MacroExpansionContext) anyerror!void {
         if (w.let_pattern != null) return Error.UnsupportedSabDirectFeature;
+        const loop_control = lowering_rules.planLoopControl(w.body);
         const head_label = try self.newLabel("L_WHILE_HEAD");
         const body_label = try self.newLabel("L_WHILE_BODY");
+        const cond_false_label = try self.newLabel("L_WHILE_COND_FALSE");
+        const break_cleanup_label = try self.newLabel("L_WHILE_BREAK_CLEANUP");
         const exit_label = try self.newLabel("L_WHILE_EXIT");
 
         try self.emitJmp(head_label);
@@ -8258,20 +8261,33 @@ pub const Codegen = struct {
         br.operands[0] = .{ .reg = cond };
         br.operands[1] = .{ .label = try self.intern(body_label) };
         br.operands[2] = .{ .label = try self.intern(body_label) };
-        br.operands[3] = .{ .label = try self.intern(exit_label) };
+        br.operands[3] = .{ .label = try self.intern(cond_false_label) };
         try self.appendInst(br);
 
         try self.emitLabel(body_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
+        try self.loop_continue_labels.append(head_label);
+        try self.loop_break_labels.append(if (loop_control.has_break) break_cleanup_label else exit_label);
         try self.genMacroBlock(w.body, ctx, true);
+        _ = self.loop_continue_labels.pop();
+        _ = self.loop_break_labels.pop();
         if (!self.lastIsTerminator()) try self.emitJmp(head_label);
 
-        try self.emitLabel(exit_label);
+        try self.emitLabel(cond_false_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
+        try self.emitJmp(exit_label);
+
+        if (loop_control.has_break) {
+            try self.emitLabel(break_cleanup_label);
+            try self.emitJmp(exit_label);
+        }
+
+        try self.emitLabel(exit_label);
     }
 
     fn genMacroFor(self: *Codegen, f: ast.ForStmt, ctx: *MacroExpansionContext) anyerror!void {
         const end_expr = f.end orelse return Error.UnsupportedSabDirectFeature;
+        const loop_control = lowering_rules.planLoopControl(f.body);
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
         const mark = macroScopeMark(ctx);
@@ -8289,6 +8305,8 @@ pub const Codegen = struct {
         const head_label = try self.newLabel("L_FOR_HEAD");
         const body_label = try self.newLabel("L_FOR_BODY");
         const cont_label = try self.newLabel("L_FOR_CONTINUE");
+        const cond_false_label = try self.newLabel("L_FOR_COND_FALSE");
+        const break_cleanup_label = try self.newLabel("L_FOR_BREAK_CLEANUP");
         const exit_label = try self.newLabel("L_FOR_EXIT");
 
         try self.emitJmp(head_label);
@@ -8302,13 +8320,20 @@ pub const Codegen = struct {
         br.operands[0] = .{ .reg = cond };
         br.operands[1] = .{ .label = try self.intern(body_label) };
         br.operands[2] = .{ .label = try self.intern(body_label) };
-        br.operands[3] = .{ .label = try self.intern(exit_label) };
+        br.operands[3] = .{ .label = try self.intern(cond_false_label) };
         try self.appendInst(br);
+
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
 
         try self.emitLabel(body_label);
         try self.emitBranchRelease(cond);
         try self.pushLocal(mapped_var, index_reg, false);
+        try self.loop_continue_labels.append(cont_label);
+        try self.loop_break_labels.append(if (loop_control.has_break) break_cleanup_label else exit_label);
         try self.genMacroBlock(f.body, ctx, true);
+        _ = self.loop_continue_labels.pop();
+        _ = self.loop_break_labels.pop();
         if (!self.lastIsTerminator()) try self.emitJmp(cont_label);
 
         try self.emitLabel(cont_label);
@@ -8319,8 +8344,20 @@ pub const Codegen = struct {
         if (!self.released_regs.contains(index_reg)) try self.emitRelease(index_reg);
         try self.emitJmp(head_label);
 
-        try self.emitLabel(exit_label);
+        try self.restoreReleased(&pre_released);
+
+        try self.emitLabel(cond_false_label);
         try self.emitBranchRelease(cond);
+        try self.emitBranchRelease(index_reg);
+        try self.emitJmp(exit_label);
+
+        if (loop_control.has_break) {
+            try self.emitLabel(break_cleanup_label);
+            try self.emitBranchRelease(index_reg);
+            try self.emitJmp(exit_label);
+        }
+
+        try self.emitLabel(exit_label);
         if (!self.isLocalReg(end_reg)) try self.emitRelease(end_reg);
     }
 
@@ -8370,6 +8407,14 @@ pub const Codegen = struct {
             .block_stmt => |block| try self.genMacroBlock(block.body, ctx, true),
             .for_stmt => |f| try self.genMacroFor(f, ctx),
             .while_stmt => |w| try self.genMacroWhile(w, ctx),
+            .break_stmt => {
+                if (self.loop_break_labels.items.len == 0) return Error.UnsupportedSabDirectFeature;
+                try self.emitJmp(self.loop_break_labels.items[self.loop_break_labels.items.len - 1]);
+            },
+            .continue_stmt => {
+                if (self.loop_continue_labels.items.len == 0) return Error.UnsupportedSabDirectFeature;
+                try self.emitJmp(self.loop_continue_labels.items[self.loop_continue_labels.items.len - 1]);
+            },
             else => return Error.UnsupportedSabDirectFeature,
         }
     }

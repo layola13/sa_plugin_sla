@@ -95,6 +95,19 @@ macro evaluate_call_value_once_macro(out, value) {
     out = direct_macro_add(value, value);
 }
 
+macro loop_control_macro(out) {
+    out = 0;
+    for i in 0..5 {
+        if i == 1 {
+            continue;
+        };
+        if i == 4 {
+            break;
+        };
+        out = out + i;
+    }
+}
+
 fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
     let borrowed: &DirectMacroCounter = cell.borrow_mut();
     borrowed.value = borrowed.value + 1;
@@ -178,6 +191,12 @@ fn macro_call_value_arg_evaluated_once() -> i64 {
     total
 }
 
+fn macro_loop_control_direct() -> i64 {
+    let total = 99i64;
+    loop_control_macro(total);
+    total
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -188,4 +207,5 @@ fn macro_call_value_arg_evaluated_once() -> i64 {
     if macro_smart_address_direct() != 42 { panic(31809); };
     if macro_value_arg_evaluated_once() != 2 { panic(31811); };
     if macro_call_value_arg_evaluated_once() != 2 { panic(31813); };
+    if macro_loop_control_direct() != 5 { panic(31814); };
 }

@@ -65,6 +65,7 @@ pub const Codegen = struct {
     macro_local_idx: usize,
     macro_inline_depth: usize,
     active_inline_macro: ?*const ast.MacroDecl,
+    active_macro_try_cleanup: ?[]const []const u8,
     macro_locals: std.StringHashMap([]const u8),
     macro_arg_exprs: std.StringHashMap(*const ast.Node),
     macro_arg_types: std.StringHashMap(*const ast.Type),
@@ -130,6 +131,7 @@ pub const Codegen = struct {
             .macro_local_idx = 0,
             .macro_inline_depth = 0,
             .active_inline_macro = null,
+            .active_macro_try_cleanup = null,
             .macro_locals = std.StringHashMap([]const u8).init(allocator),
             .macro_arg_exprs = std.StringHashMap(*const ast.Node).init(allocator),
             .macro_arg_types = std.StringHashMap(*const ast.Type).init(allocator),
@@ -530,6 +532,9 @@ pub const Codegen = struct {
         const previous_inline_macro = self.active_inline_macro;
         self.active_inline_macro = macro_decl;
         defer self.active_inline_macro = previous_inline_macro;
+        const previous_try_cleanup = self.active_macro_try_cleanup;
+        self.active_macro_try_cleanup = if (self.tc.macro_call_try_cleanups.get(call)) |list| list.items else previous_try_cleanup;
+        defer self.active_macro_try_cleanup = previous_try_cleanup;
         try self.genUserMacroBlockInline(macro_decl, macro_decl.body, hoisted_allocs);
     }
 
@@ -1149,6 +1154,7 @@ pub const Codegen = struct {
     }
 
     fn emitBranchScopedCleanupForNode(self: *Codegen, node: *const ast.Node) CodegenError!void {
+        if (self.active_macro_try_cleanup) |names| return try self.emitBranchScopedCleanupList(names);
         if (self.tc.cleanups.get(node)) |list| try self.emitBranchScopedCleanupList(list.items);
     }
 
@@ -13431,7 +13437,7 @@ pub const Codegen = struct {
             },
             .try_expr => |trye| {
                 // Postfix ? unwrapper
-                const inner_ty = self.tc.expr_types.get(trye.expr) orelse return CodegenError.CodegenError;
+                const inner_ty = self.resolvedTypeForExpr(trye.expr) orelse return CodegenError.CodegenError;
                 if (optionInnerType(inner_ty) != null) {
                     const inner_reg = try self.genExpr(trye.expr, hoisted_allocs);
                     const is_some = try self.newTmp();

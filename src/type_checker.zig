@@ -147,6 +147,7 @@ pub const TypeChecker = struct {
     // Maps await expressions to cleanups used only when codegen emits a
     // generated pending return. Ready paths retain their ordinary state.
     await_cleanups: std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)),
+    macro_call_try_cleanups: std.AutoHashMap(*const ast.CallExpr, std.ArrayList([]const u8)),
     // Maps a branch end to the variables to release for Phi resolution
     phi_cleanups: std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)),
 
@@ -196,6 +197,7 @@ pub const TypeChecker = struct {
             .scope_pool = std.ArrayList(*Scope).init(allocator),
             .cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
             .await_cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
+            .macro_call_try_cleanups = std.AutoHashMap(*const ast.CallExpr, std.ArrayList([]const u8)).init(allocator),
             .phi_cleanups = std.AutoHashMap(*const ast.Node, std.ArrayList([]const u8)).init(allocator),
             .funcs = std.StringHashMap(*ast.FuncDecl).init(allocator),
             .function_aliases = std.StringHashMap([]const u8).init(allocator),
@@ -462,6 +464,10 @@ pub const TypeChecker = struct {
             list.deinit();
         }
         self.await_cleanups.deinit();
+
+        var macro_try_cleanup_iter = self.macro_call_try_cleanups.valueIterator();
+        while (macro_try_cleanup_iter.next()) |list| list.deinit();
+        self.macro_call_try_cleanups.deinit();
 
         var phi_iter = self.phi_cleanups.valueIterator();
         while (phi_iter.next()) |list| {
@@ -5224,6 +5230,28 @@ pub const TypeChecker = struct {
                     for (call.args) |arg| {
                         _ = try self.checkExpr(arg, scope);
                     }
+                    var propagated_args = std.StringHashMap(void).init(self.allocator);
+                    defer propagated_args.deinit();
+                    var has_macro_try = false;
+                    for (mac.params, call.args) |param, arg| {
+                        if (!control_flow_rules.macroParamIsTrySource(mac.body, param)) continue;
+                        has_macro_try = true;
+                        if (rootIdentifier(arg)) |name| try propagated_args.put(name, {});
+                    }
+                    if (has_macro_try) {
+                        var cleanup = std.ArrayList([]const u8).init(self.allocator);
+                        errdefer cleanup.deinit();
+                        var current: ?*Scope = scope;
+                        while (current) |frame| {
+                            var symbols = frame.symbols.valueIterator();
+                            while (symbols.next()) |sym| {
+                                if (sym.state != .active or isInternalSymbol(sym.name) or propagated_args.contains(sym.name)) continue;
+                                try cleanup.append(sym.name);
+                            }
+                            current = frame.parent;
+                        }
+                        try self.macro_call_try_cleanups.put(&expr.call_expr, cleanup);
+                    }
                     for (mac.params, call.args, 0..) |_, arg, index| {
                         const consumption = try self.macroParamConsumption(mac, index);
                         if (consumption == .never) continue;
@@ -5773,6 +5801,8 @@ pub const TypeChecker = struct {
                         if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) try self.consumeBinding(scope, trye.expr.identifier, source, "try propagation");
                     }
                 }
+
+                if (inner_ty.* == .infer) return inner_ty;
 
                 if (optionInnerType(inner_ty)) |unwrapped_ty| {
                     var try_cleanup = std.ArrayList([]const u8).init(self.allocator);

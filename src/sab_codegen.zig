@@ -326,6 +326,7 @@ pub const Codegen = struct {
     current_expr_result_escapes: bool = false,
     current_block: ?[]const *ast.Node = null,
     current_stmt_index: usize = 0,
+    active_macro_try_cleanup: ?[]const []const u8 = null,
     current_expr_later_nodes: std.ArrayList(*const ast.Node),
     future_task_helpers_emitted: bool = false,
     // When appending a decoded std-macro fragment, fragment-internal temp/local
@@ -2846,6 +2847,19 @@ pub const Codegen = struct {
     fn emitBranchCleanupForNode(self: *Codegen, node: *const ast.Node) !void {
         var seen = std.AutoHashMap(u32, void).init(self.allocator);
         defer seen.deinit();
+        if (self.active_macro_try_cleanup) |names| {
+            for (names) |name| {
+                var i = self.locals.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    const local = self.locals.items[i];
+                    if (!std.mem.eql(u8, local.name, name)) continue;
+                    if (local.stack_ty == null and !local.is_stack_alloc) try self.emitBranchReleaseWithMetadata(local.reg, &seen);
+                    break;
+                }
+            }
+            return;
+        }
         if (self.tc.cleanups.get(node)) |list| {
             for (list.items) |name| {
                 var reg: ?u32 = null;
@@ -7983,6 +7997,20 @@ pub const Codegen = struct {
         return result;
     }
 
+    fn genMacroTryExpr(self: *Codegen, expr: *const ast.Node, try_expr: ast.TryExpr, ctx: *MacroExpansionContext) anyerror!u32 {
+        const inner_ty = (try self.macroExprType(try_expr.expr, ctx)) orelse return Error.MissingType;
+        const previous = self.tc.expr_types.get(try_expr.expr);
+        try self.tc.expr_types.put(try_expr.expr, @constCast(inner_ty));
+        defer {
+            if (previous) |ty| {
+                self.tc.expr_types.put(try_expr.expr, ty) catch unreachable;
+            } else {
+                _ = self.tc.expr_types.remove(try_expr.expr);
+            }
+        }
+        return try self.genTry(expr, try_expr);
+    }
+
     fn genMacroArrayLiteralWithType(self: *Codegen, arr_ty: *const ast.Type, lit: ast.ArrayLiteral, ctx: *MacroExpansionContext) anyerror!u32 {
         if (arr_ty.* != .array or arr_ty.array.len != lit.elements.len) return Error.UnsupportedSabDirectFeature;
 
@@ -8211,6 +8239,7 @@ pub const Codegen = struct {
             .if_expr => |ife| try self.genMacroIf(expr, ife, ctx),
             .cast_expr => |cast| try self.genMacroCast(cast, ctx),
             .unsafe_expr => |unsafe_expr| try self.genMacroUnsafeExpr(expr, unsafe_expr, ctx),
+            .try_expr => |try_expr| try self.genMacroTryExpr(expr, try_expr, ctx),
             .borrow_expr => |borrow| try self.genMacroBorrow(borrow, ctx),
             .deref_expr => |deref| try self.genMacroDeref(expr, deref, ctx),
             .move_expr => |move| try self.genMacroMove(move, ctx),
@@ -8536,8 +8565,11 @@ pub const Codegen = struct {
         }
     }
 
-    fn genUserMacroCall(self: *Codegen, macro_decl: *const ast.MacroDecl, call: ast.CallExpr) anyerror!void {
-        try self.genUserMacroCallWithParent(macro_decl, call, null);
+    fn genUserMacroCall(self: *Codegen, macro_decl: *const ast.MacroDecl, call: *const ast.CallExpr) anyerror!void {
+        const previous = self.active_macro_try_cleanup;
+        self.active_macro_try_cleanup = if (self.tc.macro_call_try_cleanups.get(call)) |list| list.items else previous;
+        defer self.active_macro_try_cleanup = previous;
+        try self.genUserMacroCallWithParent(macro_decl, call.*, null);
     }
 
     fn genStmt(self: *Codegen, stmt: *ast.Node) anyerror!void {
@@ -8558,7 +8590,7 @@ pub const Codegen = struct {
                     _ = try self.genExpr(expr);
                 } else if (expr.* == .call_expr) {
                     if (self.tc.macros.get(expr.call_expr.func_name)) |macro_decl| {
-                        try self.genUserMacroCall(macro_decl, expr.call_expr);
+                        try self.genUserMacroCall(macro_decl, &expr.call_expr);
                         return;
                     }
                     const value = try self.genExpr(expr);
@@ -11363,7 +11395,7 @@ pub const Codegen = struct {
             }
             if (self.closure_bindings.get(call.func_name)) |closure| return try self.genClosureCall(closure, call);
             if (self.tc.macros.get(call.func_name)) |macro_decl| {
-                try self.genUserMacroCall(macro_decl, call);
+                try self.genUserMacroCall(macro_decl, &expr.call_expr);
                 const sentinel = try self.intern(try self.newTmp());
                 try self.emitAssignImm(sentinel, 0);
                 return sentinel;

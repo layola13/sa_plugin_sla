@@ -1,4 +1,5 @@
 @import "sa_std/core/box.sa"
+@import "sa_std/core/option.sa"
 @import "sa_std/core/refcell.sa"
 
 macro add_one_macro(var_ref) {
@@ -168,6 +169,10 @@ macro unsafe_block_macro(out, value) {
     };
 }
 
+macro try_option_macro(out, value) {
+    out = value?;
+}
+
 fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
     let borrowed: &DirectMacroCounter = cell.borrow_mut();
     borrowed.value = borrowed.value + 1;
@@ -331,6 +336,13 @@ fn macro_unsafe_block_direct() -> i64 {
     result + local
 }
 
+fn macro_try_option_direct(^value: Option<i64>) -> Option<i64> {
+    let cleanup = Box::new(9i64);
+    let result = 0i64;
+    try_option_macro(result, value);
+    Some(result + *cleanup)
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -353,4 +365,11 @@ fn macro_unsafe_block_direct() -> i64 {
     if macro_deref_move_box_direct() != 37 { panic(31823); };
     if macro_match_enum_direct() != 36 { panic(31824); };
     if macro_unsafe_block_direct() != 135 { panic(31825); };
+    let macro_try_some_input: Option<i64> = Some(33i64);
+    let macro_try_some = macro_try_option_direct(^macro_try_some_input);
+    if !macro_try_some.is_some() { panic(31826); };
+    if macro_try_some.unwrap() != 42 { panic(31827); };
+    let macro_try_none_input: Option<i64> = None;
+    let macro_try_none = macro_try_option_direct(^macro_try_none_input);
+    if !macro_try_none.is_none() { panic(31828); };
 }

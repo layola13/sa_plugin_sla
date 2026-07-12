@@ -51,6 +51,30 @@ pub fn macroParamConsumesValue(body: []const *ast.Node, name: []const u8) bool {
     return macroParamConsumption(body, name) != .never;
 }
 
+pub fn macroParamIsTrySource(body: []const *ast.Node, name: []const u8) bool {
+    for (body) |node| {
+        if (macroNodeHasTrySource(node, name)) return true;
+    }
+    return false;
+}
+
+fn macroNodeHasTrySource(node: *const ast.Node, name: []const u8) bool {
+    return switch (node.*) {
+        .try_expr => |try_expr| try_expr.expr.* == .identifier and std.mem.eql(u8, try_expr.expr.identifier, name),
+        .block_stmt => |block| macroParamIsTrySource(block.body, name),
+        .unsafe_expr => |unsafe_expr| macroParamIsTrySource(unsafe_expr.body, name),
+        .if_expr => |ife| macroNodeHasTrySource(ife.cond, name) or macroParamIsTrySource(ife.then_block, name) or
+            (if (ife.else_block) |else_block| macroParamIsTrySource(else_block, name) else false),
+        .for_stmt => |for_stmt| macroParamIsTrySource(for_stmt.body, name),
+        .while_stmt => |while_stmt| macroParamIsTrySource(while_stmt.body, name),
+        .expr_stmt => |expr| macroNodeHasTrySource(expr, name),
+        .assign_stmt => |assign| macroNodeHasTrySource(assign.value, name),
+        .let_stmt => |let| macroNodeHasTrySource(let.value, name),
+        .return_stmt => |ret| if (ret.value) |value| macroNodeHasTrySource(value, name) else false,
+        else => false,
+    };
+}
+
 fn macroNodeConsumption(node: *const ast.Node, name: []const u8) MacroParamConsumption {
     return switch (node.*) {
         .move_expr => |move| if (move.expr.* == .identifier and std.mem.eql(u8, move.expr.identifier, name)) .always else macroNodeConsumption(move.expr, name),
@@ -173,12 +197,14 @@ test "user macro value consumption follows nested move expressions" {
     var call = ast.Node{ .call_expr = .{ .func_name = "consume", .generics = &.{}, .args = &.{&moved} } };
     var tuple = ast.Node{ .tuple_literal = .{ .elements = &.{&moved} } };
     var deref = ast.Node{ .deref_expr = .{ .expr = &moved } };
+    var try_value = ast.Node{ .try_expr = .{ .expr = &value } };
 
     try std.testing.expect(macroParamConsumesValue(&.{&block}, "value"));
     try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&call}, "value"));
     try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&tuple}, "value"));
     try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&deref}, "value"));
     try std.testing.expect(!macroParamConsumesValue(&.{&block}, "out"));
+    try std.testing.expect(macroParamIsTrySource(&.{&try_value}, "value"));
 }
 
 test "user macro consumption distinguishes conditional branches and loops" {

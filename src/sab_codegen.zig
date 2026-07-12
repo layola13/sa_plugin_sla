@@ -13000,7 +13000,10 @@ pub const Codegen = struct {
                     try body.appendSlice(self.symbols.items[reg]);
                 } else if (arg.* == .literal and arg.literal == .int_val) {
                     try body.writer().print("{}", .{arg.literal.int_val});
-                } else return Error.UnsupportedSabDirectFeature;
+                } else {
+                    const reg = try self.genScalarMatchGuardValue(arg, scratch, cursor);
+                    try body.appendSlice(self.symbols.items[reg]);
+                }
             }
             try body.append(')');
             try self.emitCallBody(dst, try body.toOwnedSlice());
@@ -13017,6 +13020,33 @@ pub const Codegen = struct {
             .{ .reg = self.localReg(bin.right.identifier) orelse return Error.UnsupportedSabDirectFeature }
         else
             .{ .imm_i64 = bin.right.literal.int_val };
+        if (cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;
+        const dst = scratch[cursor.*];
+        cursor.* += 1;
+        var item = self.makeInst(.op);
+        item.op_kind = try self.opKindForBinary(bin);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = lhs;
+        item.operands[2] = rhs;
+        try self.appendInst(item);
+        return dst;
+    }
+
+    fn genScalarMatchGuardValue(self: *Codegen, value: *ast.Node, scratch: []const u32, cursor: *usize) anyerror!u32 {
+        if (value.* != .binary_expr) return Error.UnsupportedSabDirectFeature;
+        const bin = value.binary_expr;
+        const lhs: inst.Operand = if (bin.left.* == .identifier)
+            .{ .reg = self.localReg(bin.left.identifier) orelse return Error.UnsupportedSabDirectFeature }
+        else if (bin.left.* == .literal and bin.left.literal == .int_val)
+            .{ .imm_i64 = bin.left.literal.int_val }
+        else
+            .{ .reg = try self.genScalarMatchGuardValue(bin.left, scratch, cursor) };
+        const rhs: inst.Operand = if (bin.right.* == .identifier)
+            .{ .reg = self.localReg(bin.right.identifier) orelse return Error.UnsupportedSabDirectFeature }
+        else if (bin.right.* == .literal and bin.right.literal == .int_val)
+            .{ .imm_i64 = bin.right.literal.int_val }
+        else
+            .{ .reg = try self.genScalarMatchGuardValue(bin.right, scratch, cursor) };
         if (cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;
         const dst = scratch[cursor.*];
         cursor.* += 1;

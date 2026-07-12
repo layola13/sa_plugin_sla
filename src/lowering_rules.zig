@@ -495,8 +495,9 @@ pub fn scalarMatchGuardTempCount(guard: *const ast.Node) ?usize {
     if (guard.* == .call_expr) {
         const call = guard.call_expr;
         if (call.associated_target != null) return null;
-        for (call.args) |arg| if (!(arg.* == .identifier or (arg.* == .literal and arg.literal == .int_val))) return null;
-        return 1;
+        var count: usize = 1;
+        for (call.args) |arg| count += scalarMatchGuardValueTempCount(arg) orelse return null;
+        return count;
     }
     if (guard.* != .binary_expr) return null;
     const bin = guard.binary_expr;
@@ -510,6 +511,19 @@ pub fn scalarMatchGuardTempCount(guard: *const ast.Node) ?usize {
         },
         else => null,
     };
+}
+
+fn scalarMatchGuardValueTempCount(value: *const ast.Node) ?usize {
+    if (value.* == .identifier or (value.* == .literal and value.literal == .int_val)) return 0;
+    if (value.* != .binary_expr) return null;
+    const bin = value.binary_expr;
+    switch (bin.op) {
+        .add, .sub, .mul, .div, .mod => {},
+        else => return null,
+    }
+    const left = scalarMatchGuardValueTempCount(bin.left) orelse return null;
+    const right = scalarMatchGuardValueTempCount(bin.right) orelse return null;
+    return left + right + 1;
 }
 
 pub fn supportsScalarMatchGuard(guard: *const ast.Node) bool {
@@ -3909,6 +3923,11 @@ test "shared scalar match guard scratch planning" {
 
     var call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &.{} } };
     try std.testing.expectEqual(@as(?usize, 1), scalarMatchGuardTempCount(&call));
+    var one = ast.Node{ .literal = .{ .int_val = 1 } };
+    var adjusted = ast.Node{ .binary_expr = .{ .op = .add, .left = &value, .right = &one } };
+    const call_args = [_]*ast.Node{&adjusted};
+    var adjusted_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &call_args } };
+    try std.testing.expectEqual(@as(?usize, 2), scalarMatchGuardTempCount(&adjusted_call));
 }
 
 test "shared executor task buffer classification" {

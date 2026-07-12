@@ -2675,6 +2675,77 @@ pub const TypeChecker = struct {
         return try self.macroParamConsumptionRecursive(macro_decl, param_index, &visiting);
     }
 
+    fn macroParamIsTrySource(self: *TypeChecker, macro_decl: *const ast.MacroDecl, param_index: usize) TypeError!bool {
+        var visiting = std.AutoHashMap(MacroConsumptionKey, void).init(self.allocator);
+        defer visiting.deinit();
+        return try self.macroParamIsTrySourceRecursive(macro_decl, param_index, &visiting);
+    }
+
+    fn macroParamIsTrySourceRecursive(
+        self: *TypeChecker,
+        macro_decl: *const ast.MacroDecl,
+        param_index: usize,
+        visiting: *std.AutoHashMap(MacroConsumptionKey, void),
+    ) TypeError!bool {
+        if (param_index >= macro_decl.params.len) return false;
+        const key = MacroConsumptionKey{ .macro_decl = macro_decl, .param_index = param_index };
+        if (visiting.contains(key)) return false;
+        try visiting.put(key, {});
+        defer _ = visiting.remove(key);
+        const name = macro_decl.params[param_index];
+        if (control_flow_rules.macroParamIsTrySource(macro_decl.body, name)) return true;
+        for (macro_decl.body) |node| {
+            if (try self.macroNodeForwardsTrySource(node, name, visiting)) return true;
+        }
+        return false;
+    }
+
+    fn macroNodeForwardsTrySource(
+        self: *TypeChecker,
+        node: *const ast.Node,
+        name: []const u8,
+        visiting: *std.AutoHashMap(MacroConsumptionKey, void),
+    ) TypeError!bool {
+        return switch (node.*) {
+            .call_expr => |call| blk: {
+                if (self.macros.get(call.func_name)) |nested| {
+                    for (call.args, 0..) |arg, index| {
+                        const root = rootIdentifier(arg) orelse continue;
+                        if (!std.mem.eql(u8, root, name)) continue;
+                        if (try self.macroParamIsTrySourceRecursive(nested, index, visiting)) break :blk true;
+                    }
+                }
+                break :blk false;
+            },
+            .expr_stmt => |expr| self.macroNodeForwardsTrySource(expr, name, visiting),
+            .assign_stmt => |assign| self.macroNodeForwardsTrySource(assign.value, name, visiting),
+            .let_stmt => |let| self.macroNodeForwardsTrySource(let.value, name, visiting),
+            .return_stmt => |ret| if (ret.value) |value| self.macroNodeForwardsTrySource(value, name, visiting) else false,
+            .block_stmt => |block| blk: {
+                for (block.body) |child| if (try self.macroNodeForwardsTrySource(child, name, visiting)) break :blk true;
+                break :blk false;
+            },
+            .unsafe_expr => |unsafe_expr| blk: {
+                for (unsafe_expr.body) |child| if (try self.macroNodeForwardsTrySource(child, name, visiting)) break :blk true;
+                break :blk false;
+            },
+            .if_expr => |ife| blk: {
+                for (ife.then_block) |child| if (try self.macroNodeForwardsTrySource(child, name, visiting)) break :blk true;
+                if (ife.else_block) |else_block| for (else_block) |child| if (try self.macroNodeForwardsTrySource(child, name, visiting)) break :blk true;
+                break :blk false;
+            },
+            .for_stmt => |for_stmt| blk: {
+                for (for_stmt.body) |child| if (try self.macroNodeForwardsTrySource(child, name, visiting)) break :blk true;
+                break :blk false;
+            },
+            .while_stmt => |while_stmt| blk: {
+                for (while_stmt.body) |child| if (try self.macroNodeForwardsTrySource(child, name, visiting)) break :blk true;
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
     fn macroParamConsumptionRecursive(
         self: *TypeChecker,
         macro_decl: *const ast.MacroDecl,
@@ -5233,8 +5304,8 @@ pub const TypeChecker = struct {
                     var propagated_args = std.StringHashMap(void).init(self.allocator);
                     defer propagated_args.deinit();
                     var has_macro_try = false;
-                    for (mac.params, call.args) |param, arg| {
-                        if (!control_flow_rules.macroParamIsTrySource(mac.body, param)) continue;
+                    for (mac.params, call.args, 0..) |_, arg, index| {
+                        if (!try self.macroParamIsTrySource(mac, index)) continue;
                         has_macro_try = true;
                         if (rootIdentifier(arg)) |name| try propagated_args.put(name, {});
                     }

@@ -138,7 +138,7 @@ fn macroNodeConsumption(node: *const ast.Node, name: []const u8) MacroParamConsu
         .cast_expr => |cast| macroNodeConsumption(cast.expr, name),
         .borrow_expr => |borrow| macroNodeConsumption(borrow.expr, name),
         .deref_expr => |deref| macroNodeConsumption(deref.expr, name),
-        .try_expr => |try_expr| macroNodeConsumption(try_expr.expr, name),
+        .try_expr => |try_expr| if (try_expr.expr.* == .identifier and std.mem.eql(u8, try_expr.expr.identifier, name)) .always else macroNodeConsumption(try_expr.expr, name),
         .await_expr => |await_expr| macroNodeConsumption(await_expr.expr, name),
         .assign_stmt => |assign| macroNodeConsumption(assign.value, name),
         .let_stmt => |let| macroNodeConsumption(let.value, name),

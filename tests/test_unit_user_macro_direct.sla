@@ -1,6 +1,7 @@
 @import "sa_std/core/box.sa"
 @import "sa_std/core/option.sa"
 @import "sa_std/core/refcell.sa"
+@import "sa_std/core/result.sa"
 
 macro add_one_macro(var_ref) {
     let temp = 1;
@@ -22,6 +23,7 @@ struct DirectMacroPoint { left: i64, right: i64 }
 struct DirectMacroBorrowPoint { left: i64, right: i64 }
 struct DirectMacroCounter { value: i64 }
 struct DirectMacroBoxHolder { value: Box<i64> }
+struct DirectMacroTryResult { is_err: bool, value: i64, error: i64 }
 
 enum DirectMacroMessage {
     Empty,
@@ -171,6 +173,10 @@ macro unsafe_block_macro(out, value) {
 
 macro try_option_macro(out, value) {
     out = value?;
+}
+
+macro forwarding_try_macro(out, value) {
+    try_option_macro(out, value);
 }
 
 fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
@@ -343,6 +349,20 @@ fn macro_try_option_direct(^value: Option<i64>) -> Option<i64> {
     Some(result + *cleanup)
 }
 
+fn macro_try_result_direct(^value: Result<i64, i64>) -> Result<i64, i64> {
+    let cleanup = Box::new(8i64);
+    let result = 0i64;
+    forwarding_try_macro(result, value);
+    Ok(result + *cleanup)
+}
+
+fn macro_try_custom_result_direct(^value: DirectMacroTryResult) -> DirectMacroTryResult {
+    let cleanup = Box::new(7i64);
+    let result = 0i64;
+    forwarding_try_macro(result, value);
+    DirectMacroTryResult { is_err: false, value: result + *cleanup, error: 0 }
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -372,4 +392,17 @@ fn macro_try_option_direct(^value: Option<i64>) -> Option<i64> {
     let macro_try_none_input: Option<i64> = None;
     let macro_try_none = macro_try_option_direct(^macro_try_none_input);
     if !macro_try_none.is_none() { panic(31828); };
+    let macro_try_ok_input: Result<i64, i64> = Ok(34i64);
+    let macro_try_ok = macro_try_result_direct(^macro_try_ok_input);
+    if !macro_try_ok.is_ok() { panic(31829); };
+    if macro_try_ok.unwrap() != 42 { panic(31830); };
+    let macro_try_err_input: Result<i64, i64> = Err(7i64);
+    let macro_try_err = macro_try_result_direct(^macro_try_err_input);
+    if !macro_try_err.is_err() { panic(31831); };
+    let macro_try_custom_ok_input = DirectMacroTryResult { is_err: false, value: 35, error: 0 };
+    let macro_try_custom_ok = macro_try_custom_result_direct(^macro_try_custom_ok_input);
+    if macro_try_custom_ok.is_err || macro_try_custom_ok.value != 42 { panic(31832); };
+    let macro_try_custom_err_input = DirectMacroTryResult { is_err: true, value: 0, error: 6 };
+    let macro_try_custom_err = macro_try_custom_result_direct(^macro_try_custom_err_input);
+    if !macro_try_custom_err.is_err || macro_try_custom_err.error != 6 { panic(31833); };
 }

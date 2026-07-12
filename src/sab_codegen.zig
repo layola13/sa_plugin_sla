@@ -8381,7 +8381,7 @@ pub const Codegen = struct {
         const bindings = try self.allocator.alloc(MacroArgBinding, call.args.len);
         defer self.allocator.free(bindings);
         for (macro_decl.params, call.args, 0..) |param, arg, idx| {
-            const requires_lvalue = lowering_rules.macroParamRequiresLvalue(macro_decl.body, param);
+            const requires_lvalue = lowering_rules.macroParamRequiresLvalue(self.tc, macro_decl.body, param);
             const evaluated_reg = if (requires_lvalue)
                 null
             else if (parent_ctx) |arg_ctx|

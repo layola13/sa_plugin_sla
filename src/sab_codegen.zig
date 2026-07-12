@@ -7955,6 +7955,34 @@ pub const Codegen = struct {
         return dst;
     }
 
+    fn genMacroUnsafeExpr(self: *Codegen, expr: *const ast.Node, unsafe_expr: ast.UnsafeExpr, ctx: *MacroExpansionContext) anyerror!u32 {
+        const result_ty = (try self.macroExprType(expr, ctx)) orelse return Error.MissingType;
+        if (isVoidType(result_ty)) return Error.UnsupportedSabDirectFeature;
+
+        const block_locals_len = self.locals.items.len;
+        defer self.popLocalsTo(block_locals_len);
+        const mark = macroScopeMark(ctx);
+        defer restoreMacroLocals(ctx, mark);
+
+        const result_slot = try self.intern(try self.newTmp());
+        try self.emitAlloc(result_slot, typeSize(result_ty));
+        try self.prepareResultSlotRefCellCompanion(result_slot, result_ty);
+
+        const terminated = try self.genMacroBlockTailValueStore(unsafe_expr.body, result_slot, result_ty, ctx);
+        if (terminated) {
+            const result = try self.intern(try self.newTmp());
+            try self.recordReg(result);
+            return result;
+        }
+
+        try self.releaseLocalsFrom(block_locals_len, null);
+        const result = try self.intern(try self.newTmp());
+        try self.emitLoad(result, result_slot, 0, try primType(result_ty));
+        try self.loadResultSlotTransferredValue(result, result_slot, result_ty);
+        try self.emitRelease(result_slot);
+        return result;
+    }
+
     fn genMacroArrayLiteralWithType(self: *Codegen, arr_ty: *const ast.Type, lit: ast.ArrayLiteral, ctx: *MacroExpansionContext) anyerror!u32 {
         if (arr_ty.* != .array or arr_ty.array.len != lit.elements.len) return Error.UnsupportedSabDirectFeature;
 
@@ -8182,6 +8210,7 @@ pub const Codegen = struct {
             .index_expr => |idx| try self.genMacroIndex(idx, ctx),
             .if_expr => |ife| try self.genMacroIf(expr, ife, ctx),
             .cast_expr => |cast| try self.genMacroCast(cast, ctx),
+            .unsafe_expr => |unsafe_expr| try self.genMacroUnsafeExpr(expr, unsafe_expr, ctx),
             .borrow_expr => |borrow| try self.genMacroBorrow(borrow, ctx),
             .deref_expr => |deref| try self.genMacroDeref(expr, deref, ctx),
             .move_expr => |move| try self.genMacroMove(move, ctx),

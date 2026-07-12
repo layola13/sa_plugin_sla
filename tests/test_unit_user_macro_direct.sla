@@ -161,6 +161,13 @@ macro match_enum_macro(out, value) {
     };
 }
 
+macro unsafe_block_macro(out, value) {
+    out = unsafe {
+        let unsafe_local: i64 = value + 1;
+        unsafe_local + 1
+    };
+}
+
 fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
     let borrowed: &DirectMacroCounter = cell.borrow_mut();
     borrowed.value = borrowed.value + 1;
@@ -317,6 +324,13 @@ fn macro_match_enum_direct() -> i64 {
     result
 }
 
+fn macro_unsafe_block_direct() -> i64 {
+    let local = 100i64;
+    let result = 0i64;
+    unsafe_block_macro(result, 33i64);
+    result + local
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -338,4 +352,5 @@ fn macro_match_enum_direct() -> i64 {
     if macro_aggregate_move_box_direct() != 38 { panic(31822); };
     if macro_deref_move_box_direct() != 37 { panic(31823); };
     if macro_match_enum_direct() != 36 { panic(31824); };
+    if macro_unsafe_block_direct() != 135 { panic(31825); };
 }

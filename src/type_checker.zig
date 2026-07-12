@@ -5122,9 +5122,15 @@ pub const TypeChecker = struct {
 
                 // 4. Check user-defined macro calls
                 if (self.macros.get(call.func_name)) |mac| {
-                    _ = mac;
                     for (call.args) |arg| {
                         _ = try self.checkExpr(arg, scope);
+                    }
+                    for (mac.params, call.args) |param, arg| {
+                        if (!control_flow_rules.macroParamConsumesValue(mac.body, param)) continue;
+                        if (arg.* != .identifier) continue;
+                        const sym = scope.lookup(arg.identifier) orelse return TypeError.UndefinedVariable;
+                        if (sym.state == .consumed) return TypeError.UseAfterMove;
+                        try self.consumeBinding(scope, arg.identifier, sym, "user macro move");
                     }
                     const ret = try self.allocator.create(ast.Type);
                     ret.* = .{ .primitive = .void_type };

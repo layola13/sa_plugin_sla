@@ -8953,13 +8953,14 @@ pub const Codegen = struct {
                         return;
                     }
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
+                    const stored_val_reg = if (assign.value.* == .move_expr and std.mem.startsWith(u8, val_reg, "^")) val_reg[1..] else val_reg;
                     const target_name = self.resolveBindingName(assign.target.identifier);
                     if (self.bindingStorageAddress(target_name)) |address| {
-                        self.out.writer().print("    store {s}, {s} as {s}\n", .{ address, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(assign.value)) try self.emitRelease(val_reg);
+                        self.out.writer().print("    store {s}, {s} as {s}\n", .{ address, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(assign.value)) try self.emitRelease(stored_val_reg);
                     } else if (self.addressable_bindings.contains(target_name)) {
-                        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(assign.value)) try self.emitRelease(val_reg);
+                        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        if (callArgNeedsRelease(assign.value)) try self.emitRelease(stored_val_reg);
                     } else {
                         try self.emitRelease(assign.target.identifier);
                         if (assign.value.* == .identifier and target_ty.* == .primitive) {
@@ -8969,11 +8970,11 @@ pub const Codegen = struct {
                                 else => self.out.writer().print("    {s} = add {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
                             }
                         } else {
-                            self.out.writer().print("    {s} = {s}\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
                         }
                         if (self.storedIdentifierNeedsRelease(assign.value, target_ty)) {
-                            try self.transferResultSlotValueState(target_name, val_reg, true);
-                            try self.markConsumedBinding(val_reg);
+                            try self.transferResultSlotValueState(target_name, stored_val_reg, true);
+                            try self.markConsumedBinding(stored_val_reg);
                         }
                         _ = self.consumed_bindings.remove(target_name);
                     }

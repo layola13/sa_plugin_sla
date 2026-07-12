@@ -22,6 +22,39 @@ pub fn planFunctionExitCleanup(cleanup_name: []const u8, result_expr: *const ast
     return if (std.mem.eql(u8, cleanup_name, result_name)) .transfer_result else .release;
 }
 
+pub fn macroParamConsumesValue(body: []const *ast.Node, name: []const u8) bool {
+    for (body) |node| {
+        if (macroNodeConsumesValue(node, name)) return true;
+    }
+    return false;
+}
+
+fn macroNodeConsumesValue(node: *const ast.Node, name: []const u8) bool {
+    return switch (node.*) {
+        .move_expr => |move| move.expr.* == .identifier and std.mem.eql(u8, move.expr.identifier, name),
+        .release_stmt => |release| std.mem.eql(u8, release.var_name, name),
+        .block_stmt => |block| macroParamConsumesValue(block.body, name),
+        .if_expr => |ife| macroParamConsumesValue(ife.then_block, name) or
+            (if (ife.else_block) |else_block| macroParamConsumesValue(else_block, name) else false),
+        .switch_expr => |swe| blk: {
+            for (swe.cases) |case| if (macroParamConsumesValue(case.body, name)) break :blk true;
+            break :blk false;
+        },
+        .match_expr => |mat| blk: {
+            for (mat.cases) |case| if (macroParamConsumesValue(case.body, name)) break :blk true;
+            break :blk false;
+        },
+        .unsafe_expr => |unsafe_expr| macroParamConsumesValue(unsafe_expr.body, name),
+        .for_stmt => |for_stmt| macroParamConsumesValue(for_stmt.body, name),
+        .while_stmt => |while_stmt| macroParamConsumesValue(while_stmt.body, name),
+        .expr_stmt => |expr| macroNodeConsumesValue(expr, name),
+        .assign_stmt => |assign| macroNodeConsumesValue(assign.value, name),
+        .let_stmt => |let| macroNodeConsumesValue(let.value, name),
+        .return_stmt => |ret| if (ret.value) |value| macroNodeConsumesValue(value, name) else false,
+        else => false,
+    };
+}
+
 pub const ValueState = enum {
     uninitialized,
     active,
@@ -61,4 +94,15 @@ pub fn intersectLiveBranchValueStates(states: []const ValueState) ValueState {
     if (all_same) return first;
     if (has_uninitialized) return .uninitialized;
     return .consumed;
+}
+
+test "user macro value consumption follows nested move expressions" {
+    var value = ast.Node{ .identifier = "value" };
+    var moved = ast.Node{ .move_expr = .{ .expr = &value } };
+    var target = ast.Node{ .identifier = "out" };
+    var assign = ast.Node{ .assign_stmt = .{ .target = &target, .value = &moved } };
+    var block = ast.Node{ .block_stmt = .{ .body = &.{&assign} } };
+
+    try std.testing.expect(macroParamConsumesValue(&.{&block}, "value"));
+    try std.testing.expect(!macroParamConsumesValue(&.{&block}, "out"));
 }

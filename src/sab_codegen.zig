@@ -7743,6 +7743,12 @@ pub const Codegen = struct {
         return dst;
     }
 
+    fn genMacroMove(self: *Codegen, move: ast.MoveExpr, ctx: *MacroExpansionContext) anyerror!u32 {
+        const source = try self.genMacroExpr(move.expr, ctx);
+        try self.markConsumed(source);
+        return source;
+    }
+
     fn genMacroBinary(self: *Codegen, bin: ast.BinaryExpr, ctx: *MacroExpansionContext) anyerror!u32 {
         const lhs = try self.genMacroExpr(bin.left, ctx);
         const rhs = try self.genMacroExpr(bin.right, ctx);
@@ -8178,7 +8184,7 @@ pub const Codegen = struct {
             .cast_expr => |cast| try self.genMacroCast(cast, ctx),
             .borrow_expr => |borrow| try self.genMacroBorrow(borrow, ctx),
             .deref_expr => |deref| try self.genMacroDeref(expr, deref, ctx),
-            .move_expr => |move| try self.genMacroExpr(move.expr, ctx),
+            .move_expr => |move| try self.genMacroMove(move, ctx),
             else => try self.genExpr(expr),
         };
     }

@@ -4319,6 +4319,7 @@ test "sla module table shares imported type scan surfaces across modules" {
     const left_imports = try resolveImportFiles(allocator, ".", "left.sla", "main.sla");
     const left = try modules.getOrParse(left_imports[0]);
     try std.testing.expectEqual(@as(usize, 1), modules.importTypeScanCacheCount());
+    try std.testing.expectEqual(@as(usize, 1), modules.resolvedImportSourceCacheHitCount());
     var left_has_shared = false;
     for (left.known_types) |name| left_has_shared = left_has_shared or std.mem.eql(u8, name, "SharedThing");
     try std.testing.expect(left_has_shared);
@@ -4327,6 +4328,7 @@ test "sla module table shares imported type scan surfaces across modules" {
     const right = try modules.getOrParse(right_imports[0]);
     try std.testing.expectEqual(@as(usize, 1), modules.importTypeScanCacheCount());
     try std.testing.expectEqual(@as(usize, 1), modules.importTypeScanCacheHitCount());
+    try std.testing.expectEqual(@as(usize, 2), modules.resolvedImportSourceCacheHitCount());
     var right_has_shared = false;
     for (right.known_types) |name| right_has_shared = right_has_shared or std.mem.eql(u8, name, "SharedThing");
     try std.testing.expect(right_has_shared);

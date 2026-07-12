@@ -299,6 +299,7 @@ pub const SlaModuleTable = struct {
     modules: std.StringHashMap(*SlaModule),
     import_type_scan_cache: parser_mod.ImportTypeScanCache,
     import_type_scan_cache_hits: usize,
+    resolved_import_source_cache_hits: usize,
     parse_options: parser_mod.Parser.Options,
 
     pub fn init(allocator: std.mem.Allocator) SlaModuleTable {
@@ -313,6 +314,7 @@ pub const SlaModuleTable = struct {
             .modules = std.StringHashMap(*SlaModule).init(allocator),
             .import_type_scan_cache = parser_mod.ImportTypeScanCache.init(allocator),
             .import_type_scan_cache_hits = 0,
+            .resolved_import_source_cache_hits = 0,
             .parse_options = parse_options,
         };
     }
@@ -360,10 +362,40 @@ pub const SlaModuleTable = struct {
         return self.import_type_scan_cache_hits;
     }
 
+    pub fn resolvedImportSourceCacheHitCount(self: *const SlaModuleTable) usize {
+        return self.resolved_import_source_cache_hits;
+    }
+
+    fn cachedPlainSlaImport(self: *SlaModuleTable, base_dir: []const u8, import_path: []const u8, exclude_path: []const u8) !?ResolvedImport {
+        if (!std.mem.endsWith(u8, import_path, ".sla") or
+            plugin_imports.isGlobImportPath(import_path) or
+            plugin_imports.isSlaStdImport(import_path) or
+            plugin_imports.isSaStdImport(import_path)) return null;
+
+        const candidate = if (std.fs.path.isAbsolute(import_path))
+            try self.allocator.dupe(u8, import_path)
+        else
+            try std.fs.path.join(self.allocator, &.{ base_dir, import_path });
+        const canonical_path = std.fs.cwd().realpathAlloc(self.allocator, candidate) catch return null;
+        if (std.mem.eql(u8, canonical_path, exclude_path)) return null;
+        const surface = self.import_type_scan_cache.get(canonical_path) orelse return null;
+        if (!surface.complete) return null;
+        self.resolved_import_source_cache_hits += 1;
+        return .{
+            .path = canonical_path,
+            .output_path = candidate,
+            .source = surface.source,
+        };
+    }
+
     pub fn resolveModuleImports(self: *SlaModuleTable, module_path: []const u8, base_dir: []const u8, decls: []const *ast.Node) ![]const ResolvedImport {
         var imports = std.ArrayList(ResolvedImport).init(self.allocator);
         for (decls) |decl| {
             if (decl.* != .import_decl) continue;
+            if (try self.cachedPlainSlaImport(base_dir, decl.import_decl.path, module_path)) |cached| {
+                try imports.append(cached);
+                continue;
+            }
             const resolved = try resolveImportFiles(self.allocator, base_dir, decl.import_decl.path, module_path);
             try imports.appendSlice(resolved);
         }

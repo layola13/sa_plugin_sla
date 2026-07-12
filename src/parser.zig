@@ -22,6 +22,8 @@ pub const ParserError = error{
 pub const ImportTypeSurface = struct {
     types: []const []const u8,
     enums: []const []const u8,
+    source: []const u8,
+    complete: bool,
 };
 
 pub const ImportTypeScanCache = std.StringHashMap(ImportTypeSurface);
@@ -1326,7 +1328,12 @@ pub const Parser = struct {
         }
         // Insert a cycle guard before parsing. The completed surface replaces it
         // below; recursive imports of this path observe an empty surface.
-        try self.import_type_scan_cache.put(canonical_path, .{ .types = &.{}, .enums = &.{} });
+        try self.import_type_scan_cache.put(canonical_path, .{
+            .types = &.{},
+            .enums = &.{},
+            .source = &.{},
+            .complete = false,
+        });
 
         const source = std.fs.cwd().readFileAlloc(self.allocator, canonical_path, 16 * 1024 * 1024) catch return;
         const expanded_source = source_expand.expand(self.allocator, source) catch return;
@@ -1353,6 +1360,8 @@ pub const Parser = struct {
         const surface = ImportTypeSurface{
             .types = try self.allocator.dupe([]const u8, sub.known_types.items),
             .enums = try self.allocator.dupe([]const u8, sub.known_enums.items),
+            .source = source,
+            .complete = true,
         };
         try self.import_type_scan_cache.put(canonical_path, surface);
         try self.mergeKnownTypeSurface(surface);

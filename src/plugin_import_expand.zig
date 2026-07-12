@@ -915,6 +915,10 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
             "[sla-profile] import type scan cache entries={d} hits={d}\n",
             .{ modules.importTypeScanCacheCount(), modules.importTypeScanCacheHitCount() },
         );
+        std.debug.print(
+            "[sla-profile] import source reuse hits={d}\n",
+            .{modules.resolvedImportSourceCacheHitCount()},
+        );
     }
 
     for (program.program.decls) |decl| {

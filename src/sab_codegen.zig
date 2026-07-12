@@ -2591,6 +2591,10 @@ pub const Codegen = struct {
 
     fn loadResultSlotTransferredValue(self: *Codegen, dst: u32, slot: u32, target_ty: *const ast.Type) !void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
+        switch (lowering_rules.planResultSlotLoadLifecycle(plan)) {
+            .no_value_state => return,
+            .load_value_state => {},
+        }
         switch (lowering_rules.planResultSlotRefCellLoad(
             plan,
             self.result_slot_refcell_handles.contains(slot),

@@ -1773,6 +1773,11 @@ pub const ResultSlotRefCellLoadAction = enum {
     release_empty_companion,
 };
 
+pub const ResultSlotLoadLifecycleAction = enum {
+    load_value_state,
+    no_value_state,
+};
+
 pub const RefCellHandleBindingAction = enum {
     ordinary_binding,
     bind_borrow_handle,
@@ -1851,6 +1856,10 @@ pub fn planResultSlotRefCellLoad(
     if (slot_has_refcell_handle) return .restore_borrow_handle_companion;
     if (slot_has_refcell_companion) return .release_empty_companion;
     return .transfer_value_state;
+}
+
+pub fn planResultSlotLoadLifecycle(transfer_plan: ResultSlotTransferPlan) ResultSlotLoadLifecycleAction {
+    return if (transfer_plan.transfers_value) .load_value_state else .no_value_state;
 }
 
 pub fn planRefCellHandleBinding(source_has_refcell_handle: bool) RefCellHandleBindingAction {
@@ -3557,6 +3566,7 @@ test "shared lowering rules classify result-slot value transfer" {
     const primitive_plan = planResultSlotTransfer(&primitive_ty);
     try std.testing.expect(!primitive_plan.transfers_value);
     try std.testing.expect(!primitive_plan.needs_refcell_companion);
+    try std.testing.expectEqual(ResultSlotLoadLifecycleAction.no_value_state, planResultSlotLoadLifecycle(primitive_plan));
     try std.testing.expectEqual(ResultSlotRefCellStoreAction.transfer_value_state, planResultSlotRefCellStore(primitive_plan, false));
     try std.testing.expectEqual(ResultSlotRefCellStoreAction.transfer_value_state, planResultSlotRefCellStore(primitive_plan, true));
     try std.testing.expectEqual(ResultSlotRefCellLoadAction.transfer_value_state, planResultSlotRefCellLoad(primitive_plan, false, false));
@@ -3565,6 +3575,7 @@ test "shared lowering rules classify result-slot value transfer" {
     const borrow_plan = planResultSlotTransfer(&borrow_primitive_ty);
     try std.testing.expect(borrow_plan.transfers_value);
     try std.testing.expect(borrow_plan.needs_refcell_companion);
+    try std.testing.expectEqual(ResultSlotLoadLifecycleAction.load_value_state, planResultSlotLoadLifecycle(borrow_plan));
     try std.testing.expectEqual(ResultSlotRefCellStoreAction.transfer_value_state, planResultSlotRefCellStore(borrow_plan, false));
     try std.testing.expectEqual(ResultSlotRefCellStoreAction.store_borrow_handle_companion, planResultSlotRefCellStore(borrow_plan, true));
     try std.testing.expectEqual(ResultSlotRefCellLoadAction.transfer_value_state, planResultSlotRefCellLoad(borrow_plan, false, false));

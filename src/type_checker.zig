@@ -2663,89 +2663,97 @@ pub const TypeChecker = struct {
         try self.checkBlock(macro_decl.body, scope, void_ty, null, null);
     }
 
-    fn macroParamConsumesValue(self: *TypeChecker, macro_decl: *const ast.MacroDecl, param_index: usize) TypeError!bool {
+    fn macroParamConsumption(self: *TypeChecker, macro_decl: *const ast.MacroDecl, param_index: usize) TypeError!control_flow_rules.MacroParamConsumption {
         var visiting = std.AutoHashMap(MacroConsumptionKey, void).init(self.allocator);
         defer visiting.deinit();
-        return try self.macroParamConsumesValueRecursive(macro_decl, param_index, &visiting);
+        return try self.macroParamConsumptionRecursive(macro_decl, param_index, &visiting);
     }
 
-    fn macroParamConsumesValueRecursive(
+    fn macroParamConsumptionRecursive(
         self: *TypeChecker,
         macro_decl: *const ast.MacroDecl,
         param_index: usize,
         visiting: *std.AutoHashMap(MacroConsumptionKey, void),
-    ) TypeError!bool {
-        if (param_index >= macro_decl.params.len) return false;
+    ) TypeError!control_flow_rules.MacroParamConsumption {
+        if (param_index >= macro_decl.params.len) return .never;
         const key = MacroConsumptionKey{ .macro_decl = macro_decl, .param_index = param_index };
-        if (visiting.contains(key)) return false;
+        if (visiting.contains(key)) return .never;
         try visiting.put(key, {});
         defer _ = visiting.remove(key);
 
         const name = macro_decl.params[param_index];
-        if (control_flow_rules.macroParamConsumesValue(macro_decl.body, name)) return true;
+        const direct = control_flow_rules.macroParamConsumption(macro_decl.body, name);
+        if (direct != .never) return direct;
+        var effect: control_flow_rules.MacroParamConsumption = .never;
         for (macro_decl.body) |node| {
-            if (try self.macroNodeForwardsConsumption(node, name, visiting)) return true;
+            effect = control_flow_rules.sequenceMacroParamConsumption(effect, try self.macroNodeForwardedConsumption(node, name, visiting));
         }
-        return false;
+        return effect;
     }
 
-    fn macroNodeForwardsConsumption(
+    fn macroNodeForwardedConsumption(
         self: *TypeChecker,
         node: *const ast.Node,
         name: []const u8,
         visiting: *std.AutoHashMap(MacroConsumptionKey, void),
-    ) TypeError!bool {
+    ) TypeError!control_flow_rules.MacroParamConsumption {
         return switch (node.*) {
             .call_expr => |call| blk: {
+                var effect: control_flow_rules.MacroParamConsumption = .never;
                 if (self.macros.get(call.func_name)) |nested| {
                     for (nested.params, call.args, 0..) |_, arg, index| {
                         const root = rootIdentifier(arg) orelse continue;
                         if (!std.mem.eql(u8, root, name)) continue;
-                        if (try self.macroParamConsumesValueRecursive(nested, index, visiting)) break :blk true;
+                        effect = control_flow_rules.sequenceMacroParamConsumption(effect, try self.macroParamConsumptionRecursive(nested, index, visiting));
                     }
                 }
-                for (call.args) |arg| if (try self.macroNodeForwardsConsumption(arg, name, visiting)) break :blk true;
-                break :blk false;
+                for (call.args) |arg| effect = control_flow_rules.sequenceMacroParamConsumption(effect, try self.macroNodeForwardedConsumption(arg, name, visiting));
+                break :blk effect;
             },
-            .expr_stmt => |expr| self.macroNodeForwardsConsumption(expr, name, visiting),
-            .assign_stmt => |assign| self.macroNodeForwardsConsumption(assign.value, name, visiting),
-            .let_stmt => |let| self.macroNodeForwardsConsumption(let.value, name, visiting),
-            .return_stmt => |ret| if (ret.value) |value| self.macroNodeForwardsConsumption(value, name, visiting) else false,
+            .expr_stmt => |expr| self.macroNodeForwardedConsumption(expr, name, visiting),
+            .assign_stmt => |assign| self.macroNodeForwardedConsumption(assign.value, name, visiting),
+            .let_stmt => |let| self.macroNodeForwardedConsumption(let.value, name, visiting),
+            .return_stmt => |ret| if (ret.value) |value| self.macroNodeForwardedConsumption(value, name, visiting) else .never,
             .block_stmt => |block| blk: {
-                for (block.body) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
-                break :blk false;
+                var effect: control_flow_rules.MacroParamConsumption = .never;
+                for (block.body) |child| effect = control_flow_rules.sequenceMacroParamConsumption(effect, try self.macroNodeForwardedConsumption(child, name, visiting));
+                break :blk effect;
             },
             .if_expr => |ife| blk: {
-                if (try self.macroNodeForwardsConsumption(ife.cond, name, visiting)) break :blk true;
-                for (ife.then_block) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
+                const cond = try self.macroNodeForwardedConsumption(ife.cond, name, visiting);
+                var then_effect: control_flow_rules.MacroParamConsumption = .never;
+                for (ife.then_block) |child| then_effect = control_flow_rules.sequenceMacroParamConsumption(then_effect, try self.macroNodeForwardedConsumption(child, name, visiting));
+                var else_effect: control_flow_rules.MacroParamConsumption = .never;
                 if (ife.else_block) |else_block| {
-                    for (else_block) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
+                    for (else_block) |child| else_effect = control_flow_rules.sequenceMacroParamConsumption(else_effect, try self.macroNodeForwardedConsumption(child, name, visiting));
                 }
-                break :blk false;
+                break :blk control_flow_rules.sequenceMacroParamConsumption(cond, control_flow_rules.branchMacroParamConsumption(then_effect, else_effect));
             },
-            .binary_expr => |binary| try self.macroNodeForwardsConsumption(binary.left, name, visiting) or
-                try self.macroNodeForwardsConsumption(binary.right, name, visiting),
-            .field_expr => |field| self.macroNodeForwardsConsumption(field.expr, name, visiting),
-            .index_expr => |index| try self.macroNodeForwardsConsumption(index.target, name, visiting) or
-                try self.macroNodeForwardsConsumption(index.index, name, visiting),
-            .cast_expr => |cast| self.macroNodeForwardsConsumption(cast.expr, name, visiting),
-            .borrow_expr => |borrow| self.macroNodeForwardsConsumption(borrow.expr, name, visiting),
-            .move_expr => |move| self.macroNodeForwardsConsumption(move.expr, name, visiting),
-            .deref_expr => |deref| self.macroNodeForwardsConsumption(deref.expr, name, visiting),
-            .try_expr => |try_expr| self.macroNodeForwardsConsumption(try_expr.expr, name, visiting),
-            .await_expr => |await_expr| self.macroNodeForwardsConsumption(await_expr.expr, name, visiting),
+            .binary_expr => |binary| control_flow_rules.sequenceMacroParamConsumption(try self.macroNodeForwardedConsumption(binary.left, name, visiting), try self.macroNodeForwardedConsumption(binary.right, name, visiting)),
+            .field_expr => |field| self.macroNodeForwardedConsumption(field.expr, name, visiting),
+            .index_expr => |index| control_flow_rules.sequenceMacroParamConsumption(try self.macroNodeForwardedConsumption(index.target, name, visiting), try self.macroNodeForwardedConsumption(index.index, name, visiting)),
+            .cast_expr => |cast| self.macroNodeForwardedConsumption(cast.expr, name, visiting),
+            .borrow_expr => |borrow| self.macroNodeForwardedConsumption(borrow.expr, name, visiting),
+            .move_expr => |move| self.macroNodeForwardedConsumption(move.expr, name, visiting),
+            .deref_expr => |deref| self.macroNodeForwardedConsumption(deref.expr, name, visiting),
+            .try_expr => |try_expr| self.macroNodeForwardedConsumption(try_expr.expr, name, visiting),
+            .await_expr => |await_expr| self.macroNodeForwardedConsumption(await_expr.expr, name, visiting),
             .for_stmt => |for_stmt| blk: {
-                if (try self.macroNodeForwardsConsumption(for_stmt.start, name, visiting)) break :blk true;
-                if (for_stmt.end) |end| if (try self.macroNodeForwardsConsumption(end, name, visiting)) break :blk true;
-                for (for_stmt.body) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
-                break :blk false;
+                var effect = try self.macroNodeForwardedConsumption(for_stmt.start, name, visiting);
+                if (for_stmt.end) |end| effect = control_flow_rules.sequenceMacroParamConsumption(effect, try self.macroNodeForwardedConsumption(end, name, visiting));
+                var body_effect: control_flow_rules.MacroParamConsumption = .never;
+                for (for_stmt.body) |child| body_effect = control_flow_rules.sequenceMacroParamConsumption(body_effect, try self.macroNodeForwardedConsumption(child, name, visiting));
+                if (body_effect != .never) body_effect = .conditional;
+                break :blk control_flow_rules.sequenceMacroParamConsumption(effect, body_effect);
             },
             .while_stmt => |while_stmt| blk: {
-                if (try self.macroNodeForwardsConsumption(while_stmt.cond, name, visiting)) break :blk true;
-                for (while_stmt.body) |child| if (try self.macroNodeForwardsConsumption(child, name, visiting)) break :blk true;
-                break :blk false;
+                const cond = try self.macroNodeForwardedConsumption(while_stmt.cond, name, visiting);
+                var body_effect: control_flow_rules.MacroParamConsumption = .never;
+                for (while_stmt.body) |child| body_effect = control_flow_rules.sequenceMacroParamConsumption(body_effect, try self.macroNodeForwardedConsumption(child, name, visiting));
+                if (body_effect != .never) body_effect = .conditional;
+                break :blk control_flow_rules.sequenceMacroParamConsumption(cond, body_effect);
             },
-            else => false,
+            else => .never,
         };
     }
 
@@ -5217,7 +5225,12 @@ pub const TypeChecker = struct {
                         _ = try self.checkExpr(arg, scope);
                     }
                     for (mac.params, call.args, 0..) |_, arg, index| {
-                        if (!try self.macroParamConsumesValue(mac, index)) continue;
+                        const consumption = try self.macroParamConsumption(mac, index);
+                        if (consumption == .never) continue;
+                        if (consumption == .conditional) {
+                            self.setError("MacroConditionalConsume: macro `{s}` consumes parameter `{s}` only on some control-flow paths", .{ call.func_name, mac.params[index] });
+                            return TypeError.CompileError;
+                        }
                         if (arg.* != .identifier) continue;
                         const sym = scope.lookup(arg.identifier) orelse return TypeError.UndefinedVariable;
                         if (sym.state == .consumed) return TypeError.UseAfterMove;

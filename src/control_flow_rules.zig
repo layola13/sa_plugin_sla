@@ -22,36 +22,66 @@ pub fn planFunctionExitCleanup(cleanup_name: []const u8, result_expr: *const ast
     return if (std.mem.eql(u8, cleanup_name, result_name)) .transfer_result else .release;
 }
 
-pub fn macroParamConsumesValue(body: []const *ast.Node, name: []const u8) bool {
-    for (body) |node| {
-        if (macroNodeConsumesValue(node, name)) return true;
-    }
-    return false;
+pub const MacroParamConsumption = enum {
+    never,
+    always,
+    conditional,
+};
+
+pub fn sequenceMacroParamConsumption(left: MacroParamConsumption, right: MacroParamConsumption) MacroParamConsumption {
+    if (left == .always or right == .always) return .always;
+    if (left == .conditional or right == .conditional) return .conditional;
+    return .never;
 }
 
-fn macroNodeConsumesValue(node: *const ast.Node, name: []const u8) bool {
+pub fn branchMacroParamConsumption(left: MacroParamConsumption, right: MacroParamConsumption) MacroParamConsumption {
+    if (left == right) return left;
+    return .conditional;
+}
+
+pub fn macroParamConsumption(body: []const *ast.Node, name: []const u8) MacroParamConsumption {
+    var effect: MacroParamConsumption = .never;
+    for (body) |node| {
+        effect = sequenceMacroParamConsumption(effect, macroNodeConsumption(node, name));
+    }
+    return effect;
+}
+
+pub fn macroParamConsumesValue(body: []const *ast.Node, name: []const u8) bool {
+    return macroParamConsumption(body, name) != .never;
+}
+
+fn macroNodeConsumption(node: *const ast.Node, name: []const u8) MacroParamConsumption {
     return switch (node.*) {
-        .move_expr => |move| move.expr.* == .identifier and std.mem.eql(u8, move.expr.identifier, name),
-        .release_stmt => |release| std.mem.eql(u8, release.var_name, name),
-        .block_stmt => |block| macroParamConsumesValue(block.body, name),
-        .if_expr => |ife| macroParamConsumesValue(ife.then_block, name) or
-            (if (ife.else_block) |else_block| macroParamConsumesValue(else_block, name) else false),
+        .move_expr => |move| if (move.expr.* == .identifier and std.mem.eql(u8, move.expr.identifier, name)) .always else macroNodeConsumption(move.expr, name),
+        .release_stmt => |release| if (std.mem.eql(u8, release.var_name, name)) .always else .never,
+        .block_stmt => |block| macroParamConsumption(block.body, name),
+        .if_expr => |ife| blk: {
+            const cond = macroNodeConsumption(ife.cond, name);
+            const then_effect = macroParamConsumption(ife.then_block, name);
+            const else_effect = if (ife.else_block) |else_block| macroParamConsumption(else_block, name) else .never;
+            break :blk sequenceMacroParamConsumption(cond, branchMacroParamConsumption(then_effect, else_effect));
+        },
         .switch_expr => |swe| blk: {
-            for (swe.cases) |case| if (macroParamConsumesValue(case.body, name)) break :blk true;
-            break :blk false;
+            if (swe.cases.len == 0) break :blk .never;
+            var effect = macroParamConsumption(swe.cases[0].body, name);
+            for (swe.cases[1..]) |case| effect = branchMacroParamConsumption(effect, macroParamConsumption(case.body, name));
+            break :blk effect;
         },
         .match_expr => |mat| blk: {
-            for (mat.cases) |case| if (macroParamConsumesValue(case.body, name)) break :blk true;
-            break :blk false;
+            if (mat.cases.len == 0) break :blk .never;
+            var effect = macroParamConsumption(mat.cases[0].body, name);
+            for (mat.cases[1..]) |case| effect = branchMacroParamConsumption(effect, macroParamConsumption(case.body, name));
+            break :blk effect;
         },
-        .unsafe_expr => |unsafe_expr| macroParamConsumesValue(unsafe_expr.body, name),
-        .for_stmt => |for_stmt| macroParamConsumesValue(for_stmt.body, name),
-        .while_stmt => |while_stmt| macroParamConsumesValue(while_stmt.body, name),
-        .expr_stmt => |expr| macroNodeConsumesValue(expr, name),
-        .assign_stmt => |assign| macroNodeConsumesValue(assign.value, name),
-        .let_stmt => |let| macroNodeConsumesValue(let.value, name),
-        .return_stmt => |ret| if (ret.value) |value| macroNodeConsumesValue(value, name) else false,
-        else => false,
+        .unsafe_expr => |unsafe_expr| macroParamConsumption(unsafe_expr.body, name),
+        .for_stmt => |for_stmt| if (macroParamConsumption(for_stmt.body, name) == .never) .never else .conditional,
+        .while_stmt => |while_stmt| if (macroParamConsumption(while_stmt.body, name) == .never) .never else .conditional,
+        .expr_stmt => |expr| macroNodeConsumption(expr, name),
+        .assign_stmt => |assign| macroNodeConsumption(assign.value, name),
+        .let_stmt => |let| macroNodeConsumption(let.value, name),
+        .return_stmt => |ret| if (ret.value) |value| macroNodeConsumption(value, name) else .never,
+        else => .never,
     };
 }
 
@@ -105,4 +135,18 @@ test "user macro value consumption follows nested move expressions" {
 
     try std.testing.expect(macroParamConsumesValue(&.{&block}, "value"));
     try std.testing.expect(!macroParamConsumesValue(&.{&block}, "out"));
+}
+
+test "user macro consumption distinguishes conditional branches and loops" {
+    var value = ast.Node{ .identifier = "value" };
+    var moved = ast.Node{ .move_expr = .{ .expr = &value } };
+    var moved_stmt = ast.Node{ .expr_stmt = &moved };
+    var cond = ast.Node{ .identifier = "cond" };
+    var conditional = ast.Node{ .if_expr = .{ .cond = &cond, .then_block = &.{&moved_stmt}, .else_block = null } };
+    var both = ast.Node{ .if_expr = .{ .cond = &cond, .then_block = &.{&moved_stmt}, .else_block = &.{&moved_stmt} } };
+    var loop = ast.Node{ .while_stmt = .{ .cond = &cond, .body = &.{&moved_stmt} } };
+
+    try std.testing.expectEqual(MacroParamConsumption.conditional, macroParamConsumption(&.{&conditional}, "value"));
+    try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&both}, "value"));
+    try std.testing.expectEqual(MacroParamConsumption.conditional, macroParamConsumption(&.{&loop}, "value"));
 }

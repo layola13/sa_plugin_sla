@@ -129,6 +129,14 @@ macro forwarding_move_box_macro(out, value) {
     move_box_macro(out, value);
 }
 
+macro branch_move_box_macro(out, value, cond) {
+    if cond {
+        out = ^value;
+    } else {
+        out = ^value;
+    }
+}
+
 fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
     let borrowed: &DirectMacroCounter = cell.borrow_mut();
     borrowed.value = borrowed.value + 1;
@@ -250,6 +258,13 @@ fn macro_nested_move_box_direct() -> i64 {
     *destination
 }
 
+fn macro_branch_move_box_direct(cond: bool) -> i64 {
+    let source = Box::new(41i64);
+    let destination = Box::new(1i64);
+    branch_move_box_macro(destination, source, cond);
+    *destination
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -265,4 +280,6 @@ fn macro_nested_move_box_direct() -> i64 {
     if macro_enum_unit_literal_direct() != 7 { panic(31816); };
     if macro_move_box_direct() != 42 { panic(31817); };
     if macro_nested_move_box_direct() != 40 { panic(31818); };
+    if macro_branch_move_box_direct(true) != 41 { panic(31819); };
+    if macro_branch_move_box_direct(false) != 41 { panic(31820); };
 }

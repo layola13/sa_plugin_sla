@@ -7914,13 +7914,11 @@ pub const Codegen = struct {
     fn plannedCallArgReleaseReg(self: *Codegen, lowered_arg: LoweredCallArg) ?[]const u8 {
         const release_after_call = lowered_arg.release_reg != null or lowered_arg.release_after_call;
         const candidate = lowered_arg.release_reg orelse lowered_arg.reg;
-        return switch (lowering_rules.planRefCellCallArgLifecycle(
+        const lifecycle = lowering_rules.planRefCellCallArgLifecycle(
             release_after_call,
             self.refcell_borrow_handles.contains(candidate),
-        )) {
-            .keep => null,
-            .release_value, .release_borrow_handle => candidate,
-        };
+        );
+        return if (lifecycle.shouldRelease()) candidate else null;
     }
 
     const CallArgLoweringOptions = struct {

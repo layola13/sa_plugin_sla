@@ -11354,13 +11354,11 @@ pub const Codegen = struct {
 
     fn plannedCallArgReleaseReg(self: *Codegen, candidate: ?u32) ?u32 {
         const carries_refcell_borrow_handle = if (candidate) |reg| self.refcell_borrow_values.contains(reg) else false;
-        return switch (lowering_rules.planRefCellCallArgLifecycle(
+        const lifecycle = lowering_rules.planRefCellCallArgLifecycle(
             candidate != null,
             carries_refcell_borrow_handle,
-        )) {
-            .keep => null,
-            .release_value, .release_borrow_handle => candidate.?,
-        };
+        );
+        return if (lifecycle.shouldRelease()) candidate.? else null;
     }
 
     fn borrowAddressCallArgReleaseRegs(self: *Codegen, source: AddressSource, prefix: u8) ![]const u32 {

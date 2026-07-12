@@ -1787,6 +1787,14 @@ pub const RefCellCallArgLifecycleAction = enum {
     keep,
     release_value,
     release_borrow_handle,
+
+    pub fn shouldRelease(self: RefCellCallArgLifecycleAction) bool {
+        return self != .keep;
+    }
+
+    pub fn releasesBorrowHandle(self: RefCellCallArgLifecycleAction) bool {
+        return self == .release_borrow_handle;
+    }
 };
 
 pub const RefCellCompanionStoreCleanupPlan = struct {
@@ -4526,6 +4534,10 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expectEqual(RefCellCallArgLifecycleAction.keep, planRefCellCallArgLifecycle(false, true));
     try std.testing.expectEqual(RefCellCallArgLifecycleAction.release_value, planRefCellCallArgLifecycle(true, false));
     try std.testing.expectEqual(RefCellCallArgLifecycleAction.release_borrow_handle, planRefCellCallArgLifecycle(true, true));
+    try std.testing.expect(!planRefCellCallArgLifecycle(false, true).shouldRelease());
+    try std.testing.expect(planRefCellCallArgLifecycle(true, false).shouldRelease());
+    try std.testing.expect(!planRefCellCallArgLifecycle(true, false).releasesBorrowHandle());
+    try std.testing.expect(planRefCellCallArgLifecycle(true, true).releasesBorrowHandle());
 
     const companion_plain = planRefCellCompanionStoreCleanup(false, false, false);
     try std.testing.expect(companion_plain.consume_handle_value);

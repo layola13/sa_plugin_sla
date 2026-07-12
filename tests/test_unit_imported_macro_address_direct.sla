@@ -21,6 +21,30 @@ macro nested_imported_pair_write_outer(holder) {
     nested_imported_pair_write_inner(holder);
 }
 
+macro nested_imported_index_inner(out, values) {
+    out = SLA_IMPORTED_READ_I64(values[1]);
+}
+
+macro nested_imported_index_outer(out, values) {
+    nested_imported_index_inner(out, values);
+}
+
+macro nested_imported_index_write_inner(values) {
+    SLA_IMPORTED_WRITE_29_I64(values[1]);
+}
+
+macro nested_imported_index_write_outer(values) {
+    nested_imported_index_write_inner(values);
+}
+
+macro nested_imported_deref_inner(out, ptr) {
+    out = SLA_IMPORTED_READ_I64(*ptr) + 1;
+}
+
+macro nested_imported_deref_outer(out, ptr) {
+    nested_imported_deref_inner(out, ptr);
+}
+
 fn imported_macro_read_i64(value: &i64) -> i64 {
     *value
 }
@@ -109,6 +133,22 @@ fn nested_imported_macro_pair_field_write() -> i64 {
     holder.pair.left + holder.pair.right
 }
 
+fn nested_imported_macro_index_read_write() -> i64 {
+    let values: [i64; 3] = [3, 5, 7];
+    let before = 0i64;
+    nested_imported_index_outer(before, values);
+    nested_imported_index_write_outer(values);
+    before + values[1]
+}
+
+fn nested_imported_macro_deref_output() -> i64 {
+    let tail = 41i64;
+    let ptr = &tail;
+    let total = 0i64;
+    nested_imported_deref_outer(total, ptr);
+    total
+}
+
 @test "imported macro borrowed field address"() {
     if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
     if imported_macro_field_address() != 11 { panic(31901); };
@@ -152,4 +192,9 @@ fn nested_imported_macro_pair_field_write() -> i64 {
 @test "nested user macro preserves imported macro field context"() {
     if nested_imported_macro_pair_field_read() != 42 { panic(31910); };
     if nested_imported_macro_pair_field_write() != 42 { panic(31911); };
+}
+
+@test "nested user macro preserves imported macro index and deref context"() {
+    if nested_imported_macro_index_read_write() != 34 { panic(31912); };
+    if nested_imported_macro_deref_output() != 42 { panic(31913); };
 }

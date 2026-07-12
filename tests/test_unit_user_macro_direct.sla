@@ -190,7 +190,7 @@ macro match_option_macro(out, value, floor, ceiling) {
 
 macro match_result_macro(out, value) {
     out = match value {
-        Ok(inner) if direct_macro_guard_between(inner + 1, 40, 42) => { inner + 2 },
+        Ok(inner) if direct_macro_guard_between((inner + 1) as i64, 40, 42) => { inner + 2 },
         Ok(inner) => { 0 - inner },
         Err(error) => { 0 - error },
     };

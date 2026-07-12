@@ -515,6 +515,10 @@ pub fn scalarMatchGuardTempCount(guard: *const ast.Node) ?usize {
 
 fn scalarMatchGuardValueTempCount(value: *const ast.Node) ?usize {
     if (value.* == .identifier or (value.* == .literal and value.literal == .int_val)) return 0;
+    if (value.* == .cast_expr) {
+        if (value.cast_expr.ty.* != .primitive) return null;
+        return (scalarMatchGuardValueTempCount(value.cast_expr.expr) orelse return null) + 1;
+    }
     if (value.* != .binary_expr) return null;
     const bin = value.binary_expr;
     switch (bin.op) {
@@ -3928,6 +3932,11 @@ test "shared scalar match guard scratch planning" {
     const call_args = [_]*ast.Node{&adjusted};
     var adjusted_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &call_args } };
     try std.testing.expectEqual(@as(?usize, 2), scalarMatchGuardTempCount(&adjusted_call));
+    var i64_ty = ast.Type{ .primitive = .i64 };
+    var adjusted_cast = ast.Node{ .cast_expr = .{ .expr = &adjusted, .ty = &i64_ty } };
+    const cast_call_args = [_]*ast.Node{&adjusted_cast};
+    var cast_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &cast_call_args } };
+    try std.testing.expectEqual(@as(?usize, 3), scalarMatchGuardTempCount(&cast_call));
 }
 
 test "shared executor task buffer classification" {

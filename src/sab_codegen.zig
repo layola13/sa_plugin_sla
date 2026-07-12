@@ -13033,6 +13033,28 @@ pub const Codegen = struct {
     }
 
     fn genScalarMatchGuardValue(self: *Codegen, value: *ast.Node, scratch: []const u32, cursor: *usize) anyerror!u32 {
+        if (value.* == .cast_expr) {
+            const cast = value.cast_expr;
+            if (cast.expr.* == .literal and cast.expr.literal == .int_val) {
+                if (cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;
+                const dst = scratch[cursor.*];
+                cursor.* += 1;
+                try self.emitAssignImm(dst, cast.expr.literal.int_val);
+                return dst;
+            }
+            const source = if (cast.expr.* == .identifier)
+                self.localReg(cast.expr.identifier) orelse return Error.UnsupportedSabDirectFeature
+            else
+                try self.genScalarMatchGuardValue(cast.expr, scratch, cursor);
+            if (cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;
+            const dst = scratch[cursor.*];
+            cursor.* += 1;
+            const dst_ty = try primType(cast.ty);
+            if (dst_ty == .i64 or dst_ty == .u64) {
+                try self.emitOp(dst, .add, .{ .reg = source }, .{ .imm_i64 = 0 });
+            } else return Error.UnsupportedSabDirectFeature;
+            return dst;
+        }
         if (value.* != .binary_expr) return Error.UnsupportedSabDirectFeature;
         const bin = value.binary_expr;
         const lhs: inst.Operand = if (bin.left.* == .identifier)

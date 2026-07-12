@@ -606,3 +606,18 @@ root shortcut 新增一个窄 `KnownOpenCollectionState`：只从已知 snapshot
 随后 snapshot-derived base collection state 明确保留 primary active/open file，使 `base -> add loose -> update inferred -> close loose -> update` 复用同一状态机；状态单测新增 root count `1 -> 0` 及 loose contains 断言。`set_file_default_for_open_file(..., "/dev/null/inferred")` 在 state 已证明该 open file 属于 inferred roots 时也记录 inferred default fact，复用既有 `ProjectLookup` 字面量折叠。未知 snapshot-id 仍不参与字段替换。
 
 聚焦状态机和 cached inferred lookup 回归、build 7/7、官方 dev install 均通过，真实全文件保持 3/3。连续 strict 10 秒仍约 10.02-10.03 秒，因此整个 issue 继续打开；此子切片只声明 base 单-loose/default 事实覆盖，不使用噪声较大的长窗口作性能收益声明。
+
+## 2026-07-12 closure: project shortcuts run only before typecheck
+
+最终根因不是还缺一条 project/session 特例，而是 `pruneUnreachableTestFunctionDeclsBeforeTypeCheck` 同时用于 pre-typecheck 和 post-typecheck 两个阶段，却在每次调用时都执行 `rewriteProjectSnapshotTestShortcuts`。第二次调用发生在 `tc.checkProgram()` 之后：它重复扫描和改写 root AST，既增加约数秒开销，也可能删除/替换 TypeChecker 已记录节点，导致 direct SAB `MissingType`。
+
+该函数现在显式接收 `rewrite_project_shortcuts`：pre-typecheck 调用为 true，post-typecheck syntactic reachable filter 为 false。post 阶段仍执行可达声明/known-branch 裁剪，但不再改变 project shortcut AST。新增 `sla post-typecheck pruning does not rerun project shortcuts`，证明 false 模式保留 shortcut candidate call；现有 pre-typecheck pruning 调用全部显式传 true。
+
+最终 installed strict SAB 证据：
+
+- multi-configured 连续三次通过 3/3：5.64s、7.17s、7.29s；profile 模式也在 5.97s 内通过。
+- background update/warm/wait、collection open/default、config registry、snapshot config registry 均在各自 strict 10 秒门禁通过。
+- 历史 API open/update 文件已不在当前下游测试树中，不能作为现存门禁。
+- focused post-typecheck mode 回归、inferred result regression、build 7/7、官方 dev install/help 均通过。
+
+因此本 issue 关闭。后续 project/session surface 扩展属于新功能或一般优化，不再归入本 timeout issue。

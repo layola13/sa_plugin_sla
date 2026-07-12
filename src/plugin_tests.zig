@@ -1246,6 +1246,33 @@ test "sla test codegen does not root imported const initializers" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla post-typecheck pruning does not rerun project shortcuts" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\fn empty_session() -> int { return 0; }
+        \\fn session_parse_file(state: int, text: ptr, text_len: int) -> int { return state + text_len; }
+        \\@test "keep project shortcut candidate"() {
+        \\    let state = session_parse_file(empty_session(), "", 0);
+        \\    if state != 0 { panic(20001); };
+        \\}
+    ;
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true, false);
+
+    for (prog.program.decls) |decl| {
+        if (decl.* != .test_decl) continue;
+        try std.testing.expect(decl.test_decl.body.len > 0);
+        try std.testing.expect(decl.test_decl.body[0].* == .let_stmt);
+        try std.testing.expect(decl.test_decl.body[0].let_stmt.value.* == .call_expr);
+        try std.testing.expect(std.mem.endsWith(u8, decl.test_decl.body[0].let_stmt.value.call_expr.func_name, "session_parse_file"));
+        return;
+    }
+    return error.TestUnexpectedResult;
+}
+
 test "sla pre-typecheck pruning keeps local function pointer callees" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1265,7 +1292,7 @@ test "sla pre-typecheck pruning keeps local function pointer callees" {
     var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
     const prog = try parser.parseProgram();
     try pruneTestsByFilter(allocator, prog, "fnptr");
-    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true);
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true, true);
 
     var saw_binding = false;
     for (prog.program.decls) |decl| {
@@ -1299,7 +1326,7 @@ test "sla pre-typecheck pruning keeps release-only bindings" {
     var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
     const prog = try parser.parseProgram();
     try pruneTestsByFilter(allocator, prog, "release");
-    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true);
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true, true);
 
     var saw_binding = false;
     for (prog.program.decls) |decl| {
@@ -1903,7 +1930,7 @@ test "sla pre-typecheck pruning keeps for-in protocol methods" {
     var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
     const prog = try parser.parseProgram();
     try pruneTestsByFilter(allocator, prog, "protocol");
-    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true);
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, prog, null, null, true, true);
 
     var method_count: usize = 0;
     for (prog.program.decls) |decl| {
@@ -1976,7 +2003,7 @@ test "sla post-typecheck prune removes statically empty import scan branches" {
     var no_import_parser = parser_mod.Parser.initWithDir(allocator, source, ".");
     const no_import_prog = try no_import_parser.parseProgram();
     try pruneTestsByFilter(allocator, no_import_prog, "no import text");
-    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, no_import_prog, null, null, true);
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, no_import_prog, null, null, true, true);
 
     var saw_no_import_program_new = false;
     var saw_no_import_scan = false;
@@ -1994,7 +2021,7 @@ test "sla post-typecheck prune removes statically empty import scan branches" {
     var import_parser = parser_mod.Parser.initWithDir(allocator, source, ".");
     const import_prog = try import_parser.parseProgram();
     try pruneTestsByFilter(allocator, import_prog, "import text");
-    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, import_prog, null, null, true);
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, import_prog, null, null, true, true);
 
     var saw_import_program_new = false;
     var saw_import_scan = false;
@@ -2056,7 +2083,7 @@ test "sla test codegen prunes known struct field branches" {
     var false_parser = parser_mod.Parser.initWithDir(allocator, source, ".");
     const false_prog = try false_parser.parseProgram();
     try pruneTestsByFilter(allocator, false_prog, "false field");
-    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, false_prog, null, null, true);
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, false_prog, null, null, true, true);
 
     var saw_false_cancel = false;
     var saw_false_broken = false;
@@ -2071,7 +2098,7 @@ test "sla test codegen prunes known struct field branches" {
     var true_parser = parser_mod.Parser.initWithDir(allocator, source, ".");
     const true_prog = try true_parser.parseProgram();
     try pruneTestsByFilter(allocator, true_prog, "true field");
-    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, true_prog, null, null, true);
+    try pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, true_prog, null, null, true, true);
 
     var saw_true_cancel = false;
     var saw_true_broken = false;

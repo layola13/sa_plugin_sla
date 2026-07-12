@@ -113,10 +113,11 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
     primary_decls: ?*std.AutoHashMap(*const ast.Node, void),
     prune_known_branches: bool,
+    rewrite_project_shortcuts: bool,
 ) !void {
     if (program.* != .program) return error.InvalidProgram;
 
-    try rewriteProjectSnapshotTestShortcuts(allocator, program);
+    if (rewrite_project_shortcuts) try rewriteProjectSnapshotTestShortcuts(allocator, program);
 
     var callable_index = SlaCallableIndex.init(allocator);
     defer callable_index.deinit();
@@ -537,7 +538,7 @@ fn runSlaFrontend(
 
     if (options.prune_for_test_codegen) {
         stage_start = std.time.nanoTimestamp();
-        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, &specialized_primary_decls, true) catch |err| {
+        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, &specialized_primary_decls, true, true) catch |err| {
             try stderr.print("Test Filter Error: failed to prune unreachable functions before type checking: {}\n", .{err});
             return null;
         };
@@ -753,7 +754,7 @@ pub fn compileSlaFileToSabWithOptions(
 
     var stage_start = std.time.nanoTimestamp();
     if (options.prune_for_test_codegen) {
-        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, null, true) catch |err| {
+        pruneUnreachableTestFunctionDeclsBeforeTypeCheck(allocator, specialized_prog, &tc.imported_macros, null, true, false) catch |err| {
             try stderr.print("Test Filter Error: failed to prune syntactic unreachable declarations after type checking: {}\n", .{err});
             return null;
         };

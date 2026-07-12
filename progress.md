@@ -2608,6 +2608,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 # 2026-07-12: Base single-loose inferred state folding
 
+# 2026-07-12: Project snapshot/background timeout closure
+
+- [done] Project shortcut rewriting is now pre-typecheck-only.
+  - Post-typecheck syntactic reachable pruning no longer reruns project AST rewrites against an already populated TypeChecker.
+  - Prevents direct SAB `MissingType` from typed-node replacement/deletion and removes duplicate shortcut work.
+  - New exact post-typecheck-mode regression passes; existing pre-typecheck calls explicitly enable rewriting.
+  - Multi-configured strict 10s passes three times at 5.64s/7.17s/7.29s and profile passes at 5.97s.
+  - All existing background/collection/config representative strict gates pass; historical API files are absent. Timeout issue closed.
+
 - [done] Extended known collection state to snapshot primary active/open plus one loose secondary open.
   - State regression now proves inferred root count `1 -> 0` across add/update/close/update.
   - Proven `/dev/null/inferred` defaults set through the open-file API reuse the existing inferred lookup fold.

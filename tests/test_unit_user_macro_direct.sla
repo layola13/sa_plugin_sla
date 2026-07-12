@@ -176,16 +176,18 @@ macro match_enum_guard_macro(out, value, floor) {
     };
 }
 
-macro match_option_macro(out, value) {
+macro match_option_macro(out, value, floor) {
     out = match value {
-        Some(inner) => { inner + 1 },
+        Some(inner) if inner > floor => { inner + 1 },
+        Some(inner) => { 0 - inner },
         None => { 0 },
     };
 }
 
-macro match_result_macro(out, value) {
+macro match_result_macro(out, value, floor) {
     out = match value {
-        Ok(inner) => { inner + 2 },
+        Ok(inner) if inner > floor => { inner + 2 },
+        Ok(inner) => { 0 - inner },
         Err(error) => { 0 - error },
     };
 }
@@ -372,15 +374,15 @@ fn macro_match_enum_guard_direct(floor: i64) -> i64 {
     result
 }
 
-fn macro_match_option_direct(^value: Option<i64>) -> i64 {
+fn macro_match_option_direct(^value: Option<i64>, floor: i64) -> i64 {
     let result = 0i64;
-    match_option_macro(result, value);
+    match_option_macro(result, value, floor);
     result
 }
 
-fn macro_match_result_direct(^value: Result<i64, i64>) -> i64 {
+fn macro_match_result_direct(^value: Result<i64, i64>, floor: i64) -> i64 {
     let result = 0i64;
-    match_result_macro(result, value);
+    match_result_macro(result, value, floor);
     result
 }
 
@@ -443,13 +445,17 @@ fn macro_try_call_option_direct(value: i64, succeed: bool) -> Option<i64> {
     if macro_match_enum_guard_direct(10) != 42 { panic(31836); };
     if macro_match_enum_guard_direct(20) != 8 { panic(31837); };
     let macro_match_some_input: Option<i64> = Some(41i64);
-    if macro_match_option_direct(^macro_match_some_input) != 42 { panic(31838); };
+    if macro_match_option_direct(^macro_match_some_input, 40) != 42 { panic(31838); };
+    let macro_match_low_some_input: Option<i64> = Some(9i64);
+    if macro_match_option_direct(^macro_match_low_some_input, 10) != -9 { panic(31842); };
     let macro_match_none_input: Option<i64> = None;
-    if macro_match_option_direct(^macro_match_none_input) != 0 { panic(31839); };
+    if macro_match_option_direct(^macro_match_none_input, 10) != 0 { panic(31839); };
     let macro_match_ok_input: Result<i64, i64> = Ok(40i64);
-    if macro_match_result_direct(^macro_match_ok_input) != 42 { panic(31840); };
+    if macro_match_result_direct(^macro_match_ok_input, 39) != 42 { panic(31840); };
+    let macro_match_low_ok_input: Result<i64, i64> = Ok(8i64);
+    if macro_match_result_direct(^macro_match_low_ok_input, 9) != -8 { panic(31843); };
     let macro_match_err_input: Result<i64, i64> = Err(7i64);
-    if macro_match_result_direct(^macro_match_err_input) != -7 { panic(31841); };
+    if macro_match_result_direct(^macro_match_err_input, 9) != -7 { panic(31841); };
     if macro_unsafe_block_direct() != 135 { panic(31825); };
     let macro_try_some_input: Option<i64> = Some(33i64);
     let macro_try_some = macro_try_option_direct(^macro_try_some_input);

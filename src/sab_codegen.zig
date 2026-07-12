@@ -12854,8 +12854,6 @@ pub const Codegen = struct {
             if (variant) |enum_variant| {
                 if (case.pattern.bindings.len != enum_variant.fields.len) return Error.UnsupportedSabDirectFeature;
             } else if (case.pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
-            if (case.guard != null and variant == null) return Error.UnsupportedSabDirectFeature;
-
             const cond = case_cond_regs.items[i];
             try self.emitBranchRelease(cond);
             try self.emitLetPatternCheck(case.pattern, val_reg, decl, plan, cond);
@@ -12868,15 +12866,35 @@ pub const Codegen = struct {
 
             // Load pattern bindings from the payload at shared offsets.
             if (case.guard != null) {
-                const enum_variant = variant.?;
-                for (case.pattern.bindings, enum_variant.fields, 0..) |binding, field, binding_idx| {
-                    const layout = lowering_rules.enumFieldLayout(enum_variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
-                    const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
-                    if (prim == .ptr) return Error.UnsupportedSabDirectFeature;
-                    const binding_reg = case_binding_regs.items[i][binding_idx];
-                    try self.emitLoad(binding_reg, val_reg, layout.offset, prim);
+                if (variant) |enum_variant| {
+                    for (case.pattern.bindings, enum_variant.fields, 0..) |binding, field, binding_idx| {
+                        const layout = lowering_rules.enumFieldLayout(enum_variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
+                        const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+                        if (prim == .ptr) return Error.UnsupportedSabDirectFeature;
+                        const binding_reg = case_binding_regs.items[i][binding_idx];
+                        try self.emitLoad(binding_reg, val_reg, layout.offset, prim);
+                        try self.recordReg(binding_reg);
+                        try self.locals.append(.{ .name = binding, .reg = binding_reg, .is_param = false, .ty = field.ty, .is_stack_alloc = true });
+                    }
+                } else if (case.pattern.bindings.len == 1) {
+                    const binding_reg = case_binding_regs.items[i][0];
+                    const binding_ty = switch (plan.kind) {
+                        .option_some => lowering_rules.optionInnerType(val_ty),
+                        .result_ok => lowering_rules.resultOkType(val_ty),
+                        .result_err => lowering_rules.resultErrType(val_ty),
+                        else => null,
+                    } orelse return Error.UnsupportedSabDirectFeature;
+                    if (binding_ty.* != .infer and
+                        (storagePrimType(binding_ty) catch return Error.UnsupportedSabDirectFeature) == .ptr)
+                        return Error.UnsupportedSabDirectFeature;
+                    switch (plan.kind) {
+                        .option_some => try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_GET", &.{ self.symbols.items[binding_reg], self.symbols.items[val_reg] }),
+                        .result_ok => try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_OK", &.{ self.symbols.items[binding_reg], self.symbols.items[val_reg] }),
+                        .result_err => try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_ERR", &.{ self.symbols.items[binding_reg], self.symbols.items[val_reg] }),
+                        else => return Error.UnsupportedSabDirectFeature,
+                    }
                     try self.recordReg(binding_reg);
-                    try self.locals.append(.{ .name = binding, .reg = binding_reg, .is_param = false, .ty = field.ty, .is_stack_alloc = true });
+                    try self.locals.append(.{ .name = case.pattern.bindings[0], .reg = binding_reg, .is_param = false, .ty = binding_ty, .is_stack_alloc = true });
                 }
             } else {
                 try self.bindLetPatternPayload(case.pattern, val_reg, val_ty, decl, plan);

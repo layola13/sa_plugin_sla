@@ -1571,6 +1571,7 @@ pub const PrefixedIdentifierArg = struct {
 };
 
 pub const CallArgMaterializationKind = enum {
+    raw_pointer_string_literal,
     array_to_slice_borrow,
     dyn_borrow,
     auto_borrow,
@@ -3050,6 +3051,11 @@ pub fn callArgUsesRawPointerStringLiteralValue(arg: *const ast.Node, param: ast.
 }
 
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
+    if (input.param) |param| {
+        if (callArgUsesRawPointerStringLiteralValue(arg, param)) {
+            return .{ .kind = .raw_pointer_string_literal, .release_after_call = true };
+        }
+    }
     if (input.array_to_slice_borrow) {
         return .{ .kind = .array_to_slice_borrow, .release_after_call = callArgNeedsRelease(arg) };
     }
@@ -3422,6 +3428,13 @@ test "shared lowering rules classify call materialization decisions" {
     const array_plan = planCallArgMaterialization(&field, .{ .array_to_slice_borrow = true });
     try std.testing.expectEqual(CallArgMaterializationKind.array_to_slice_borrow, array_plan.kind);
     try std.testing.expect(array_plan.release_after_call);
+
+    var raw_ptr_ty = ast.Type{ .pointer = &i64_ty };
+    const raw_param = ast.Param{ .name = "raw", .ty = &raw_ptr_ty };
+    var string_arg = ast.Node{ .literal = .{ .string_val = "raw" } };
+    const raw_string_plan = planCallArgMaterialization(&string_arg, .{ .param = raw_param });
+    try std.testing.expectEqual(CallArgMaterializationKind.raw_pointer_string_literal, raw_string_plan.kind);
+    try std.testing.expect(raw_string_plan.release_after_call);
 
     const dyn_plan = planCallArgMaterialization(&value, .{ .dyn_borrow_trait_name = "Drawable" });
     try std.testing.expectEqual(CallArgMaterializationKind.dyn_borrow, dyn_plan.kind);

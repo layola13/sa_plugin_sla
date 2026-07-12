@@ -11545,13 +11545,6 @@ pub const Codegen = struct {
         arg_index: usize,
         auto_borrow_receiver: bool,
     ) anyerror!SabLoweredCallArg {
-        if (param) |target_param| {
-            if (lowering_rules.callArgUsesRawPointerStringLiteralValue(arg, target_param)) {
-                const arg_reg = try self.genRawPointerStringLiteralArg(arg.literal.string_val);
-                return .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
-            }
-        }
-
         const materialization = lowering_rules.planCallArgMaterialization(arg, .{
             .param = param,
             .arg_ty = self.tc.expr_types.get(arg),
@@ -11565,6 +11558,11 @@ pub const Codegen = struct {
         });
 
         return switch (materialization.kind) {
+            .raw_pointer_string_literal => blk: {
+                if (arg.* != .literal or arg.literal != .string_val) return Error.UnsupportedSabDirectFeature;
+                const arg_reg = try self.genRawPointerStringLiteralArg(arg.literal.string_val);
+                break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
+            },
             .array_to_slice_borrow => try self.genArrayBorrowToSliceArg(arg, materialization.release_after_call),
             .dyn_borrow => blk: {
                 const trait_name = materialization.dyn_borrow_trait_name orelse return Error.UnsupportedSabDirectFeature;
@@ -11649,13 +11647,6 @@ pub const Codegen = struct {
         arg_index: usize,
         auto_borrow_receiver: bool,
     ) anyerror!SabLoweredCallArg {
-        if (param) |target_param| {
-            if (lowering_rules.callArgUsesRawPointerStringLiteralValue(effective_arg, target_param)) {
-                const arg_reg = try self.genRawPointerStringLiteralArg(effective_arg.literal.string_val);
-                return .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
-            }
-        }
-
         const materialization = lowering_rules.planCallArgMaterialization(effective_arg, .{
             .param = param,
             .arg_ty = self.tc.expr_types.get(effective_arg),
@@ -11669,6 +11660,11 @@ pub const Codegen = struct {
         });
 
         return switch (materialization.kind) {
+            .raw_pointer_string_literal => blk: {
+                if (effective_arg.* != .literal or effective_arg.literal != .string_val) return Error.UnsupportedSabDirectFeature;
+                const arg_reg = try self.genRawPointerStringLiteralArg(effective_arg.literal.string_val);
+                break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
+            },
             .array_to_slice_borrow => try self.genMacroArrayBorrowToSliceArg(arg, effective_arg, ctx, materialization.release_after_call),
             .dyn_borrow => blk: {
                 const trait_name = materialization.dyn_borrow_trait_name orelse return Error.UnsupportedSabDirectFeature;

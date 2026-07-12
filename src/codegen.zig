@@ -7940,6 +7940,11 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
         return switch (materialization.kind) {
+            .raw_pointer_string_literal => blk: {
+                if (arg.* != .literal or arg.literal != .string_val) return CodegenError.CodegenError;
+                const ptr_reg = try self.genRawPointerStringLiteralArg(arg.literal.string_val);
+                break :blk .{ .reg = ptr_reg, .release_after_call = materialization.release_after_call };
+            },
             .array_to_slice_borrow => try self.genArrayBorrowToSliceArg(arg, hoisted_allocs),
             .dyn_borrow => blk: {
                 const trait_name = materialization.dyn_borrow_trait_name orelse return CodegenError.CodegenError;
@@ -7964,12 +7969,6 @@ pub const Codegen = struct {
                 break :blk .{ .reg = copied, .release_after_call = materialization.release_after_call };
             },
             .value => blk: {
-                if (param) |target_param| {
-                    if (lowering_rules.callArgUsesRawPointerStringLiteralValue(arg, target_param)) {
-                        const ptr_reg = try self.genRawPointerStringLiteralArg(arg.literal.string_val);
-                        break :blk .{ .reg = ptr_reg, .release_after_call = true };
-                    }
-                }
                 if (lowering_rules.borrowedIdentifierName(arg)) |borrowed_name| {
                     if (self.addressable_bindings.contains(borrowed_name)) {
                         const addr_reg = try self.genExpr(arg, hoisted_allocs);

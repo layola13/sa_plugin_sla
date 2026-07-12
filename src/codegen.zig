@@ -8086,8 +8086,8 @@ pub const Codegen = struct {
         var deref_source_ty: ?*const ast.Type = null;
         var index_target_ty: ?*const ast.Type = null;
         switch (arg.*) {
-            .deref_expr => deref_source_ty = self.tc.expr_types.get(arg.deref_expr.expr) orelse return CodegenError.CodegenError,
-            .index_expr => |idx| index_target_ty = self.tc.expr_types.get(idx.target) orelse return CodegenError.CodegenError,
+            .deref_expr => deref_source_ty = self.resolvedTypeForExpr(arg.deref_expr.expr) orelse return CodegenError.CodegenError,
+            .index_expr => |idx| index_target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError,
             else => {},
         }
         return lowering_rules.planAddressOf(arg, .{
@@ -8098,7 +8098,7 @@ pub const Codegen = struct {
 
     fn genImportedMacroMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
         const value_reg = try self.genExpr(arg, hoisted_allocs);
-        const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+        const arg_ty = self.resolvedTypeForExpr(arg) orelse return CodegenError.CodegenError;
         const slot = try self.newTmp();
         self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
         self.out.writer().print("    {s} = stack_alloc {}\n", .{ slot, typeSize(arg_ty) }) catch return CodegenError.CodegenError;
@@ -8108,7 +8108,7 @@ pub const Codegen = struct {
     }
 
     fn genImportedMacroAddressExpressionMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
-        const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+        const arg_ty = self.resolvedTypeForExpr(arg) orelse return CodegenError.CodegenError;
         const slot = try self.newTmp();
         self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
         self.out.writer().print("    {s} = stack_alloc {}\n", .{ slot, typeSize(arg_ty) }) catch return CodegenError.CodegenError;
@@ -8207,7 +8207,7 @@ pub const Codegen = struct {
         arg: *ast.Node,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
-        const arg_ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
+        const arg_ty = self.resolvedTypeForExpr(arg) orelse return CodegenError.CodegenError;
         if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| switch (action) {
             .pass_value, .pass_raw_pointer_value => {
                 const reg = try self.genExpr(arg, hoisted_allocs);

@@ -5,6 +5,22 @@ struct ImportedMacroAddressPoint { left: i64, right: i64 }
 struct ImportedMacroAddressPair { left: i64, right: i64 }
 struct ImportedMacroAddressPairHolder { pair: ImportedMacroAddressPair }
 
+macro nested_imported_pair_inner(out, holder) {
+    out = SLA_IMPORTED_READ_PAIR_SUM(holder.pair);
+}
+
+macro nested_imported_pair_outer(out, holder) {
+    nested_imported_pair_inner(out, holder);
+}
+
+macro nested_imported_pair_write_inner(holder) {
+    SLA_IMPORTED_WRITE_PAIR_LEFT(holder.pair);
+}
+
+macro nested_imported_pair_write_outer(holder) {
+    nested_imported_pair_write_inner(holder);
+}
+
 fn imported_macro_read_i64(value: &i64) -> i64 {
     *value
 }
@@ -76,6 +92,23 @@ fn imported_macro_pair_field_alias_write() -> i64 {
     holder.pair.left + holder.pair.right
 }
 
+fn nested_imported_macro_pair_field_read() -> i64 {
+    let holder = ImportedMacroAddressPairHolder {
+        pair: ImportedMacroAddressPair { left: 17, right: 25 },
+    };
+    let total = 0i64;
+    nested_imported_pair_outer(total, holder);
+    total
+}
+
+fn nested_imported_macro_pair_field_write() -> i64 {
+    let holder = ImportedMacroAddressPairHolder {
+        pair: ImportedMacroAddressPair { left: 3, right: 5 },
+    };
+    nested_imported_pair_write_outer(holder);
+    holder.pair.left + holder.pair.right
+}
+
 @test "imported macro borrowed field address"() {
     if imported_macro_read_i64_keepalive() != 0 { panic(31900); };
     if imported_macro_field_address() != 11 { panic(31901); };
@@ -114,4 +147,9 @@ fn imported_macro_pair_field_alias_write() -> i64 {
 
 @test "imported macro aggregate field preserves write alias"() {
     if imported_macro_pair_field_alias_write() != 44 { panic(31909); };
+}
+
+@test "nested user macro preserves imported macro field context"() {
+    if nested_imported_macro_pair_field_read() != 42 { panic(31910); };
+    if nested_imported_macro_pair_field_write() != 42 { panic(31911); };
 }

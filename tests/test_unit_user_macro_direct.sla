@@ -20,6 +20,7 @@ macro add_two_macro(var_ref) {
 struct DirectMacroPoint { left: i64, right: i64 }
 struct DirectMacroBorrowPoint { left: i64, right: i64 }
 struct DirectMacroCounter { value: i64 }
+struct DirectMacroBoxHolder { value: Box<i64> }
 
 enum DirectMacroMessage {
     Empty,
@@ -143,6 +144,10 @@ macro branch_move_box_macro(out, value, cond) {
 
 macro call_move_box_macro(out, value) {
     out = direct_macro_consume_box(^value);
+}
+
+macro aggregate_move_box_macro(out, value) {
+    out = DirectMacroBoxHolder { value: ^value };
 }
 
 fn macro_next_value(cell: &RefCell<DirectMacroCounter>) -> i64 {
@@ -280,6 +285,13 @@ fn macro_call_move_box_direct() -> i64 {
     result
 }
 
+fn macro_aggregate_move_box_direct() -> i64 {
+    let source = Box::new(38i64);
+    let holder = DirectMacroBoxHolder { value: Box::new(1i64) };
+    aggregate_move_box_macro(holder, source);
+    *holder.value
+}
+
 @test "direct user macro nested expansion"() {
     if macro_shadow_direct(5) != 106 { panic(31803); };
     if macro_branch_direct(10, true, 4) != 14 { panic(31804); };
@@ -298,4 +310,5 @@ fn macro_call_move_box_direct() -> i64 {
     if macro_branch_move_box_direct(true) != 41 { panic(31819); };
     if macro_branch_move_box_direct(false) != 41 { panic(31820); };
     if macro_call_move_box_direct() != 39 { panic(31821); };
+    if macro_aggregate_move_box_direct() != 38 { panic(31822); };
 }

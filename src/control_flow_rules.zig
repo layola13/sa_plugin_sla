@@ -83,6 +83,27 @@ fn macroNodeConsumption(node: *const ast.Node, name: []const u8) MacroParamConsu
             for (call.args) |arg| effect = sequenceMacroParamConsumption(effect, macroNodeConsumption(arg, name));
             break :blk effect;
         },
+        .struct_literal => |lit| blk: {
+            var effect: MacroParamConsumption = if (lit.update_expr) |update| macroNodeConsumption(update, name) else .never;
+            for (lit.fields) |field| effect = sequenceMacroParamConsumption(effect, macroNodeConsumption(field.value, name));
+            break :blk effect;
+        },
+        .enum_literal => |lit| blk: {
+            var effect: MacroParamConsumption = .never;
+            for (lit.fields) |field| effect = sequenceMacroParamConsumption(effect, macroNodeConsumption(field.value, name));
+            break :blk effect;
+        },
+        .tuple_literal => |lit| blk: {
+            var effect: MacroParamConsumption = .never;
+            for (lit.elements) |element| effect = sequenceMacroParamConsumption(effect, macroNodeConsumption(element, name));
+            break :blk effect;
+        },
+        .array_literal => |lit| blk: {
+            var effect: MacroParamConsumption = .never;
+            for (lit.elements) |element| effect = sequenceMacroParamConsumption(effect, macroNodeConsumption(element, name));
+            break :blk effect;
+        },
+        .repeat_array_literal => |lit| macroNodeConsumption(lit.value, name),
         .assign_stmt => |assign| macroNodeConsumption(assign.value, name),
         .let_stmt => |let| macroNodeConsumption(let.value, name),
         .return_stmt => |ret| if (ret.value) |value| macroNodeConsumption(value, name) else .never,
@@ -138,9 +159,11 @@ test "user macro value consumption follows nested move expressions" {
     var assign = ast.Node{ .assign_stmt = .{ .target = &target, .value = &moved } };
     var block = ast.Node{ .block_stmt = .{ .body = &.{&assign} } };
     var call = ast.Node{ .call_expr = .{ .func_name = "consume", .generics = &.{}, .args = &.{&moved} } };
+    var tuple = ast.Node{ .tuple_literal = .{ .elements = &.{&moved} } };
 
     try std.testing.expect(macroParamConsumesValue(&.{&block}, "value"));
     try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&call}, "value"));
+    try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&tuple}, "value"));
     try std.testing.expect(!macroParamConsumesValue(&.{&block}, "out"));
 }
 

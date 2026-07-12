@@ -13041,15 +13041,27 @@ pub const Codegen = struct {
     fn genScalarMatchGuardValue(self: *Codegen, value: *ast.Node, scratch: []const u32, cursor: *usize) anyerror!u32 {
         if (value.* == .index_expr) {
             const index = value.index_expr;
-            if (index.target.* != .identifier or index.index.* != .literal or index.index.literal != .int_val or index.index.literal.int_val < 0 or cursor.* >= scratch.len)
+            if (index.target.* != .identifier or cursor.* >= scratch.len)
                 return Error.UnsupportedSabDirectFeature;
             const base = self.localReg(index.target.identifier) orelse return Error.UnsupportedSabDirectFeature;
             const base_ty = self.localType(index.target.identifier) orelse return Error.UnsupportedSabDirectFeature;
             if (base_ty.* != .array) return Error.UnsupportedSabDirectFeature;
-            const layout = arrayElementLayout(base_ty.array, @intCast(index.index.literal.int_val)) orelse return Error.UnsupportedSabDirectFeature;
-            const dst = scratch[cursor.*];
-            cursor.* += 1;
-            try self.emitLoad(dst, base, layout.offset, layout.ty);
+            if (index.index.* == .literal and index.index.literal == .int_val and index.index.literal.int_val >= 0) {
+                const layout = arrayElementLayout(base_ty.array, @intCast(index.index.literal.int_val)) orelse return Error.UnsupportedSabDirectFeature;
+                const dst = scratch[cursor.*];
+                cursor.* += 1;
+                try self.emitLoad(dst, base, layout.offset, layout.ty);
+                return dst;
+            }
+            if (index.index.* != .identifier or cursor.* + 2 >= scratch.len) return Error.UnsupportedSabDirectFeature;
+            const index_reg = self.localReg(index.index.identifier) orelse return Error.UnsupportedSabDirectFeature;
+            const offset = scratch[cursor.*];
+            const ptr = scratch[cursor.* + 1];
+            const dst = scratch[cursor.* + 2];
+            cursor.* += 3;
+            try self.emitOp(offset, .mul, .{ .reg = index_reg }, .{ .imm_i64 = @intCast(arrayStride(base_ty.array.elem)) });
+            try self.emitPtrAdd(ptr, base, .{ .reg = offset });
+            try self.emitLoad(dst, ptr, 0, try storagePrimType(base_ty.array.elem));
             return dst;
         }
         if (value.* == .field_expr) {

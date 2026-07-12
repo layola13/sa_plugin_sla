@@ -188,9 +188,9 @@ macro match_option_macro(out, value, floor, ceiling) {
     };
 }
 
-macro match_result_macro(out, value, limits) {
+macro match_result_macro(out, value, limits, floor_index, ceiling_index) {
     out = match value {
-        Ok(inner) if direct_macro_guard_between((inner + 1) as i64, limits[0], limits[1]) => { inner + 2 },
+        Ok(inner) if direct_macro_guard_between((inner + 1) as i64, limits[floor_index], limits[ceiling_index]) => { inner + 2 },
         Ok(inner) => { 0 - inner },
         Err(error) => { 0 - error },
     };
@@ -387,7 +387,9 @@ fn macro_match_option_direct(^value: Option<i64>, floor: i64, ceiling: i64) -> i
 fn macro_match_result_direct(^value: Result<i64, i64>) -> i64 {
     let result = 0i64;
     let limits: [i64; 2] = [40, 42];
-    match_result_macro(result, value, limits);
+    let floor_index = 0i64;
+    let ceiling_index = 1i64;
+    match_result_macro(result, value, limits, floor_index, ceiling_index);
     result
 }
 

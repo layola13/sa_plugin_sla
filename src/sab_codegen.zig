@@ -13039,6 +13039,19 @@ pub const Codegen = struct {
     }
 
     fn genScalarMatchGuardValue(self: *Codegen, value: *ast.Node, scratch: []const u32, cursor: *usize) anyerror!u32 {
+        if (value.* == .index_expr) {
+            const index = value.index_expr;
+            if (index.target.* != .identifier or index.index.* != .literal or index.index.literal != .int_val or index.index.literal.int_val < 0 or cursor.* >= scratch.len)
+                return Error.UnsupportedSabDirectFeature;
+            const base = self.localReg(index.target.identifier) orelse return Error.UnsupportedSabDirectFeature;
+            const base_ty = self.localType(index.target.identifier) orelse return Error.UnsupportedSabDirectFeature;
+            if (base_ty.* != .array) return Error.UnsupportedSabDirectFeature;
+            const layout = arrayElementLayout(base_ty.array, @intCast(index.index.literal.int_val)) orelse return Error.UnsupportedSabDirectFeature;
+            const dst = scratch[cursor.*];
+            cursor.* += 1;
+            try self.emitLoad(dst, base, layout.offset, layout.ty);
+            return dst;
+        }
         if (value.* == .field_expr) {
             const field = value.field_expr;
             if (field.expr.* != .identifier or cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;

@@ -519,6 +519,11 @@ fn scalarMatchGuardValueTempCount(value: *const ast.Node) ?usize {
         if (value.field_expr.expr.* != .identifier) return null;
         return 1;
     }
+    if (value.* == .index_expr) {
+        const index = value.index_expr;
+        if (index.target.* != .identifier or index.index.* != .literal or index.index.literal != .int_val or index.index.literal.int_val < 0) return null;
+        return 1;
+    }
     if (value.* == .cast_expr) {
         if (value.cast_expr.ty.* != .primitive) return null;
         return (scalarMatchGuardValueTempCount(value.cast_expr.expr) orelse return null) + 1;
@@ -3946,6 +3951,11 @@ test "shared scalar match guard scratch planning" {
     const field_call_args = [_]*ast.Node{ &value, &floor_field };
     var field_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &field_call_args } };
     try std.testing.expectEqual(@as(?usize, 2), scalarMatchGuardTempCount(&field_call));
+    var zero = ast.Node{ .literal = .{ .int_val = 0 } };
+    var first_limit = ast.Node{ .index_expr = .{ .target = &limits, .index = &zero } };
+    const index_call_args = [_]*ast.Node{ &value, &first_limit };
+    var index_call = ast.Node{ .call_expr = .{ .func_name = "check", .generics = &.{}, .args = &index_call_args } };
+    try std.testing.expectEqual(@as(?usize, 2), scalarMatchGuardTempCount(&index_call));
 }
 
 test "shared executor task buffer classification" {

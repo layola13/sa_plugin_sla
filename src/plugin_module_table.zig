@@ -270,6 +270,9 @@ pub const SlaModule = struct {
     has_macro_bodies: bool,
     parsed_function_bodies: std.StringHashMap(void),
     parsed_macro_bodies: std.StringHashMap(void),
+    /// Exact `{ ... }` body source slices for top-level and associated functions.
+    /// Values borrow into `expanded_source` and are valid for the module lifetime.
+    function_body_spans: std.StringHashMap([]const u8),
 };
 
 pub const SlaImportExpansionOptions = struct {
@@ -321,6 +324,9 @@ pub const SlaModuleTable = struct {
             self.allocator.free(module.resolved_imports);
             self.allocator.free(module.known_enums);
             self.allocator.free(module.known_types);
+            var span_key_iter = module.function_body_spans.keyIterator();
+            while (span_key_iter.next()) |key_ptr| self.allocator.free(key_ptr.*);
+            module.function_body_spans.deinit();
             module.parsed_macro_bodies.deinit();
             module.parsed_function_bodies.deinit();
             module.exports.deinit();
@@ -382,7 +388,9 @@ pub const SlaModuleTable = struct {
             .has_macro_bodies = self.parse_options.parse_macro_bodies and self.parse_options.macro_body_names == null,
             .parsed_function_bodies = std.StringHashMap(void).init(self.allocator),
             .parsed_macro_bodies = std.StringHashMap(void).init(self.allocator),
+            .function_body_spans = std.StringHashMap([]const u8).init(self.allocator),
         };
+        try captureModuleFunctionBodySpans(self.allocator, module, &parser);
         if (self.parse_options.parse_function_bodies) {
             if (self.parse_options.function_body_names) |selected| {
                 var selected_iter = selected.keyIterator();
@@ -406,6 +414,13 @@ pub const SlaModuleTable = struct {
         selected_macro_bodies: ?*const std.StringHashMap(void),
     ) !SlaModuleReparseStats {
         if (module.has_function_bodies and module.has_macro_bodies) return .{};
+
+        // Prefer exact function-body span materialization when the module already
+        // has a decl-only AST and no newly selected macros require a full reparse.
+        // Macros still fall back to the full selected-body reparse path.
+        if (try self.tryMaterializeSelectedFunctionBodiesInPlace(module, selected_function_bodies, selected_macro_bodies)) |stats| {
+            return stats;
+        }
 
         const parse_start = std.time.nanoTimestamp();
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, module.expanded_source, module.base_dir, .{
@@ -453,14 +468,87 @@ pub const SlaModuleTable = struct {
             }
         }
 
+        // Full reparses rebuild the AST; refresh body spans from the new parser
+        // so later in-place materialization can resume from the updated surface.
+        var span_key_iter = module.function_body_spans.keyIterator();
+        while (span_key_iter.next()) |key_ptr| self.allocator.free(key_ptr.*);
+        module.function_body_spans.clearRetainingCapacity();
+
         module.exports.deinit();
         module.program = parsed;
         module.exports = exports;
+        try captureModuleFunctionBodySpans(self.allocator, module, &parser);
         module.has_function_bodies = selected_function_bodies == null;
         module.has_macro_bodies = selected_macro_bodies == null;
         return .{
             .parse_ns = parse_ns,
             .exports_ns = exports_ns,
+            .commit_ns = std.time.nanoTimestamp() - commit_start,
+        };
+    }
+
+    fn tryMaterializeSelectedFunctionBodiesInPlace(
+        self: *SlaModuleTable,
+        module: *SlaModule,
+        selected_function_bodies: ?*const std.StringHashMap(void),
+        selected_macro_bodies: ?*const std.StringHashMap(void),
+    ) !?SlaModuleReparseStats {
+        // Macro bodies still require a full reparse for now.
+        if (selected_macro_bodies) |selected| {
+            if (!stringSetsEqual(selected, &module.parsed_macro_bodies)) return null;
+        } else if (!module.has_macro_bodies and module.parsed_macro_bodies.count() != 0) {
+            return null;
+        }
+
+        const selected_functions = selected_function_bodies orelse return null;
+        if (module.function_body_spans.count() == 0) return null;
+
+        var new_function_count: usize = 0;
+        var selected_iter = selected_functions.keyIterator();
+        while (selected_iter.next()) |name_ptr| {
+            if (module.parsed_function_bodies.contains(name_ptr.*)) continue;
+            if (!module.function_body_spans.contains(name_ptr.*)) return null;
+            new_function_count += 1;
+        }
+        // Nothing new to materialize for functions either.
+        if (new_function_count == 0 and stringSetsEqual(selected_functions, &module.parsed_function_bodies)) {
+            return .{};
+        }
+        if (new_function_count == 0) {
+            // Selection shrank or only already-materialized bodies remain; keep
+            // tracking set in sync without touching the AST.
+            const commit_start = std.time.nanoTimestamp();
+            try replaceParsedFunctionBodySet(self.allocator, module, selected_functions);
+            return .{ .commit_ns = std.time.nanoTimestamp() - commit_start };
+        }
+
+        const parse_start = std.time.nanoTimestamp();
+        selected_iter = selected_functions.keyIterator();
+        while (selected_iter.next()) |name_ptr| {
+            if (module.parsed_function_bodies.contains(name_ptr.*)) continue;
+            const span = module.function_body_spans.get(name_ptr.*) orelse return null;
+            const func_decl = moduleFunctionDeclBySymbol(module, name_ptr.*) orelse return null;
+            if (func_decl.body.len != 0 and !func_decl.is_decl_only) continue;
+            const body = try parser_mod.Parser.parseFunctionBodySpan(
+                self.allocator,
+                span,
+                module.known_types,
+                module.known_enums,
+            );
+            func_decl.body = body;
+            func_decl.is_decl_only = false;
+        }
+        const parse_ns = std.time.nanoTimestamp() - parse_start;
+
+        const commit_start = std.time.nanoTimestamp();
+        try replaceParsedFunctionBodySet(self.allocator, module, selected_functions);
+        // Preserve the historical null-selection meaning used by full reparses:
+        // null means "all bodies of this kind are present".
+        module.has_function_bodies = false;
+        if (selected_macro_bodies == null) module.has_macro_bodies = true;
+        return .{
+            .parse_ns = parse_ns,
+            .exports_ns = 0,
             .commit_ns = std.time.nanoTimestamp() - commit_start,
         };
     }
@@ -563,3 +651,66 @@ pub const SlaModuleTable = struct {
         return null;
     }
 };
+
+fn stringSetContainsAll(haystack: *const std.StringHashMap(void), needles: *const std.StringHashMap(void)) bool {
+    var iter = needles.keyIterator();
+    while (iter.next()) |name_ptr| {
+        if (!haystack.contains(name_ptr.*)) return false;
+    }
+    return true;
+}
+
+fn stringSetsEqual(a: *const std.StringHashMap(void), b: *const std.StringHashMap(void)) bool {
+    return a.count() == b.count() and stringSetContainsAll(a, b);
+}
+
+fn replaceParsedFunctionBodySet(
+    allocator: std.mem.Allocator,
+    module: *SlaModule,
+    selected_function_bodies: *const std.StringHashMap(void),
+) !void {
+    module.parsed_function_bodies.clearRetainingCapacity();
+    var selected_iter = selected_function_bodies.keyIterator();
+    while (selected_iter.next()) |name_ptr| {
+        const owned = try allocator.dupe(u8, name_ptr.*);
+        try module.parsed_function_bodies.put(owned, {});
+    }
+}
+
+fn moduleFunctionDeclBySymbol(module: *SlaModule, symbol: []const u8) ?*ast.FuncDecl {
+    if (module.exports.function_decls.get(symbol)) |decl| {
+        if (decl.* == .func_decl) return &decl.func_decl;
+    }
+    if (module.exports.associated_function_decls.get(symbol)) |decl| {
+        if (decl.* == .func_decl) return &decl.func_decl;
+    }
+    return null;
+}
+
+fn captureModuleFunctionBodySpans(
+    allocator: std.mem.Allocator,
+    module: *SlaModule,
+    parser: *const parser_mod.Parser,
+) !void {
+    var top_iter = module.exports.function_decls.iterator();
+    while (top_iter.next()) |entry| {
+        try putFunctionBodySpan(allocator, &module.function_body_spans, entry.key_ptr.*, parser.functionBodySpanFor(entry.value_ptr.*));
+    }
+    var associated_iter = module.exports.associated_function_decls.iterator();
+    while (associated_iter.next()) |entry| {
+        try putFunctionBodySpan(allocator, &module.function_body_spans, entry.key_ptr.*, parser.functionBodySpanFor(entry.value_ptr.*));
+    }
+}
+
+fn putFunctionBodySpan(
+    allocator: std.mem.Allocator,
+    spans: *std.StringHashMap([]const u8),
+    symbol: []const u8,
+    span: ?[]const u8,
+) !void {
+    const body_span = span orelse return;
+    if (spans.contains(symbol)) return;
+    const owned_symbol = try allocator.dupe(u8, symbol);
+    errdefer allocator.free(owned_symbol);
+    try spans.put(owned_symbol, body_span);
+}

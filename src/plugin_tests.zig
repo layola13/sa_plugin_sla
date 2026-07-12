@@ -4129,6 +4129,95 @@ test "sla module table reparses with cached imported type names" {
     try std.testing.expect(make_decl.func_decl.body.len != 0);
 }
 
+test "sla module table materializes function bodies from cached spans" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dep_source =
+        \\struct Holder { value: i32 }
+        \\fn first() -> i32 {
+        \\    return 11;
+        \\}
+        \\fn second() -> i32 {
+        \\    return first() + 20;
+        \\}
+        \\impl Holder {
+        \\    fn method(self) -> i32 {
+        \\        return self.value + first();
+        \\    }
+        \\}
+        \\fn invalid_unselected() -> i32 {
+        \\    let = ;
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var modules = SlaModuleTable.initWithParserOptions(allocator, .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+    });
+    defer modules.deinit();
+    const imports = try resolveImportFiles(allocator, ".", "dep.sla", "main.sla");
+    const dep = try modules.getOrParse(imports[0]);
+
+    try std.testing.expect(dep.function_body_spans.contains("first"));
+    try std.testing.expect(dep.function_body_spans.contains("second"));
+    try std.testing.expect(dep.function_body_spans.contains("Holder_method"));
+    try std.testing.expect(dep.function_body_spans.contains("invalid_unselected"));
+
+    // After the initial decl-only parse, the expanded source may become
+    // unavailable/invalid. In-place materialization must use cached spans only.
+    const corrupt =
+        \\this is no longer valid sla source {
+    ;
+    const owned_corrupt = try allocator.dupe(u8, corrupt);
+    dep.expanded_source = owned_corrupt;
+    dep.source = owned_corrupt;
+    try tmp.dir.deleteFile("dep.sla");
+
+    const first_decl = dep.exports.function_decls.get("first") orelse return error.TestUnexpectedResult;
+    const second_decl = dep.exports.function_decls.get("second") orelse return error.TestUnexpectedResult;
+    const method_decl = dep.exports.associated_function_decls.get("Holder_method") orelse return error.TestUnexpectedResult;
+    const invalid_decl = dep.exports.function_decls.get("invalid_unselected") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 0), first_decl.func_decl.body.len);
+    try std.testing.expectEqual(@as(usize, 0), second_decl.func_decl.body.len);
+    try std.testing.expectEqual(@as(usize, 0), method_decl.func_decl.body.len);
+    try std.testing.expectEqual(@as(usize, 0), invalid_decl.func_decl.body.len);
+
+    var selected_first = std.StringHashMap(void).init(allocator);
+    defer selected_first.deinit();
+    try selected_first.put("first", {});
+    _ = try modules.reparseModuleWithSelectedBodies(dep, &selected_first, null);
+    try std.testing.expect(dep.parsed_function_bodies.contains("first"));
+    try std.testing.expectEqual(@as(usize, 1), first_decl.func_decl.body.len);
+    try std.testing.expect(first_decl.func_decl.body[0].* == .return_stmt);
+    // Existing AST nodes must be updated in place.
+    try std.testing.expect(dep.exports.function_decls.get("first").? == first_decl);
+    try std.testing.expectEqual(@as(usize, 0), second_decl.func_decl.body.len);
+    try std.testing.expectEqual(@as(usize, 0), method_decl.func_decl.body.len);
+    try std.testing.expectEqual(@as(usize, 0), invalid_decl.func_decl.body.len);
+
+    var selected_more = std.StringHashMap(void).init(allocator);
+    defer selected_more.deinit();
+    try selected_more.put("first", {});
+    try selected_more.put("second", {});
+    try selected_more.put("Holder_method", {});
+    _ = try modules.reparseModuleWithSelectedBodies(dep, &selected_more, null);
+    try std.testing.expectEqual(@as(usize, 1), first_decl.func_decl.body.len);
+    try std.testing.expect(second_decl.func_decl.body.len != 0);
+    try std.testing.expect(method_decl.func_decl.body.len != 0);
+    try std.testing.expectEqual(@as(usize, 0), invalid_decl.func_decl.body.len);
+    try std.testing.expect(dep.exports.associated_function_decls.get("Holder_method").? == method_decl);
+}
+
 test "sla reachability session retries only unresolved callable roots" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

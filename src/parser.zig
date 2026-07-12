@@ -40,6 +40,10 @@ pub const Parser = struct {
     base_dir: []const u8,
     import_scan_depth: usize,
     options: Options,
+    /// Exact `{ ... }` source slices for function bodies that were skipped
+    /// during the current parse. Keys are the created `func_decl` nodes and
+    /// values point into the parser buffer / expanded module source.
+    function_body_spans: std.AutoHashMap(*ast.Node, []const u8),
 
     pub fn init(allocator: std.mem.Allocator, buffer: []const u8) Parser {
         return initWithDir(allocator, buffer, ".");
@@ -62,6 +66,7 @@ pub const Parser = struct {
             .base_dir = base_dir,
             .import_scan_depth = 0,
             .options = options,
+            .function_body_spans = std.AutoHashMap(*ast.Node, []const u8).init(allocator),
         };
         p.tok = p.lex.next();
         return p;
@@ -78,6 +83,28 @@ pub const Parser = struct {
     pub fn seedKnownTypeNames(self: *Parser, type_names: []const []const u8, enum_names: []const []const u8) !void {
         try self.known_types.appendSlice(type_names);
         try self.known_enums.appendSlice(enum_names);
+    }
+
+    pub fn functionBodySpanFor(self: *const Parser, node: *ast.Node) ?[]const u8 {
+        return self.function_body_spans.get(node);
+    }
+
+    /// Parse a previously captured `{ ... }` function-body span with the
+    /// caller's known type/enum surface, without recursive import prescanning.
+    pub fn parseFunctionBodySpan(
+        allocator: std.mem.Allocator,
+        body_source: []const u8,
+        type_names: []const []const u8,
+        enum_names: []const []const u8,
+    ) ParserError![]const *ast.Node {
+        var parser = initWithDirAndOptions(allocator, body_source, ".", .{
+            .parse_function_bodies = true,
+            .parse_macro_bodies = true,
+            .parse_test_bodies = true,
+            .prescan_sla_import_types = false,
+        });
+        try parser.seedKnownTypeNames(type_names, enum_names);
+        return try parser.parseBlock();
     }
 
     fn advance(self: *Parser) void {
@@ -995,10 +1022,7 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (try self.shouldParseMethodBody(target_ty, trait_name, name)) try self.parseBlock() else blk: {
-            try self.skipBlock();
-            break :blk &.{};
-        };
+        const body_result = try self.parseOrCaptureFunctionBody(try self.shouldParseMethodBody(target_ty, trait_name, name));
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1008,11 +1032,12 @@ pub const Parser = struct {
                 .generics = generics,
                 .params = try params.toOwnedSlice(),
                 .ret_ty = ret_ty,
-                .body = body,
+                .body = body_result.body,
                 .is_inline = false,
                 .is_async = false,
             },
         };
+        try self.rememberFunctionBodySpan(node, body_result.span);
         return node;
     }
 
@@ -1071,10 +1096,7 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (try self.shouldParseMethodBody(target_ty, null, op_name)) try self.parseBlock() else blk: {
-            try self.skipBlock();
-            break :blk &.{};
-        };
+        const body_result = try self.parseOrCaptureFunctionBody(try self.shouldParseMethodBody(target_ty, null, op_name));
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1084,12 +1106,13 @@ pub const Parser = struct {
                 .generics = generics,
                 .params = try params.toOwnedSlice(),
                 .ret_ty = ret_ty,
-                .body = body,
+                .body = body_result.body,
                 .is_inline = false,
                 .is_async = false,
                 .operator = op,
             },
         };
+        try self.rememberFunctionBodySpan(node, body_result.span);
         return node;
     }
 
@@ -1126,10 +1149,10 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (is_decl_only) &.{} else if (self.shouldParseFunctionBody(name)) try self.parseBlock() else blk: {
-            try self.skipBlock();
-            break :blk &.{};
-        };
+        const body_result = if (is_decl_only)
+            FunctionBodyParseResult{ .body = &.{}, .span = null }
+        else
+            try self.parseOrCaptureFunctionBody(self.shouldParseFunctionBody(name));
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1143,11 +1166,12 @@ pub const Parser = struct {
                 .generics = generics,
                 .params = try params.toOwnedSlice(),
                 .ret_ty = ret_ty,
-                .body = body,
+                .body = body_result.body,
                 .is_inline = is_inline,
                 .is_async = is_async,
             },
         };
+        try self.rememberFunctionBodySpan(node, body_result.span);
         return node;
     }
 
@@ -1333,17 +1357,81 @@ pub const Parser = struct {
         return node;
     }
 
+    const FunctionBodyParseResult = struct {
+        body: []const *ast.Node,
+        span: ?[]const u8,
+    };
+
+    fn parseOrCaptureFunctionBody(self: *Parser, should_parse: bool) ParserError!FunctionBodyParseResult {
+        if (should_parse) {
+            const span = try self.peekBlockSpan();
+            const body = try self.parseBlock();
+            return .{ .body = body, .span = span };
+        }
+        const span = try self.skipBlockSpan();
+        return .{ .body = &.{}, .span = span };
+    }
+
+    fn rememberFunctionBodySpan(self: *Parser, node: *ast.Node, span: ?[]const u8) ParserError!void {
+        const body_span = span orelse return;
+        try self.function_body_spans.put(node, body_span);
+    }
+
+    fn peekBlockSpan(self: *const Parser) ParserError![]const u8 {
+        if (self.tok.tag != .l_brace) {
+            return ParserError.SyntaxError;
+        }
+        var lex = lexer.Lexer.init(self.lex.buffer[self.tok.loc.start..]);
+        var depth: usize = 0;
+        var end: usize = self.tok.loc.start;
+        while (true) {
+            const tok = lex.next();
+            switch (tok.tag) {
+                .l_brace => {
+                    depth += 1;
+                    end = self.tok.loc.start + tok.loc.end;
+                },
+                .r_brace => {
+                    if (depth == 0) {
+                        return ParserError.SyntaxError;
+                    }
+                    depth -= 1;
+                    end = self.tok.loc.start + tok.loc.end;
+                    if (depth == 0) {
+                        return self.lex.buffer[self.tok.loc.start..end];
+                    }
+                },
+                .eof => {
+                    return ParserError.SyntaxError;
+                },
+                else => {},
+            }
+        }
+    }
+
     fn skipBlock(self: *Parser) ParserError!void {
-        try self.expect(.l_brace);
+        _ = try self.skipBlockSpan();
+    }
+
+    fn skipBlockSpan(self: *Parser) ParserError![]const u8 {
+        if (self.tok.tag != .l_brace) {
+            self.last_expected = @tagName(lexer.Token.Tag.l_brace);
+            return ParserError.SyntaxError;
+        }
+        const start = self.tok.loc.start;
+        var end = self.tok.loc.end;
+        self.advance();
         var depth: usize = 1;
         while (depth > 0 and self.peek() != .eof) {
             switch (self.peek()) {
                 .l_brace => {
                     depth += 1;
+                    end = self.tok.loc.end;
                     self.advance();
                 },
                 .r_brace => {
                     depth -= 1;
+                    end = self.tok.loc.end;
                     self.advance();
                 },
                 else => self.advance(),
@@ -1353,6 +1441,7 @@ pub const Parser = struct {
             self.last_expected = "matching closing brace";
             return ParserError.SyntaxError;
         }
+        return self.lex.buffer[start..end];
     }
 
     fn shouldParseFunctionBody(self: *const Parser, name: []const u8) bool {
@@ -3225,6 +3314,58 @@ test "sla parser selectively parses named function bodies" {
     try std.testing.expectEqual(@as(usize, 2), prog.program.decls.len);
     try std.testing.expectEqual(@as(usize, 1), prog.program.decls[0].func_decl.body.len);
     try std.testing.expectEqual(@as(usize, 0), prog.program.decls[1].func_decl.body.len);
+}
+
+test "sla parser records exact skipped function body spans" {
+    const source =
+        \\fn first() -> i32 {
+        \\    return 1;
+        \\}
+        \\
+        \\impl Holder {
+        \\    fn second(self) -> i32 {
+        \\        return 2;
+        \\    }
+        \\}
+        \\
+        \\fn invalid_body() -> i32 {
+        \\    let = ;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.initWithDirAndOptions(allocator, source, ".", .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+    });
+    const prog = try p.parseProgram();
+    try std.testing.expect(prog.* == .program);
+
+    const first = prog.program.decls[0];
+    const first_span = p.functionBodySpanFor(first) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(
+        \\{
+        \\    return 1;
+        \\}
+    , first_span);
+
+    const impl_decl = prog.program.decls[1];
+    try std.testing.expect(impl_decl.* == .impl_decl);
+    const second = impl_decl.impl_decl.methods[0];
+    const second_span = p.functionBodySpanFor(second) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(
+        \\{
+        \\        return 2;
+        \\    }
+    , second_span);
+
+    const body = try Parser.parseFunctionBodySpan(allocator, first_span, &.{}, &.{});
+    try std.testing.expectEqual(@as(usize, 1), body.len);
+    try std.testing.expect(body[0].* == .return_stmt);
 }
 
 test "sla parser selectively parses named macro bodies" {

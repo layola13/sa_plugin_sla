@@ -78,6 +78,11 @@ fn macroNodeConsumption(node: *const ast.Node, name: []const u8) MacroParamConsu
         .for_stmt => |for_stmt| if (macroParamConsumption(for_stmt.body, name) == .never) .never else .conditional,
         .while_stmt => |while_stmt| if (macroParamConsumption(while_stmt.body, name) == .never) .never else .conditional,
         .expr_stmt => |expr| macroNodeConsumption(expr, name),
+        .call_expr => |call| blk: {
+            var effect: MacroParamConsumption = .never;
+            for (call.args) |arg| effect = sequenceMacroParamConsumption(effect, macroNodeConsumption(arg, name));
+            break :blk effect;
+        },
         .assign_stmt => |assign| macroNodeConsumption(assign.value, name),
         .let_stmt => |let| macroNodeConsumption(let.value, name),
         .return_stmt => |ret| if (ret.value) |value| macroNodeConsumption(value, name) else .never,
@@ -132,8 +137,10 @@ test "user macro value consumption follows nested move expressions" {
     var target = ast.Node{ .identifier = "out" };
     var assign = ast.Node{ .assign_stmt = .{ .target = &target, .value = &moved } };
     var block = ast.Node{ .block_stmt = .{ .body = &.{&assign} } };
+    var call = ast.Node{ .call_expr = .{ .func_name = "consume", .generics = &.{}, .args = &.{&moved} } };
 
     try std.testing.expect(macroParamConsumesValue(&.{&block}, "value"));
+    try std.testing.expectEqual(MacroParamConsumption.always, macroParamConsumption(&.{&call}, "value"));
     try std.testing.expect(!macroParamConsumesValue(&.{&block}, "out"));
 }
 

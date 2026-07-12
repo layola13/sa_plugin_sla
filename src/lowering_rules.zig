@@ -2960,6 +2960,8 @@ pub fn rootIdentifier(expr: *const ast.Node) ?[]const u8 {
         .identifier => |name| name,
         .field_expr => |field| rootIdentifier(field.expr),
         .index_expr => |idx| rootIdentifier(idx.target),
+        .borrow_expr => |borrow| rootIdentifier(borrow.expr),
+        .move_expr => |move| rootIdentifier(move.expr),
         else => null,
     };
 }

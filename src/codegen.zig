@@ -7870,7 +7870,7 @@ pub const Codegen = struct {
 
     fn genCallArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
         if (lowering_rules.prefixedIdentifierCallArg(arg)) |prefixed| {
-            return std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefixed.prefix, prefixed.name }) catch return CodegenError.OutOfMemory;
+            return std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefixed.prefix, self.resolveBindingName(prefixed.name) }) catch return CodegenError.OutOfMemory;
         }
         return try self.genExpr(arg, hoisted_allocs);
     }

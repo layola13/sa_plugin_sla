@@ -166,6 +166,7 @@ pub const TypeChecker = struct {
     resolved_call_symbols: std.AutoHashMap(*const ast.Node, []const u8),
     resolved_call_alias_metadata: std.AutoHashMap(*const ast.Node, FunctionAliasMetadata),
     current_loop_scope: ?*Scope,
+    current_loop_body_terminates: bool,
     global_scope: ?*Scope,
     unsafe_depth: usize,
     injected_scope_bindings: []const InjectedScopeBinding,
@@ -209,6 +210,7 @@ pub const TypeChecker = struct {
             .resolved_call_symbols = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .resolved_call_alias_metadata = std.AutoHashMap(*const ast.Node, FunctionAliasMetadata).init(allocator),
             .current_loop_scope = null,
+            .current_loop_body_terminates = false,
             .global_scope = null,
             .unsafe_depth = 0,
             .injected_scope_bindings = options.injected_scope_bindings,
@@ -235,6 +237,16 @@ pub const TypeChecker = struct {
             TypeError.OutOfMemory => return TypeError.OutOfMemory,
             else => return err,
         };
+    }
+
+    fn consumeBinding(self: *TypeChecker, scope: *Scope, name: []const u8, sym: *Symbol, operation: []const u8) TypeError!void {
+        if (self.current_loop_scope) |loop_scope| {
+            if (!self.current_loop_body_terminates and !bindingIsLocalToLoop(scope, loop_scope, name)) {
+                self.setError("LoopConditionalConsume: binding `{s}` declared before the loop cannot be consumed by {s} inside the loop body", .{ name, operation });
+                return TypeError.CompileError;
+            }
+        }
+        sym.state = .consumed;
     }
 
     fn directBorrowSource(expr: *const ast.Node) ?[]const u8 {
@@ -2908,7 +2920,7 @@ pub const TypeChecker = struct {
                 }
                 if (let.value.* == .identifier) {
                     if (scope.lookup(let.value.identifier)) |source| {
-                        if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) source.state = .consumed;
+                        if (!self.typeIsCopy(source.ty) and !isBorrowLikeType(source.ty)) try self.consumeBinding(scope, let.value.identifier, source, "implicit let move");
                     }
                 }
                 if (!isDiscardName(let.name)) {
@@ -2977,7 +2989,7 @@ pub const TypeChecker = struct {
                 if (rootIdentifier(let.value)) |name| {
                     const sym = scope.lookup(name) orelse return TypeError.UndefinedVariable;
                     if (sym.state == .consumed) return TypeError.UseAfterMove;
-                    sym.state = .consumed;
+                    try self.consumeBinding(scope, name, sym, "destructuring move");
                 }
             },
             .const_stmt => |c| {
@@ -3039,7 +3051,7 @@ pub const TypeChecker = struct {
                             self.setError("UseBeforeInit: var `{s}` is read before assignment", .{value_name});
                             return TypeError.UseBeforeInit;
                         }
-                        if (!self.typeIsCopy(sym.ty) and !isBorrowLikeType(sym.ty)) sym.state = .consumed;
+                        if (!self.typeIsCopy(sym.ty) and !isBorrowLikeType(sym.ty)) try self.consumeBinding(scope, value_name, sym, "assignment move");
                     }
                 }
                 if (assign.target.* == .identifier) {
@@ -3110,8 +3122,13 @@ pub const TypeChecker = struct {
                 defer saved_states.deinit();
 
                 const prev_loop_scope = self.current_loop_scope;
+                const prev_loop_body_terminates = self.current_loop_body_terminates;
                 self.current_loop_scope = loop_scope;
-                defer self.current_loop_scope = prev_loop_scope;
+                self.current_loop_body_terminates = blockTerminates(f.body);
+                defer {
+                    self.current_loop_scope = prev_loop_scope;
+                    self.current_loop_body_terminates = prev_loop_body_terminates;
+                }
                 try self.checkBlock(f.body, loop_scope, ret_ty, stmt, loop_scope);
                 self.restoreUninitializedFromSaved(scope, &saved_states);
             },
@@ -3135,8 +3152,13 @@ pub const TypeChecker = struct {
                 defer saved_states.deinit();
 
                 const prev_loop_scope = self.current_loop_scope;
+                const prev_loop_body_terminates = self.current_loop_body_terminates;
                 self.current_loop_scope = loop_scope;
-                defer self.current_loop_scope = prev_loop_scope;
+                self.current_loop_body_terminates = blockTerminates(w.body);
+                defer {
+                    self.current_loop_scope = prev_loop_scope;
+                    self.current_loop_body_terminates = prev_loop_body_terminates;
+                }
                 try self.checkBlock(w.body, loop_scope, ret_ty, stmt, loop_scope);
                 self.restoreUninitializedFromSaved(scope, &saved_states);
             },
@@ -3166,18 +3188,12 @@ pub const TypeChecker = struct {
             },
             .release_stmt => |rel| {
                 const sym = scope.lookup(rel.var_name) orelse return TypeError.UndefinedVariable;
-                if (current_loop_scope) |loop_scope| {
-                    if (!bindingIsLocalToLoop(scope, loop_scope, rel.var_name)) {
-                        self.setError("LoopConditionalConsume: binding `{s}` declared before the loop cannot be explicitly released inside the loop body", .{rel.var_name});
-                        return TypeError.CompileError;
-                    }
-                }
                 if (sym.state == .consumed) return TypeError.UseAfterMove;
                 if (sym.state == .uninitialized) {
                     self.setError("UseBeforeInit: var `{s}` cannot be released before assignment", .{rel.var_name});
                     return TypeError.UseBeforeInit;
                 }
-                sym.state = .consumed;
+                try self.consumeBinding(scope, rel.var_name, sym, "explicit release");
             },
             .expr_stmt => |expr| {
                 _ = try self.checkExpr(expr, scope);
@@ -3393,7 +3409,7 @@ pub const TypeChecker = struct {
                 if (move.expr.* == .identifier) {
                     const sym = scope.lookup(move.expr.identifier) orelse return TypeError.UndefinedVariable;
                     if (sym.state == .consumed) return TypeError.UseAfterMove;
-                    sym.state = .consumed; // Consume ownership
+                    try self.consumeBinding(scope, move.expr.identifier, sym, "explicit move");
                 }
                 return inner_ty;
             },

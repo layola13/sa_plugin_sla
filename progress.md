@@ -2602,6 +2602,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 # 2026-07-12: Inferred result-chain root folding
 
+# 2026-07-12: Folded empty project guard cleanup
+
+- [done] Removed no-else constant `if false {}` statements created by root project-result folding.
+  - Handles direct and expression-statement AST shapes.
+  - Focused inferred invalid-body and cached inferred lookup regressions plus build 7/7 pass.
+  - No strict-10s performance claim; the inferred open/close/update chain remains open.
+
 - [done] Constant-folded proven inferred snapshot/project-list/service-list guards before imported reachability.
   - Known three-project counts, tertiary presence, and inferred tertiary kind are rewritten in root panic guards.
   - Iterative dead-let cleanup removes the unused pure query/session chain.

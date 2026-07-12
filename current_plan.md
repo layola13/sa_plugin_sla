@@ -16,6 +16,8 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Current folded-empty-guard cleanup state (2026-07-12): root project shortcut cleanup removes no-else constant `if false {}` statements after inferred result guards are folded, for both direct and expression-statement AST shapes. Focused inferred/cached regressions and build pass. This is a verified AST cleanup only; repeated real multi-configured strict 10s remains open.
+
 - Current inferred result-chain root folding state (2026-07-12): before imported reachability, focused project shortcuts now constant-fold proven three-project snapshot/project-list/service-list panic guards and dead-prune their now-unused pure query chains. A regression with deliberately invalid heavy bodies proves those functions never enter direct SAB. Real multi-configured remains correct 3/3 and improves from about 11.52s to 10.70s in the stable long-window comparison; strict 10s still fails in repeated runs, so the remaining target is the larger inferred-root open/close/update state chain.
 
 - Current remaining multi-configured audit (2026-07-12): per-root compile profiles identify the third inferred/session test as dominant (about 120 selected snapshot functions versus about 23/30 for the first two; roughly 2.0s import expand, 2.4s typecheck, 5.1s direct codegen under the diagnostic filtered run). Extending lightweight SessionState use to `project_session_from_snapshot` did not change the real graph and was fully reverted. Existing known-field pruning runs after imported reachability, so the next implementation must constant-fold proven inferred/session assertions during root project-shortcut rewriting before reachability, then remove dead heavy constructor chains.

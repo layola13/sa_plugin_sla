@@ -1,0 +1,35 @@
+@import "sa_std/fs.sai"
+
+fn fallible_extern_read_len(path_ptr: ptr, path_len: u64) -> u64 {
+    let buffer = sa_fs_read_file(path_ptr, path_len, 4096);
+    switch buffer {
+        0 => {
+            return 0;
+        },
+        default => {},
+    };
+    let data_len = sa_fs_read_buffer_len(buffer);
+    let free_status = sa_fs_read_buffer_free(buffer);
+    if free_status != 0 {
+        return 0;
+    };
+    return data_len;
+}
+
+fn nonzero_status_u64(value: u64) -> u64 {
+    switch value {
+        0 => {
+            return 0;
+        },
+        default => {},
+    };
+    return 1;
+}
+
+@test "fallible extern payload can feed buffer externs"() {
+    let got = fallible_extern_read_len("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/test_unit_basic.sla", 72);
+    let ok = nonzero_status_u64(got);
+    if ok == 0 {
+        panic(43011);
+    };
+}

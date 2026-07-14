@@ -1,0 +1,14 @@
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+
+fn ptr_byte_add_read_second() -> u8 {
+    let p = PTR_BYTE_ADD(STR_PTR("az"), 1);
+    return PTR_READ_U8(p);
+}
+
+@test "sa ptr byte add result has pointer type"() {
+    let value = ptr_byte_add_read_second();
+    if value != 122 {
+        panic(43311);
+    };
+}

@@ -1086,6 +1086,54 @@ test "sla test codegen keeps imported macro direct callee" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sa codegen resolves local binding types for imported macro args" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\@import "sa_std/string.sa"
+        \\
+        \\fn same_literal_via_local_slices() -> bool {
+        \\    let left_ptr = STR_PTR("exec");
+        \\    let right_ptr = STR_PTR("exec");
+        \\    let left_len = STR_LEN("exec");
+        \\    let right_len = STR_LEN("exec");
+        \\    let left_slice = STR_FROM_PARTS(left_ptr, left_len);
+        \\    let right_slice = STR_FROM_PARTS(right_ptr, right_len);
+        \\    return STR_EQ(left_slice, right_slice);
+        \\}
+        \\
+        \\@test "imported macro local binding args"() {
+        \\    if !same_literal_via_local_slices() { panic(24043); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaString(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND STR_FROM_PARTS") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND STR_EQ") != null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla emit reachability keeps user macro direct callee" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1868,6 +1916,68 @@ test "sla empty void exits keep caller managed parameters" {
         try std.testing.expect(std.mem.indexOf(u8, body, "    return\n") != null);
         try std.testing.expect(std.mem.indexOf(u8, body, "    !value\n") == null);
     }
+}
+
+test "sla shared static call plan emits void calls without result registers" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn consume(value: i32) {
+        \\}
+        \\
+        \\@test "void static call plan"() {
+        \\    consume(7);
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "void static call plan",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "    call @sla__consume(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, " = call @sla__consume(") == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+
+    stderr_buf.clearRetainingCapacity();
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "main.sla",
+        ".sla-cache/sab/void_static_call_plan.sab",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "void static call plan",
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+            .allow_fallback = false,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, disasm, "@sla__consume") != null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla reachability merges only call facts shared by every caller" {
@@ -4920,6 +5030,8 @@ test "sla test codegen qualifies same named imported helper reachability" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__helper") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__sibling__entry") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__sibling__helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__dep__helper") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__sibling__helper") != null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -6957,18 +7069,18 @@ test "sla sab backend lowers std surface function metadata directly" {
     defer module.deinit(std.testing.allocator);
 
     var saw_vec_len = false;
-    var saw_len_call = false;
     for (module.function_sigs) |fsig| {
         if (std.mem.eql(u8, fsig.name, "sa_vec_len")) saw_vec_len = true;
     }
     for (module.instructions) |item| {
         try std.testing.expectEqualStrings("", item.raw_text);
-        if (item.kind == .call and item.operands[1] == .text and std.mem.indexOf(u8, item.operands[1].text, "@sa_vec_len") != null) {
-            saw_len_call = true;
-        }
     }
+    const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
+    const test_start = std.mem.indexOf(u8, disasm, "test_decl $\"direct vec len metadata\"") orelse return error.TestUnexpectedResult;
+    const test_body = disasm[test_start..];
     try std.testing.expect(saw_vec_len);
-    try std.testing.expect(saw_len_call);
+    try std.testing.expect(std.mem.indexOf(u8, test_body, "    load ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, test_body, "@sa_vec_len") == null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

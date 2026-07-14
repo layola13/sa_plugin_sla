@@ -30,6 +30,11 @@ pub const StaticCallResultPlan = struct {
     returns_void: bool,
 };
 
+pub const StaticCallLoweringPlan = struct {
+    call: StaticCallPlan,
+    result: StaticCallResultPlan,
+};
+
 pub const AddressOfShape = enum {
     identifier,
     deref_borrow_or_pointer,
@@ -1654,6 +1659,7 @@ pub const CallArgMaterializationInput = struct {
     auto_borrow_receiver: bool = false,
     receiver_style_auto_borrow: bool = false,
     statement_receiver_auto_borrow: bool = false,
+    abi_borrow_auto_borrow: bool = false,
     array_to_slice_borrow: bool = false,
     dyn_borrow_trait_name: ?[]const u8 = null,
     copy_struct_value: bool = false,
@@ -1662,12 +1668,14 @@ pub const CallArgMaterializationInput = struct {
     preserve_identifier_for_later_use: bool = false,
     shallow_copy_value: bool = false,
     generated_scalar_const_identifier: bool = false,
+    value_arg_transfers_ownership: bool = false,
 };
 
 pub const CallArgMaterializationPlan = struct {
     kind: CallArgMaterializationKind,
     release_after_call: bool,
     dyn_borrow_trait_name: ?[]const u8 = null,
+    transfers_ownership: bool = false,
 };
 
 pub const AbiFieldLayout = struct {
@@ -1812,8 +1820,14 @@ pub const BorrowAddressTempReleasePlan = struct {
 
 pub const PrefixedBorrowAddressCallArgReleasePlan = struct {
     emit_arg_prefix: bool,
+    restore_taken_value: bool,
     release_address_value: bool,
     release_source_temps: bool,
+};
+
+pub const PrefixedBorrowAddressCallArgRestoreTiming = enum {
+    after_call,
+    before_sibling_args,
 };
 
 pub const ResultSlotTransferPlan = struct {
@@ -2052,12 +2066,27 @@ pub fn planBorrowAddressTempRelease(has_borrow_address_temps: bool) BorrowAddres
     };
 }
 
-pub fn planPrefixedBorrowAddressCallArgRelease(prefix: u8, address_value_is_temp: bool, has_source_temps: bool) PrefixedBorrowAddressCallArgReleasePlan {
+pub fn planPrefixedBorrowAddressCallArgRelease(prefix: u8, address_value_is_temp: bool, has_source_temps: bool, has_taken_value_restore: bool) PrefixedBorrowAddressCallArgReleasePlan {
     return .{
         .emit_arg_prefix = prefix == '&' or prefix == '^',
-        .release_address_value = prefix == '&' and address_value_is_temp,
+        .restore_taken_value = prefix == '&' and has_taken_value_restore,
+        .release_address_value = prefix == '&' and address_value_is_temp and !has_taken_value_restore,
         .release_source_temps = has_source_temps,
     };
+}
+
+pub fn planPrefixedBorrowAddressCallArgRestoreTiming(prefix: u8, has_taken_value_restore: bool, has_sibling_args: bool) PrefixedBorrowAddressCallArgRestoreTiming {
+    if (prefix == '&' and has_taken_value_restore and has_sibling_args) return .before_sibling_args;
+    return .after_call;
+}
+
+pub fn prefixedBorrowAddressCallArgNeedsOperandPrefix(prefix: u8, address_source_materialized: bool) bool {
+    if (prefix == '&' and address_source_materialized) return false;
+    return prefix == '&' or prefix == '^';
+}
+
+pub fn prefixedBorrowAddressCallArgOperandPrefix(prefix: u8, address_source_materialized: bool) ?u8 {
+    return if (prefixedBorrowAddressCallArgNeedsOperandPrefix(prefix, address_source_materialized)) prefix else null;
 }
 
 pub fn planRefCellCompanionStoreCleanup(
@@ -2916,6 +2945,32 @@ pub fn planStaticCall(tc: *type_checker.TypeChecker, expr: *const ast.Node, call
     return null;
 }
 
+pub fn planStaticCallLowering(
+    tc: *type_checker.TypeChecker,
+    expr: *const ast.Node,
+    call: ast.CallExpr,
+    expr_ty: ?*const ast.Type,
+) ?StaticCallLoweringPlan {
+    const call_plan = planStaticCall(tc, expr, call) orelse return null;
+    return .{
+        .call = call_plan,
+        .result = planStaticCallResult(tc, call_plan, expr_ty),
+    };
+}
+
+pub fn planResolvedStaticCallLowering(
+    tc: *type_checker.TypeChecker,
+    expr: *const ast.Node,
+    call: ast.CallExpr,
+    expr_ty: ?*const ast.Type,
+) ?StaticCallLoweringPlan {
+    const call_plan = planResolvedStaticCall(tc, expr, call) orelse return null;
+    return .{
+        .call = call_plan,
+        .result = planStaticCallResult(tc, call_plan, expr_ty),
+    };
+}
+
 pub fn staticCallEmitSymbol(plan: StaticCallPlan) []const u8 {
     if (plan.alias_metadata) |metadata| return metadata.alias;
     return plan.target_symbol;
@@ -3229,6 +3284,8 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
                 if (shouldAutoBorrowReceiverArg(param, arg, arg_ty)) {
                     return .{ .kind = .auto_borrow, .release_after_call = callArgNeedsRelease(arg) or input.generated_scalar_const_identifier };
                 }
+            } else if (input.abi_borrow_auto_borrow and param.is_borrow and arg.* != .borrow_expr) {
+                return .{ .kind = .auto_borrow, .release_after_call = callArgNeedsRelease(arg) or input.generated_scalar_const_identifier };
             } else if (shouldAutoBorrowResolvedArg(param, arg, arg_ty, input.arg_index, input.auto_borrow_receiver)) {
                 return .{ .kind = .auto_borrow, .release_after_call = callArgNeedsRelease(arg) or input.generated_scalar_const_identifier };
             }
@@ -3250,10 +3307,16 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
     }
     return .{
         .kind = .value,
-        .release_after_call = callArgNeedsRelease(arg) or
-            input.generated_fn_ptr_identifier or
-            input.generated_scalar_const_identifier,
+        .release_after_call = !input.value_arg_transfers_ownership and
+            (callArgNeedsRelease(arg) or
+                input.generated_fn_ptr_identifier or
+                input.generated_scalar_const_identifier),
+        .transfers_ownership = input.value_arg_transfers_ownership,
     };
+}
+
+pub fn vecElementPushTransfersOwnership(elem_ty: *const ast.Type, elem_is_copy: bool) bool {
+    return !elem_is_copy and !isBorrowLikeType(elem_ty);
 }
 
 test "shared lowering rules normalize derives and call argument prefixes" {
@@ -4743,12 +4806,33 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expect(borrow_temp_release.release_borrow_value);
     try std.testing.expect(borrow_temp_release.release_source_temps);
 
-    const borrowed_call_arg_release = planPrefixedBorrowAddressCallArgRelease('&', true, true);
+    const borrowed_call_arg_release = planPrefixedBorrowAddressCallArgRelease('&', true, true, false);
     try std.testing.expect(borrowed_call_arg_release.emit_arg_prefix);
+    try std.testing.expect(!borrowed_call_arg_release.restore_taken_value);
     try std.testing.expect(borrowed_call_arg_release.release_address_value);
     try std.testing.expect(borrowed_call_arg_release.release_source_temps);
 
-    const moved_call_arg_release = planPrefixedBorrowAddressCallArgRelease('^', true, true);
+    const restored_call_arg = planPrefixedBorrowAddressCallArgRelease('&', true, true, true);
+    try std.testing.expect(restored_call_arg.restore_taken_value);
+    try std.testing.expect(!restored_call_arg.release_address_value);
+    try std.testing.expect(restored_call_arg.release_source_temps);
+    try std.testing.expectEqual(
+        PrefixedBorrowAddressCallArgRestoreTiming.before_sibling_args,
+        planPrefixedBorrowAddressCallArgRestoreTiming('&', true, true),
+    );
+    try std.testing.expectEqual(
+        PrefixedBorrowAddressCallArgRestoreTiming.after_call,
+        planPrefixedBorrowAddressCallArgRestoreTiming('&', true, false),
+    );
+    try std.testing.expectEqual(
+        PrefixedBorrowAddressCallArgRestoreTiming.after_call,
+        planPrefixedBorrowAddressCallArgRestoreTiming('^', true, true),
+    );
+    try std.testing.expectEqual(null, prefixedBorrowAddressCallArgOperandPrefix('&', true));
+    try std.testing.expectEqual(@as(?u8, '&'), prefixedBorrowAddressCallArgOperandPrefix('&', false));
+    try std.testing.expectEqual(@as(?u8, '^'), prefixedBorrowAddressCallArgOperandPrefix('^', true));
+
+    const moved_call_arg_release = planPrefixedBorrowAddressCallArgRelease('^', true, true, false);
     try std.testing.expect(moved_call_arg_release.emit_arg_prefix);
     try std.testing.expect(!moved_call_arg_release.release_address_value);
     try std.testing.expect(moved_call_arg_release.release_source_temps);
@@ -4996,4 +5080,9 @@ test "shared static call plan preserves namespace alias metadata" {
     try std.testing.expectEqualStrings("/tmp/dep.sla", plan.alias_metadata.?.module_path.?);
     try std.testing.expectEqualStrings("dep__imported_a", staticCallEmitSymbol(plan));
     try std.testing.expectEqualStrings("dep__imported_a", resolveStaticCallSymbol(&tc, &call_node, call_node.call_expr).?);
+
+    var void_ty = ast.Type{ .primitive = .void_type };
+    const lowering = planStaticCallLowering(&tc, &call_node, call_node.call_expr, &void_ty) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("dep__imported_a", staticCallEmitSymbol(lowering.call));
+    try std.testing.expect(lowering.result.returns_void);
 }

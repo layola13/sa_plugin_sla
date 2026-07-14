@@ -1,0 +1,54 @@
+@import "sa_std/vec.sa"
+
+struct PushSpan {
+    start: u64,
+    end: u64,
+}
+
+struct PushTrack {
+    name: PushSpan,
+    span: PushSpan,
+}
+
+struct PushAst {
+    tracks: Vec<PushTrack>,
+}
+
+fn push_span_new(start: u64, end: u64) -> PushSpan {
+    return PushSpan { start: start, end: end };
+}
+
+fn push_span_len(span: &PushSpan) -> u64 {
+    if span.end <= span.start {
+        return 0;
+    };
+    return span.end - span.start;
+}
+
+fn push_track_new(name: PushSpan, span: PushSpan) -> PushTrack {
+    return PushTrack { name: name, span: span };
+}
+
+fn push_ast_new() -> PushAst {
+    let tracks: Vec<PushTrack> = Vec::new();
+    return PushAst { tracks: tracks };
+}
+
+fn push_ast_add_track(ast: &PushAst, track: PushTrack) {
+    ast.tracks.push(track);
+}
+
+@test "vec keeps struct returned by helper call"() {
+    let ast = push_ast_new();
+    push_ast_add_track(&ast, push_track_new(push_span_new(2, 5), push_span_new(0, 9)));
+
+    if len(ast.tracks) != 1 {
+        panic(43001);
+    };
+    if push_span_len(&ast.tracks[0].name) != 3 {
+        panic(43002);
+    };
+    if push_span_len(&ast.tracks[0].span) != 9 {
+        panic(43003);
+    };
+}

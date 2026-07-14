@@ -65,3 +65,22 @@ struct VecStructHolder {
     if len(holder.values) != 2 { panic(9130); };
     if holder.values[1].y != 2 { panic(9131); };
 }
+
+fn vec_struct_holder_sum(holder: &VecStructHolder) -> i32 {
+    let i: i64 = 0;
+    let total: i32 = 0;
+    while i < len(holder.values) as i64 {
+        let point = holder.values[i];
+        total = total + point.x;
+        i = i + 1;
+    }
+    return total;
+}
+
+@test "borrowed vec struct field index read in loop"() {
+    let values: Vec<VecPoint> = Vec::new();
+    values.push(VecPoint { x: 4, y: 1 });
+    values.push(VecPoint { x: 6, y: 2 });
+    let holder = VecStructHolder { values: values };
+    if vec_struct_holder_sum(&holder) != 10 { panic(9140); };
+}

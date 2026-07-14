@@ -1,4 +1,5 @@
 const std = @import("std");
+const workspace = @import("workspace.zig");
 
 pub const max_import_bytes = 16 * 1024 * 1024;
 
@@ -84,6 +85,7 @@ pub fn readImportFileIfExists(allocator: std.mem.Allocator, path: []const u8) !?
 pub fn readImportFromRoot(allocator: std.mem.Allocator, root: []const u8, rel_path: []const u8, output_path: []const u8) !?ResolvedImport {
     if (rel_path.len == 0) return null;
     const candidate = try std.fs.path.join(allocator, &.{ root, rel_path });
+    defer allocator.free(candidate);
     return try readImportFileIfExistsWithOutputPath(allocator, candidate, output_path);
 }
 
@@ -150,6 +152,59 @@ pub fn resolveSlaStdImport(allocator: std.mem.Allocator, import_path: []const u8
     return null;
 }
 
+fn isExplicitFileImportPath(path: []const u8) bool {
+    return std.fs.path.isAbsolute(path) or
+        std.mem.startsWith(u8, path, "./") or
+        std.mem.startsWith(u8, path, "../") or
+        std.mem.eql(u8, path, ".") or
+        std.mem.eql(u8, path, "..");
+}
+
+fn resolveWorkspacePackageImport(
+    allocator: std.mem.Allocator,
+    base_dir: []const u8,
+    import_path: []const u8,
+) !?ResolvedImport {
+    if (isExplicitFileImportPath(import_path)) return null;
+    if (isGlobImportPath(import_path)) return null;
+    if (isSaStdImport(import_path) or isSlaStdImport(import_path)) return null;
+
+    const slash = std.mem.indexOfScalar(u8, import_path, '/') orelse return null;
+    if (slash == 0 or slash + 1 >= import_path.len) return null;
+
+    const package_name = import_path[0..slash];
+    const rel_path = import_path[slash + 1 ..];
+
+    var resolved_workspace = workspace.resolveFromRootPath(allocator, base_dir, .{}) catch |err| switch (err) {
+        error.FileNotFound,
+        error.InvalidFormat,
+        error.InvalidPath,
+        error.DuplicateEntry,
+        error.UnknownPackage,
+        error.MissingDefaultMember,
+        => return null,
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer resolved_workspace.deinit(allocator);
+
+    if (resolved_workspace.workspace_manifest == null) return null;
+    const members = try workspace.listWorkspaceMembers(
+        allocator,
+        resolved_workspace.workspace_root,
+        &resolved_workspace.workspace_manifest.?,
+    );
+    defer workspace.freeWorkspaceMembers(allocator, members);
+
+    for (members) |member| {
+        const member_package = member.package_name orelse continue;
+        if (!std.mem.eql(u8, member_package, package_name)) continue;
+        if (try readImportFromRoot(allocator, member.member_root, rel_path, import_path)) |resolved| return resolved;
+        return null;
+    }
+
+    return null;
+}
+
 pub fn resolveImportFile(
     allocator: std.mem.Allocator,
     base_dir: []const u8,
@@ -159,6 +214,7 @@ pub fn resolveImportFile(
 
     if (try resolveSlaStdImport(allocator, import_path)) |resolved| return resolved;
     if (try resolveSaStdImport(allocator, import_path)) |resolved| return resolved;
+    if (try resolveWorkspacePackageImport(allocator, base_dir, import_path)) |resolved| return resolved;
 
     const candidate = if (std.fs.path.isAbsolute(import_path))
         try allocator.dupe(u8, import_path)
@@ -265,4 +321,36 @@ pub fn importPathFromLine(raw_line: []const u8) ?[]const u8 {
 
 pub fn expandedSourceMayContainImports(expanded_source: []const u8) bool {
     return std.mem.indexOf(u8, expanded_source, "@import") != null;
+}
+
+test "resolve import by workspace package name" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("members/app/src");
+    try tmp.dir.makePath("members/protocol/src");
+    const workspace_manifest =
+        \\workspace {
+        \\  members ["members/app", "members/protocol"]
+        \\  default_member "app"
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "sa.mod", .data = workspace_manifest });
+    try tmp.dir.writeFile(.{ .sub_path = "members/app/sa.mod", .data = "package \"scodex-cli\"\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "members/protocol/sa.mod", .data = "package \"scodex-protocol\"\n" });
+    try tmp.dir.writeFile(.{ .sub_path = "members/protocol/src/protocol.sla", .data = "fn protocol_ok() -> i32 { return 1; }\n" });
+
+    const tmp_root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_root);
+    const app_src = try std.fs.path.join(std.testing.allocator, &.{ tmp_root, "members", "app", "src" });
+    defer std.testing.allocator.free(app_src);
+
+    const resolved = try resolveImportFile(std.testing.allocator, app_src, "scodex-protocol/src/protocol.sla");
+    defer std.testing.allocator.free(resolved.path);
+    defer std.testing.allocator.free(resolved.output_path);
+    defer std.testing.allocator.free(resolved.source);
+
+    try std.testing.expect(std.mem.endsWith(u8, resolved.path, "members/protocol/src/protocol.sla"));
+    try std.testing.expectEqualStrings("scodex-protocol/src/protocol.sla", resolved.output_path);
+    try std.testing.expect(std.mem.indexOf(u8, resolved.source, "protocol_ok") != null);
 }

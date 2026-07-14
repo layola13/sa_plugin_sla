@@ -1,0 +1,225 @@
+# issue016: argv JSON string slice parsing hits borrow/codegen limits
+
+Date: 2026-07-14
+Status: reproduced from `scodex`, no source fix yet
+
+## Summary
+
+`/home/vscode/projects/sla_codex` now models CLI routing from real argv JSON:
+
+```sla
+fn cli_route_from_argv_json(data_ref: &ptr, data_len: u64, source_code: u8) -> CliRoute
+```
+
+The implementation parses a JSON array, reads argv element 1 as the command
+name, and maps it to `exec`, `app-server`, `tui`, `capabilities`, `help`, and
+`doctor`.
+
+The package type-checks and the workspace builds, but executing the focused
+argv JSON tests exposes backend limitations around borrowed JSON string
+pointers and imported string macros.
+
+## Environment
+
+```text
+project: /home/vscode/projects/sla_codex
+compiler source: /home/vscode/projects/sa_plugins/sa_plugin_sla
+mode: source-built sla-local-cli, no dev plugin install
+```
+
+## Repro
+
+```sh
+cd /home/vscode/projects/sla_codex
+/home/vscode/projects/sa_plugins/sa_plugin_sla/.zig-cache/o/787cd19cd9444b68e4e13a2a80362c04/sla-local-cli \
+  sla test packages/scodex-cli/src/args.sla --test-backend sab --jobs 1 --trace-panic
+
+/home/vscode/projects/sa_plugins/sa_plugin_sla/.zig-cache/o/787cd19cd9444b68e4e13a2a80362c04/sla-local-cli \
+  sla test packages/scodex-cli/src/args.sla --test-backend sa --jobs 1 --trace-panic
+```
+
+## Current Passing Comparison
+
+```sh
+cd /home/vscode/projects/sla_codex
+/home/vscode/projects/sa_plugins/sa_plugin_sla/.zig-cache/o/787cd19cd9444b68e4e13a2a80362c04/sla-local-cli \
+  sla check -p scodex-cli
+
+/home/vscode/projects/sa_plugins/sa_plugin_sla/.zig-cache/o/787cd19cd9444b68e4e13a2a80362c04/sla-local-cli \
+  sla build-workspace -p scodex-cli -o /tmp/scodex
+
+/tmp/scodex
+tools/verify_no_rust.sh
+```
+
+Result:
+
+```text
+Sla Compiler: Successfully parsed and verified syntax and types of /home/vscode/projects/sla_codex/packages/scodex-cli/src/main.sla.
+scodex: SLA-native bootstrap ok
+scodex no-rust gate ok
+```
+
+## SAB Failure
+
+The direct SAB backend exits with `UseAfterMove` while lowering the argv JSON
+string/slice path. Earlier variants reproduced the same class of problem with:
+
+- a local `ptr` returned by `sa_json_string_ptr`;
+- a temporary `*sa_json_string_ptr(command_node)` argument;
+- manual byte reads through repeated `PTR_BYTE_ADD`;
+- route-level double parsing of the same argv pointer.
+
+After reducing the route to a single JSON scan and borrowed input pointer, SAB
+still fails during execution of the focused tests.
+
+## SA Backend Failure
+
+The SA backend fails during codegen for imported macro arguments when the argv
+command string is turned into a string slice and compared:
+
+```text
+Codegen Error: failed to generate SA code: error.CodegenError
+src/codegen.zig:8724 in genImportedMacroArg
+```
+
+A previous attempt to use `sa_str_eq_ignore_ascii_case` instead of `STR_EQ`
+avoided imported string macros but failed verification with:
+
+```text
+error[InteriorPtrEscape]: interior pointers cannot cross FFI boundaries
+```
+
+That suggests the compiler/runtime needs a stable way to compare a JSON string
+node slice to a literal without treating the borrowed JSON string pointer as an
+escaping FFI-owned pointer.
+
+## Expected
+
+The following pattern should be valid in both SA and direct SAB backends:
+
+```sla
+let root = sa_json_parse(data_ref, data_len);
+let command_node = ... argv[1] ...;
+let command_len = sa_json_string_len(command_node);
+let command_ptr = *sa_json_string_ptr(command_node);
+let command_slice = STR_FROM_PARTS(command_ptr, command_len);
+return STR_EQ(command_slice, "exec");
+```
+
+Equivalent direct byte reads from a borrowed string pointer should also not
+produce use-after-move cleanup traps.
+
+## Impact
+
+`scodex` can now type-check and build with the argv JSON route model in place,
+but cannot promote argv JSON parsing to an execution gate until this backend
+borrow/codegen issue is fixed.
+
+## 2026-07-14 Update
+
+The `scodex` side was adjusted to avoid changing the existing `sa_std`
+JSON ABI. `sci/sa_std/encoding/json.sa` now adds a macro-only helper:
+
+```sa
+[MACRO] JSON_STRING_PTR %out_ptr, %node
+    %out_ptr = call @sa_json_string_ptr(%node)
+[END_MACRO]
+```
+
+This keeps `@extern sa_json_string_ptr(node: ptr) -> &ptr` unchanged and avoids
+adding a new runtime symbol that would require rebuilding `libsa_std.a`.
+
+With the current source-built local CLI:
+
+```sh
+cd /home/vscode/projects/sla_codex
+SA_PLUGIN_DEV=1 \
+SA_STD_DIR=/home/vscode/projects/sci/sa_std \
+/home/vscode/projects/sa_plugins/sa_plugin_sla/.zig-cache/o/787cd19cd9444b68e4e13a2a80362c04/sla-local-cli \
+  sla test packages/scodex-cli/src/args.sla --test-backend sa --jobs 1 --trace-panic
+```
+
+passes:
+
+```text
+7 passed; 0 failed; 0 skipped
+```
+
+The same file with direct SAB still exits nonzero without diagnostics:
+
+```sh
+SA_PLUGIN_DEV=1 \
+SA_STD_DIR=/home/vscode/projects/sci/sa_std \
+/home/vscode/projects/sa_plugins/sa_plugin_sla/.zig-cache/o/787cd19cd9444b68e4e13a2a80362c04/sla-local-cli \
+  sla test packages/scodex-cli/src/args.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+Observed result:
+
+```text
+exit=1
+```
+
+No trap JSON or verifier message was emitted in that run. The updated expected
+compiler behavior is:
+
+- SA-text and SAB should both support imported macro wrappers around borrowed
+  JSON string pointers.
+- SAB test execution should emit a diagnostic if the compiled SAB test exits
+  nonzero.
+
+## 2026-07-14 Update 2
+
+`scodex` no longer depends on `sa_json_string_ptr` for CLI argv routing. The
+current implementation in
+`/home/vscode/projects/sla_codex/packages/scodex-cli/src/args.sla` uses a
+conservative ASCII scanner over the original argv JSON bytes:
+
+- count top-level JSON string values;
+- take the second string as the command name;
+- compare that borrowed slice to known command literals;
+- return `help` when fewer than two argv strings are present.
+
+This is intentionally a local argv snapshot compatibility layer, not a
+replacement for the general JSON ABI.
+
+Current result with the source-built local CLI:
+
+```sh
+cd /home/vscode/projects/sla_codex
+SA_PLUGIN_DEV=1 \
+SA_STD_DIR=/home/vscode/projects/sci/sa_std \
+/home/vscode/projects/sa_plugins/sa_plugin_sla/.zig-cache/o/787cd19cd9444b68e4e13a2a80362c04/sla-local-cli \
+  sla test packages/scodex-cli/src/args.sla --test-backend sa --jobs 1 --trace-panic
+```
+
+passes:
+
+```text
+7 passed; 0 failed; 0 skipped
+```
+
+The direct SAB backend still exits with code 1 and no diagnostic:
+
+```sh
+SA_PLUGIN_DEV=1 \
+SA_STD_DIR=/home/vscode/projects/sci/sa_std \
+/home/vscode/projects/sa_plugins/sa_plugin_sla/.zig-cache/o/787cd19cd9444b68e4e13a2a80362c04/sla-local-cli \
+  sla test packages/scodex-cli/src/args.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+Observed output:
+
+```text
+<empty stdout/stderr>
+exit=1
+```
+
+Updated interpretation:
+
+- The original borrowed JSON string pointer issue remains valid for general
+  JSON/string ABI usage.
+- `scodex` has a working SA-backend workaround for CLI argv routing.
+- Direct SAB still needs either a control-flow/ptr-scan fix or at minimum a
+  diagnostic when a focused test binary exits nonzero.

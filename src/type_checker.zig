@@ -171,6 +171,7 @@ pub const TypeChecker = struct {
     array_to_slice_borrow_args: std.AutoHashMap(*const ast.Node, void),
     resolved_call_symbols: std.AutoHashMap(*const ast.Node, []const u8),
     resolved_call_alias_metadata: std.AutoHashMap(*const ast.Node, FunctionAliasMetadata),
+    current_function_namespace: ?[]const u8,
     current_loop_scope: ?*Scope,
     current_loop_body_terminates: bool,
     global_scope: ?*Scope,
@@ -216,6 +217,7 @@ pub const TypeChecker = struct {
             .array_to_slice_borrow_args = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .resolved_call_symbols = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .resolved_call_alias_metadata = std.AutoHashMap(*const ast.Node, FunctionAliasMetadata).init(allocator),
+            .current_function_namespace = null,
             .current_loop_scope = null,
             .current_loop_body_terminates = false,
             .global_scope = null,
@@ -264,6 +266,28 @@ pub const TypeChecker = struct {
         };
     }
 
+    fn borrowSourceAliasedByOtherActive(self: *TypeChecker, scope: *Scope, name: []const u8) bool {
+        _ = self;
+        // issue013: when a borrow value is `let y = x;` (x is a borrow), the borrow
+        // handle is carried into y; only y should be released at scope exit.
+        // Return true if some *other* active symbol `y` in the same scope (or an
+        // ancestor scope) has borrow_source == name -- in that case we skip the
+        // source `name` from cleanup, otherwise SA vm gets a double release
+        // (UseAfterMove / PhiStateConflict).
+        var curr: ?*Scope = scope;
+        while (curr) |frame| : (curr = frame.parent) {
+            var iter = frame.symbols.valueIterator();
+            while (iter.next()) |sym| {
+                if (std.mem.eql(u8, sym.name, name)) continue;
+                if (sym.state != .active) continue;
+                if (sym.borrow_source) |bsrc| {
+                    if (std.mem.eql(u8, bsrc, name)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
     fn functionExitBindingEscapes(scope: *Scope, result_expr: *const ast.Node, candidate: []const u8) bool {
         const result_name = switch (result_expr.*) {
             .identifier => |name| name,
@@ -293,6 +317,8 @@ pub const TypeChecker = struct {
             while (iter.next()) |sym| {
                 if (sym.state != .active or isInternalSymbol(sym.name)) continue;
                 if (functionExitBindingEscapes(scope, future_expr, sym.name)) continue;
+                // issue013: skip borrowed source that was aliased.
+                if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
                 try cleanup_list.append(sym.name);
             }
         }
@@ -584,9 +610,14 @@ pub const TypeChecker = struct {
     }
 
     fn recordResolvedCallSymbol(self: *TypeChecker, expr: *const ast.Node, call_name: []const u8, resolved_name: []const u8) TypeError!void {
-        try self.resolved_call_symbols.put(expr, resolved_name);
         if (self.resolveFunctionAliasMetadata(call_name)) |metadata| {
+            try self.resolved_call_symbols.put(expr, metadata.target);
             try self.resolved_call_alias_metadata.put(expr, metadata);
+        } else if (self.resolveFunctionAliasMetadata(resolved_name)) |metadata| {
+            try self.resolved_call_symbols.put(expr, metadata.target);
+            try self.resolved_call_alias_metadata.put(expr, metadata);
+        } else {
+            try self.resolved_call_symbols.put(expr, resolved_name);
         }
     }
 
@@ -2413,12 +2444,6 @@ pub const TypeChecker = struct {
     }
 
     fn setTypeFromAbiReturn(allocator: std.mem.Allocator, ret: *ast.Type, abi_ret_ty: []const u8) void {
-        const raw_name = std.mem.trim(u8, abi_ret_ty, " \t\r");
-        if (std.mem.endsWith(u8, raw_name, "!")) {
-            ret.* = .{ .primitive = .void_type };
-            return;
-        }
-
         const name = normalizeAbiTypeName(abi_ret_ty);
         if (isPointerAbiType(abi_ret_ty)) {
             const ty = normalizeAbiTypeName(abi_ret_ty);
@@ -2913,6 +2938,10 @@ pub const TypeChecker = struct {
     fn checkFunc(self: *TypeChecker, func: *ast.FuncDecl) !void {
         if (func.is_decl_only) return;
 
+        const previous_namespace = self.current_function_namespace;
+        self.current_function_namespace = if (self.resolveFunctionAliasMetadata(func.name)) |metadata| metadata.namespace else null;
+        defer self.current_function_namespace = previous_namespace;
+
         var scope = try Scope.init(self.allocator, self.global_scope);
         try self.scope_pool.append(scope);
 
@@ -2973,6 +3002,10 @@ pub const TypeChecker = struct {
                 // Block-local borrows still need lexical end cleanups so codegen can
                 // release tracked borrow handles such as RefCell shared/mut borrows.
                 if (sym.ty.* == .primitive and sym.ty.primitive == .void_type) continue;
+                // issue013: if another active local has borrow_source == sym.name,
+                // the borrow handle was moved into that local; skip the source here
+                // so we do not emit a double `!name` release.
+                if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
                 try cleanup_list.append(sym.name);
                 sym.state = .consumed;
             }
@@ -3316,6 +3349,8 @@ pub const TypeChecker = struct {
                             if (ret.value) |val| {
                                 if (functionExitBindingEscapes(scope, val, sym.name)) continue;
                             }
+                            // issue013: skip borrow source that has been re-aliased.
+                            if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
                             try cleanup_list.append(sym.name);
                         }
                     }
@@ -3407,6 +3442,8 @@ pub const TypeChecker = struct {
                     var iter = s.symbols.valueIterator();
                     while (iter.next()) |sym| {
                         if (sym.state == .active and !isInternalSymbol(sym.name)) {
+                            // issue013: skip borrowed source that was aliased.
+                            if (isBorrowLikeType(sym.ty) and self.borrowSourceAliasedByOtherActive(scope, sym.name)) continue;
                             try cleanup_list.append(sym.name);
                         }
                     }
@@ -4617,10 +4654,23 @@ pub const TypeChecker = struct {
                     }
                 }
 
-                const resolved_func_name = self.resolveFunctionAlias(call.func_name);
+                var module_alias_buf: [512]u8 = undefined;
+                const module_local_name = if (self.current_function_namespace) |namespace|
+                    std.fmt.bufPrint(&module_alias_buf, "{s}__{s}", .{ namespace, call.func_name }) catch null
+                else
+                    null;
+                const resolved_func_name = if (module_local_name) |alias|
+                    if (self.funcs.contains(alias) or self.imported_function_signatures.contains(alias)) alias else self.resolveFunctionAlias(call.func_name)
+                else if (self.funcs.contains(call.func_name) or self.imported_function_signatures.contains(call.func_name))
+                    call.func_name
+                else
+                    self.resolveFunctionAlias(call.func_name);
                 if (self.funcs.get(resolved_func_name)) |func| {
                     try self.checkCallArgsAgainstFunc(func, call.args, scope, call.func_name, false);
-                    if (!std.mem.eql(u8, resolved_func_name, call.func_name)) {
+                    if (!std.mem.eql(u8, resolved_func_name, call.func_name) or
+                        self.resolveFunctionAliasMetadata(call.func_name) != null or
+                        self.resolveFunctionAliasMetadata(resolved_func_name) != null)
+                    {
                         try self.recordResolvedCallSymbol(expr, call.func_name, resolved_func_name);
                     }
                     if (func.is_async) {
@@ -4631,7 +4681,10 @@ pub const TypeChecker = struct {
 
                 if (self.imported_function_signatures.get(resolved_func_name)) |signature| {
                     try self.checkCallArgsAgainstSignature(signature.params, call.args, scope, call.func_name, false);
-                    if (!std.mem.eql(u8, resolved_func_name, call.func_name)) {
+                    if (!std.mem.eql(u8, resolved_func_name, call.func_name) or
+                        self.resolveFunctionAliasMetadata(call.func_name) != null or
+                        self.resolveFunctionAliasMetadata(resolved_func_name) != null)
+                    {
                         try self.recordResolvedCallSymbol(expr, call.func_name, resolved_func_name);
                     }
                     if (signature.is_async) return try self.makeFutureType(signature.ret_ty);
@@ -5408,7 +5461,9 @@ pub const TypeChecker = struct {
                     if (macro.leading_outputs == 1 and call.args.len + 1 == macro.arity) {
                         if (std.mem.endsWith(u8, call.func_name, "_PTR") or
                             std.mem.endsWith(u8, call.func_name, "_DATA") or
-                            std.mem.endsWith(u8, call.func_name, "_AS_PTR"))
+                            std.mem.endsWith(u8, call.func_name, "_AS_PTR") or
+                            std.mem.endsWith(u8, call.func_name, "_ADD") or
+                            std.mem.endsWith(u8, call.func_name, "_NULL"))
                         {
                             return try self.makeRawPtrType();
                         }
@@ -5416,6 +5471,15 @@ pub const TypeChecker = struct {
                             std.mem.endsWith(u8, call.func_name, "_COUNT"))
                         {
                             return try self.makeI64Type();
+                        }
+                        if (std.mem.endsWith(u8, call.func_name, "_READ_U8")) {
+                            return try self.makeU8Type();
+                        }
+                        if (std.mem.endsWith(u8, call.func_name, "_READ_U64")) {
+                            return try self.makeU64Type();
+                        }
+                        if (std.mem.endsWith(u8, call.func_name, "_READ_I32")) {
+                            return try self.makeI32Type();
                         }
                         return try self.makeInferType();
                     }

@@ -19,7 +19,7 @@ const ResolvedImport = plugin_imports.ResolvedImport;
 const SlaModuleTable = plugin_module_table.SlaModuleTable;
 const SlaResolvedImportGroup = plugin_module_table.SlaResolvedImportGroup;
 const appendDefaultJobsAuto = plugin_cli.appendDefaultJobsAuto;
-const appendSaTestPassthrough = plugin_cli.appendSaTestPassthrough;
+const appendCompiledSaTestPassthrough = plugin_cli.appendCompiledSaTestPassthrough;
 const appendSabWorkspacePassthrough = plugin_sab_paths.appendSabWorkspacePassthrough;
 const compileSlaFileToSab = plugin_compile.compileSlaFileToSab;
 const compileSlaFileToSabOrSa = plugin_compile.compileSlaFileToSabOrSa;
@@ -510,7 +510,7 @@ pub fn runSlaCommandImpl(
         try argv.append("sa");
         try argv.append("test");
         try argv.append(test_input.path);
-        appendSaTestPassthrough(&argv, extra_args) catch {
+        appendCompiledSaTestPassthrough(&argv, extra_args) catch {
             try writeCommandHelp(stderr, cmd);
             return 1;
         };

@@ -309,3 +309,25 @@ parallel_query.sla focused generated-SA: parse 220ms, import expand 712ms, load 
 2. 继续实现真正的浅层扫描/懒解析：当前代码已跳过 imported tests，在非测试 build 路径支持浅解析后 materialize 可达模块，并让 test-codegen imported-macro preload 只加载 root + contributing module 的 contract imports；但 focused test-codegen 仍会解析大量未触达函数体，contract 数据也尚未做到完整按符号/模块可达性裁剪。这些才是 `import expand`、`parse`、`load contracts` 的主耗时。`import aliases` 已降到近零，已解析非 SLA imports 也不再被重读，但仍应保留 profile gate 防止回归。
 3. 继续复跑 `world_table_erased.sla`、`system_param_table_erased.sla`、`parallel_table_erased.sla`、`examples/parallel_query.sla` 的 generated-SA focused/profile gates，避免性能修复重新引入前端 check/import 回归。
 4. 默认/SAB `8701` 已在当前 compiler cleanup 切片中复验通过；后续仍应保留这些 focused strict/default gates，防止性能改动重新引入 SAB 后端回归。
+
+## 2026-07-13 namespace-local helper binding checkpoint
+
+Selective reachable-body materialization exposed a remaining namespace collision: if `dep.sla` and `sibling.sla` both define `entry()` calling a local `helper()`, reachability can correctly select `dep__helper` and `sibling__helper`, but flattening duplicate raw `helper` declarations previously caused TypeChecker `Redeclaration`.
+
+Current correction:
+
+- namespace-only reachable imported functions no longer require duplicate raw function declarations;
+- while checking an imported alias function, TypeChecker resolves a raw call against the current namespace alias first;
+- `resolved_call_symbols` retains the historical raw target, while `resolved_call_alias_metadata` carries the namespace/module identity consumed by both SA and SAB emitters;
+- regression `sla test codegen qualifies same named imported helper reachability` asserts both alias helper declarations and both module-qualified SA call targets.
+
+Serial verification passed: same-name helper 2/2, selective reachable bodies 1/1, Module Table 15/15, imported alias metadata 2/2, `zig build -j1 --summary all` 7/7, `zig build test -j1 --summary all` 210/210, official dev install/help.
+
+Installed real ECS focused generated-SA profiles also pass, but this sample is a performance regression rather than closure:
+
+```text
+parallel_query.sla: parse 291ms, import expand 868ms, load contracts 0ms, import aliases 4ms, elapsed 4.34
+parallel_table_erased.sla: parse 246ms, import expand 1156ms, load contracts 0ms, import aliases 0ms, elapsed 5.23
+```
+
+Profile detail shows the remaining tail in import root resolution and repeated reachability/materialization extension, including several passes over the large `world_table_erased.sla` module. Therefore the real latency target remains open. This checkpoint also does not claim full namespace isolation for imported const initializers, SLA macro bodies, types, or every raw AST binding; those belong in the Typed HIR/module symbol identity work.

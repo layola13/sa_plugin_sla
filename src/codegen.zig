@@ -1760,7 +1760,11 @@ pub const Codegen = struct {
         for (call.args, 0..) |arg, i| {
             const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
             defer self.popExprLaterNodesTo(sibling_mark);
-            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
+            const planned_param = if (i < ext.params.len) try self.externPtrParamAsAstParam(ext.params[i]) else null;
+            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                .param = planned_param,
+                .arg_index = i,
+            });
             const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
                 .borrow => try self.abiPrefixedArg('&', lowered_arg.reg),
                 .move => try self.abiPrefixedArg('^', lowered_arg.reg),
@@ -1813,7 +1817,11 @@ pub const Codegen = struct {
         for (call.args, 0..) |arg, i| {
             const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
             defer self.popExprLaterNodesTo(sibling_mark);
-            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
+            const planned_param = if (i < ext.params.len) try self.externPtrParamAsAstParam(ext.params[i]) else null;
+            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                .param = planned_param,
+                .arg_index = i,
+            });
             const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
                 .borrow => try self.abiPrefixedArg('&', lowered_arg.reg),
                 .move => try self.abiPrefixedArg('^', lowered_arg.reg),
@@ -2185,6 +2193,7 @@ pub const Codegen = struct {
 
     fn abiParamPrefix(self: *Codegen, p: ast.Param) []const u8 {
         if (p.is_borrow or p.ty.* == .borrow) return "&";
+        if (lowering_rules.byValueRawPointerParam(p)) return "";
         if (p.is_move or (!self.typeIsCopyValue(p.ty) and !lowering_rules.isBorrowLikeType(p.ty))) return "^";
         return "";
     }
@@ -2233,6 +2242,17 @@ pub const Codegen = struct {
         if (param.is_borrow) return .borrow;
         if (param.is_move) return .move;
         return .none;
+    }
+
+    fn externPtrParamAsAstParam(self: *Codegen, param: contract_parser.Param) CodegenError!?ast.Param {
+        const ty_name = std.mem.trim(u8, param.ty, " \t\r");
+        if (!std.mem.eql(u8, ty_name, "ptr")) return null;
+        return .{
+            .name = param.name,
+            .ty = @constCast(try self.makePrimitiveType(.void_type)),
+            .is_borrow = param.is_borrow,
+            .is_move = param.is_move,
+        };
     }
 
     fn abiPrefixedArg(self: *Codegen, prefix: u8, reg: []const u8) CodegenError![]const u8 {
@@ -8846,6 +8866,18 @@ pub const Codegen = struct {
         if (lowered_arg.consume_reg) |reg| consume_regs.append(reg) catch return CodegenError.OutOfMemory;
     }
 
+    fn identifierCallArgTempNeedsRelease(self: *Codegen, arg: *const ast.Node, arg_reg: []const u8) bool {
+        if (arg.* != .identifier) return false;
+        if (!isTemporaryRegisterName(arg_reg)) return false;
+        const resolved_name = self.resolveBindingName(arg.identifier);
+        if (std.mem.eql(u8, arg_reg, arg.identifier) or std.mem.eql(u8, arg_reg, resolved_name)) return false;
+        return true;
+    }
+
+    fn callArgResultTempNeedsRelease(self: *Codegen, arg: *const ast.Node, arg_reg: []const u8) bool {
+        return self.exprResultRegNeedsRelease(arg) or self.identifierCallArgTempNeedsRelease(arg, arg_reg);
+    }
+
     fn emitLoweredCallArgCleanups(
         self: *Codegen,
         release_regs: []const ?[]const u8,
@@ -8903,10 +8935,11 @@ pub const Codegen = struct {
             .auto_borrow => blk: {
                 const recv_reg = try self.genExpr(arg, hoisted_allocs);
                 const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
+                const release_recv = materialization.release_after_call or self.callArgResultTempNeedsRelease(arg, recv_reg);
                 break :blk .{
                     .reg = borrow_arg,
-                    .release_after_call = materialization.release_after_call,
-                    .release_reg = if (materialization.release_after_call) recv_reg else null,
+                    .release_after_call = release_recv,
+                    .release_reg = if (release_recv) recv_reg else null,
                 };
             },
             .copy_struct_value => blk: {
@@ -8936,7 +8969,10 @@ pub const Codegen = struct {
                         };
                     }
                 }
-                const arg_reg = try self.genCallArg(arg, hoisted_allocs);
+                const arg_reg = if (param != null)
+                    try self.genExpr(arg, hoisted_allocs)
+                else
+                    try self.genCallArg(arg, hoisted_allocs);
                 const abi_moves_arg = if (param) |target_param|
                     std.mem.eql(u8, self.abiParamPrefix(target_param), "^")
                 else
@@ -8955,16 +8991,18 @@ pub const Codegen = struct {
                 if (param) |target_param| {
                     if (abiParamNeedsBorrowArg(target_param) and !std.mem.startsWith(u8, arg_reg, "&")) {
                         const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{arg_reg}) catch return CodegenError.OutOfMemory;
+                        const release_arg = materialization.release_after_call or self.callArgResultTempNeedsRelease(arg, arg_reg);
                         break :blk .{
                             .reg = borrow_arg,
-                            .release_after_call = false,
-                            .release_reg = if (materialization.release_after_call) arg_reg else null,
+                            .release_after_call = release_arg,
+                            .release_reg = if (release_arg) arg_reg else null,
                         };
                     }
                 }
+                const release_arg = materialization.release_after_call or self.callArgResultTempNeedsRelease(arg, arg_reg);
                 break :blk .{
                     .reg = arg_reg,
-                    .release_after_call = materialization.release_after_call,
+                    .release_after_call = release_arg,
                 };
             },
         };
@@ -9393,6 +9431,7 @@ pub const Codegen = struct {
     fn valueArgTransfersOwnership(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
         const target_param = param orelse return false;
         if (target_param.is_borrow or target_param.is_move) return false;
+        if (lowering_rules.byValueRawPointerParam(target_param)) return false;
         const ty = arg_ty orelse target_param.ty;
         if (lowering_rules.isBorrowLikeType(ty)) return false;
         return !self.typeIsCopyValue(ty);

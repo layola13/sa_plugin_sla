@@ -3525,6 +3525,7 @@ pub const Codegen = struct {
 
     fn paramCapability(self: *Codegen, param: ast.Param) inst.CapPrefix {
         if (param.is_borrow or param.ty.* == .borrow) return .borrow;
+        if (lowering_rules.byValueRawPointerParam(param)) return .by_value;
         if (param.is_move or (!self.typeIsCopyValue(param.ty) and !lowering_rules.isBorrowLikeType(param.ty))) return .move;
         return .by_value;
     }
@@ -7742,6 +7743,24 @@ pub const Codegen = struct {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .primitive = primitive };
         return ty;
+    }
+
+    fn astTypeForAbiRaw(self: *Codegen, raw: []const u8) !*const ast.Type {
+        return switch (abiPrimType(raw)) {
+            .i1 => try self.makePrimitiveType(.boolean),
+            .i8 => try self.makePrimitiveType(.i8),
+            .i16 => try self.makePrimitiveType(.i16),
+            .i32 => try self.makePrimitiveType(.i32),
+            .i64 => try self.makePrimitiveType(.i64),
+            .u8 => try self.makePrimitiveType(.u8),
+            .u16 => try self.makePrimitiveType(.u16),
+            .u32 => try self.makePrimitiveType(.u32),
+            .u64 => try self.makePrimitiveType(.u64),
+            .f32 => try self.makePrimitiveType(.f32),
+            .f64 => try self.makePrimitiveType(.f64),
+            .ptr, .void => try self.makePrimitiveType(.void_type),
+            else => try self.makePrimitiveType(.void_type),
+        };
     }
 
     fn makePointerType(self: *Codegen) !*const ast.Type {
@@ -12132,12 +12151,11 @@ pub const Codegen = struct {
     };
 
     fn directSabExternParam(self: *Codegen, param: contract_parser.Param) !DirectSabCallParam {
-        const ty = try self.allocator.create(ast.Type);
-        ty.* = .{ .primitive = .void_type };
+        const ty = try self.astTypeForAbiRaw(param.ty);
         return .{
             .param = .{
                 .name = param.name,
-                .ty = ty,
+                .ty = @constCast(ty),
                 .is_borrow = param.is_borrow,
                 .is_move = param.is_move,
             },
@@ -12439,6 +12457,7 @@ pub const Codegen = struct {
     fn valueArgTransfersOwnership(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
         const target_param = param orelse return false;
         if (target_param.is_borrow or target_param.is_move) return false;
+        if (lowering_rules.byValueRawPointerParam(target_param)) return false;
         const ty = arg_ty orelse target_param.ty;
         if (lowering_rules.isBorrowLikeType(ty)) return false;
         return !self.typeIsCopyValue(ty);

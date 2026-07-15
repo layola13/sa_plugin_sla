@@ -18,6 +18,20 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue029 fallible extern payload and call-arg cleanup closure
+  (2026-07-15): SA-text and direct SAB now keep by-value raw `ptr` extern
+  params as by-value values for shared call-argument planning, and SA-text
+  call-argument cleanup releases temporary registers materialized from
+  addressable stack-slot identifiers or casts. Fallible extern payload loads
+  use the SCI SA ABI payload slot at offset `+8` for all payload sizes,
+  including `i32!`. `tests/test_unit_fallible_extern_payload_direct.sla`
+  covers `u64!` via `sa_fs_read_file` and `i32!` via
+  `sa_fs_metadata_free(metadata)`. Serial focused verification passed:
+  `zig fmt --check src/codegen.zig src/lowering_rules.zig src/sab_codegen.zig`;
+  `git diff --check`; `zig build -j1 --summary all` 7/7; focused
+  `zig test src/lowering_rules.zig --test-filter "shared lowering rules keep string literals as raw pointers for ptr params"`
+  1/1; local SA and strict SAB fixture 2/2 each; official dev install/help;
+  installed/dev SA and strict SAB fixture 2/2 each. No full test suite was run.
 - Docs/issue026 imported pointer-macro output binding closure (2026-07-15):
   current installed/dev `check` and `build` both reject SA instruction syntax
   such as `ptr_add source, start`, so the historical parser disagreement is no

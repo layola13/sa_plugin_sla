@@ -4,6 +4,20 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue029 fallible extern payload and call-arg temp cleanup closure
+  (2026-07-15): by-value raw `ptr` extern params now enter shared
+  call-argument materialization as by-value values in SA-text and direct SAB,
+  avoiding accidental move/ownership treatment. SA-text call-argument cleanup
+  now releases generated temporaries from stack-slot identifier loads and
+  materializing casts. Fallible extern payload extraction uses SCI's SA ABI
+  payload slot at `+8` for all payload widths, including `i32!`.
+  `tests/test_unit_fallible_extern_payload_direct.sla` covers `u64!` through
+  `sa_fs_read_file` and `i32!` through `sa_fs_metadata_free(metadata)`.
+  Serial focused verification: `zig fmt --check`; `git diff --check`; build
+  7/7; focused lowering-rule Zig 1/1; local SA and strict SAB 2/2 each;
+  official dev install/help; installed/dev SA and strict SAB 2/2 each. No full
+  suite was run.
+
 - docs/issue026 imported pointer-macro output binding closure (2026-07-15):
   `ptr_add source, start` is SA instruction syntax rather than a legal SLA
   expression; current installed/dev `sa sla check` and `sa sla build` both

@@ -1,4 +1,6 @@
 @import "sa_std/fs.sai"
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
 
 fn fallible_extern_read_len(path_ptr: ptr, path_len: u64) -> u64 {
     let buffer = sa_fs_read_file(path_ptr, path_len, 4096);
@@ -26,10 +28,22 @@ fn nonzero_status_u64(value: u64) -> u64 {
     return 1;
 }
 
+fn fallible_extern_metadata_free_status(path_ptr: ptr, path_len: u64) -> i32 {
+    let metadata = sa_fs_metadata(path_ptr, path_len);
+    return sa_fs_metadata_free(metadata);
+}
+
 @test "fallible extern payload can feed buffer externs"() {
     let got = fallible_extern_read_len("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/test_unit_basic.sla", 72);
     let ok = nonzero_status_u64(got);
     if ok == 0 {
         panic(43011);
+    };
+}
+
+@test "fallible i32 extern payload uses SA ABI offset"() {
+    let status = fallible_extern_metadata_free_status("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/test_unit_basic.sla", 72);
+    if status != 0 {
+        panic(43012);
     };
 }

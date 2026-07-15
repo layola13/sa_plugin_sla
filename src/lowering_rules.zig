@@ -3257,10 +3257,14 @@ fn rawPointerValueType(ty: *const ast.Type) bool {
     };
 }
 
-pub fn callArgUsesRawPointerStringLiteralValue(arg: *const ast.Node, param: ast.Param) bool {
+pub fn byValueRawPointerParam(param: ast.Param) bool {
     if (param.is_borrow or param.is_move) return false;
-    if (arg.* != .literal or arg.literal != .string_val) return false;
     return rawPointerValueType(param.ty);
+}
+
+pub fn callArgUsesRawPointerStringLiteralValue(arg: *const ast.Node, param: ast.Param) bool {
+    if (arg.* != .literal or arg.literal != .string_val) return false;
+    return byValueRawPointerParam(param);
 }
 
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
@@ -3406,6 +3410,16 @@ test "shared lowering rules keep string literals as raw pointers for ptr params"
     var string_arg = ast.Node{ .literal = .{ .string_val = "types" } };
     var ptr_ty = ast.Type{ .primitive = .void_type };
     var borrow_ptr_ty = ast.Type{ .primitive = .void_type };
+
+    try std.testing.expect(byValueRawPointerParam(.{
+        .name = "data",
+        .ty = &ptr_ty,
+    }));
+    try std.testing.expect(!byValueRawPointerParam(.{
+        .name = "data",
+        .ty = &borrow_ptr_ty,
+        .is_borrow = true,
+    }));
 
     try std.testing.expect(callArgUsesRawPointerStringLiteralValue(&string_arg, .{
         .name = "data",

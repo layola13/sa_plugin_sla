@@ -2117,6 +2117,7 @@ pub const Codegen = struct {
     const VecReceiver = struct {
         reg: []const u8,
         release_reg: ?[]const u8 = null,
+        consume_reg: ?[]const u8 = null,
     };
 
     fn typeSize(ty: *const ast.Type) usize {
@@ -3159,6 +3160,7 @@ pub const Codegen = struct {
 
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
         if (depth > 8) return false;
+        if (vecElementType(ty) != null or hashMapTypes(ty) != null or btreeMapTypes(ty) != null) return false;
         return switch (ty.*) {
             .primitive => true,
             .pointer, .borrow, .fn_ptr => true,
@@ -3180,6 +3182,18 @@ pub const Codegen = struct {
             },
             else => false,
         };
+    }
+
+    fn typeIsSmallPlainSlotStruct(self: *Codegen, ty: *const ast.Type) bool {
+        const decl = self.structDeclForType(ty) orelse return false;
+        if (decl.is_opaque or decl.is_union or structSize(decl) > 128) return false;
+        for (decl.fields) |field| {
+            switch (field.ty.*) {
+                .primitive, .pointer, .borrow, .fn_ptr => {},
+                else => return false,
+            }
+        }
+        return true;
     }
 
     fn typeHasHashDerive(self: *Codegen, ty: *const ast.Type) bool {
@@ -9277,11 +9291,28 @@ pub const Codegen = struct {
             return;
         }
         if (!callArgNeedsRelease(value)) return;
-        if (!self.typeIsCopyValue(value_ty) and !lowering_rules.isBorrowLikeType(value_ty)) {
+        if (std.mem.eql(u8, typeString(value_ty), "ptr") or (!self.typeIsCopyValue(value_ty) and !lowering_rules.isBorrowLikeType(value_ty))) {
             try self.markConsumedBinding(value_reg);
             return;
         }
         try self.emitRelease(value_reg);
+    }
+
+    fn genLoadSlotValue(self: *Codegen, ptr_reg: []const u8, ty: *const ast.Type) CodegenError![]const u8 {
+        const loaded = try self.newTmp();
+        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ loaded, ptr_reg, typeString(ty) }) catch return CodegenError.CodegenError;
+        if (self.typeIsCopyStruct(ty)) {
+            const copied = try self.newTmp();
+            try self.genCopyValueInto(copied, loaded, ty);
+            try self.emitForgetMovedValue(loaded);
+            return copied;
+        }
+        if (self.typeIsSmallPlainSlotStruct(ty)) {
+            const copied = try self.genShallowCopyCallArgValue(loaded, ty);
+            try self.emitForgetMovedValue(loaded);
+            return copied;
+        }
+        return loaded;
     }
 
     fn valueArgTransfersOwnership(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
@@ -9873,6 +9904,48 @@ pub const Codegen = struct {
                     try self.finishStoredValueAfterSlotStore(assign.value, inner_ty, val_reg);
                 } else if (assign.target.* == .field_expr) {
                     const field = assign.target.field_expr;
+                    if (field.expr.* == .index_expr) {
+                        const idx = field.expr.index_expr;
+                        const idx_target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
+                        if (vecElementType(idx_target_ty)) |elem_ty| {
+                            const layout = try self.fieldAddressLayout(elem_ty, field.field_name);
+                            const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
+                            const vec_receiver = try self.genVecOwnerReceiver(idx.target, hoisted_allocs);
+                            const vec_reg = vec_receiver.reg;
+                            const index_reg = try self.genExpr(idx.index, hoisted_allocs);
+                            const len_reg = try self.newTmp();
+                            const in_bounds_reg = try self.newTmp();
+                            const hit_label = try self.newLabel("L_VEC_INDEX_FIELD_ASSIGN_OK");
+                            const miss_label = try self.newLabel("L_VEC_INDEX_FIELD_ASSIGN_OOB");
+                            self.out.writer().print("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    panic(87)\n\n", .{}) catch return CodegenError.CodegenError;
+                            self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
+                            const data_reg = try self.newTmp();
+                            const offset_reg = try self.newTmp();
+                            const slot_reg = try self.newTmp();
+                            const owner_reg = try self.newTmp();
+                            self.out.writer().print("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ owner_reg, slot_reg }) catch return CodegenError.CodegenError;
+                            const val_reg = try self.genExpr(assign.value, hoisted_allocs);
+                            self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ owner_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                            try self.emitForgetMovedValue(owner_reg);
+                            try self.emitRelease(slot_reg);
+                            try self.emitRelease(offset_reg);
+                            try self.emitRelease(data_reg);
+                            try self.emitRelease(len_reg);
+                            if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
+                            if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
+                            if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
+                            try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
+                            return;
+                        }
+                    }
                     const base_reg = try self.genExpr(field.expr, hoisted_allocs);
                     const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
@@ -10841,6 +10914,12 @@ pub const Codegen = struct {
         }
     }
 
+    fn finishIndexAddress(self: *Codegen, address: IndexAddress) CodegenError!void {
+        try self.emitRelease(address.ptr);
+        if (address.base_tmp) |base_tmp| try self.emitRelease(base_tmp);
+        if (address.release_base_reg) try self.emitRelease(address.base_reg);
+    }
+
     fn genFieldAddress(
         self: *Codegen,
         field: *const ast.FieldExpr,
@@ -10882,7 +10961,9 @@ pub const Codegen = struct {
             const owner = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ owner, projection.ptr }) catch return CodegenError.CodegenError;
             try self.emitRelease(projection.ptr);
-            return .{ .reg = owner, .release_reg = owner };
+            const borrowed = try self.newTmp();
+            self.out.writer().print("    {s} = &{s}\n", .{ borrowed, owner }) catch return CodegenError.CodegenError;
+            return .{ .reg = borrowed, .release_reg = borrowed, .consume_reg = owner };
         }
 
         const reg = try self.genExpr(target, hoisted_allocs);
@@ -10929,14 +11010,13 @@ pub const Codegen = struct {
             if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
             try self.finishStoredValueAfterSlotStore(value, elem_ty, val_reg);
             if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
+            if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
             return;
         }
         const addr = try self.genIndexAddress(idx, hoisted_allocs);
         const val_reg = try self.genExpr(value, hoisted_allocs);
         self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ addr.ptr, val_reg, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
-        try self.emitRelease(addr.ptr);
-        if (addr.base_tmp) |base_tmp| try self.emitRelease(base_tmp);
-        if (addr.release_base_reg) try self.emitRelease(addr.base_reg);
+        try self.finishIndexAddress(addr);
         try self.finishStoredValueAfterSlotStore(value, addr.elem_ty, val_reg);
     }
 
@@ -10953,7 +11033,6 @@ pub const Codegen = struct {
         const in_bounds_reg = try self.newTmp();
         const hit_label = try self.newLabel("L_VEC_INDEX_OK");
         const miss_label = try self.newLabel("L_VEC_INDEX_OOB");
-        const reg = try self.newTmp();
         self.out.writer().print("    {s} = load {s}+Vec_len as u64\n", .{ len_reg, vec_reg }) catch return CodegenError.CodegenError;
         self.out.writer().print("    {s} = ult {s}, {s}\n", .{ in_bounds_reg, index_reg, len_reg }) catch return CodegenError.CodegenError;
         self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ in_bounds_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
@@ -10967,13 +11046,14 @@ pub const Codegen = struct {
         self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
         self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
         self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, ptr_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+        const reg = try self.genLoadSlotValue(ptr_reg, elem_ty);
         try self.emitRelease(ptr_reg);
         try self.emitRelease(offset_reg);
         try self.emitRelease(data_reg);
         try self.emitRelease(len_reg);
         if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
         if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
+        if (vec_receiver.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
         return reg;
     }
 
@@ -11992,8 +12072,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    panic(404)\n\n", .{}) catch return CodegenError.CodegenError;
                     self.out.writer().print("{s}:\n", .{hit_label}) catch return CodegenError.CodegenError;
                     self.out.writer().print("    !{s}\n", .{found}) catch return CodegenError.CodegenError;
-                    const reg = try self.newTmp();
-                    self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, value_ptr, typeString(hm.value) }) catch return CodegenError.CodegenError;
+                    const reg = try self.genLoadSlotValue(value_ptr, hm.value);
                     try self.emitRelease(value_ptr);
                     if (callArgNeedsRelease(idx.index)) try self.emitRelease(key_reg);
                     return reg;
@@ -12029,11 +12108,8 @@ pub const Codegen = struct {
                     return reg;
                 }
                 const addr = try self.genIndexAddress(&idx, hoisted_allocs);
-                const reg = try self.newTmp();
-                self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, addr.ptr, typeString(addr.elem_ty) }) catch return CodegenError.CodegenError;
-                try self.emitRelease(addr.ptr);
-                if (addr.base_tmp) |base_tmp| try self.emitRelease(base_tmp);
-                if (addr.release_base_reg) try self.emitRelease(addr.base_reg);
+                const reg = try self.genLoadSlotValue(addr.ptr, addr.elem_ty);
+                try self.finishIndexAddress(addr);
                 return reg;
             },
             .slice_expr => |slc| {
@@ -12631,6 +12707,7 @@ pub const Codegen = struct {
                             const reg = try self.newTmp();
                             self.out.writer().print("    {s} = load {s}+Vec_len as u64\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                             if (recv.release_reg) |release_reg| try self.emitRelease(release_reg);
+                            if (recv.consume_reg) |consume_reg| try self.emitForgetMovedValue(consume_reg);
                             return reg;
                         }
                         if (vecDequeElementType(ty) != null) {

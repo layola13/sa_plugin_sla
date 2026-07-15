@@ -394,3 +394,55 @@ SA_PLUGIN_DEV=1 sa sla test packages/scodex-config/src/config.sla \
 
 This keeps issue016 open for pointer/string scanner execution under direct SAB
 and for the no-diagnostic failure mode.
+
+## 2026-07-15 Config/Auth Home Load Plan Repro
+
+`scodex` now adds an additive home/config/auth load plan that connects the
+`CODEX_HOME` resolution status to caller-joined `config.toml` and `auth.json`
+file-read wrappers:
+
+```sla
+fn codex_config_auth_crate_reference_plan() -> CodexRustCrateReferencePlan
+fn codex_home_config_auth_load_plan(
+    codex_home_env_len: u64,
+    env_path_exists: bool,
+    env_path_is_dir: bool,
+    config_path_ptr: ptr,
+    config_path_len: u64,
+    auth_path_ptr: ptr,
+    auth_path_len: u64,
+    max_bytes: u64,
+) -> CodexHomeConfigAuthLoadPlan
+```
+
+The Rust behavioral references are explicitly crate paths under
+`/home/vscode/projects/codex/codex-rs/{core,utils/home-dir,config,login}`.
+The tests use synthetic `/tmp` files and still avoid reading the real
+`~/.codex/auth.json`.
+
+Passing SA-text coverage:
+
+```sh
+cd /home/vscode/projects/sla_codex
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-config/src/config.sla \
+  --test-backend sa --trace-panic
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-cli/src/main.sla \
+  --test-backend sa --trace-panic
+SA_PLUGIN_DEV=1 sa sla check -p scodex-cli
+SA_PLUGIN_DEV=1 sa sla build packages/scodex-cli/src/main.sla --out /tmp/scodex.sa
+```
+
+Direct SAB still exits 1 with empty stdout/stderr:
+
+```sh
+cd /home/vscode/projects/sla_codex
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-config/src/config.sla \
+  --test-backend sab --trace-panic
+```
+
+Observed result:
+
+```text
+<empty stdout/stderr>
+exit=1
+```

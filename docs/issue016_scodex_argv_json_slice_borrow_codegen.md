@@ -263,3 +263,44 @@ and top-level `packages/scodex-cli/src/main.sla` SAB coverage imports the
 fallback through the workspace successfully. This does not close the compiler
 issue: SAB still needs a fix for pointer JSON scanning or at least diagnostics
 when the generated test exits nonzero.
+
+## 2026-07-15 App-Server Slice Repro
+
+The same class of direct SAB no-diagnostic exit appears outside argv JSON when
+`scodex` executes app-server HTTP method/path slice classification.
+
+Known existing repro:
+
+```sh
+cd /home/vscode/projects/sla_codex
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-app-server-protocol/src/protocol_v2.sla \
+  --test-backend sab --trace-panic
+```
+
+Observed result:
+
+```text
+<empty stdout/stderr>
+exit=1
+```
+
+While adding `http-server` accept/respond bridge planning, an additive
+`from_slices` API was SA-verified:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-runtime/src/http_server_adapter.sla \
+  --test-backend sa --trace-panic --filter "method path slices"
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-model/src/app_server_turn.sla \
+  --test-backend sa --trace-panic --filter "derives persistence route from slices"
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-cli/src/main.sla \
+  --test-backend sa --trace-panic --filter "slice bridge"
+```
+
+Each focused SA test passed. The equivalent direct SAB executions exited 1 with
+empty output, even after replacing the bridge-local classifier with fixed ASCII
+`PTR_READ_U8` comparisons instead of `STR_FROM_PARTS`/`STR_EQ`.
+
+`scodex` therefore keeps the slice APIs type-checked and SA-verified but does
+not include those pointer/slice execution tests in the regular SAB gate yet.
+This issue remains the tracking item for pointer/slice SAB execution and for
+surfacing diagnostics when the generated test exits nonzero.

@@ -354,3 +354,43 @@ exit=1
 This is not treated as a `scodex` test skip: SA-text coverage is kept, and this
 issue remains the compiler-side tracking item for pointer/string scanning under
 direct SAB plus missing diagnostics when the generated SAB path exits nonzero.
+
+## 2026-07-15 Config/Auth File-Read Wrapper Repro
+
+`scodex` now adds caller-path file-read wrappers around the same config/auth
+scanners:
+
+```sla
+fn codex_config_toml_file_compat_scan(path_ptr: ptr, path_len: u64, max_bytes: u64) -> CodexConfigTomlFileCompatScan
+fn codex_auth_json_file_compat_scan(path_ptr: ptr, path_len: u64, max_bytes: u64) -> CodexAuthJsonFileCompatScan
+```
+
+The wrappers use `sa_fs_read_to_string`, `FS_READ_BUFFER_DATA`, and
+`FS_READ_BUFFER_LEN`, scan the returned buffer, then call
+`sa_fs_read_buffer_free`.
+
+Passing SA-text coverage:
+
+```sh
+cd /home/vscode/projects/sla_codex
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-config/src/config.sla \
+  --test-backend sa --trace-panic
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-cli/src/main.sla \
+  --test-backend sa --trace-panic
+SA_PLUGIN_DEV=1 sa sla check -p scodex-cli
+SA_PLUGIN_DEV=1 sa sla build packages/scodex-cli/src/main.sla --out /tmp/scodex.sa
+```
+
+The config package now has successful temp-file read tests for both
+`config.toml` and `auth.json`, plus missing-file fail-closed coverage. Auth test
+data is synthetic and the public result remains redacted metadata only.
+
+Direct SAB still exits 1 with empty stdout/stderr:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-config/src/config.sla \
+  --test-backend sab --trace-panic
+```
+
+This keeps issue016 open for pointer/string scanner execution under direct SAB
+and for the no-diagnostic failure mode.

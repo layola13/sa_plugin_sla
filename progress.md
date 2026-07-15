@@ -4,6 +4,23 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue026 imported pointer-macro output binding closure (2026-07-15):
+  `ptr_add source, start` is SA instruction syntax rather than a legal SLA
+  expression; current installed/dev `sa sla check` and `sa sla build` both
+  reject the focused temporary repro at the same token, so the historical
+  parser disagreement is not reproducible. The legal
+  `SLA_PTR_ADD(base, source, start)` form exposed a direct-SAB leading-output
+  bug because `let base = source` can retain the raw-ptr source parameter
+  register as a borrow-like alias. `src/sab_codegen.zig` now reserves a
+  distinct destination for non-expression imported-macro leading outputs and
+  installs the output binding after argument lowering and macro emission.
+  Added `tests/test_unit_ptr_add_macro_output_direct.sla` and a decoded-SAB
+  regression proving the `ptr_add` destination differs from
+  `sla__source_map_base_name__param_0_source`. Serial focused verification:
+  build 7/7; focused Zig 2/2; local SA and strict SAB 1/1 each; official dev
+  install/help; installed/dev SA and strict SAB 1/1 each. No full suite was
+  run.
+
 - docs/issue023 SA-text imported-macro argument type closure (2026-07-15):
   `src/codegen.zig` now recovers `len(...)`, comparison/logical expression, and
   imported env buffer-producing macro result types before imported-macro

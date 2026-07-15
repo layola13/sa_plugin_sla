@@ -18,6 +18,19 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue026 imported pointer-macro output binding closure (2026-07-15):
+  current installed/dev `check` and `build` both reject SA instruction syntax
+  such as `ptr_add source, start`, so the historical parser disagreement is no
+  longer reproducible. The legal `SLA_PTR_ADD(base, source, start)` form had a
+  separate direct-SAB bug: borrow-like raw-ptr aliases caused the leading
+  output argument to resolve to the live source parameter register.
+  `src/sab_codegen.zig` now lowers non-expression imported-macro leading
+  outputs through a distinct destination binding and installs that binding
+  after all arguments and the macro instruction are emitted. Added
+  `tests/test_unit_ptr_add_macro_output_direct.sla`. Focused Zig regression,
+  local and installed/dev SA-text plus strict direct SAB 1/1, build 7/7,
+  official dev install/help, and matching invalid-syntax `check`/`build`
+  diagnostics pass. No full test suite was run.
 - Docs/issue023 SA-text imported-macro arg type closure (2026-07-15):
   `src/codegen.zig` now recovers `len(...)`, comparison/logical expression, and
   imported env buffer-producing macro result types before imported-macro

@@ -11411,6 +11411,31 @@ pub const Codegen = struct {
         };
     }
 
+    fn importedMacroOutputTargetName(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) ?[]const u8 {
+        if (ctx) |macro_ctx| return self.macroAssignTargetName(@constCast(arg), macro_ctx);
+        if (arg.* != .identifier) return null;
+        return arg.identifier;
+    }
+
+    fn genImportedMacroLeadingOutputArg(
+        self: *Codegen,
+        plan: lowering_rules.ImportedMacroCallPlan,
+        call_arg_index: usize,
+        arg: *const ast.Node,
+        ctx: ?*MacroExpansionContext,
+        arg_ty: *const ast.Type,
+    ) anyerror!?SabLoweredCallArg {
+        if (plan.expression_output or call_arg_index >= plan.leading_outputs) return null;
+        const name = self.importedMacroOutputTargetName(arg, ctx) orelse return null;
+        const dst = try self.bindingReg(name);
+        return .{
+            .operand = self.symbols.items[dst],
+            .release_reg = null,
+            .output_bind_name = name,
+            .output_bind_ty = arg_ty,
+        };
+    }
+
     fn importedMacroDirectCallConsumesValueArg(_: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize) bool {
         return (std.mem.eql(u8, plan.macro_name, "FS_READ_BUFFER_FREE") or
             std.mem.eql(u8, plan.macro_name, "SLA_FS_BUFFER_FREE")) and call_arg_index == 0;
@@ -11504,6 +11529,7 @@ pub const Codegen = struct {
 
     fn genImportedMacroArg(self: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
         const arg_ty = (try self.importedMacroArgType(arg, ctx)) orelse return Error.MissingType;
+        if (try self.genImportedMacroLeadingOutputArg(plan, call_arg_index, arg, ctx, arg_ty)) |output_arg| return output_arg;
         const release_value = !self.importedMacroDirectCallConsumesValueArg(plan, call_arg_index);
         if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| switch (action) {
             .pass_value, .pass_raw_pointer_value => return self.genImportedMacroValueArg(arg, ctx, release_value),
@@ -11823,6 +11849,8 @@ pub const Codegen = struct {
         defer release_regs.deinit();
         var restores = std.ArrayList(struct { slot: u32, value: u32 }).init(self.allocator);
         defer restores.deinit();
+        var output_rebindings = std.ArrayList(struct { name: []const u8, reg: u32, ty: *const ast.Type }).init(self.allocator);
+        defer output_rebindings.deinit();
 
         if (dst) |reg| try arg_names.append(self.symbols.items[reg]);
         for (call.args, 0..) |arg, i| {
@@ -11839,6 +11867,10 @@ pub const Codegen = struct {
             if (lowered_arg.restore_slot) |slot| {
                 try restores.append(.{ .slot = slot, .value = lowered_arg.restore_value orelse return Error.UnsupportedSabDirectFeature });
             }
+            if (lowered_arg.output_bind_name) |name| {
+                const reg = try self.intern(lowered_arg.operand);
+                try output_rebindings.append(.{ .name = name, .reg = reg, .ty = lowered_arg.output_bind_ty orelse return Error.MissingType });
+            }
         }
 
         const emitted_direct = try self.emitDirectImportedMacroCall(plan.macro_name, arg_names.items);
@@ -11851,6 +11883,9 @@ pub const Codegen = struct {
         for (restores.items) |restore| {
             try self.emitStore(restore.slot, 0, restore.value, .ptr);
             try self.markConsumed(restore.value);
+        }
+        for (output_rebindings.items) |binding| {
+            try self.pushTypedLocal(binding.name, binding.reg, false, binding.ty);
         }
         if (!emitted_direct) {
             try self.releaseNonLocalTemps(release_regs.items);
@@ -12086,6 +12121,8 @@ pub const Codegen = struct {
         forget_reg: ?u32 = null,
         restore_slot: ?u32 = null,
         restore_value: ?u32 = null,
+        output_bind_name: ?[]const u8 = null,
+        output_bind_ty: ?*const ast.Type = null,
     };
 
     const DirectSabCallParam = struct {

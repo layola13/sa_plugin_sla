@@ -7495,6 +7495,51 @@ test "sla sab backend treats ptr stack slot temps as non owning" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend imported ptr add macro output does not redefine input param" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_ptr_add_macro_output_direct.sla",
+        ".sla-cache/sab/ptr_add_macro_output_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct sab ptr add macro writes local output without redefining input param", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    const function_idx = for (module.function_sigs, 0..) |fsig, idx| {
+        if (std.mem.eql(u8, fsig.name, "sla__source_map_base_name")) break idx;
+    } else return error.TestUnexpectedResult;
+    const function_start: usize = @intCast(module.function_sigs[function_idx].entry_inst_idx);
+    const function_end: usize = if (function_idx + 1 < module.function_sigs.len)
+        @intCast(module.function_sigs[function_idx + 1].entry_inst_idx)
+    else
+        module.instructions.len;
+
+    const source_param_id = for (module.symbols, 0..) |name, idx| {
+        if (std.mem.eql(u8, name, "sla__source_map_base_name__param_0_source")) break @as(u32, @intCast(idx));
+    } else return error.TestUnexpectedResult;
+    var saw_ptr_add = false;
+    for (module.instructions[function_start..function_end]) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind != .ptr_add) continue;
+        if (item.operands[1] != .reg or item.operands[1].reg != source_param_id) continue;
+        saw_ptr_add = true;
+        try std.testing.expect(item.operands[0] == .reg);
+        try std.testing.expect(item.operands[0].reg != source_param_id);
+    }
+    try std.testing.expect(saw_ptr_add);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab backend lowers tuple literals and destructuring directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

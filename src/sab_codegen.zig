@@ -7635,8 +7635,11 @@ pub const Codegen = struct {
     fn assignToIdentifier(self: *Codegen, name: []const u8, value: u32) anyerror!void {
         if (self.stackLocal(name)) |slot| {
             const ty = slot.stack_ty orelse return Error.UnsupportedSabDirectFeature;
-            try self.emitStore(slot.reg, 0, value, try primType(ty));
-            if (!self.isLocalReg(value)) try self.emitRelease(value);
+            try self.emitStore(slot.reg, 0, value, try storagePrimType(ty));
+            if (!self.isLocalReg(value)) {
+                if (typeIsPointerScalarValue(ty)) try self.markNonOwningReg(value);
+                try self.emitRelease(value);
+            }
             return;
         }
 
@@ -12463,6 +12466,13 @@ pub const Codegen = struct {
         return !self.typeIsCopyValue(ty);
     }
 
+    fn stackSlotIdentifierTempNeedsReleaseForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: u32) bool {
+        if (param) |target_param| {
+            if (lowering_rules.byValueRawPointerParam(target_param)) return false;
+        }
+        return arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg);
+    }
+
     fn genPlannedSabCallArg(
         self: *Codegen,
         arg: *const ast.Node,
@@ -12593,10 +12603,10 @@ pub const Codegen = struct {
                 if (abi_borrow_auto_borrow) {
                     break :blk .{
                         .operand = try self.externBorrowCallOperand(self.symbols.items[arg_reg]),
-                        .release_reg = if (materialization.release_after_call or (arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg))) arg_reg else null,
+                        .release_reg = if (materialization.release_after_call or self.stackSlotIdentifierTempNeedsReleaseForParam(param, arg, arg_reg)) arg_reg else null,
                     };
                 }
-                const release_reg: ?u32 = if (materialization.release_after_call or (arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg))) arg_reg else null;
+                const release_reg: ?u32 = if (materialization.release_after_call or self.stackSlotIdentifierTempNeedsReleaseForParam(param, arg, arg_reg)) arg_reg else null;
                 const consumption = lowering_rules.planValueCallArgConsumption(
                     arg,
                     param,

@@ -8878,6 +8878,13 @@ pub const Codegen = struct {
         return self.exprResultRegNeedsRelease(arg) or self.identifierCallArgTempNeedsRelease(arg, arg_reg);
     }
 
+    fn callArgResultTempNeedsReleaseForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: []const u8) bool {
+        if (param) |target_param| {
+            if (lowering_rules.byValueRawPointerParam(target_param)) return false;
+        }
+        return self.callArgResultTempNeedsRelease(arg, arg_reg);
+    }
+
     fn emitLoweredCallArgCleanups(
         self: *Codegen,
         release_regs: []const ?[]const u8,
@@ -8991,7 +8998,7 @@ pub const Codegen = struct {
                 if (param) |target_param| {
                     if (abiParamNeedsBorrowArg(target_param) and !std.mem.startsWith(u8, arg_reg, "&")) {
                         const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{arg_reg}) catch return CodegenError.OutOfMemory;
-                        const release_arg = materialization.release_after_call or self.callArgResultTempNeedsRelease(arg, arg_reg);
+                        const release_arg = materialization.release_after_call or self.callArgResultTempNeedsReleaseForParam(param, arg, arg_reg);
                         break :blk .{
                             .reg = borrow_arg,
                             .release_after_call = release_arg,
@@ -8999,7 +9006,7 @@ pub const Codegen = struct {
                         };
                     }
                 }
-                const release_arg = materialization.release_after_call or self.callArgResultTempNeedsRelease(arg, arg_reg);
+                const release_arg = materialization.release_after_call or self.callArgResultTempNeedsReleaseForParam(param, arg, arg_reg);
                 break :blk .{
                     .reg = arg_reg,
                     .release_after_call = release_arg,
@@ -14816,6 +14823,45 @@ test "basic code generation" {
     // Verify generated instructions
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "add") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "return") != null);
+}
+
+test "by-value raw pointer call arg does not release stack-slot load temp" {
+    const source =
+        \\struct Holder {
+        \\    handle: ptr,
+        \\}
+        \\
+        \\fn consume_handle(handle: ptr) -> i32 {
+        \\    return 0;
+        \\}
+        \\
+        \\fn release_holder(holder: Holder) -> i32 {
+        \\    var handle: ptr;
+        \\    handle = holder.handle;
+        \\    return consume_handle(handle);
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const parser_mod = @import("parser.zig");
+    var p = parser_mod.Parser.init(arena.allocator(), source);
+    const prog = try p.parseProgram();
+
+    var tc = type_checker.TypeChecker.init(arena.allocator());
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    var cg = Codegen.init(arena.allocator(), &tc);
+    defer cg.deinit();
+
+    const sa_code = try cg.generate(prog);
+    const call_start = std.mem.indexOf(u8, sa_code, "call @sla__consume_handle(") orelse return error.TestExpectedEqual;
+    const arg_start = call_start + "call @sla__consume_handle(".len;
+    const arg_end = std.mem.indexOfScalarPos(u8, sa_code, arg_start, ')') orelse return error.TestExpectedEqual;
+    const arg_reg = sa_code[arg_start..arg_end];
+    const release_line = try std.fmt.allocPrint(arena.allocator(), "\n    !{s}\n", .{arg_reg});
+    try std.testing.expect(std.mem.indexOfPos(u8, sa_code, arg_end, release_line) == null);
 }
 
 test "binary expression releases materialized cast result" {

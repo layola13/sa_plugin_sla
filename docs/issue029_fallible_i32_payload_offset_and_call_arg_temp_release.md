@@ -4,17 +4,25 @@
 
 SLA code that called `.sai` externs returning `i32!` could trip capability or cleanup failures while passing generated pointer/stack-slot temporaries through extern calls.
 
-The same investigation also exposed a call-argument cleanup gap: when an identifier lived in an addressable stack slot, `genExpr(identifier)` could materialize a temporary `load` register, but call-argument cleanup still classified the source as a plain identifier and did not release that temporary.
+The same investigation also exposed call-argument cleanup gaps around stack-slot temporaries:
+
+- owning value temps loaded from stack slots still need cleanup after a call;
+- by-value raw `ptr` parameters must not release stack-slot load temps, because those values can be external handles or non-owning pointer scalars;
+- direct SAB stack-slot assignment for raw `ptr` values must store with pointer storage type and consume loaded pointer scalars as non-owning values.
 
 ## Cause
 
-SLA planned call lowering did not pass `.sai` raw `ptr` extern params through the shared call-argument materialization rules, so by-value raw pointers could be treated like owning aggregate values. The cleanup path also missed temporary registers produced while reading stack-slot identifiers.
+SLA planned call lowering did not pass `.sai` raw `ptr` extern params through the shared call-argument materialization rules, so by-value raw pointers could be treated like owning aggregate values. A later cleanup pass over-corrected by releasing generated stack-slot load temps even when the target param was a by-value raw `ptr`.
+
+The direct SAB path had the same ownership-class issue and also used the ordinary primitive type for `ptr` stack-slot stores, producing a `void` store type where later loads expected `ptr`.
 
 During the investigation, the SA runtime ABI was verified with executable tests: fallible extern payloads are read from the SA ABI payload slot at offset `+8`, including `i32!`.
 
 ## Fix
 
-SA text and direct SAB codegen now keep by-value raw `ptr` extern params as by-value values instead of ownership transfers. SA text call-argument cleanup also releases generated temporary result registers for stack-slot identifiers and materializing casts.
+SA text and direct SAB codegen now keep by-value raw `ptr` params as by-value values instead of ownership transfers. SA text call-argument cleanup releases generated temporary result registers for stack-slot identifiers only when the target parameter is not by-value raw `ptr`.
+
+Direct SAB now treats raw `ptr` stack-slot assignment sources as non-owning values and stores them with pointer storage type.
 
 ## Regression
 
@@ -22,3 +30,8 @@ SA text and direct SAB codegen now keep by-value raw `ptr` extern params as by-v
 
 - `u64!` payloads via `sa_fs_read_file`.
 - `i32!` payloads via `sa_fs_metadata_free(metadata)`.
+
+Additional focused regressions:
+
+- `src/codegen.zig`: `by-value raw pointer call arg does not release stack-slot load temp`.
+- `tests/test_unit_ptr_value_arg_reuse.sla`: `by value ptr stack slot params can be reused after calls`, verified with SA backend and strict direct SAB backend.

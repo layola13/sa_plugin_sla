@@ -1,5 +1,9 @@
 @import "sa_std/string.sa"
 
+struct PtrBox {
+    data: ptr,
+}
+
 fn accept_ptr_value(data: ptr, value: int) -> int {
     return value;
 }
@@ -10,9 +14,25 @@ fn ptr_param_reused(data: ptr) -> int {
     return left + right;
 }
 
+fn ptr_stack_slot_param_reused(box: PtrBox) -> int {
+    var data: ptr;
+    data = box.data;
+    let left = accept_ptr_value(data, 1);
+    let right = accept_ptr_value(data, 2);
+    return left + right;
+}
+
 @test "by value ptr params can be reused after calls"() {
     let got = ptr_param_reused(STR_PTR("keyword"));
     if got != 3 {
         panic(44001);
+    };
+}
+
+@test "by value ptr stack slot params can be reused after calls"() {
+    let box = PtrBox { data: STR_PTR("keyword") };
+    let got = ptr_stack_slot_param_reused(box);
+    if got != 3 {
+        panic(44002);
     };
 }

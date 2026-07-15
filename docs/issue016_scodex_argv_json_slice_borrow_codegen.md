@@ -223,3 +223,43 @@ Updated interpretation:
 - `scodex` has a working SA-backend workaround for CLI argv routing.
 - Direct SAB still needs either a control-flow/ptr-scan fix or at minimum a
   diagnostic when a focused test binary exits nonzero.
+
+## 2026-07-15 Update
+
+Current installed dev-mode `sa` still reproduces the backend split:
+
+```sh
+cd /home/vscode/projects/sla_codex
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-cli/src/args.sla \
+  --test-backend sa --jobs 1 --trace-panic
+```
+
+passes with 8 tests after adding an additive metadata fallback test.
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-cli/src/args.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+still exits 1 with empty stdout/stderr when the pointer-based argv JSON scanner
+tests are included.
+
+`scodex` now has a route-around for direct SAB execution:
+
+```sla
+fn cli_route_from_argv_metadata(argc: u64, command_code: u8, source_code: u8, argv_json_len: u64) -> CliRoute
+fn cli_argv_route_fallback_plan_codes(source_code: u8, backend_code: u8, argc: u64, command_code: u8, argv_json_len: u64, json_scan_requested: bool) -> CliArgvRouteFallbackPlan
+```
+
+The filtered SAB fallback test passes:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-cli/src/args.sla \
+  --test-backend sab --jobs 1 --trace-panic \
+  --filter "cli routes argv metadata"
+```
+
+and top-level `packages/scodex-cli/src/main.sla` SAB coverage imports the
+fallback through the workspace successfully. This does not close the compiler
+issue: SAB still needs a fix for pointer JSON scanning or at least diagnostics
+when the generated test exits nonzero.

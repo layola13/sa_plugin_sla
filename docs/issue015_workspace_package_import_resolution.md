@@ -1,7 +1,7 @@
 # issue015: workspace package-name imports are not resolved by SLA import expansion
 
 Date: 2026-07-14
-Status: source fix added; installed dev check passes; build-workspace acceptance pending
+Status: resolved; installed dev check and build-workspace acceptance pass
 
 ## Summary
 
@@ -163,6 +163,16 @@ Result:
 Sla Compiler: Successfully parsed and verified syntax and types of /home/vscode/projects/sla_codex/packages/scodex-cli/src/main.sla.
 ```
 
-`build-workspace -p scodex-cli` remains pending because an external
-`sla_tsgo` `sa sla test` scan was occupying the test/build queue during this
-verification slice.
+The build-workspace acceptance gate now passes through the normal dev command:
+
+```sh
+cd /home/vscode/projects/sla_codex
+SA_PLUGIN_DEV=1 sa sla build-workspace -p scodex-cli -o /tmp/scodex
+/tmp/scodex
+```
+
+Result:
+
+```text
+scodex: SLA-native bootstrap ok
+```

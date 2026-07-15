@@ -1078,7 +1078,7 @@ test "sla test codegen keeps imported macro direct callee" {
         defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
         const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND TEST_IMPORTED_PAIR_SUM") != null);
-        try std.testing.expect(std.mem.indexOf(u8, sa_code, "@sla__macro_pair_sum(value") != null);
+        try std.testing.expect(std.mem.indexOf(u8, sa_code, "@sla__macro_pair_sum(&value") != null);
     } else {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -1094,6 +1094,9 @@ test "sla sa codegen resolves local binding types for imported macro args" {
 
     const source =
         \\@import "sa_std/string.sa"
+        \\@import "sa_std/fs.sa"
+        \\@import "sa_std/fs.sai"
+        \\@import "sa_std/vec.sa"
         \\
         \\fn same_literal_via_local_slices() -> bool {
         \\    let left_ptr = STR_PTR("exec");
@@ -1105,8 +1108,18 @@ test "sla sa codegen resolves local binding types for imported macro args" {
         \\    return STR_EQ(left_slice, right_slice);
         \\}
         \\
+        \\fn imported_macro_len_call_arg_type() -> i32 {
+        \\    let path_ptr = STR_PTR("/tmp/sla_imported_macro_len_arg.txt");
+        \\    let path_len = STR_LEN("/tmp/sla_imported_macro_len_arg.txt");
+        \\    let data_ptr = STR_PTR("ab");
+        \\    let bytes = vec(65u8, 66u8);
+        \\    return sa_fs_write_file(path_ptr, path_len, data_ptr, len(bytes));
+        \\}
+        \\
         \\@test "imported macro local binding args"() {
         \\    if !same_literal_via_local_slices() { panic(24043); };
+        \\    let write_status = imported_macro_len_call_arg_type();
+        \\    if write_status != 0 { panic(24044); };
         \\};
     ;
     try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
@@ -1131,6 +1144,8 @@ test "sla sa codegen resolves local binding types for imported macro args" {
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND STR_FROM_PARTS") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND STR_EQ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "Vec_len") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "sa_fs_write_file") != null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -1908,7 +1923,7 @@ test "sla empty void exits keep caller managed parameters" {
         return error.TestUnexpectedResult;
     };
 
-    for ([_][]const u8{ "@sla__empty_void_borrow(value: ptr):", "@sla__empty_void_owned(value: ptr):" }) |header| {
+    for ([_][]const u8{ "@sla__empty_void_borrow(&value: ptr):", "@sla__empty_void_owned(^value: ptr):" }) |header| {
         const start = std.mem.indexOf(u8, sa_code, header) orelse return error.TestUnexpectedResult;
         const tail = sa_code[start..];
         const end = std.mem.indexOfPos(u8, tail, 1, "\n@") orelse tail.len;

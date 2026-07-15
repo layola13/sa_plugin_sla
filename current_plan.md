@@ -18,6 +18,40 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue raw-ptr and ptr-aggregate call-arg ABI state (2026-07-14):
+  ordinary by-value `ptr` params now stay by-value in SA-text and direct SAB
+  instead of being inferred as move params from raw `ptr`'s internal
+  `primitive.void_type` type. Shallow-copy-safe ptr/scalar aggregates used as
+  by-value call args are now copied before move-prefixed calls, so a
+  `ScannerState`-style value can be passed to `mini_parser_new(s2,
+  mini_token_kind(s2), ...)` without consuming the original `s2`. Focused local
+  and official dev SA/SAB fixtures `tests/test_unit_ptr_value_arg_reuse.sla`
+  and `tests/test_unit_shallow_copy_ptr_aggregate_call_arg.sla` pass. The
+  follow-on SA-text parser-state rebind surface is also fixed:
+  assigned shallow-copy-safe aggregate locals now lower through value slots
+  instead of redefining the same SA register across branch/loop merges. Added
+  `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla`. `sla_tsgo`
+  `test_checker_contract.sla` now gets past the original issue017
+  `lookup_keyword` surface, the `advance`/`mkpj` `s2` surface, and the
+  `parse_function_expression` `p2 = tmp_6858` RegisterRedefinition surface:
+  SA-text, default/direct SAB, and strict direct SAB all pass 170/170 through
+  official dev-plugin mode. `lua_sla` issue011's historical `sf_pos`
+  RegisterRedefinition is no longer the current blocker; current `lvm.sla`
+  stops later at `vm_table_set_index` `tm` UseAfterMove.
+- Docs/issue focused cleanup and verification state (2026-07-14): issue004 and
+  issue007 are fixed and pass local plus official dev-plugin SA/SAB focused
+  gates after `SA_PLUGIN_DEV=1 sa plugin install --dev .` and
+  `SA_PLUGIN_DEV=1 sa sla help`. issue002, issue003, and issue009 strict direct
+  SAB Vec/field regressions were reverified under `SLA_SAB_NO_FALLBACK=1`, and
+  issue003 now also covers local all-scalar struct field copies moved into a
+  Vec element. Source filters `direct sab extern` and
+  `resolve import by workspace package name` pass 2/2. `scodex-cli`
+  package-name import checking plus `build-workspace -p scodex-cli` pass
+  through official `SA_PLUGIN_DEV=1 sa sla ...`, issue008 official SA-text
+  rerun passes, and issue014 `sla_music_cli/src/music_ir.sla` strict direct SAB
+  now passes 4/4. The borrow-temp strict SAB `--filter` registration mismatch
+  no longer reproduces: both tracked filters pass locally and through official
+  dev-plugin mode, and official dev strict SAB whole-file remains 25/25.
 - Current call-expression macro-try state (2026-07-12): macro-level has-try detection and parameter-level propagated-source detection are separate and recursive. A temporary Option produced by an ordinary call is returned on None while all caller locals/params clean up; no unrelated macro arg is excluded. Some produces 42. Build 7/7, full Zig 208/208, installed macro 2/2, Option 1/1, custom try 3/3, owner 15/15, imported macro 11/11, official install/help, and host `parallel.sla` pass. Tracked macro try now covers direct identifiers, nested forwarding, standard/custom Result, and call-expression sources. Next select match guards or Option/Result macro pattern matching as a genuinely different control-flow surface.
 - Current match-guard state (2026-07-12): direct SAB supports scalar comparison guards on user-enum cases, including user-macro expansion. Shared `supportsScalarMatchGuard()` owns the accepted comparison shape. Guarded-case scalar payload bindings and guard results are allocated before entering the match ladder, normalizing SAB capability state across tag-mismatch and guard-failure edges; later case-condition releases occur only after guard success. The focused macro returns 42 when the guard succeeds and 8 through the repeated-variant fallback case. Build 7/7, full Zig 208/208, local/installed macro SA/SAB 2/2, enum SA/SAB 2/2, borrowed enum 1/1, owner 15/15, imported macro 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1 pass. Complex/call guards and Option/Result direct-SAB matches remain distinct follow-ups.
 - Current Option/Result macro-match state (2026-07-12): infer-typed macro bodies infer `Option<infer>` or `Result<infer,infer>` from their first standard pattern, while concrete expansion uses the caller argument type for standard payload extraction and the assignment target type for the value-producing result slot. Direct SAB now routes user-enum, Option, and Result match cases through shared `planLetPattern()` plus the existing std macro fragments instead of duplicating their layout. Some(41) and Ok(40) return 42; None returns 0; Err(7) returns -7 in both emitters. Build 7/7, full Zig 208/208, local/installed macro SA/SAB 2/2, Option SA/SAB 1/1, Result SA/SAB 1/1, owner 15/15, imported macro 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1 pass. Next distinct gap is complex/call match guards or standard-match guards in direct SAB.
@@ -300,7 +334,7 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Remaining Tracked Unit Failures
 
-- `tests/test_unit_borrow_temp_release_order.sla` now passes whole-file local strict direct SAB 25/25 and SA-text 25/25 after restoring non-owning field-slot borrow semantics. The remaining related failure is SAB test-harness registration with `--filter`, which exits `error: no matching test` even for cases that pass in the whole-file SAB run; see `docs/sab_borrow_temp_void_call_regression_issue_cn.md`.
+- `tests/test_unit_borrow_temp_release_order.sla` now passes whole-file local strict direct SAB 25/25 and SA-text 25/25 after restoring non-owning field-slot borrow semantics. The prior SAB test-harness registration issue with `--filter` no longer reproduces for the two tracked cases; local and official dev strict SAB filters pass 1/1 each, and official dev whole-file strict SAB passes 25/25. See `docs/sab_borrow_temp_void_call_regression_issue_cn.md`.
 - Broader hardening remains: generic SCI fragment naming and full async/Future state-machine support beyond local statically-ready/pending propagation and ready/pending-state task-runtime subsets.
 
 ### SCI Boundary Note
@@ -309,12 +343,19 @@ The generic std-macro fragment naming problem is still a real SCI-boundary task:
 
 ## Next Active Slice
 
+- Continue the docs/issue priority queue before returning to broader
+  architecture work. The prior official issue008 SA-text rerun, `sla_codex`
+  `SA_PLUGIN_DEV=1 sa sla build-workspace -p scodex-cli -o /tmp/scodex` plus
+  `/tmp/scodex`, issue014 `sla_music_cli/src/music_ir.sla` strict SAB reverify,
+  and borrow-temp strict SAB filter/whole-file gates are complete. Do not start
+  future gates while any other `sa sla test`, `sla-local-cli sla test`,
+  `zig build`, or `zig build test` process is active.
 - Continue docs issue audit while moving the SLA frontend import architecture beyond the first Module Table slice. The user-requested strict glob `docs/*issue.md` currently has no matches in this repo; the actual issue-ticket set is `docs/*issue*.md`, including `*_issue_cn.md`, and must be considered for each slice. Current open/partial issue docs include the `sla_tsgo` project snapshot/API timeout, compiler checker-pool timeout, `parallel_runner.sla` / `task_pool_builder.sla` whole-file dangerous smoke, and the external `sa_lua` runtime entry issue. The prior `removed_components` downstream whole-file retest is now closed in `docs/sab_system_param_removed_components_memoryleak_issue_cn.md`.
 - Next implementation target: reduce the still-high `import expand` cost in real `sla_ecs` focused profiles by continuing shallow scan/lazy materialization work below the current parser/reparse level. Keep referenced-surface contract queueing, Module Table cache, namespace aliasing, and selective reachable-body parsing as foundations, but do not claim the real latency target until `parallel_query.sla` and `parallel_table_erased.sla` move on real profile numbers.
 - New architecture constraint: evolve the Y-shaped backend into `Parser -> Typed HIR -> LoweringPlan -> {SA serializer, SAB serializer}` as specified in `docs/typed_hir_lowering_plan_architecture_cn.md`. Emitters must stop making independent ownership/temp/layout/call-argument decisions. The first `StaticCallLoweringPlan` slice is in progress; full call/aggregate/control-flow planning remains open.
 - Cross-repo source imports must reach 0. `build.zig` still compiles `../../sci/src/plugin_bridge.zig`, so this is an explicit unfinished dependency-boundary task, not a completed cleanup.
 - Latest Module Table correctness checkpoint: namespace-only sibling functions may call same-named local helpers without duplicate raw declarations. TypeChecker now resolves raw calls in an imported alias body through the current module namespace and exposes the existing raw-target plus alias metadata contract to both emitters. Focused gates and full Zig 210/210 pass, but real `sla_ecs` profiles remain above target (`import expand` 868ms and 1156ms), so deeper import graph/materialization work stays active.
-- Completed direct-SAB field-view lifecycle sub-slice: ordinary `&field` bindings and call arguments no longer load/release the field's owning `Box`/`Rc`/`Arc` value. They pass the materialized field-slot address and consume the shared prefixed-borrow address cleanup plan. Local strict SAB and SA-text both pass `tests/test_unit_borrow_temp_release_order.sla` 25/25; full Zig is 210/210 and official dev install/help pass. The separate SAB `--filter` registration mismatch remains open.
+- Completed direct-SAB field-view lifecycle sub-slice: ordinary `&field` bindings and call arguments no longer load/release the field's owning `Box`/`Rc`/`Arc` value. They pass the materialized field-slot address and consume the shared prefixed-borrow address cleanup plan. Local strict SAB and SA-text both pass `tests/test_unit_borrow_temp_release_order.sla` 25/25; full Zig is 210/210 and official dev install/help pass. The tracked SAB `--filter` registration mismatch is also closed: both filtered borrow-temp cases pass locally and through official dev mode, and official dev whole-file strict SAB passes 25/25.
 - Completed docs-priority compiler issue: `docs/sab_anyof9_table_erased_memoryleak_issue_cn.md` `first_type_id` MemoryLeak is fixed for the compiler-owned SAB cleanup surface. Direct SAB now emits visible `.move_` consume instructions for entry stack-slotted by-value Copy scalar params and for param cleanup consume paths, instead of only marking those registers consumed in emitter state. Verification: `zig fmt --check src/sab_codegen.zig`; `zig build --summary all`; `zig build test --summary all` (94/94); official `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; local and installed strict SAB focused scalar/COPY-param fixtures; downstream strict SAB `system_param_table_erased.sla --filter "filtered pair mut system params"` pass; downstream relationship/observer AnyOf wrapper strict SAB filters pass; full local strict SAB unit sweep 118/118; full installed host strict SAB unit sweep 118/118; `git diff --check`. Downstream `world_table_erased.sla --filter "anyof nested"` no longer verifier-traps but fails with `panic 15305` under both SA backend and strict SAB, so that remaining assertion is downstream semantic/business evidence rather than a current SAB cleanup blocker.
 - Completed Phase 1 RefCell lifecycle sub-slice: owner release now uses shared `planRefCellHandleCellRelease` to release active RefCell borrow handles attached to the owner before the owner is released. Direct SAB branch-local cleanup now emits RefCell dynamic-borrow release and borrow-temp cleanup through a branch-local `seen` set without mutating global release state, and SA-text chained `if let` fail-path cleanup restores consumed/borrow/RefCell state after emitting fail cleanup. Added/extended `tests/test_unit_refcell_owner_release_direct.sla` to 2/2; verified local/installed SA-text and strict direct-SAB focused fixture, rosetta 104 SA/SAB, existing RefCell payload SA/SAB 7/7, borrow-temp strict SAB 25/25, `zig build`, `zig build test` 94/94, official dev install/help, and full local/installed strict direct-SAB sweeps 119/119.
 - The tracked function-exit lifecycle audit is closed: ordinary branch/loop/try/let-else exits, implicit/explicit returns, specialized continuation entries, async pending returns, and empty void exits now have focused parity evidence. Resume the primary open implementation target above: profile-driven reduction of real `sla_ecs` `import expand` cost through deeper shallow scan/lazy materialization work, without adding flattened-name compatibility hacks.

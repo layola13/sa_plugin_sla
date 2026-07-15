@@ -43,3 +43,38 @@ SA_PLUGIN_DEV=1 sa plugin install --dev /home/vscode/projects/sa_plugins/sa_plug
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_vec_push_call_result_struct.sla --test-backend sa --jobs 1 --trace-panic
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_vec_push_call_result_struct.sla --test-backend sab --jobs 1 --trace-panic
 ```
+
+## 2026-07-14 Follow-up
+
+Reverified after the direct SAB pointer-backed field-borrow and call-argument
+cleanup fixes:
+
+```sh
+SA_PLUGIN_DEV=1 sa plugin install --dev .
+SA_PLUGIN_DEV=1 sa sla help
+SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_vec_push_call_result_struct.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+The strict direct SAB gate passes under `SLA_SAB_NO_FALLBACK=1`.
+
+## 2026-07-14 Follow-up: local struct field copies
+
+Extended the regression with
+`"vec push consumes local struct field copies"`, covering the related shape
+where `PushSpan` values are first bound to locals and then moved into a
+`PushTrack` struct literal before `Vec::push`.
+
+Fix detail: direct SAB now releases the moved source after creating a
+shallow-copy value for all-scalar pointer-backed struct fields, and marks the
+copied field value as transferred into the containing struct.
+
+Verification:
+
+```sh
+zig build -j1 --summary all
+SA_PLUGIN_DEV=1 sa plugin install --dev .
+SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_vec_push_call_result_struct.sla --test-backend sab --jobs 1 --trace-panic
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_vec_push_call_result_struct.sla --test-backend sa --jobs 1 --trace-panic
+```
+
+Result: both SA and strict direct SAB pass 2/2.

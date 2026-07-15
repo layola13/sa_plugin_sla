@@ -40,3 +40,27 @@ tests/test_unit_move_arg_lexical_cleanup_sa.sla
 
 The existing `tests/test_unit_plain_call_arg_consumes_owned_binding.sla` also
 covers the same SA backend failure mode.
+
+## 2026-07-14 Follow-up
+
+Reverified locally after the call-argument cleanup consolidation:
+
+```sh
+./zig-out/bin/sla-local-cli sla test tests/test_unit_move_arg_lexical_cleanup_sa.sla --test-backend sa --jobs 1 --trace-panic
+./zig-out/bin/sla-local-cli sla test tests/test_unit_plain_call_arg_consumes_owned_binding.sla --test-backend sa --jobs 1 --trace-panic
+```
+
+Both local SA-text gates pass.
+
+Official dev-plugin rerun:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_move_arg_lexical_cleanup_sa.sla --test-backend sa --jobs 1 --trace-panic
+```
+
+Result:
+
+```text
+[PASS] sa lexical cleanup skips moved call argument
+test result: ok. 1 passed; 0 failed; 0 skipped
+```

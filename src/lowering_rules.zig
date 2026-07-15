@@ -3301,9 +3301,9 @@ pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializ
         if (input.local_fn_ptr_identifier) {
             return .{ .kind = .borrow_local_fn_ptr_value, .release_after_call = false };
         }
-        if (input.preserve_identifier_for_later_use and input.shallow_copy_value) {
-            return .{ .kind = .shallow_copy_preserved_value, .release_after_call = false };
-        }
+    }
+    if (input.shallow_copy_value) {
+        return .{ .kind = .shallow_copy_preserved_value, .release_after_call = false };
     }
     return .{
         .kind = .value,
@@ -3747,7 +3747,8 @@ test "shared lowering rules classify call materialization decisions" {
         .preserve_identifier_for_later_use = true,
         .shallow_copy_value = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.value, preserved_sa_plan.kind);
+    try std.testing.expectEqual(CallArgMaterializationKind.shallow_copy_preserved_value, preserved_sa_plan.kind);
+    try std.testing.expect(!preserved_sa_plan.release_after_call);
 }
 
 test "shared lowering rules classify user macro lvalue parameters" {

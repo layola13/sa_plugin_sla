@@ -52,3 +52,20 @@ fn push_ast_add_track(ast: &PushAst, track: PushTrack) {
         panic(43003);
     };
 }
+
+@test "vec push consumes local struct field copies"() {
+    let ast = push_ast_new();
+    let name = push_span_new(3, 8);
+    let span = push_span_new(1, 11);
+    push_ast_add_track(&ast, PushTrack { name: name, span: span });
+
+    if len(ast.tracks) != 1 {
+        panic(43011);
+    };
+    if push_span_len(&ast.tracks[0].name) != 5 {
+        panic(43012);
+    };
+    if push_span_len(&ast.tracks[0].span) != 10 {
+        panic(43013);
+    };
+}

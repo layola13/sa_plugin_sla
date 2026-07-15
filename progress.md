@@ -4,22 +4,53 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue raw-ptr and ptr-aggregate call-arg ABI closure (2026-07-14):
+  ordinary by-value `ptr` parameters no longer get implicit move capability
+  merely because raw `ptr` is represented as `primitive.void_type` and is not a
+  Copy value. SA-text `abiParamPrefix()` and direct SAB `paramCapability()` now
+  keep borrow-like raw pointer values by-value unless the source explicitly
+  requests borrow/move. Shallow-copy-safe ptr/scalar aggregates passed as
+  by-value call args now materialize a copy before move-prefixed calls, so a
+  `ScannerState`-style value can be reused across nested sibling args. Added
+  `tests/test_unit_ptr_value_arg_reuse.sla`,
+  `tests/test_unit_shallow_copy_ptr_aggregate_call_arg.sla`, and a direct SAB
+  signature regression. SA-text now also lowers reassigned shallow-copy-safe
+  aggregate locals through stack value slots, preventing `p2 = tmp`-style
+  RegisterRedefinition at branch/loop merges; added
+  `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla`. Local and official dev
+  SA/SAB focused fixture gates pass. `sla_tsgo` `test_checker_contract.sla` now
+  gets past the original `lookup_keyword` `UnknownRegister tmp_220` / SA-text
+  `CapabilityMismatch tmp_338` raw-ptr surface, the follow-on `advance`/`mkpj`
+  `s2` UseAfterMove, and the `parse_function_expression` `p2 = tmp_6858`
+  RegisterRedefinition: official dev SA-text, default/direct SAB, and strict
+  direct SAB all pass 170/170. `lua_sla/src_lua/lvm.sla` also gets past the
+  historical issue011 `sf_pos` RegisterRedefinition and now stops at
+  `vm_table_set_index` `tm` UseAfterMove.
+
 - docs/issue focused cleanup and verification slice (2026-07-14): fixed the
   remaining issue004 SA/SAB by-value call-argument cleanup gaps by recording
   ownership-transfer operands in emitter cleanup state, including direct SAB
   ABI-inferred `^` operands. Fixed issue007-adjacent SA-text raw pointer call
   arguments by applying by-value `ptr` ABI move prefixes to string-literal and
-  imported-macro pointer results. Reverified local focused issue batch plus
-  official dev-plugin gates after `SA_PLUGIN_DEV=1 sa plugin install --dev .`
-  and `SA_PLUGIN_DEV=1 sa sla help`: issue004 SA/SAB, issue007 SA/SAB,
-  raw-pointer literal SA, issue002/003/009 strict SAB Vec/field regressions,
-  and borrow-struct strict SAB all pass. Source filters `direct sab extern` and
-  `resolve import by workspace package name` pass 2/2. `scodex-cli` package-name
-  import check passes through official `SA_PLUGIN_DEV=1 sa sla check -p
-  scodex-cli`; `build-workspace -p scodex-cli` is still pending because an
-  external `sla_tsgo` test scan occupied the queue.
+  imported-macro pointer results. Added a direct SAB lifecycle fix for
+  all-scalar struct values that are shallow-copied while being moved into a
+  struct field: the copied field is marked transferred into the parent and the
+  moved source is released. Reverified local focused issue batch plus official
+  dev-plugin gates after `SA_PLUGIN_DEV=1 sa plugin install --dev .` and
+  `SA_PLUGIN_DEV=1 sa sla help`: issue004 SA/SAB, issue007 SA/SAB, raw-pointer
+  literal SA, issue002/003/009 strict SAB Vec/field regressions, the extended
+  issue003 local-struct-copy fixture, and borrow-struct strict SAB all pass.
+  Source filters `direct sab extern` and
+  `resolve import by workspace package name` pass 2/2. `scodex-cli`
+  package-name import check and `build-workspace -p scodex-cli` pass through
+  official `SA_PLUGIN_DEV=1 sa sla ...`; issue008 official SA-text rerun passes;
+  issue014 `sla_music_cli/src/music_ir.sla` strict direct SAB now passes 4/4.
+  The borrow-temp strict SAB `--filter` registration mismatch no longer
+  reproduces: both tracked filters pass locally and through official
+  `SA_PLUGIN_DEV=1 sa sla ...`, and official dev strict SAB whole-file remains
+  25/25.
 
-- direct-SAB non-owning smart-pointer field-view lifecycle closure (2026-07-14): removed the ordinary direct-SAB borrow path that loaded a pointer-backed `&field` as the field's owning `Box`/`Rc`/`Arc` value, and removed the matching call-argument path that passed/released that owner instead of the already materialized field-slot address. Ordinary field borrows now follow the same shared `planAddressOf()` plus `PrefixedBorrowAddressCallArgReleasePlan` contract as macro borrows: the callee receives the field-slot view, address temporaries are discharged, and the owner stored in the containing struct remains live. `tests/test_unit_borrow_temp_release_order.sla` recovered from strict-SAB 16/25 to 25/25; local SA-text parity is 25/25. The stale std-surface metadata assertion was also corrected to verify the current structured `Vec_len` load while retaining the `sa_vec_len` signature, instead of requiring an obsolete call. Serial gates: `zig fmt --check`, `git diff --check`, build 7/7, shared borrow-plan Zig 1/1, static-call plan 2/2, std-surface metadata 2/2, full Zig 210/210, official dev install/help, local strict SAB 25/25, and local SA 25/25. Installed/dev SA/SAB reruns are pending only because another workspace test process was active; the SAB `--filter` registration mismatch remains a separate open harness issue.
+- direct-SAB non-owning smart-pointer field-view lifecycle closure (2026-07-14): removed the ordinary direct-SAB borrow path that loaded a pointer-backed `&field` as the field's owning `Box`/`Rc`/`Arc` value, and removed the matching call-argument path that passed/released that owner instead of the already materialized field-slot address. Ordinary field borrows now follow the same shared `planAddressOf()` plus `PrefixedBorrowAddressCallArgReleasePlan` contract as macro borrows: the callee receives the field-slot view, address temporaries are discharged, and the owner stored in the containing struct remains live. `tests/test_unit_borrow_temp_release_order.sla` recovered from strict-SAB 16/25 to 25/25; local SA-text parity is 25/25. The stale std-surface metadata assertion was also corrected to verify the current structured `Vec_len` load while retaining the `sa_vec_len` signature, instead of requiring an obsolete call. Serial gates: `zig fmt --check`, `git diff --check`, build 7/7, shared borrow-plan Zig 1/1, static-call plan 2/2, std-surface metadata 2/2, full Zig 210/210, official dev install/help, local strict SAB 25/25, local SA 25/25, local strict SAB filters 1/1 each, official dev strict SAB filters 1/1 each, and official dev strict SAB whole-file 25/25. The SAB `--filter` registration mismatch is closed for the tracked borrow-temp cases.
 
 - borrow_temp void-call + SAB filter/harness diagnosis (2026-07-13): reconfirmed the two strict-SAB `--filter` cases on `tests/test_unit_borrow_temp_release_order.sla` fail with code 1 and `error: no matching test` even with `--trace-panic`; the same two cases PASS in the no-filter strict-SAB whole-file run, and the SA-text `--filter` path passes. This points at the sa test harness + SAB module + `--filter` runtime registration mismatch, not at the void-call codegen itself. The whole-file strict-SAB run is 16/25: the two void-call cases plus several deep-borrow cases PASS, but 9 `&field`/`&*field` smart-pointer borrow cases fail with signal 11; those 9 reproduce on unmodified `1df9edc` and are tracked as a pre-existing non-owning field-view + owner-cleanup lifecycle gap in `docs/sab_borrow_temp_void_call_regression_issue_cn.md`. No SA/SAB release special-case was added this slice; the pointer-backed `&field` SAB arg path was reverted to its prior `markNonOwningReg` + `release_reg = owner` shape after experiments (`release`/`markConsumed`/no-release variants all failed to move the 9 signal-11 cases) confirmed the fix needs shared call/lifecycle plan modeling, not an emitter release tweak. `emitRelease` non-owning branch keeps `move_` (its original behavior). Serial gates this slice: `zig build -j1` 7/7, `zig build test -j1` 209/210 (the single failure is the pre-existing `sla sab backend lowers std surface function metadata directly` std-surface `len` inline vs `@sa_vec_len` call assertion, unrelated to this diagnosis), `zig test src/lowering_rules.zig` shared static-call/borrow/refcell regressions 4/4, SA-text `tests/test_unit_borrow_temp_release_order.sla` 25/25, strict-SAB whole-file 16/25. Open: the 9 signal-11 field-borrow cases, the std-surface `len` assertion, and the Module Table import-expand latency target still dominated by import root resolution.
 

@@ -857,7 +857,7 @@ pub const Codegen = struct {
 
     fn typeCanUseScalarReassignSlot(ty: *const ast.Type) bool {
         return switch (ty.*) {
-            .primitive => |p| p != .void_type,
+            .primitive => true,
             else => false,
         };
     }
@@ -1657,7 +1657,7 @@ pub const Codegen = struct {
 
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
         return switch (ty.*) {
-            .primitive => |p| p != .void_type,
+            .primitive => true,
             .user_defined => blk: {
                 const cache_name: ?[]const u8 = if (ty.user_defined.generics.len == 0) ty.user_defined.name else null;
                 if (cache_name) |name| {
@@ -1730,7 +1730,7 @@ pub const Codegen = struct {
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
         if (depth > 8) return false;
         return switch (ty.*) {
-            .primitive => |p| p != .void_type,
+            .primitive => true,
             .pointer, .borrow, .fn_ptr => true,
             .tuple => |tuple| blk: {
                 for (tuple.elems) |elem| {
@@ -2843,6 +2843,8 @@ pub const Codegen = struct {
         if (cap == .raw) return .skip;
         if (cap == .borrow) return .release;
         const ty = local.ty orelse return .skip;
+        if (cap == .by_value and (try primType(ty)) == .ptr) return .skip;
+        if (cap == .by_value and self.typeIsCopyValue(ty)) return .skip;
         if (ty.* == .fn_ptr) return .consume;
         if (self.typeIsCopyValue(ty)) return .consume;
         if ((try primType(ty)) == .ptr) return .consume;
@@ -2916,6 +2918,10 @@ pub const Codegen = struct {
 
     fn emitBalanceReleaseLocal(self: *Codegen, local: Local) !void {
         if (self.released_regs.contains(local.reg)) return;
+        if (local.ty) |ty| {
+            const abi_ty = primType(ty) catch return;
+            if (abi_ty == .ptr) return;
+        }
         if (local.is_param) switch (try self.paramCleanupAction(local)) {
             .skip => return,
             .mark_consumed => {
@@ -2944,6 +2950,8 @@ pub const Codegen = struct {
     ) !void {
         for (self.locals.items[0..branch_locals_len]) |local| {
             if (!target_released.contains(local.reg) or branch_released.contains(local.reg)) continue;
+            const local_ty = local.ty orelse continue;
+            if (lowering_rules.isBorrowLikeType(local_ty)) continue;
             try self.emitBalanceReleaseLocal(local);
             try branch_released.put(local.reg, {});
         }
@@ -3490,7 +3498,7 @@ pub const Codegen = struct {
 
     fn paramCapability(self: *Codegen, param: ast.Param) inst.CapPrefix {
         if (param.is_borrow or param.ty.* == .borrow) return .borrow;
-        if (param.is_move or !self.typeIsCopyValue(param.ty)) return .move;
+        if (param.is_move or (!self.typeIsCopyValue(param.ty) and !lowering_rules.isBorrowLikeType(param.ty))) return .move;
         return .by_value;
     }
 
@@ -5575,6 +5583,7 @@ pub const Codegen = struct {
     fn paramNeedsEntryStackSlot(self: *Codegen, param: ast.Param) bool {
         if (param.is_borrow or param.is_move) return false;
         if (self.borrowedBindingNeedsStackStorage(param.name, param.ty)) return true;
+        if (self.typeIsCopyValue(param.ty)) return false;
         if (self.bindingNeedsScalarReassignSlot(param.name, param.ty)) return true;
         return false;
     }
@@ -5587,7 +5596,9 @@ pub const Codegen = struct {
             const param_reg = self.localReg(param.name) orelse return Error.UnsupportedSabDirectFeature;
             try self.emitStackAlloc(slot, typeSize(param.ty));
             try self.emitStore(slot, 0, param_reg, try storagePrimType(param.ty));
-            try self.emitMove(param_reg);
+            if ((try primType(param.ty)) != .ptr and !self.typeIsCopyValue(param.ty)) {
+                try self.emitMove(param_reg);
+            }
             try self.pushStackLocal(param.name, slot, param.ty);
         }
     }
@@ -11501,7 +11512,6 @@ pub const Codegen = struct {
             const addr = try self.intern(try self.newTmp());
             try self.emitPtrAdd(addr, ptr, .{ .reg = offset });
             try self.emitLoad(dst, addr, 0, .u8);
-            try self.emitRelease(addr);
             return true;
         }
 
@@ -11513,7 +11523,6 @@ pub const Codegen = struct {
             const addr = try self.intern(try self.newTmp());
             try self.emitPtrAdd(addr, ptr, .{ .reg = offset });
             try self.emitStore(addr, 0, value, .u8);
-            try self.emitRelease(addr);
             return true;
         }
 
@@ -11779,7 +11788,9 @@ pub const Codegen = struct {
             try self.emitStore(restore.slot, 0, restore.value, .ptr);
             try self.markConsumed(restore.value);
         }
-        try self.releaseNonLocalTemps(release_regs.items);
+        if (!emitted_direct) {
+            try self.releaseNonLocalTemps(release_regs.items);
+        }
         if (dst) |reg| return reg;
 
         const sentinel = try self.intern(try self.newTmp());
@@ -12305,10 +12316,17 @@ pub const Codegen = struct {
         const target_param = param orelse return false;
         if (target_param.is_borrow or target_param.is_move) return false;
         if (arg.* != .identifier) return false;
-        const ty = arg_ty orelse return false;
+        const ty = arg_ty orelse target_param.ty;
         if (ty.* != .user_defined) return false;
         if (self.typeIsCopyValue(ty) or lowering_rules.isBorrowLikeType(ty)) return false;
         return self.typeIsShallowCopyCallArgValue(ty, 0);
+    }
+
+    fn callArgType(self: *Codegen, arg: *const ast.Node) !?*const ast.Type {
+        if (arg.* == .identifier) {
+            if (self.localType(arg.identifier)) |ty| return ty;
+        }
+        return try self.exprTypeOrFallback(arg);
     }
 
     fn valueArgTransfersOwnership(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
@@ -12329,10 +12347,11 @@ pub const Codegen = struct {
         arg_index: usize,
         auto_borrow_receiver: bool,
     ) anyerror!SabLoweredCallArg {
+        const arg_ty = try self.callArgType(arg);
         const materialization = lowering_rules.planCallArgMaterialization(arg, .{
             .target = .direct_sab,
             .param = param,
-            .arg_ty = self.tc.expr_types.get(arg),
+            .arg_ty = arg_ty,
             .arg_index = arg_index,
             .auto_borrow_receiver = auto_borrow_receiver,
             .abi_borrow_auto_borrow = abi_borrow_auto_borrow,
@@ -12342,9 +12361,9 @@ pub const Codegen = struct {
             .generated_fn_ptr_identifier = self.isGeneratedFnPtrValueArg(arg, param),
             .local_fn_ptr_identifier = self.isLocalFnPtrValueArg(arg, param),
             .preserve_identifier_for_later_use = arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier),
-            .shallow_copy_value = self.isShallowCopyValueArg(arg, param, self.tc.expr_types.get(arg)),
+            .shallow_copy_value = self.isShallowCopyValueArg(arg, param, arg_ty),
             .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(arg),
-            .value_arg_transfers_ownership = self.valueArgTransfersOwnership(param, self.tc.expr_types.get(arg)),
+            .value_arg_transfers_ownership = self.valueArgTransfersOwnership(param, arg_ty),
         });
 
         return switch (materialization.kind) {
@@ -12390,13 +12409,13 @@ pub const Codegen = struct {
                 };
             },
             .shallow_copy_preserved_value => blk: {
-                const arg_ty = self.tc.expr_types.get(arg) orelse return Error.UnsupportedSabDirectFeature;
+                const ty = arg_ty orelse return Error.UnsupportedSabDirectFeature;
                 const arg_reg = try self.genExpr(@constCast(arg));
-                const copied = try self.genShallowCopyCallArgValue(arg_reg, arg_ty);
+                const copied = try self.genShallowCopyCallArgValue(arg_reg, ty);
                 break :blk .{
-                    .operand = self.symbols.items[copied],
+                    .operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[copied]}),
                     .release_reg = null,
-                    .consume_reg = copied,
+                    .forget_reg = copied,
                 };
             },
             .auto_borrow => blk: {
@@ -12417,6 +12436,18 @@ pub const Codegen = struct {
                         break :blk effective;
                     }
                     const arg_reg = try self.genExpr(@constCast(arg));
+                    if (prefix == '^' and
+                        arg.* == .identifier and
+                        self.isShallowCopyValueArg(arg, param, arg_ty))
+                    {
+                        const ty = arg_ty orelse (param orelse return Error.UnsupportedSabDirectFeature).ty;
+                        const copied = try self.genShallowCopyCallArgValue(arg_reg, ty);
+                        break :blk .{
+                            .operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[copied]}),
+                            .release_reg = null,
+                            .forget_reg = copied,
+                        };
+                    }
                     const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                     const operand = try std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, self.symbols.items[arg_reg] });
                     break :blk .{
@@ -12436,11 +12467,10 @@ pub const Codegen = struct {
                 if (abi_borrow_auto_borrow) {
                     break :blk .{
                         .operand = try self.externBorrowCallOperand(self.symbols.items[arg_reg]),
-                        .release_reg = if (materialization.release_after_call) arg_reg else null,
+                        .release_reg = if (materialization.release_after_call or (arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg))) arg_reg else null,
                     };
                 }
-                const arg_ty = self.tc.expr_types.get(arg);
-                const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
+                const release_reg: ?u32 = if (materialization.release_after_call or (arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg))) arg_reg else null;
                 const consumption = lowering_rules.planValueCallArgConsumption(
                     arg,
                     param,
@@ -12537,9 +12567,9 @@ pub const Codegen = struct {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 const copied = try self.genShallowCopyCallArgValue(arg_reg, effective_ty);
                 break :blk .{
-                    .operand = self.symbols.items[copied],
+                    .operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[copied]}),
                     .release_reg = null,
-                    .consume_reg = copied,
+                    .forget_reg = copied,
                 };
             },
             .auto_borrow => blk: {
@@ -13374,6 +13404,8 @@ pub const Codegen = struct {
                             if (transfer == .move and self.typeIsShallowCopyCallArgValue(plan.field_ty, 0)) {
                                 const copied = try self.genShallowCopyCallArgValue(value_reg, plan.field_ty);
                                 try self.emitStore(dst, layout.offset, copied, prim);
+                                try self.emitConsumedMarker(copied);
+                                try self.releaseMovedShallowCopySource(value, value_reg, plan.field_ty);
                             } else {
                                 if (transfer == .move) {
                                     try self.emitStore(dst, layout.offset, value_reg, prim);
@@ -13423,6 +13455,16 @@ pub const Codegen = struct {
         while (iter.next()) |reg| try self.markConsumed(reg.*);
 
         return dst;
+    }
+
+    fn releaseMovedShallowCopySource(self: *Codegen, value: *const ast.Node, value_reg: u32, value_ty: *const ast.Type) !void {
+        if (value.* == .identifier) {
+            _ = lowering_rules.storedValueMovesIdentifier(value, value_ty, self.typeIsCopyValue(value_ty)) orelse return;
+            const local_reg = self.localReg(value.identifier) orelse return;
+            try self.emitRelease(local_reg);
+            return;
+        }
+        if (lowering_rules.exprResultNeedsRelease(value)) try self.emitRelease(value_reg);
     }
 
     /// Direct SAB lowering for an enum literal (`Enum::Variant { fields }` or a
@@ -13822,11 +13864,10 @@ pub const Codegen = struct {
             if (self.structDeclForType(field.ty) != null) {
                 const copied_field = try self.genCopyValue(field_reg, field.ty);
                 try self.emitStore(dst, layout.offset, copied_field, layout.ty);
-                try self.emitRelease(copied_field);
+                try self.emitConsumedMarker(copied_field);
                 try self.emitRelease(field_reg);
             } else {
                 try self.emitStore(dst, layout.offset, field_reg, layout.ty);
-                try self.emitRelease(field_reg);
             }
         }
         return dst;
@@ -13845,6 +13886,7 @@ pub const Codegen = struct {
             if (self.structDeclForType(field.ty) != null) {
                 const copied_field = try self.genShallowCopyCallArgValue(field_reg, field.ty);
                 try self.emitStore(dst, layout.offset, copied_field, layout.ty);
+                try self.emitConsumedMarker(copied_field);
                 try self.emitRelease(field_reg);
             } else {
                 try self.emitStore(dst, layout.offset, field_reg, layout.ty);
@@ -14141,7 +14183,6 @@ pub const Codegen = struct {
         defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
 
         try self.emitLabel(then_label);
-        if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         const then_terminated = try self.genBlockTailValueStore(ife.then_block, result_slot, result_ty);
         if (!then_terminated) {
             try self.releaseLocalsFrom(branch_locals_len, null);
@@ -14159,7 +14200,6 @@ pub const Codegen = struct {
         try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
 
         try self.emitLabel(else_label);
-        if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         const else_terminated = try self.genBlockTailValueStore(else_block, result_slot, result_ty);
         if (!else_terminated) {
             try self.releaseLocalsFrom(branch_locals_len, null);
@@ -14234,7 +14274,6 @@ pub const Codegen = struct {
         defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
 
         try self.emitLabel(then_label);
-        if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         try self.genBlock(ife.then_block);
         const then_terminated = self.lastIsTerminator();
         if (!then_terminated) {
@@ -14253,7 +14292,6 @@ pub const Codegen = struct {
         try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
 
         try self.emitLabel(else_label);
-        if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
         if (ife.else_block) |else_block| try self.genBlock(else_block);
         const else_terminated = self.lastIsTerminator();
         if (!else_terminated) {
@@ -14825,6 +14863,27 @@ test "direct sab normal sig preserves borrow return cap" {
     const fsig = try cg.genFuncSig("borrowed_view", .normal, &.{}, borrow_ret, false, false, false);
     try std.testing.expectEqual(inst.CapPrefix.borrow, fsig.return_cap.?);
     try std.testing.expectEqual(sig.PrimType.ptr, fsig.return_ty);
+}
+
+test "direct sab normal sig keeps by-value ptr params raw" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const ptr_ty = try allocator.create(ast.Type);
+    ptr_ty.* = .{ .primitive = .void_type };
+    const int_ty = try allocator.create(ast.Type);
+    int_ty.* = .{ .primitive = .i64 };
+
+    const params = [_]ast.Param{.{ .name = "data", .ty = ptr_ty }};
+    const fsig = try cg.genFuncSig("raw_ptr_param", .normal, &params, int_ty, false, false, false);
+    try std.testing.expectEqual(inst.CapPrefix.by_value, fsig.params[0].cap);
+    try std.testing.expectEqual(sig.PrimType.ptr, fsig.params[0].ty);
 }
 
 test "direct sab contract extern sig preserves return caps" {

@@ -1,0 +1,18 @@
+@import "sa_std/string.sa"
+
+fn accept_ptr_value(data: ptr, value: int) -> int {
+    return value;
+}
+
+fn ptr_param_reused(data: ptr) -> int {
+    let left = accept_ptr_value(data, 1);
+    let right = accept_ptr_value(data, 2);
+    return left + right;
+}
+
+@test "by value ptr params can be reused after calls"() {
+    let got = ptr_param_reused(STR_PTR("keyword"));
+    if got != 3 {
+        panic(44001);
+    };
+}

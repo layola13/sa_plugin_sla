@@ -1,5 +1,7 @@
 # issue014: direct SAB test reports music_ir register leak
 
+Status: resolved on 2026-07-14
+
 ## Symptom
 
 `sla_music_cli/src/music_ir.sla` passes with the SA-text backend, but strict
@@ -130,6 +132,53 @@ still reports it live at function exit. This points at a verifier/codegen state
 merge issue for direct SAB temporaries inside loop-carried branches, or at a
 register identity reuse issue across the loop backedge.
 
+## Resolution
+
+The final reproducible leak shifted to `music_ir_add_note` after the Vec/Slice
+and primitive stack-slot fixes:
+
+```text
+error[MemoryLeak]: live registers remain at function exit
+  register: tmp_955
+  state: Active
+```
+
+The root cause was direct SAB's all-scalar struct shallow-copy path for struct
+literal fields. For a shape such as:
+
+```sla
+let note_source_span = span_new(source_start, source_end);
+ir.notes.push(MusicIrNote { source_span: note_source_span, ... });
+```
+
+direct SAB created a shallow-copy allocation for the `SourceSpan` field but did
+not consume the copied field register or release the moved source local. The
+source local therefore remained active at function exit even though the field
+value had been moved into the containing struct.
+
+Fix:
+
+- mark the copied shallow field value as transferred into the parent struct;
+- release the moved source expression after the shallow copy has been created;
+- extend `tests/test_unit_vec_push_call_result_struct.sla` with
+  `"vec push consumes local struct field copies"`.
+
+Verification:
+
+```sh
+cd /home/vscode/projects/sa_plugins/sa_plugin_sla
+zig build -j1 --summary all
+SA_PLUGIN_DEV=1 sa plugin install --dev .
+SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_vec_push_call_result_struct.sla --test-backend sab --jobs 1 --trace-panic
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_vec_push_call_result_struct.sla --test-backend sa --jobs 1 --trace-panic
+
+cd /home/vscode/projects/sla_music_cli
+SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test src/music_ir.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+Result: the focused compiler fixture passes SA/SAB 2/2, and
+`src/music_ir.sla` strict direct SAB passes 4/4.
+
 ## Expected
 
 Direct SAB should compile and run `src/music_ir.sla` without live-register
@@ -139,12 +188,8 @@ at branch joins and loop backedges. SA-text should remain green.
 
 ## Current Workaround
 
-Use the SA-text backend as the music development gate for this module while
-continuing pure SLA music work:
-
-```sh
-SA_PLUGIN_DEV=1 sa sla test src/music_ir.sla --test-backend sa --jobs 1 --trace-panic
-```
+None needed for this issue. Keep the strict direct SAB music gate above as the
+regression check.
 
 Focused compiler regression that currently passes with the std-surface fallback:
 

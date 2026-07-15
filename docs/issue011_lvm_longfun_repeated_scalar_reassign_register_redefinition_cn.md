@@ -1,11 +1,32 @@
 # issue011: `vm_builtin_string_format` 中反复自赋值的 scalar local 触发 `RegisterRedefinition`
 
 日期：2026-07-13
-状态：open (regressor file `lua_sla/src_lua/lvm.sla`；未拿到最小 repro)
+状态：原 `sf_pos` RegisterRedefinition surface 当前未复现；`lua_sla/src_lua/lvm.sla` 仍被后续 `vm_table_set_index` / `tm` UseAfterMove 阻塞，未拿到独立最小 repro。
 
 ## Summary
 
 `sa sla test lua_sla/src_lua/lvm.sla --test-backend sa` 在 `vm_builtin_string_format(vm: &VMState, ra: int, rb: int)` 内触发 trap：
+
+## 2026-07-14 reverify update
+
+使用当前 dev plugin 串行复验：
+
+```sh
+cd /home/vscode/projects/lua_sla
+SA_PLUGIN_DEV=1 sa sla test src_lua/lvm.sla --test-backend sa --jobs 1 --trace-panic
+```
+
+原 `@sla__vm_builtin_string_format` / `sf_pos` `RegisterRedefinition(1006)` 未复现。测试继续执行到新的阻塞点：
+
+```text
+error[UseAfterMove]: moved value is no longer usable
+  in function @sla__vm_table_set_index(&vm: ptr, tidx: i64, key_tt: i64, key_i
+  line 262662 (expanded 220563):     tmp_49541 = call @sla__vm_call_tm_lightc(&vm, ^tm, ^obj, ^key, tmp_49540, ^val)
+  register: tm
+  state: expected Consumed, actual Consumed
+```
+
+因此本文原始 scalar self-reassign `RegisterRedefinition` 证据应视为历史 surface；当前仍开放的是同一大型 `lvm.sla` 后续 move-state blocker。后续应基于 `vm_table_set_index` / `tm` 提取新的最小 repro，或另开 `UseAfterMove` 工单；不要再把当前失败归因到 `sf_pos` self-reassign。
 
 ```text
 error[RegisterRedefinition]: register is already live

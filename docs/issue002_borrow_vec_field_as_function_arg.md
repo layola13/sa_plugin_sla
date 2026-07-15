@@ -86,3 +86,15 @@ SA_PLUGIN_DEV=1 sa sla test tests/test_unit_borrow_vec_field_call_arg.sla --test
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_vec_index_assign.sla --test-backend sa --jobs 1 --trace-panic
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_vec_index_assign.sla --test-backend sab --jobs 1 --trace-panic
 ```
+
+## 2026-07-14 Follow-up
+
+Reverified after the direct SAB Vec-field owner and call-argument cleanup fixes:
+
+```sh
+SA_PLUGIN_DEV=1 sa plugin install --dev .
+SA_PLUGIN_DEV=1 sa sla help
+SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_borrow_vec_field_call_arg.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+The strict direct SAB gate passes under `SLA_SAB_NO_FALLBACK=1`.

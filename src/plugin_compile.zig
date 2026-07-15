@@ -810,6 +810,12 @@ pub const CompiledTestInput = struct {
     delete_after: bool = false,
 };
 
+fn keepGeneratedSaTestInput(allocator: std.mem.Allocator) bool {
+    const value = std.process.getEnvVarOwned(allocator, "SLA_KEEP_TEST_SA") catch return false;
+    defer allocator.free(value);
+    return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false") and !std.mem.eql(u8, value, "no");
+}
+
 pub fn compileSlaSabTestInput(
     allocator: std.mem.Allocator,
     file: []const u8,
@@ -861,5 +867,5 @@ pub fn compileSlaSaTestInput(
             return null;
         };
     }
-    return .{ .path = sa_out, .delete_after = true };
+    return .{ .path = sa_out, .delete_after = !keepGeneratedSaTestInput(allocator) };
 }

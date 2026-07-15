@@ -1,7 +1,7 @@
 # issue017: 超长函数内 inline 宏结果作 call arg 触发 `UnknownRegister` / `CapabilityMismatch`
 
 日期：2026-07-14
-状态：open (regressor file `sla_tsgo/members/ast/src/scanner.sla`；未拿到独立最小 repro)
+状态：原 `lookup_keyword` raw-ptr call-arg surface 已修复并复验；后续 `advance`/`mkpj` aggregate `s2` move-state surface 也已修复并复验。再后续 SA-text `parse_function_expression` `p2` RegisterRedefinition 已通过 assigned aggregate value-slot lowering 修复并复验。`test_checker_contract.sla` SA-text/default/direct-SAB/strict-SAB 均通过。
 
 ## Summary
 
@@ -9,6 +9,78 @@
 
 `sa sla check members/ast/src/scanner.sla` ✓ 类型/语法校验通过；
 但 `sa sla test tests/test_checker_contract.sla`（该测试套件最终会经 scanner 走到 `lookup_keyword`）触发 trap。
+
+## 2026-07-14 closure update
+
+根因收敛为普通 SLA 函数签名把 raw `ptr`（AST 内为 `primitive.void_type`）当作非 Copy owner 参数处理，导致 by-value `ptr` 参数自动签成/调用成 move capability。`lookup_keyword(t: ptr, ...)` 因此生成 `^t`，第一次 `check_kw(t, start, STR_PTR(...), N)` 就消耗 `t`，后续 keyword 分支再用 `t` 触发 `UseAfterMove` / capability trap。
+
+修复点：
+
+- SA-text `abiParamPrefix()`：`ptr` 这类 borrow-like raw value 不再因为 `!typeIsCopyValue()` 自动获得 `^`；
+- direct SAB `paramCapability()`：普通 by-value `ptr` 参数保持 `by_value` cap；
+- 新增 `tests/test_unit_ptr_value_arg_reuse.sla`，覆盖同一个 `ptr` 参数连续传给 by-value `ptr` callee，SA-text 与 strict direct SAB 均通过；
+- 新增 direct SAB 签名单测，确认普通 by-value `ptr` 参数 cap 为 `by_value`、ABI 类型为 `ptr`。
+
+串行复验证据：
+
+- `zig fmt --check src/codegen.zig src/sab_codegen.zig`；
+- `zig build test -Dtest-filter="direct sab normal sig keeps by-value ptr params raw" --summary all`：2/2；
+- `zig build -j1 --summary all`：7/7；
+- local `tests/test_unit_ptr_value_arg_reuse.sla` SA/SAB：1/1 + 1/1；
+- `SA_PLUGIN_DEV=1 sa plugin install --dev .` 与 `SA_PLUGIN_DEV=1 sa sla help`：通过；
+- official dev `tests/test_unit_ptr_value_arg_reuse.sla` SA/SAB：1/1 + 1/1；
+- `/home/vscode/projects/mnt/sla_tsgo` official dev `tests/test_checker_contract.sla` 默认/SAB 已越过原 `UnknownRegister tmp_220 @ SAB 738`，当前停在后续 `register: s2` `UseAfterMove`；
+- 同一 checker SA-text 已越过原 `CapabilityMismatch tmp_338 @ lookup_keyword`，当前停在 `@sla__advance(^p: ptr) -> ptr` 的 `tmp_2889 = call @sla__mkpj(^s2, ...)`，`register: s2`。
+
+因此本 issue 标题所述的“超长 `lookup_keyword` 内 inline `STR_PTR` 作为 by-value `ptr` call arg 导致 `UnknownRegister` / `CapabilityMismatch`”已关闭。剩余 `s2` 问题属于 `ScannerState` 非 Copy aggregate 被 `scanner_token_kind(s2)` 与 `mkpj(s2, ...)` 重复使用的 move-state surface，应归入 issue006/aggregate call-arg 保留或另开独立工单，而不是继续挂在 raw-ptr inline macro call-arg issue 下。
+
+## 2026-07-14 aggregate follow-up closure
+
+后续 `advance`/`mkpj` 的 `s2` blocker 根因是 shallow-copy-safe aggregate（例如只含 raw `ptr` 与 scalar 字段的 `ScannerState`）作为 by-value 参数传入多个 sibling/nested call 时，SA-text/direct-SAB 仍会把原 identifier 作为 move 参数重复传入。修复后，这类非 owner aggregate 会在 call-arg materialization 阶段浅拷贝，callee 消耗的是 `^copy`，原 `s2` 保持可用于同一表达式里的后续参数。
+
+新增最小复现：
+
+- `tests/test_unit_shallow_copy_ptr_aggregate_call_arg.sla`：`mini_parser_new(s2, mini_token_kind(s2), ...)` 覆盖 nested sibling call arg 复用。
+
+复验证据：
+
+- `zig fmt --check src/codegen.zig src/sab_codegen.zig src/lowering_rules.zig`；
+- `zig build -j1 --summary all`：7/7；
+- `zig build test -Dtest-filter="shared lowering rules classify call argument materialization" --summary all`：1/1；
+- local fixture SA-text 与 strict direct-SAB：1/1 + 1/1；
+- `SA_PLUGIN_DEV=1 sa plugin install --dev .` 与 `SA_PLUGIN_DEV=1 sa sla help`：通过；
+- official dev fixture SA-text 与 strict direct-SAB：1/1 + 1/1；
+- `/home/vscode/projects/mnt/sla_tsgo` official dev `tests/test_checker_contract.sla` 默认 backend：170/170；
+- 同一 checker strict direct-SAB (`SLA_SAB_NO_FALLBACK=1 --test-backend sab`)：170/170；
+- 同一 checker SA-text backend 已越过原 `lookup_keyword` 与 `advance/mkpj s2`，当前后续 blocker 为 `@sla__parse_function_expression(^p: ptr) -> ptr` 中 `p2 = tmp_6858` 的 `RegisterRedefinition(1006)`。
+
+结论：issue017 覆盖的 raw-ptr call-arg ABI surface 和紧随其后的 ptr aggregate `s2` reuse surface 均已关闭。后续 SA-text `parse_function_expression` `p2` RegisterRedefinition 也已在 issue006 parser-state rebind 系列下关闭。
+
+## 2026-07-14 SA-text parser rebind follow-up closure
+
+`parse_function_expression` 中的 `let p2 = advance(p); ... p2 = advance(p2)`
+形状会在 SA-text 后端生成 `release p2; p2 = tmp_6858`，在分支/循环合流后
+触发 `RegisterRedefinition(1006)`。修复后，SA-text 对被 assignment 命中的
+shallow-copy-safe aggregate local 使用 stack value slot：初始 `let` 写入
+slot，后续读取生成 `load` 临时，assignment 覆盖 `store slot+0`，不再重定义同名
+SA register。
+
+新增最小复现：
+
+- `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla`：覆盖
+  `p2 = rebind_advance(p2)` parser-state rebind 与 loop/break 合流形状。
+
+复验证据：
+
+- `zig fmt --check src/codegen.zig src/plugin_tests.zig`；
+- `zig build -j1 --summary all`：7/7；
+- `zig build test --summary all`：215/215；
+- local fixture SA-text 与 strict direct-SAB：1/1 + 1/1；
+- `SA_PLUGIN_DEV=1 sa plugin install --dev .` 与 `SA_PLUGIN_DEV=1 sa sla help`：通过；
+- official dev fixture SA-text 与 strict direct-SAB：1/1 + 1/1；
+- `/home/vscode/projects/mnt/sla_tsgo` official dev `tests/test_checker_contract.sla --test-backend sa`：170/170；
+- 同一 checker 默认 backend：170/170；
+- 同一 checker strict direct-SAB (`SLA_SAB_NO_FALLBACK=1 --test-backend sab`)：170/170。
 
 不同 backend 给的 trap_code 不同，但函数归因一致：
 

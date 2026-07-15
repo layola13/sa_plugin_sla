@@ -1,5 +1,58 @@
 # issue006: sla_tsgo parser chained `p2 = F(p2)` reassignment triggers SAB `UseAfterMove` even when the arrow path is never executed
 
+## Update 2026-07-14: SA-text parser-state rebind surface closed for checker
+
+The later `sla_tsgo` checker SA-text blocker had the same source-level parser
+state shape, but surfaced as `RegisterRedefinition(1006)` instead of direct-SAB
+`UseAfterMove`:
+
+```text
+in function @sla__parse_function_expression(^p: ptr) -> ptr:
+line 53865 (expanded 22043):     p2 = tmp_6858
+register: p2
+```
+
+The source shape is:
+
+```sla
+let p2 = advance(p);
+if p2.current_kind == KindIdentifier { p2 = advance(p2); };
+...
+while ii < mi {
+    ...
+    if depth == 0 { p2 = advance(p2); break; };
+    ...
+    p2 = advance(p2);
+}
+...
+return add_err(p2);
+```
+
+SA-text now pre-scans assignment targets and lowers assigned
+shallow-copy-safe aggregate locals through a stack value slot. The initial
+`let p2 = ...` stores into the slot, reads load a temporary value, and
+`p2 = advance(p2)` overwrites the slot with `store` instead of redefining the
+same SA register after a control-flow merge.
+
+Regression:
+
+- `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla`
+
+Evidence:
+
+- local and official dev fixture SA-text: 1/1;
+- local and official dev strict direct-SAB fixture: 1/1;
+- `/home/vscode/projects/mnt/sla_tsgo` official dev
+  `tests/test_checker_contract.sla --test-backend sa`: 170/170;
+- same checker default backend: 170/170;
+- same checker strict direct-SAB: 170/170;
+- `zig build -j1 --summary all`: 7/7;
+- `zig build test --summary all`: 215/215.
+
+This update closes the observed checker `parse_function_expression` SA-text
+rebind blocker. The older direct-SAB loop/break phi notes below remain useful
+historical diagnosis for broader parser-state control-flow shapes.
+
 ## Symptom
 
 `members/ast/src/parser.sla` in `/home/vscode/projects/mnt/sla_tsgo` type-checks

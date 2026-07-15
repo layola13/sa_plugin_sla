@@ -304,3 +304,53 @@ empty output, even after replacing the bridge-local classifier with fixed ASCII
 not include those pointer/slice execution tests in the regular SAB gate yet.
 This issue remains the tracking item for pointer/slice SAB execution and for
 surfacing diagnostics when the generated test exits nonzero.
+
+## 2026-07-15 Config/Auth Compatibility Repro
+
+While adding additive Codex compatibility scanners for `~/.codex/config.toml`
+and `$CODEX_HOME/auth.json` in `packages/scodex-config/src/config.sla`, the same
+backend split still reproduces.
+
+Reference crates used for the compatibility surface:
+
+- `/home/vscode/projects/codex/codex-rs/utils/home-dir`
+- `/home/vscode/projects/codex/codex-rs/config`
+- `/home/vscode/projects/codex/codex-rs/login`
+
+Passing SA-text checks:
+
+```sh
+cd /home/vscode/projects/sla_codex
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-config/src/config.sla \
+  --test-backend sa --trace-panic
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-cli/src/main.sla \
+  --test-backend sa --trace-panic
+SA_PLUGIN_DEV=1 sa sla check -p scodex-cli
+SA_PLUGIN_DEV=1 sa sla build packages/scodex-cli/src/main.sla --out /tmp/scodex.sa
+```
+
+All of the above pass. The config tests include pointer scanning via
+`PTR_BYTE_ADD`, slice construction through `STR_FROM_PARTS`, and imported
+`STR_PTR`/`STR_LEN` literals.
+
+Failing direct SAB commands:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-config/src/config.sla \
+  --test-backend sab --trace-panic
+SA_PLUGIN_DEV=1 sa sla test packages/scodex-cli/src/main.sla \
+  --test-backend sab --trace-panic
+SA_PLUGIN_DEV=1 sa sla sab workspace -p scodex-cli --sab-out /tmp/scodex.sab
+SA_PLUGIN_DEV=1 sa sla build-workspace -p scodex-cli -o /tmp/scodex
+```
+
+Observed result for each direct SAB path:
+
+```text
+<empty stdout/stderr>
+exit=1
+```
+
+This is not treated as a `scodex` test skip: SA-text coverage is kept, and this
+issue remains the compiler-side tracking item for pointer/string scanning under
+direct SAB plus missing diagnostics when the generated SAB path exits nonzero.

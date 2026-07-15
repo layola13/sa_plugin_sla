@@ -10,6 +10,7 @@ const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
 const codegen_mod = @import("codegen.zig");
 const sab_codegen_mod = @import("sab_codegen.zig");
+const contract_parser = @import("contract_parser.zig");
 const stability_metadata = @import("stability_metadata.zig");
 const source_expand = @import("source_expand.zig");
 const sla_workspace = @import("workspace.zig");
@@ -1094,6 +1095,8 @@ test "sla sa codegen resolves local binding types for imported macro args" {
 
     const source =
         \\@import "sa_std/string.sa"
+        \\@import "sa_std/env.sa"
+        \\@import "sa_std/env.sai"
         \\@import "sa_std/fs.sa"
         \\@import "sa_std/fs.sai"
         \\@import "sa_std/vec.sa"
@@ -1116,10 +1119,18 @@ test "sla sa codegen resolves local binding types for imported macro args" {
         \\    return sa_fs_write_file(path_ptr, path_len, data_ptr, len(bytes));
         \\}
         \\
+        \\fn imported_macro_env_buffer_arg_type() -> u64 {
+        \\    let buffer = ENV_ARGS_JSON();
+        \\    let data = ENV_BUFFER_DATA(buffer);
+        \\    let data_len = ENV_BUFFER_LEN(buffer);
+        \\    return data_len;
+        \\}
+        \\
         \\@test "imported macro local binding args"() {
         \\    if !same_literal_via_local_slices() { panic(24043); };
         \\    let write_status = imported_macro_len_call_arg_type();
         \\    if write_status != 0 { panic(24044); };
+        \\    let env_len = imported_macro_env_buffer_arg_type();
         \\};
     ;
     try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
@@ -1146,6 +1157,8 @@ test "sla sa codegen resolves local binding types for imported macro args" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND STR_EQ") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "Vec_len") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sa_fs_write_file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND ENV_ARGS_JSON") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND ENV_BUFFER_DATA") != null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -1411,6 +1424,104 @@ test "sla pre-typecheck pruning keeps release-only bindings" {
             for (cleanup.items) |name| try std.testing.expect(!std.mem.eql(u8, name, "value"));
         }
     }
+}
+
+test "sla typechecker treats extern move args as consumed for cleanup" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\fn consume_env_handle(handle: u64) -> i32 {
+        \\    let status = sa_env_buffer_free(handle);
+        \\    return status;
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.extern_funcs.put("sa_env_buffer_free", .{
+        .name = "sa_env_buffer_free",
+        .params = &.{contract_parser.Param{
+            .name = "buffer",
+            .ty = "u64",
+            .is_borrow = false,
+            .is_move = true,
+        }},
+        .ret_ty = "i32",
+    });
+
+    try tc.checkProgram(prog);
+
+    const ret_stmt = prog.program.decls[0].func_decl.body[1];
+    if (tc.cleanups.get(ret_stmt)) |cleanup| {
+        for (cleanup.items) |name| {
+            try std.testing.expect(!std.mem.eql(u8, name, "handle"));
+        }
+    }
+}
+
+test "sla sa codegen does not release extern move field temps" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const contract_source =
+        \\@extern consume_handle(^buffer: u64) -> i32
+    ;
+    const source =
+        \\@import "move_abi.sai"
+        \\
+        \\struct HandleBox {
+        \\    handle: u64,
+        \\}
+        \\
+        \\fn release_box(value: HandleBox) -> i32 {
+        \\    let status = consume_handle(value.handle);
+        \\    return status;
+        \\}
+        \\
+        \\@test "extern move field temp"() {
+        \\    let value = HandleBox { handle: 7u64 };
+        \\    let status = release_box(value);
+        \\    if status != 0 { panic(25025); };
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "move_abi.sai", .data = contract_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaString(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    const prefix = "call @consume_handle(^";
+    const call_pos = std.mem.indexOf(u8, sa_code, prefix) orelse return error.TestUnexpectedResult;
+    const reg_start = call_pos + prefix.len;
+    const reg_tail = sa_code[reg_start..];
+    const reg_end = std.mem.indexOfScalar(u8, reg_tail, ')') orelse return error.TestUnexpectedResult;
+    const reg = reg_tail[0..reg_end];
+    const release_line = try std.fmt.allocPrint(arena.allocator(), "    !{s}\n", .{reg});
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, release_line) == null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla typechecker restores fallthrough ownership after terminating move branch" {
@@ -7323,6 +7434,64 @@ test "sla sab backend lowers var scalar slots directly" {
     }
     try std.testing.expect(saw_stack_alloc);
     try std.testing.expect(saw_loop_jump);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend treats ptr stack slot temps as non owning" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_ptr_byte_add_read_type_sa.sla",
+        ".sla-cache/sab/ptr_byte_add_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct sab ptr byte add stack slot temps are non owning", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var ptr_add_results = std.AutoHashMap(u32, void).init(std.testing.allocator);
+    defer ptr_add_results.deinit();
+    var ptr_stack_slot_sources = std.AutoHashMap(u32, void).init(std.testing.allocator);
+    defer ptr_stack_slot_sources.deinit();
+
+    const function_idx = for (module.function_sigs, 0..) |fsig, idx| {
+        if (std.mem.eql(u8, fsig.name, "sla__ptr_byte_add_compare_loop")) break idx;
+    } else return error.TestUnexpectedResult;
+    const function_start: usize = @intCast(module.function_sigs[function_idx].entry_inst_idx);
+    const function_end: usize = if (function_idx + 1 < module.function_sigs.len)
+        @intCast(module.function_sigs[function_idx + 1].entry_inst_idx)
+    else
+        module.instructions.len;
+
+    for (module.instructions[function_start..function_end]) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .ptr_add and item.operands[0] == .reg) {
+            try ptr_add_results.put(item.operands[0].reg, {});
+            continue;
+        }
+        if (item.kind == .store and
+            item.operands[2] == .reg and
+            item.operands[3] == .ty and
+            item.operands[3].ty == @intFromEnum(sci_bridge.sab.signature.PrimType.ptr) and
+            ptr_add_results.contains(item.operands[2].reg))
+        {
+            try ptr_stack_slot_sources.put(item.operands[2].reg, {});
+            continue;
+        }
+        if (item.kind == .release and item.operands[0] == .reg) {
+            try std.testing.expect(!ptr_stack_slot_sources.contains(item.operands[0].reg));
+        }
+    }
+
+    try std.testing.expect(ptr_stack_slot_sources.count() >= 2);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 

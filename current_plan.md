@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue023 SA-text imported-macro arg type closure (2026-07-15):
+  `src/codegen.zig` now recovers `len(...)`, comparison/logical expression, and
+  imported env buffer-producing macro result types before imported-macro
+  materialization. The focused plugin regression covers `sa_fs_write_file`
+  with `len(bytes)` plus `ENV_ARGS_JSON` / `ENV_BUFFER_DATA` /
+  `ENV_BUFFER_LEN`. Focused Zig test, single-threaded build, official dev
+  install/help, and the real `/home/vscode/projects/sla_music_cli`
+  `SA_PLUGIN_DEV=1 sa sla build src/main.sla --out /tmp/slamusic-main.sa`
+  repro pass. issue023 is closed; issue022's direct-SAB `tmp_167`
+  `UseAfterMove` remains separate and open.
 - Docs/issue raw-ptr and ptr-aggregate call-arg ABI state (2026-07-14):
   ordinary by-value `ptr` params now stay by-value in SA-text and direct SAB
   instead of being inferred as move params from raw `ptr`'s internal

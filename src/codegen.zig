@@ -1762,12 +1762,18 @@ pub const Codegen = struct {
             defer self.popExprLaterNodesTo(sibling_mark);
             const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
             const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
-                .borrow => std.fmt.allocPrint(self.allocator, "&{s}", .{lowered_arg.reg}) catch return CodegenError.OutOfMemory,
-                .move => std.fmt.allocPrint(self.allocator, "^{s}", .{lowered_arg.reg}) catch return CodegenError.OutOfMemory,
+                .borrow => try self.abiPrefixedArg('&', lowered_arg.reg),
+                .move => try self.abiPrefixedArg('^', lowered_arg.reg),
                 .none => lowered_arg.reg,
             } else lowered_arg.reg;
             arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
-            try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
+            try self.appendExternLoweredCallArgCleanups(
+                &arg_release_regs,
+                &arg_consume_regs,
+                lowered_arg,
+                if (i < ext.params.len) ext.params[i] else null,
+                arg_reg,
+            );
         }
 
         const fallible_reg = try self.newTmp();
@@ -1809,12 +1815,18 @@ pub const Codegen = struct {
             defer self.popExprLaterNodesTo(sibling_mark);
             const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
             const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
-                .borrow => std.fmt.allocPrint(self.allocator, "&{s}", .{lowered_arg.reg}) catch return CodegenError.OutOfMemory,
-                .move => std.fmt.allocPrint(self.allocator, "^{s}", .{lowered_arg.reg}) catch return CodegenError.OutOfMemory,
+                .borrow => try self.abiPrefixedArg('&', lowered_arg.reg),
+                .move => try self.abiPrefixedArg('^', lowered_arg.reg),
                 .none => lowered_arg.reg,
             } else lowered_arg.reg;
             arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
-            try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
+            try self.appendExternLoweredCallArgCleanups(
+                &arg_release_regs,
+                &arg_consume_regs,
+                lowered_arg,
+                if (i < ext.params.len) ext.params[i] else null,
+                arg_reg,
+            );
         }
 
         const reg = try self.newTmp();
@@ -2221,6 +2233,32 @@ pub const Codegen = struct {
         if (param.is_borrow) return .borrow;
         if (param.is_move) return .move;
         return .none;
+    }
+
+    fn abiPrefixedArg(self: *Codegen, prefix: u8, reg: []const u8) CodegenError![]const u8 {
+        if (reg.len != 0 and reg[0] == prefix) return reg;
+        return std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, reg }) catch return CodegenError.OutOfMemory;
+    }
+
+    fn appendExternLoweredCallArgCleanups(
+        self: *Codegen,
+        release_regs: *std.ArrayList(?[]const u8),
+        consume_regs: *std.ArrayList([]const u8),
+        lowered_arg: LoweredCallArg,
+        param: ?contract_parser.Param,
+        call_arg_reg: []const u8,
+    ) CodegenError!void {
+        if (param) |target_param| {
+            if (target_param.is_move) {
+                try self.appendLoweredCallArgCleanups(release_regs, consume_regs, .{
+                    .reg = call_arg_reg,
+                    .release_after_call = false,
+                    .consume_reg = call_arg_reg,
+                });
+                return;
+            }
+        }
+        try self.appendLoweredCallArgCleanups(release_regs, consume_regs, lowered_arg);
     }
 
     fn bindingNeedsAddressableStorage(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {
@@ -3040,6 +3078,13 @@ pub const Codegen = struct {
                 }
                 if (self.tc.imported_macros.get(call.func_name)) |macro| {
                     if (macro.leading_outputs == 1 and call.args.len + 1 == macro.arity) {
+                        if (std.mem.eql(u8, call.func_name, "ENV_ARGS_JSON") or
+                            std.mem.eql(u8, call.func_name, "ENV_VARS_JSON") or
+                            std.mem.eql(u8, call.func_name, "ENV_SPLIT_PATHS_JSON") or
+                            std.mem.eql(u8, call.func_name, "ENV_JOIN_PATHS_JSON"))
+                        {
+                            break :blk self.makePrimitiveType(.u64) catch null;
+                        }
                         if (std.mem.endsWith(u8, call.func_name, "_PTR") or
                             std.mem.endsWith(u8, call.func_name, "_DATA") or
                             std.mem.endsWith(u8, call.func_name, "_AS_PTR") or
@@ -9164,10 +9209,7 @@ pub const Codegen = struct {
         arg: *ast.Node,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
-        const arg_ty = self.importedMacroArgType(arg) catch |err| {
-            std.debug.print("imported macro arg type missing: macro={s} index={} tag={s}\n", .{ plan.macro_name, call_arg_index, @tagName(arg.*) });
-            return err;
-        };
+        const arg_ty = try self.importedMacroArgType(arg);
         if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| switch (action) {
             .pass_value, .pass_raw_pointer_value => {
                 const reg = try self.genExpr(arg, hoisted_allocs);

@@ -2851,7 +2851,8 @@ pub fn structFieldIsPointerBacked(field_ty: *const ast.Type) bool {
 pub fn planStructLiteralFieldTransfer(plan: StructLiteralFieldPlan, field_is_copy_struct: bool) StructLiteralFieldTransfer {
     return switch (plan.source) {
         .explicit => blk: {
-            _ = plan.value orelse break :blk .direct;
+            const value = plan.value orelse break :blk .direct;
+            if (value.* == .move_expr) break :blk .move;
             if (field_is_copy_struct) break :blk .deep_copy;
             if (structFieldIsPointerBacked(plan.field_ty)) break :blk .move;
             break :blk .direct;
@@ -3932,6 +3933,16 @@ test "shared struct literal update field plan" {
     };
     const explicit_nested_identifier_plan = planStructLiteralField(&nested_decl, &nested_identifier_lit, nested_fields[0]) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(StructLiteralFieldTransfer.deep_copy, planStructLiteralFieldTransfer(explicit_nested_identifier_plan, true));
+
+    var moved_nested_identifier = ast.Node{ .move_expr = .{ .expr = &nested_identifier } };
+    const moved_nested_identifier_fields = [_]ast.StructLiteralField{.{ .name = "payload", .value = &moved_nested_identifier }};
+    const moved_nested_identifier_lit = ast.StructLiteral{
+        .ty = undefined,
+        .fields = moved_nested_identifier_fields[0..],
+        .update_expr = null,
+    };
+    const moved_nested_identifier_plan = planStructLiteralField(&nested_decl, &moved_nested_identifier_lit, nested_fields[0]) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(StructLiteralFieldTransfer.move, planStructLiteralFieldTransfer(moved_nested_identifier_plan, true));
 
     const nested_temp_lit = ast.StructLiteral{ .ty = undefined, .fields = &.{}, .update_expr = null };
     var nested_temp = ast.Node{ .struct_literal = nested_temp_lit };

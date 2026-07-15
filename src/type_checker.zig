@@ -258,6 +258,20 @@ pub const TypeChecker = struct {
         sym.state = .consumed;
     }
 
+    fn consumeExternMoveArg(self: *TypeChecker, scope: *Scope, param: contract_parser.Param, arg: *const ast.Node) TypeError!void {
+        if (!param.is_move) return;
+        if (arg.* == .move_expr) return;
+        if (arg.* != .identifier) return;
+
+        const sym = scope.lookup(arg.identifier) orelse return TypeError.UndefinedVariable;
+        if (sym.state == .consumed) return TypeError.UseAfterMove;
+        if (sym.state == .uninitialized) {
+            self.setError("UseBeforeInit: var `{s}` is read before assignment", .{arg.identifier});
+            return TypeError.UseBeforeInit;
+        }
+        try self.consumeBinding(scope, arg.identifier, sym, "extern move argument");
+    }
+
     fn directBorrowSource(expr: *const ast.Node) ?[]const u8 {
         return switch (expr.*) {
             .identifier => |name| name,
@@ -5386,8 +5400,8 @@ pub const TypeChecker = struct {
                     if (ext.params.len != call.args.len) return TypeError.InvalidArgsCount;
                     for (ext.params, call.args) |param, arg| {
                         const arg_ty = try self.checkExpr(arg, scope);
-                        _ = param;
                         _ = arg_ty; // bypass signature checks for FFI pointers
+                        try self.consumeExternMoveArg(scope, param, arg);
                     }
                     const ret = try self.allocator.create(ast.Type);
                     setTypeFromAbiReturn(self.allocator, ret, ext.ret_ty);

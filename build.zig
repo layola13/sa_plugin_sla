@@ -57,6 +57,21 @@ pub fn build(b: *std.Build) void {
     const local_cli_step = b.step("local-cli", "Run the local Sla CLI driver");
     local_cli_step.dependOn(&run_local_cli.step);
 
+    const dump_sab_module = b.createModule(.{
+        .root_source_file = b.path("tools/dump_sab.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dump_sab_module.addImport("sci_bridge", sci_bridge);
+    const dump_sab = b.addExecutable(.{
+        .name = "dump-sab",
+        .root_module = dump_sab_module,
+    });
+    const run_dump_sab = b.addRunArtifact(dump_sab);
+    if (b.args) |args| run_dump_sab.addArgs(args);
+    const dump_sab_step = b.step("dump-sab", "Disassemble SAB or report uses of one symbol");
+    dump_sab_step.dependOn(&run_dump_sab.step);
+
     const install_sap = b.addInstallFile(b.path("sap.json"), "lib/sap.json");
     b.getInstallStep().dependOn(&install_sap.step);
 

@@ -2167,6 +2167,14 @@ pub const Codegen = struct {
         return ty.* == .primitive and ty.primitive == .void_type;
     }
 
+    fn typeIsPointerScalarValue(ty: *const ast.Type) bool {
+        return switch (ty.*) {
+            .primitive => |prim| prim == .void_type,
+            .pointer => true,
+            else => false,
+        };
+    }
+
     fn isFloatType(ty: *const ast.Type) bool {
         return ty.* == .primitive and switch (ty.primitive) {
             .f32, .f64, .float => true,
@@ -2960,6 +2968,10 @@ pub const Codegen = struct {
     fn releaseStackLocalValue(self: *Codegen, local: Local) !void {
         const ty = local.stack_ty orelse return;
         if (self.released_regs.contains(local.reg)) return;
+        if (typeIsPointerScalarValue(ty)) {
+            try self.markConsumed(local.reg);
+            return;
+        }
         if (self.stack_alloc_emitted.contains(local.reg)) {
             if (!self.typeIsCopyValue(ty)) {
                 const value = try self.intern(try self.newTmp());
@@ -3354,6 +3366,21 @@ pub const Codegen = struct {
         }
         if (!lowering_rules.exprResultNeedsRelease(expr)) return;
         if (!self.isLocalReg(reg)) try self.emitRelease(reg);
+    }
+
+    fn releaseStoredExprResultIfNeeded(self: *Codegen, expr: *const ast.Node, reg: u32, stored_ty: *const ast.Type) !void {
+        if (expr.* == .identifier and self.stackLocal(expr.identifier) != null) {
+            if (!self.isLocalReg(reg)) {
+                if (typeIsPointerScalarValue(stored_ty)) try self.markNonOwningReg(reg);
+                try self.emitRelease(reg);
+            }
+            return;
+        }
+        if (!lowering_rules.exprResultNeedsRelease(expr)) return;
+        if (!self.isLocalReg(reg)) {
+            if (typeIsPointerScalarValue(stored_ty)) try self.markNonOwningReg(reg);
+            try self.emitRelease(reg);
+        }
     }
 
     fn emitLabel(self: *Codegen, name: []const u8) !void {
@@ -4273,6 +4300,32 @@ pub const Codegen = struct {
         }
     }
 
+    fn coerceDecodedValueOperand(self: *Codegen, operand: *inst.Operand, remap: *DecodedModuleLocalRemap) !void {
+        _ = self;
+        if (operand.* != .text) return;
+        const text = std.mem.trim(u8, operand.text, " \t\r\n");
+        if (isStdMacroTemplateIntegerArg(text)) {
+            operand.* = try stdMacroTemplateIntegerOperand(text);
+            return;
+        }
+        const reg = remap.reg_name_ids.get(text) orelse return;
+        operand.* = .{ .reg = reg };
+    }
+
+    fn coerceDecodedInstructionOperands(self: *Codegen, item: *inst.Instruction, remap: *DecodedModuleLocalRemap) !void {
+        switch (item.kind) {
+            .store => try self.coerceDecodedValueOperand(&item.operands[2], remap),
+            .assign => try self.coerceDecodedValueOperand(&item.operands[1], remap),
+            .op => {
+                try self.coerceDecodedValueOperand(&item.operands[1], remap);
+                try self.coerceDecodedValueOperand(&item.operands[2], remap);
+            },
+            .ptr_add, .borrow => try self.coerceDecodedValueOperand(&item.operands[1], remap),
+            .release => try self.coerceDecodedValueOperand(&item.operands[0], remap),
+            else => {},
+        }
+    }
+
     fn cloneTemplateTextList(self: *Codegen, items: []const []const u8, args: []const []const u8) ![]const []const u8 {
         if (items.len == 0) return &.{};
         const out = try self.allocator.alloc([]const u8, items.len);
@@ -4548,6 +4601,7 @@ pub const Codegen = struct {
         out.atomic_new_text = if (source.atomic_new_text) |text| try self.renameDecodedModuleLocalText(text, remap) else null;
         out.native_reg_names = try self.cloneDecodedModuleTextList(source.native_reg_names, remap);
         for (&out.operands, 0..) |*operand, operand_idx| operand.* = try self.remapDecodedModuleOperand(symbols, operand.*, source.kind, operand_idx, remap, stable_names);
+        try self.coerceDecodedInstructionOperands(&out, remap);
         if (out.kind == .panic_msg and out.operands[0] == .text) {
             if (try self.structuredPanicMsgOperands(out.operands[0].text)) |ops| {
                 out.operands[0] = ops[0];
@@ -6471,7 +6525,10 @@ pub const Codegen = struct {
         if (self.bindingNeedsScalarReassignSlot(name, let_ty) or self.bindingNeedsCopyScalarReuseSlot(name, let_ty)) {
             try self.emitStackAlloc(dst, typeSize(let_ty));
             try self.emitStore(dst, 0, src, try storagePrimType(let_ty));
-            if (!self.isLocalReg(src)) try self.emitRelease(src);
+            if (!self.isLocalReg(src)) {
+                if (typeIsPointerScalarValue(let_ty)) try self.markNonOwningReg(src);
+                try self.emitRelease(src);
+            }
             try self.pushStackLocal(name, dst, let_ty);
             return;
         }
@@ -8111,7 +8168,7 @@ pub const Codegen = struct {
                                 try self.consumeStoredMoveValue(value, value_reg, plan.field_ty);
                             } else {
                                 try self.emitStore(dst, layout.offset, value_reg, prim);
-                                try self.releaseExprResultIfNeeded(value, value_reg);
+                                try self.releaseStoredExprResultIfNeeded(value, value_reg, plan.field_ty);
                             }
                         },
                     }
@@ -8155,7 +8212,7 @@ pub const Codegen = struct {
             const layout = tupleFieldLayout(tuple_ty, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genMacroExpr(elem, ctx);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            try self.releaseExprResultIfNeeded(elem, value);
+            try self.releaseStoredExprResultIfNeeded(elem, value, elem_tys[idx]);
         }
         return dst;
     }
@@ -8179,7 +8236,7 @@ pub const Codegen = struct {
             const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
             const value_reg = try self.genMacroExpr(value, ctx);
             try self.emitStore(dst, layout.offset, value_reg, prim);
-            try self.releaseExprResultIfNeeded(value, value_reg);
+            try self.releaseStoredExprResultIfNeeded(value, value_reg, field.ty);
         }
 
         return dst;
@@ -8236,7 +8293,7 @@ pub const Codegen = struct {
             const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genMacroExpr(elem, ctx);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            try self.releaseExprResultIfNeeded(elem, value);
+            try self.releaseStoredExprResultIfNeeded(elem, value, arr_ty.array.elem);
         }
         return dst;
     }
@@ -8252,7 +8309,7 @@ pub const Codegen = struct {
             const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
             try self.emitStore(dst, layout.offset, value, layout.ty);
         }
-        try self.releaseExprResultIfNeeded(lit.value, value);
+        try self.releaseStoredExprResultIfNeeded(lit.value, value, arr_ty.array.elem);
         return dst;
     }
 
@@ -8304,7 +8361,13 @@ pub const Codegen = struct {
                 try self.emitAssignImm(sentinel, 0);
                 return sentinel;
             }
-            if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| return try self.genImportedMacroCall(call, plan, ctx);
+            if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
+                const reg = try self.genImportedMacroCall(call, plan, ctx);
+                if ((try self.macroExprType(expr, ctx))) |ty| {
+                    if (typeIsPointerScalarValue(ty)) try self.markNonOwningReg(reg);
+                }
+                return reg;
+            }
         }
 
         const call_plan = lowering_rules.planStaticCall(self.tc, expr, call) orelse return Error.UnsupportedSabDirectFeature;
@@ -11532,6 +11595,7 @@ pub const Codegen = struct {
             const base = try self.directImportedMacroReg(arg_names[1]);
             const offset = try self.directImportedMacroReg(arg_names[2]);
             try self.emitPtrAdd(dst, base, .{ .reg = offset });
+            try self.markNonOwningReg(dst);
             return true;
         }
 
@@ -11840,7 +11904,13 @@ pub const Codegen = struct {
                 try self.emitAssignImm(sentinel, 0);
                 return sentinel;
             }
-            if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| return try self.genImportedMacroCall(call, plan, null);
+            if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
+                const reg = try self.genImportedMacroCall(call, plan, null);
+                if ((try self.exprTypeOrFallback(expr))) |ty| {
+                    if (typeIsPointerScalarValue(ty)) try self.markNonOwningReg(reg);
+                }
+                return reg;
+            }
         }
         if (try self.genFutureTaskCall(call)) |reg| return reg;
         if (isThreadSpawnCall(call)) return try self.genThreadSpawn(expr, call);
@@ -13383,7 +13453,16 @@ pub const Codegen = struct {
         for (plans, 0..) |plan, field_index| {
             const layout = plan.layout;
             const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
-            const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
+            var transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
+            var copy_elided_move = false;
+            if (transfer == .deep_copy and plan.source == .explicit) {
+                if (plan.value) |field_value| {
+                    if (field_value.* == .identifier and !self.identifierMustStayLiveForLaterUse(field_value.identifier)) {
+                        transfer = .move;
+                        copy_elided_move = true;
+                    }
+                }
+            }
             switch (plan.source) {
                 .explicit => {
                     const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
@@ -13400,30 +13479,35 @@ pub const Codegen = struct {
                             try self.emitRelease(copied);
                         },
                         .direct, .move => {
-                            const value_reg = try self.genExpr(value);
-                            if (transfer == .move and self.typeIsShallowCopyCallArgValue(plan.field_ty, 0)) {
+                            const value_reg = if (transfer == .move and value.* == .move_expr)
+                                try self.genExpr(value.move_expr.expr)
+                            else
+                                try self.genExpr(value);
+                            const explicit_move = value.* == .move_expr;
+                            const moved_value = if (explicit_move) value.move_expr.expr else value;
+                            const moves_identifier = moved_id: {
+                                if (moved_value.* != .identifier) break :moved_id false;
+                                if (lowering_rules.storedValueMovesIdentifier(moved_value, plan.field_ty, self.typeIsCopyValue(plan.field_ty)) != null) break :moved_id true;
+                                break :moved_id explicit_move or copy_elided_move;
+                            };
+                            if (transfer == .move and !explicit_move and !copy_elided_move and !moves_identifier and self.typeIsShallowCopyCallArgValue(plan.field_ty, 0)) {
                                 const copied = try self.genShallowCopyCallArgValue(value_reg, plan.field_ty);
                                 try self.emitStore(dst, layout.offset, copied, prim);
                                 try self.emitConsumedMarker(copied);
                                 try self.releaseMovedShallowCopySource(value, value_reg, plan.field_ty);
                             } else {
-                                if (transfer == .move) {
-                                    try self.emitStore(dst, layout.offset, value_reg, prim);
-                                    try self.emitConsumedMarker(value_reg);
-                                } else {
-                                    try self.emitStore(dst, layout.offset, value_reg, prim);
-                                }
+                                try self.emitStore(dst, layout.offset, value_reg, prim);
                             }
                             if (transfer == .move) {
-                                if (value.* == .identifier) {
-                                    if (lowering_rules.storedValueMovesIdentifier(value, plan.field_ty, self.typeIsCopyValue(plan.field_ty)) != null) {
-                                        if (self.localReg(value.identifier)) |reg| try pending_moved_fields.put(reg, {});
+                                if (moved_value.* == .identifier) {
+                                    if (moves_identifier) {
+                                        if (self.localReg(moved_value.identifier)) |reg| try pending_moved_fields.put(reg, {});
                                     }
-                                } else if (lowering_rules.exprResultNeedsRelease(value)) {
+                                } else if (lowering_rules.exprResultNeedsRelease(moved_value)) {
                                     try self.markConsumed(value_reg);
                                 }
                             } else {
-                                try self.releaseExprResultIfNeeded(value, value_reg);
+                                try self.releaseStoredExprResultIfNeeded(value, value_reg, plan.field_ty);
                             }
                         },
                     }
@@ -13491,7 +13575,7 @@ pub const Codegen = struct {
             const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
             const value_reg = try self.genExpr(value);
             try self.emitStore(dst, layout.offset, value_reg, prim);
-            try self.releaseExprResultIfNeeded(value, value_reg);
+            try self.releaseStoredExprResultIfNeeded(value, value_reg, field.ty);
         }
 
         return dst;
@@ -13868,6 +13952,7 @@ pub const Codegen = struct {
                 try self.emitRelease(field_reg);
             } else {
                 try self.emitStore(dst, layout.offset, field_reg, layout.ty);
+                try self.emitConsumedMarker(field_reg);
             }
         }
         return dst;
@@ -13890,7 +13975,7 @@ pub const Codegen = struct {
                 try self.emitRelease(field_reg);
             } else {
                 try self.emitStore(dst, layout.offset, field_reg, layout.ty);
-                try self.emitRelease(field_reg);
+                try self.emitConsumedMarker(field_reg);
             }
         }
         return dst;
@@ -13909,7 +13994,7 @@ pub const Codegen = struct {
             const layout = tupleFieldLayout(tuple_ty, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genExpr(elem);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            try self.releaseExprResultIfNeeded(elem, value);
+            try self.releaseStoredExprResultIfNeeded(elem, value, elem_tys[idx]);
         }
         return dst;
     }
@@ -13924,7 +14009,7 @@ pub const Codegen = struct {
             const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genExpr(elem);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            try self.releaseExprResultIfNeeded(elem, value);
+            try self.releaseStoredExprResultIfNeeded(elem, value, arr_ty.array.elem);
         }
         return dst;
     }
@@ -13941,7 +14026,7 @@ pub const Codegen = struct {
             const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
             try self.emitStore(dst, layout.offset, value, layout.ty);
         }
-        try self.releaseExprResultIfNeeded(lit.value, value);
+        try self.releaseStoredExprResultIfNeeded(lit.value, value, arr_ty.array.elem);
         return dst;
     }
 
@@ -14748,7 +14833,7 @@ test "filtered decoded std deps keep text-only helper regs in scope" {
         if (reg_id == count_id) saw_count = true;
     }
     try std.testing.expect(saw_count);
-    try std.testing.expectEqualStrings("count", cg.instructions.items[2].operands[2].text);
+    try std.testing.expectEqual(count_id, cg.instructions.items[2].operands[2].reg);
 }
 
 test "std macro template preserves hygiened placeholder output args" {

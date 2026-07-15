@@ -4,6 +4,19 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue023 SA-text imported-macro argument type closure (2026-07-15):
+  `src/codegen.zig` now recovers `len(...)`, comparison/logical expression, and
+  imported env buffer-producing macro result types before imported-macro
+  materialization. Extended the focused plugin regression with
+  `sa_fs_write_file(..., len(bytes))`, `ENV_ARGS_JSON`,
+  `ENV_BUFFER_DATA`, and `ENV_BUFFER_LEN`. Verification passed serially:
+  focused `plugin_tests.zig`, `zig build -j1 --summary all`, official
+  `SA_PLUGIN_DEV=1 sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`,
+  and the real `/home/vscode/projects/sla_music_cli`
+  `SA_PLUGIN_DEV=1 sa sla build src/main.sla --out /tmp/slamusic-main.sa`.
+  issue023 is fixed/verified. issue022's direct-SAB `build-exe` `tmp_167`
+  `UseAfterMove` remains open and is tracked separately.
+
 - docs/issue raw-ptr and ptr-aggregate call-arg ABI closure (2026-07-14):
   ordinary by-value `ptr` parameters no longer get implicit move capability
   merely because raw `ptr` is represented as `primitive.void_type` and is not a

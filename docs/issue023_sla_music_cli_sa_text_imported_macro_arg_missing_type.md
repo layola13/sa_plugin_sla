@@ -1,7 +1,7 @@
 # issue023: sla_music_cli SA-text build fails resolving imported macro argument type
 
 日期：2026-07-15
-状态：OPEN
+状态：FIXED / VERIFIED
 
 ## Summary
 
@@ -59,3 +59,42 @@ SA_PLUGIN_DEV=1 sa sla build-exe src/main.sla -o /tmp/slamusic-cli
 ```
 
 并增加 compiler 侧最小回归，覆盖 imported macro arg 类型缺失时应从 local/expr fallback 恢复，而不是裸返回 `CodegenError`。
+
+## Resolution
+
+`src/codegen.zig` 的 expression type fallback 现在覆盖：
+
+- `len(...) -> usize`
+- comparison / logical binary expressions -> `bool`
+- `ENV_ARGS_JSON`、`ENV_VARS_JSON`、`ENV_SPLIT_PATHS_JSON`、
+  `ENV_JOIN_PATHS_JSON` 这类 imported buffer-producing macro -> `u64`
+
+Imported macro 参数路径统一通过 `importedMacroArgType()` 取回类型，不再在
+多个 materialization/address 分支中直接裸用缺失的
+`resolvedTypeForExpr(...)`。
+
+`src/plugin_tests.zig` 的
+`sla sa codegen resolves local binding types for imported macro args` 回归现在覆盖：
+
+- `sa_fs_write_file(..., len(bytes))`
+- `ENV_ARGS_JSON()`
+- `ENV_BUFFER_DATA(buffer)`
+- `ENV_BUFFER_LEN(buffer)`
+
+## Verification
+
+以下命令串行通过：
+
+```sh
+zig test src/plugin_tests.zig \
+  --test-filter "sla sa codegen resolves local binding types for imported macro args"
+zig build -j1 --summary all
+SA_PLUGIN_DEV=1 sa plugin install --dev .
+SA_PLUGIN_DEV=1 sa sla help
+
+cd /home/vscode/projects/sla_music_cli
+SA_PLUGIN_DEV=1 sa sla build src/main.sla --out /tmp/slamusic-main.sa
+```
+
+真实 SA-text repro 已通过。`build-exe` 的 direct SAB `tmp_167`
+`UseAfterMove` 是独立的 issue022，不影响本 issue 的 SA-text closure。

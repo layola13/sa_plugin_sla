@@ -75,6 +75,8 @@ pub const Codegen = struct {
     closure_param_regs: std.StringHashMap([]const u8),
     stack_alloc_bindings: std.StringHashMap(void),
     addressable_bindings: std.StringHashMap(void),
+    assigned_bindings: std.StringHashMap(void),
+    assigned_value_slots: std.StringHashMap(void),
     global_const_bindings: std.StringHashMap(void),
     global_scalar_consts: std.StringHashMap(*const ast.Node),
     hashmap_key_slots: std.StringHashMap([]const u8),
@@ -109,6 +111,7 @@ pub const Codegen = struct {
     injected_address_bindings: std.StringHashMap([]const u8),
     loop_continue_labels: std.ArrayList([]const u8),
     loop_break_labels: std.ArrayList([]const u8),
+    current_expr_later_nodes: std.ArrayList(*const ast.Node),
     current_async: bool,
     current_async_return_ty: ?*const ast.Type,
     async_pending_return_emitted: bool,
@@ -142,6 +145,8 @@ pub const Codegen = struct {
             .closure_param_regs = std.StringHashMap([]const u8).init(allocator),
             .stack_alloc_bindings = std.StringHashMap(void).init(allocator),
             .addressable_bindings = std.StringHashMap(void).init(allocator),
+            .assigned_bindings = std.StringHashMap(void).init(allocator),
+            .assigned_value_slots = std.StringHashMap(void).init(allocator),
             .global_const_bindings = std.StringHashMap(void).init(allocator),
             .global_scalar_consts = std.StringHashMap(*const ast.Node).init(allocator),
             .hashmap_key_slots = std.StringHashMap([]const u8).init(allocator),
@@ -176,6 +181,7 @@ pub const Codegen = struct {
             .injected_address_bindings = injected_address_bindings,
             .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
             .loop_break_labels = std.ArrayList([]const u8).init(allocator),
+            .current_expr_later_nodes = std.ArrayList(*const ast.Node).init(allocator),
             .current_async = false,
             .current_async_return_ty = null,
             .async_pending_return_emitted = false,
@@ -197,6 +203,8 @@ pub const Codegen = struct {
         self.closure_param_regs.deinit();
         self.stack_alloc_bindings.deinit();
         self.addressable_bindings.deinit();
+        self.assigned_bindings.deinit();
+        self.assigned_value_slots.deinit();
         self.global_const_bindings.deinit();
         self.global_scalar_consts.deinit();
         var key_slot_iter = self.hashmap_key_slots.valueIterator();
@@ -243,6 +251,7 @@ pub const Codegen = struct {
         self.injected_address_bindings.deinit();
         self.loop_continue_labels.deinit();
         self.loop_break_labels.deinit();
+        self.current_expr_later_nodes.deinit();
     }
 
     fn clearBindingAliases(self: *Codegen) void {
@@ -1118,10 +1127,14 @@ pub const Codegen = struct {
     }
 
     fn releaseTemporaryHandleRegister(self: *Codegen, handle_reg: []const u8) CodegenError!void {
-        if (!std.mem.startsWith(u8, handle_reg, "tmp_")) return;
+        if (!isTemporaryRegisterName(handle_reg)) return;
         if (self.consumed_bindings.contains(handle_reg)) return;
         self.out.writer().print("    !{s}\n", .{handle_reg}) catch return CodegenError.CodegenError;
         self.consumed_bindings.put(handle_reg, {}) catch return CodegenError.OutOfMemory;
+    }
+
+    fn isTemporaryRegisterName(name: []const u8) bool {
+        return std.mem.startsWith(u8, name, "tmp_");
     }
 
     fn restoreConsumedBindings(self: *Codegen, saved: *std.StringHashMap(void)) CodegenError!void {
@@ -1175,12 +1188,23 @@ pub const Codegen = struct {
     fn emitFunctionTailCleanups(self: *Codegen, stmt: *const ast.Node, tail_expr: *const ast.Node) CodegenError!void {
         if (self.tc.cleanups.get(stmt)) |list| {
             for (list.items) |name| {
-                switch (lowering_rules.planFunctionTailCleanup(name, tail_expr)) {
+                switch (try self.planFunctionResultCleanup(name, tail_expr)) {
                     .release => try self.emitRelease(name),
                     .transfer_result => {},
                 }
             }
         }
+    }
+
+    fn planFunctionResultCleanup(self: *Codegen, cleanup_name: []const u8, result_expr: *const ast.Node) CodegenError!lowering_rules.FunctionTailCleanupAction {
+        const base_plan = lowering_rules.planFunctionTailCleanup(cleanup_name, result_expr);
+        if (base_plan == .transfer_result) return base_plan;
+        const root_name = lowering_rules.rootIdentifier(result_expr) orelse return base_plan;
+        if (!std.mem.eql(u8, cleanup_name, root_name)) return base_plan;
+        const result_ty = self.resolvedTypeForExpr(result_expr) orelse self.tc.expr_types.get(result_expr) orelse return base_plan;
+        if (self.typeIsCopyValue(result_ty)) return base_plan;
+        if (lowering_rules.isBorrowLikeType(result_ty)) return base_plan;
+        return .transfer_result;
     }
 
     fn restoreRefCellBranchState(
@@ -1600,6 +1624,8 @@ pub const Codegen = struct {
                     var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
                     defer arg_consume_regs.deinit();
                     for (call.args, 0..) |arg, i| {
+                        const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+                        defer self.popExprLaterNodesTo(sibling_mark);
                         if (i < func.params.len) {
                             const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
                                 .param = func.params[i],
@@ -1646,6 +1672,8 @@ pub const Codegen = struct {
                                 var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
                                 defer arg_consume_regs.deinit();
                                 for (call.args, 0..) |arg, i| {
+                                    const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+                                    defer self.popExprLaterNodesTo(sibling_mark);
                                     if (i < func.params.len) {
                                         const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
                                             .param = func.params[i],
@@ -1687,6 +1715,8 @@ pub const Codegen = struct {
         const resolved_func_name = self.tc.resolveFunctionAlias(call.func_name);
         const maybe_func = self.tc.funcs.get(resolved_func_name);
         for (call.args, 0..) |arg, i| {
+            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+            defer self.popExprLaterNodesTo(sibling_mark);
             if (maybe_func) |func| {
                 if (i < func.params.len) {
                     const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
@@ -1728,6 +1758,8 @@ pub const Codegen = struct {
         defer arg_consume_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
+            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+            defer self.popExprLaterNodesTo(sibling_mark);
             const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
             const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
                 .borrow => std.fmt.allocPrint(self.allocator, "&{s}", .{lowered_arg.reg}) catch return CodegenError.OutOfMemory,
@@ -1773,6 +1805,8 @@ pub const Codegen = struct {
         defer arg_consume_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
+            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+            defer self.popExprLaterNodesTo(sibling_mark);
             const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
             const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
                 .borrow => std.fmt.allocPrint(self.allocator, "&{s}", .{lowered_arg.reg}) catch return CodegenError.OutOfMemory,
@@ -2089,8 +2123,11 @@ pub const Codegen = struct {
         return lowering_rules.abiTypeSize(ty);
     }
 
-    fn vecElementSlotSize(ty: *const ast.Type) usize {
-        const size = typeSize(ty);
+    fn vecElementSlotSize(self: *Codegen, ty: *const ast.Type) usize {
+        const size = if (ty.* == .user_defined and lowering_rules.smartPointerType(ty) == null)
+            if (self.structDeclForType(ty)) |decl| structSize(decl) else typeSize(ty)
+        else
+            typeSize(ty);
         return if (size < 8) 8 else size;
     }
 
@@ -2135,7 +2172,7 @@ pub const Codegen = struct {
 
     fn abiParamPrefix(self: *Codegen, p: ast.Param) []const u8 {
         if (p.is_borrow or p.ty.* == .borrow) return "&";
-        if (p.is_move or !self.typeIsCopyValue(p.ty)) return "^";
+        if (p.is_move or (!self.typeIsCopyValue(p.ty) and !lowering_rules.isBorrowLikeType(p.ty))) return "^";
         return "";
     }
 
@@ -2187,6 +2224,103 @@ pub const Codegen = struct {
 
     fn bindingNeedsAddressableStorage(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {
         return lowering_rules.planBorrowedBindingStorage(self.addressable_bindings.contains(name), ty).materialize_stack_slot;
+    }
+
+    fn bindingNeedsAssignedValueSlot(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {
+        return self.assigned_bindings.contains(name) and
+            !self.typeIsCopyValue(ty) and
+            self.typeIsShallowCopyCallArgValue(ty, 0);
+    }
+
+    fn collectAssignedBindings(self: *Codegen, block: []const *ast.Node) CodegenError!void {
+        for (block) |stmt| {
+            try self.collectAssignedBindingsInNode(stmt);
+        }
+    }
+
+    fn collectAssignedBindingsInNode(self: *Codegen, node: *const ast.Node) CodegenError!void {
+        switch (node.*) {
+            .func_decl => |f| try self.collectAssignedBindings(f.body),
+            .test_decl => |t| try self.collectAssignedBindings(t.body),
+            .impl_decl => |i| for (i.methods) |method| try self.collectAssignedBindingsInNode(method),
+            .overload_decl => |o| for (o.methods) |method| try self.collectAssignedBindingsInNode(method),
+            .let_stmt => |let| try self.collectAssignedBindingsInNode(let.value),
+            .let_else_stmt => |let| {
+                try self.collectAssignedBindingsInNode(let.value);
+                try self.collectAssignedBindings(let.else_block);
+            },
+            .let_destructure_stmt => |let| try self.collectAssignedBindingsInNode(let.value),
+            .const_stmt => |c| try self.collectAssignedBindingsInNode(c.value),
+            .var_stmt => {},
+            .assign_stmt => |assign| {
+                if (lowering_rules.rootIdentifier(assign.target)) |name| self.assigned_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+                try self.collectAssignedBindingsInNode(assign.target);
+                try self.collectAssignedBindingsInNode(assign.value);
+            },
+            .expr_stmt => |expr| try self.collectAssignedBindingsInNode(expr),
+            .return_stmt => |ret| if (ret.value) |value| try self.collectAssignedBindingsInNode(value),
+            .block_stmt => |blk| try self.collectAssignedBindings(blk.body),
+            .for_stmt => |for_stmt| {
+                try self.collectAssignedBindingsInNode(for_stmt.start);
+                if (for_stmt.end) |end_expr| try self.collectAssignedBindingsInNode(end_expr);
+                try self.collectAssignedBindings(for_stmt.body);
+            },
+            .while_stmt => |while_stmt| {
+                try self.collectAssignedBindingsInNode(while_stmt.cond);
+                try self.collectAssignedBindings(while_stmt.body);
+            },
+            .binary_expr => |bin| {
+                try self.collectAssignedBindingsInNode(bin.left);
+                try self.collectAssignedBindingsInNode(bin.right);
+            },
+            .call_expr => |call| for (call.args) |arg| try self.collectAssignedBindingsInNode(arg),
+            .field_expr => |field| try self.collectAssignedBindingsInNode(field.expr),
+            .index_expr => |index| {
+                try self.collectAssignedBindingsInNode(index.target);
+                try self.collectAssignedBindingsInNode(index.index);
+            },
+            .slice_expr => |slice| {
+                try self.collectAssignedBindingsInNode(slice.target);
+                try self.collectAssignedBindingsInNode(slice.start);
+                try self.collectAssignedBindingsInNode(slice.end);
+            },
+            .struct_literal => |lit| {
+                for (lit.fields) |field| try self.collectAssignedBindingsInNode(field.value);
+                if (lit.update_expr) |update| try self.collectAssignedBindingsInNode(update);
+            },
+            .enum_literal => |lit| for (lit.fields) |field| try self.collectAssignedBindingsInNode(field.value),
+            .tuple_literal => |lit| for (lit.elements) |elem| try self.collectAssignedBindingsInNode(elem),
+            .array_literal => |lit| for (lit.elements) |elem| try self.collectAssignedBindingsInNode(elem),
+            .repeat_array_literal => |lit| try self.collectAssignedBindingsInNode(lit.value),
+            .borrow_expr => |borrow| try self.collectAssignedBindingsInNode(borrow.expr),
+            .move_expr => |move| try self.collectAssignedBindingsInNode(move.expr),
+            .deref_expr => |deref| try self.collectAssignedBindingsInNode(deref.expr),
+            .cast_expr => |cast| try self.collectAssignedBindingsInNode(cast.expr),
+            .await_expr => |await_expr| try self.collectAssignedBindingsInNode(await_expr.expr),
+            .try_expr => |try_expr| try self.collectAssignedBindingsInNode(try_expr.expr),
+            .unsafe_expr => |unsafe_expr| try self.collectAssignedBindings(unsafe_expr.body),
+            .closure_literal => |closure| try self.collectAssignedBindingsInNode(closure.body),
+            .if_expr => |ife| {
+                try self.collectAssignedBindingsInNode(ife.cond);
+                if (ife.let_chain) |chain| {
+                    for (chain) |cond| try self.collectAssignedBindingsInNode(cond.value);
+                }
+                try self.collectAssignedBindings(ife.then_block);
+                if (ife.else_block) |else_block| try self.collectAssignedBindings(else_block);
+            },
+            .switch_expr => |swe| {
+                try self.collectAssignedBindingsInNode(swe.val);
+                for (swe.cases) |case| try self.collectAssignedBindings(case.body);
+            },
+            .match_expr => |mat| {
+                try self.collectAssignedBindingsInNode(mat.val);
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| try self.collectAssignedBindingsInNode(guard);
+                    try self.collectAssignedBindings(case.body);
+                }
+            },
+            else => {},
+        }
     }
 
     fn collectAddressableBindings(self: *Codegen, block: []const *ast.Node) CodegenError!void {
@@ -3023,6 +3157,31 @@ pub const Codegen = struct {
         };
     }
 
+    fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
+        if (depth > 8) return false;
+        return switch (ty.*) {
+            .primitive => true,
+            .pointer, .borrow, .fn_ptr => true,
+            .tuple => |tuple| blk: {
+                for (tuple.elems) |elem| {
+                    if (!self.typeIsShallowCopyCallArgValue(elem, depth + 1)) break :blk false;
+                }
+                break :blk true;
+            },
+            .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
+            .user_defined => blk: {
+                if (lowering_rules.smartPointerType(ty) != null) break :blk false;
+                const decl = self.structDeclForType(ty) orelse break :blk false;
+                if (decl.is_opaque or decl.is_union) break :blk false;
+                for (decl.fields) |field| {
+                    if (!self.typeIsShallowCopyCallArgValue(field.ty, depth + 1)) break :blk false;
+                }
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
     fn typeHasHashDerive(self: *Codegen, ty: *const ast.Type) bool {
         return switch (ty.*) {
             .primitive => |p| switch (p) {
@@ -3490,6 +3649,28 @@ pub const Codegen = struct {
                 self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, field_reg, layout.ty_str }) catch return CodegenError.CodegenError;
             }
         }
+    }
+
+    fn genShallowCopyCallArgValue(self: *Codegen, source_reg: []const u8, ty: *const ast.Type) CodegenError![]const u8 {
+        const struct_decl = self.structDeclForType(ty) orelse return CodegenError.CodegenError;
+        if (!self.typeIsShallowCopyCallArgValue(ty, 0) or struct_decl.is_opaque or struct_decl.is_union) return CodegenError.CodegenError;
+
+        const target = try self.newTmp();
+        self.out.writer().print("    {s} = alloc {}\n", .{ target, structSize(struct_decl) }) catch return CodegenError.CodegenError;
+        for (struct_decl.fields) |field| {
+            const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
+            const field_reg = try self.newTmp();
+            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ field_reg, source_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+            if (self.structDeclForType(field.ty) != null) {
+                const copied_field = try self.genShallowCopyCallArgValue(field_reg, field.ty);
+                self.out.writer().print("    store {s}+{}, ^{s} as {s}\n", .{ target, layout.offset, copied_field, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.emitRelease(field_reg);
+            } else {
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, field_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.emitRelease(field_reg);
+            }
+        }
+        return target;
     }
 
     fn primitiveHashBits(self: *Codegen, value_reg: []const u8, ty: *const ast.Type) CodegenError![]const u8 {
@@ -6946,6 +7127,8 @@ pub const Codegen = struct {
         defer self.current_async_return_ty = prev_async_return_ty;
         defer self.async_pending_return_emitted = prev_async_pending_return;
         self.addressable_bindings.clearRetainingCapacity();
+        self.assigned_bindings.clearRetainingCapacity();
+        self.assigned_value_slots.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
@@ -6975,6 +7158,7 @@ pub const Codegen = struct {
         self.local_binding_types.clearRetainingCapacity();
         self.clearBindingAliases();
         self.clearHashMapKeySlots();
+        try self.collectAssignedBindings(f.body);
         try self.collectAddressableBindings(f.body);
 
         if (lowering_rules.planAsyncJoin2AwaitContinuation(f)) |plan| {
@@ -7047,6 +7231,13 @@ pub const Codegen = struct {
                 self.out.writer().print("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
                 try self.emitRelease(raw_param);
+            } else if (!p.is_borrow and !p.is_move and self.bindingNeedsAssignedValueSlot(p.name, p.ty)) {
+                const raw_param = try self.newTmp();
+                self.out.writer().print("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                self.assigned_value_slots.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
             }
         }
 
@@ -7091,6 +7282,8 @@ pub const Codegen = struct {
 
     fn genTestDecl(self: *Codegen, t: *const ast.TestDecl) CodegenError!void {
         self.addressable_bindings.clearRetainingCapacity();
+        self.assigned_bindings.clearRetainingCapacity();
+        self.assigned_value_slots.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
@@ -7120,6 +7313,7 @@ pub const Codegen = struct {
         self.local_binding_types.clearRetainingCapacity();
         self.clearBindingAliases();
         self.clearHashMapKeySlots();
+        try self.collectAssignedBindings(t.body);
         try self.collectAddressableBindings(t.body);
 
         // Emit SA @test header:  @test [ignored] [should_panic] "name"():
@@ -7412,8 +7606,39 @@ pub const Codegen = struct {
     }
 
     fn genBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+        var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
+        defer {
+            var i = scoped_aliases.items.len;
+            while (i > 0) {
+                i -= 1;
+                self.popBindingAlias(scoped_aliases.items[i]);
+            }
+            scoped_aliases.deinit();
+        }
+
         for (block) |stmt| {
-            try self.genStmt(stmt, hoisted_allocs);
+            if (stmt.* == .let_stmt and !isDiscardName(stmt.let_stmt.name)) {
+                const source_name = stmt.let_stmt.name;
+                const resolved_name = self.resolveBindingName(source_name);
+                if (self.stack_alloc_bindings.contains(resolved_name)) {
+                    const alias = try self.pushBindingAlias(source_name);
+                    try scoped_aliases.append(source_name);
+                    if (self.addressable_bindings.contains(source_name)) {
+                        self.addressable_bindings.put(alias, {}) catch return CodegenError.OutOfMemory;
+                    }
+                    if (self.assigned_bindings.contains(source_name)) {
+                        self.assigned_bindings.put(alias, {}) catch return CodegenError.OutOfMemory;
+                    }
+                    var let_copy = stmt.let_stmt;
+                    let_copy.name = alias;
+                    var node = ast.Node{ .let_stmt = let_copy };
+                    try self.genStmt(&node, hoisted_allocs);
+                } else {
+                    try self.genStmt(stmt, hoisted_allocs);
+                }
+            } else {
+                try self.genStmt(stmt, hoisted_allocs);
+            }
             if (self.async_pending_return_emitted) break;
         }
     }
@@ -8379,6 +8604,97 @@ pub const Codegen = struct {
         return try self.genExpr(arg, hoisted_allocs);
     }
 
+    fn closureShadowsIdentifier(closure: ast.ClosureLiteral, name: []const u8) bool {
+        for (closure.params) |param| {
+            if (std.mem.eql(u8, param.name, name)) return true;
+        }
+        return false;
+    }
+
+    fn nodeUsesIdentifier(node: *const ast.Node, name: []const u8) bool {
+        return switch (node.*) {
+            .identifier => |ident| std.mem.eql(u8, ident, name),
+            .literal, .generic_func_ref => false,
+            .await_expr => |await_expr| nodeUsesIdentifier(await_expr.expr, name),
+            .binary_expr => |bin| nodeUsesIdentifier(bin.left, name) or nodeUsesIdentifier(bin.right, name),
+            .call_expr => |call| blk: {
+                for (call.args) |arg| {
+                    if (nodeUsesIdentifier(arg, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .closure_literal => |closure| if (closureShadowsIdentifier(closure, name)) false else nodeUsesIdentifier(closure.body, name),
+            .borrow_expr => |borrow| nodeUsesIdentifier(borrow.expr, name),
+            .move_expr => |move| nodeUsesIdentifier(move.expr, name),
+            .deref_expr => |deref| nodeUsesIdentifier(deref.expr, name),
+            .cast_expr => |cast| nodeUsesIdentifier(cast.expr, name),
+            .field_expr => |field| nodeUsesIdentifier(field.expr, name),
+            .struct_literal => |lit| blk: {
+                if (lit.update_expr) |update| {
+                    if (nodeUsesIdentifier(update, name)) break :blk true;
+                }
+                for (lit.fields) |field| {
+                    if (nodeUsesIdentifier(field.value, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .enum_literal => |lit| blk: {
+                for (lit.fields) |field| {
+                    if (nodeUsesIdentifier(field.value, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .tuple_literal => |tuple| blk: {
+                for (tuple.elements) |elem| {
+                    if (nodeUsesIdentifier(elem, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .array_literal => |array| blk: {
+                for (array.elements) |elem| {
+                    if (nodeUsesIdentifier(elem, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .repeat_array_literal => |repeat| nodeUsesIdentifier(repeat.value, name),
+            .index_expr => |idx| nodeUsesIdentifier(idx.target, name) or nodeUsesIdentifier(idx.index, name),
+            .slice_expr => |slice| nodeUsesIdentifier(slice.target, name) or nodeUsesIdentifier(slice.start, name) or nodeUsesIdentifier(slice.end, name),
+            .try_expr => |try_expr| nodeUsesIdentifier(try_expr.expr, name),
+            .if_expr => |ife| blk: {
+                if (nodeUsesIdentifier(ife.cond, name)) break :blk true;
+                if (ife.let_chain) |chain| {
+                    for (chain) |item| {
+                        if (nodeUsesIdentifier(item.value, name)) break :blk true;
+                    }
+                }
+                break :blk false;
+            },
+            .switch_expr => |switch_expr| nodeUsesIdentifier(switch_expr.val, name),
+            .match_expr => |match_expr| nodeUsesIdentifier(match_expr.val, name),
+            else => false,
+        };
+    }
+
+    fn identifierUsedLaterInCurrentExpr(self: *Codegen, name: []const u8) bool {
+        for (self.current_expr_later_nodes.items) |node| {
+            if (nodeUsesIdentifier(node, name)) return true;
+        }
+        return false;
+    }
+
+    fn pushCallSiblingArgExprs(self: *Codegen, args: []const *ast.Node, arg_index: usize) CodegenError!usize {
+        const mark = self.current_expr_later_nodes.items.len;
+        for (args, 0..) |arg, i| {
+            if (i == arg_index) continue;
+            self.current_expr_later_nodes.append(arg) catch return CodegenError.OutOfMemory;
+        }
+        return mark;
+    }
+
+    fn popExprLaterNodesTo(self: *Codegen, mark: usize) void {
+        self.current_expr_later_nodes.shrinkRetainingCapacity(mark);
+    }
+
     fn emitPrimitiveCopy(self: *Codegen, target: []const u8, source: []const u8, ty: *const ast.Type) CodegenError!void {
         if (ty.* != .primitive) return CodegenError.CodegenError;
         switch (ty.primitive) {
@@ -8517,7 +8833,14 @@ pub const Codegen = struct {
                 try self.genCopyValueInto(copied, source_reg, target_param.ty);
                 break :blk .{ .reg = copied, .release_after_call = materialization.release_after_call };
             },
-            .generated_fn_ptr_value_slot, .borrow_local_fn_ptr_value, .shallow_copy_preserved_value => return CodegenError.CodegenError,
+            .shallow_copy_preserved_value => blk: {
+                const arg_ty = self.resolvedTypeForExpr(arg) orelse return CodegenError.CodegenError;
+                const source_reg = try self.genCallArg(arg, hoisted_allocs);
+                const copied = try self.genShallowCopyCallArgValue(source_reg, arg_ty);
+                const moved_copy = std.fmt.allocPrint(self.allocator, "^{s}", .{copied}) catch return CodegenError.OutOfMemory;
+                break :blk .{ .reg = moved_copy, .release_after_call = false };
+            },
+            .generated_fn_ptr_value_slot, .borrow_local_fn_ptr_value => return CodegenError.CodegenError,
             .value => blk: {
                 if (lowering_rules.borrowedIdentifierName(arg)) |borrowed_name| {
                     if (self.addressable_bindings.contains(borrowed_name)) {
@@ -8574,9 +8897,20 @@ pub const Codegen = struct {
             options.include_copy_struct_value and !param.is_borrow and !param.is_move and arg.* == .identifier and self.typeIsCopyStruct(param.ty)
         else
             false;
+        const arg_ty = self.resolvedTypeForExpr(arg);
+        const shallow_copy_value = if (options.param) |param|
+            !param.is_borrow and !param.is_move and
+                arg.* == .identifier and
+                arg_ty != null and
+                arg_ty.?.* == .user_defined and
+                !self.typeIsCopyValue(arg_ty.?) and
+                !lowering_rules.isBorrowLikeType(arg_ty.?) and
+                self.typeIsShallowCopyCallArgValue(arg_ty.?, 0)
+        else
+            false;
         const materialization = lowering_rules.planCallArgMaterialization(arg, .{
             .param = options.param,
-            .arg_ty = self.resolvedTypeForExpr(arg),
+            .arg_ty = arg_ty,
             .arg_index = options.arg_index,
             .auto_borrow_receiver = options.auto_borrow_receiver,
             .receiver_style_auto_borrow = options.receiver_style_auto_borrow,
@@ -8586,7 +8920,9 @@ pub const Codegen = struct {
             .copy_struct_value = copy_struct_value,
             .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(arg),
             .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(arg),
-            .value_arg_transfers_ownership = self.valueArgTransfersOwnership(options.param, self.resolvedTypeForExpr(arg)),
+            .preserve_identifier_for_later_use = arg.* == .identifier and self.identifierUsedLaterInCurrentExpr(arg.identifier),
+            .shallow_copy_value = shallow_copy_value,
+            .value_arg_transfers_ownership = self.valueArgTransfersOwnership(options.param, arg_ty),
         });
         return try self.genCallArgFromMaterializationPlan(arg, options.param, materialization, hoisted_allocs);
     }
@@ -8625,6 +8961,8 @@ pub const Codegen = struct {
 
         for (call.args, 0..) |arg, i| {
             const param = func.params[i];
+            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+            defer self.popExprLaterNodesTo(sibling_mark);
             const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
                 .param = param,
                 .arg_index = i,
@@ -8933,6 +9271,19 @@ pub const Codegen = struct {
         return lowering_rules.storedValueMovesIdentifier(value, value_ty, self.typeIsCopyValue(value_ty)) != null;
     }
 
+    fn finishStoredValueAfterSlotStore(self: *Codegen, value: *const ast.Node, value_ty: *const ast.Type, value_reg: []const u8) CodegenError!void {
+        if (self.storedIdentifierNeedsRelease(value, value_ty)) {
+            try self.markConsumedBinding(value_reg);
+            return;
+        }
+        if (!callArgNeedsRelease(value)) return;
+        if (!self.typeIsCopyValue(value_ty) and !lowering_rules.isBorrowLikeType(value_ty)) {
+            try self.markConsumedBinding(value_reg);
+            return;
+        }
+        try self.emitRelease(value_reg);
+    }
+
     fn valueArgTransfersOwnership(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
         const target_param = param orelse return false;
         if (target_param.is_borrow or target_param.is_move) return false;
@@ -9145,6 +9496,16 @@ pub const Codegen = struct {
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
                     self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
+                    if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
+                } else if (self.bindingNeedsAssignedValueSlot(let.name, let_ty)) {
+                    const val_reg = try self.genExpr(let.value, hoisted_allocs);
+                    if (self.async_pending_return_emitted) return;
+                    self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                    self.assigned_value_slots.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
+                    if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
+                    if (self.storedIdentifierNeedsRelease(let.value, let_ty)) try self.markConsumedBinding(val_reg);
                 } else if (isStackAllocCall(let.value)) {
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, stackAllocSize(&let.value.call_expr) }) catch return CodegenError.CodegenError;
@@ -9271,8 +9632,9 @@ pub const Codegen = struct {
                         _ = self.metadata_open_results.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
-                    if (let.value.* == .identifier and let_ty.* == .primitive) {
+                    if (let_ty.* == .primitive) {
                         try self.emitPrimitiveCopy(let.name, val_reg, let_ty);
+                        if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
                     } else {
                         self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
@@ -9508,7 +9870,7 @@ pub const Codegen = struct {
                     if (target_lifecycle.shouldRelease()) try self.emitRelease(target_reg);
                     if (assign.target.deref_expr.expr.* != .identifier and self.mutex_guard_handles.contains(target_reg)) try self.emitRelease(target_reg);
                     if (assign.target.deref_expr.expr.* != .identifier and self.rwlock_guard_handles.contains(target_reg)) try self.emitRelease(target_reg);
-                    if (callArgNeedsRelease(assign.value) or self.storedIdentifierNeedsRelease(assign.value, inner_ty)) try self.emitRelease(val_reg);
+                    try self.finishStoredValueAfterSlotStore(assign.value, inner_ty, val_reg);
                 } else if (assign.target.* == .field_expr) {
                     const field = assign.target.field_expr;
                     const base_reg = try self.genExpr(field.expr, hoisted_allocs);
@@ -9536,7 +9898,7 @@ pub const Codegen = struct {
                         self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ base_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     }
                     if (exprResultNeedsRelease(field.expr)) try self.emitRelease(base_reg);
-                    if (callArgNeedsRelease(assign.value) or self.storedIdentifierNeedsRelease(assign.value, target_ty)) try self.emitRelease(val_reg);
+                    try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
                 } else if (assign.target.* == .identifier) {
                     const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
                     if (assign.value.* == .identifier and self.typeIsCopyStruct(target_ty)) {
@@ -9553,6 +9915,13 @@ pub const Codegen = struct {
                     if (self.bindingStorageAddress(target_name)) |address| {
                         self.out.writer().print("    store {s}, {s} as {s}\n", .{ address, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(assign.value)) try self.emitRelease(stored_val_reg);
+                    } else if (self.assigned_value_slots.contains(target_name)) {
+                        self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
+                        if (self.storedIdentifierNeedsRelease(assign.value, target_ty)) {
+                            try self.transferResultSlotValueState(target_name, stored_val_reg, true);
+                            try self.markConsumedBinding(stored_val_reg);
+                        }
+                        _ = self.consumed_bindings.remove(target_name);
                     } else if (self.addressable_bindings.contains(target_name)) {
                         self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         if (callArgNeedsRelease(assign.value)) try self.emitRelease(stored_val_reg);
@@ -9600,7 +9969,14 @@ pub const Codegen = struct {
                 // Inject scope cleanups before return
                 if (self.tc.cleanups.get(stmt)) |list| {
                     for (list.items) |c_var| {
-                        try self.emitRelease(c_var);
+                        if (ret.value) |v| {
+                            switch (try self.planFunctionResultCleanup(c_var, v)) {
+                                .release => try self.emitRelease(c_var),
+                                .transfer_result => {},
+                            }
+                        } else {
+                            try self.emitRelease(c_var);
+                        }
                     }
                 }
                 if (val_reg) |vr| {
@@ -10403,7 +10779,7 @@ pub const Codegen = struct {
                 .elem_ty = elem_ty,
                 .base_tmp = null,
                 .base_reg = slice_reg,
-                .release_base_reg = exprResultNeedsRelease(idx.target),
+                .release_base_reg = exprResultNeedsRelease(idx.target) or isTemporaryRegisterName(slice_reg),
             };
         }
 
@@ -10428,7 +10804,7 @@ pub const Codegen = struct {
             .elem_ty = arr.elem,
             .base_tmp = base_tmp,
             .base_reg = base_source_reg,
-            .release_base_reg = base_tmp == null and exprResultNeedsRelease(idx.target),
+            .release_base_reg = base_tmp == null and (exprResultNeedsRelease(idx.target) or isTemporaryRegisterName(base_source_reg)),
         };
     }
 
@@ -10543,7 +10919,7 @@ pub const Codegen = struct {
             const ptr_reg = try self.newTmp();
             self.out.writer().print("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
             self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
-            self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
             self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
             self.out.writer().print("    store {s}+0, {s} as u64\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
             try self.emitRelease(ptr_reg);
@@ -10551,7 +10927,7 @@ pub const Codegen = struct {
             try self.emitRelease(data_reg);
             try self.emitRelease(len_reg);
             if (callArgNeedsRelease(idx.index)) try self.emitRelease(index_reg);
-            if (callArgNeedsRelease(value) or self.storedIdentifierNeedsRelease(value, elem_ty)) try self.emitRelease(val_reg);
+            try self.finishStoredValueAfterSlotStore(value, elem_ty, val_reg);
             if (vec_receiver.release_reg) |release_reg| try self.emitRelease(release_reg);
             return;
         }
@@ -10561,7 +10937,7 @@ pub const Codegen = struct {
         try self.emitRelease(addr.ptr);
         if (addr.base_tmp) |base_tmp| try self.emitRelease(base_tmp);
         if (addr.release_base_reg) try self.emitRelease(addr.base_reg);
-        if (callArgNeedsRelease(value) or self.storedIdentifierNeedsRelease(value, addr.elem_ty)) try self.emitRelease(val_reg);
+        try self.finishStoredValueAfterSlotStore(value, addr.elem_ty, val_reg);
     }
 
     fn genVecIndexRead(
@@ -10589,7 +10965,7 @@ pub const Codegen = struct {
         const ptr_reg = try self.newTmp();
         self.out.writer().print("    !{s}\n", .{in_bounds_reg}) catch return CodegenError.CodegenError;
         self.out.writer().print("    {s} = load {s}+Vec_ptr as ptr\n", .{ data_reg, vec_reg }) catch return CodegenError.CodegenError;
-        self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    {s} = mul {s}, {}\n", .{ offset_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
         self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ ptr_reg, data_reg, offset_reg }) catch return CodegenError.CodegenError;
         self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, ptr_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
         try self.emitRelease(ptr_reg);
@@ -11063,7 +11439,7 @@ pub const Codegen = struct {
         const acc_reg = try self.newTmp();
         self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ acc_reg, acc_slot, typeString(sum_ty) }) catch return CodegenError.CodegenError;
         const off_reg = try self.newTmp();
-        self.out.writer().print("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+        self.out.writer().print("    {s} = mul {s}, {}\n", .{ off_reg, idx_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
         const slot_reg = try self.newTmp();
         self.out.writer().print("    {s} = ptr_add {s}, {s}\n", .{ slot_reg, data_reg, off_reg }) catch return CodegenError.CodegenError;
         const item_reg = try self.newTmp();
@@ -11174,6 +11550,12 @@ pub const Codegen = struct {
                     self.out.writer().print("    {s} = load {s} as {s}\n", .{ reg, address, typeString(expr_ty) }) catch return CodegenError.CodegenError;
                     return reg;
                 }
+                if (self.assigned_value_slots.contains(name)) {
+                    const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
+                    const reg = try self.newTmp();
+                    self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                    return reg;
+                }
                 if (self.tc.funcs.contains(name)) {
                     const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                     if (expr_ty.* == .fn_ptr) {
@@ -11250,9 +11632,15 @@ pub const Codegen = struct {
                 switch (address_plan.shape) {
                     .identifier => {
                         if (lowering_rules.borrowedIdentifierName(expr)) |borrowed_name| {
-                            if (self.addressable_bindings.contains(borrowed_name)) {
+                            const resolved_name = self.resolveBindingName(borrowed_name);
+                            if (self.assigned_value_slots.contains(resolved_name)) {
                                 const addr = try self.newTmp();
-                                self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, borrowed_name }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ addr, resolved_name }) catch return CodegenError.CodegenError;
+                                return addr;
+                            }
+                            if (self.addressable_bindings.contains(borrowed_name) or self.addressable_bindings.contains(resolved_name)) {
+                                const addr = try self.newTmp();
+                                self.out.writer().print("    {s} = ptr_add {s}, 0\n", .{ addr, resolved_name }) catch return CodegenError.CodegenError;
                                 return addr;
                             }
                         }
@@ -12182,6 +12570,8 @@ pub const Codegen = struct {
                         defer arg_consume_regs.deinit();
                         const maybe_func = self.tc.funcs.get(method_key);
                         for (call.args, 0..) |arg, i| {
+                            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+                            defer self.popExprLaterNodesTo(sibling_mark);
                             if (maybe_func) |func| {
                                 if (i < func.params.len) {
                                     const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
@@ -12216,7 +12606,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    EXPAND VEC_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     const vec_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                     const elem_ty = vecElementType(vec_ty) orelse return CodegenError.CodegenError;
-                    const elem_size = vecElementSlotSize(elem_ty);
+                    const elem_size = self.vecElementSlotSize(elem_ty);
                     const elem_transfers_ownership = lowering_rules.vecElementPushTransfersOwnership(elem_ty, self.typeIsCopyValue(elem_ty));
                     for (call.args) |arg| {
                         const arg_reg = try self.genExpr(arg, hoisted_allocs);
@@ -12322,7 +12712,7 @@ pub const Codegen = struct {
                     const elem_ty = vecElementType(recv_ty) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const arg_reg = try self.genExpr(call.args[1], hoisted_allocs);
-                    self.out.writer().print("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                     if (lowering_rules.vecElementPushTransfersOwnership(elem_ty, self.typeIsCopyValue(elem_ty))) {
                         try self.emitForgetMovedValue(arg_reg);
                     } else if (callArgNeedsRelease(call.args[1])) try self.emitRelease(arg_reg);
@@ -12368,7 +12758,7 @@ pub const Codegen = struct {
                     const raw_reg = try self.newTmp();
                     const hit_label = try self.newLabel("L_VEC_REMOVE_OK");
                     const miss_label = try self.newLabel("L_VEC_REMOVE_OOB");
-                    self.out.writer().print("    EXPAND VEC_REMOVE {s}, {s}, {s}, {s}, {}\n", .{ ok_reg, raw_reg, recv_reg, index_reg, vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    EXPAND VEC_REMOVE {s}, {s}, {s}, {s}, {}\n", .{ ok_reg, raw_reg, recv_reg, index_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                     self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, hit_label, miss_label }) catch return CodegenError.CodegenError;
                     self.out.writer().print("{s}:\n", .{miss_label}) catch return CodegenError.CodegenError;
                     self.out.writer().print("    panic(86)\n\n", .{}) catch return CodegenError.CodegenError;
@@ -13460,6 +13850,8 @@ pub const Codegen = struct {
                                         defer arg_consume_regs.deinit();
                                         const method_func = self.tc.funcs.get(method_key);
                                         for (call.args, 0..) |arg, i| {
+                                            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+                                            defer self.popExprLaterNodesTo(sibling_mark);
                                             if (method_func) |func| {
                                                 if (i < func.params.len and arg.* == .literal and arg.literal == .string_val and isFormatStringType(func.params[i].ty)) {
                                                     const arg_reg = try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs);
@@ -13519,6 +13911,8 @@ pub const Codegen = struct {
                     defer arg_consume_regs.deinit();
                     const maybe_func = self.tc.funcs.get(call.func_name);
                     for (call.args, 0..) |arg, i| {
+                        const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+                        defer self.popExprLaterNodesTo(sibling_mark);
                         if (maybe_func) |func| {
                             if (i < func.params.len and arg.* == .literal and arg.literal == .string_val and isFormatStringType(func.params[i].ty)) {
                                 const arg_reg = try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs);
@@ -13579,6 +13973,8 @@ pub const Codegen = struct {
                         defer arg_consume_regs.deinit();
                         const maybe_func = self.tc.funcs.get(call.func_name);
                         for (call.args, 0..) |arg, i| {
+                            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+                            defer self.popExprLaterNodesTo(sibling_mark);
                             if (maybe_func) |func| {
                                 if (i < func.params.len and arg.* == .literal and arg.literal == .string_val and isFormatStringType(func.params[i].ty)) {
                                     const arg_reg = try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs);

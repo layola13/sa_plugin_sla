@@ -18,6 +18,17 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue036 loop-local scalar cleanup closure (2026-07-16):
+  SA-text now records top-level while-body `let` locals and emits consistent
+  cleanup on break/continue exits and natural backedges. This closes the
+  `sla_tsgo` `emit_js_skip_class_member_modifiers` `next` PhiStateConflict.
+  The same slice removed duplicate natural-backedge cleanup for those tracked
+  top-level `let` locals, fixing the follow-on `check_kw` `kwb` double
+  release exposed by the downstream contract. Focused serial verification
+  passed: build 7/7; local and installed/dev SA plus strict SAB loop-body
+  cleanup fixture 4/4 each; official dev install/help; downstream `sla_tsgo`
+  `tests/test_compile_ts_to_js_text_contract.sla` SA backend 68/68. No full
+  suite was run.
 - Docs/issue033 repeated aggregate alias field lifetime closure (2026-07-16):
   the field-base release fix recorded for issue035 also closes the earlier
   `sla_tsgo` `parse_jsx_like_expression` `UseAfterMove`. Repeated
@@ -26,8 +37,8 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
   identifier-load temporaries. Focused shared Zig 1/1, build 7/7, local and
   installed SA/strict SAB fixture 3/3 each, and official dev install/help
   passed serially. The downstream compile-to-JS SA contract gets past
-  issue033 and now stops at issue036's independent loop-local scalar
-  `PhiStateConflict`. No full suite was run.
+  issue033; the later issue036 loop-local scalar blocker is now closed. No
+  full suite was run.
 - Docs/issue035 assigned aggregate field-base lifetime closure (2026-07-16):
   SA-text field lowering no longer releases a temporary-looking `tmp_*`
   register when it is the resolved local binding for an identifier.
@@ -61,9 +72,8 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
   fmt check; diff check; build 7/7; local SA and strict SAB 2/2 each; official
   dev install/help; downstream `tests/test_compiler_contract.sla` SA backend
   41/41. The second issue027 repro's `emit_js_emit_enum` loop
-  `PhiStateConflict` is now fixed as issue032, and the later issue033
-  field-base failure is also fixed. The current downstream blocker is
-  issue036. No full suite was run.
+  `PhiStateConflict` is now fixed as issue032, the later issue033 field-base
+  failure is fixed, and issue036 is now closed. No full suite was run.
 - Docs/issue029 fallible extern payload and call-arg cleanup closure
   (2026-07-15): SA-text and direct SAB now keep by-value raw `ptr` extern
   params as by-value values for shared call-argument planning, and SA-text

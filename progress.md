@@ -4,6 +4,22 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue036 loop-local scalar cleanup closure (2026-07-16):
+  SA-text while lowering now tracks top-level loop-body `let` locals and
+  releases them consistently on break/continue exits and natural backedges.
+  This fixes the `sla_tsgo` `emit_js_skip_class_member_modifiers` `next`
+  `PhiStateConflict`. After that blocker moved, the downstream contract
+  exposed `check_kw` double-releasing `kwb`; the old AST-scanned natural
+  backedge cleanup no longer releases tracked top-level `let` locals a second
+  time. `tests/test_unit_loop_body_local_cleanup.sla` now covers the scalar
+  break/backedge shape and the assignment-RHS single-cleanup shape. Serial
+  focused verification passed: `zig build -j1 --summary all` 7/7; local and
+  installed/dev SA plus strict SAB fixture 4/4 each; official
+  `SA_PLUGIN_DEV=1 sa plugin install --dev .` and `SA_PLUGIN_DEV=1 sa sla
+  help`; downstream `/home/vscode/projects/mnt/sla_tsgo`
+  `tests/test_compile_ts_to_js_text_contract.sla` SA backend 68/68. No full
+  suite was run.
+
 - docs/issue033 repeated aggregate alias field lifetime closure (2026-07-16):
   the shared field-base release decision committed for issue035 also fixes
   `sla_tsgo` `parse_jsx_like_expression`. Repeated `let after_lt`
@@ -12,8 +28,8 @@ Update this file every time a compiler feature or demo milestone is completed an
   Focused serial verification passed: shared Zig test 1/1; build 7/7; local
   and installed SA plus strict SAB fixture 3/3 each; official dev
   install/help. The downstream compile-to-JS SA contract advances past
-  issue033 and stops later at issue036's independent loop-local scalar
-  `PhiStateConflict`. No full suite was run.
+  issue033; the later issue036 loop-local scalar blocker is now closed. No
+  full suite was run.
 
 - docs/issue035 assigned aggregate field-base lifetime closure (2026-07-16):
   SA-text field lowering previously released any `tmp_*` field base, even
@@ -56,7 +72,7 @@ Update this file every time a compiler feature or demo milestone is completed an
   dev install/help; downstream `tests/test_compiler_contract.sla` SA backend
   41/41. The later `emit_js_emit_enum` loop `PhiStateConflict` is now fixed as
   issue032, and the later issue033 field-base failure is also fixed. The
-  current downstream blocker is issue036. No full suite was run.
+  current downstream issue036 blocker is now closed. No full suite was run.
 
 - docs/issue029 fallible extern payload and call-arg temp cleanup closure
   (2026-07-15): by-value raw `ptr` extern params now enter shared

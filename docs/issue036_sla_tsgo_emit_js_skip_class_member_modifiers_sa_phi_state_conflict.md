@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: open
+Status: fixed
 
 ## Summary
 
@@ -41,7 +41,7 @@ SA_PLUGIN_DEV=1 sa sla test tests/test_compile_ts_to_js_text_contract.sla \
   --test-backend sa --jobs 1 --trace-panic
 ```
 
-## Current Assessment
+## Resolution
 
 The loop declares `let next = i`, conditionally reassigns `next` through a
 deep keyword chain, may `break` when no modifier matches, then assigns
@@ -49,12 +49,25 @@ deep keyword chain, may `break` when no modifier matches, then assigns
 path and consumed on another. This is a scalar loop-local cleanup/control-flow
 merge issue, separate from issue033's aggregate field-base lifetime.
 
-## Required Closure
+SA-text now tracks top-level while-body `let` locals during block emission and
+emits the same local cleanup on break/continue exits and natural backedges.
+Primitive loop locals are emitted even when the emitter's global consumed cache
+was polluted by a different branch, so SA verifier path state remains
+authoritative. The older AST-scanned natural-backedge cleanup no longer releases
+the same top-level `let` locals a second time; this also covers the follow-on
+`check_kw` `kwb` double-release exposed after the original `next` conflict was
+fixed.
 
-- Derive a focused compiler fixture for a loop-local scalar that is
-  conditionally reassigned, read by a break condition, and used after it.
-- Identify which break or natural-backedge cleanup path consumes `next`.
-- Put the lifecycle/control-flow decision in shared lowering rules where
-  practical, keeping SA label/register emission local to `src/codegen.zig`.
-- Verify only the focused fixture and downstream compile-to-JS SA contract
-  serially. Do not run a full test suite.
+## Verification
+
+Serial focused verification only; no full suite was run:
+
+- `zig build -j1 --summary all` 7/7.
+- Local `tests/test_unit_loop_body_local_cleanup.sla` SA 4/4.
+- Local strict SAB for the same file 4/4.
+- `SA_PLUGIN_DEV=1 sa plugin install --dev .`.
+- Official `SA_PLUGIN_DEV=1 sa sla help`.
+- Installed/dev `tests/test_unit_loop_body_local_cleanup.sla` SA 4/4 and
+  strict SAB 4/4.
+- Downstream `/home/vscode/projects/mnt/sla_tsgo`
+  `tests/test_compile_ts_to_js_text_contract.sla` SA 68/68.

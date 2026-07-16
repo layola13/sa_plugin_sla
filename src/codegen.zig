@@ -113,6 +113,8 @@ pub const Codegen = struct {
     injected_address_bindings: std.StringHashMap([]const u8),
     loop_continue_labels: std.ArrayList([]const u8),
     loop_break_labels: std.ArrayList([]const u8),
+    loop_body_local_scopes: std.ArrayList(std.ArrayList([]const u8)),
+    loop_body_block_depths: std.ArrayList(usize),
     current_expr_later_nodes: std.ArrayList(*const ast.Node),
     current_async: bool,
     current_async_return_ty: ?*const ast.Type,
@@ -185,6 +187,8 @@ pub const Codegen = struct {
             .injected_address_bindings = injected_address_bindings,
             .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
             .loop_break_labels = std.ArrayList([]const u8).init(allocator),
+            .loop_body_local_scopes = std.ArrayList(std.ArrayList([]const u8)).init(allocator),
+            .loop_body_block_depths = std.ArrayList(usize).init(allocator),
             .current_expr_later_nodes = std.ArrayList(*const ast.Node).init(allocator),
             .current_async = false,
             .current_async_return_ty = null,
@@ -257,6 +261,12 @@ pub const Codegen = struct {
         self.injected_address_bindings.deinit();
         self.loop_continue_labels.deinit();
         self.loop_break_labels.deinit();
+        while (self.loop_body_local_scopes.items.len > 0) {
+            var scope = self.loop_body_local_scopes.pop().?;
+            scope.deinit();
+        }
+        self.loop_body_local_scopes.deinit();
+        self.loop_body_block_depths.deinit();
         self.current_expr_later_nodes.deinit();
     }
 
@@ -954,6 +964,80 @@ pub const Codegen = struct {
     fn emitLexicalCleanupRelease(self: *Codegen, name: []const u8) CodegenError!void {
         const resolved_name = self.resolveBindingName(name);
         try self.emitRelease(resolved_name);
+    }
+
+    fn pushLoopBodyLocalScope(self: *Codegen) CodegenError!void {
+        self.loop_body_local_scopes.append(std.ArrayList([]const u8).init(self.allocator)) catch return CodegenError.OutOfMemory;
+        self.loop_body_block_depths.append(0) catch return CodegenError.OutOfMemory;
+    }
+
+    fn popLoopBodyLocalScope(self: *Codegen) void {
+        if (self.loop_body_local_scopes.items.len > 0) {
+            var scope = self.loop_body_local_scopes.pop().?;
+            scope.deinit();
+        }
+        if (self.loop_body_block_depths.items.len > 0) _ = self.loop_body_block_depths.pop();
+    }
+
+    fn enterBlockForLoopLocalTracking(self: *Codegen) void {
+        for (self.loop_body_block_depths.items) |*depth| {
+            depth.* += 1;
+        }
+    }
+
+    fn leaveBlockForLoopLocalTracking(self: *Codegen) void {
+        for (self.loop_body_block_depths.items) |*depth| {
+            depth.* -= 1;
+        }
+    }
+
+    fn rememberLoopBodyTopLevelLocal(self: *Codegen, name: []const u8) CodegenError!void {
+        if (self.loop_body_local_scopes.items.len == 0) return;
+        const scope_index = self.loop_body_local_scopes.items.len - 1;
+        if (self.loop_body_block_depths.items[scope_index] > 1) return;
+        self.loop_body_local_scopes.items[scope_index].append(name) catch return CodegenError.OutOfMemory;
+    }
+
+    fn cleanupListContainsName(self: *Codegen, list: ?*const std.ArrayList([]const u8), name: []const u8) bool {
+        const cleanup_list = list orelse return false;
+        const resolved_name = self.resolveBindingName(name);
+        for (cleanup_list.items) |item| {
+            if (std.mem.eql(u8, self.resolveBindingName(item), resolved_name)) return true;
+        }
+        return false;
+    }
+
+    fn emitLoopBodyLocalCleanup(self: *Codegen, name: []const u8, force_consumed_primitive: bool) CodegenError!void {
+        const resolved_name = self.resolveBindingName(name);
+        if (self.local_binding_types.get(resolved_name)) |ty| {
+            if (force_consumed_primitive and ty.* == .primitive and self.consumed_bindings.contains(resolved_name)) {
+                self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
+                return;
+            }
+        }
+        try self.emitRelease(resolved_name);
+    }
+
+    fn activeLoopBodyLocalContainsName(self: *Codegen, name: []const u8) bool {
+        if (self.loop_body_local_scopes.items.len == 0) return false;
+        const resolved_name = self.resolveBindingName(name);
+        const scope = &self.loop_body_local_scopes.items[self.loop_body_local_scopes.items.len - 1];
+        for (scope.items) |item| {
+            if (std.mem.eql(u8, self.resolveBindingName(item), resolved_name)) return true;
+        }
+        return false;
+    }
+
+    fn emitActiveLoopBodyLocalCleanups(self: *Codegen, skip_list: ?*const std.ArrayList([]const u8), force_consumed_primitive: bool) CodegenError!void {
+        if (self.loop_body_local_scopes.items.len == 0) return;
+        const scope = &self.loop_body_local_scopes.items[self.loop_body_local_scopes.items.len - 1];
+        var i = scope.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (!self.cleanupListContainsName(skip_list, scope.items[i])) {
+                try self.emitLoopBodyLocalCleanup(scope.items[i], force_consumed_primitive);
+            }
+        }
     }
 
     fn transferResultSlotValueState(self: *Codegen, dst: []const u8, src: []const u8, mark_consumed: bool) CodegenError!void {
@@ -7701,6 +7785,9 @@ pub const Codegen = struct {
     }
 
     fn genBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+        self.enterBlockForLoopLocalTracking();
+        defer self.leaveBlockForLoopLocalTracking();
+
         var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
         defer {
             var i = scoped_aliases.items.len;
@@ -7729,8 +7816,10 @@ pub const Codegen = struct {
                     let_copy.name = alias;
                     var node = ast.Node{ .let_stmt = let_copy };
                     try self.genStmt(&node, hoisted_allocs);
+                    try self.rememberLoopBodyTopLevelLocal(alias);
                 } else {
                     try self.genStmt(stmt, hoisted_allocs);
+                    try self.rememberLoopBodyTopLevelLocal(source_name);
                 }
             } else {
                 try self.genStmt(stmt, hoisted_allocs);
@@ -7748,9 +7837,6 @@ pub const Codegen = struct {
         while (i > 0) {
             i -= 1;
             switch (block[i].*) {
-                .let_stmt => |let| if (!isDiscardName(let.name)) {
-                    try self.emitRelease(self.let_binding_aliases.get(block[i]) orelse let.name);
-                },
                 .const_stmt => |c| if (!isDiscardName(c.name)) try self.emitRelease(c.name),
                 .let_destructure_stmt => |let| {
                     if (let.rest_alias) |rest_alias| if (!isDiscardName(rest_alias)) try self.emitRelease(rest_alias);
@@ -10403,6 +10489,8 @@ pub const Codegen = struct {
                     try self.emitRelease(cond_reg);
                     self.loop_continue_labels.append(loop_head) catch return CodegenError.OutOfMemory;
                     self.loop_break_labels.append(loop_exit) catch return CodegenError.OutOfMemory;
+                    try self.pushLoopBodyLocalScope();
+                    defer self.popLoopBodyLocalScope();
                     var pre_loop_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
                     defer pre_loop_borrow_sources.deinit();
                     var pre_loop_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
@@ -10419,6 +10507,7 @@ pub const Codegen = struct {
                                 try self.emitRelease(binding);
                             }
                         }
+                        try self.emitActiveLoopBodyLocalCleanups(null, false);
                         try self.emitLoopBodyTopLevelLocalCleanups(w.body);
                         self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
                     }
@@ -10440,6 +10529,8 @@ pub const Codegen = struct {
                 self.out.writer().print("    !{s}\n", .{cond_reg}) catch return CodegenError.CodegenError;
                 self.loop_continue_labels.append(loop_head) catch return CodegenError.OutOfMemory;
                 self.loop_break_labels.append(loop_exit) catch return CodegenError.OutOfMemory;
+                try self.pushLoopBodyLocalScope();
+                defer self.popLoopBodyLocalScope();
                 var pre_loop_borrow_sources = self.borrow_source_temps.clone() catch return CodegenError.OutOfMemory;
                 defer pre_loop_borrow_sources.deinit();
                 var pre_loop_refcell_handles = self.refcell_borrow_handles.clone() catch return CodegenError.OutOfMemory;
@@ -10451,6 +10542,7 @@ pub const Codegen = struct {
                     .restore_pre_loop => try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources),
                 }
                 if (!blockTerminates(w.body)) {
+                    try self.emitActiveLoopBodyLocalCleanups(null, false);
                     try self.emitLoopBodyTopLevelLocalCleanups(w.body);
                     self.out.writer().print("    jmp {s}\n\n", .{loop_head}) catch return CodegenError.CodegenError;
                 }
@@ -10462,21 +10554,33 @@ pub const Codegen = struct {
                 self.out.writer().print("{s}:\n", .{loop_exit}) catch return CodegenError.CodegenError;
             },
             .break_stmt => {
-                if (self.tc.cleanups.get(stmt)) |list| {
+                const cleanup_list = self.tc.cleanups.getPtr(stmt);
+                if (cleanup_list) |list| {
                     for (list.items) |c_var| {
-                        try self.emitLexicalCleanupRelease(c_var);
+                        if (self.activeLoopBodyLocalContainsName(c_var)) {
+                            try self.emitLoopBodyLocalCleanup(c_var, true);
+                        } else {
+                            try self.emitLexicalCleanupRelease(c_var);
+                        }
                     }
                 }
+                try self.emitActiveLoopBodyLocalCleanups(cleanup_list, true);
                 if (self.loop_break_labels.items.len == 0) return CodegenError.CodegenError;
                 const break_label = self.loop_break_labels.items[self.loop_break_labels.items.len - 1];
                 self.out.writer().print("    jmp {s}\n", .{break_label}) catch return CodegenError.CodegenError;
             },
             .continue_stmt => {
-                if (self.tc.cleanups.get(stmt)) |list| {
+                const cleanup_list = self.tc.cleanups.getPtr(stmt);
+                if (cleanup_list) |list| {
                     for (list.items) |c_var| {
-                        try self.emitLexicalCleanupRelease(c_var);
+                        if (self.activeLoopBodyLocalContainsName(c_var)) {
+                            try self.emitLoopBodyLocalCleanup(c_var, true);
+                        } else {
+                            try self.emitLexicalCleanupRelease(c_var);
+                        }
                     }
                 }
+                try self.emitActiveLoopBodyLocalCleanups(cleanup_list, true);
                 if (self.loop_continue_labels.items.len == 0) return CodegenError.CodegenError;
                 const continue_label = self.loop_continue_labels.items[self.loop_continue_labels.items.len - 1];
                 self.out.writer().print("    jmp {s}\n", .{continue_label}) catch return CodegenError.CodegenError;

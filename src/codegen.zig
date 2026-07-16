@@ -1798,9 +1798,10 @@ pub const Codegen = struct {
         try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
 
         const payload_reg = try self.newTmp();
-        self.out.writer().print("    {s} = load {s}+8 as {s}\n", .{
+        self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{
             payload_reg,
             fallible_reg,
+            lowering_rules.abiFalliblePayloadOffset(ext.ret_ty),
             abiRawPayloadTypeString(ext.ret_ty),
         }) catch return CodegenError.CodegenError;
         try self.emitRelease(fallible_reg);
@@ -8879,6 +8880,12 @@ pub const Codegen = struct {
         return self.callArgResultTempNeedsRelease(arg, arg_reg);
     }
 
+    fn callArgResultTempNeedsConsumeForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: []const u8) bool {
+        const target_param = param orelse return false;
+        if (!lowering_rules.byValueRawPointerParam(target_param)) return false;
+        return self.identifierCallArgTempNeedsRelease(arg, arg_reg);
+    }
+
     fn emitLoweredCallArgCleanups(
         self: *Codegen,
         release_regs: []const ?[]const u8,
@@ -9001,9 +9008,11 @@ pub const Codegen = struct {
                     }
                 }
                 const release_arg = materialization.release_after_call or self.callArgResultTempNeedsReleaseForParam(param, arg, arg_reg);
+                const consume_arg = self.callArgResultTempNeedsConsumeForParam(param, arg, arg_reg);
                 break :blk .{
                     .reg = arg_reg,
                     .release_after_call = release_arg,
+                    .consume_reg = if (consume_arg) arg_reg else null,
                 };
             },
         };
@@ -14872,6 +14881,8 @@ test "by-value raw pointer call arg does not release stack-slot load temp" {
     const arg_reg = sa_code[arg_start..arg_end];
     const release_line = try std.fmt.allocPrint(arena.allocator(), "\n    !{s}\n", .{arg_reg});
     try std.testing.expect(std.mem.indexOfPos(u8, sa_code, arg_end, release_line) == null);
+    const consume_line = try std.fmt.allocPrint(arena.allocator(), "\n    ^{s}\n", .{arg_reg});
+    try std.testing.expect(std.mem.indexOfPos(u8, sa_code, arg_end, consume_line) != null);
 }
 
 test "binary expression releases materialized cast result" {

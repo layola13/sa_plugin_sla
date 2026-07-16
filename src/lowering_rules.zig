@@ -2308,6 +2308,25 @@ pub fn abiTypeSize(ty: *const ast.Type) usize {
     };
 }
 
+pub fn abiFalliblePayloadOffset(raw: []const u8) usize {
+    var name = std.mem.trim(u8, raw, " \t\r");
+    if (name.len > 0 and (name[0] == '&' or name[0] == '^' or name[0] == '*')) {
+        name = std.mem.trim(u8, name[1..], " \t\r");
+    }
+    if (std.mem.endsWith(u8, name, "!")) {
+        name = std.mem.trim(u8, name[0 .. name.len - 1], " \t\r");
+    }
+    const payload_align: usize = if (std.mem.eql(u8, name, "ptr") or
+        std.mem.eql(u8, name, "i64") or
+        std.mem.eql(u8, name, "u64") or
+        std.mem.eql(u8, name, "isize") or
+        std.mem.eql(u8, name, "usize") or
+        std.mem.eql(u8, name, "int") or
+        std.mem.eql(u8, name, "f64") or
+        std.mem.eql(u8, name, "float")) 8 else 4;
+    return (4 + payload_align - 1) & ~(payload_align - 1);
+}
+
 pub fn abiPassesAsPointer(ty: *const ast.Type) bool {
     return switch (ty.*) {
         .pointer, .borrow, .fn_ptr, .user_defined, .tuple, .array, .future => true,
@@ -4061,6 +4080,14 @@ test "shared ABI treats ready futures as pointer-backed values" {
 
     try std.testing.expectEqual(@as(usize, 8), abiTypeSize(&future_ty));
     try std.testing.expect(abiPassesAsPointer(&future_ty));
+}
+
+test "shared fallible extern payload offsets follow C ABI alignment" {
+    try std.testing.expectEqual(@as(usize, 4), abiFalliblePayloadOffset("i32!"));
+    try std.testing.expectEqual(@as(usize, 4), abiFalliblePayloadOffset("u16!"));
+    try std.testing.expectEqual(@as(usize, 8), abiFalliblePayloadOffset("u64!"));
+    try std.testing.expectEqual(@as(usize, 8), abiFalliblePayloadOffset("ptr!"));
+    try std.testing.expectEqual(@as(usize, 8), abiFalliblePayloadOffset("^ptr!"));
 }
 
 test "shared struct literal update field plan" {

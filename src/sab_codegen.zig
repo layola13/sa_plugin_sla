@@ -12048,7 +12048,7 @@ pub const Codegen = struct {
         const fallible_reg = try self.intern(try self.newTmp());
         try self.emitCallBody(fallible_reg, body);
         const payload_reg = dst_override orelse try self.intern(try self.newTmp());
-        try self.emitLoad(payload_reg, fallible_reg, 8, abiPrimType(ext.ret_ty));
+        try self.emitLoad(payload_reg, fallible_reg, lowering_rules.abiFalliblePayloadOffset(ext.ret_ty), abiPrimType(ext.ret_ty));
         try self.emitRelease(fallible_reg);
         return payload_reg;
     }

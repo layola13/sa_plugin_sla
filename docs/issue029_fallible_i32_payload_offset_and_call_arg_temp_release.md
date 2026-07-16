@@ -16,7 +16,9 @@ SLA planned call lowering did not pass `.sai` raw `ptr` extern params through th
 
 The direct SAB path had the same ownership-class issue and also used the ordinary primitive type for `ptr` stack-slot stores, producing a `void` store type where later loads expected `ptr`.
 
-During the investigation, the SA runtime ABI was verified with executable tests: fallible extern payloads are read from the SA ABI payload slot at offset `+8`, including `i32!`.
+During the investigation, the SA runtime ABI was verified with executable tests: fallible extern payloads use C ABI field alignment. `i32!` payloads are read from offset `+4`, while wider payloads such as `u64!` and `ptr!` are read from offset `+8`.
+
+The native SA LLVM caller also needed a matching fix for external `i32!` functions. On x86_64, C returns `struct { i32 status; i32 value; }` packed in one `i64`; SCI now declares those external calls as `i64` and unpacks them back into the internal fallible aggregate before storing the call result.
 
 ## Fix
 
@@ -24,12 +26,15 @@ SA text and direct SAB codegen now keep by-value raw `ptr` params as by-value va
 
 Direct SAB now treats raw `ptr` stack-slot assignment sources as non-owning values and stores them with pointer storage type.
 
+SA text and direct SAB now share `lowering_rules.abiFalliblePayloadOffset`, so both backends use offset `+4` for `i32!` and offset `+8` for `u64!`, `ptr!`, and other 8-byte-aligned payloads.
+
 ## Regression
 
-`tests/test_unit_fallible_extern_payload_direct.sla` now covers both:
+`tests/test_unit_fallible_extern_payload_direct.sla` now covers:
 
 - `u64!` payloads via `sa_fs_read_file`.
 - `i32!` payloads via `sa_fs_metadata_free(metadata)`.
+- consuming `ptr!` cleanup via `sa_json_free(node)`.
 
 Additional focused regressions:
 

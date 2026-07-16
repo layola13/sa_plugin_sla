@@ -1,4 +1,5 @@
 @import "sa_std/fs.sai"
+@import "sa_std/encoding/json.sai"
 @import "sa_std/ptr.sa"
 @import "sa_std/string.sa"
 
@@ -33,6 +34,13 @@ fn fallible_extern_metadata_free_status(path_ptr: ptr, path_len: u64) -> i32 {
     return sa_fs_metadata_free(metadata);
 }
 
+fn fallible_extern_json_free_status(node: ptr, owned: bool) -> i32 {
+    if owned {
+        return sa_json_free(node);
+    };
+    return 0;
+}
+
 @test "fallible extern payload can feed buffer externs"() {
     let got = fallible_extern_read_len("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/test_unit_basic.sla", 72);
     let ok = nonzero_status_u64(got);
@@ -45,5 +53,26 @@ fn fallible_extern_metadata_free_status(path_ptr: ptr, path_len: u64) -> i32 {
     let status = fallible_extern_metadata_free_status("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/test_unit_basic.sla", 72);
     if status != 0 {
         panic(43012);
+    };
+}
+
+@test "fallible consuming ptr extern closes a handle once"() {
+    let root = sa_json_parse(STR_PTR("[{}]"), STR_LEN("[{}]") as u64);
+    if PTR_IS_NONNULL(root) == false {
+        panic(43013);
+    };
+    var child: ptr;
+    child = PTR_NULL();
+    let child_status = sa_json_array_get(root, 0, &child);
+    if child_status != 0 || PTR_IS_NONNULL(child) == false {
+        panic(43014);
+    };
+    let status = fallible_extern_json_free_status(child, true);
+    if status != 0 {
+        panic(43015);
+    };
+    let root_status = sa_json_free(root);
+    if root_status != 0 {
+        panic(43016);
     };
 }

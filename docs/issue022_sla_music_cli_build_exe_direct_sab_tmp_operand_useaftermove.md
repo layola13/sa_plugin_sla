@@ -1,7 +1,7 @@
 # issue022: sla_music_cli `build-exe` direct SAB keeps stale `tmp_*` call operands and trips `UseAfterMove`
 
 日期：2026-07-15
-状态：PARTIAL / OPEN（direct SAB codegen 症状已修复；`build-exe` 输入已裁剪；完整 native 验收仍阻塞于 timeout）
+状态：CLOSED（direct SAB codegen 症状、`build-exe` 输入裁剪、large repeat byte array 展开和 native CLI 验收均已修复/通过）
 
 ## Summary
 
@@ -95,7 +95,7 @@ store r405,0u,r457,ty:12
 
 即不再有 `ptr_add ...,"tmp_*"`，也不再有 `store ... r457` 后的 `release r457`。
 
-完整验收仍未关闭：`SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla build-exe src/main.sla -o /tmp/slamusic-cli` 在重新安装 dev plugin 后不再快速报 `UseAfterMove tmp_151`，但当前在本机约 3 分钟处 timeout 124，未产出 `/tmp/slamusic-cli`。后续需要把这个 `build-exe` timeout 作为剩余 blocker 继续缩小；本 issue 保持 OPEN，直到 CLI 可执行文件和 `verify` / `inspect` / `build` 三个命令通过。
+当时的完整验收仍未关闭：`SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla build-exe src/main.sla -o /tmp/slamusic-cli` 在重新安装 dev plugin 后不再快速报 `UseAfterMove tmp_151`，但在本机约 3 分钟处 timeout 124，未产出 `/tmp/slamusic-cli`。该剩余 blocker 后续由 Update 3 的 repeated-byte-array fill 修复并关闭。
 
 ## 2026-07-16 Update 2
 
@@ -127,4 +127,59 @@ timeout 300s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
   sla build-exe src/main.sla -o /tmp/slamusic-cli-pruned --jobs 1
 ```
 
-在 direct SAB codegen 约 20s 后进入底层 `sa build-exe`，最终仍 timeout 124；对已裁剪 managed SAB 直接跑 `sa build-exe ... --jobs 1 --dce full` 也在 300s timeout。当前剩余 blocker 更像 SA native compile 对该仍较大的 CLI dispatch/音乐转换闭包不收敛，而不是 direct SAB stale operand。CLI `verify` / `inspect` / `build` 三个命令仍未运行。
+当时在 direct SAB codegen 约 20s 后进入底层 `sa build-exe`，最终仍 timeout 124；对已裁剪 managed SAB 直接跑 `sa build-exe ... --jobs 1 --dce full` 也在 300s timeout。该阶段判断剩余 blocker 更像 native compile 对仍较大的 CLI dispatch/音乐转换闭包不收敛，而不是 direct SAB stale operand；后续 Update 3 证明主要热点是 repeated byte array 展开。
+
+## 2026-07-16 Update 3
+
+最终 blocker 确认为 direct-SAB repeat byte array lowering 过度展开：`/home/vscode/projects/sla_music_cli/src/io.sla`
+中的 `let scratch = [0u8; 65536];` 被 direct SAB 生成为 65536 条逐 byte
+`store`，使 `sla__io_write_writer_to_path` 单函数膨胀到约 65k 行并拖慢后续
+native compile。
+
+本轮修复：
+
+- `src/sab_codegen.zig` 为 direct-SAB repeated `u8` array 增加 `sa_mem_set`
+  fill 路径，普通表达式和 macro 表达式共享；非 `u8` repeated array 仍保持原逐元素
+  store 行为。
+- 新增 focused Zig 回归 `direct sab large repeated byte array uses mem set`，确认
+  `[0u8; 1024]` 生成 `@sa_mem_set(...)`，且不再出现尾部展开 store。
+
+验证：
+
+```sh
+zig fmt --check src/sab_codegen.zig
+zig build test -j1 -Dtest-filter="direct sab large repeated byte array uses mem set" --summary all
+zig build -j1 --summary all
+SA_PLUGIN_DEV=1 sa plugin install --dev .
+SA_PLUGIN_DEV=1 sa sla help
+git diff --check
+```
+
+下游 `/home/vscode/projects/sla_music_cli` 本地 strict direct-SAB 验证：
+
+```sh
+timeout 300s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla sab build src/main.sla --out /tmp/slamusic-main-repeatfill.sab
+
+/home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla sab disasm /tmp/slamusic-main-repeatfill.sab \
+  --out /tmp/slamusic-main-repeatfill.disasm.sa
+
+timeout 300s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla build-exe src/main.sla -o /tmp/slamusic-cli-repeatfill-20260716 --jobs 1
+```
+
+结果：
+
+- full `sab build` 成功；反汇编里 `sla__io_write_writer_to_path` 现在包含
+  `call "@sa_mem_set","&tmp_668, tmp_670, 65536"`，不再有 `store ...,1023u`
+  这类尾部展开；最大函数约 2545 行。
+- `build-exe --jobs 1` 在 300s timeout 内成功产出可执行文件；managed executable
+  SAB 约 2.2MB。
+- 下游 CLI 验收通过：默认 demo 写出 `/tmp/slamusic-demo.mid`；最小输入
+  `track p;score m{p:1 2 [3 5]}` 的 `verify`、`inspect`、`build -o
+  /tmp/slamusic-built-20260716.mid` 均成功，输出 MIDI 83 bytes。
+
+本 issue 关闭。未运行全量测试。

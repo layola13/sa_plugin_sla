@@ -4,22 +4,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
-- docs/issue022 `sla_music_cli` direct-SAB `build-exe` partial fix
-  (2026-07-16): executable SAB generation now prunes from `main` for
-  `build-exe`, `build-workspace`, and `sab workspace`, while `sab build`
-  remains a complete inspection artifact. `--emit-sab` on executable paths writes
-  the same pruned `sab_bytes` instead of recompiling a full sibling SAB. The
-  prior direct-SAB `ptr_add` / raw-ptr temp cleanup remains verified. Focused
-  serial verification passed: `zig fmt --check src/plugin_compile_options.zig
-  src/plugin_compile.zig src/plugin_commands.zig src/plugin_tests.zig`; `zig
-  build test -j1 -Dtest-filter="sla build-exe SAB codegen prunes unreachable
-  main declarations" --summary all` 2/2; `zig build -j1 --summary all` 7/7;
-  official dev install/help; `git diff --check`. Downstream local strict
-  `sla_music_cli/src/main.sla` executable SAB shrank from about 7.7MB / 778 funcs
-  to about 3.9MB / 396 funcs with no test decls. Full issue acceptance remains
-  open: local `build-exe --jobs 1` and direct `sa build-exe --jobs 1 --dce full`
-  on the pruned SAB still timeout at 300s before producing `/tmp/slamusic-cli`,
-  so CLI `verify` / `inspect` / `build` did not run. No full suite was run.
+- docs/issue022 `sla_music_cli` direct-SAB `build-exe` closure (2026-07-16):
+  the earlier stale `ptr_add` operand, raw-ptr temp cleanup, and executable
+  entry-prune fixes are now joined by a direct-SAB repeated-byte-array fill path:
+  `[0u8; N]` lowers through `sa_mem_set` instead of one `store` per byte. This
+  removes the `io_write_writer_to_path` 65k-line hotspot caused by `[0u8; 65536]`.
+  Focused serial verification passed: `zig fmt --check src/sab_codegen.zig`;
+  `zig build test -j1 -Dtest-filter="direct sab large repeated byte array uses
+  mem set" --summary all` 2/2; `zig build -j1 --summary all` 7/7; official
+  dev install/help; `git diff --check`. Downstream local strict
+  `sla_music_cli/src/main.sla` full SAB build/disasm shows
+  `@sa_mem_set(..., 65536)` in `io_write_writer_to_path`, no tail store expansion,
+  and max function size about 2545 lines. Local strict `build-exe --jobs 1`
+  completed within 300s and produced `/tmp/slamusic-cli-repeatfill-20260716`;
+  default demo plus `verify`, `inspect`, and `build -o` passed on a minimal music
+  source, writing an 83-byte MIDI file. No full suite was run.
 
 - docs/issue043 `sla_music_cli` `cli_arg_eq` raw pointer byte-add SA
   UseAfterMove current-non-repro closure (2026-07-16): the focused
@@ -251,7 +250,7 @@ Update this file every time a compiler feature or demo milestone is completed an
   and the real `/home/vscode/projects/sla_music_cli`
   `SA_PLUGIN_DEV=1 sa sla build src/main.sla --out /tmp/slamusic-main.sa`.
   issue023 is fixed/verified. issue022's direct-SAB `build-exe` `tmp_167`
-  `UseAfterMove` remains open and is tracked separately.
+  `UseAfterMove` was tracked separately and is now closed.
 
 - docs/issue raw-ptr and ptr-aggregate call-arg ABI closure (2026-07-14):
   ordinary by-value `ptr` parameters no longer get implicit move capability

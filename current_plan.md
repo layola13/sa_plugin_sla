@@ -18,21 +18,19 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
-- Docs/issue022 `sla_music_cli` direct-SAB `build-exe` partial fix
-  (2026-07-16): the earlier direct SAB codegen symptoms remain fixed
-  (`ptr_add r457,r458,r459`, no post-store `release r457`), and executable SAB
-  generation now prunes from `main` for `build-exe` / `build-workspace` /
-  `sab workspace` while leaving `sab build` complete. `--emit-sab` on executable
-  paths writes the already-pruned SAB bytes instead of recompiling a full
-  sibling SAB. Focused serial verification passed: fmt check; filtered Zig
-  regression `sla build-exe SAB codegen prunes unreachable main declarations`
-  2/2; build 7/7; official dev install/help; `git diff --check`. Downstream
-  local strict direct-SAB input for `sla_music_cli/src/main.sla` shrank from
-  about 7.7MB / 778 funcs to about 3.9MB / 396 funcs with no test decls. Full
-  native `build-exe` acceptance remains open: both the true local path and
-  direct `sa build-exe` with `--dce full` still timeout at 300s before producing
-  `/tmp/slamusic-cli`; CLI `verify` / `inspect` / `build` did not run. No full
-  suite was run.
+- Docs/issue022 `sla_music_cli` direct-SAB `build-exe` closure (2026-07-16):
+  after the earlier stale `ptr_add` operand, stored ptr-temp cleanup, and
+  executable entry-prune slices, direct SAB now lowers repeated `u8` arrays such
+  as `[0u8; 65536]` through `sa_mem_set` instead of emitting one `store` per
+  byte. Focused serial verification passed: `zig fmt --check src/sab_codegen.zig`;
+  filtered Zig regression `direct sab large repeated byte array uses mem set`
+  2/2; `zig build -j1 --summary all` 7/7; official dev install/help. Downstream
+  local strict direct-SAB `sla_music_cli/src/main.sla` full SAB disasm now shows
+  `io_write_writer_to_path` calling `@sa_mem_set(..., 65536)` and no 65k-line
+  store expansion; executable SAB is about 2.2MB. Local `sla build-exe
+  src/main.sla --jobs 1` completed inside 300s and produced
+  `/tmp/slamusic-cli-repeatfill-20260716`; CLI demo, `verify`, `inspect`, and
+  `build -o` passed on a minimal music source. No full suite was run.
 - Docs/issue043 `sla_music_cli` `cli_arg_eq` raw pointer byte-add generated-SA
   UseAfterMove current-non-repro closure (2026-07-16): the focused
   `music cli output flag scan helpers` test in
@@ -216,7 +214,7 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
   install/help, and the real `/home/vscode/projects/sla_music_cli`
   `SA_PLUGIN_DEV=1 sa sla build src/main.sla --out /tmp/slamusic-main.sa`
   repro pass. issue023 is closed; issue022's direct-SAB `tmp_167`
-  `UseAfterMove` remains separate and open.
+  `UseAfterMove` was tracked separately and is now closed.
 - Docs/issue raw-ptr and ptr-aggregate call-arg ABI state (2026-07-14):
   ordinary by-value `ptr` params now stay by-value in SA-text and direct SAB
   instead of being inferred as move params from raw `ptr`'s internal

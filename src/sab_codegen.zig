@@ -8253,6 +8253,17 @@ pub const Codegen = struct {
         return dst;
     }
 
+    fn emitRepeatArrayFill(self: *Codegen, dst: u32, arr: ast.ArrayType, value: u32) !bool {
+        if (arr.elem.* != .primitive or arr.elem.primitive != .u8) return false;
+        try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_set"});
+        try self.emitCallBody(null, try std.fmt.allocPrint(
+            self.allocator,
+            "@sa_mem_set(&{s}, {s}, {d})",
+            .{ self.symbols.items[dst], self.symbols.items[value], arr.len },
+        ));
+        return true;
+    }
+
     fn genMacroRepeatArrayLiteralWithType(self: *Codegen, arr_ty: *const ast.Type, lit: ast.RepeatArrayLiteral, ctx: *MacroExpansionContext) anyerror!u32 {
         if (arr_ty.* != .array or arr_ty.array.len != lit.len) return Error.UnsupportedSabDirectFeature;
         _ = try primType(arr_ty.array.elem);
@@ -8260,9 +8271,11 @@ pub const Codegen = struct {
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, arraySize(arr_ty.array));
         const value = try self.genMacroExpr(lit.value, ctx);
-        for (0..lit.len) |idx| {
-            const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
-            try self.emitStore(dst, layout.offset, value, layout.ty);
+        if (!try self.emitRepeatArrayFill(dst, arr_ty.array, value)) {
+            for (0..lit.len) |idx| {
+                const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
+                try self.emitStore(dst, layout.offset, value, layout.ty);
+            }
         }
         try self.releaseStoredExprResultIfNeeded(lit.value, value, arr_ty.array.elem);
         return dst;
@@ -14046,9 +14059,11 @@ pub const Codegen = struct {
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, arraySize(arr_ty.array));
         const value = try self.genExpr(lit.value);
-        for (0..lit.len) |idx| {
-            const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
-            try self.emitStore(dst, layout.offset, value, layout.ty);
+        if (!try self.emitRepeatArrayFill(dst, arr_ty.array, value)) {
+            for (0..lit.len) |idx| {
+                const layout = arrayElementLayout(arr_ty.array, idx) orelse return Error.UnsupportedSabDirectFeature;
+                try self.emitStore(dst, layout.offset, value, layout.ty);
+            }
         }
         try self.releaseStoredExprResultIfNeeded(lit.value, value, arr_ty.array.elem);
         return dst;
@@ -14531,6 +14546,49 @@ test "direct sab stack_alloc uses integer constant expression size" {
     }
     try std.testing.expectEqual(@as(usize, 2), stack_alloc_64);
     try std.testing.expectEqual(@as(usize, 0), stack_alloc_16);
+}
+
+test "direct sab large repeated byte array uses mem set" {
+    const source =
+        \\fn large_repeat_byte_array() -> u8 {
+        \\    let scratch = [0u8; 1024];
+        \\    return scratch[0];
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const parser_mod = @import("parser.zig");
+    var p = parser_mod.Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+    const bytes = try cg.generate(prog);
+    defer allocator.free(bytes);
+
+    var saw_mem_set_call = false;
+    var saw_unrolled_tail_store = false;
+    for (cg.instructions.items) |item| {
+        if (item.kind == .call) {
+            for (item.operands) |operand| {
+                if (operand == .text and std.mem.indexOf(u8, operand.text, "@sa_mem_set(") != null) {
+                    saw_mem_set_call = true;
+                }
+            }
+        } else if (item.kind == .store) {
+            if (item.operands[1] == .imm_u64 and item.operands[1].imm_u64 == 1023) {
+                saw_unrolled_tail_store = true;
+            }
+        }
+    }
+    try std.testing.expect(saw_mem_set_call);
+    try std.testing.expect(!saw_unrolled_tail_store);
 }
 
 test "direct sab instruction reg scan records call body refs" {

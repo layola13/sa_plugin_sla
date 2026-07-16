@@ -2132,9 +2132,9 @@ pub const Codegen = struct {
         return lowering_rules.planBorrowedBindingStorage(self.borrowed_bindings.contains(name), ty).materialize_stack_slot;
     }
 
-    fn stackAllocSize(call: ast.CallExpr) !usize {
-        if (call.args.len > 0 and call.args[0].* == .literal and call.args[0].literal == .int_val) {
-            const value = call.args[0].literal.int_val;
+    fn stackAllocSize(self: *Codegen, call: ast.CallExpr) !usize {
+        if (call.args.len > 0) {
+            const value = lowering_rules.intConstantExprValue(call.args[0], self.global_scalar_consts) orelse return 16;
             if (value < 0) return Error.UnsupportedSabDirectFeature;
             return @intCast(value);
         }
@@ -6486,7 +6486,7 @@ pub const Codegen = struct {
         _ = self.future_readiness_by_name.remove(let.name);
         if (let.value.* == .call_expr and let.value.call_expr.associated_target == null and std.mem.eql(u8, let.value.call_expr.func_name, "stack_alloc")) {
             const dst = try self.bindingReg(let.name);
-            try self.emitStackAlloc(dst, try stackAllocSize(let.value.call_expr));
+            try self.emitStackAlloc(dst, try self.stackAllocSize(let.value.call_expr));
             try self.pushStackAllocLocal(let.name, dst);
             return;
         }
@@ -8294,7 +8294,7 @@ pub const Codegen = struct {
         if (call.associated_target == null) {
             if (std.mem.eql(u8, call.func_name, "stack_alloc")) {
                 const dst = try self.intern(try self.newTmp());
-                try self.emitStackAlloc(dst, try stackAllocSize(call));
+                try self.emitStackAlloc(dst, try self.stackAllocSize(call));
                 try self.pushStackAllocLocal(self.symbols.items[dst], dst);
                 return dst;
             }
@@ -11862,7 +11862,7 @@ pub const Codegen = struct {
             }
             if (std.mem.eql(u8, call.func_name, "stack_alloc")) {
                 const dst = try self.intern(try self.newTmp());
-                try self.emitStackAlloc(dst, try stackAllocSize(call));
+                try self.emitStackAlloc(dst, try self.stackAllocSize(call));
                 try self.pushStackAllocLocal(self.symbols.items[dst], dst);
                 return dst;
             }
@@ -14454,6 +14454,54 @@ pub fn generate(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker, pro
     var cg = Codegen.init(allocator, tc);
     defer cg.deinit();
     return try cg.generate(program);
+}
+
+test "direct sab stack_alloc uses integer constant expression size" {
+    const source =
+        \\const ARG_SIZE: int = 16;
+        \\const ARG_COUNT: int = 4;
+        \\const ARG_BYTES: int = ARG_SIZE * ARG_COUNT;
+        \\
+        \\fn alloc_direct() -> ptr {
+        \\    let argv = stack_alloc(ARG_SIZE * ARG_COUNT);
+        \\    return argv;
+        \\}
+        \\
+        \\fn alloc_alias() -> ptr {
+        \\    let argv = stack_alloc(ARG_BYTES);
+        \\    return argv;
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const parser_mod = @import("parser.zig");
+    var p = parser_mod.Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+    const bytes = try cg.generate(prog);
+    defer allocator.free(bytes);
+
+    var stack_alloc_64: usize = 0;
+    var stack_alloc_16: usize = 0;
+    for (cg.instructions.items) |item| {
+        if (item.kind != .stack_alloc) continue;
+        const size = switch (item.operands[1]) {
+            .imm_u64 => |value| value,
+            else => return error.TestUnexpectedResult,
+        };
+        if (size == 64) stack_alloc_64 += 1;
+        if (size == 16) stack_alloc_16 += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), stack_alloc_64);
+    try std.testing.expectEqual(@as(usize, 0), stack_alloc_16);
 }
 
 test "direct sab instruction reg scan records call body refs" {

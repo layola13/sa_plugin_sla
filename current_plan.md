@@ -18,6 +18,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue042 stack_alloc const-expression size closure (2026-07-16):
+  shared lowering rules now evaluate integer constant expressions for
+  `stack_alloc` sizes, including scalar const aliases, casts, and supported
+  integer binary operators. SA-text and direct SAB both consume the shared
+  helper instead of falling back to the literal-only default size 16. Focused
+  serial verification passed: fmt check; shared lowering-rule Zig 1/1; SA-text
+  codegen Zig 1/1; filtered direct-SAB `zig build test` 2/2; build 7/7;
+  official dev install/help. No full suite was run.
 - Docs/issue041 MidiIR scalar field-assignment SA cleanup closure
   (2026-07-16): SA-text ordinary field assignment now uses the shared
   `fieldBaseResultNeedsRelease()` decision for the assignment base. This

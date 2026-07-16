@@ -3233,6 +3233,39 @@ pub fn exprResultNeedsRelease(expr: *const ast.Node) bool {
     };
 }
 
+pub fn intConstantExprValue(expr: *const ast.Node, scalar_consts: anytype) ?i64 {
+    return switch (expr.*) {
+        .literal => |lit| switch (lit) {
+            .int_val => |value| value,
+            else => null,
+        },
+        .identifier => |name| blk: {
+            const node = scalar_consts.get(name) orelse break :blk null;
+            if (node.* == .literal and node.literal == .int_val) break :blk node.literal.int_val;
+            break :blk null;
+        },
+        .cast_expr => |cast| intConstantExprValue(cast.expr, scalar_consts),
+        .binary_expr => |bin| blk: {
+            const left = intConstantExprValue(bin.left, scalar_consts) orelse break :blk null;
+            const right = intConstantExprValue(bin.right, scalar_consts) orelse break :blk null;
+            break :blk switch (bin.op) {
+                .add => std.math.add(i64, left, right) catch null,
+                .sub => std.math.sub(i64, left, right) catch null,
+                .mul => std.math.mul(i64, left, right) catch null,
+                .div => if (right == 0) null else @divTrunc(left, right),
+                .mod => if (right == 0) null else @rem(left, right),
+                .bit_and => left & right,
+                .bit_or => left | right,
+                .bit_xor => left ^ right,
+                .shl => if (right >= 0 and right < 64) left << @as(u6, @intCast(right)) else null,
+                .shr => if (right >= 0 and right < 64) left >> @as(u6, @intCast(right)) else null,
+                else => null,
+            };
+        },
+        else => null,
+    };
+}
+
 pub fn fieldBaseResultNeedsRelease(
     expression_result_needs_release: bool,
     generated_register_is_temporary: bool,
@@ -3972,6 +4005,28 @@ test "shared lowering rules classify call materialization decisions" {
     });
     try std.testing.expectEqual(CallArgMaterializationKind.shallow_copy_preserved_value, preserved_sa_plan.kind);
     try std.testing.expect(!preserved_sa_plan.release_after_call);
+}
+
+test "shared integer constant expression value resolves aliases and arithmetic" {
+    var scalar_consts = std.StringHashMap(*const ast.Node).init(std.testing.allocator);
+    defer scalar_consts.deinit();
+
+    var sixteen = ast.Node{ .literal = .{ .int_val = 16 } };
+    var four = ast.Node{ .literal = .{ .int_val = 4 } };
+    try scalar_consts.put("ARG_SIZE", &sixteen);
+    try scalar_consts.put("ARG_COUNT", &four);
+
+    var size_ident = ast.Node{ .identifier = "ARG_SIZE" };
+    var count_ident = ast.Node{ .identifier = "ARG_COUNT" };
+    var product = ast.Node{ .binary_expr = .{ .left = &size_ident, .op = .mul, .right = &count_ident } };
+    try std.testing.expectEqual(@as(?i64, 64), intConstantExprValue(&product, scalar_consts));
+
+    var int_ty = ast.Type{ .primitive = .i64 };
+    var cast_product = ast.Node{ .cast_expr = .{ .expr = &product, .ty = &int_ty } };
+    try std.testing.expectEqual(@as(?i64, 64), intConstantExprValue(&cast_product, scalar_consts));
+
+    var unknown = ast.Node{ .identifier = "MISSING" };
+    try std.testing.expect(intConstantExprValue(&unknown, scalar_consts) == null);
 }
 
 test "shared lowering rules classify user macro lvalue parameters" {

@@ -9660,9 +9660,9 @@ pub const Codegen = struct {
         return slot;
     }
 
-    fn stackAllocSize(call: *const ast.CallExpr) i64 {
-        if (call.args.len > 0 and call.args[0].* == .literal and call.args[0].literal == .int_val) {
-            return call.args[0].literal.int_val;
+    fn stackAllocSize(self: *Codegen, call: *const ast.CallExpr) i64 {
+        if (call.args.len > 0) {
+            if (lowering_rules.intConstantExprValue(call.args[0], self.global_scalar_consts)) |value| return value;
         }
         return 16;
     }
@@ -9763,7 +9763,7 @@ pub const Codegen = struct {
                     if (self.storedIdentifierNeedsRelease(let.value, let_ty)) try self.markConsumedBinding(val_reg);
                 } else if (isStackAllocCall(let.value)) {
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, stackAllocSize(&let.value.call_expr) }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, self.stackAllocSize(&let.value.call_expr) }) catch return CodegenError.CodegenError;
                 } else if (let.value.* == .literal and let.value.literal == .string_val) {
                     const value = let.value.literal.string_val;
                     const label = try self.newStringConst();
@@ -10055,7 +10055,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ c.name, val_reg, typeString(const_ty) }) catch return CodegenError.CodegenError;
                 } else if (isStackAllocCall(c.value)) {
                     self.stack_alloc_bindings.put(c.name, {}) catch return CodegenError.OutOfMemory;
-                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ c.name, stackAllocSize(&c.value.call_expr) }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ c.name, self.stackAllocSize(&c.value.call_expr) }) catch return CodegenError.CodegenError;
                 } else if (c.value.* == .closure_literal) {
                     try self.closure_bindings.put(c.name, &c.value.closure_literal);
                     self.out.writer().print("    {s} = 0\n", .{c.name}) catch return CodegenError.CodegenError;
@@ -14344,7 +14344,7 @@ pub const Codegen = struct {
                 // If it is standard stack_alloc, it might be hoisted
                 if (std.mem.eql(u8, call.func_name, "stack_alloc")) {
                     const reg = try self.newTmp();
-                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ reg, stackAllocSize(&call) }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = stack_alloc {}\n", .{ reg, self.stackAllocSize(&call) }) catch return CodegenError.CodegenError;
                     return reg;
                 }
 
@@ -14950,6 +14950,41 @@ test "basic code generation" {
     // Verify generated instructions
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "add") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "return") != null);
+}
+
+test "stack_alloc uses integer constant expression size" {
+    const source =
+        \\const ARG_SIZE: int = 16;
+        \\const ARG_COUNT: int = 4;
+        \\const ARG_BYTES: int = ARG_SIZE * ARG_COUNT;
+        \\
+        \\fn alloc_direct() -> ptr {
+        \\    let argv = stack_alloc(ARG_SIZE * ARG_COUNT);
+        \\    return argv;
+        \\}
+        \\
+        \\fn alloc_alias() -> ptr {
+        \\    let argv = stack_alloc(ARG_BYTES);
+        \\    return argv;
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const parser_mod = @import("parser.zig");
+    var p = parser_mod.Parser.init(arena.allocator(), source);
+    const prog = try p.parseProgram();
+
+    var tc = type_checker.TypeChecker.init(arena.allocator());
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    var cg = Codegen.init(arena.allocator(), &tc);
+    defer cg.deinit();
+
+    const sa_code = try cg.generate(prog);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, sa_code, "stack_alloc 64"));
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "stack_alloc 16") == null);
 }
 
 test "by-value raw pointer call arg does not release stack-slot load temp" {

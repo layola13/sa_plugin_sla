@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue042 stack_alloc const-expression size closure (2026-07-16):
+  shared lowering rules now evaluate integer constant expressions for
+  `stack_alloc` allocation sizes instead of letting each emitter read only
+  literal arguments and fall back to 16. The shared helper resolves scalar
+  const identifiers and aliases, casts around integer constants, and supported
+  integer binary operators; SA-text and direct SAB both consume it. Focused
+  serial gates passed: `zig fmt --check src/lowering_rules.zig src/codegen.zig
+  src/sab_codegen.zig`; shared lowering-rule Zig 1/1; SA-text codegen Zig 1/1;
+  filtered direct-SAB `zig build test` 2/2; `zig build -j1 --summary all` 7/7;
+  official dev install/help. No full suite was run.
+
 - docs/issue041 MidiIR scalar field-assignment SA cleanup closure
   (2026-07-16): fixed the generated-SA leak where assigning a scalar field on
   an assigned value-slot aggregate local left the temporary base register live

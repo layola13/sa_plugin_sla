@@ -1,6 +1,6 @@
 # issue: SA-text Vec 结构体元素索引/写回仍存在指针槽别名生命周期问题
 
-状态：open
+状态：fixed/current-non-repro on 2026-07-16
 
 ## 现象
 
@@ -29,3 +29,23 @@
 ```sh
 zig build local-cli -- sla test /home/vscode/projects/sla_music_cli/src/music_ir.sla --test-backend sa --jobs 1 --trace-panic
 ```
+
+## 2026-07-16 Update
+
+当前编译器已通过后续 Vec 指针槽和字段生命周期修复覆盖该 surface：
+
+- `tests/test_unit_vec_index_assign.sla` 覆盖 `Vec<struct>` 指针槽读取、动态索引 borrow/swap、以及 Vec 元素 local 的重复 scalar field 读取。
+- `tests/test_unit_vec_index_field_assign.sla` 覆盖 `vec[i].field = value` 写回结构体 owner 后可读回。
+- `tests/test_unit_field_assign_move_cleanup.sla` 覆盖含 `Vec` 字段的结构体 scalar field assignment cleanup。
+- `src/codegen.zig` 的 SA-text Vec index read/write 路径现在把 Vec slot 当 owner pointer slot 处理，而不是把 slot 本身当 inline struct 地址。
+
+复验命令：
+
+```sh
+timeout 300s env SA_PLUGIN_DEV=1 \
+  sa sla test src/music_ir.sla --test-backend sa --jobs 1 --trace-panic
+```
+
+在 `/home/vscode/projects/sla_music_cli` 结果：`26 passed; 0 failed; 0 skipped`。
+
+本 issue 作为 stale open issue 关闭。未运行全量测试。

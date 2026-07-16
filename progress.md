@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue `music_ir_vec_inline_struct_index_alias` stale-open closure
+  (2026-07-16): current SA-text Vec lowering treats `Vec<T>` element slots as
+  owner pointer slots for struct elements rather than inline struct storage.
+  Existing focused fixtures cover `Vec<struct>` slot reads, dynamic index
+  borrow/swap, `vec[i].field` writes, repeated scalar field reads from a Vec
+  element local, and cleanup for scalar field assignment on structs containing
+  `Vec`. Downstream focused verification passed in
+  `/home/vscode/projects/sla_music_cli`: `timeout 300s env SA_PLUGIN_DEV=1 sa
+  sla test src/music_ir.sla --test-backend sa --jobs 1 --trace-panic` returned
+  26/26. No compiler source change and no full suite were run.
+
 - docs/issue022 `sla_music_cli` direct-SAB `build-exe` closure (2026-07-16):
   the earlier stale `ptr_add` operand, raw-ptr temp cleanup, and executable
   entry-prune fixes are now joined by a direct-SAB repeated-byte-array fill path:

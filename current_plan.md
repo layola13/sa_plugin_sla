@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue `music_ir_vec_inline_struct_index_alias` stale-open closure
+  (2026-07-16): the current SA-text Vec pointer-slot and field-lifecycle
+  lowering already covers the tracked `/home/vscode/projects/sla_music_cli`
+  `src/music_ir.sla` layout failures. Existing focused fixtures cover
+  `Vec<struct>` pointer-slot reads, dynamic index borrow/swap, `vec[i].field`
+  writes, repeated scalar field reads from a Vec element local, and scalar field
+  assignment cleanup for structs containing `Vec`. Downstream focused
+  verification passed: `timeout 300s env SA_PLUGIN_DEV=1 sa sla test
+  src/music_ir.sla --test-backend sa --jobs 1 --trace-panic` in
+  `/home/vscode/projects/sla_music_cli` returned 26/26. No full suite was run.
 - Docs/issue022 `sla_music_cli` direct-SAB `build-exe` closure (2026-07-16):
   after the earlier stale `ptr_add` operand, stored ptr-temp cleanup, and
   executable entry-prune slices, direct SAB now lowers repeated `u8` arrays such

@@ -10258,8 +10258,7 @@ pub const Codegen = struct {
                     };
                 }
             }
-            const elem_ty = firstGenericArg(target_ty) orelse return Error.UnsupportedSabDirectFeature;
-            if (lowering_rules.smartPointerType(elem_ty) == null) return Error.UnsupportedSabDirectFeature;
+            _ = firstGenericArg(target_ty) orelse return Error.UnsupportedSabDirectFeature;
             const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
             const rule = self.findStdSurfaceRule(.index_address, target_type_name, null) orelse return Error.UnsupportedSabDirectFeature;
             const target_reg = try self.genExpr(idx.target);
@@ -12146,6 +12145,10 @@ pub const Codegen = struct {
         return !self.typeIsCopyValue(field_ty) and !lowering_rules.isBorrowLikeType(field_ty);
     }
 
+    fn indexBorrowLoadsStoredPointer(self: *Codegen, elem_ty: *const ast.Type) bool {
+        return self.fieldBorrowLoadsStoredPointer(elem_ty);
+    }
+
     fn fieldProjectionReleaseRegs(self: *Codegen, projection: AddressSource) ![]const u32 {
         var regs = std.ArrayList(u32).init(self.allocator);
         defer regs.deinit();
@@ -12186,6 +12189,20 @@ pub const Codegen = struct {
                     .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[owner]}),
                     .release_reg = owner,
                     .release_regs = try self.fieldProjectionReleaseRegs(projection),
+                };
+            }
+        }
+        if (prefix == '&' and inner.* == .index_expr) {
+            const inner_ty = self.tc.expr_types.get(inner);
+            if (inner_ty != null and self.indexBorrowLoadsStoredPointer(inner_ty.?)) {
+                const source = try self.genIndexAddress(inner.index_expr);
+                const owner = try self.intern(try self.newTmp());
+                try self.emitLoad(owner, source.reg, 0, .ptr);
+                try self.markNonOwningReg(owner);
+                return .{
+                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[owner]}),
+                    .release_reg = owner,
+                    .release_regs = try self.fieldProjectionReleaseRegs(source),
                 };
             }
         }

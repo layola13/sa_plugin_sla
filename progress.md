@@ -4,6 +4,19 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue040 `sla_music_cli` `music_ir.sla` strict direct-SAB unsupported
+  Vec struct index-borrow closure (2026-07-16): direct SAB now lets
+  std-surface `index_address` lower `Vec<T>` when `T` is an ordinary
+  pointer-backed struct, and borrowed call arguments like `&values[j]` load the
+  stored object pointer before emitting the borrow operand. Added
+  `tests/test_unit_vec_index_assign.sla` coverage for a selection-sort shaped
+  `Vec<VecPoint>` dynamic index borrow and swap. Serial focused gates passed:
+  `zig fmt --check src/sab_codegen.zig`; `git diff --check`; `zig build -j1
+  --summary all` 7/7; local and installed/dev SA plus strict SAB filter
+  `vec struct dynamic index borrow and swap` 1/1 each; official dev
+  install/help; downstream `/home/vscode/projects/sla_music_cli/src/music_ir.sla`
+  strict SAB 26/26. No full suite was run.
+
 - docs/issue042 stack_alloc const-expression size closure (2026-07-16):
   shared lowering rules now evaluate integer constant expressions for
   `stack_alloc` allocation sizes instead of letting each emitter read only

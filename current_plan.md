@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue040 `sla_music_cli` `music_ir.sla` strict direct-SAB unsupported
+  Vec struct index-borrow closure (2026-07-16): direct SAB now uses the
+  existing Vec `index_address` std-surface path for ordinary pointer-backed
+  struct elements and loads the stored object pointer for borrowed call
+  arguments like `&values[j]`. Added a selection-sort shaped
+  `tests/test_unit_vec_index_assign.sla` fixture covering dynamic Vec struct
+  index borrows and swaps. Focused serial verification passed: fmt/diff
+  checks; build 7/7; local and installed/dev SA plus strict SAB filter 1/1
+  each; official dev install/help; downstream
+  `sla_music_cli/src/music_ir.sla` strict SAB 26/26. No full suite was run.
 - Docs/issue042 stack_alloc const-expression size closure (2026-07-16):
   shared lowering rules now evaluate integer constant expressions for
   `stack_alloc` sizes, including scalar const aliases, casts, and supported

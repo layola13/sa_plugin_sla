@@ -30,6 +30,12 @@ struct VecMusicTrack {
     group: i64,
 }
 
+fn vec_point_less(left: &VecPoint, right: &VecPoint) -> bool {
+    if left.x < right.x { return true; };
+    if left.x > right.x { return false; };
+    return left.y < right.y;
+}
+
 @test "vec index assignment updates scalar slot"() {
     let values: Vec<i32> = Vec::new();
     values.push(10);
@@ -121,4 +127,33 @@ fn vec_midi_project_track(holder: &VecMidiHolder, i: i64) -> VecMusicTrack {
     if got.instr != 42 { panic(9151); };
     if got.channel != 9 { panic(9152); };
     if got.group != 3 { panic(9153); };
+}
+
+@test "vec struct dynamic index borrow and swap"() {
+    let values: Vec<VecPoint> = Vec::new();
+    values.push(VecPoint { x: 9, y: 0 });
+    values.push(VecPoint { x: 4, y: 1 });
+    values.push(VecPoint { x: 7, y: 2 });
+
+    let i: u64 = 0;
+    while i < len(values) {
+        let best = i;
+        let j = i + 1;
+        while j < len(values) {
+            if vec_point_less(&values[j], &values[best]) == true {
+                best = j;
+            };
+            j = j + 1;
+        }
+        if best != i {
+            let tmp = values[i];
+            values[i] = values[best];
+            values[best] = tmp;
+        };
+        i = i + 1;
+    }
+
+    if values[0].x != 4 { panic(9160); };
+    if values[1].x != 7 { panic(9161); };
+    if values[2].x != 9 { panic(9162); };
 }

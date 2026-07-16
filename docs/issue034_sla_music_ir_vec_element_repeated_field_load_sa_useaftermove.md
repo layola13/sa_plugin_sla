@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: open
+Status: fixed
 
 ## Summary
 
@@ -63,7 +63,7 @@ tmp_3461 = load tmp_3432+1 as u8
 tmp_3463 = load tmp_3432+2 as u8
 ```
 
-## Current Assessment
+## Resolution
 
 SA-text codegen treats the pointer-backed `Vec` element projection as though
 the first scalar field read ends the aggregate temporary's lifetime. Later
@@ -74,12 +74,29 @@ This is narrower than the older general Vec alias report
 `issue_music_ir_vec_inline_struct_index_alias_cn.md`: the generated element
 pointer and exact premature consume are now known.
 
-## Required Closure
+The field-base lifetime fixes from issues035/033 now keep resolved lexical
+aggregate bindings alive while still releasing genuine temporary field bases.
+The original `music_ir.sla` SA backend repro passes in the current tree.
 
-- Add a focused compiler fixture with a pointer-backed struct stored in a
-  `Vec`, assigned to a local, and read through three scalar fields in one
-  aggregate literal or call.
-- Keep the element pointer alive until its final field projection.
-- Verify the focused fixture and the music fallback command above.
-- Confirm that direct SAB behavior is unchanged or add a separate direct SAB
-  report if it fails differently.
+Added `tests/test_unit_vec_index_assign.sla` coverage for a pointer-backed
+struct stored in a `Vec`, assigned to a local, and read through repeated scalar
+fields in one aggregate literal.
+
+Direct SAB for the focused compiler fixture passes. The real
+`sla_music_cli/src/music_ir.sla` strict SAB path fails differently with
+`UnsupportedSabDirectFeature`; that is tracked separately as issue040.
+
+## Verification
+
+Serial focused verification only; no full suite was run:
+
+- `git diff --check`.
+- `zig build -j1 --summary all` 7/7.
+- Local `tests/test_unit_vec_index_assign.sla` SA 6/6.
+- Local strict SAB for the same fixture 6/6.
+- Official `SA_PLUGIN_DEV=1 sa plugin install --dev .` and
+  `SA_PLUGIN_DEV=1 sa sla help`.
+- Installed/dev `tests/test_unit_vec_index_assign.sla` SA 6/6.
+- Installed/dev strict SAB for the same fixture 6/6.
+- Downstream `/home/vscode/projects/sla_music_cli/src/music_ir.sla` SA
+  backend 25/25.

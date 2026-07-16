@@ -13,6 +13,23 @@ struct VecStructHolder {
     values: Vec<VecPoint>,
 }
 
+struct VecMidiTrack {
+    program: u8,
+    channel: u8,
+    group: u8,
+}
+
+struct VecMidiHolder {
+    tracks: Vec<VecMidiTrack>,
+}
+
+struct VecMusicTrack {
+    is_drum: bool,
+    instr: i64,
+    channel: i64,
+    group: i64,
+}
+
 @test "vec index assignment updates scalar slot"() {
     let values: Vec<i32> = Vec::new();
     values.push(10);
@@ -77,10 +94,31 @@ fn vec_struct_holder_sum(holder: &VecStructHolder) -> i32 {
     return total;
 }
 
+fn vec_midi_project_track(holder: &VecMidiHolder, i: i64) -> VecMusicTrack {
+    let track = holder.tracks[i];
+    return VecMusicTrack {
+        is_drum: track.channel == 9,
+        instr: track.program as i64,
+        channel: track.channel as i64,
+        group: track.group as i64,
+    };
+}
+
 @test "borrowed vec struct field index read in loop"() {
     let values: Vec<VecPoint> = Vec::new();
     values.push(VecPoint { x: 4, y: 1 });
     values.push(VecPoint { x: 6, y: 2 });
     let holder = VecStructHolder { values: values };
     if vec_struct_holder_sum(&holder) != 10 { panic(9140); };
+}
+
+@test "vec element local survives repeated scalar field reads"() {
+    let tracks: Vec<VecMidiTrack> = Vec::new();
+    tracks.push(VecMidiTrack { program: 42, channel: 9, group: 3 });
+    let holder = VecMidiHolder { tracks: tracks };
+    let got = vec_midi_project_track(&holder, 0);
+    if got.is_drum != true { panic(9150); };
+    if got.instr != 42 { panic(9151); };
+    if got.channel != 9 { panic(9152); };
+    if got.group != 3 { panic(9153); };
 }

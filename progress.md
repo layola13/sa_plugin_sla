@@ -4,6 +4,20 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue034 Vec element repeated field-load SA closure (2026-07-16):
+  issue035/033's field-base lifetime fixes also cover the `sla_music_cli`
+  `midi_ir_to_music_ir` generated-SA `UseAfterMove`: a Vec element aggregate
+  local now survives repeated scalar field projections. Added
+  `tests/test_unit_vec_index_assign.sla` coverage for a Vec-stored struct
+  assigned to a local and read through repeated fields in one aggregate
+  literal. Serial focused verification passed: `git diff --check`;
+  `zig build -j1 --summary all` 7/7; local and installed/dev SA plus strict
+  SAB fixture 6/6 each; official dev install/help; downstream
+  `/home/vscode/projects/sla_music_cli/src/music_ir.sla` SA backend 25/25. The
+  downstream strict SAB file still fails differently with
+  `UnsupportedSabDirectFeature`, now tracked as issue040. No full suite was
+  run.
+
 - docs/issue038 nested owner aggregate call-arg closure (2026-07-16):
   preserved by-value call arguments may now shallow-copy a plain outer
   aggregate even when that aggregate contains nested standard-owner slots such

@@ -18,6 +18,17 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue034 Vec element repeated field-load SA closure (2026-07-16):
+  the field-base lifetime fixes from issue035/033 now also close the
+  `sla_music_cli` `midi_ir_to_music_ir` generated-SA `UseAfterMove` where a
+  Vec element pointer was consumed after the first scalar field projection.
+  Extended `tests/test_unit_vec_index_assign.sla` with a Vec element local
+  read through repeated scalar fields in one aggregate literal. Focused serial
+  verification passed: diff check; build 7/7; local and installed/dev SA plus
+  strict SAB fixture 6/6 each; official dev install/help; downstream
+  `sla_music_cli/src/music_ir.sla` SA backend 25/25. The downstream strict SAB
+  path fails differently with `UnsupportedSabDirectFeature` and is tracked as
+  issue040. No full suite was run.
 - Docs/issue038 nested owner aggregate call-arg closure (2026-07-16):
   direct SAB and SA-text now preserve a later-used plain aggregate containing
   nested standard-owner slots by shallow-copying only the outer aggregate's ABI

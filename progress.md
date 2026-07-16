@@ -4,6 +4,20 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue027 imported-macro type and assigned aggregate alias closure
+  (2026-07-16): shared imported-macro expression result classification now
+  covers the compiler helper macros used by `sla_tsgo`. SA-text identifier
+  lowering now checks the resolved binding against `assigned_value_slots`
+  after shadowing/redeclaration and loads the typed aggregate value from
+  `slot+0` instead of returning the stack-slot address. Extended
+  `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla` with the parser-state
+  redeclaration/reassignment return shape. Serial focused verification passed:
+  fmt and diff checks; build 7/7; local SA and strict SAB 2/2 each; official
+  dev install/help; downstream `tests/test_compiler_contract.sla` SA backend
+  41/41. The remaining `test_compile_ts_to_js_text_contract.sla` failure is a
+  separate `emit_js_emit_enum` loop `PhiStateConflict`, now issue032. No full
+  suite was run.
+
 - docs/issue029 fallible extern payload and call-arg temp cleanup closure
   (2026-07-15): by-value raw `ptr` extern params now enter shared
   call-argument materialization as by-value values in SA-text and direct SAB,

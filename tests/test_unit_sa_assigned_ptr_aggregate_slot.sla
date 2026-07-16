@@ -60,10 +60,28 @@ fn rebind_parse_like_function_expression(parser: RebindParser) -> RebindParser {
     return p2;
 }
 
+fn rebind_parse_redeclared_return(parser: RebindParser) -> RebindParser {
+    let p2 = rebind_advance(parser);
+    if p2.current_kind == 20 {
+        let p2 = rebind_advance(parser);
+        p2 = rebind_advance(p2);
+        return p2;
+    };
+    return p2;
+}
+
 @test "sa text assigned ptr aggregate rebinds through slot"() {
     let parser = rebind_parser_new(rebind_scanner_new(STR_PTR("abc"), STR_LEN("abc")), 10, 7, 0);
     let got = rebind_parse_like_function_expression(parser);
     if got.scanner.pos != 3 { panic(44201); };
     if got.nodes != 10 { panic(44202); };
     if got.errors != 0 { panic(44203); };
+}
+
+@test "sa text redeclared assigned ptr aggregate return loads slot value"() {
+    let parser = rebind_parser_new(rebind_scanner_new(STR_PTR("abc"), STR_LEN("abc")), 10, 7, 0);
+    let got = rebind_parse_redeclared_return(parser);
+    if got.scanner.pos != 2 { panic(44211); };
+    if got.nodes != 9 { panic(44212); };
+    if got.errors != 0 { panic(44213); };
 }

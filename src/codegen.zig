@@ -11710,6 +11710,12 @@ pub const Codegen = struct {
                 }
                 const resolved_name = self.resolveBindingName(name);
                 if (!std.mem.eql(u8, resolved_name, name)) {
+                    if (self.assigned_value_slots.contains(resolved_name)) {
+                        const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
+                        const reg = try self.newTmp();
+                        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                        return reg;
+                    }
                     if (self.addressable_bindings.contains(resolved_name)) {
                         const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
                         const reg = try self.newTmp();

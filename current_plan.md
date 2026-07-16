@@ -18,6 +18,18 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue027 imported-macro type and assigned aggregate alias closure
+  (2026-07-16): shared imported-macro expression result classification now
+  covers the compiler helper macros used by `sla_tsgo`. SA-text identifier
+  lowering also loads from a resolved assigned aggregate value slot after
+  shadowing/redeclaration instead of returning the slot address itself.
+  `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla` covers the parser-state
+  redeclaration/reassignment return shape. Serial focused verification passed:
+  fmt check; diff check; build 7/7; local SA and strict SAB 2/2 each; official
+  dev install/help; downstream `tests/test_compiler_contract.sla` SA backend
+  41/41. The second issue027 repro now reaches a distinct
+  `emit_js_emit_enum` loop `PhiStateConflict`, tracked as issue032. No full
+  suite was run.
 - Docs/issue029 fallible extern payload and call-arg cleanup closure
   (2026-07-15): SA-text and direct SAB now keep by-value raw `ptr` extern
   params as by-value values for shared call-argument planning, and SA-text

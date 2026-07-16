@@ -1,7 +1,7 @@
 # issue016: argv JSON string slice parsing hits borrow/codegen limits
 
 Date: 2026-07-14
-Status: reproduced from `scodex`, no source fix yet
+Status: fixed/current-non-repro on 2026-07-16
 
 ## Summary
 
@@ -283,6 +283,55 @@ Observed result:
 <empty stdout/stderr>
 exit=1
 ```
+
+## 2026-07-16 Current Compiler Reverification
+
+The historical paths moved from `packages/` to `crates/` in `sla_codex`.
+Against the current installed dev plugin, the issue016 direct-SAB pointer/string
+scanner failures no longer reproduce. The current argv, config/auth,
+app-server slice, CLI workspace test, SAB workspace generation, and native
+workspace build paths all pass under direct SAB no-fallback mode.
+
+Serial focused verification only; no full test suite was run:
+
+```sh
+cd /home/vscode/projects/sla_codex
+
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 SLA_SAB_TRACE_UNSUPPORTED=1 \
+  sa sla test crates/scodex-cli/src/args.sla \
+  --test-backend sab --jobs 1 --trace-panic
+
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 SLA_SAB_TRACE_UNSUPPORTED=1 \
+  sa sla test crates/scodex-config/src/config.sla \
+  --test-backend sab --jobs 1 --trace-panic
+
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 SLA_SAB_TRACE_UNSUPPORTED=1 \
+  sa sla test crates/scodex-app-server-protocol/src/protocol_v2.sla \
+  --test-backend sab --jobs 1 --trace-panic
+
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 \
+  sa sla test crates/scodex-cli/src/main.sla \
+  --test-backend sab --jobs 1 --trace-panic
+
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 \
+  sa sla sab workspace -p scodex-cli --sab-out /tmp/scodex-issue016.sab
+
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 \
+  sa sla build-workspace -p scodex-cli -o /tmp/scodex-issue016
+```
+
+Results:
+
+- `crates/scodex-cli/src/args.sla`: 11/11 passed.
+- `crates/scodex-config/src/config.sla`: 15/15 passed.
+- `crates/scodex-app-server-protocol/src/protocol_v2.sla`: 8/8 passed.
+- `crates/scodex-cli/src/main.sla`: 78/78 passed.
+- `sa sla sab workspace -p scodex-cli`: succeeded.
+- `sa sla build-workspace -p scodex-cli`: succeeded.
+
+No additional compiler source change was needed in this slice; the issue is
+closed as a current-state revalidation after later pointer, raw-ptr, imported
+macro, cleanup, and direct-SAB lowering fixes.
 
 While adding `http-server` accept/respond bridge planning, an additive
 `from_slices` API was SA-verified:

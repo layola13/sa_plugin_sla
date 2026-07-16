@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue016 scodex pointer/string scanner direct-SAB current-non-repro
+  closure (2026-07-16): the current `sla_codex` issue paths now live under
+  `crates/`, and the historical direct-SAB empty-output exit no longer
+  reproduces against the installed dev plugin. Focused serial verification
+  passed under `SLA_SAB_NO_FALLBACK=1`: `crates/scodex-cli/src/args.sla`
+  strict SAB 11/11, `crates/scodex-config/src/config.sla` strict SAB 15/15,
+  `crates/scodex-app-server-protocol/src/protocol_v2.sla` strict SAB 8/8,
+  `crates/scodex-cli/src/main.sla` strict SAB 78/78, SAB workspace generation,
+  and `build-workspace -p scodex-cli`. No compiler source change and no full
+  suite were run.
 - Docs/issue040 `sla_music_cli` `music_ir.sla` strict direct-SAB unsupported
   Vec struct index-borrow closure (2026-07-16): direct SAB now uses the
   existing Vec `index_address` std-surface path for ordinary pointer-backed

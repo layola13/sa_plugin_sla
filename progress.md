@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue033 repeated aggregate alias field lifetime closure (2026-07-16):
+  the shared field-base release decision committed for issue035 also fixes
+  `sla_tsgo` `parse_jsx_like_expression`. Repeated `let after_lt`
+  declarations receive generated `tmp_*` lexical binding names; `.current_kind`
+  no longer consumes those live bindings before `advance(after_lt)`.
+  Focused serial verification passed: shared Zig test 1/1; build 7/7; local
+  and installed SA plus strict SAB fixture 3/3 each; official dev
+  install/help. The downstream compile-to-JS SA contract advances past
+  issue033 and stops later at issue036's independent loop-local scalar
+  `PhiStateConflict`. No full suite was run.
+
 - docs/issue035 assigned aggregate field-base lifetime closure (2026-07-16):
   SA-text field lowering previously released any `tmp_*` field base, even
   when that register was the resolved binding for an assigned aggregate
@@ -29,9 +40,9 @@ Update this file every time a compiler feature or demo milestone is completed an
   `expected Untracked, actual Consumed` Phi signature. Serial focused
   verification passed: fmt/diff checks; shared Zig 1/1; build 7/7; local SA
   and strict SAB 2/2 each; official dev install/help. Downstream
-  `test_compile_ts_to_js_text_contract.sla` now gets past
-  `emit_js_emit_enum` and stops later at issue033's
-  `parse_jsx_like_expression` `UseAfterMove`. No full suite was run.
+  `test_compile_ts_to_js_text_contract.sla` gets past `emit_js_emit_enum`;
+  its later issue033 failure is now also fixed, and the current blocker is
+  issue036. No full suite was run.
 
 - docs/issue027 imported-macro type and assigned aggregate alias closure
   (2026-07-16): shared imported-macro expression result classification now
@@ -44,8 +55,8 @@ Update this file every time a compiler feature or demo milestone is completed an
   fmt and diff checks; build 7/7; local SA and strict SAB 2/2 each; official
   dev install/help; downstream `tests/test_compiler_contract.sla` SA backend
   41/41. The later `emit_js_emit_enum` loop `PhiStateConflict` is now fixed as
-  issue032; the current independent blocker is issue033. No full suite was
-  run.
+  issue032, and the later issue033 field-base failure is also fixed. The
+  current downstream blocker is issue036. No full suite was run.
 
 - docs/issue029 fallible extern payload and call-arg temp cleanup closure
   (2026-07-15): by-value raw `ptr` extern params now enter shared

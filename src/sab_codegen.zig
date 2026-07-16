@@ -1658,7 +1658,7 @@ pub const Codegen = struct {
             },
             .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
             .user_defined => blk: {
-                if (userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
+                if (userDefinedStdOwnerIsNonCopy(ty)) break :blk depth > 0;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
                 if (decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {
@@ -13960,7 +13960,7 @@ pub const Codegen = struct {
             const layout = try self.fieldLayout(ty, field.name);
             const field_reg = try self.intern(try self.newTmp());
             try self.emitLoad(field_reg, source, layout.offset, layout.ty);
-            if (self.structDeclForType(field.ty) != null) {
+            if (self.structDeclForType(field.ty) != null and !userDefinedStdOwnerIsNonCopy(field.ty)) {
                 const copied_field = try self.genShallowCopyCallArgValue(field_reg, field.ty);
                 try self.emitStore(dst, layout.offset, copied_field, layout.ty);
                 try self.emitConsumedMarker(copied_field);

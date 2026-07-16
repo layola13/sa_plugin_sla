@@ -18,6 +18,17 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue038 nested owner aggregate call-arg closure (2026-07-16):
+  direct SAB and SA-text now preserve a later-used plain aggregate containing
+  nested standard-owner slots by shallow-copying only the outer aggregate's ABI
+  slots for by-value helper calls. Top-level `Vec`, map, set, Box, and other
+  smart-pointer owners remain non-copyable. Added
+  `tests/test_unit_sab_stack_aggregate_shallow_copy_arg.sla` for a
+  `QueueState { Vec, Vec }` read-only helper call followed by original
+  mutation. Focused serial verification passed: fmt/diff checks; build 7/7;
+  local and installed/dev SA plus strict SAB fixture 1/1 each; official dev
+  install/help; downstream `sla_ecs/lib/task_scope_completion.sla` strict SAB
+  filters 3/3 and matching generated-SA filters 3/3. No full suite was run.
 - Docs/issue036 loop-local scalar cleanup closure (2026-07-16):
   SA-text now records top-level while-body `let` locals and emits consistent
   cleanup on break/continue exits and natural backedges. This closes the

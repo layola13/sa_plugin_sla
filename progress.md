@@ -4,6 +4,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue038 nested owner aggregate call-arg closure (2026-07-16):
+  preserved by-value call arguments may now shallow-copy a plain outer
+  aggregate even when that aggregate contains nested standard-owner slots such
+  as `Vec`. Top-level standard owners remain non-copyable, and shallow-copy
+  emission stores nested owner slots directly instead of recursively copying
+  owner internals. Added
+  `tests/test_unit_sab_stack_aggregate_shallow_copy_arg.sla` to cover a
+  `QueueState` with two Vec fields passed to a read-only helper before later
+  mutation. Serial focused verification passed: `zig fmt
+  src/codegen.zig src/sab_codegen.zig`; `git diff --check`; `zig build -j1
+  --summary all` 7/7; local and installed/dev SA plus strict SAB fixture 1/1
+  each; official dev install/help; downstream
+  `/home/vscode/projects/sla_ecs/lib/task_scope_completion.sla` strict SAB
+  filters 3/3 and matching generated-SA filters 3/3. No full suite was run.
+
 - docs/issue036 loop-local scalar cleanup closure (2026-07-16):
   SA-text while lowering now tracks top-level loop-body `let` locals and
   releases them consistently on break/continue exits and natural backedges.

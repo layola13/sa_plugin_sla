@@ -3311,7 +3311,7 @@ pub const Codegen = struct {
 
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
         if (depth > 8) return false;
-        if (vecElementType(ty) != null or hashMapTypes(ty) != null or btreeMapTypes(ty) != null) return false;
+        if (vecElementType(ty) != null or hashMapTypes(ty) != null or btreeMapTypes(ty) != null) return depth > 0;
         return switch (ty.*) {
             .primitive => true,
             .pointer, .borrow, .fn_ptr => true,
@@ -3323,7 +3323,7 @@ pub const Codegen = struct {
             },
             .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
             .user_defined => blk: {
-                if (lowering_rules.smartPointerType(ty) != null) break :blk false;
+                if (lowering_rules.smartPointerType(ty) != null) break :blk depth > 0;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
                 if (decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {
@@ -3834,7 +3834,11 @@ pub const Codegen = struct {
             const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
             const field_reg = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ field_reg, source_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-            if (self.structDeclForType(field.ty) != null) {
+            const nested_owner = vecElementType(field.ty) != null or
+                hashMapTypes(field.ty) != null or
+                btreeMapTypes(field.ty) != null or
+                lowering_rules.smartPointerType(field.ty) != null;
+            if (self.structDeclForType(field.ty) != null and !nested_owner) {
                 const copied_field = try self.genShallowCopyCallArgValue(field_reg, field.ty);
                 self.out.writer().print("    store {s}+{}, ^{s} as {s}\n", .{ target, layout.offset, copied_field, layout.ty_str }) catch return CodegenError.CodegenError;
                 try self.emitRelease(field_reg);

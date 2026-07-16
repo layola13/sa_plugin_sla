@@ -18,6 +18,18 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue018 scodex protocol JSON scanner cleanup closure (2026-07-16):
+  direct SAB now consumes non-owning raw pointer temps stored into borrowed
+  stack-slot bindings with a normal release, and `*(&ptr)` deref loads use the
+  storage ABI primitive `ptr` instead of raw `void_type`. Added
+  `tests/test_unit_protocol_json_balance_cleanup.sla` for by-value ptr reads,
+  borrowed `STR_PTR(identifier)` ptr locals, and the positive/malformed/missing
+  protocol JSON scanner paths. Focused serial verification passed: fmt/diff
+  checks; build 7/7; local and installed/dev SA plus strict SAB fixture 5/5
+  each; local adjacent strict SAB raw-ptr and borrowed-primitive fixtures 1/1
+  each; official dev install/help; downstream
+  `sla_codex/crates/scodex-protocol/src/protocol_json.sla` current SA and
+  strict SAB files 8/8 each. No full suite was run.
 - Raw-ptr ABI return assignment compatibility (2026-07-16): TypeChecker now
   treats a pointer ABI value as assignable to an explicit raw `ptr` target for
   typed `let`/`const`, top-level `const`, `var` reassignment, tail expressions,

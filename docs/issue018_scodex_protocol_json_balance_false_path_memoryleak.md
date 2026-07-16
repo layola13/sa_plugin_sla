@@ -1,7 +1,7 @@
 # issue018: protocol JSON balance false path leaves live register at SA test exit
 
 Date: 2026-07-14
-Status: open
+Status: fixed
 
 ## Summary
 
@@ -116,6 +116,43 @@ or final boolean return lowering.
 
 This appears related to the existing register lifecycle / cleanup family of
 issues, not to `scodex` protocol semantics.
+
+## Resolution
+
+Direct SAB and generated SA now cover the scanner shape with
+`tests/test_unit_protocol_json_balance_cleanup.sla`. The direct-SAB root cause
+had two raw-pointer pieces:
+
+- borrowed stack-slot bindings initialized from non-owning raw pointer temps
+  must consume the source temp with a normal `release`, matching SA-text, not
+  leave it active at function exit;
+- dereferencing `&ptr` must load the stored raw pointer using storage ABI
+  primitive `ptr`, not the expression-result primitive for SLA's internal
+  `void_type` raw-pointer representation.
+
+The focused fixture covers a by-value raw pointer read, a `let ptr =
+STR_PTR(string_identifier)` local borrowed as `&ptr`, and the three protocol
+JSON scanner paths from this issue: positive round trip, malformed balance, and
+missing type.
+
+## Verification
+
+Serial focused verification only; no full suite was run:
+
+- `zig fmt --check src/sab_codegen.zig`.
+- `git diff --check`.
+- `zig build -j1 --summary all` 7/7.
+- Local `tests/test_unit_protocol_json_balance_cleanup.sla` SA 5/5.
+- Local strict SAB for the same fixture 5/5.
+- Local strict SAB `tests/test_unit_str_ptr_len_identifier_direct.sla` 1/1.
+- Local strict SAB `tests/test_unit_borrowed_let_primitive_call_condition.sla`
+  1/1.
+- Official `SA_PLUGIN_DEV=1 sa plugin install --dev .` and
+  `SA_PLUGIN_DEV=1 sa sla help`.
+- Installed/dev `tests/test_unit_protocol_json_balance_cleanup.sla` SA 5/5.
+- Installed/dev strict SAB for the same fixture 5/5.
+- Downstream `/home/vscode/projects/sla_codex/crates/scodex-protocol/src/protocol_json.sla`
+  SA 8/8 and strict SAB 8/8 for the current downstream test file.
 
 ## Acceptance
 

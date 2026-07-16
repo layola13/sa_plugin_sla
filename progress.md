@@ -4,6 +4,20 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue018 scodex protocol JSON scanner cleanup closure (2026-07-16):
+  direct SAB now handles raw `ptr` locals initialized from `STR_PTR(identifier)`
+  and then borrowed as `&ptr`: non-owning raw pointer temps stored into
+  borrowed stack slots are consumed with a normal release, and dereferencing
+  `&ptr` loads with storage ABI primitive `ptr`. Added
+  `tests/test_unit_protocol_json_balance_cleanup.sla` for by-value ptr reads,
+  borrowed ptr locals, and the positive/malformed/missing protocol JSON scanner
+  paths. Serial focused gates passed: `zig fmt --check src/sab_codegen.zig`;
+  `git diff --check`; `zig build -j1 --summary all` 7/7; local and
+  installed/dev SA plus strict SAB fixture 5/5 each; adjacent strict SAB
+  raw-ptr and borrowed-primitive fixtures 1/1 each; official dev install/help;
+  downstream `/home/vscode/projects/sla_codex/crates/scodex-protocol/src/protocol_json.sla`
+  SA and strict SAB 8/8 each. No full suite was run.
+
 - raw-ptr ABI return assignment compatibility (2026-07-16): fixed the
   TypeChecker path where SLA raw `ptr` is represented as `primitive.void_type`
   but an extern ABI return such as `^ptr` is represented as a pointer type.

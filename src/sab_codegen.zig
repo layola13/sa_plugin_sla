@@ -6437,7 +6437,10 @@ pub const Codegen = struct {
         if (self.borrowedBindingNeedsStackStorage(name, let_ty)) {
             try self.emitStackAlloc(dst, typeSize(let_ty));
             try self.emitStore(dst, 0, src, try storagePrimType(let_ty));
-            if (!self.isLocalReg(src) and !self.non_owning_regs.contains(src)) try self.emitRelease(src);
+            if (!self.isLocalReg(src)) {
+                _ = self.non_owning_regs.remove(src);
+                try self.emitRelease(src);
+            }
             try self.pushStackLocal(name, dst, let_ty);
             return;
         }
@@ -7960,7 +7963,7 @@ pub const Codegen = struct {
             return value;
         }
         const dst = try self.intern(try self.newTmp());
-        try self.emitLoad(dst, source, 0, try primType(deref_ty));
+        try self.emitLoad(dst, source, 0, try storagePrimType(deref_ty));
         if (!self.isLocalReg(source)) try self.emitRelease(source);
         return dst;
     }
@@ -10461,7 +10464,7 @@ pub const Codegen = struct {
             return value;
         }
         const dst = try self.intern(try self.newTmp());
-        try self.emitLoad(dst, source, 0, try primType(deref_ty));
+        try self.emitLoad(dst, source, 0, try storagePrimType(deref_ty));
         if (!self.isLocalReg(source)) try self.emitRelease(source);
         return dst;
     }

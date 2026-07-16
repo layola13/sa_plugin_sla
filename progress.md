@@ -4,6 +4,19 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- raw-ptr ABI return assignment compatibility (2026-07-16): fixed the
+  TypeChecker path where SLA raw `ptr` is represented as `primitive.void_type`
+  but an extern ABI return such as `^ptr` is represented as a pointer type.
+  Explicit `var` assignment, typed `let`/`const`, top-level `const`, function
+  tail expressions, and `return` now use `valueAssignableTo()` so a raw `ptr`
+  target can accept a pointer ABI return without weakening pointer-to-pointer
+  equality. Kept the improved assignment diagnostic with function and target
+  names. Added focused regression coverage in `src/type_checker.zig`.
+  Verification passed: `zig build test -j1 -Dtest-filter='raw ptr bindings
+  from pointer abi returns' --summary all` 2/2, `zig build -j1`, and
+  `SA_PLUGIN_DEV=1 sa plugin install --dev
+  /home/vscode/projects/sa_plugins/sa_plugin_sla`. No full suite was run.
+
 - docs/issue034 Vec element repeated field-load SA closure (2026-07-16):
   issue035/033's field-base lifetime fixes also cover the `sla_music_cli`
   `midi_ir_to_music_ir` generated-SA `UseAfterMove`: a Vec element aggregate

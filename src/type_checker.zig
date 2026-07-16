@@ -171,6 +171,7 @@ pub const TypeChecker = struct {
     array_to_slice_borrow_args: std.AutoHashMap(*const ast.Node, void),
     resolved_call_symbols: std.AutoHashMap(*const ast.Node, []const u8),
     resolved_call_alias_metadata: std.AutoHashMap(*const ast.Node, FunctionAliasMetadata),
+    current_function_name: ?[]const u8,
     current_function_namespace: ?[]const u8,
     current_loop_scope: ?*Scope,
     current_loop_body_terminates: bool,
@@ -217,6 +218,7 @@ pub const TypeChecker = struct {
             .array_to_slice_borrow_args = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .resolved_call_symbols = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .resolved_call_alias_metadata = std.AutoHashMap(*const ast.Node, FunctionAliasMetadata).init(allocator),
+            .current_function_name = null,
             .current_function_namespace = null,
             .current_loop_scope = null,
             .current_loop_body_terminates = false,
@@ -803,6 +805,11 @@ pub const TypeChecker = struct {
 
     fn isPointerValueType(ty: *const ast.Type) bool {
         return ty.* == .pointer or isRawPtrAliasType(ty);
+    }
+
+    fn valueAssignableTo(self: *TypeChecker, expected: *ast.Type, actual: *ast.Type) bool {
+        if (self.typesEqual(expected, actual)) return true;
+        return isRawPtrAliasType(expected) and actual.* == .pointer;
     }
 
     fn isPointerCarrierCastType(ty: *const ast.Type) bool {
@@ -2657,7 +2664,7 @@ pub const TypeChecker = struct {
                 try self.ensureTopLevelNameUnused(c.name, "const");
                 const val_ty = try self.checkExpr(c.value, global_scope);
                 const declared_ty = c.ty orelse val_ty;
-                if (!self.typesEqual(declared_ty, val_ty)) {
+                if (!self.valueAssignableTo(declared_ty, val_ty)) {
                     self.setError("TypeMismatch in const {s}: declared tag={s}, val tag={s}", .{ c.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
                     return TypeError.TypeMismatch;
                 }
@@ -2952,6 +2959,10 @@ pub const TypeChecker = struct {
     fn checkFunc(self: *TypeChecker, func: *ast.FuncDecl) !void {
         if (func.is_decl_only) return;
 
+        const previous_name = self.current_function_name;
+        self.current_function_name = func.name;
+        defer self.current_function_name = previous_name;
+
         const previous_namespace = self.current_function_namespace;
         self.current_function_namespace = if (self.resolveFunctionAliasMetadata(func.name)) |metadata| metadata.namespace else null;
         defer self.current_function_namespace = previous_namespace;
@@ -2972,7 +2983,7 @@ pub const TypeChecker = struct {
             const last = func.body[func.body.len - 1];
             if (last.* == .expr_stmt and !stmtTerminates(last)) {
                 const tail_ty = self.expr_types.get(last.expr_stmt) orelse return TypeError.CompileError;
-                if (!self.typesEqual(func.ret_ty, tail_ty)) {
+                if (!self.valueAssignableTo(func.ret_ty, tail_ty)) {
                     self.setError("TypeMismatch in function tail expression: expected tag={s}, actual tag={s}", .{ @tagName(func.ret_ty.*), @tagName(tail_ty.*) });
                     return TypeError.TypeMismatch;
                 }
@@ -3180,7 +3191,7 @@ pub const TypeChecker = struct {
             .let_stmt => |let| {
                 const val_ty = try self.checkExpr(let.value, scope);
                 const declared_ty = let.ty orelse val_ty;
-                if (!self.typesEqual(declared_ty, val_ty)) {
+                if (!self.valueAssignableTo(declared_ty, val_ty)) {
                     if (declared_ty.* == .user_defined and std.mem.eql(u8, declared_ty.user_defined.name, "Slice") and declared_ty.user_defined.generics.len == 1 and val_ty.* == .borrow) {
                         if (arrayType(val_ty.borrow)) |arr| {
                             if (self.typesEqual(declared_ty.user_defined.generics[0], arr.elem)) {
@@ -3275,7 +3286,7 @@ pub const TypeChecker = struct {
             .const_stmt => |c| {
                 const val_ty = try self.checkExpr(c.value, scope);
                 const declared_ty = c.ty orelse val_ty;
-                if (!self.typesEqual(declared_ty, val_ty)) {
+                if (!self.valueAssignableTo(declared_ty, val_ty)) {
                     if (self.canCoerceToDynBox(declared_ty, val_ty)) |trait_name| {
                         self.dyn_box_coercions.put(c.value, trait_name) catch return TypeError.OutOfMemory;
                     } else if (self.canCoerceRcNewToDynRc(declared_ty, val_ty, c.value)) |trait_name| {
@@ -3308,8 +3319,13 @@ pub const TypeChecker = struct {
                     break :blk sym.ty;
                 } else try self.checkExpr(assign.target, scope);
                 const val_ty = try self.checkExpr(assign.value, scope);
-                if (!self.typesEqual(target_ty, val_ty)) {
-                    self.setError("TypeMismatch in assign: target tag={s}, val tag={s}", .{ @tagName(target_ty.*), @tagName(val_ty.*) });
+                if (!self.valueAssignableTo(target_ty, val_ty)) {
+                    const target_name = if (assign.target.* == .identifier) assign.target.identifier else "<expr>";
+                    if (self.current_function_name) |fn_name| {
+                        self.setError("TypeMismatch in assign in {s}: target `{s}` tag={s}, val tag={s}", .{ fn_name, target_name, @tagName(target_ty.*), @tagName(val_ty.*) });
+                    } else {
+                        self.setError("TypeMismatch in assign: target `{s}` tag={s}, val tag={s}", .{ target_name, @tagName(target_ty.*), @tagName(val_ty.*) });
+                    }
                     return TypeError.TypeMismatch;
                 }
                 // let bindings can be reassigned and indexed; const bindings cannot.
@@ -3342,7 +3358,7 @@ pub const TypeChecker = struct {
             .return_stmt => |ret| {
                 if (ret.value) |val| {
                     const val_ty = try self.checkExpr(val, scope);
-                    if (!self.typesEqual(ret_ty, val_ty)) {
+                    if (!self.valueAssignableTo(ret_ty, val_ty)) {
                         self.setError("TypeMismatch in return: expected tag={s}, actual tag={s}", .{ @tagName(ret_ty.*), @tagName(val_ty.*) });
                         return TypeError.TypeMismatch;
                     }
@@ -6338,4 +6354,37 @@ test "type checker resolves imported function signature without function body" {
     try std.testing.expectEqualStrings("imported_a", call_metadata.?.target);
     try std.testing.expectEqualStrings("dep", call_metadata.?.namespace.?);
     try std.testing.expectEqualStrings("/tmp/dep.sla", call_metadata.?.module_path.?);
+}
+
+test "type checker allows raw ptr bindings from pointer abi returns" {
+    const parser_mod = @import("parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\fn assign_probe(data: ptr, len: u64) -> i32 {
+        \\    var node: ptr;
+        \\    node = abi_make_ptr(data, len);
+        \\    return 0;
+        \\}
+        \\
+        \\fn let_probe(data: ptr, len: u64) -> ptr {
+        \\    let node: ptr = abi_make_ptr(data, len);
+        \\    return node;
+        \\}
+        \\
+        \\fn return_probe(data: ptr, len: u64) -> ptr {
+        \\    return abi_make_ptr(data, len);
+        \\}
+    ;
+    var parser = parser_mod.Parser.init(arena.allocator(), source);
+    const program = try parser.parseProgram();
+
+    var tc = TypeChecker.init(arena.allocator());
+    defer tc.deinit();
+    try tc.loadContracts(
+        \\@extern abi_make_ptr(data: ptr, len: u64) -> ^ptr
+    , "");
+    try tc.checkProgram(program);
 }

@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Raw-ptr ABI return assignment compatibility (2026-07-16): TypeChecker now
+  treats a pointer ABI value as assignable to an explicit raw `ptr` target for
+  typed `let`/`const`, top-level `const`, `var` reassignment, tail expressions,
+  and returns. It does not relax typed pointer equality between different
+  pointer element types. Focused regression and dev-plugin install passed:
+  `zig build test -j1 -Dtest-filter='raw ptr bindings from pointer abi
+  returns' --summary all`, `zig build -j1`, and `SA_PLUGIN_DEV=1 sa plugin
+  install --dev /home/vscode/projects/sa_plugins/sa_plugin_sla`. No full
+  suite was run.
 - Docs/issue034 Vec element repeated field-load SA closure (2026-07-16):
   the field-base lifetime fixes from issue035/033 now also close the
   `sla_music_cli` `midi_ir_to_music_ir` generated-SA `UseAfterMove` where a

@@ -1,7 +1,7 @@
 # issue022: sla_music_cli `build-exe` direct SAB keeps stale `tmp_*` call operands and trips `UseAfterMove`
 
 日期：2026-07-15
-状态：PARTIAL / OPEN（direct SAB codegen 症状已修复；完整 `build-exe` 验收当前阻塞于 timeout）
+状态：PARTIAL / OPEN（direct SAB codegen 症状已修复；`build-exe` 输入已裁剪；完整 native 验收仍阻塞于 timeout）
 
 ## Summary
 
@@ -96,3 +96,35 @@ store r405,0u,r457,ty:12
 即不再有 `ptr_add ...,"tmp_*"`，也不再有 `store ... r457` 后的 `release r457`。
 
 完整验收仍未关闭：`SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla build-exe src/main.sla -o /tmp/slamusic-cli` 在重新安装 dev plugin 后不再快速报 `UseAfterMove tmp_151`，但当前在本机约 3 分钟处 timeout 124，未产出 `/tmp/slamusic-cli`。后续需要把这个 `build-exe` timeout 作为剩余 blocker 继续缩小；本 issue 保持 OPEN，直到 CLI 可执行文件和 `verify` / `inspect` / `build` 三个命令通过。
+
+## 2026-07-16 Update 2
+
+本轮确认 `call rN,"@sla__music_cli_build","^tmp_*"` 这类 disasm 形态本身不是 stale operand 的充分证据：SAB direct call body 仍保留源符号文本，`recordCallBodyRegs()` 会把 body 中已知符号记录到当前函数寄存器集合。最小 fixture 和下游 `music_cli_dispatch` 形态一致。
+
+已落地一个 build-exe 输入缩小 slice：
+
+- `SlaCompileOptions` 新增 `prune_for_entry_function`。
+- `sa sla build-exe`、`sa sla build-workspace`、`sa sla sab workspace` 生成 native 输入 SAB 时从 `main` 做 post-typecheck reachable decl filter；`sa sla sab build` 保持完整 SAB 输出，方便检查/反汇编。
+- `--emit-sab` 在 build-exe/workspace 路径不再二次编译 sibling SAB，而是写出同一份已裁剪的 `sab_bytes`。
+- 新增 Zig 回归 `sla build-exe SAB codegen prunes unreachable main declarations`，确认 `main -> used -> helper` 之外的 unused function 和 test decl 不进入 executable SAB。
+
+验证：
+
+```sh
+zig fmt --check src/plugin_compile_options.zig src/plugin_compile.zig src/plugin_commands.zig src/plugin_tests.zig
+zig build test -j1 -Dtest-filter="sla build-exe SAB codegen prunes unreachable main declarations" --summary all
+zig build -j1 --summary all
+sa plugin install --dev .
+SA_PLUGIN_DEV=1 sa sla help
+git diff --check
+```
+
+下游 `/home/vscode/projects/sla_music_cli` 本地 strict direct-SAB `build-exe` 输入已从约 7.7MB / 778 funcs 缩到约 3.9MB / 396 funcs，且 `test_decl=0`。但完整 native 阶段仍未关闭：不带 `--emit-sab` 的真实路径
+
+```sh
+timeout 300s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 \
+  /home/vscode/projects/sa_plugins/sa_plugin_sla/zig-out/bin/sla-local-cli \
+  sla build-exe src/main.sla -o /tmp/slamusic-cli-pruned --jobs 1
+```
+
+在 direct SAB codegen 约 20s 后进入底层 `sa build-exe`，最终仍 timeout 124；对已裁剪 managed SAB 直接跑 `sa build-exe ... --jobs 1 --dce full` 也在 300s timeout。当前剩余 blocker 更像 SA native compile 对该仍较大的 CLI dispatch/音乐转换闭包不收敛，而不是 direct SAB stale operand。CLI `verify` / `inspect` / `build` 三个命令仍未运行。

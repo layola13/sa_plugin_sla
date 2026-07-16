@@ -22,16 +22,16 @@ const appendDefaultJobsAuto = plugin_cli.appendDefaultJobsAuto;
 const appendCompiledSaTestPassthrough = plugin_cli.appendCompiledSaTestPassthrough;
 const appendSabWorkspacePassthrough = plugin_sab_paths.appendSabWorkspacePassthrough;
 const compileSlaFileToSab = plugin_compile.compileSlaFileToSab;
-const compileSlaFileToSabOrSa = plugin_compile.compileSlaFileToSabOrSa;
+const compileSlaFileToSabWithOptions = plugin_compile.compileSlaFileToSabWithOptions;
 const compileSlaSaTestInput = plugin_compile.compileSlaSaTestInput;
 const compileSlaSabTestInput = plugin_compile.compileSlaSabTestInput;
 const compileSlaToSaString = plugin_compile.compileSlaToSaString;
+const defaultOutputPath = plugin_sab_paths.defaultOutputPath;
 const expandSlaImportsWithModuleTable = plugin_import_expand.expandSlaImportsWithModuleTable;
 const hasEmitSabArg = plugin_sab_paths.hasEmitSabArg;
 const isHelpArg = plugin_cli.isHelpArg;
 const loadImportedContractsFromResolvedImports = plugin_import_expand.loadImportedContractsFromResolvedImports;
 const managedSabPath = plugin_sab_paths.managedSabPath;
-const maybeWriteSiblingSab = plugin_compile.maybeWriteSiblingSab;
 const parseOutFileArg = plugin_sab_paths.parseOutFileArg;
 const parseSabOutFileArg = plugin_sab_paths.parseSabOutFileArg;
 const parseSlaCliOptions = plugin_cli.parseSlaCliOptions;
@@ -49,6 +49,23 @@ const writeCommandHelp = plugin_cli.writeCommandHelp;
 const writeEmptyTestResult = plugin_compile_options.writeEmptyTestResult;
 const writeManagedSab = plugin_sab_paths.writeManagedSab;
 const writeSabFile = plugin_sab_paths.writeSabFile;
+
+fn buildExeCompileOptions() plugin_compile_options.SlaCompileOptions {
+    return .{
+        .prune_for_entry_function = "main",
+        .load_reachable_imported_bodies_from_registry = true,
+    };
+}
+
+fn writeSiblingSabFromBytes(
+    allocator: std.mem.Allocator,
+    file: []const u8,
+    sab_bytes: []const u8,
+    stderr: std.io.AnyWriter,
+) !bool {
+    const sab_out = try defaultOutputPath(allocator, file, ".sla", ".sab");
+    return try writeSabFile(allocator, sab_out, sab_bytes, stderr);
+}
 
 fn runSabBuildCommand(
     args: []const []const u8,
@@ -110,17 +127,14 @@ fn runSabWorkspaceCommand(
     const file = (try resolveWorkspaceSourcePath(allocator, stderr, options.package_name)) orelse return 1;
     const extra_args = args[options.passthrough_start..];
     const managed_out = try managedSabPath(allocator, file);
-    const sab_bytes = (try compileSlaFileToSab(allocator, file, managed_out, stderr)) orelse return 1;
+    const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, managed_out, stderr, buildExeCompileOptions())) orelse return 1;
     const managed_path = (try writeManagedSab(allocator, file, sab_bytes, stderr)) orelse return 1;
 
     if (parseSabOutFileArg(args, option_start)) |sab_out| {
         if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
     }
     if (options.emit_sab_file or hasEmitSabArg(args, option_start)) {
-        maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
-            try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
-            return 1;
-        };
+        if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
     }
 
     var argv = std.ArrayList([]const u8).init(allocator);
@@ -312,13 +326,10 @@ pub fn runSlaCommandImpl(
         const extra_args = args[options.passthrough_start..];
 
         const sab_out = try managedSabPath(allocator, file);
-        const sab_bytes = (try compileSlaFileToSabOrSa(allocator, file, sab_out, stderr)) orelse return 1;
+        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, buildExeCompileOptions())) orelse return 1;
         if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
         if (options.emit_sab_file) {
-            maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
-                try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
-                return 1;
-            };
+            if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
         }
 
         var argv = std.ArrayList([]const u8).init(allocator);
@@ -360,13 +371,10 @@ pub fn runSlaCommandImpl(
         const extra_args = args[options.passthrough_start..];
 
         const sab_out = try managedSabPath(allocator, file);
-        const sab_bytes = (try compileSlaFileToSabOrSa(allocator, file, sab_out, stderr)) orelse return 1;
+        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, buildExeCompileOptions())) orelse return 1;
         if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
         if (options.emit_sab_file) {
-            maybeWriteSiblingSab(allocator, file, stderr) catch |err| {
-                try stderr.print("File Error: failed to emit sibling SAB for {s}: {}\n", .{ file, err });
-                return 1;
-            };
+            if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
         }
 
         var argv = std.ArrayList([]const u8).init(allocator);

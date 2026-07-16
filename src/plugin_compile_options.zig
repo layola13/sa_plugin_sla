@@ -4,6 +4,7 @@ pub const SlaCompileOptions = struct {
     test_filter: ?[]const u8 = null,
     allow_fallback: bool = true,
     prune_for_test_codegen: bool = false,
+    prune_for_entry_function: ?[]const u8 = null,
     load_reachable_imported_bodies_from_registry: bool = false,
 };
 

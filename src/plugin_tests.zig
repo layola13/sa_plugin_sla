@@ -743,6 +743,81 @@ test "sla test sab backend prunes unmatched tests before type checking" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla build-exe SAB codegen prunes unreachable main declarations" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn used_helper() -> i32 {
+        \\    return 40;
+        \\};
+        \\
+        \\fn used_value() -> i32 {
+        \\    return used_helper() + 2;
+        \\};
+        \\
+        \\fn unused_value() -> i32 {
+        \\    return 99;
+        \\};
+        \\
+        \\@test "unused native input"() {
+        \\    if unused_value() != 99 { panic(24047); };
+        \\};
+        \\
+        \\fn main() -> i32 {
+        \\    return used_value();
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "main.sla",
+        ".sla-cache/sab/main.sab",
+        stderr_buf.writer().any(),
+        .{
+            .prune_for_entry_function = "main",
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_main = false;
+    var saw_used = false;
+    var saw_helper = false;
+    var saw_unused = false;
+    var saw_test = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.eql(u8, fsig.name, "main")) saw_main = true;
+        if (std.mem.eql(u8, fsig.name, "sla__used_value")) saw_used = true;
+        if (std.mem.eql(u8, fsig.name, "sla__used_helper")) saw_helper = true;
+        if (std.mem.indexOf(u8, fsig.name, "unused_value") != null) saw_unused = true;
+        if (fsig.kind == .test_func) saw_test = true;
+    }
+
+    try std.testing.expect(saw_main);
+    try std.testing.expect(saw_used);
+    try std.testing.expect(saw_helper);
+    try std.testing.expect(!saw_unused);
+    try std.testing.expect(!saw_test);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla test codegen prunes unreachable functions before type checking" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

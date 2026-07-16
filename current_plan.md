@@ -18,23 +18,21 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
-- Docs/issue022 `sla_music_cli` direct-SAB `PTR_BYTE_ADD` stale operand /
-  raw-ptr temp cleanup partial fix (2026-07-16): direct SAB std
-  macro/template `ptr_add` now coerces both base and dynamic offset operands,
-  and borrowed stack-slot bindings no longer emit a post-store release for
-  non-local pointer scalar temps that have already been transferred into the
-  slot. Focused serial verification passed: `zig fmt --check
-  src/sab_codegen.zig`; `zig build test -j1 -Dtest-filter="std macro template
-  coerces ptr_add dynamic offset arg" --summary all` (2/2); `zig build -j1
-  --summary all` 7/7; local strict SAB
-  `tests/test_unit_ptr_byte_add_read_type_sa.sla --filter "direct sab ptr byte
-  add stack slot temps are non owning"` 1/1; official dev install. Downstream
-  `sla_music_cli` regenerated SAB disasm confirms `cli_arg_eq` now has
-  `ptr_add r457,r458,r459` and no `release r457` after `store left_p`.
-  The full `build-exe` acceptance remains open because installed/dev
-  `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla build-exe src/main.sla -o
-  /tmp/slamusic-cli` currently times out before producing the executable.
-  No full suite was run.
+- Docs/issue022 `sla_music_cli` direct-SAB `build-exe` partial fix
+  (2026-07-16): the earlier direct SAB codegen symptoms remain fixed
+  (`ptr_add r457,r458,r459`, no post-store `release r457`), and executable SAB
+  generation now prunes from `main` for `build-exe` / `build-workspace` /
+  `sab workspace` while leaving `sab build` complete. `--emit-sab` on executable
+  paths writes the already-pruned SAB bytes instead of recompiling a full
+  sibling SAB. Focused serial verification passed: fmt check; filtered Zig
+  regression `sla build-exe SAB codegen prunes unreachable main declarations`
+  2/2; build 7/7; official dev install/help; `git diff --check`. Downstream
+  local strict direct-SAB input for `sla_music_cli/src/main.sla` shrank from
+  about 7.7MB / 778 funcs to about 3.9MB / 396 funcs with no test decls. Full
+  native `build-exe` acceptance remains open: both the true local path and
+  direct `sa build-exe` with `--dce full` still timeout at 300s before producing
+  `/tmp/slamusic-cli`; CLI `verify` / `inspect` / `build` did not run. No full
+  suite was run.
 - Docs/issue043 `sla_music_cli` `cli_arg_eq` raw pointer byte-add generated-SA
   UseAfterMove current-non-repro closure (2026-07-16): the focused
   `music cli output flag scan helpers` test in

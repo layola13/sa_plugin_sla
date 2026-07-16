@@ -420,6 +420,146 @@ fn pruneUnreachableFilteredTestDecls(
     program.program.decls = try filtered_decls.toOwnedSlice();
 }
 
+fn pruneUnreachableEntryFunctionDecls(
+    allocator: std.mem.Allocator,
+    program: *ast.Node,
+    tc: *const type_checker_mod.TypeChecker,
+    entry_name: []const u8,
+) !void {
+    if (program.* != .program) return error.InvalidProgram;
+    const entry = tc.funcs.get(entry_name) orelse return;
+
+    var reachable = std.StringHashMap(void).init(allocator);
+    var worklist = std.ArrayList([]const u8).init(allocator);
+
+    try reachable.put(entry_name, {});
+    try collectReachableBlock(tc, &reachable, &worklist, entry.body);
+    for (program.program.decls) |decl| {
+        if (decl.* == .const_stmt) try collectReachableExpr(tc, &reachable, &worklist, decl.const_stmt.value);
+    }
+
+    var index: usize = 0;
+    while (index < worklist.items.len) : (index += 1) {
+        const name = worklist.items[index];
+        const func = tc.funcs.get(name) orelse continue;
+        try collectReachableBlock(tc, &reachable, &worklist, func.body);
+    }
+
+    var needed_trait_impls = std.StringHashMap(void).init(allocator);
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .const_stmt => |const_stmt| try collectNeededTraitImplsExpr(allocator, tc, &needed_trait_impls, const_stmt.value),
+            .func_decl => |func_decl| {
+                if (reachable.contains(func_decl.name)) try collectNeededTraitImplsBlock(allocator, tc, &needed_trait_impls, func_decl.body);
+            },
+            .impl_decl => |impl_decl| {
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse continue;
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = if (impl_decl.trait_name) |trait_name|
+                        try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
+                    else
+                        try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (reachable.contains(symbol)) try collectNeededTraitImplsBlock(allocator, tc, &needed_trait_impls, method.func_decl.body);
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse continue;
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) continue;
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (reachable.contains(symbol)) try collectNeededTraitImplsBlock(allocator, tc, &needed_trait_impls, method.func_decl.body);
+                }
+            },
+            else => {},
+        }
+    }
+
+    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    for (program.program.decls) |decl| {
+        switch (decl.*) {
+            .func_decl => |func_decl| {
+                if (func_decl.is_decl_only or reachable.contains(func_decl.name)) try filtered_decls.append(decl);
+            },
+            .test_decl => {},
+            .impl_decl => |impl_decl| {
+                if (impl_decl.trait_name != null) {
+                    const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse {
+                        try filtered_decls.append(decl);
+                        continue;
+                    };
+                    const key = try std.fmt.allocPrint(allocator, "{s}|{s}", .{ impl_decl.trait_name.?, type_name });
+                    var keep_impl = needed_trait_impls.contains(key);
+                    if (!keep_impl) {
+                        for (impl_decl.methods) |method| {
+                            if (method.* != .func_decl) continue;
+                            const symbol = try lowering_rules.mangleTraitMethodName(allocator, type_name, impl_decl.trait_name.?, method.func_decl.name);
+                            if (reachable.contains(symbol)) {
+                                keep_impl = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (keep_impl) try filtered_decls.append(decl);
+                    continue;
+                }
+                const type_name = lowering_rules.concreteTypeName(impl_decl.target_ty) orelse {
+                    try filtered_decls.append(decl);
+                    continue;
+                };
+
+                var methods = std.ArrayList(*ast.Node).init(allocator);
+                for (impl_decl.methods) |method| {
+                    if (method.* != .func_decl) {
+                        try methods.append(method);
+                        continue;
+                    }
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+                }
+                if (methods.items.len == impl_decl.methods.len) {
+                    try filtered_decls.append(decl);
+                } else if (methods.items.len > 0) {
+                    const pruned = try allocator.create(ast.Node);
+                    pruned.* = .{ .impl_decl = .{
+                        .trait_name = null,
+                        .target_ty = impl_decl.target_ty,
+                        .methods = try methods.toOwnedSlice(),
+                    } };
+                    try filtered_decls.append(pruned);
+                }
+            },
+            .overload_decl => |overload_decl| {
+                const type_name = lowering_rules.concreteTypeName(overload_decl.target_ty) orelse {
+                    try filtered_decls.append(decl);
+                    continue;
+                };
+                var methods = std.ArrayList(*ast.Node).init(allocator);
+                for (overload_decl.methods) |method| {
+                    if (method.* != .func_decl) {
+                        try methods.append(method);
+                        continue;
+                    }
+                    const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
+                    if (method.func_decl.is_decl_only or reachable.contains(symbol)) try methods.append(method);
+                }
+                if (methods.items.len == overload_decl.methods.len) {
+                    try filtered_decls.append(decl);
+                } else if (methods.items.len > 0) {
+                    const pruned = try allocator.create(ast.Node);
+                    pruned.* = .{ .overload_decl = .{
+                        .target_ty = overload_decl.target_ty,
+                        .methods = try methods.toOwnedSlice(),
+                    } };
+                    try filtered_decls.append(pruned);
+                }
+            },
+            else => try filtered_decls.append(decl),
+        }
+    }
+    program.program.decls = try filtered_decls.toOwnedSlice();
+}
+
 pub fn compileSlaToSaString(
     allocator: std.mem.Allocator,
     file: []const u8,
@@ -767,6 +907,15 @@ pub fn compileSlaFileToSabWithOptions(
         return null;
     };
     slaProfileStage(stderr, profile, "reachable decl filter", stage_start);
+
+    stage_start = std.time.nanoTimestamp();
+    if (options.prune_for_entry_function) |entry_name| {
+        pruneUnreachableEntryFunctionDecls(allocator, specialized_prog, &tc, entry_name) catch |err| {
+            try stderr.print("Reachability Error: failed to prune unreachable executable declarations: {}\n", .{err});
+            return null;
+        };
+    }
+    slaProfileStage(stderr, profile, "entry reachable decl filter", stage_start);
 
     stage_start = std.time.nanoTimestamp();
     const sab_bytes = sab_codegen_mod.generate(allocator, &tc, specialized_prog) catch |err| {

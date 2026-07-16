@@ -18,6 +18,17 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue035 assigned aggregate field-base lifetime closure (2026-07-16):
+  SA-text field lowering no longer releases a temporary-looking `tmp_*`
+  register when it is the resolved local binding for an identifier.
+  `src/lowering_rules.zig` owns the shared release decision and
+  `src/codegen.zig` applies it to tuple and struct projections. Extended
+  `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla` with a repeated
+  aggregate field-read regression. Serial focused verification passed:
+  shared Zig lowering test 1/1; official dev install/help; compiler
+  generated-SA fixture 1/1; downstream `sla_ecs` generated-SA rescan fixture
+  1/1. The downstream default-backend fixture was already green before the
+  compiler fix. No full suite was run.
 - Docs/issue032 repeated lexical loop-local register isolation closure
   (2026-07-16): `src/lowering_rules.zig` now owns the per-function repeated
   `let` binding scanner previously implemented only in direct SAB. SA-text and

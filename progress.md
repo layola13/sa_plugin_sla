@@ -4,6 +4,20 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue035 assigned aggregate field-base lifetime closure (2026-07-16):
+  SA-text field lowering previously released any `tmp_*` field base, even
+  when that register was the resolved binding for an assigned aggregate
+  identifier. The first field projection therefore consumed the local and a
+  later branch or loop iteration failed with `UseAfterMove`.
+  `fieldBaseResultNeedsRelease()` now lives in shared
+  `src/lowering_rules.zig`; `src/codegen.zig` uses it for tuple, manual-drop,
+  and ordinary struct field projections. Extended
+  `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla` with the minimal
+  repeated-field regression. Serial focused verification passed: shared Zig
+  test 1/1; official dev install/help; compiler generated-SA fixture 1/1;
+  downstream `sla_ecs` generated-SA rescan fixture 1/1. The downstream
+  default backend was already green. No full suite was run.
+
 - docs/issue032 repeated lexical loop-local register isolation closure
   (2026-07-16): the per-function repeated `let` scanner previously owned by
   direct SAB now lives in shared `src/lowering_rules.zig` and feeds both

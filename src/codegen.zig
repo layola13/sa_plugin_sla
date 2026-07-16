@@ -9378,6 +9378,16 @@ pub const Codegen = struct {
         return exprResultNeedsRelease(expr);
     }
 
+    fn fieldBaseResultNeedsRelease(self: *Codegen, expr: *const ast.Node, generated_reg: []const u8) bool {
+        const generated_is_resolved_binding = expr.* == .identifier and
+            std.mem.eql(u8, generated_reg, self.resolveBindingName(expr.identifier));
+        return lowering_rules.fieldBaseResultNeedsRelease(
+            exprResultNeedsRelease(expr),
+            isTemporaryRegisterName(generated_reg),
+            generated_is_resolved_binding,
+        );
+    }
+
     fn isSwitchDefaultPattern(pattern: *const ast.Node) bool {
         return pattern.* == .identifier and std.mem.eql(u8, pattern.identifier, "default");
     }
@@ -12021,7 +12031,7 @@ pub const Codegen = struct {
                     const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
                     const layout = tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
                     self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                    if (exprResultNeedsRelease(field.expr) or isTemporaryRegisterName(inner)) try self.emitRelease(inner);
+                    if (self.fieldBaseResultNeedsRelease(field.expr, inner)) try self.emitRelease(inner);
                     return reg;
                 }
 
@@ -12071,12 +12081,12 @@ pub const Codegen = struct {
                 for (struct_decl.fields) |decl_field| {
                     if (std.mem.eql(u8, decl_field.name, field.field_name) and manuallyDropInnerType(decl_field.ty) != null) {
                         self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ reg, inner, layout.offset }) catch return CodegenError.CodegenError;
-                        if (exprResultNeedsRelease(field.expr) or isTemporaryRegisterName(inner)) try self.emitRelease(inner);
+                        if (self.fieldBaseResultNeedsRelease(field.expr, inner)) try self.emitRelease(inner);
                         return reg;
                     }
                 }
                 self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, inner, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                if (exprResultNeedsRelease(field.expr) or isTemporaryRegisterName(inner)) try self.emitRelease(inner);
+                if (self.fieldBaseResultNeedsRelease(field.expr, inner)) try self.emitRelease(inner);
                 return reg;
             },
             .struct_literal => |lit| {

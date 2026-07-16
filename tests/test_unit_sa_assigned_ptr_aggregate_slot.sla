@@ -70,6 +70,22 @@ fn rebind_parse_redeclared_return(parser: RebindParser) -> RebindParser {
     return p2;
 }
 
+fn rebind_repeated_aggregate_field_reuse(parser: RebindParser) -> RebindParser {
+    if parser.current_kind == 10 {
+        let after_lt = rebind_advance(parser);
+        if after_lt.current_kind == 20 {
+            return rebind_advance(after_lt);
+        };
+    };
+    if parser.current_kind == 30 {
+        let after_lt = rebind_advance(parser);
+        if after_lt.current_kind == 20 {
+            return rebind_advance(after_lt);
+        };
+    };
+    return parser;
+}
+
 @test "sa text assigned ptr aggregate rebinds through slot"() {
     let parser = rebind_parser_new(rebind_scanner_new(STR_PTR("abc"), STR_LEN("abc")), 10, 7, 0);
     let got = rebind_parse_like_function_expression(parser);
@@ -84,4 +100,12 @@ fn rebind_parse_redeclared_return(parser: RebindParser) -> RebindParser {
     if got.scanner.pos != 2 { panic(44211); };
     if got.nodes != 9 { panic(44212); };
     if got.errors != 0 { panic(44213); };
+}
+
+@test "sa text repeated aggregate alias survives field read"() {
+    let parser = rebind_parser_new(rebind_scanner_new(STR_PTR("abc"), STR_LEN("abc")), 10, 7, 0);
+    let got = rebind_repeated_aggregate_field_reuse(parser);
+    if got.scanner.pos != 2 { panic(44221); };
+    if got.nodes != 9 { panic(44222); };
+    if got.errors != 0 { panic(44223); };
 }

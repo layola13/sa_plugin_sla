@@ -3214,6 +3214,15 @@ pub fn exprResultNeedsRelease(expr: *const ast.Node) bool {
     };
 }
 
+pub fn fieldBaseResultNeedsRelease(
+    expression_result_needs_release: bool,
+    generated_register_is_temporary: bool,
+    generated_register_is_resolved_binding: bool,
+) bool {
+    return expression_result_needs_release or
+        (generated_register_is_temporary and !generated_register_is_resolved_binding);
+}
+
 pub fn castResultMaterializesTemp(src_ty: *const ast.Type, dst_ty: *const ast.Type) bool {
     return !(isPointerCarrierCastType(src_ty) and isPointerCarrierCastType(dst_ty));
 }
@@ -3795,6 +3804,10 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(!exprResultNeedsRelease(&value));
     try std.testing.expect(exprResultNeedsRelease(&field));
     try std.testing.expect(exprResultNeedsRelease(&borrowed_value));
+    try std.testing.expect(!fieldBaseResultNeedsRelease(false, true, true));
+    try std.testing.expect(fieldBaseResultNeedsRelease(false, true, false));
+    try std.testing.expect(fieldBaseResultNeedsRelease(true, false, true));
+    try std.testing.expect(!fieldBaseResultNeedsRelease(false, false, false));
 
     try std.testing.expectEqualStrings("value", borrowedIdentifierName(&borrowed_value).?);
     try std.testing.expect(borrowedIdentifierName(&borrowed_field) == null);

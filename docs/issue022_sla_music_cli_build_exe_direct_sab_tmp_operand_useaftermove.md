@@ -1,7 +1,7 @@
 # issue022: sla_music_cli `build-exe` direct SAB keeps stale `tmp_*` call operands and trips `UseAfterMove`
 
 日期：2026-07-15
-状态：OPEN
+状态：PARTIAL / OPEN（direct SAB codegen 症状已修复；完整 `build-exe` 验收当前阻塞于 timeout）
 
 ## Summary
 
@@ -68,3 +68,31 @@ SA_PLUGIN_DEV=1 sa sla build-exe src/main.sla -o /tmp/slamusic-cli
 ```
 
 并增加 compiler 侧最小回归，覆盖 helper 返回 aggregate 立即作为 by-value/static call 参数传入 direct SAB 的路径，确认 disasm 不再出现 stale `^tmp_*` operand。
+
+## 2026-07-16 Update
+
+本轮已修复两个直接相关的 direct SAB codegen 问题：
+
+- std macro/template `ptr_add out, base, offset` 展开时，base 和 dynamic offset 两个 value operands 都会从模板文本名 coercion 成当前 SAB register。此前只处理 base，导致 `PTR_BYTE_ADD(arg.ptr, i)` 生成 `ptr_add r457,r458,"tmp_184"` 这类 stale text operand。
+- borrowed stack-slot binding 存储 raw pointer scalar 后，不再对已被 `store` 转移进 slot 的临时 ptr 继续发 `release`。此前新生成 SAB 在 `cli_arg_eq` 中仍有 `store left_p,tmp_151` 后 `release tmp_151`，触发 `UseAfterMove`。
+
+已验证：
+
+```sh
+zig fmt --check src/sab_codegen.zig
+zig build test -j1 -Dtest-filter="std macro template coerces ptr_add dynamic offset arg" --summary all
+zig build -j1 --summary all
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test tests/test_unit_ptr_byte_add_read_type_sa.sla --filter "direct sab ptr byte add stack slot temps are non owning" --test-backend sab --jobs 1 --trace-panic
+sa plugin install --dev .
+```
+
+下游 `/home/vscode/projects/sla_music_cli` 清理相关 `.sla-cache/sab/main-81c5284c2170c4fb.sab*` 后重新生成的 disasm 已确认：
+
+```sa
+ptr_add r457,r458,r459
+store r405,0u,r457,ty:12
+```
+
+即不再有 `ptr_add ...,"tmp_*"`，也不再有 `store ... r457` 后的 `release r457`。
+
+完整验收仍未关闭：`SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla build-exe src/main.sla -o /tmp/slamusic-cli` 在重新安装 dev plugin 后不再快速报 `UseAfterMove tmp_151`，但当前在本机约 3 分钟处 timeout 124，未产出 `/tmp/slamusic-cli`。后续需要把这个 `build-exe` timeout 作为剩余 blocker 继续缩小；本 issue 保持 OPEN，直到 CLI 可执行文件和 `verify` / `inspect` / `build` 三个命令通过。

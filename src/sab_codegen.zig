@@ -4213,7 +4213,11 @@ pub const Codegen = struct {
                 try self.coerceTemplateValueOperand(&item.operands[1]);
                 try self.coerceTemplateValueOperand(&item.operands[2]);
             },
-            .ptr_add, .borrow => try self.coerceTemplateValueOperand(&item.operands[1]),
+            .ptr_add => {
+                try self.coerceTemplateValueOperand(&item.operands[1]);
+                try self.coerceTemplateValueOperand(&item.operands[2]);
+            },
+            .borrow => try self.coerceTemplateValueOperand(&item.operands[1]),
             .release => try self.coerceTemplateValueOperand(&item.operands[0]),
             else => {},
         }
@@ -4239,7 +4243,11 @@ pub const Codegen = struct {
                 try self.coerceDecodedValueOperand(&item.operands[1], remap);
                 try self.coerceDecodedValueOperand(&item.operands[2], remap);
             },
-            .ptr_add, .borrow => try self.coerceDecodedValueOperand(&item.operands[1], remap),
+            .ptr_add => {
+                try self.coerceDecodedValueOperand(&item.operands[1], remap);
+                try self.coerceDecodedValueOperand(&item.operands[2], remap);
+            },
+            .borrow => try self.coerceDecodedValueOperand(&item.operands[1], remap),
             .release => try self.coerceDecodedValueOperand(&item.operands[0], remap),
             else => {},
         }
@@ -6439,7 +6447,11 @@ pub const Codegen = struct {
             try self.emitStore(dst, 0, src, try storagePrimType(let_ty));
             if (!self.isLocalReg(src)) {
                 _ = self.non_owning_regs.remove(src);
-                try self.emitRelease(src);
+                if (typeIsPointerScalarValue(let_ty)) {
+                    try self.markConsumed(src);
+                } else {
+                    try self.emitRelease(src);
+                }
             }
             try self.pushStackLocal(name, dst, let_ty);
             return;
@@ -14962,6 +14974,71 @@ test "std macro template preserves hygiened placeholder output args" {
     const internal_reg = cg.instructions.items[2].operands[0].reg;
     try std.testing.expect(internal_reg != out_id);
     try std.testing.expect(std.mem.startsWith(u8, cg.symbols.items[internal_reg], "__frag"));
+}
+
+test "std macro template coerces ptr_add dynamic offset arg" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const func_id: u32 = 0;
+    const label_id: u32 = 1;
+    const out_placeholder_id: u32 = 2;
+    const base_placeholder_id: u32 = 3;
+    const offset_placeholder_id: u32 = 4;
+    const symbols = &.{
+        "__sla_macro_template_0",
+        "L_ENTRY",
+        "__frag7___sla_macro_arg_0",
+        "__frag7___sla_macro_arg_1",
+        "__frag7___sla_macro_arg_2",
+    };
+
+    const function_sigs = try allocator.alloc(sig.FunctionSig, 1);
+    function_sigs[0] = try sig.parseFunctionSig(allocator, "@__sla_macro_template_0() -> void:", 0, 0);
+
+    const instructions = try allocator.alloc(inst.Instruction, 6);
+    instructions[0] = inst.makeInstruction(.func_decl, 1, 1, null, "");
+    instructions[0].operands[0] = .{ .symbol = func_id };
+    instructions[0].operands[1] = .{ .func = func_id };
+    instructions[1] = inst.makeInstruction(.label, 2, 2, null, "");
+    instructions[1].operands[0] = .{ .symbol = label_id };
+    instructions[1].operands[1] = .{ .label = label_id };
+    instructions[2] = inst.makeInstruction(.assign, 3, 3, null, "");
+    instructions[2].operands[0] = .{ .reg = base_placeholder_id };
+    instructions[2].operands[1] = .{ .imm_i64 = 100 };
+    instructions[3] = inst.makeInstruction(.assign, 4, 4, null, "");
+    instructions[3].operands[0] = .{ .reg = offset_placeholder_id };
+    instructions[3].operands[1] = .{ .imm_i64 = 4 };
+    instructions[4] = inst.makeInstruction(.ptr_add, 5, 5, null, "");
+    instructions[4].operands[0] = .{ .reg = out_placeholder_id };
+    instructions[4].operands[1] = .{ .text = "__frag7___sla_macro_arg_1" };
+    instructions[4].operands[2] = .{ .text = "__frag7___sla_macro_arg_2" };
+    instructions[5] = inst.makeInstruction(.return_, 6, 6, null, "");
+
+    const module = sab.Module{
+        .symbols = symbols,
+        .function_sigs = function_sigs,
+        .const_decls = &.{},
+        .instructions = instructions,
+        .owned_text = &.{},
+    };
+
+    try cg.appendRenamedTemplateFragmentBody(module, "__sla_macro_template_0", &.{ "tmp_out", "base_reg", "offset_reg" });
+
+    const out_id = cg.symbol_ids.get("tmp_out") orelse return error.TestUnexpectedResult;
+    const base_id = cg.symbol_ids.get("base_reg") orelse return error.TestUnexpectedResult;
+    const offset_id = cg.symbol_ids.get("offset_reg") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 3), cg.instructions.items.len);
+    try std.testing.expectEqual(inst.InstKind.ptr_add, cg.instructions.items[2].kind);
+    try std.testing.expectEqual(out_id, cg.instructions.items[2].operands[0].reg);
+    try std.testing.expectEqual(base_id, cg.instructions.items[2].operands[1].reg);
+    try std.testing.expectEqual(offset_id, cg.instructions.items[2].operands[2].reg);
 }
 
 test "cached std macro template owns decoded symbols for placeholder remap" {

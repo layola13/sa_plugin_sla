@@ -4,6 +4,24 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue022 `sla_music_cli` direct-SAB `build-exe` `tmp_151`
+  `UseAfterMove` partial fix (2026-07-16): fixed the two codegen symptoms
+  visible in the current repro. Imported std macro/template `ptr_add` now
+  coerces both base and dynamic offset text operands to current SAB registers,
+  so `PTR_BYTE_ADD(arg.ptr, i)` no longer leaves `"tmp_*"` as the offset.
+  Borrowed stack-slot bindings now mark non-local pointer scalar temps as
+  consumed after store instead of emitting a second release of the stored
+  pointer temp. Serial focused verification passed: `zig fmt --check
+  src/sab_codegen.zig`; `zig build test -j1 -Dtest-filter="std macro template
+  coerces ptr_add dynamic offset arg" --summary all` 2/2; `zig build -j1
+  --summary all` 7/7; local strict SAB focused
+  `tests/test_unit_ptr_byte_add_read_type_sa.sla` 1/1; official dev install.
+  Regenerated downstream `sla_music_cli` disasm shows `ptr_add r457,r458,r459`
+  and no post-store `release r457`. Full issue acceptance remains open:
+  installed/dev `build-exe` now times out before producing `/tmp/slamusic-cli`,
+  so the CLI `verify` / `inspect` / `build` commands were not run. No full
+  suite was run.
+
 - docs/issue043 `sla_music_cli` `cli_arg_eq` raw pointer byte-add SA
   UseAfterMove current-non-repro closure (2026-07-16): the focused
   `music cli output flag scan helpers` test is now present in

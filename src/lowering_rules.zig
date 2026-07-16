@@ -460,6 +460,93 @@ pub fn planLoopControl(body: []const *ast.Node) LoopControlPlan {
     };
 }
 
+pub fn collectRepeatedLetBindings(
+    allocator: std.mem.Allocator,
+    body: []const *ast.Node,
+    repeated: *std.StringHashMap(void),
+) error{OutOfMemory}!void {
+    repeated.clearRetainingCapacity();
+    var counts = std.StringHashMap(u32).init(allocator);
+    defer counts.deinit();
+    try countLetBindingsInBlock(body, &counts);
+    var iter = counts.iterator();
+    while (iter.next()) |entry| {
+        if (entry.value_ptr.* >= 2) try repeated.put(entry.key_ptr.*, {});
+    }
+}
+
+fn countLetBindingsInBlock(body: []const *ast.Node, counts: *std.StringHashMap(u32)) error{OutOfMemory}!void {
+    for (body) |node| try countLetBindingsInNode(node, counts);
+}
+
+fn countLetBindingsInNode(node: *const ast.Node, counts: *std.StringHashMap(u32)) error{OutOfMemory}!void {
+    switch (node.*) {
+        .let_stmt => |let| {
+            const entry = try counts.getOrPut(let.name);
+            if (!entry.found_existing) entry.value_ptr.* = 0;
+            entry.value_ptr.* += 1;
+            try countLetBindingsInNode(let.value, counts);
+        },
+        .let_else_stmt => |let| {
+            try countLetBindingsInNode(let.value, counts);
+            try countLetBindingsInBlock(let.else_block, counts);
+        },
+        .let_destructure_stmt => |let| try countLetBindingsInNode(let.value, counts),
+        .const_stmt => |c| try countLetBindingsInNode(c.value, counts),
+        .assign_stmt => |assign| {
+            try countLetBindingsInNode(assign.target, counts);
+            try countLetBindingsInNode(assign.value, counts);
+        },
+        .expr_stmt => |expr| try countLetBindingsInNode(expr, counts),
+        .return_stmt => |ret| if (ret.value) |value| try countLetBindingsInNode(value, counts),
+        .block_stmt => |block| try countLetBindingsInBlock(block.body, counts),
+        .binary_expr => |bin| {
+            try countLetBindingsInNode(bin.left, counts);
+            try countLetBindingsInNode(bin.right, counts);
+        },
+        .call_expr => |call| for (call.args) |arg| try countLetBindingsInNode(arg, counts),
+        .field_expr => |field| try countLetBindingsInNode(field.expr, counts),
+        .struct_literal => |lit| {
+            for (lit.fields) |field| try countLetBindingsInNode(field.value, counts);
+            if (lit.update_expr) |update| try countLetBindingsInNode(update, counts);
+        },
+        .tuple_literal => |lit| for (lit.elements) |elem| try countLetBindingsInNode(elem, counts),
+        .array_literal => |lit| for (lit.elements) |elem| try countLetBindingsInNode(elem, counts),
+        .repeat_array_literal => |lit| try countLetBindingsInNode(lit.value, counts),
+        .index_expr => |idx| {
+            try countLetBindingsInNode(idx.target, counts);
+            try countLetBindingsInNode(idx.index, counts);
+        },
+        .if_expr => |ife| {
+            try countLetBindingsInNode(ife.cond, counts);
+            if (ife.let_chain) |chain| for (chain) |cond| try countLetBindingsInNode(cond.value, counts);
+            try countLetBindingsInBlock(ife.then_block, counts);
+            if (ife.else_block) |else_block| try countLetBindingsInBlock(else_block, counts);
+        },
+        .while_stmt => |w| {
+            try countLetBindingsInNode(w.cond, counts);
+            try countLetBindingsInBlock(w.body, counts);
+        },
+        .for_stmt => |f| {
+            try countLetBindingsInNode(f.start, counts);
+            if (f.end) |end| try countLetBindingsInNode(end, counts);
+            try countLetBindingsInBlock(f.body, counts);
+        },
+        .match_expr => |mat| {
+            try countLetBindingsInNode(mat.val, counts);
+            for (mat.cases) |case| try countLetBindingsInBlock(case.body, counts);
+        },
+        .borrow_expr => |borrow| try countLetBindingsInNode(borrow.expr, counts),
+        .move_expr => |move| try countLetBindingsInNode(move.expr, counts),
+        .deref_expr => |deref| try countLetBindingsInNode(deref.expr, counts),
+        .cast_expr => |cast| try countLetBindingsInNode(cast.expr, counts),
+        .unsafe_expr => |unsafe_expr| try countLetBindingsInBlock(unsafe_expr.body, counts),
+        .await_expr => |aw| try countLetBindingsInNode(aw.expr, counts),
+        .closure_literal => |closure| try countLetBindingsInNode(closure.body, counts),
+        else => {},
+    }
+}
+
 pub fn planLetPattern(pattern: ast.EnumPattern, has_user_enum_decl: bool) ?LetPatternPlan {
     if (has_user_enum_decl) {
         return .{
@@ -5165,6 +5252,28 @@ test "shared function tail cleanup transfers only the direct result binding" {
     try std.testing.expectEqual(FunctionTailCleanupAction.release, planFunctionTailCleanup("other", &result));
     try std.testing.expectEqual(FunctionTailCleanupAction.release, planFunctionTailCleanup("result", &other));
     try std.testing.expectEqual(FunctionTailCleanupAction.release, planFunctionTailCleanup("result", &field));
+}
+
+test "shared repeated let binding scanner isolates sibling loop locals" {
+    var zero = ast.Node{ .literal = .{ .int_val = 0 } };
+    var first_let = ast.Node{ .let_stmt = .{ .name = "c", .ty = null, .value = &zero } };
+    const first_body = [_]*ast.Node{&first_let};
+    var first_cond = ast.Node{ .literal = .{ .bool_val = true } };
+    var first_loop = ast.Node{ .while_stmt = .{ .cond = &first_cond, .let_pattern = null, .body = first_body[0..] } };
+
+    var second_let = ast.Node{ .let_stmt = .{ .name = "c", .ty = null, .value = &zero } };
+    const second_body = [_]*ast.Node{&second_let};
+    var second_cond = ast.Node{ .literal = .{ .bool_val = true } };
+    var second_loop = ast.Node{ .while_stmt = .{ .cond = &second_cond, .let_pattern = null, .body = second_body[0..] } };
+
+    var unique_let = ast.Node{ .let_stmt = .{ .name = "only_once", .ty = null, .value = &zero } };
+    const body = [_]*ast.Node{ &first_loop, &second_loop, &unique_let };
+    var repeated = std.StringHashMap(void).init(std.testing.allocator);
+    defer repeated.deinit();
+
+    try collectRepeatedLetBindings(std.testing.allocator, body[0..], &repeated);
+    try std.testing.expect(repeated.contains("c"));
+    try std.testing.expect(!repeated.contains("only_once"));
 }
 
 test "shared static call plan preserves namespace alias metadata" {

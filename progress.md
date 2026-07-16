@@ -4,6 +4,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue032 repeated lexical loop-local register isolation closure
+  (2026-07-16): the per-function repeated `let` scanner previously owned by
+  direct SAB now lives in shared `src/lowering_rules.zig` and feeds both
+  emitters. SA-text allocates a unique lexical alias for each repeated
+  declaration and records the concrete AST-node alias so natural loop
+  backedge cleanup does not fall back to an out-of-scope source name.
+  `tests/test_unit_loop_body_local_cleanup.sla` now covers two sequential
+  loops declaring `let c`; before the fix it reproduced the downstream
+  `expected Untracked, actual Consumed` Phi signature. Serial focused
+  verification passed: fmt/diff checks; shared Zig 1/1; build 7/7; local SA
+  and strict SAB 2/2 each; official dev install/help. Downstream
+  `test_compile_ts_to_js_text_contract.sla` now gets past
+  `emit_js_emit_enum` and stops later at issue033's
+  `parse_jsx_like_expression` `UseAfterMove`. No full suite was run.
+
 - docs/issue027 imported-macro type and assigned aggregate alias closure
   (2026-07-16): shared imported-macro expression result classification now
   covers the compiler helper macros used by `sla_tsgo`. SA-text identifier
@@ -14,9 +29,9 @@ Update this file every time a compiler feature or demo milestone is completed an
   redeclaration/reassignment return shape. Serial focused verification passed:
   fmt and diff checks; build 7/7; local SA and strict SAB 2/2 each; official
   dev install/help; downstream `tests/test_compiler_contract.sla` SA backend
-  41/41. The remaining `test_compile_ts_to_js_text_contract.sla` failure is a
-  separate `emit_js_emit_enum` loop `PhiStateConflict`, now issue032. No full
-  suite was run.
+  41/41. The later `emit_js_emit_enum` loop `PhiStateConflict` is now fixed as
+  issue032; the current independent blocker is issue033. No full suite was
+  run.
 
 - docs/issue029 fallible extern payload and call-arg temp cleanup closure
   (2026-07-15): by-value raw `ptr` extern params now enter shared

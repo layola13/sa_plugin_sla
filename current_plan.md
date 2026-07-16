@@ -18,6 +18,18 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue032 repeated lexical loop-local register isolation closure
+  (2026-07-16): `src/lowering_rules.zig` now owns the per-function repeated
+  `let` binding scanner previously implemented only in direct SAB. SA-text and
+  SAB both consume it; SA-text assigns a unique lexical alias to every
+  repeated declaration and records the concrete alias for natural loop
+  backedge cleanup. Extended `tests/test_unit_loop_body_local_cleanup.sla`
+  with two sequential loops declaring `let c`; the pre-fix fixture reproduced
+  the downstream `Untracked/Consumed` Phi signature. Serial focused gates
+  passed: fmt/diff checks; shared Zig test 1/1; build 7/7; local SA and strict
+  SAB 2/2 each; official dev install/help. Downstream compile-to-JS SA now
+  gets past `emit_js_emit_enum` and stops later at the separate
+  `parse_jsx_like_expression` issue033 `UseAfterMove`. No full suite was run.
 - Docs/issue027 imported-macro type and assigned aggregate alias closure
   (2026-07-16): shared imported-macro expression result classification now
   covers the compiler helper macros used by `sla_tsgo`. SA-text identifier
@@ -27,9 +39,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
   redeclaration/reassignment return shape. Serial focused verification passed:
   fmt check; diff check; build 7/7; local SA and strict SAB 2/2 each; official
   dev install/help; downstream `tests/test_compiler_contract.sla` SA backend
-  41/41. The second issue027 repro now reaches a distinct
-  `emit_js_emit_enum` loop `PhiStateConflict`, tracked as issue032. No full
-  suite was run.
+  41/41. The second issue027 repro's `emit_js_emit_enum` loop
+  `PhiStateConflict` is now fixed as issue032; its next independent blocker is
+  issue033. No full suite was run.
 - Docs/issue029 fallible extern payload and call-arg cleanup closure
   (2026-07-15): SA-text and direct SAB now keep by-value raw `ptr` extern
   params as by-value values for shared call-argument planning, and SA-text

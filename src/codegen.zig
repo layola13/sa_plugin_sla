@@ -77,6 +77,7 @@ pub const Codegen = struct {
     addressable_bindings: std.StringHashMap(void),
     assigned_bindings: std.StringHashMap(void),
     assigned_value_slots: std.StringHashMap(void),
+    repeated_let_bindings: std.StringHashMap(void),
     global_const_bindings: std.StringHashMap(void),
     global_scalar_consts: std.StringHashMap(*const ast.Node),
     hashmap_key_slots: std.StringHashMap([]const u8),
@@ -108,6 +109,7 @@ pub const Codegen = struct {
     future_readiness: std.StringHashMap(lowering_rules.FutureReadiness),
     executor_task_counts: std.StringHashMap(usize),
     binding_aliases: std.StringHashMap(std.ArrayList([]const u8)),
+    let_binding_aliases: std.AutoHashMap(*const ast.Node, []const u8),
     injected_address_bindings: std.StringHashMap([]const u8),
     loop_continue_labels: std.ArrayList([]const u8),
     loop_break_labels: std.ArrayList([]const u8),
@@ -147,6 +149,7 @@ pub const Codegen = struct {
             .addressable_bindings = std.StringHashMap(void).init(allocator),
             .assigned_bindings = std.StringHashMap(void).init(allocator),
             .assigned_value_slots = std.StringHashMap(void).init(allocator),
+            .repeated_let_bindings = std.StringHashMap(void).init(allocator),
             .global_const_bindings = std.StringHashMap(void).init(allocator),
             .global_scalar_consts = std.StringHashMap(*const ast.Node).init(allocator),
             .hashmap_key_slots = std.StringHashMap([]const u8).init(allocator),
@@ -178,6 +181,7 @@ pub const Codegen = struct {
             .future_readiness = std.StringHashMap(lowering_rules.FutureReadiness).init(allocator),
             .executor_task_counts = std.StringHashMap(usize).init(allocator),
             .binding_aliases = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
+            .let_binding_aliases = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .injected_address_bindings = injected_address_bindings,
             .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
             .loop_break_labels = std.ArrayList([]const u8).init(allocator),
@@ -205,6 +209,7 @@ pub const Codegen = struct {
         self.addressable_bindings.deinit();
         self.assigned_bindings.deinit();
         self.assigned_value_slots.deinit();
+        self.repeated_let_bindings.deinit();
         self.global_const_bindings.deinit();
         self.global_scalar_consts.deinit();
         var key_slot_iter = self.hashmap_key_slots.valueIterator();
@@ -248,6 +253,7 @@ pub const Codegen = struct {
         self.executor_task_counts.deinit();
         self.clearBindingAliases();
         self.binding_aliases.deinit();
+        self.let_binding_aliases.deinit();
         self.injected_address_bindings.deinit();
         self.loop_continue_labels.deinit();
         self.loop_break_labels.deinit();
@@ -7211,6 +7217,7 @@ pub const Codegen = struct {
         self.addressable_bindings.clearRetainingCapacity();
         self.assigned_bindings.clearRetainingCapacity();
         self.assigned_value_slots.clearRetainingCapacity();
+        self.repeated_let_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
@@ -7239,7 +7246,9 @@ pub const Codegen = struct {
         self.executor_task_counts.clearRetainingCapacity();
         self.local_binding_types.clearRetainingCapacity();
         self.clearBindingAliases();
+        self.let_binding_aliases.clearRetainingCapacity();
         self.clearHashMapKeySlots();
+        try lowering_rules.collectRepeatedLetBindings(self.allocator, f.body, &self.repeated_let_bindings);
         try self.collectAssignedBindings(f.body);
         try self.collectAddressableBindings(f.body);
 
@@ -7366,6 +7375,7 @@ pub const Codegen = struct {
         self.addressable_bindings.clearRetainingCapacity();
         self.assigned_bindings.clearRetainingCapacity();
         self.assigned_value_slots.clearRetainingCapacity();
+        self.repeated_let_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
@@ -7394,7 +7404,9 @@ pub const Codegen = struct {
         self.executor_task_counts.clearRetainingCapacity();
         self.local_binding_types.clearRetainingCapacity();
         self.clearBindingAliases();
+        self.let_binding_aliases.clearRetainingCapacity();
         self.clearHashMapKeySlots();
+        try lowering_rules.collectRepeatedLetBindings(self.allocator, t.body, &self.repeated_let_bindings);
         try self.collectAssignedBindings(t.body);
         try self.collectAddressableBindings(t.body);
 
@@ -7702,7 +7714,7 @@ pub const Codegen = struct {
             if (stmt.* == .let_stmt and !isDiscardName(stmt.let_stmt.name)) {
                 const source_name = stmt.let_stmt.name;
                 const resolved_name = self.resolveBindingName(source_name);
-                if (self.stack_alloc_bindings.contains(resolved_name)) {
+                if (self.repeated_let_bindings.contains(source_name) or self.stack_alloc_bindings.contains(resolved_name)) {
                     const alias = try self.pushBindingAlias(source_name);
                     try scoped_aliases.append(source_name);
                     if (self.addressable_bindings.contains(source_name)) {
@@ -7711,6 +7723,7 @@ pub const Codegen = struct {
                     if (self.assigned_bindings.contains(source_name)) {
                         self.assigned_bindings.put(alias, {}) catch return CodegenError.OutOfMemory;
                     }
+                    self.let_binding_aliases.put(stmt, alias) catch return CodegenError.OutOfMemory;
                     var let_copy = stmt.let_stmt;
                     let_copy.name = alias;
                     var node = ast.Node{ .let_stmt = let_copy };
@@ -7734,7 +7747,9 @@ pub const Codegen = struct {
         while (i > 0) {
             i -= 1;
             switch (block[i].*) {
-                .let_stmt => |let| if (!isDiscardName(let.name)) try self.emitRelease(let.name),
+                .let_stmt => |let| if (!isDiscardName(let.name)) {
+                    try self.emitRelease(self.let_binding_aliases.get(block[i]) orelse let.name);
+                },
                 .const_stmt => |c| if (!isDiscardName(c.name)) try self.emitRelease(c.name),
                 .let_destructure_stmt => |let| {
                     if (let.rest_alias) |rest_alias| if (!isDiscardName(rest_alias)) try self.emitRelease(rest_alias);

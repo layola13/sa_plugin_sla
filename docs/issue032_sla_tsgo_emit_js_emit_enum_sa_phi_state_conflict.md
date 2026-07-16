@@ -2,6 +2,8 @@
 
 Date: 2026-07-16
 
+Status: fixed for the tracked `emit_js_emit_enum` Phi signature.
+
 ## Summary
 
 After issue027's imported-macro type recovery and assigned aggregate alias
@@ -41,12 +43,42 @@ about whether register `c` is consumed. The likely compiler surface is
 SA-text loop-body cleanup or binding-state restoration around a conditional
 path inside `emit_js_emit_enum`.
 
-## Required Closure
+## Root Cause And Fix
 
-- Add a focused plugin fixture that reproduces the consumed-vs-untracked loop
-  backedge state without importing the full downstream compiler.
-- Fix the shared lifecycle/control-flow decision when possible; keep concrete
-  SA register emission in `src/codegen.zig`.
-- Verify only the focused fixture and the downstream
-  `test_compile_ts_to_js_text_contract.sla` SA backend serially.
-- Do not run a full unit or Zig test suite for this issue.
+`emit_js_emit_enum` declares `let c` in multiple sequential loops. SA-text
+used the source name as a function-global register name, so a consumed `c`
+state from an earlier lexical binding polluted a later loop whose first
+incoming path expected `c` to be untracked.
+
+Direct SAB already had a per-function repeated-`let` scanner and allocated a
+fresh register for every occurrence. That scanner now lives in shared
+`src/lowering_rules.zig` as `collectRepeatedLetBindings()` and is consumed by
+both emitters. SA-text assigns lexical aliases to repeated `let` declarations
+and records the concrete alias per AST node so natural loop-backedge cleanup
+still targets the generated register after the block alias stack is popped.
+
+`tests/test_unit_loop_body_local_cleanup.sla` now contains two sequential
+loops that both declare `let c`. Before the fix it reproduced:
+
+```text
+error[PhiStateConflict]: incoming control-flow states do not agree
+  register: c
+  expected Untracked, actual Consumed
+```
+
+## Verification
+
+Serial focused verification:
+
+- `zig fmt --check src/codegen.zig src/lowering_rules.zig src/sab_codegen.zig`
+- `git diff --check`
+- focused shared repeated-let Zig test (1/1)
+- `zig build -j1 --summary all` (7/7)
+- local SA-text and strict direct-SAB fixture (2/2 each)
+- official dev plugin install/help
+- downstream `test_compile_ts_to_js_text_contract.sla` no longer reaches the
+  `emit_js_emit_enum` `PhiStateConflict`
+
+The downstream contract now stops later at an independent
+`parse_jsx_like_expression` SA-text `UseAfterMove`, tracked as issue033. No
+full test suite was run.

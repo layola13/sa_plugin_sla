@@ -15,7 +15,35 @@ fn loop_body_local_cleanup(limit: int) -> int {
     return i;
 }
 
+fn sequential_loop_local_cleanup(limit: int) -> int {
+    let first = 0;
+    while first < limit {
+        let c = first;
+        if c == 0 {
+            first = first + 1;
+        } else {
+            break;
+        };
+    }
+
+    let second = 0;
+    while second < limit {
+        let c = second;
+        if c == 0 {
+            second = second + 1;
+        } else {
+            break;
+        };
+    }
+    return first + second;
+}
+
 @test "while body locals are cleaned before natural loop backedge"() {
     let got = loop_body_local_cleanup(5);
     if got != 2 { panic(43001); };
+}
+
+@test "sequential while locals with the same source name stay distinct"() {
+    let got = sequential_loop_local_cleanup(3);
+    if got != 2 { panic(43002); };
 }

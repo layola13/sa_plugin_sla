@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: open
+Status: fixed and verified
 
 ## Summary
 
@@ -69,11 +69,36 @@ The music project can temporarily express the countdown without a separate
 
 ## Required Closure
 
-- Add a focused compiler fixture with a loop-local scalar assigned into a
+- [x] Add a focused compiler fixture with a loop-local scalar assigned into a
   loop-carried scalar before the back edge.
-- Ensure assignment lowering and scope cleanup agree on ownership of the
+- [x] Ensure assignment lowering and scope cleanup agree on ownership of the
   loop-local value and emit exactly one release.
-- Pass the focused generated-SA fixture.
-- Pass the downstream `sla_music_cli` command above without a source
+- [x] Pass the focused generated-SA fixture.
+- [x] Pass the downstream `sla_music_cli` command above without a source
   workaround.
-- Confirm direct SAB behavior for the focused fixture.
+- [x] Confirm direct SAB behavior for the focused fixture.
+
+## Resolution
+
+`src/codegen.zig` now tracks top-level locals declared inside loop bodies and
+routes `break`/`continue` cleanup through the same loop-local cleanup path used
+on natural backedges. Natural backedges use the normal `emitRelease` consumed
+guard, while branch cleanup can still force primitive releases where the SA VM
+expects an explicit cleanup on that edge.
+
+Focused verification:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_loop_body_local_cleanup.sla \
+  --test-backend sa --jobs 1 --trace-panic
+
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_loop_body_local_cleanup.sla \
+  --jobs 1 --trace-panic
+```
+
+Downstream verification from `/home/vscode/projects/sla_music_cli`:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test src/byte.sla --test-backend sa --jobs 1 --trace-panic
+SA_PLUGIN_DEV=1 sa sla test src/music_lower.sla --test-backend sa --jobs 1 --trace-panic
+```

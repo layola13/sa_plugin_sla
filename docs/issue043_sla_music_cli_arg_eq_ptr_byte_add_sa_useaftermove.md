@@ -2,8 +2,8 @@
 
 ## Status
 
-Open. Discovered while hardening `/home/vscode/projects/sla_music_cli` CLI
-argument scanning on 2026-07-16.
+Fixed/current-non-repro on 2026-07-16. Discovered while hardening
+`/home/vscode/projects/sla_music_cli` CLI argument scanning on 2026-07-16.
 
 ## Reproduction
 
@@ -61,3 +61,26 @@ general raw pointer temporary lifetime bug for SA-text generated code.
 The music repo keeps the CLI scan hardening in ordinary checked code but avoids
 leaving a focused `src/main.sla` test that exercises the failing backend shape.
 Re-enable that focused test after the compiler fix lands.
+
+## 2026-07-16 Current Compiler Reverification
+
+The focused music-side helper test is now present in
+`/home/vscode/projects/sla_music_cli/src/main.sla` and passes under both
+generated-SA and strict direct-SAB backends with the current installed dev
+plugin. No new compiler source change was needed in this slice; the issue is
+closed as a current-state revalidation after later raw-pointer temporary and
+call-argument cleanup fixes.
+
+Serial focused verification only; no full test suite was run:
+
+```sh
+cd /home/vscode/projects/sla_music_cli
+
+SA_PLUGIN_DEV=1 \
+  sa sla test src/main.sla --test-backend sa --jobs 1 --trace-panic
+
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 \
+  sa sla test src/main.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+Both commands passed `music cli output flag scan helpers` 1/1.

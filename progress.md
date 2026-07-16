@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue043 `sla_music_cli` `cli_arg_eq` raw pointer byte-add SA
+  UseAfterMove current-non-repro closure (2026-07-16): the focused
+  `music cli output flag scan helpers` test is now present in
+  `/home/vscode/projects/sla_music_cli/src/main.sla` and passes against the
+  installed dev plugin. Serial focused verification passed:
+  `SA_PLUGIN_DEV=1 sa sla test src/main.sla --test-backend sa --jobs 1
+  --trace-panic` 1/1 and `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test
+  src/main.sla --test-backend sab --jobs 1 --trace-panic` 1/1. No compiler
+  source change and no full suite were run.
+
 - docs/issue016 scodex pointer/string scanner direct-SAB current-non-repro
   closure (2026-07-16): current `sla_codex` paths moved from `packages/` to
   `crates/`, and the historical no-diagnostic direct-SAB exit no longer

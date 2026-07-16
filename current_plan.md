@@ -18,6 +18,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue043 `sla_music_cli` `cli_arg_eq` raw pointer byte-add generated-SA
+  UseAfterMove current-non-repro closure (2026-07-16): the focused
+  `music cli output flag scan helpers` test in
+  `/home/vscode/projects/sla_music_cli/src/main.sla` now passes under both
+  installed/dev generated-SA and strict direct-SAB backends. Focused serial
+  verification passed 1/1 for `src/main.sla --test-backend sa` and 1/1 for
+  `SLA_SAB_NO_FALLBACK=1 src/main.sla --test-backend sab`. No compiler source
+  change and no full suite were run.
 - Docs/issue016 scodex pointer/string scanner direct-SAB current-non-repro
   closure (2026-07-16): the current `sla_codex` issue paths now live under
   `crates/`, and the historical direct-SAB empty-output exit no longer

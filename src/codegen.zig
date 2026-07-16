@@ -10194,7 +10194,7 @@ pub const Codegen = struct {
                         const layout = fieldLayout(struct_decl, field.field_name) orelse return CodegenError.CodegenError;
                         self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ base_reg, layout.offset, val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                     }
-                    if (exprResultNeedsRelease(field.expr)) try self.emitRelease(base_reg);
+                    if (self.fieldBaseResultNeedsRelease(field.expr, base_reg)) try self.emitRelease(base_reg);
                     try self.finishStoredValueAfterSlotStore(assign.value, target_ty, val_reg);
                 } else if (assign.target.* == .identifier) {
                     const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;

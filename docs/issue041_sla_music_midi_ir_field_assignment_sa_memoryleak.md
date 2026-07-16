@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: open
+Status: fixed
 
 ## Summary
 
@@ -57,12 +57,38 @@ remains active until the test function return.
 The issue is distinct from the music project's metadata validation behavior:
 the equivalent one-shot constructor form compiles and passes.
 
+## Fix
+
+Fixed in `src/codegen.zig` by applying the shared
+`fieldBaseResultNeedsRelease()` decision to ordinary SA-text field assignment
+bases. Assigned aggregate locals with nested owner fields are stored in
+assigned value slots; reading such a local for `local.scalar = value` produces a
+temporary base register that must be released after the store. Resolved lexical
+bindings are still kept alive by the shared field-base rule.
+
+Added focused coverage in `tests/test_unit_field_assign_move_cleanup.sla`:
+`field assign scalar on vec aggregate releases base temp`.
+
 ## Required Closure
 
-- [ ] Add a focused compiler fixture with a local struct containing a `Vec`
+- [x] Add a focused compiler fixture with a local struct containing a `Vec`
   field, followed by scalar field assignment and a borrowed validation call.
-- [ ] Ensure generated-SA cleanup consumes/releases any temporary produced by
+- [x] Ensure generated-SA cleanup consumes/releases any temporary produced by
   the field assignment before function exit.
-- [ ] Verify the focused fixture with `--test-backend sa`.
-- [ ] Re-run the downstream `sla_music_cli` repro shape without the
-  `midi_ir_new_ex` workaround.
+- [x] Verify the focused fixture with `--test-backend sa`.
+- [x] Re-run the downstream `sla_music_cli` related SA files. Current
+  `src/midi.sla` retains the `midi_ir_new_ex` workaround for the original test,
+  while `src/music_ir.sla` still contains the scalar field-assignment shape;
+  both pass with the fixed compiler.
+
+## Verification
+
+- `zig fmt --check src/codegen.zig`
+- `zig build -j1 --summary all` 7/7
+- `./zig-out/bin/sla-local-cli sla test tests/test_unit_field_assign_move_cleanup.sla --test-backend sa --jobs 1 --trace-panic` 4/4
+- `SA_PLUGIN_DEV=1 sa plugin install --dev .`
+- `SA_PLUGIN_DEV=1 sa sla help`
+- `SA_PLUGIN_DEV=1 sa sla test tests/test_unit_field_assign_move_cleanup.sla --test-backend sa --jobs 1 --trace-panic` 4/4
+- From `/home/vscode/projects/sla_music_cli`:
+  - `SA_PLUGIN_DEV=1 sa sla test src/midi.sla --test-backend sa --jobs 1 --trace-panic` 38/38
+  - `SA_PLUGIN_DEV=1 sa sla test src/music_ir.sla --test-backend sa --jobs 1 --trace-panic` 26/26

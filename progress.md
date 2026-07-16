@@ -4,6 +4,22 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue041 MidiIR scalar field-assignment SA cleanup closure
+  (2026-07-16): fixed the generated-SA leak where assigning a scalar field on
+  an assigned value-slot aggregate local left the temporary base register live
+  at test exit. Ordinary SA-text field assignment now uses the shared
+  `fieldBaseResultNeedsRelease()` rule already used by field reads, so a
+  loaded value-slot temp is released after the store while resolved lexical
+  aliases remain live. Added
+  `tests/test_unit_field_assign_move_cleanup.sla` coverage for a struct with a
+  `Vec` field, scalar metadata assignment, and borrowed validation call.
+  Serial focused gates passed: `zig fmt --check src/codegen.zig`; `zig build
+  -j1 --summary all` 7/7; local and installed/dev SA fixture 4/4 each;
+  official dev install/help; downstream
+  `/home/vscode/projects/sla_music_cli/src/midi.sla` SA backend 38/38 and
+  `/home/vscode/projects/sla_music_cli/src/music_ir.sla` SA backend 26/26.
+  No full suite was run.
+
 - docs/issue018 scodex protocol JSON scanner cleanup closure (2026-07-16):
   direct SAB now handles raw `ptr` locals initialized from `STR_PTR(identifier)`
   and then borrowed as `&ptr`: non-owning raw pointer temps stored into

@@ -18,6 +18,18 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue041 MidiIR scalar field-assignment SA cleanup closure
+  (2026-07-16): SA-text ordinary field assignment now uses the shared
+  `fieldBaseResultNeedsRelease()` decision for the assignment base. This
+  releases the temporary produced when an assigned value-slot aggregate local
+  with nested owner fields is loaded for `local.scalar = value`, while keeping
+  resolved lexical binding aliases alive. Added
+  `tests/test_unit_field_assign_move_cleanup.sla` coverage for a local struct
+  containing `Vec`, a scalar field assignment, and a borrowed validation call.
+  Serial focused verification passed: fmt check; build 7/7; local and
+  installed/dev SA fixture 4/4 each; official dev install/help; downstream
+  `sla_music_cli/src/midi.sla` SA backend 38/38 and `src/music_ir.sla` SA
+  backend 26/26. No full suite was run.
 - Docs/issue018 scodex protocol JSON scanner cleanup closure (2026-07-16):
   direct SAB now consumes non-owning raw pointer temps stored into borrowed
   stack-slot bindings with a normal release, and `*(&ptr)` deref loads use the

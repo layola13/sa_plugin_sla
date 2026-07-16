@@ -3078,6 +3078,23 @@ pub const Codegen = struct {
         return try self.makeSliceType(elem);
     }
 
+    fn makeImportedMacroExpressionResultType(
+        self: *Codegen,
+        kind: lowering_rules.ImportedMacroExpressionResultKind,
+    ) CodegenError!*const ast.Type {
+        return switch (kind) {
+            .raw_pointer => try self.makePrimitiveType(.void_type),
+            .boolean => try self.makePrimitiveType(.boolean),
+            .u8 => try self.makePrimitiveType(.u8),
+            .u32 => try self.makePrimitiveType(.u32),
+            .u64 => try self.makePrimitiveType(.u64),
+            .i32 => try self.makePrimitiveType(.i32),
+            .i64 => try self.makePrimitiveType(.i64),
+            .f64 => try self.makePrimitiveType(.f64),
+            .slice_u8 => try self.makeSliceU8Type(),
+        };
+    }
+
     fn resolvedTypeForExpr(self: *Codegen, expr: *const ast.Node) ?*const ast.Type {
         if (self.tc.expr_types.get(expr)) |ty| {
             if (ty.* != .infer) return ty;
@@ -3098,46 +3115,8 @@ pub const Codegen = struct {
                 }
                 if (self.tc.imported_macros.get(call.func_name)) |macro| {
                     if (macro.leading_outputs == 1 and call.args.len + 1 == macro.arity) {
-                        if (std.mem.eql(u8, call.func_name, "ENV_ARGS_JSON") or
-                            std.mem.eql(u8, call.func_name, "ENV_VARS_JSON") or
-                            std.mem.eql(u8, call.func_name, "ENV_SPLIT_PATHS_JSON") or
-                            std.mem.eql(u8, call.func_name, "ENV_JOIN_PATHS_JSON"))
-                        {
-                            break :blk self.makePrimitiveType(.u64) catch null;
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_PTR") or
-                            std.mem.endsWith(u8, call.func_name, "_DATA") or
-                            std.mem.endsWith(u8, call.func_name, "_AS_PTR") or
-                            std.mem.endsWith(u8, call.func_name, "_ADD") or
-                            std.mem.endsWith(u8, call.func_name, "_NULL"))
-                        {
-                            break :blk self.makePrimitiveType(.void_type) catch null;
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_LEN") or
-                            std.mem.endsWith(u8, call.func_name, "_COUNT"))
-                        {
-                            break :blk self.makePrimitiveType(.i64) catch null;
-                        }
-                        if (std.mem.eql(u8, call.func_name, "JSON_PARSE")) {
-                            break :blk self.makePrimitiveType(.void_type) catch null;
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_KIND")) {
-                            break :blk self.makePrimitiveType(.u32) catch null;
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_READ_U8")) {
-                            break :blk self.makePrimitiveType(.u8) catch null;
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_READ_U64")) {
-                            break :blk self.makePrimitiveType(.u64) catch null;
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_READ_I32")) {
-                            break :blk self.makePrimitiveType(.i32) catch null;
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_FROM_PARTS") or
-                            std.mem.endsWith(u8, call.func_name, "_AS_BYTES") or
-                            std.mem.endsWith(u8, call.func_name, "_BYTES"))
-                        {
-                            break :blk self.makeSliceU8Type() catch null;
+                        if (lowering_rules.importedMacroExpressionResultKind(call.func_name)) |kind| {
+                            break :blk self.makeImportedMacroExpressionResultType(kind) catch null;
                         }
                     }
                 }

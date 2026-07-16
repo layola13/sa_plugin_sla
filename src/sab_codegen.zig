@@ -2851,7 +2851,7 @@ pub const Codegen = struct {
         if (cap == .raw) return .skip;
         if (cap == .borrow) return .release;
         const ty = local.ty orelse return .skip;
-        if (cap == .by_value and (try primType(ty)) == .ptr) return .skip;
+        if (cap == .by_value and (try primType(ty)) == .ptr) return .consume;
         if (cap == .by_value and self.typeIsCopyValue(ty)) return .skip;
         if (ty.* == .fn_ptr) return .consume;
         if (self.typeIsCopyValue(ty)) return .consume;
@@ -12473,6 +12473,12 @@ pub const Codegen = struct {
         return arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg);
     }
 
+    fn stackSlotIdentifierTempNeedsConsumeForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: u32) bool {
+        const target_param = param orelse return false;
+        if (!lowering_rules.byValueRawPointerParam(target_param)) return false;
+        return arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg);
+    }
+
     fn genPlannedSabCallArg(
         self: *Codegen,
         arg: *const ast.Node,
@@ -12607,6 +12613,7 @@ pub const Codegen = struct {
                     };
                 }
                 const release_reg: ?u32 = if (materialization.release_after_call or self.stackSlotIdentifierTempNeedsReleaseForParam(param, arg, arg_reg)) arg_reg else null;
+                const consume_temp = self.stackSlotIdentifierTempNeedsConsumeForParam(param, arg, arg_reg);
                 const consumption = lowering_rules.planValueCallArgConsumption(
                     arg,
                     param,
@@ -12622,7 +12629,7 @@ pub const Codegen = struct {
                 break :blk .{
                     .operand = self.symbols.items[arg_reg],
                     .release_reg = if (consume_source) null else release_reg,
-                    .consume_reg = if (consume_source) arg_reg else null,
+                    .consume_reg = if (consume_source or consume_temp) arg_reg else null,
                 };
             },
         };
@@ -12747,7 +12754,8 @@ pub const Codegen = struct {
                         .release_reg = if (materialization.release_after_call) arg_reg else null,
                     };
                 }
-                const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
+                const release_reg: ?u32 = if (materialization.release_after_call or self.stackSlotIdentifierTempNeedsReleaseForParam(param, effective_arg, arg_reg)) arg_reg else null;
+                const consume_temp = self.stackSlotIdentifierTempNeedsConsumeForParam(param, effective_arg, arg_reg);
                 const effective_ty = self.tc.expr_types.get(effective_arg);
                 const consumption = lowering_rules.planValueCallArgConsumption(
                     effective_arg,
@@ -12764,7 +12772,7 @@ pub const Codegen = struct {
                 break :blk .{
                     .operand = self.symbols.items[arg_reg],
                     .release_reg = if (consume_source) null else release_reg,
-                    .consume_reg = if (consume_source) arg_reg else null,
+                    .consume_reg = if (consume_source or consume_temp) arg_reg else null,
                 };
             },
         };

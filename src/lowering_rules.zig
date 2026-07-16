@@ -1613,6 +1613,83 @@ pub fn importedMacroUsesExpressionOutput(macro: type_checker.ImportedMacro, arg_
     return macro.leading_outputs == 1 and arg_count + 1 == macro.arity;
 }
 
+pub const ImportedMacroExpressionResultKind = enum {
+    raw_pointer,
+    boolean,
+    u8,
+    u32,
+    u64,
+    i32,
+    i64,
+    f64,
+    slice_u8,
+};
+
+pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroExpressionResultKind {
+    if (std.mem.eql(u8, macro_name, "ENV_ARGS_JSON") or
+        std.mem.eql(u8, macro_name, "ENV_VARS_JSON") or
+        std.mem.eql(u8, macro_name, "ENV_SPLIT_PATHS_JSON") or
+        std.mem.eql(u8, macro_name, "ENV_JOIN_PATHS_JSON") or
+        std.mem.eql(u8, macro_name, "SLA_FS_OPEN_READ") or
+        std.mem.eql(u8, macro_name, "SLA_FS_READ_TO_STRING") or
+        std.mem.eql(u8, macro_name, "SLA_FS_READ_FILE") or
+        std.mem.eql(u8, macro_name, "SLA_FS_METADATA"))
+    {
+        return .u64;
+    }
+    if (std.mem.eql(u8, macro_name, "JSON_PARSE") or
+        std.mem.eql(u8, macro_name, "SLA_BUF_ALLOC") or
+        std.mem.eql(u8, macro_name, "SLA_JSON_OBJECT_GET") or
+        std.mem.eql(u8, macro_name, "SLA_JSON_ARRAY_GET") or
+        std.mem.eql(u8, macro_name, "SLA_JSON_STRINGIFY") or
+        std.mem.endsWith(u8, macro_name, "_PTR") or
+        std.mem.endsWith(u8, macro_name, "_DATA") or
+        std.mem.endsWith(u8, macro_name, "_AS_PTR") or
+        std.mem.endsWith(u8, macro_name, "_ADD") or
+        std.mem.endsWith(u8, macro_name, "_NULL"))
+    {
+        return .raw_pointer;
+    }
+    if (std.mem.startsWith(u8, macro_name, "JSON_IS_")) return .boolean;
+    if (std.mem.eql(u8, macro_name, "SLA_BYTE_AT") or
+        std.mem.eql(u8, macro_name, "JSON_AS_BOOL") or
+        std.mem.eql(u8, macro_name, "SLA_JSON_AS_BOOL") or
+        std.mem.eql(u8, macro_name, "SLA_FS_EXISTS") or
+        std.mem.eql(u8, macro_name, "SLA_FS_IS_FILE") or
+        std.mem.eql(u8, macro_name, "SLA_FS_IS_DIR") or
+        std.mem.endsWith(u8, macro_name, "_GET_BOOL") or
+        std.mem.endsWith(u8, macro_name, "_READ_U8"))
+    {
+        return .u8;
+    }
+    if (std.mem.endsWith(u8, macro_name, "_KIND")) return .u32;
+    if (std.mem.endsWith(u8, macro_name, "_READ_U64")) return .u64;
+    if (std.mem.endsWith(u8, macro_name, "_READ_I32")) return .i32;
+    if (std.mem.eql(u8, macro_name, "JSON_AS_I64") or
+        std.mem.eql(u8, macro_name, "SLA_JSON_AS_I64") or
+        std.mem.endsWith(u8, macro_name, "_GET_I64"))
+    {
+        return .i64;
+    }
+    if (std.mem.eql(u8, macro_name, "JSON_AS_F64") or
+        std.mem.endsWith(u8, macro_name, "_GET_F64"))
+    {
+        return .f64;
+    }
+    if (std.mem.endsWith(u8, macro_name, "_LEN") or
+        std.mem.endsWith(u8, macro_name, "_COUNT"))
+    {
+        return .i64;
+    }
+    if (std.mem.endsWith(u8, macro_name, "_FROM_PARTS") or
+        std.mem.endsWith(u8, macro_name, "_AS_BYTES") or
+        std.mem.endsWith(u8, macro_name, "_BYTES"))
+    {
+        return .slice_u8;
+    }
+    return null;
+}
+
 pub fn planImportedMacroCall(tc: *type_checker.TypeChecker, call: ast.CallExpr) ?ImportedMacroCallPlan {
     if (call.associated_target != null) return null;
     const macro = tc.imported_macros.get(call.func_name) orelse return null;
@@ -3469,6 +3546,18 @@ test "shared imported macro call plan classifies addressable arg actions" {
     try std.testing.expectEqualStrings("other", expression_output_plan.addressableIdentifierArgName(0, &other_ident).?);
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.reuse_existing_addressable, expression_output_plan.planAddressableArgAction(0, true));
     try std.testing.expectEqual(ImportedMacroAddressableArgAction.materialize_stack_slot, expression_output_plan.planAddressableArgAction(0, false));
+}
+
+test "shared imported macro expression result kinds cover compiler helper macros" {
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.raw_pointer, importedMacroExpressionResultKind("SLA_BUF_ALLOC").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u8, importedMacroExpressionResultKind("SLA_BYTE_AT").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.raw_pointer, importedMacroExpressionResultKind("SLA_JSON_OBJECT_GET").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.raw_pointer, importedMacroExpressionResultKind("SLA_JSON_ARRAY_GET").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u32, importedMacroExpressionResultKind("JSON_KIND").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.i64, importedMacroExpressionResultKind("SLA_JSON_AS_I64").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u8, importedMacroExpressionResultKind("SLA_JSON_AS_BOOL").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.u64, importedMacroExpressionResultKind("SLA_FS_READ_TO_STRING").?);
+    try std.testing.expect(importedMacroExpressionResultKind("SLA_UNKNOWN_HELPER") == null);
 }
 
 test "shared borrowed binding storage plan keeps primitive address-taken bindings stack backed" {

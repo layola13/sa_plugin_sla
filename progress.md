@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue031 scodex main direct-SAB workspace import aggregate MemoryLeak
+  current-non-repro closure (2026-07-17): the tracked unfiltered
+  `crates/scodex-cli/src/main.sla` strict-SAB aggregate leak is covered by the
+  later issue016 scodex revalidation. Installed/dev strict SAB passed
+  `crates/scodex-cli/src/main.sla` 78/78, adjacent scodex crate fixtures, SAB
+  workspace generation, and build-workspace. No compiler source change and no
+  full suite were run for this document closure. The current `sla_codex`
+  checkout is dirty, so no fresh broad downstream rerun was used as closure
+  evidence.
+
 - docs/issue021 direct-SAB early-return helper-chain ptr PhiStateConflict
   current-non-repro closure (2026-07-17): current direct-SAB branch lowering
   scopes branch-local release state before merge, covering reusable `ptr`

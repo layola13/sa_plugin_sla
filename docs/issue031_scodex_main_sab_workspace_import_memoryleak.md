@@ -2,6 +2,8 @@
 
 Date: 2026-07-16
 
+Status: fixed/current-non-repro on 2026-07-17; covered by issue016 scodex strict-SAB revalidation
+
 ## Summary
 
 While restoring direct `http-client` null-response fail-closed extern coverage
@@ -60,3 +62,25 @@ Result: `59 passed; 0 failed; 0 skipped`.
 focused SAB gates, but cannot promote the full top-level CLI direct-SAB
 aggregate to a required gate until this workspace import/test aggregate leak is
 diagnosed or mapped to source.
+
+## Current Resolution
+
+The full top-level CLI aggregate was later revalidated as part of the issue016
+scodex pointer/string scanner closure. Current paths moved from `packages/` to
+`crates/`, and installed/dev strict direct-SAB verification passed:
+
+- `crates/scodex-cli/src/args.sla` 11/11.
+- `crates/scodex-config/src/config.sla` 15/15.
+- `crates/scodex-app-server-protocol/src/protocol_v2.sla` 8/8.
+- `crates/scodex-cli/src/main.sla` 78/78.
+- `sa sla sab workspace -p scodex-cli`.
+- `sa sla build-workspace -p scodex-cli`.
+
+That closes this issue's tracked unfiltered `crates/scodex-cli/src/main.sla`
+strict-SAB aggregate leak as a current non-repro. No compiler source change is
+associated with this document closure, and no full suite was run for this
+closure slice.
+
+The current `/home/vscode/projects/sla_codex` checkout is dirty, so this update
+records the already-completed issue016 installed/dev evidence rather than
+running a fresh broad downstream aggregate over uncommitted project changes.

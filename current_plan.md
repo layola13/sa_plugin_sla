@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue031 scodex main direct-SAB workspace import aggregate MemoryLeak
+  current-non-repro closure (2026-07-17): the unfiltered
+  `crates/scodex-cli/src/main.sla` strict-SAB aggregate leak is covered by the
+  later issue016 scodex revalidation, where installed/dev strict SAB passed
+  `crates/scodex-cli/src/main.sla` 78/78 plus adjacent scodex crates and
+  workspace/build-workspace gates. No compiler source change and no full suite
+  were run for this document closure. The current `sla_codex` checkout is dirty,
+  so this records existing issue016 installed/dev evidence rather than a fresh
+  broad downstream rerun.
 - Docs/issue021 direct-SAB early-return helper-chain ptr PhiStateConflict
   current-non-repro closure (2026-07-17): current direct-SAB branch lowering
   scopes per-branch local and release state before merge, so early-return

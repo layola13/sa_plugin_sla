@@ -4,6 +4,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue status sweep (2026-07-17): added explicit fixed/verified status
+  headers to early issue001-009/029 documents, marked issue011's original
+  `sf_pos` RegisterRedefinition surface fixed/current-non-repro while leaving
+  the later `vm_table_set_index` / `tm` UseAfterMove as a separate future
+  reducer, and corrected the issue029 task text to match the shared
+  `abiFalliblePayloadOffset` contract (`i32!` payload at `+4`, 8-byte payloads
+  at `+8`). Focused installed/dev issue001 fixture passed 2/2 under SA and 2/2
+  under strict SAB. No full suite was run.
+
 - docs/issue019 source-growth cross-test instability closure (2026-07-17):
   current `sla_music_cli` already contains the historical source-growth shapes
   that originally triggered unrelated failures: full 13-byte MIDI

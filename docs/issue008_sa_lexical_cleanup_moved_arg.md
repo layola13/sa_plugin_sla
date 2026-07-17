@@ -1,5 +1,7 @@
 # issue008: SA lexical cleanup re-released moved call arguments
 
+Status: fixed/verified for the generated-SA lexical cleanup surface.
+
 ## Summary
 
 The generated SA backend could emit a scope cleanup for a local aggregate after

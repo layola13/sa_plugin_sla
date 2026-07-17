@@ -1,5 +1,8 @@
 # Issue 007: fallible extern payload calls were treated as raw scalar calls
 
+Status: fixed/verified. Dev-plugin SA and strict direct-SAB focused regressions
+are recorded below.
+
 ## Symptom
 
 Direct SLA calls to `.sai` externs declared with a fallible return, for example:

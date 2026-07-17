@@ -1,7 +1,11 @@
 # issue011: `vm_builtin_string_format` 中反复自赋值的 scalar local 触发 `RegisterRedefinition`
 
 日期：2026-07-13
-状态：原 `sf_pos` RegisterRedefinition surface 当前未复现；`lua_sla/src_lua/lvm.sla` 仍被后续 `vm_table_set_index` / `tm` UseAfterMove 阻塞，未拿到独立最小 repro。
+状态：fixed/current-non-repro for the original `sf_pos`
+RegisterRedefinition surface. `lua_sla/src_lua/lvm.sla` 的后续
+`vm_table_set_index` / `tm` UseAfterMove 是新的大型下游 blocker，目前没有独立
+最小 repro；后续应另开 issue 或先提取最小复现，不再把它归因到本 issue 的
+scalar self-reassign register 重定义问题。
 
 ## Summary
 
@@ -26,7 +30,10 @@ error[UseAfterMove]: moved value is no longer usable
   state: expected Consumed, actual Consumed
 ```
 
-因此本文原始 scalar self-reassign `RegisterRedefinition` 证据应视为历史 surface；当前仍开放的是同一大型 `lvm.sla` 后续 move-state blocker。后续应基于 `vm_table_set_index` / `tm` 提取新的最小 repro，或另开 `UseAfterMove` 工单；不要再把当前失败归因到 `sf_pos` self-reassign。
+因此本文原始 scalar self-reassign `RegisterRedefinition` 证据应视为历史
+surface，issue011 按 fixed/current-non-repro 关闭。当前大型 `lvm.sla` 仍有后续
+move-state blocker，但应基于 `vm_table_set_index` / `tm` 提取新的最小 repro，或
+另开 `UseAfterMove` 工单；不要再把当前失败归因到 `sf_pos` self-reassign。
 
 ```text
 error[RegisterRedefinition]: register is already live
@@ -121,4 +128,6 @@ timeout 1200 env SA_PLUGIN_DEV=1 sa sla test src_lua/lvm.sla --test-backend sa
 # 5 分钟左右 sla codegen -> sa test 后 2 分钟 -> trap dump on stderr.
 ```
 
-待找出 minimal repro 后补  `tests/test_unit_scalar_reassign_register_redefinition.sla`; 现有 repro 单独不 复现 trap (需 new finding).
+原始 `sf_pos` surface 当前不再要求新增最小回归。若后续 `tm` UseAfterMove 能
+提取稳定 reducer，应在新的 issue 中补对应 fixture；不要复用
+`tests/test_unit_scalar_reassign_register_redefinition.sla` 作为本 issue 的闭环条件。

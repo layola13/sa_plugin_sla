@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue status sweep (2026-07-17): numbered `docs/issue*.md` files now
+  have explicit current status headers. Added fixed/verified status to early
+  issue001-009/029 documents, marked issue011's original `sf_pos`
+  RegisterRedefinition surface fixed/current-non-repro while keeping the later
+  `vm_table_set_index` / `tm` UseAfterMove as a separate future reducer, and
+  corrected the issue029 task text to match `abiFalliblePayloadOffset`
+  (`i32!` payload at `+4`, 8-byte payloads at `+8`). Focused issue001 SA and
+  strict-SAB fixture passed 2/2 each. No full suite was run.
+
 - Docs/issue019 source-growth cross-test instability closure (2026-07-17):
   the current `sla_music_cli` source already contains the two documented growth
   shapes: full 13-byte MIDI indicator-header checking and expanded music-patch

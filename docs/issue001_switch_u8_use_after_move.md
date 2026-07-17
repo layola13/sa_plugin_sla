@@ -2,6 +2,9 @@
 
 Date: 2026-07-13
 
+Status: fixed/current-non-repro. Rechecked on 2026-07-17 with focused
+installed/dev SA and strict direct-SAB fixtures.
+
 ## Context
 
 While implementing the pure-SLA music parser in `/home/vscode/projects/sla_music_cli`,
@@ -65,3 +68,18 @@ same local after the switch target has already been consumed/released.
 Avoid `switch` over a local primitive in the music parser for now. Use enum
 classification helpers plus exhaustive `match`, which is covered by
 `tests/test_unit_enum_match.sla`.
+
+## Resolution
+
+The switch-expression statement and local-scrutinee cleanup paths are covered by
+the later direct-SAB switch lowering and cleanup fixes. The focused regression is
+`tests/test_unit_switch_local_scrutinee_cleanup.sla`.
+
+2026-07-17 serial focused verification:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_switch_local_scrutinee_cleanup.sla --test-backend sa --jobs 1 --trace-panic
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_switch_local_scrutinee_cleanup.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+Both backends passed 2/2. No full suite was run.

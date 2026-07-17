@@ -1,5 +1,8 @@
 # issue003: helper-returned struct stored in Vec lost pointer-backed field borrow
 
+Status: fixed/verified. Dev-plugin SA and strict direct-SAB focused regressions
+are recorded below.
+
 ## Symptom
 
 Parsing `PushTrack`-style values stored in `Vec<T>` failed when later borrowing a

@@ -1,5 +1,8 @@
 # issue006: direct SAB double-releases imported macro move arguments
 
+Status: fixed/verified for the imported-macro move-argument double-release
+surface.
+
 ## Summary
 
 Direct SAB lowered imported macros with value arguments as release-after-call

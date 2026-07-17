@@ -1,5 +1,7 @@
 # issue005: direct SAB did not lower switch expression statements
 
+Status: fixed/verified for strict direct SAB switch expression statements.
+
 ## Symptom
 
 `switch` used as a standalone statement passed normal `sa sla test` because the

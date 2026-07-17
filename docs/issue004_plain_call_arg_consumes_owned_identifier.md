@@ -1,5 +1,8 @@
 # issue004: plain by-value call args did not consume owned identifiers
 
+Status: fixed/verified. Dev-plugin SA and strict direct-SAB focused regressions
+are recorded below.
+
 ## Symptom
 
 A plain by-value function call could type-check, but the source binding stayed

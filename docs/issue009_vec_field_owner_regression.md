@@ -2,6 +2,9 @@
 
 Date: 2026-07-14
 
+Status: fixed/verified. Dev-plugin strict direct-SAB Vec field owner regressions
+are recorded below.
+
 ## Context
 
 While extending `/home/vscode/projects/sla_music_cli`, byte-reader tests exposed

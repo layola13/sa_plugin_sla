@@ -2,6 +2,9 @@
 
 Date: 2026-07-13
 
+Status: fixed/verified. Dev-plugin SA and strict direct-SAB focused regressions
+are recorded below.
+
 ## Context
 
 While implementing `/home/vscode/projects/sla_music_cli/src/music_parse.sla`, a

@@ -1,5 +1,9 @@
 # Issue 029: Fallible extern i32 payload and call-arg temp cleanup
 
+Status: fixed/verified. SA-text and direct SAB share
+`lowering_rules.abiFalliblePayloadOffset`; focused regressions are recorded
+below.
+
 ## Symptom
 
 SLA code that called `.sai` externs returning `i32!` could trip capability or cleanup failures while passing generated pointer/stack-slot temporaries through extern calls.

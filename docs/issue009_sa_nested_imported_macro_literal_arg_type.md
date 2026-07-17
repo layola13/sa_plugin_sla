@@ -1,5 +1,8 @@
 # issue009: SA codegen missed literal types inside nested imported macros
 
+Status: fixed/verified for the SA-text nested imported-macro literal type
+surface.
+
 ## Summary
 
 The SA-text backend could type-check a nested imported macro call but then fail

@@ -18,6 +18,17 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue028 filtered strict-SAB child selection passthrough mitigation
+  (2026-07-17): compiled-test passthrough now preserves `--filter` /
+  `--filter=...` when invoking the child `sa test` process for generated
+  `.sab` / `.test.sa` inputs, while still stripping plugin-private
+  `--test-backend`. This lets SCI's `.sab` runner see explicit test selection
+  and use its selected-test path for filtered strict-SAB runs. The original
+  unfiltered `test_real_ts_project_reference_flow.sla` timeout remains open;
+  a 60s profiled rerun in the dirty `sla_tsgo` checkout timed out during the
+  nested `sa test <generated.sab>` phase before any pass summary. Focused Zig
+  filter `sla compiled test passthrough keeps test selection for child runner`
+  passed 2/2. No full tests were run.
 - Docs/issue047 source-aware chord hook-span SA-text move-state closure
   (2026-07-17): field-address borrow cleanup no longer treats a generated
   `tmp_*` register as a disposable source temp when that register is the

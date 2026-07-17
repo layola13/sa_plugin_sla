@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue025 sa_std buffer-free consumed-handle cleanup reconciliation
+  (2026-07-17): the issue is fixed in source and now marked
+  focused-regression verified rather than pending as an open compiler bug.
+  Current serial verification passed
+  `zig build test -j1 -Dtest-filter='extern move' --summary all` 3/3,
+  covering extern move args consumed in typechecker cleanup and SA-text
+  field-temp cleanup. A fresh SA/SAB fixture rerun was not started because an
+  external `sa sla test` process was active; previous issue evidence still
+  records the downstream `sla-hub` bridge checks.
 - Docs/issue016/020 scodex pointer/response-reader stale-open reconciliation
   (2026-07-17): issue016 was already fixed/current-non-repro, but old
   2026-07-14/15 sections still said it remained open; issue020 lacked a current

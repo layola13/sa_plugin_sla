@@ -4,6 +4,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue025 sa_std buffer-free consumed-handle cleanup reconciliation
+  (2026-07-17): the source fix already covers direct scalar handles consumed
+  by `^` extern params and generated field-access temporaries for SA-text
+  extern move calls. Updated the issue status from pending release wording to
+  fixed/source-verified, with the current focused regression
+  `zig build test -j1 -Dtest-filter='extern move' --summary all` passing 3/3.
+  No full test suite was run. A fresh SA/SAB fixture rerun was not started
+  because another external `sa sla test` process was active.
+
 - docs/issue016/020 scodex pointer/response-reader stale-open reconciliation
   (2026-07-17): issue016 already had a fixed/current-non-repro header, but old
   repro sections still said it remained open; issue020 lacked a current

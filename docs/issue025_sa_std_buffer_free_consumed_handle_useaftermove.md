@@ -1,7 +1,7 @@
 # issue025: sa_std buffer_free consuming handle cleanup UseAfterMove
 
 Date: 2026-07-15
-Status: fixed in source; pending normal plugin release
+Status: fixed in source and focused-regression verified
 
 ## Context
 
@@ -99,6 +99,14 @@ Project-side workaround removed:
 
 ## Verification
 
+- Current focused source regression check (2026-07-17):
+  `zig build test -j1 -Dtest-filter='extern move' --summary all` passed 3/3
+  filtered tests, including the direct identifier and field-temp extern move
+  cleanup coverage listed above.
+- A fresh SA/SAB fixture rerun was intentionally not started during this
+  reconciliation because an external `sa sla test` process was already active;
+  normal plugin release remains a distribution step, not an open compiler bug
+  for this issue.
 - `zig build test --summary all` in `sa_plugin_sla`: 218/218 passed.
 - `SA_PLUGIN_DEV=1 sa sla test src/env_bridge.sla --test-backend sa`: passed.
 - `SA_PLUGIN_DEV=1 sa sla test src/config_bridge.sla --test-backend sa`: passed.

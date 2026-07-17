@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue016/020 scodex pointer/response-reader stale-open reconciliation
+  (2026-07-17): issue016 was already fixed/current-non-repro, but old
+  2026-07-14/15 sections still said it remained open; issue020 lacked a current
+  resolution despite issue031/016 evidence that the response-reader and CLI
+  direct-SAB gates now pass. Updated both docs to mark those old notes as
+  historical and point to the installed/dev scodex revalidation
+  (`http_client_adapter` 16/16, response-reader filter 1/1, CLI 78/78,
+  workspace/build-workspace). Documentation-only; current `sla_codex` is dirty,
+  so no fresh broad downstream rerun was used.
 - Docs/issue014 internal status reconciliation (2026-07-17): the issue was
   already marked resolved, but an intermediate investigation paragraph still
   said "keeps issue014 open". Updated the document to mark that paragraph as

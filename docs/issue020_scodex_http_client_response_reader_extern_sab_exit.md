@@ -1,5 +1,7 @@
 # issue020: scodex http-client response-reader extern exits direct SAB without diagnostics
 
+Status: fixed/current-non-repro on 2026-07-17; covered by issue031/issue016 scodex revalidation
+
 ## Context
 
 While adding the next `scodex` Responses HTTP body-reader slice, a direct
@@ -56,3 +58,22 @@ Direct SAB should either:
   borrow/out-parameter lowering issue.
 
 It should not exit 1 without diagnostics.
+
+## Current Resolution
+
+The historical repro paths moved from `packages/` to `crates/` in `sla_codex`.
+Later revalidation recorded in issue031 and issue016 showed that the response
+reader surface no longer exits without diagnostics in the tracked current gates:
+
+- `crates/scodex-runtime/src/http_client_adapter.sla` direct SAB passed 16/16
+  with the live null-response extern test enabled.
+- `crates/scodex-cli/src/main.sla --filter "http response reader abi"` direct
+  SAB passed 1/1.
+- `crates/scodex-cli/src/main.sla` strict direct SAB passed 78/78.
+- `sa sla sab workspace -p scodex-cli` and `sa sla build-workspace -p scodex-cli`
+  succeeded.
+
+No compiler source change is associated with this document closure, and no full
+suite was run for this closure slice. The current `/home/vscode/projects/sla_codex`
+checkout is dirty, so this update records the already-completed issue031/issue016
+installed/dev evidence rather than running a fresh broad downstream aggregate.

@@ -4,6 +4,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue016/020 scodex pointer/response-reader stale-open reconciliation
+  (2026-07-17): issue016 already had a fixed/current-non-repro header, but old
+  repro sections still said it remained open; issue020 lacked a current
+  resolution. Updated both docs to classify those old notes as historical and
+  reference existing issue031/issue016 installed/dev evidence:
+  `http_client_adapter` 16/16, response-reader filter 1/1, CLI strict SAB 78/78,
+  SAB workspace, and build-workspace. Documentation-only; the current
+  `sla_codex` checkout is dirty, so no fresh broad downstream rerun was used.
+
 - docs/issue014 internal status reconciliation (2026-07-17): the file header
   already marked issue014 resolved, but an intermediate investigation paragraph
   still said the issue remained open. Updated the doc to make that paragraph

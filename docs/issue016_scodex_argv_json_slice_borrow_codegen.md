@@ -351,8 +351,9 @@ empty output, even after replacing the bridge-local classifier with fixed ASCII
 
 `scodex` therefore keeps the slice APIs type-checked and SA-verified but does
 not include those pointer/slice execution tests in the regular SAB gate yet.
-This issue remains the tracking item for pointer/slice SAB execution and for
-surfacing diagnostics when the generated test exits nonzero.
+This was an intermediate 2026-07-14 observation before the current installed
+dev-plugin revalidation above. The direct-SAB pointer/string scanner failures
+are now closed as current non-repro for the moved `crates/` paths.
 
 ## 2026-07-15 Config/Auth Compatibility Repro
 
@@ -400,9 +401,9 @@ Observed result for each direct SAB path:
 exit=1
 ```
 
-This is not treated as a `scodex` test skip: SA-text coverage is kept, and this
-issue remains the compiler-side tracking item for pointer/string scanning under
-direct SAB plus missing diagnostics when the generated SAB path exits nonzero.
+This was an intermediate 2026-07-15 observation for the old `packages/` paths.
+The current `crates/` paths are covered by the 2026-07-16 installed/dev
+strict-SAB revalidation above.
 
 ## 2026-07-15 Config/Auth File-Read Wrapper Repro
 
@@ -441,8 +442,8 @@ SA_PLUGIN_DEV=1 sa sla test packages/scodex-config/src/config.sla \
   --test-backend sab --trace-panic
 ```
 
-This keeps issue016 open for pointer/string scanner execution under direct SAB
-and for the no-diagnostic failure mode.
+This was an intermediate 2026-07-15 observation. The current status remains the
+2026-07-16 fixed/current-non-repro closure for the moved `crates/` paths.
 
 ## 2026-07-15 Config/Auth Home Load Plan Repro
 

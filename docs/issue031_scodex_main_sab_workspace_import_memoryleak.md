@@ -8,8 +8,8 @@ Status: fixed/current-non-repro on 2026-07-17; covered by issue016 scodex strict
 
 While restoring direct `http-client` null-response fail-closed extern coverage
 in `scodex`, the focused runtime SAB test and the filtered top-level CLI SAB
-test pass, but the full `crates/scodex-cli/src/main.sla` direct-SAB aggregate
-still fails before assertions with a verifier `MemoryLeak`.
+test passed, but the full `crates/scodex-cli/src/main.sla` direct-SAB aggregate
+historically failed before assertions with a verifier `MemoryLeak`.
 
 This looks backend-owned rather than a response-reader ABI failure:
 

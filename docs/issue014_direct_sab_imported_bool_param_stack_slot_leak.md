@@ -91,7 +91,7 @@ Current direct-SAB observations:
     pointer/composite temporary created in the loop body, so the direct
     optimization is currently routed back through the standard surface path.
   - The standard surface path avoids that focused Phi conflict, but
-    `sla_music_cli/src/music_ir.sla` still fails strict SAB on a loop-local
+    `sla_music_cli/src/music_ir.sla` then failed strict SAB on a loop-local
     temporary Slice allocation from `SLICE_TRY_GET_TYPED_PTR`:
 
 ```text

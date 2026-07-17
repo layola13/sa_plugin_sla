@@ -107,7 +107,7 @@ Current result:
 ```
 
 The original issue024 `UseAfterMove` compile blocker is resolved, and the
-downstream parser import-scan residual is no longer open.
+downstream parser import-scan residual is closed.
 
 ## Project-side limitation
 

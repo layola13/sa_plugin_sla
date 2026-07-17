@@ -18,6 +18,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue historical wording cleanup (2026-07-17): reconciled residual
+  false-positive wording in fixed issues 014, 016, 020, 024, 031, and 040 so
+  `still fails`, `no diagnostics`, and `no longer open` phrases are marked as
+  historical or closed rather than current status. Documentation-only; no tests
+  were run.
 - Docs/issue012 scodex plugin extern CapabilityMismatch reconciliation
   (2026-07-17): updated the issue status to fixed/current-non-repro for the
   compiler-owned capability-prefix root cause. The old RC139 node/deno/http

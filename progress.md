@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue historical wording cleanup (2026-07-17): fixed residual
+  false-positive text in closed issue docs 014, 016, 020, 024, 031, and 040 so
+  open-issue scans no longer confuse historical repro notes with current
+  status. Documentation-only; no full tests were run.
+
 - docs/issue012 scodex plugin extern CapabilityMismatch reconciliation
   (2026-07-17): the document now closes only the compiler-owned borrow-prefix
   CapabilityMismatch root cause as fixed/current-non-repro. The old adapter

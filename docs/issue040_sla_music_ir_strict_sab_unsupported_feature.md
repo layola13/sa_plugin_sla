@@ -8,8 +8,8 @@ Status: fixed
 
 While closing issue034, the original `sla_music_cli/src/music_ir.sla` generated
 SA backend repro passed, and the focused compiler Vec-element field fixture
-also passed under strict direct SAB. The full downstream `music_ir.sla` strict
-SAB path still fails differently:
+also passed under strict direct SAB. At that point the full downstream
+`music_ir.sla` strict SAB path failed differently:
 
 ```text
 SAB Direct Error: direct SLA-to-SAB lowering failed without fallback: error.UnsupportedSabDirectFeature

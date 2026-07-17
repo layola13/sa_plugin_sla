@@ -5,8 +5,9 @@ Status: fixed/current-non-repro on 2026-07-17; covered by issue031/issue016 scod
 ## Context
 
 While adding the next `scodex` Responses HTTP body-reader slice, a direct
-wrapper around the installed `http-client` response-reader ABI caused direct
-SAB execution and workspace build to exit with status 1 and no diagnostics.
+wrapper around the installed `http-client` response-reader ABI historically
+caused direct SAB execution and workspace build to exit with status 1 and no
+diagnostics.
 
 The failing wrapper called this ABI sequence from
 `packages/scodex-runtime/src/http_client_adapter.sla`:

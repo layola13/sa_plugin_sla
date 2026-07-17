@@ -71,7 +71,7 @@ string/slice path. Earlier variants reproduced the same class of problem with:
 - route-level double parsing of the same argv pointer.
 
 After reducing the route to a single JSON scan and borrowed input pointer, SAB
-still fails during execution of the focused tests.
+historically failed during execution of the focused tests.
 
 ## SA Backend Failure
 

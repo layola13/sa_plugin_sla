@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue047 source-aware chord hook-span SA-text move-state closure
+  (2026-07-17): field-address borrow cleanup no longer treats a generated
+  `tmp_*` register as a disposable source temp when that register is the
+  resolved binding alias for a local. This fixes the repeated-let Vec element
+  owner shape behind `&chord_note.hook_span`, where cleanup consumed the owner
+  on one branch before later nested field reads. Added focused
+  `tests/test_unit_vec_index_assign.sla` coverage. Serial gates passed:
+  lowering-rule Zig filter 2/2; build 7/7; local and installed/dev SA plus
+  strict SAB filter 1/1 each; dev install/help. No full tests were run.
 - issue019 focused SLAN/source-growth direct-SAB subcase (2026-07-17):
   imported scalar macro leading outputs that target stack-slot locals now lower
   through a temporary value and store back into the stack slot instead of

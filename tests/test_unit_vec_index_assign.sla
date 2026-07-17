@@ -30,10 +30,93 @@ struct VecMusicTrack {
     group: i64,
 }
 
+struct VecHookSpan {
+    start: u64,
+    end: u64,
+}
+
+struct VecHookNote {
+    hook_span: VecHookSpan,
+    pitch: i64,
+}
+
+struct VecHookTrack {
+    hook_span: VecHookSpan,
+}
+
+struct VecHookIr {
+    notes: Vec<VecHookNote>,
+    tracks: Vec<VecHookTrack>,
+}
+
 fn vec_point_less(left: &VecPoint, right: &VecPoint) -> bool {
     if left.x < right.x { return true; };
     if left.x > right.x { return false; };
     return left.y < right.y;
+}
+
+fn vec_hook_span_is_ident(source: &Vec<u8>, span: &VecHookSpan) -> bool {
+    if len(source) == 0 {
+        return false;
+    };
+    return span.end >= span.start;
+}
+
+fn vec_hook_push_note(out: &Vec<u8>, source: &Vec<u8>, span: &VecHookSpan) -> u64 {
+    if len(out) != 0 {
+        return 1000;
+    };
+    if len(source) == 0 {
+        return 2000;
+    };
+    return span.end - span.start;
+}
+
+fn vec_hook_source_aware_group(ir: &VecHookIr, source: &Vec<u8>, chord_i: i64, t: i64, use_source_names: bool) -> u64 {
+    let out: Vec<u8> = Vec::new();
+    let chord_note = ir.notes[chord_i];
+    let total: u64 = 0;
+    if use_source_names == true {
+        let track_hook = ir.tracks[t].hook_span;
+        if vec_hook_span_is_ident(source, &chord_note.hook_span) == true {
+            if chord_note.hook_span.start != track_hook.start {
+                total = total + 10;
+            };
+            if chord_note.hook_span.end != track_hook.end {
+                total = total + 20;
+            };
+            total = total + vec_hook_push_note(&out, source, &chord_note.hook_span);
+        };
+    };
+    return total + chord_note.pitch as u64;
+}
+
+fn vec_hook_source_aware_loop_group(ir: &VecHookIr, source: &Vec<u8>, use_source_names: bool) -> u64 {
+    let out: Vec<u8> = Vec::new();
+    let chord_i: i64 = 0;
+    let total: u64 = 0;
+    while chord_i < 1 {
+        let chord_note = ir.notes[chord_i];
+        if use_source_names == true {
+            let track_hook = ir.tracks[0].hook_span;
+            if vec_hook_span_is_ident(source, &chord_note.hook_span) == true {
+                if chord_note.hook_span.start != track_hook.start {
+                    total = total + 10;
+                };
+                if chord_note.hook_span.end != track_hook.end {
+                    total = total + 20;
+                };
+                total = total + vec_hook_push_note(&out, source, &chord_note.hook_span);
+            };
+        };
+        total = total + chord_note.pitch as u64;
+        chord_i = chord_i + 1;
+    }
+    if use_source_names == false {
+        let chord_note = ir.notes[0];
+        total = total + chord_note.pitch as u64;
+    };
+    return total;
 }
 
 @test "vec index assignment updates scalar slot"() {
@@ -127,6 +210,34 @@ fn vec_midi_project_track(holder: &VecMidiHolder, i: i64) -> VecMusicTrack {
     if got.instr != 42 { panic(9151); };
     if got.channel != 9 { panic(9152); };
     if got.group != 3 { panic(9153); };
+}
+
+@test "vec element nested span borrow keeps branch state"() {
+    let notes: Vec<VecHookNote> = Vec::new();
+    notes.push(VecHookNote {
+        hook_span: VecHookSpan { start: 3, end: 9 },
+        pitch: 64,
+    });
+    let tracks: Vec<VecHookTrack> = Vec::new();
+    tracks.push(VecHookTrack {
+        hook_span: VecHookSpan { start: 3, end: 8 },
+    });
+    let ir = VecHookIr { notes: notes, tracks: tracks };
+    let source: Vec<u8> = Vec::new();
+    source.push(65);
+
+    if vec_hook_source_aware_group(&ir, &source, 0, 0, true) != 90 {
+        panic(9154);
+    };
+    if vec_hook_source_aware_group(&ir, &source, 0, 0, false) != 64 {
+        panic(9155);
+    };
+    if vec_hook_source_aware_loop_group(&ir, &source, true) != 90 {
+        panic(9156);
+    };
+    if vec_hook_source_aware_loop_group(&ir, &source, false) != 128 {
+        panic(9157);
+    };
 }
 
 @test "vec struct dynamic index borrow and swap"() {

@@ -11461,9 +11461,17 @@ pub const Codegen = struct {
         } else try self.genExpr(field.expr, hoisted_allocs);
         const ptr = try self.newTmp();
         self.out.writer().print("    {s} = ptr_add {s}, {}\n", .{ ptr, base, layout.offset }) catch return CodegenError.CodegenError;
+        const base_is_resolved_binding = field.expr.* == .identifier and
+            std.mem.eql(u8, base, self.resolveBindingName(field.expr.identifier));
+        const track_source_temp = lowering_rules.fieldAddressProjectionTracksSourceTemp(
+            field.expr.* == .field_expr,
+            exprResultNeedsRelease(field.expr),
+            isTemporaryRegisterName(base),
+            base_is_resolved_binding,
+        );
         return .{
             .ptr = ptr,
-            .source_temp = if (field.expr.* == .field_expr or exprResultNeedsRelease(field.expr) or isTemporaryRegisterName(base)) base else null,
+            .source_temp = if (track_source_temp) base else null,
         };
     }
 

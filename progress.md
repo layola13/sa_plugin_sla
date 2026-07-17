@@ -4,6 +4,19 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue047 source-aware chord hook-span SA-text move-state closure
+  (2026-07-17): SA-text field-address lowering now treats a generated `tmp_*`
+  register that is the resolved binding for a local as a binding alias, not as
+  a borrow source temporary to be recursively released. This fixes the
+  source-aware nested-span shape where `&chord_note.hook_span` cleanup consumed
+  a repeated-let Vec element owner before later `chord_note.hook_span.start/end`
+  or `chord_note.pitch` reads. Added
+  `tests/test_unit_vec_index_assign.sla` coverage for the branch/repeated-let
+  alias reducer. Serial focused gates passed: lowering-rule Zig filter 2/2;
+  build 7/7; local SA and strict SAB filter 1/1 each; official dev
+  install/help; installed/dev SA and strict SAB filter 1/1 each. No full test
+  suite was run.
+
 - issue019 focused SLAN/source-growth direct-SAB subcase (2026-07-17): direct
   SAB imported macro lowering now detects leading output args whose binding is
   an existing stack-slot local and emits `macro output temp -> store slot`

@@ -4,6 +4,20 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue046 unsigned binary lowering closure (2026-07-17): ordinary scalar
+  binary expressions now share signed/unsigned/float operation selection through
+  `src/lowering_rules.zig`; generated-SA and direct SAB both select `udiv`,
+  `urem`, `ule`, `ult`, `uge`, `ugt`, and `lshr` for high-bit `u64` operations.
+  Direct SAB also emits typed unsigned literals and nonnegative values at or
+  above `2^62` as `imm_u64`, fixing the `9223372036854775807u64` SAB
+  `Leb128Overflow` surfaced by the focused fixture. Added
+  `tests/test_unit_unsigned_binary_ops.sla`. Serial focused verification passed:
+  `zig test src/lowering_rules.zig --test-filter "shared scalar binary plan
+  selects unsigned high bit operations"` 1/1; `zig build -j1 --summary all` 7/7;
+  local generated-SA and strict direct-SAB fixture 1/1 each; generated-SA and
+  SAB disassembly opcode checks; official dev install/help; installed/dev
+  generated-SA and strict direct-SAB fixture 1/1 each. No full suite was run.
+
 - docs/issue039 SA-backend thread/time fallible return mismatch closure
   (2026-07-17): escaped thread closures with function-pointer or noncopy
   captures now follow the shared inline-join execution plan. SA-text manually

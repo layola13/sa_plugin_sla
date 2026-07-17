@@ -3529,6 +3529,18 @@ pub const Codegen = struct {
         try self.appendInst(item);
     }
 
+    fn emitAssignInt(self: *Codegen, dst: u32, value: i64, ty: ?*const ast.Type) !void {
+        try self.recordReg(dst);
+        var item = self.makeInst(.assign);
+        item.operands[0] = .{ .reg = dst };
+        const needs_unsigned_leb = value >= (@as(i64, 1) << 62);
+        item.operands[1] = if (value >= 0 and ((ty != null and lowering_rules.isUnsignedIntegerType(ty.?)) or needs_unsigned_leb))
+            .{ .imm_u64 = @intCast(value) }
+        else
+            .{ .imm_i64 = value };
+        try self.appendInst(item);
+    }
+
     fn emitPanicCode(self: *Codegen, code: i64) !void {
         var item = self.makeInst(.panic);
         item.operands[0] = .{ .text = try std.fmt.allocPrint(self.allocator, "{}", .{code}) };
@@ -8457,7 +8469,7 @@ pub const Codegen = struct {
 
     fn genMacroExpr(self: *Codegen, expr: *ast.Node, ctx: *MacroExpansionContext) anyerror!u32 {
         return switch (expr.*) {
-            .literal => |lit| try self.genLiteral(lit),
+            .literal => |lit| try self.genLiteralTyped(lit, try self.macroExprType(expr, ctx)),
             .identifier => |name| try self.genMacroIdentifier(name, ctx),
             .binary_expr => |bin| try self.genMacroBinary(bin, ctx),
             .call_expr => |call| try self.genMacroCall(expr, call, ctx),
@@ -9216,7 +9228,7 @@ pub const Codegen = struct {
 
     fn genExpr(self: *Codegen, expr: *ast.Node) anyerror!u32 {
         return switch (expr.*) {
-            .literal => |lit| try self.genLiteral(lit),
+            .literal => |lit| try self.genLiteralTyped(lit, self.tc.expr_types.get(expr)),
             .identifier => |name| blk: {
                 if (self.closure_param_regs.get(name)) |mapped| break :blk mapped;
                 if (self.stackLocal(name)) |slot| {
@@ -9248,7 +9260,7 @@ pub const Codegen = struct {
                 if (self.localReg(name)) |reg| break :blk reg;
                 if (self.global_scalar_consts.get(name)) |literal_node| {
                     if (literal_node.* != .literal) return Error.UnsupportedSabDirectFeature;
-                    break :blk try self.genLiteral(literal_node.literal);
+                    break :blk try self.genLiteralTyped(literal_node.literal, self.tc.expr_types.get(expr));
                 }
                 break :blk try self.intern(name);
             },
@@ -9366,16 +9378,20 @@ pub const Codegen = struct {
         return value;
     }
 
-    fn genLiteral(self: *Codegen, lit: ast.Literal) anyerror!u32 {
+    fn genLiteralTyped(self: *Codegen, lit: ast.Literal, ty: ?*const ast.Type) anyerror!u32 {
         const reg = try self.intern(try self.newTmp());
         try self.recordReg(reg);
         switch (lit) {
-            .int_val => |v| try self.emitAssignImm(reg, v),
+            .int_val => |v| try self.emitAssignInt(reg, v, ty),
             .float_val => |v| try self.emitAssignFloat(reg, v),
             .bool_val => |v| try self.emitAssignImm(reg, if (v) 1 else 0),
             .string_val => |v| return try self.genStringLiteral(v),
         }
         return reg;
+    }
+
+    fn genLiteral(self: *Codegen, lit: ast.Literal) anyerror!u32 {
+        return try self.genLiteralTyped(lit, null);
     }
 
     fn genStringLiteral(self: *Codegen, value: []const u8) anyerror!u32 {

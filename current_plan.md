@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue046 unsigned binary lowering closure (2026-07-17): shared scalar
+  binary lowering now selects `udiv`, `urem`, unsigned comparisons, and `lshr`
+  for unsigned integer operands, and both generated-SA and direct SAB consume
+  the shared plan. Direct SAB also emits typed unsigned integer literals and
+  large nonnegative immediates as `imm_u64`, avoiding SCI signed-LEB overflow
+  on `9223372036854775807u64`. Added
+  `tests/test_unit_unsigned_binary_ops.sla`. Serial focused gates passed:
+  shared lowering Zig 1/1; build 7/7; local SA and strict SAB fixture 1/1 each;
+  SA-text and SAB disasm opcode checks; official dev install/help; installed/dev
+  SA and strict SAB fixture 1/1 each. No full suite was run.
 - Docs/issue039 SA-backend thread/time fallible return mismatch closure
   (2026-07-17): escaped thread closures that capture function pointers or
   noncopy payloads now use the shared inline-join execution plan, with scalar

@@ -18,6 +18,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue012 scodex plugin extern CapabilityMismatch reconciliation
+  (2026-07-17): updated the issue status to fixed/current-non-repro for the
+  compiler-owned capability-prefix root cause. The old RC139 node/deno/http
+  adapter note is now explicitly historical and separate from this issue.
+  Later issue031/016 scodex evidence already covers the current HTTP adapter
+  path (`http_client_adapter` 16/16, response-reader filter 1/1, CLI strict
+  SAB 78/78). No fresh node/deno rerun was used because the current
+  `sla_codex` checkout is dirty.
 - Docs/issue025 sa_std buffer-free consumed-handle cleanup reconciliation
   (2026-07-17): the issue is fixed in source and now marked
   focused-regression verified rather than pending as an open compiler bug.

@@ -4,6 +4,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue012 scodex plugin extern CapabilityMismatch reconciliation
+  (2026-07-17): the document now closes only the compiler-owned borrow-prefix
+  CapabilityMismatch root cause as fixed/current-non-repro. The old adapter
+  RC139 note is preserved as a historical separate runtime/ABI concern. Existing
+  issue031/016 installed/dev evidence covers the current HTTP adapter and CLI
+  strict-SAB gates; node/deno were not freshly rerun because the current
+  `sla_codex` checkout is dirty. Documentation-only; no full tests were run.
+
 - docs/issue025 sa_std buffer-free consumed-handle cleanup reconciliation
   (2026-07-17): the source fix already covers direct scalar handles consumed
   by `^` extern params and generated field-access temporaries for SA-text

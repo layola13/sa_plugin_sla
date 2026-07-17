@@ -1,13 +1,13 @@
 # issue012: scodex plugin extern calls fail direct SAB capability validation
 
 Date: 2026-07-14
-Status: CapabilityMismatch fixed; adapter runtime segfault remains separate
+Status: fixed/current-non-repro for CapabilityMismatch
 
 ## Summary
 
 `/home/vscode/projects/sla_codex` uses SA optional plugins through local `.sai`
-contracts. The same adapter tests pass on the SA-text backend but fail on direct
-SAB with `CapabilityMismatch`.
+contracts. The same adapter tests historically passed on the SA-text backend but
+failed on direct SAB with `CapabilityMismatch`.
 
 This blocks using plugin-backed HTTP, Deno, and Node adapters as production
 direct-SAB gates for `scodex`.
@@ -130,8 +130,9 @@ requires refreshing the dev plugin binary before it can pass through `sa sla`.
 ## Impact
 
 `scodex` can continue modeling protocol, CLI, config, and tool-loop logic in
-SAB, but plugin-backed network/model/runtime adapters cannot be promoted to
-production direct-SAB gates until this is fixed.
+SAB. The direct-SAB capability-prefix compiler issue is fixed; any remaining
+plugin adapter runtime ABI failure should be tracked separately from this
+capability metadata issue.
 
 Temporary SA-text adapter tests are useful diagnostics only. They should not be
 treated as final production acceptance for `scodex exec`.
@@ -166,8 +167,25 @@ call r39,"@sa_deno_plugin_now_ns","&tmp_17"
 call r139,"@sa_http_client_new","tmp_55, &tmp_53"
 ```
 
-The remaining acceptance gap is no longer verifier `CapabilityMismatch`: running
-`sa test` on the generated SAB files currently exits with RC 139 / segmentation
-fault for node, deno, and http-client adapters. Treat that as a separate
-runtime/plugin ABI issue; do not reopen this capability-prefix issue unless a
-disassembly again shows an unprefixed call operand for a borrow extern param.
+The follow-on acceptance gap was no longer verifier `CapabilityMismatch`:
+running `sa test` on the generated SAB files exited with RC 139 / segmentation
+fault for node, deno, and http-client adapters. Treat that historical result as
+a separate runtime/plugin ABI issue; do not reopen this capability-prefix issue
+unless a disassembly again shows an unprefixed call operand for a borrow extern
+param.
+
+## 2026-07-17 Reconciliation
+
+Later scodex revalidation recorded in issue031/issue016 shows that the current
+HTTP client adapter direct-SAB gate now passes:
+
+- `crates/scodex-runtime/src/http_client_adapter.sla` direct SAB passed 16/16.
+- `crates/scodex-cli/src/main.sla --filter "http response reader abi"` direct
+  SAB passed 1/1.
+- `crates/scodex-cli/src/main.sla` strict direct SAB passed 78/78.
+
+No fresh node/deno adapter rerun was used for this reconciliation because the
+current `/home/vscode/projects/sla_codex` checkout is dirty. This issue remains
+closed for the compiler-owned CapabilityMismatch root cause; node/deno runtime
+adapter behavior should be verified under a separate clean downstream slice if
+it becomes a release gate again.

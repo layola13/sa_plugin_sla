@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- issue019 representative recheck (2026-07-17): after the direct-SAB
+  `NUM_U64_CHECKED_ADD` fix, current-tree representative probes for the
+  historical music/parser/import instability now pass: `music parser captures
+  top level track and score` 1/1 SA-text, `smf1 imports back into midi ir`
+  1/1 SA-text, `music ir writes smf1 through midi ir` 1/1 SA-text, `smf1
+  decompiles into normalized sla source` 1/1 strict SAB, and `midi import any
+  detects smf clip and raw ump containers` 1/1 strict SAB. This narrows the
+  remaining open issue019 surface to the broader historical growth scenario;
+  it is not a full closure sweep. No full suite was run.
+
 - Docs/issue048 `sla_music_cli` struct-literal `Vec::new()` field direct-SAB
   MemoryLeak closure (2026-07-17): strict direct-SAB now emits a visible
   consumed marker when a non-identifier owned field temporary is stored into a

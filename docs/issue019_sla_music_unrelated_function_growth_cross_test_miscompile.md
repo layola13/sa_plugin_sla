@@ -132,3 +132,18 @@ Serial focused verification passed:
 This does not close the whole issue019 cross-test instability: the current
 `sla_music_cli` checkout is dirty, and no broader `midi.sla` or fallback-gate
 rerun was used for this slice.
+
+## 2026-07-17 Current Representative Recheck
+
+After the focused direct-SAB subcase was fixed, the currently relevant
+representative probes no longer reproduce the earlier cross-test symptoms on
+the current tree:
+
+- `SA_PLUGIN_DEV=1 sa sla test src/music_parse.sla --test-backend sa --jobs 1 --trace-panic --filter "music parser captures top level track and score"` passed 1/1.
+- `SA_PLUGIN_DEV=1 sa sla test src/midi.sla --test-backend sa --jobs 1 --trace-panic --filter "smf1 imports back into midi ir"` passed 1/1.
+- `SA_PLUGIN_DEV=1 sa sla test src/midi.sla --test-backend sa --jobs 1 --trace-panic --filter "music ir writes smf1 through midi ir"` passed 1/1.
+- `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test src/midi.sla --test-backend sab --jobs 1 --trace-panic --filter "smf1 decompiles into normalized sla source"` passed 1/1.
+- `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test src/midi.sla --test-backend sab --jobs 1 --trace-panic --filter "midi import any detects smf clip and raw ump containers"` passed 1/1.
+
+This narrows the remaining open issue019 surface to the broader historical
+growth scenario rather than the specific parser/lower/import probes above.

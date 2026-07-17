@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- issue019 representative recheck (2026-07-17): after the direct-SAB
+  `NUM_U64_CHECKED_ADD` subcase was fixed, the current tree now passes the
+  representative music/parser/import probes that were previously implicated in
+  the cross-test instability: `music parser captures top level track and
+  score` 1/1 SA-text, `smf1 imports back into midi ir` 1/1 SA-text,
+  `music ir writes smf1 through midi ir` 1/1 SA-text, `smf1 decompiles into
+  normalized sla source` 1/1 strict SAB, and `midi import any detects smf clip
+  and raw ump containers` 1/1 strict SAB. The broader issue019 stays open, but
+  this removes the currently cited parser/lower/import probes from the active
+  failure set. No full suite was run.
+
 - docs/issue048 `sla_music_cli` struct-literal `Vec::new()` field direct-SAB
   MemoryLeak closure (2026-07-17): filtered strict SAB for the dirty downstream
   `src/music_lower.sla` test `music normalized sla orders same track notes by

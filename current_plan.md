@@ -18,6 +18,17 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue048 `sla_music_cli` struct-literal `Vec::new()` field direct-SAB
+  MemoryLeak closure (2026-07-17): strict direct-SAB now emits a visible
+  consumed marker when a non-identifier owned field temporary is stored into a
+  struct literal and the aggregate is moved onward. This fixes the downstream
+  dirty `src/music_lower.sla` filtered strict SAB failure where `tmp_8253`
+  remained active for `MusicIrTrack.imported_name: Vec::new()`. Added
+  `tests/test_unit_vec_push_call_result_struct.sla` coverage. Serial focused
+  gates passed: fmt check, build 7/7, local and installed/dev strict SAB
+  fixture 1/1, official dev install/help, and downstream strict SAB filter
+  `music normalized sla orders same track notes by tick` 1/1. No full tests
+  were run.
 - Docs/issue006 strict direct-SAB parser chained-reassign current-non-repro
   closure (2026-07-17): the historical `p2 = F(p2)` / parser loop-merge
   `UseAfterMove` blocker no longer reproduces against the installed dev

@@ -4,6 +4,20 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue048 `sla_music_cli` struct-literal `Vec::new()` field direct-SAB
+  MemoryLeak closure (2026-07-17): filtered strict SAB for the dirty downstream
+  `src/music_lower.sla` test `music normalized sla orders same track notes by
+  tick` failed with live `tmp_8253`. SAB disassembly showed `tmp_8253` was the
+  owned `Vec::new()` result for `MusicIrTrack.imported_name`, stored into a
+  struct literal and then moved into `music_ir_add_track(&ir, ^track)`.
+  Direct SAB now emits a visible consumed marker for non-identifier moved
+  struct-literal field temporaries after storing them into the aggregate,
+  matching macro struct-literal lowering. Added focused
+  `tests/test_unit_vec_push_call_result_struct.sla` coverage. Serial focused
+  gates passed: `zig fmt --check src/sab_codegen.zig`; build 7/7; local and
+  installed/dev strict SAB fixture 1/1; dev install/help; downstream dirty
+  strict SAB filter 1/1. No full test suite was run.
+
 - docs/issue006 strict direct-SAB parser chained-reassign current-non-repro
   closure (2026-07-17): the historical `sla_tsgo` parser `p2 = F(p2)`
   `UseAfterMove` / `Consumed/Consumed` over-conservation blocker no longer

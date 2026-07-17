@@ -14,6 +14,15 @@ struct PushAst {
     tracks: Vec<PushTrack>,
 }
 
+struct PushNamedTrack {
+    name: PushSpan,
+    label: Vec<u8>,
+}
+
+struct PushNamedAst {
+    tracks: Vec<PushNamedTrack>,
+}
+
 fn push_span_new(start: u64, end: u64) -> PushSpan {
     return PushSpan { start: start, end: end };
 }
@@ -35,6 +44,15 @@ fn push_ast_new() -> PushAst {
 }
 
 fn push_ast_add_track(ast: &PushAst, track: PushTrack) {
+    ast.tracks.push(track);
+}
+
+fn push_named_ast_new() -> PushNamedAst {
+    let tracks: Vec<PushNamedTrack> = Vec::new();
+    return PushNamedAst { tracks: tracks };
+}
+
+fn push_named_ast_add_track(ast: &PushNamedAst, track: PushNamedTrack) {
     ast.tracks.push(track);
 }
 
@@ -67,5 +85,23 @@ fn push_ast_add_track(ast: &PushAst, track: PushTrack) {
     };
     if push_span_len(&ast.tracks[0].span) != 10 {
         panic(43013);
+    };
+}
+
+@test "direct sab moves vec new struct literal field into call arg"() {
+    let ast = push_named_ast_new();
+    push_named_ast_add_track(&ast, PushNamedTrack {
+        name: push_span_new(4, 10),
+        label: Vec::new(),
+    });
+
+    if len(ast.tracks) != 1 {
+        panic(43021);
+    };
+    if push_span_len(&ast.tracks[0].name) != 6 {
+        panic(43022);
+    };
+    if len(ast.tracks[0].label) != 0 {
+        panic(43023);
     };
 }

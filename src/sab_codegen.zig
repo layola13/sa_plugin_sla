@@ -13548,6 +13548,7 @@ pub const Codegen = struct {
                                         if (self.localReg(moved_value.identifier)) |reg| try pending_moved_fields.put(reg, {});
                                     }
                                 } else if (lowering_rules.exprResultNeedsRelease(moved_value)) {
+                                    try self.emitConsumedMarker(value_reg);
                                     try self.markConsumed(value_reg);
                                 }
                             } else {

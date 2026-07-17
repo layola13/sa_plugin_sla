@@ -2,7 +2,7 @@
 
 Date: 2026-07-17
 
-Status: investigating
+Status: fixed
 
 ## Summary
 
@@ -79,12 +79,22 @@ identifier. It therefore missed that lowering the function identifier
 materialized a temporary register. These paths must use
 `callArgResultTempNeedsRelease`, consistent with generic call lowering.
 
-## Expected Resolution
+## Resolution
 
-- Resolve function-pointer call types through the alias-aware local binding
-  lookup.
-- Release generated function-pointer temporaries after copy-style vector
-  insertion.
-- Keep the direct-SAB and generated-SA paths aligned.
-- Verify the minimal compiler fixture and the exact downstream ECS regression
-  serially with timeouts.
+- Commit `adf98e2` resolves function-pointer call types through the alias-aware
+  local binding lookup.
+- Commit `e2406dc` releases generated function-pointer temporaries after
+  copy-style `vec(...)` and `Vec.push(...)` insertion.
+- The direct-SAB and generated-SA paths now both accept the repeated-alias
+  fixture.
+
+## Verification
+
+- `timeout 180s zig build -j1 --summary all`: 7/7 steps succeeded, peak RSS
+  about 1.14 GiB.
+- Strict direct SAB minimal fixture: 1 passed / 0 failed with `--jobs 1`.
+- Generated-SA minimal fixture: 1 passed / 0 failed with `--jobs 1`.
+- Downstream `sla_ecs` exact regression
+  `task pool scoped task set external only stays off pool`: 1 passed / 0 failed
+  on both the default and generated-SA backends.
+- The development plugin was reinstalled before downstream verification.

@@ -4,6 +4,21 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- RefCell branch-dependent assigned-handle owner merge (2026-07-17): fixed the
+  `borrowed = right.borrow_mut()` in one live branch shape for SA-text assigned
+  value slots by storing RefCell borrow owner metadata in a companion slot,
+  releasing the old dynamic borrow on reassignment without freeing that slot,
+  restoring companion maps before the sibling branch is generated, and using
+  the companion to release the actual runtime owner on explicit `!borrowed`.
+  Direct SAB keeps the same shape in local register metadata and passed the
+  matching strict no-fallback filter. Added focused coverage to
+  `tests/test_unit_refcell_owner_release_direct.sla`. Serial verification
+  passed: lowering-rule Zig filter 1/1; `zig build -j1 --summary all` 7/7;
+  local generated-SA filter 1/1; local strict direct-SAB filter 1/1. No full
+  suite was run. Official dev install was attempted once but stopped when its
+  internal ReleaseFast build held two Zig child processes near 950MB RSS each
+  for several minutes, to avoid the OOM risk observed in this session.
+
 - docs/issue status sweep (2026-07-17): added explicit fixed/verified status
   headers to early issue001-009/029 documents, marked issue011's original
   `sf_pos` RegisterRedefinition surface fixed/current-non-repro while leaving

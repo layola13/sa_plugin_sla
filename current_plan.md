@@ -18,6 +18,22 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- RefCell branch-dependent assigned-handle owner merge (2026-07-17): SA-text
+  assigned value slots that store RefCell borrow handles now keep a companion
+  owner slot, release the previous dynamic borrow on reassignment without
+  freeing the companion storage, restore companion metadata when compiling the
+  sibling `if` branch, and release the actual runtime owner on explicit
+  `!borrowed`. Direct SAB already carries the same reassigned-handle metadata
+  through local registers; shared lowering now exposes the branch owner-merge
+  decision used by both emitters. Added
+  `tests/test_unit_refcell_owner_release_direct.sla` coverage for a handle
+  initially borrowing `left` and reassigned to `right` only on one live branch.
+  Focused serial gates passed: lowering-rule Zig filter 1/1; build 7/7; local
+  generated-SA filter 1/1; local strict direct-SAB filter 1/1. No full suite
+  was run. Official `sa plugin install --dev .` was attempted once but stopped
+  after its internal ReleaseFast build held two Zig children near 950MB RSS for
+  several minutes, to avoid the OOM condition observed in this session.
+
 - Docs/issue status sweep (2026-07-17): numbered `docs/issue*.md` files now
   have explicit current status headers. Added fixed/verified status to early
   issue001-009/029 documents, marked issue011's original `sf_pos`

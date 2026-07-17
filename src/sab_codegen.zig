@@ -93,6 +93,11 @@ const ResultSlotRefCellHandle = struct {
     kind: lowering_rules.RefCellBorrowKind,
 };
 
+const BranchRefCellHandleOwnerMergeSlot = struct {
+    cell_slot: u32,
+    kind: lowering_rules.RefCellBorrowKind,
+};
+
 const LoopJumpKind = enum {
     break_,
     continue_,
@@ -2515,6 +2520,75 @@ pub const Codegen = struct {
             .restore_then => try self.restoreRefCellBranchState(then_values, then_temps),
             .restore_else => try self.restoreRefCellBranchState(else_values, else_temps),
             .keep_current => {},
+        }
+    }
+
+    fn prepareRefCellBranchHandleOwnerMergeSlots(
+        self: *Codegen,
+        pre_values: *const std.AutoHashMap(u32, RefCellBorrowValue),
+        slots: *std.AutoHashMap(u32, BranchRefCellHandleOwnerMergeSlot),
+    ) !void {
+        var iter = pre_values.iterator();
+        while (iter.next()) |entry| {
+            const cell_slot = try self.intern(try self.newTmp());
+            try self.emitAlloc(cell_slot, 8);
+            try slots.put(entry.key_ptr.*, .{
+                .cell_slot = cell_slot,
+                .kind = entry.value_ptr.kind,
+            });
+        }
+    }
+
+    fn storeRefCellBranchHandleOwnerMergeSlots(
+        self: *Codegen,
+        slots: *const std.AutoHashMap(u32, BranchRefCellHandleOwnerMergeSlot),
+        values: *const std.AutoHashMap(u32, RefCellBorrowValue),
+    ) !void {
+        var iter = slots.iterator();
+        while (iter.next()) |entry| {
+            if (values.get(entry.key_ptr.*)) |value| {
+                try self.emitStore(entry.value_ptr.cell_slot, 0, value.cell_reg, .ptr);
+            }
+        }
+    }
+
+    fn loadRefCellBranchHandleOwnerMergeSlots(
+        self: *Codegen,
+        slots: *const std.AutoHashMap(u32, BranchRefCellHandleOwnerMergeSlot),
+        then_terminated: bool,
+        then_values: *const std.AutoHashMap(u32, RefCellBorrowValue),
+        else_terminated: bool,
+        else_values: *const std.AutoHashMap(u32, RefCellBorrowValue),
+    ) !void {
+        var iter = slots.iterator();
+        while (iter.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const then_value = if (!then_terminated) then_values.get(key) else null;
+            const else_value = if (!else_terminated) else_values.get(key) else null;
+            const action = lowering_rules.planRefCellBranchHandleOwnerMerge(
+                then_value != null,
+                else_value != null,
+                then_value != null and else_value != null and then_value.?.kind == else_value.?.kind,
+                then_value != null and else_value != null and then_value.?.cell_reg == else_value.?.cell_reg,
+            );
+            switch (action) {
+                .merge_dynamic_owner => {
+                    const cell_reg = try self.intern(try self.newTmp());
+                    const restore_plan = lowering_rules.planRefCellCompanionRestore();
+                    try self.emitLoad(cell_reg, entry.value_ptr.cell_slot, 0, .ptr);
+                    if (self.refcell_borrow_values.fetchRemove(key)) |old| {
+                        if (old.value.release_regs.len != 0) self.allocator.free(old.value.release_regs);
+                    }
+                    const release_regs = if (restore_plan.track_loaded_cell_owner_temp) try self.singleReleaseReg(cell_reg) else &.{};
+                    try self.refcell_borrow_values.put(key, .{
+                        .cell_reg = cell_reg,
+                        .kind = then_value.?.kind,
+                        .release_regs = release_regs,
+                    });
+                    if (restore_plan.release_companion_slot_after_restore) try self.emitRelease(entry.value_ptr.cell_slot);
+                },
+                .keep_static_owner => try self.emitRelease(entry.value_ptr.cell_slot),
+            }
         }
     }
 
@@ -14298,12 +14372,12 @@ pub const Codegen = struct {
         const then_label = try self.newLabel("L_THEN");
         const else_label = try self.newLabel("L_ELSE");
         const merge_label = try self.newLabel("L_MERGE");
+        const branch_needs_merge = !lowering_rules.blockTerminates(ife.then_block) or !lowering_rules.blockTerminates(else_block);
         var br = self.makeInst(.br);
         br.operands[0] = .{ .reg = cond };
         br.operands[1] = .{ .label = try self.intern(then_label) };
         br.operands[2] = .{ .label = try self.intern(then_label) };
         br.operands[3] = .{ .label = try self.intern(else_label) };
-        try self.appendInst(br);
 
         // Scope each branch's locals/release state; see genIfStatement.
         const branch_locals_len = self.locals.items.len;
@@ -14313,11 +14387,17 @@ pub const Codegen = struct {
         defer self.deinitRefCellBorrowValueSnapshot(&pre_refcell_values);
         var pre_refcell_temps = try self.cloneBorrowAddressTemps();
         defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
+        var branch_refcell_owner_slots = std.AutoHashMap(u32, BranchRefCellHandleOwnerMergeSlot).init(self.allocator);
+        defer branch_refcell_owner_slots.deinit();
+        if (branch_needs_merge) try self.prepareRefCellBranchHandleOwnerMergeSlots(&pre_refcell_values, &branch_refcell_owner_slots);
+
+        try self.appendInst(br);
 
         try self.emitLabel(then_label);
         const then_terminated = try self.genBlockTailValueStore(ife.then_block, result_slot, result_ty);
         if (!then_terminated) {
             try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_values);
             try self.emitJmp(merge_label);
         }
         var then_released = try self.released_regs.clone();
@@ -14335,6 +14415,7 @@ pub const Codegen = struct {
         const else_terminated = try self.genBlockTailValueStore(else_block, result_slot, result_ty);
         if (!else_terminated) {
             try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_values);
             try self.emitJmp(merge_label);
         }
         var else_released = try self.released_regs.clone();
@@ -14346,6 +14427,31 @@ pub const Codegen = struct {
 
         self.popLocalsTo(branch_locals_len);
         try self.setMergeReleased(then_terminated, &then_released, else_terminated, &else_released, &pre_released);
+        if (!then_terminated or !else_terminated) {
+            try self.emitLabel(merge_label);
+            try self.setMergeRefCellBranchState(
+                then_terminated,
+                &then_refcell_values,
+                &then_refcell_temps,
+                else_terminated,
+                &else_refcell_values,
+                &else_refcell_temps,
+                &pre_refcell_values,
+                &pre_refcell_temps,
+            );
+            try self.loadRefCellBranchHandleOwnerMergeSlots(
+                &branch_refcell_owner_slots,
+                then_terminated,
+                &then_refcell_values,
+                else_terminated,
+                &else_refcell_values,
+            );
+            const result = try self.intern(try self.newTmp());
+            try self.emitLoad(result, result_slot, 0, try primType(result_ty));
+            try self.loadResultSlotTransferredValue(result, result_slot, result_ty);
+            try self.emitRelease(result_slot);
+            return result;
+        }
         try self.setMergeRefCellBranchState(
             then_terminated,
             &then_refcell_values,
@@ -14356,15 +14462,6 @@ pub const Codegen = struct {
             &pre_refcell_values,
             &pre_refcell_temps,
         );
-
-        if (!then_terminated or !else_terminated) {
-            try self.emitLabel(merge_label);
-            const result = try self.intern(try self.newTmp());
-            try self.emitLoad(result, result_slot, 0, try primType(result_ty));
-            try self.loadResultSlotTransferredValue(result, result_slot, result_ty);
-            try self.emitRelease(result_slot);
-            return result;
-        }
 
         const result = try self.intern(try self.newTmp());
         try self.recordReg(result);
@@ -14388,7 +14485,7 @@ pub const Codegen = struct {
         br.operands[1] = .{ .label = try self.intern(then_label) };
         br.operands[2] = .{ .label = try self.intern(then_label) };
         br.operands[3] = .{ .label = try self.intern(else_label) };
-        try self.appendInst(br);
+        const branch_needs_merge = !lowering_rules.blockTerminates(ife.then_block) or (if (ife.else_block) |else_block| !lowering_rules.blockTerminates(else_block) else true);
 
         // Scope each branch's `self.locals` and `released_regs` so a `let`
         // binding or a release emitted inside one branch (e.g. on an
@@ -14404,6 +14501,11 @@ pub const Codegen = struct {
         defer self.deinitRefCellBorrowValueSnapshot(&pre_refcell_values);
         var pre_refcell_temps = try self.cloneBorrowAddressTemps();
         defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
+        var branch_refcell_owner_slots = std.AutoHashMap(u32, BranchRefCellHandleOwnerMergeSlot).init(self.allocator);
+        defer branch_refcell_owner_slots.deinit();
+        if (branch_needs_merge) try self.prepareRefCellBranchHandleOwnerMergeSlots(&pre_refcell_values, &branch_refcell_owner_slots);
+
+        try self.appendInst(br);
 
         try self.emitLabel(then_label);
         try self.genBlock(ife.then_block);
@@ -14443,6 +14545,7 @@ pub const Codegen = struct {
             try self.restoreRefCellBranchState(&then_refcell_values, &then_refcell_temps);
             try self.emitLabel(then_exit_label);
             if (!else_terminated) try self.balanceBranchReleasedLocals(branch_locals_len, &then_released, &else_released);
+            try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &then_refcell_values);
             try self.emitJmp(merge_label);
         }
         if (!else_terminated) {
@@ -14450,6 +14553,7 @@ pub const Codegen = struct {
             try self.restoreRefCellBranchState(&else_refcell_values, &else_refcell_temps);
             try self.emitLabel(else_exit_label);
             if (!then_terminated) try self.balanceBranchReleasedLocals(branch_locals_len, &else_released, &then_released);
+            try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &else_refcell_values);
             try self.emitJmp(merge_label);
         }
         // The merge is reached only by the non-terminated incoming paths; a
@@ -14459,6 +14563,7 @@ pub const Codegen = struct {
         // double-releases (release present on all paths) nor leaks (release
         // present on only one path).
         try self.setMergeReleased(then_terminated, &then_released, else_terminated, &else_released, &pre_released);
+        if (!then_terminated or !else_terminated) try self.emitLabel(merge_label);
         try self.setMergeRefCellBranchState(
             then_terminated,
             &then_refcell_values,
@@ -14469,8 +14574,13 @@ pub const Codegen = struct {
             &pre_refcell_values,
             &pre_refcell_temps,
         );
-
-        if (!then_terminated or !else_terminated) try self.emitLabel(merge_label);
+        if (!then_terminated or !else_terminated) try self.loadRefCellBranchHandleOwnerMergeSlots(
+            &branch_refcell_owner_slots,
+            then_terminated,
+            &then_refcell_values,
+            else_terminated,
+            &else_refcell_values,
+        );
         const result = try self.intern(try self.newTmp());
         try self.recordReg(result);
         return result;

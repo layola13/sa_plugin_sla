@@ -2089,6 +2089,10 @@ pub const RefCellCompanionRestorePlan = struct {
 };
 
 pub const RefCellBranchStateMergeAction = control_flow_rules.BranchStateMergeAction;
+pub const RefCellBranchHandleOwnerMergeAction = enum {
+    keep_static_owner,
+    merge_dynamic_owner,
+};
 pub const MultiBranchStateMergeAction = control_flow_rules.MultiBranchStateMergeAction;
 
 pub const RefCellLoopStateMergeAction = enum {
@@ -2275,6 +2279,16 @@ pub fn planRefCellCompanionRestore() RefCellCompanionRestorePlan {
 
 pub fn planRefCellBranchStateMerge(then_terminated: bool, else_terminated: bool) RefCellBranchStateMergeAction {
     return control_flow_rules.planBranchStateMerge(then_terminated, else_terminated);
+}
+
+pub fn planRefCellBranchHandleOwnerMerge(
+    then_live: bool,
+    else_live: bool,
+    same_kind: bool,
+    same_owner: bool,
+) RefCellBranchHandleOwnerMergeAction {
+    if (then_live and else_live and same_kind and !same_owner) return .merge_dynamic_owner;
+    return .keep_static_owner;
 }
 
 pub fn planMultiBranchStateMerge(live_branch_count: usize) MultiBranchStateMergeAction {
@@ -5371,6 +5385,10 @@ test "shared refcell borrow call plan tracks payload kind and release macro" {
     try std.testing.expectEqual(RefCellBranchStateMergeAction.restore_else, planRefCellBranchStateMerge(true, false));
     try std.testing.expectEqual(RefCellBranchStateMergeAction.restore_then, planRefCellBranchStateMerge(false, true));
     try std.testing.expectEqual(RefCellBranchStateMergeAction.restore_pre, planRefCellBranchStateMerge(true, true));
+    try std.testing.expectEqual(RefCellBranchHandleOwnerMergeAction.keep_static_owner, planRefCellBranchHandleOwnerMerge(false, true, true, false));
+    try std.testing.expectEqual(RefCellBranchHandleOwnerMergeAction.keep_static_owner, planRefCellBranchHandleOwnerMerge(true, true, false, false));
+    try std.testing.expectEqual(RefCellBranchHandleOwnerMergeAction.keep_static_owner, planRefCellBranchHandleOwnerMerge(true, true, true, true));
+    try std.testing.expectEqual(RefCellBranchHandleOwnerMergeAction.merge_dynamic_owner, planRefCellBranchHandleOwnerMerge(true, true, true, false));
     try std.testing.expectEqual(RefCellLoopStateMergeAction.restore_pre_loop, planRefCellLoopStateMerge());
 }
 

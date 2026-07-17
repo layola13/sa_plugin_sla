@@ -1,6 +1,6 @@
 # issue014: direct SAB test reports music_ir register leak
 
-Status: resolved on 2026-07-14
+Status: resolved on 2026-07-14; stale intermediate notes reconciled on 2026-07-17
 
 ## Symptom
 
@@ -110,9 +110,10 @@ store <slice_tmp>,8u,<len>,ty:9
 release <slice_tmp>
 ```
 
-This keeps issue014 open: the remaining problem is SAB/control-flow state for
-loop-local composite temporaries, whether they come from the direct Vec index
-path or the std-surface Slice helper path.
+This was an intermediate state during the 2026-07-14 investigation. The issue
+was later closed by the final shallow-copy field-transfer fix below, and the
+remaining strict-SAB Vec struct-index surface moved to issue040, which is also
+fixed/current-verified.
 
 The most useful current disassembly shape is in `music_ir_to_source_map_ir`.
 The strict SAB failure is exposed around a loop that indexes MusicIR vectors
@@ -178,6 +179,14 @@ SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 sa sla test src/music_ir.sla --test-backen
 
 Result: the focused compiler fixture passes SA/SAB 2/2, and
 `src/music_ir.sla` strict direct SAB passes 4/4.
+
+2026-07-17 reconciliation: the later issue040 closure reverified the broader
+`src/music_ir.sla` strict direct-SAB path at 26/26 and added
+`tests/test_unit_vec_index_assign.sla` coverage for the dynamic Vec struct index
+borrow/swap surface. No fresh test was run for this documentation-only
+reconciliation because another external `sa sla test` process was active; the
+current status is based on the already-recorded issue014 and issue040 focused
+verification.
 
 ## Expected
 

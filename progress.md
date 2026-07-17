@@ -4,6 +4,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue014 internal status reconciliation (2026-07-17): the file header
+  already marked issue014 resolved, but an intermediate investigation paragraph
+  still said the issue remained open. Updated the doc to make that paragraph
+  historical and reference the final shallow-copy field-transfer resolution plus
+  issue040's later `music_ir.sla` strict SAB 26/26 Vec-index closure.
+  Documentation-only; no fresh tests were run because another external
+  `sa sla test` process was active.
+
 - docs/issue031 scodex main direct-SAB workspace import aggregate MemoryLeak
   current-non-repro closure (2026-07-17): the tracked unfiltered
   `crates/scodex-cli/src/main.sla` strict-SAB aggregate leak is covered by the

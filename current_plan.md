@@ -18,6 +18,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue014 internal status reconciliation (2026-07-17): the issue was
+  already marked resolved, but an intermediate investigation paragraph still
+  said "keeps issue014 open". Updated the document to mark that paragraph as
+  historical and point to the final issue014 shallow-copy field-transfer
+  resolution plus the later issue040 `music_ir.sla` strict SAB 26/26 Vec-index
+  closure. Documentation-only change; no fresh tests were run because an
+  external `sa sla test` process was active.
 - Docs/issue031 scodex main direct-SAB workspace import aggregate MemoryLeak
   current-non-repro closure (2026-07-17): the unfiltered
   `crates/scodex-cli/src/main.sla` strict-SAB aggregate leak is covered by the

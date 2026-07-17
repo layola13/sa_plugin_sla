@@ -13242,7 +13242,7 @@ pub const Codegen = struct {
                         self.out.writer().print("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ reg, arg_reg, elem_size }) catch return CodegenError.CodegenError;
                         if (elem_transfers_ownership) {
                             try self.emitForgetMovedValue(arg_reg);
-                        } else if (callArgNeedsRelease(arg)) try self.emitRelease(arg_reg);
+                        } else if (self.callArgResultTempNeedsRelease(arg, arg_reg)) try self.emitRelease(arg_reg);
                     }
                     return reg;
                 }
@@ -13345,7 +13345,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
                     if (lowering_rules.vecElementPushTransfersOwnership(elem_ty, self.typeIsCopyValue(elem_ty))) {
                         try self.emitForgetMovedValue(arg_reg);
-                    } else if (callArgNeedsRelease(call.args[1])) try self.emitRelease(arg_reg);
+                    } else if (self.callArgResultTempNeedsRelease(call.args[1], arg_reg)) try self.emitRelease(arg_reg);
                     if (exprResultNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                     return "return_ty_sentinel";
                 }

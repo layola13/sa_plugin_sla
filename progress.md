@@ -4,16 +4,18 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
-- issue019 representative recheck (2026-07-17): after the direct-SAB
-  `NUM_U64_CHECKED_ADD` subcase was fixed, the current tree now passes the
-  representative music/parser/import probes that were previously implicated in
-  the cross-test instability: `music parser captures top level track and
-  score` 1/1 SA-text, `smf1 imports back into midi ir` 1/1 SA-text,
+- docs/issue019 source-growth cross-test instability closure (2026-07-17):
+  current `sla_music_cli` already contains the historical source-growth shapes
+  that originally triggered unrelated failures: full 13-byte MIDI
+  indicator-header checking and expanded music-patch editor context/layout
+  serialization. After the direct-SAB `NUM_U64_CHECKED_ADD` subcase was fixed,
+  focused serial rechecks now pass on that source: `music patch editor text
+  serializes intents and spans` 1/1 SA-text, `music parser captures top level
+  track and score` 1/1 SA-text, `smf1 imports back into midi ir` 1/1 SA-text,
   `music ir writes smf1 through midi ir` 1/1 SA-text, `smf1 decompiles into
   normalized sla source` 1/1 strict SAB, and `midi import any detects smf clip
-  and raw ump containers` 1/1 strict SAB. The broader issue019 stays open, but
-  this removes the currently cited parser/lower/import probes from the active
-  failure set. No full suite was run.
+  and raw ump containers` 1/1 strict SAB. No compiler source change and no
+  full suite was run.
 
 - docs/issue048 `sla_music_cli` struct-literal `Vec::new()` field direct-SAB
   MemoryLeak closure (2026-07-17): filtered strict SAB for the dirty downstream
@@ -78,8 +80,9 @@ Update this file every time a compiler feature or demo milestone is completed an
   regression coverage. Serial focused verification passed: Zig filter 2/2;
   build 7/7; local and installed/dev SA plus strict SAB fixture 1/1 each; dev
   install/help; downstream dirty-checkout strict SAB filter
-  `smf2 ump rejects unsupported packet types` 1/1. No full test suite was run;
-  broad issue019 remains open.
+  `smf2 ump rejects unsupported packet types` 1/1. No full test suite was run.
+  At that point the broad issue019 source-growth recheck was still pending; it
+  is now covered by the closure entry above.
 
 - docs/issue historical wording cleanup (2026-07-17): fixed residual
   false-positive text in closed issue docs 014, 016, 020, 024, 031, and 040 so

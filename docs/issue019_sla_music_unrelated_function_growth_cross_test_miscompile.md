@@ -4,7 +4,13 @@ Date: 2026-07-14
 
 ## Status
 
-Open; current SLAN/source-growth direct-SAB subcase fixed on 2026-07-17.
+Fixed/current-non-repro on 2026-07-17.
+
+The current `/home/vscode/projects/sla_music_cli` source already contains the
+two historical source-growth shapes: the full 13-byte MIDI indicator-header
+check and the expanded music-patch editor context/layout serialization. Focused
+serial rechecks against that current source pass for the affected
+music_ir/midi/parser SA and strict-SAB representatives. No full suite was run.
 
 ## Summary
 
@@ -129,9 +135,9 @@ Serial focused verification passed:
 - downstream dirty checkout focused strict direct-SAB
   `src/midi.sla --filter "smf2 ump rejects unsupported packet types"`: 1/1.
 
-This does not close the whole issue019 cross-test instability: the current
-`sla_music_cli` checkout is dirty, and no broader `midi.sla` or fallback-gate
-rerun was used for this slice.
+This did not close the whole issue019 cross-test instability by itself: the
+then-current `sla_music_cli` checkout was dirty, and no broader `midi.sla` or
+fallback-gate rerun was used for that slice.
 
 ## 2026-07-17 Current Representative Recheck
 
@@ -145,5 +151,31 @@ the current tree:
 - `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test src/midi.sla --test-backend sab --jobs 1 --trace-panic --filter "smf1 decompiles into normalized sla source"` passed 1/1.
 - `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test src/midi.sla --test-backend sab --jobs 1 --trace-panic --filter "midi import any detects smf clip and raw ump containers"` passed 1/1.
 
-This narrows the remaining open issue019 surface to the broader historical
-growth scenario rather than the specific parser/lower/import probes above.
+This intermediate recheck narrowed the unresolved surface at that time to the
+broader historical growth scenario rather than the specific parser/lower/import
+probes above.
+
+## 2026-07-17 Current Source-Growth Closure
+
+The current `sla_music_cli` source already includes the historical source-growth
+changes:
+
+- `src/midi.sla::midi_is_indicator_header()` checks the full 13-byte
+  `MIDI2.0.0` indicator header.
+- `src/music_ir.sla::music_patch_write_editor_text()` serializes the expanded
+  hunk layout fields, and the editor document path also carries the separate
+  context rows for layout/collision/beam metadata.
+
+After waiting for unrelated external `sa sla test` processes to finish, the
+following focused tests were rerun serially with `--jobs 1`:
+
+- `SA_PLUGIN_DEV=1 sa sla test src/music_ir.sla --test-backend sa --jobs 1 --trace-panic --filter "music patch editor text serializes intents and spans"` passed 1/1.
+- `SA_PLUGIN_DEV=1 sa sla test src/midi.sla --test-backend sa --jobs 1 --trace-panic --filter "smf1 imports back into midi ir"` passed 1/1.
+- `SA_PLUGIN_DEV=1 sa sla test src/midi.sla --test-backend sa --jobs 1 --trace-panic --filter "music ir writes smf1 through midi ir"` passed 1/1.
+- `SA_PLUGIN_DEV=1 sa sla test src/music_parse.sla --test-backend sa --jobs 1 --trace-panic --filter "music parser captures top level track and score"` passed 1/1.
+- `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test src/midi.sla --test-backend sab --jobs 1 --trace-panic --filter "smf1 decompiles into normalized sla source"` passed 1/1.
+- `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test src/midi.sla --test-backend sab --jobs 1 --trace-panic --filter "midi import any detects smf clip and raw ump containers"` passed 1/1.
+
+This closes issue019 as fixed/current-non-repro for the documented
+source-growth cross-test instability. No compiler source change and no full
+suite were run for this closure slice.

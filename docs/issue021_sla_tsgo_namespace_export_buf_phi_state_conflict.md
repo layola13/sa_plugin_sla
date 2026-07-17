@@ -2,6 +2,8 @@
 
 Date: 2026-07-15
 
+Status: fixed/current-non-repro on 2026-07-17
+
 ## Context
 
 While expanding `/home/vscode/projects/mnt/sla_tsgo` emitter coverage for real
@@ -86,3 +88,21 @@ The `sla_tsgo` emitter is being refactored to avoid passing the same `buf`
 parameter through branch-tail helper chains. The likely workaround is to compute
 the namespace export kind first, then consume/use `buf` in a simpler tail path.
 
+## Current Resolution
+
+The current direct-SAB branch lowering scopes per-branch local and release state
+before merging. Early-return branches no longer poison sibling branch or merge
+state for reusable `ptr` parameters.
+
+`tests/test_unit_if_return_helper_chain_ptr_direct.sla` covers the reduced
+shape: one branch calls a helper with `buf` and returns, while the other branch
+tail-calls the next helper with the same `buf`.
+
+Focused serial verification passed:
+
+- `SA_PLUGIN_DEV=1 sa sla test tests/test_unit_if_return_helper_chain_ptr_direct.sla --test-backend sa --jobs 1 --trace-panic` 1/1.
+- `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test tests/test_unit_if_return_helper_chain_ptr_direct.sla --test-backend sab --jobs 1 --trace-panic` 1/1.
+
+No full suite was run. The downstream `/home/vscode/projects/mnt/sla_tsgo`
+checkout is currently dirty, so this closure is based on the repository-owned
+focused fixture rather than a broad downstream rerun.

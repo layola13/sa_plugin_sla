@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue021 direct-SAB early-return helper-chain ptr PhiStateConflict
+  current-non-repro closure (2026-07-17): current direct-SAB branch lowering
+  scopes branch-local release state before merge, covering reusable `ptr`
+  parameters passed through mutually exclusive early-return helper chains.
+  Existing `tests/test_unit_if_return_helper_chain_ptr_direct.sla` is the
+  repository-owned reduced fixture for the historical `buf` shape. Focused
+  installed/dev verification passed: generated-SA fixture 1/1 and strict
+  direct-SAB fixture 1/1. No compiler source change and no full suite were run.
+  The downstream `sla_tsgo` checkout is dirty, so no broad downstream rerun was
+  used as closure evidence.
+
 - docs/issue045 `u64::MAX` literal parser closure (2026-07-17): integer
   suffixes are now identified before numeric parsing in `parsePrefixExpr`.
   Explicit `u64` and `usize` literals parse through `u64` and retain their bit

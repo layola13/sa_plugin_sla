@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue021 direct-SAB early-return helper-chain ptr PhiStateConflict
+  current-non-repro closure (2026-07-17): current direct-SAB branch lowering
+  scopes per-branch local and release state before merge, so early-return
+  branches no longer poison sibling/merge state for reusable `ptr` parameters.
+  Existing `tests/test_unit_if_return_helper_chain_ptr_direct.sla` covers the
+  reduced `buf` helper-chain shape. Focused installed/dev verification passed:
+  generated-SA and strict direct-SAB fixture 1/1 each. No compiler source change
+  and no full suite were run. The downstream `sla_tsgo` checkout is dirty, so
+  this closure is based on the repository-owned focused fixture rather than a
+  broad downstream rerun.
 - Docs/issue045 `u64::MAX` literal parser closure (2026-07-17):
   `parsePrefixExpr` now identifies integer suffixes before parsing the numeric
   payload. Explicit `u64` and `usize` literals parse through `u64` and preserve

@@ -4,17 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
-- docs/issue028 filtered strict-SAB child selection passthrough mitigation
-  (2026-07-17): `sa sla test` compiled-test passthrough now preserves
-  user-supplied `--filter` / `--filter=...` when invoking the child `sa test`
-  on generated `.sab` or `.test.sa` inputs, while still stripping
-  `--test-backend`. This restores explicit test-selection visibility to SCI's
-  `.sab` runner for filtered strict-SAB tests. The original unfiltered
-  `test_real_ts_project_reference_flow.sla` timeout is not closed; a 60s
-  profiled rerun in the dirty `sla_tsgo` checkout timed out during nested
-  `sa test <generated.sab>` before the pass summary. Focused Zig filter
-  `sla compiled test passthrough keeps test selection for child runner`
-  passed 2/2. No full test suite was run.
+- docs/issue028 strict-SAB timeout current-non-repro closure (2026-07-17):
+  `sa sla test` compiled-test passthrough preserves user `--filter` /
+  `--filter=...` when invoking child `sa test` on generated `.sab` or
+  `.test.sa` inputs, while still stripping plugin-private `--test-backend`.
+  The remaining unfiltered timeout path was rechecked serially in the dirty
+  `sla_tsgo` checkout after unrelated external tests finished. Direct
+  `sa test .sla-cache/sab/test_real_ts_project_reference_flow-96dd54743c5a82de.sab`
+  passed 2/2 and exited 0, and the original outer
+  `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test
+  tests/test_real_ts_project_reference_flow.sla --test-backend sab --jobs 1`
+  also passed 2/2 and exited 0 in about 17.5s. No full test suite was run.
 
 - docs/issue047 source-aware chord hook-span SA-text move-state closure
   (2026-07-17): SA-text field-address lowering now treats a generated `tmp_*`

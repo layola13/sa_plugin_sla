@@ -3472,43 +3472,20 @@ pub const Codegen = struct {
         };
     }
 
-    fn binaryOpName(op: ast.BinaryOp, is_float: bool) []const u8 {
-        return if (is_float) switch (op) {
-            .add => "fadd",
-            .sub => "fsub",
-            .mul => "fmul",
-            .div => "fdiv",
-            .eq => "fcmp_eq",
-            .ne => "fcmp_ne",
-            .lt => "fcmp_lt",
-            .le => "fcmp_le",
-            .gt => "fcmp_gt",
-            .ge => "fcmp_ge",
-            .spaceship => unreachable,
-            .logical_and => "and",
-            .logical_or => "or",
-            .mod => "rem",
-            .bit_and, .bit_or, .bit_xor, .shl, .shr => unreachable,
-        } else switch (op) {
-            .add => "add",
-            .sub => "sub",
-            .mul => "mul",
-            .div => "div",
-            .mod => "rem",
-            .bit_and => "and",
-            .bit_or => "or",
-            .bit_xor => "xor",
-            .shl => "shl",
-            .shr => "shr",
+    fn binaryOpName(op: ast.BinaryOp, left_ty: *const ast.Type, right_ty: *const ast.Type) ?[]const u8 {
+        const plan = lowering_rules.planScalarBinaryOp(op, left_ty, right_ty) orelse return null;
+        return lowering_rules.scalarBinaryOpName(plan);
+    }
+
+    fn asyncContinuationConditionOpName(op: ast.BinaryOp) ?[]const u8 {
+        return switch (op) {
             .eq => "eq",
             .ne => "ne",
             .lt => "slt",
             .le => "sle",
             .gt => "sgt",
             .ge => "sge",
-            .spaceship => unreachable,
-            .logical_and => "and",
-            .logical_or => "or",
+            else => null,
         };
     }
 
@@ -7498,7 +7475,7 @@ pub const Codegen = struct {
                 const l = try self.genMacroExpr(bin.left, m);
                 const r = try self.genMacroExpr(bin.right, m);
                 const reg = try self.newTmp();
-                const op = binaryOpName(bin.op, isFloatType(left_ty) or isFloatType(right_ty));
+                const op = binaryOpName(bin.op, left_ty, right_ty) orelse return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
                 return reg;
             },
@@ -8465,7 +8442,7 @@ pub const Codegen = struct {
         }
         const result_reg = if (plan.branch != null) "async_result" else plan.resultBindingName() orelse if (scalar.isIdentity()) plan.binding_name else "async_result";
         if (plan.branch) |branch| {
-            const condition_op = binaryOpName(branch.condition_op, false);
+            const condition_op = asyncContinuationConditionOpName(branch.condition_op) orelse return CodegenError.CodegenError;
             self.out.writer().print(
                 \\    async_branch_cond = {s} {s}, {}
                 \\    br async_branch_cond -> L_ASYNC_SINGLE_AWAIT_BRANCH_THEN, L_ASYNC_SINGLE_AWAIT_BRANCH_ELSE
@@ -12223,7 +12200,7 @@ pub const Codegen = struct {
                 const l = try self.genExpr(bin.left, hoisted_allocs);
                 const r = try self.genExpr(bin.right, hoisted_allocs);
                 const reg = try self.newTmp();
-                const op = binaryOpName(bin.op, isFloatType(left_ty) or isFloatType(right_ty));
+                const op = binaryOpName(bin.op, left_ty, right_ty) orelse return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = {s} {s}, {s}\n", .{ reg, op, l, r }) catch return CodegenError.CodegenError;
                 if (self.exprResultRegNeedsRelease(bin.left)) try self.emitRelease(l);
                 if (self.exprResultRegNeedsRelease(bin.right)) try self.emitRelease(r);

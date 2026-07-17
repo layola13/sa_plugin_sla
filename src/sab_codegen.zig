@@ -2169,46 +2169,49 @@ pub const Codegen = struct {
         return last.expr_stmt;
     }
 
-    fn opKindForBinary(self: *Codegen, bin: ast.BinaryExpr) !inst.OpKind {
-        const lhs_ty = self.tc.expr_types.get(bin.left);
-        const rhs_ty = self.tc.expr_types.get(bin.right);
-        const use_float = (lhs_ty != null and isFloatType(lhs_ty.?)) or (rhs_ty != null and isFloatType(rhs_ty.?));
-        if (use_float) {
-            return switch (bin.op) {
-                .add => .fadd,
-                .sub => .fsub,
-                .mul => .fmul,
-                .div => .fdiv,
-                .eq => .fcmp_eq,
-                .ne => .fcmp_ne,
-                .lt => .fcmp_lt,
-                .le => .fcmp_le,
-                .gt => .fcmp_gt,
-                .ge => .fcmp_ge,
-                else => Error.UnsupportedSabDirectFeature,
-            };
-        }
-        return switch (bin.op) {
+    fn scalarBinaryOpKind(op: lowering_rules.ScalarBinaryOp) inst.OpKind {
+        return switch (op) {
             .add => .add,
             .sub => .sub,
             .mul => .mul,
-            .div => .sdiv,
-            .mod => .srem,
+            .sdiv => .sdiv,
+            .udiv => .udiv,
+            .srem => .srem,
+            .urem => .urem,
             .eq => .eq,
             .ne => .ne,
-            .lt => .slt,
-            .le => .sle,
-            .gt => .sgt,
-            .ge => .sge,
-            .bit_and => .@"and",
-            .bit_or => .@"or",
+            .slt => .slt,
+            .sle => .sle,
+            .sgt => .sgt,
+            .sge => .sge,
+            .ult => .ult,
+            .ule => .ule,
+            .ugt => .ugt,
+            .uge => .uge,
+            .bit_and, .logical_and => .@"and",
+            .bit_or, .logical_or => .@"or",
             .bit_xor => .xor,
             .shl => .shl,
-            .shr => .ashr,
-            .logical_and => .@"and",
-            .logical_or => .@"or",
-            else => Error.UnsupportedSabDirectFeature,
+            .lshr => .lshr,
+            .ashr => .ashr,
+            .fadd => .fadd,
+            .fsub => .fsub,
+            .fmul => .fmul,
+            .fdiv => .fdiv,
+            .fcmp_eq => .fcmp_eq,
+            .fcmp_ne => .fcmp_ne,
+            .fcmp_lt => .fcmp_lt,
+            .fcmp_le => .fcmp_le,
+            .fcmp_gt => .fcmp_gt,
+            .fcmp_ge => .fcmp_ge,
         };
+    }
+
+    fn opKindForBinary(self: *Codegen, bin: ast.BinaryExpr) !inst.OpKind {
+        const lhs_ty = self.tc.expr_types.get(bin.left) orelse return Error.MissingType;
+        const rhs_ty = self.tc.expr_types.get(bin.right) orelse return Error.MissingType;
+        const plan = lowering_rules.planScalarBinaryOp(bin.op, lhs_ty, rhs_ty) orelse return Error.UnsupportedSabDirectFeature;
+        return scalarBinaryOpKind(plan);
     }
 
     fn pushLocal(self: *Codegen, name: []const u8, reg: u32, is_param: bool) !void {
@@ -7828,43 +7831,10 @@ pub const Codegen = struct {
     fn macroOpKindForBinary(self: *Codegen, bin: ast.BinaryExpr, ctx: *MacroExpansionContext) !inst.OpKind {
         const lhs_ty = try self.macroExprType(bin.left, ctx);
         const rhs_ty = try self.macroExprType(bin.right, ctx);
-        const use_float = (lhs_ty != null and isFloatType(lhs_ty.?)) or (rhs_ty != null and isFloatType(rhs_ty.?));
-        if (use_float) {
-            return switch (bin.op) {
-                .add => .fadd,
-                .sub => .fsub,
-                .mul => .fmul,
-                .div => .fdiv,
-                .eq => .fcmp_eq,
-                .ne => .fcmp_ne,
-                .lt => .fcmp_lt,
-                .le => .fcmp_le,
-                .gt => .fcmp_gt,
-                .ge => .fcmp_ge,
-                else => Error.UnsupportedSabDirectFeature,
-            };
-        }
-        return switch (bin.op) {
-            .add => .add,
-            .sub => .sub,
-            .mul => .mul,
-            .div => .sdiv,
-            .mod => .srem,
-            .eq => .eq,
-            .ne => .ne,
-            .lt => .slt,
-            .le => .sle,
-            .gt => .sgt,
-            .ge => .sge,
-            .bit_and => .@"and",
-            .bit_or => .@"or",
-            .bit_xor => .xor,
-            .shl => .shl,
-            .shr => .ashr,
-            .logical_and => .@"and",
-            .logical_or => .@"or",
-            else => Error.UnsupportedSabDirectFeature,
-        };
+        const effective_lhs = lhs_ty orelse rhs_ty orelse return Error.MissingType;
+        const effective_rhs = rhs_ty orelse effective_lhs;
+        const plan = lowering_rules.planScalarBinaryOp(bin.op, effective_lhs, effective_rhs) orelse return Error.UnsupportedSabDirectFeature;
+        return scalarBinaryOpKind(plan);
     }
 
     fn genMacroFieldAddress(self: *Codegen, field: ast.FieldExpr, ctx: *MacroExpansionContext) anyerror!AddressSource {

@@ -2957,6 +2957,124 @@ pub fn isNumericType(ty: *const ast.Type) bool {
     };
 }
 
+pub const ScalarBinaryOp = enum {
+    add,
+    sub,
+    mul,
+    sdiv,
+    udiv,
+    srem,
+    urem,
+    bit_and,
+    bit_or,
+    bit_xor,
+    shl,
+    lshr,
+    ashr,
+    eq,
+    ne,
+    slt,
+    sle,
+    sgt,
+    sge,
+    ult,
+    ule,
+    ugt,
+    uge,
+    logical_and,
+    logical_or,
+    fadd,
+    fsub,
+    fmul,
+    fdiv,
+    fcmp_eq,
+    fcmp_ne,
+    fcmp_lt,
+    fcmp_le,
+    fcmp_gt,
+    fcmp_ge,
+};
+
+pub fn planScalarBinaryOp(op: ast.BinaryOp, left_ty: *const ast.Type, right_ty: *const ast.Type) ?ScalarBinaryOp {
+    const use_float = isFloatType(left_ty) or isFloatType(right_ty);
+    if (use_float) {
+        return switch (op) {
+            .add => .fadd,
+            .sub => .fsub,
+            .mul => .fmul,
+            .div => .fdiv,
+            .eq => .fcmp_eq,
+            .ne => .fcmp_ne,
+            .lt => .fcmp_lt,
+            .le => .fcmp_le,
+            .gt => .fcmp_gt,
+            .ge => .fcmp_ge,
+            else => null,
+        };
+    }
+
+    const use_unsigned = isUnsignedIntegerType(left_ty);
+    return switch (op) {
+        .add => .add,
+        .sub => .sub,
+        .mul => .mul,
+        .div => if (use_unsigned) .udiv else .sdiv,
+        .mod => if (use_unsigned) .urem else .srem,
+        .bit_and => .bit_and,
+        .bit_or => .bit_or,
+        .bit_xor => .bit_xor,
+        .shl => .shl,
+        .shr => if (use_unsigned) .lshr else .ashr,
+        .eq => .eq,
+        .ne => .ne,
+        .lt => if (use_unsigned) .ult else .slt,
+        .le => if (use_unsigned) .ule else .sle,
+        .gt => if (use_unsigned) .ugt else .sgt,
+        .ge => if (use_unsigned) .uge else .sge,
+        .logical_and => .logical_and,
+        .logical_or => .logical_or,
+        .spaceship => null,
+    };
+}
+
+pub fn scalarBinaryOpName(op: ScalarBinaryOp) []const u8 {
+    return switch (op) {
+        .add => "add",
+        .sub => "sub",
+        .mul => "mul",
+        .sdiv => "sdiv",
+        .udiv => "udiv",
+        .srem => "srem",
+        .urem => "urem",
+        .bit_and, .logical_and => "and",
+        .bit_or, .logical_or => "or",
+        .bit_xor => "xor",
+        .shl => "shl",
+        .lshr => "lshr",
+        .ashr => "ashr",
+        .eq => "eq",
+        .ne => "ne",
+        .slt => "slt",
+        .sle => "sle",
+        .sgt => "sgt",
+        .sge => "sge",
+        .ult => "ult",
+        .ule => "ule",
+        .ugt => "ugt",
+        .uge => "uge",
+        .fadd => "fadd",
+        .fsub => "fsub",
+        .fmul => "fmul",
+        .fdiv => "fdiv",
+        .fcmp_eq => "fcmp_eq",
+        .fcmp_ne => "fcmp_ne",
+        .fcmp_lt => "fcmp_lt",
+        .fcmp_le => "fcmp_le",
+        .fcmp_gt => "fcmp_gt",
+        .fcmp_ge => "fcmp_ge",
+    };
+}
+
 pub const SpaceshipOperandKind = enum {
     /// Numeric primitives compared directly into an Ordering.
     numeric,
@@ -5404,4 +5522,24 @@ test "shared static call plan preserves namespace alias metadata" {
     const lowering = planStaticCallLowering(&tc, &call_node, call_node.call_expr, &void_ty) orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("dep__imported_a", staticCallEmitSymbol(lowering.call));
     try std.testing.expect(lowering.result.returns_void);
+}
+
+test "shared scalar binary plan selects unsigned high bit operations" {
+    var u64_ty = ast.Type{ .primitive = .u64 };
+    var i64_ty = ast.Type{ .primitive = .i64 };
+
+    try std.testing.expectEqual(ScalarBinaryOp.udiv, planScalarBinaryOp(.div, &u64_ty, &u64_ty).?);
+    try std.testing.expectEqual(ScalarBinaryOp.urem, planScalarBinaryOp(.mod, &u64_ty, &u64_ty).?);
+    try std.testing.expectEqual(ScalarBinaryOp.ult, planScalarBinaryOp(.lt, &u64_ty, &u64_ty).?);
+    try std.testing.expectEqual(ScalarBinaryOp.ule, planScalarBinaryOp(.le, &u64_ty, &u64_ty).?);
+    try std.testing.expectEqual(ScalarBinaryOp.ugt, planScalarBinaryOp(.gt, &u64_ty, &u64_ty).?);
+    try std.testing.expectEqual(ScalarBinaryOp.uge, planScalarBinaryOp(.ge, &u64_ty, &u64_ty).?);
+    try std.testing.expectEqual(ScalarBinaryOp.lshr, planScalarBinaryOp(.shr, &u64_ty, &u64_ty).?);
+
+    try std.testing.expectEqual(ScalarBinaryOp.sdiv, planScalarBinaryOp(.div, &i64_ty, &i64_ty).?);
+    try std.testing.expectEqual(ScalarBinaryOp.srem, planScalarBinaryOp(.mod, &i64_ty, &i64_ty).?);
+    try std.testing.expectEqual(ScalarBinaryOp.ashr, planScalarBinaryOp(.shr, &i64_ty, &i64_ty).?);
+    try std.testing.expectEqual(ScalarBinaryOp.ashr, planScalarBinaryOp(.shr, &i64_ty, &u64_ty).?);
+    try std.testing.expectEqualStrings("udiv", scalarBinaryOpName(.udiv));
+    try std.testing.expectEqualStrings("lshr", scalarBinaryOpName(.lshr));
 }

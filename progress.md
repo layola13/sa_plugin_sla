@@ -4,6 +4,25 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue039 SA-backend thread/time fallible return mismatch closure
+  (2026-07-17): escaped thread closures with function-pointer or noncopy
+  captures now follow the shared inline-join execution plan. SA-text manually
+  constructs scalar join Results, lowers unwrap without the mismatched macro
+  surface, and prunes unused thread runtime imports. The time failure was
+  isolated to SCI's hardcoded fallible `sa_time_sleep_ns` LLVM shim conflicting
+  with its ordinary runtime `i32` ABI; the unshimmed
+  `sa_time_sleep_ms(u64) -> i32` ABI passes directly. When the selected time
+  surface contains only `TIME_DURATION_FROM_MILLIS` and
+  `TIME_THREAD_SLEEP_NS`, generated SA now emits the duration conversion
+  directly, skips `sa_std/time.sa`, and rounds nonzero nanoseconds up before
+  calling `sa_time_sleep_ms`. Added
+  `tests/test_unit_time_sleep_fallible_direct.sla`. Serial focused gates
+  passed: `zig fmt --check src/codegen.zig`; `git diff --check`; `zig build
+  -j1 --summary all` 7/7; local pair/time fixtures 1/1 each; official dev
+  install/help; installed/dev pair/time fixtures 1/1 each. Generated time SA
+  has no `sa_std/time.sa`, `TIME_*`, or `sa_time_sleep_ns`. No full suite was
+  run.
+
 - docs/issue `music_ir_vec_inline_struct_index_alias` stale-open closure
   (2026-07-16): current SA-text Vec lowering treats `Vec<T>` element slots as
   owner pointer slots for struct elements rather than inline struct storage.

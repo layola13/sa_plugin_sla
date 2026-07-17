@@ -1,5 +1,12 @@
 # Issue 039: SA backend thread/time fallible return mismatch blocks live HTTP loopback
 
+## Status
+
+Resolved for the focused SA-backend thread and sleep blockers on 2026-07-17.
+The downstream scodex live HTTP loopback can now revalidate against these
+compiler paths; that downstream integration is not part of this focused
+compiler regression slice.
+
 ## Symptom
 
 Current `SA_PLUGIN_DEV=1 sa sla test --test-backend sa` can emit an LLVM backend return type mismatch when SLA code uses std thread/time helpers needed by live HTTP loopback tests:
@@ -30,23 +37,57 @@ Using `thread::sleep(Duration::from_millis(1))` through `sa_std/time.sla` also t
 
 Both paths currently hit the SA backend mismatch above.
 
-## Notes
+## Root cause
 
-- `sa sla build` can still emit SA text for the scodex file.
-- The generated `thread_sleep` wrapper is `void`, but expands `TIME_THREAD_SLEEP_NS`, which calls `sa_time_sleep_ns`.
-- A temporary attempt to change `sa_time_sleep_ns` to plain `i32` in the active std surface changed the mismatch from `... i64` to `... i32`, indicating the runtime/backend still materializes a `{ i32, i32 }` return shape.
-- A temporary attempt to apply `?` inside `TIME_THREAD_SLEEP_NS` produced `EarlyReturnLeak` before the LLVM stage, matching the current fallible-cleanup constraints for macro expansion.
+- SCI's runtime exports both `sa_time_sleep_ns` and `sa_time_sleep_ms` as
+  ordinary `i32` functions.
+- `sci/sa_std/time.sai` declares both functions as `i32!`.
+- SCI's LLVM shim additionally hardcodes `sa_time_sleep_ns` as a fallible
+  `{ i32, i32 }` function, so changing only the generated declaration cannot
+  make that symbol ABI-consistent.
+- `sa_time_sleep_ms` is not covered by the hardcoded shim. A focused plain-SA
+  test declaring `sa_time_sleep_ms(ms: u64) -> i32` passed 1/1.
+- The thread function-pointer path separately needed inline escaped-closure
+  execution, scalar `JoinHandle<T>::join()` Result construction, and unwrap
+  lowering that avoid the mismatched pthread/fallible surface for captures
+  that cannot safely escape.
 
-## Requested fix
+## Fix
 
-Audit SA backend lowering for:
+- SA-text thread closures capturing function pointers or noncopy payloads now
+  consume the shared escaped-closure execution plan and use inline join
+  storage. Generated output for the pair fixture contains no pthread branch,
+  indirect call, spawn wrapper, or unused `sa_std/thread.sa` import.
+- SA-text manually constructs scalar join Results and lowers Result unwrap
+  without the mismatched macro return path.
+- When the selected time surface contains only
+  `TIME_DURATION_FROM_MILLIS` plus `TIME_THREAD_SLEEP_NS`, codegen now lowers
+  the duration multiplication directly, omits `sa_std/time.sa`, declares
+  `sa_time_sleep_ms(u64) -> i32`, and calls that ordinary ABI. Nanoseconds are
+  rounded up to milliseconds so a nonzero sub-millisecond duration is not
+  truncated to zero.
+- Other time macro combinations retain the existing std import and lowering;
+  the workaround does not silently rewrite unsupported time surfaces.
 
-- `JoinHandle<T>::join().unwrap()` return lowering for scalar `T`.
-- Imported fallible extern calls such as `sa_time_sleep_ns(ns: u64) -> i32!`.
-- Macro-expanded fallible calls in std helpers where the result is intentionally ignored or converted into blocking/yield behavior.
+Added focused regression:
 
-Add focused regressions for:
+- `tests/test_unit_time_sleep_fallible_direct.sla`
 
-- `tests/test_unit_fn_ptr_thread_pair_direct.sla` on `--test-backend sa`.
-- `sa_std/time.sla` `thread::sleep(Duration::from_millis(1))` on `--test-backend sa`.
-- A loopback-style async poll that sleeps/yields between `sa_http_client_async_poll` calls.
+## Verification
+
+All compiler build/test commands were run serially after checking for existing
+Zig/SA processes:
+
+- `zig fmt --check src/codegen.zig`
+- `zig build -j1 --summary all`: 7/7
+- local SA pair fixture: 1/1
+- local SA time sleep fixture: 1/1
+- `SA_PLUGIN_DEV=1 sa plugin install --dev .`
+- `SA_PLUGIN_DEV=1 sa sla help`
+- installed/dev SA pair fixture: 1/1
+- installed/dev SA time sleep fixture: 1/1
+- generated time fixture contains no `sa_std/time.sa`, `TIME_*`, or
+  `sa_time_sleep_ns` reference
+- `git diff --check`
+
+No full Zig or SLA test suite was run.

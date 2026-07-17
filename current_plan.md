@@ -18,6 +18,20 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue039 SA-backend thread/time fallible return mismatch closure
+  (2026-07-17): escaped thread closures that capture function pointers or
+  noncopy payloads now use the shared inline-join execution plan, with scalar
+  Result construction/unwrap lowering and unused thread runtime import
+  pruning. The remaining std time sleep blocker was traced to SCI's
+  `sa_time_sleep_ns` hardcoded fallible LLVM shim conflicting with the ordinary
+  runtime `i32` ABI. For programs whose selected time surface is limited to
+  `Duration::from_millis` plus `thread::sleep`, SA-text now emits the duration
+  conversion directly, omits `sa_std/time.sa`, and calls the unshimmed
+  `sa_time_sleep_ms(u64) -> i32` ABI with rounded-up millisecond conversion.
+  Added `tests/test_unit_time_sleep_fallible_direct.sla`. Focused serial gates
+  passed: fmt/diff checks; build 7/7; local pair and time fixtures 1/1 each;
+  official dev install/help; installed/dev pair and time fixtures 1/1 each.
+  No full suite was run.
 - Docs/issue `music_ir_vec_inline_struct_index_alias` stale-open closure
   (2026-07-16): the current SA-text Vec pointer-slot and field-lifecycle
   lowering already covers the tracked `/home/vscode/projects/sla_music_cli`

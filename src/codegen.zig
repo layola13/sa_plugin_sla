@@ -17,11 +17,19 @@ const ThreadSpawnHelper = struct {
     ret_ty: *const ast.Type,
     captures: []const ThreadCapture,
     slot_size: usize,
+    inline_join: bool = false,
 };
 
 const ThreadCapture = struct {
     name: []const u8,
     offset: usize,
+    is_fn_ptr: bool = false,
+    is_noncopy_payload: bool = false,
+};
+
+const ThreadCaptureInfo = struct {
+    is_fn_ptr: bool = false,
+    is_noncopy_payload: bool = false,
 };
 
 const RefCellBorrowHandle = struct {
@@ -46,6 +54,27 @@ const RwLockGuardHandle = struct {
 
 const FileResultHandle = struct {};
 const MetadataResultHandle = struct {};
+
+const TimeMacroUseSummary = struct {
+    has_duration_from_millis: bool = false,
+    has_thread_sleep_ns: bool = false,
+    has_unsupported: bool = false,
+
+    fn observe(self: *TimeMacroUseSummary, name: []const u8) void {
+        if (!std.mem.startsWith(u8, name, "TIME_")) return;
+        if (std.mem.eql(u8, name, "TIME_DURATION_FROM_MILLIS")) {
+            self.has_duration_from_millis = true;
+        } else if (std.mem.eql(u8, name, "TIME_THREAD_SLEEP_NS")) {
+            self.has_thread_sleep_ns = true;
+        } else {
+            self.has_unsupported = true;
+        }
+    }
+
+    fn supportsPlainSleepMsAbi(self: TimeMacroUseSummary) bool {
+        return self.has_duration_from_millis and self.has_thread_sleep_ns and !self.has_unsupported;
+    }
+};
 
 pub const InjectedAddressBinding = struct {
     name: []const u8,
@@ -83,6 +112,7 @@ pub const Codegen = struct {
     hashmap_key_slots: std.StringHashMap([]const u8),
     thread_spawn_helpers: std.AutoHashMap(*const ast.Node, ThreadSpawnHelper),
     thread_capture_regs: std.StringHashMap([]const u8),
+    inline_thread_handles: std.StringHashMap(void),
     consumed_bindings: std.StringHashMap(void),
     mpsc_sender_bindings: std.StringHashMap(void),
     mpsc_sender_channels: std.StringHashMap([]const u8),
@@ -120,6 +150,7 @@ pub const Codegen = struct {
     current_async_return_ty: ?*const ast.Type,
     async_pending_return_emitted: bool,
     thread_helper_idx: usize,
+    use_plain_time_sleep_ms_abi: bool,
 
     pub fn init(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker) Codegen {
         return initWithOptions(allocator, tc, .{});
@@ -157,6 +188,7 @@ pub const Codegen = struct {
             .hashmap_key_slots = std.StringHashMap([]const u8).init(allocator),
             .thread_spawn_helpers = std.AutoHashMap(*const ast.Node, ThreadSpawnHelper).init(allocator),
             .thread_capture_regs = std.StringHashMap([]const u8).init(allocator),
+            .inline_thread_handles = std.StringHashMap(void).init(allocator),
             .consumed_bindings = std.StringHashMap(void).init(allocator),
             .mpsc_sender_bindings = std.StringHashMap(void).init(allocator),
             .mpsc_sender_channels = std.StringHashMap([]const u8).init(allocator),
@@ -194,6 +226,7 @@ pub const Codegen = struct {
             .current_async_return_ty = null,
             .async_pending_return_emitted = false,
             .thread_helper_idx = 0,
+            .use_plain_time_sleep_ms_abi = false,
         };
     }
 
@@ -230,6 +263,7 @@ pub const Codegen = struct {
         }
         self.thread_spawn_helpers.deinit();
         self.thread_capture_regs.deinit();
+        self.inline_thread_handles.deinit();
         self.consumed_bindings.deinit();
         self.mpsc_sender_bindings.deinit();
         self.mpsc_sender_channels.deinit();
@@ -1467,13 +1501,28 @@ pub const Codegen = struct {
         };
     }
 
-    fn captureNameFromIdentifier(self: *Codegen, name: []const u8, captures: *std.StringHashMap(void), locals: *const std.StringHashMap(void)) CodegenError!void {
+    fn captureNameFromIdentifier(
+        self: *Codegen,
+        name: []const u8,
+        ty: ?*const ast.Type,
+        used_as_fn_ptr: bool,
+        captures: *std.StringHashMap(ThreadCaptureInfo),
+        locals: *const std.StringHashMap(void),
+    ) CodegenError!void {
         if (locals.contains(name)) return;
         if (self.global_const_bindings.contains(name)) return;
         if (self.tc.funcs.contains(name)) return;
         if (self.tc.macros.contains(name)) return;
         if (std.mem.eql(u8, name, "return_ty_sentinel")) return;
-        captures.put(name, {}) catch return CodegenError.OutOfMemory;
+        var info = captures.get(name) orelse ThreadCaptureInfo{};
+        if (used_as_fn_ptr) info.is_fn_ptr = true;
+        if (ty) |capture_ty| {
+            if (capture_ty.* == .fn_ptr) info.is_fn_ptr = true;
+            if (!self.typeIsCopyValue(capture_ty) and !lowering_rules.isBorrowLikeType(capture_ty)) {
+                info.is_noncopy_payload = true;
+            }
+        }
+        captures.put(name, info) catch return CodegenError.OutOfMemory;
     }
 
     fn collectPatternBindings(self: *Codegen, pattern: ast.EnumPattern, locals: *std.StringHashMap(void)) CodegenError!void {
@@ -1483,7 +1532,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn collectThreadClosureCapturesInBlock(self: *Codegen, block: []const *ast.Node, captures: *std.StringHashMap(void), locals: *std.StringHashMap(void)) CodegenError!void {
+    fn collectThreadClosureCapturesInBlock(self: *Codegen, block: []const *ast.Node, captures: *std.StringHashMap(ThreadCaptureInfo), locals: *std.StringHashMap(void)) CodegenError!void {
         for (block) |stmt| {
             switch (stmt.*) {
                 .let_stmt => |let| {
@@ -1536,9 +1585,9 @@ pub const Codegen = struct {
         }
     }
 
-    fn collectThreadClosureCapturesInExpr(self: *Codegen, expr: *const ast.Node, captures: *std.StringHashMap(void), locals: *std.StringHashMap(void)) CodegenError!void {
+    fn collectThreadClosureCapturesInExpr(self: *Codegen, expr: *const ast.Node, captures: *std.StringHashMap(ThreadCaptureInfo), locals: *std.StringHashMap(void)) CodegenError!void {
         switch (expr.*) {
-            .identifier => |name| try self.captureNameFromIdentifier(name, captures, locals),
+            .identifier => |name| try self.captureNameFromIdentifier(name, self.tc.expr_types.get(expr), false, captures, locals),
             .binary_expr => |bin| {
                 try self.collectThreadClosureCapturesInExpr(bin.left, captures, locals);
                 try self.collectThreadClosureCapturesInExpr(bin.right, captures, locals);
@@ -1550,7 +1599,7 @@ pub const Codegen = struct {
             .field_expr => |field| try self.collectThreadClosureCapturesInExpr(field.expr, captures, locals),
             .call_expr => |call| {
                 if (call.associated_target == null) {
-                    try self.captureNameFromIdentifier(call.func_name, captures, locals);
+                    try self.captureNameFromIdentifier(call.func_name, null, true, captures, locals);
                 }
                 for (call.args) |arg| try self.collectThreadClosureCapturesInExpr(arg, captures, locals);
             },
@@ -1620,7 +1669,7 @@ pub const Codegen = struct {
     }
 
     fn collectThreadClosureCaptures(self: *Codegen, closure: *const ast.ClosureLiteral) CodegenError![]const ThreadCapture {
-        var captures = std.StringHashMap(void).init(self.allocator);
+        var captures = std.StringHashMap(ThreadCaptureInfo).init(self.allocator);
         defer captures.deinit();
         var locals = std.StringHashMap(void).init(self.allocator);
         defer locals.deinit();
@@ -1636,7 +1685,12 @@ pub const Codegen = struct {
         var iter = captures.iterator();
         var offset: usize = 16;
         while (iter.next()) |entry| {
-            ordered.append(.{ .name = entry.key_ptr.*, .offset = offset }) catch return CodegenError.OutOfMemory;
+            ordered.append(.{
+                .name = entry.key_ptr.*,
+                .offset = offset,
+                .is_fn_ptr = entry.value_ptr.is_fn_ptr,
+                .is_noncopy_payload = entry.value_ptr.is_noncopy_payload,
+            }) catch return CodegenError.OutOfMemory;
             offset += 8;
         }
         return ordered.toOwnedSlice() catch return CodegenError.OutOfMemory;
@@ -6697,6 +6751,12 @@ pub const Codegen = struct {
         const captures = try self.collectThreadClosureCaptures(closure);
         var slot_size: usize = 16;
         for (captures) |capture| slot_size = capture.offset + 8;
+        var capture_summary = lowering_rules.EscapedClosureCaptureSummary{};
+        for (captures) |capture| {
+            capture_summary.has_fn_ptr = capture_summary.has_fn_ptr or capture.is_fn_ptr;
+            capture_summary.has_noncopy_payload = capture_summary.has_noncopy_payload or capture.is_noncopy_payload;
+        }
+        const execution_plan = lowering_rules.planEscapedClosureExecution(capture_summary);
         const helper = ThreadSpawnHelper{
             .worker_name = std.fmt.allocPrint(self.allocator, "sla_thread_worker_{}", .{idx}) catch return CodegenError.OutOfMemory,
             .spawn_name = std.fmt.allocPrint(self.allocator, "sla_thread_spawn_{}", .{idx}) catch return CodegenError.OutOfMemory,
@@ -6705,6 +6765,7 @@ pub const Codegen = struct {
             .ret_ty = ret_ty,
             .captures = captures,
             .slot_size = slot_size,
+            .inline_join = execution_plan.inline_join,
         };
         try self.thread_spawn_helpers.put(expr, helper);
         return helper;
@@ -6803,19 +6864,22 @@ pub const Codegen = struct {
         if (self.thread_spawn_helpers.count() == 0) return;
         var iter = self.thread_spawn_helpers.valueIterator();
         while (iter.next()) |helper| {
+            if (helper.inline_join) continue;
             self.out.writer().print("@const {s} = vtable {{ call = @{s} }}\n", .{ helper.vtable_name, helper.worker_name }) catch return CodegenError.CodegenError;
         }
         self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
 
         var fn_iter = self.thread_spawn_helpers.valueIterator();
         while (fn_iter.next()) |helper| {
-            self.out.writer().print("@ffi_wrapper {s}(*slot: ptr) -> i32:\nL_ENTRY:\n", .{helper.spawn_name}) catch return CodegenError.CodegenError;
+            if (helper.inline_join) continue;
+            self.out.writer().print("@ffi_wrapper {s}(*slot: ptr):\nL_ENTRY:\n", .{helper.spawn_name}) catch return CodegenError.CodegenError;
             self.out.writer().print("    worker_vt = &{s}\n", .{helper.vtable_name}) catch return CodegenError.CodegenError;
             self.out.writer().print("    worker_fn = load worker_vt+0 as ptr\n", .{}) catch return CodegenError.CodegenError;
             self.out.writer().print("    worker_raw = *worker_fn\n", .{}) catch return CodegenError.CodegenError;
             self.out.writer().print("    worker_safe = assume_safe worker_raw\n", .{}) catch return CodegenError.CodegenError;
             self.out.writer().print("    EXPAND THREAD_SPAWN handle, *worker_safe, *slot\n", .{}) catch return CodegenError.CodegenError;
-            self.out.writer().print("    !slot\n    return handle\n\n", .{}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    store slot+0, handle as i32\n", .{}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    !handle\n    !worker_safe\n    !worker_raw\n    !worker_fn\n    !worker_vt\n    !slot\n    return\n\n", .{}) catch return CodegenError.CodegenError;
 
             self.out.writer().print("@{s}(&slot: ptr) -> i32:\nL_ENTRY:\n", .{helper.worker_name}) catch return CodegenError.CodegenError;
             for (helper.captures) |capture| {
@@ -6905,10 +6969,154 @@ pub const Codegen = struct {
         , .{}) catch return CodegenError.CodegenError;
     }
 
+    fn collectTimeMacroUseExpr(expr: *const ast.Node, summary: *TimeMacroUseSummary) void {
+        switch (expr.*) {
+            .call_expr => |call| {
+                summary.observe(call.func_name);
+                for (call.args) |arg| collectTimeMacroUseExpr(arg, summary);
+            },
+            .binary_expr => |bin| {
+                collectTimeMacroUseExpr(bin.left, summary);
+                collectTimeMacroUseExpr(bin.right, summary);
+            },
+            .borrow_expr => |borrow| collectTimeMacroUseExpr(borrow.expr, summary),
+            .move_expr => |move| collectTimeMacroUseExpr(move.expr, summary),
+            .deref_expr => |deref| collectTimeMacroUseExpr(deref.expr, summary),
+            .cast_expr => |cast| collectTimeMacroUseExpr(cast.expr, summary),
+            .field_expr => |field| collectTimeMacroUseExpr(field.expr, summary),
+            .closure_literal => |closure| collectTimeMacroUseExpr(closure.body, summary),
+            .await_expr => |await_expr| collectTimeMacroUseExpr(await_expr.expr, summary),
+            .try_expr => |try_expr| collectTimeMacroUseExpr(try_expr.expr, summary),
+            .struct_literal => |lit| {
+                if (lit.update_expr) |update| collectTimeMacroUseExpr(update, summary);
+                for (lit.fields) |field| collectTimeMacroUseExpr(field.value, summary);
+            },
+            .enum_literal => |lit| {
+                for (lit.fields) |field| collectTimeMacroUseExpr(field.value, summary);
+            },
+            .tuple_literal => |lit| {
+                for (lit.elements) |element| collectTimeMacroUseExpr(element, summary);
+            },
+            .array_literal => |lit| {
+                for (lit.elements) |element| collectTimeMacroUseExpr(element, summary);
+            },
+            .repeat_array_literal => |lit| collectTimeMacroUseExpr(lit.value, summary),
+            .index_expr => |index| {
+                collectTimeMacroUseExpr(index.target, summary);
+                collectTimeMacroUseExpr(index.index, summary);
+            },
+            .slice_expr => |slice| {
+                collectTimeMacroUseExpr(slice.target, summary);
+                collectTimeMacroUseExpr(slice.start, summary);
+                collectTimeMacroUseExpr(slice.end, summary);
+            },
+            .if_expr => |if_expr| {
+                collectTimeMacroUseExpr(if_expr.cond, summary);
+                if (if_expr.let_chain) |chain| {
+                    for (chain) |item| collectTimeMacroUseExpr(item.value, summary);
+                }
+                collectTimeMacroUseBlock(if_expr.then_block, summary);
+                if (if_expr.else_block) |else_block| collectTimeMacroUseBlock(else_block, summary);
+            },
+            .switch_expr => |switch_expr| {
+                collectTimeMacroUseExpr(switch_expr.val, summary);
+                for (switch_expr.cases) |case| {
+                    collectTimeMacroUseExpr(case.pattern, summary);
+                    collectTimeMacroUseBlock(case.body, summary);
+                }
+            },
+            .match_expr => |match_expr| {
+                collectTimeMacroUseExpr(match_expr.val, summary);
+                for (match_expr.cases) |case| {
+                    if (case.guard) |guard| collectTimeMacroUseExpr(guard, summary);
+                    collectTimeMacroUseBlock(case.body, summary);
+                }
+            },
+            .unsafe_expr => |unsafe_expr| collectTimeMacroUseBlock(unsafe_expr.body, summary),
+            else => {},
+        }
+    }
+
+    fn collectTimeMacroUseBlock(block: []const *ast.Node, summary: *TimeMacroUseSummary) void {
+        for (block) |stmt| {
+            switch (stmt.*) {
+                .let_stmt => |let| collectTimeMacroUseExpr(let.value, summary),
+                .let_else_stmt => |let| {
+                    collectTimeMacroUseExpr(let.value, summary);
+                    collectTimeMacroUseBlock(let.else_block, summary);
+                },
+                .let_destructure_stmt => |let| collectTimeMacroUseExpr(let.value, summary),
+                .const_stmt => |constant| collectTimeMacroUseExpr(constant.value, summary),
+                .assign_stmt => |assign| {
+                    collectTimeMacroUseExpr(assign.target, summary);
+                    collectTimeMacroUseExpr(assign.value, summary);
+                },
+                .block_stmt => |nested| collectTimeMacroUseBlock(nested.body, summary),
+                .expr_stmt => |expr| collectTimeMacroUseExpr(expr, summary),
+                .return_stmt => |ret| if (ret.value) |value| collectTimeMacroUseExpr(value, summary),
+                .for_stmt => |for_stmt| {
+                    collectTimeMacroUseExpr(for_stmt.start, summary);
+                    if (for_stmt.end) |end| collectTimeMacroUseExpr(end, summary);
+                    collectTimeMacroUseBlock(for_stmt.body, summary);
+                },
+                .while_stmt => |while_stmt| {
+                    collectTimeMacroUseExpr(while_stmt.cond, summary);
+                    collectTimeMacroUseBlock(while_stmt.body, summary);
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn programSupportsPlainTimeSleepMsAbi(program: *const ast.Node) bool {
+        var summary = TimeMacroUseSummary{};
+        for (program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => |func| collectTimeMacroUseBlock(func.body, &summary),
+                .impl_decl => |impl| for (impl.methods) |method| {
+                    if (method.* == .func_decl) collectTimeMacroUseBlock(method.func_decl.body, &summary);
+                },
+                .overload_decl => |overload| for (overload.methods) |method| {
+                    if (method.* == .func_decl) collectTimeMacroUseBlock(method.func_decl.body, &summary);
+                },
+                .macro_decl => |macro| collectTimeMacroUseBlock(macro.body, &summary),
+                .test_decl => |test_decl| collectTimeMacroUseBlock(test_decl.body, &summary),
+                .const_stmt => |constant| collectTimeMacroUseExpr(constant.value, &summary),
+                else => {},
+            }
+        }
+        return summary.supportsPlainSleepMsAbi();
+    }
+
+    fn pruneUnusedThreadRuntimeImport(self: *Codegen) void {
+        const output = self.out.items;
+        const needs_runtime =
+            std.mem.indexOf(u8, output, "EXPAND THREAD_") != null or
+            std.mem.indexOf(u8, output, "call @pthread_") != null or
+            std.mem.indexOf(u8, output, "call @sa_thread_") != null;
+        if (needs_runtime) return;
+
+        const import_line = "@import \"sa_std/thread.sa\"\n";
+        var read: usize = 0;
+        var write: usize = 0;
+        while (read < self.out.items.len) {
+            const at_line_start = read == 0 or self.out.items[read - 1] == '\n';
+            if (at_line_start and std.mem.startsWith(u8, self.out.items[read..], import_line)) {
+                read += import_line.len;
+                continue;
+            }
+            self.out.items[write] = self.out.items[read];
+            write += 1;
+            read += 1;
+        }
+        self.out.items.len = write;
+    }
+
     pub fn generate(self: *Codegen, program: *ast.Node) CodegenError![]const u8 {
         if (program.* != .program) return CodegenError.CodegenError;
         self.global_const_bindings.clearRetainingCapacity();
         self.global_scalar_consts.clearRetainingCapacity();
+        self.use_plain_time_sleep_ms_abi = programSupportsPlainTimeSleepMsAbi(program);
         try self.collectThreadSpawnHelpers(program);
 
         // Struct layouts are compile-time Sla metadata. The generated SA uses
@@ -6921,6 +7129,9 @@ pub const Codegen = struct {
             } else if (decl.* == .using_decl) {
                 continue;
             }
+        }
+        if (self.use_plain_time_sleep_ms_abi) {
+            self.out.writer().print("@extern sa_time_sleep_ms(ms: u64) -> i32\n", .{}) catch return CodegenError.CodegenError;
         }
 
         self.out.writer().print("@import \"sa_std/string.sa\"\n", .{}) catch return CodegenError.CodegenError;
@@ -7140,6 +7351,7 @@ pub const Codegen = struct {
             }
         }
 
+        self.pruneUnusedThreadRuntimeImport();
         return self.out.toOwnedSlice() catch return CodegenError.OutOfMemory;
     }
 
@@ -7150,6 +7362,7 @@ pub const Codegen = struct {
             const base = path[0 .. path.len - 4];
             path = std.fmt.bufPrint(&path_buf, "{s}.sa", .{base}) catch path;
         }
+        if (self.use_plain_time_sleep_ms_abi and std.mem.endsWith(u8, path, "sa_std/time.sa")) return;
         if (std.fs.path.isAbsolute(path)) {
             if (std.mem.indexOf(u8, path, "sa_std/")) |idx| {
                 path = path[idx..];
@@ -7308,6 +7521,7 @@ pub const Codegen = struct {
         self.assigned_value_slots.clearRetainingCapacity();
         self.repeated_let_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
+        self.inline_thread_handles.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
         self.mpsc_sender_channels.clearRetainingCapacity();
@@ -7466,6 +7680,7 @@ pub const Codegen = struct {
         self.assigned_value_slots.clearRetainingCapacity();
         self.repeated_let_bindings.clearRetainingCapacity();
         self.stack_alloc_bindings.clearRetainingCapacity();
+        self.inline_thread_handles.clearRetainingCapacity();
         self.consumed_bindings.clearRetainingCapacity();
         self.mpsc_sender_bindings.clearRetainingCapacity();
         self.mpsc_sender_channels.clearRetainingCapacity();
@@ -8792,6 +9007,42 @@ pub const Codegen = struct {
         return try self.genExpr(arg, hoisted_allocs);
     }
 
+    fn fnPtrInlineCandidateExpr(self: *Codegen, func: *const ast.FuncDecl) ?*const ast.Node {
+        _ = self;
+        const value = if (func.body.len == 1 and func.body[0].* == .return_stmt)
+            func.body[0].return_stmt.value
+        else if (func.body.len == 1 and func.body[0].* == .expr_stmt)
+            func.body[0].expr_stmt
+        else
+            null;
+        const expr = value orelse return null;
+        for (func.params) |param| {
+            if (nodeUsesIdentifier(expr, param.name)) return null;
+        }
+        return expr;
+    }
+
+    fn fnPtrInlineCanConsumeMovedArgs(self: *Codegen, lowered_args: []const LoweredCallArg, param_tys: []const *ast.Type) bool {
+        _ = self;
+        for (lowered_args, param_tys) |lowered_arg, param_ty| {
+            if (!std.mem.startsWith(u8, lowered_arg.reg, "^")) continue;
+            const smart = lowering_rules.smartPointerType(param_ty) orelse return false;
+            if (smart.kind != .arc) return false;
+        }
+        return true;
+    }
+
+    fn emitFnPtrInlineMovedArgConsumes(self: *Codegen, lowered_args: []const LoweredCallArg, param_tys: []const *ast.Type) CodegenError!void {
+        for (lowered_args, param_tys) |lowered_arg, param_ty| {
+            if (!std.mem.startsWith(u8, lowered_arg.reg, "^")) continue;
+            const smart = lowering_rules.smartPointerType(param_ty) orelse return CodegenError.CodegenError;
+            if (smart.kind != .arc) return CodegenError.CodegenError;
+            const arg_name = lowered_arg.reg[1..];
+            self.out.writer().print("    !{s}\n", .{arg_name}) catch return CodegenError.CodegenError;
+            try self.markConsumedBinding(arg_name);
+        }
+    }
+
     fn closureShadowsIdentifier(closure: ast.ClosureLiteral, name: []const u8) bool {
         for (closure.params) |param| {
             if (std.mem.eql(u8, param.name, name)) return true;
@@ -9374,7 +9625,50 @@ pub const Codegen = struct {
         }
     }
 
+    fn genPlainTimeMacroCall(
+        self: *Codegen,
+        call: *const ast.CallExpr,
+        plan: lowering_rules.ImportedMacroCallPlan,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!?[]const u8 {
+        if (!self.use_plain_time_sleep_ms_abi) return null;
+
+        if (std.mem.eql(u8, plan.macro_name, "TIME_DURATION_FROM_MILLIS")) {
+            if (!plan.expression_output or call.args.len != 1) return CodegenError.CodegenError;
+            const lowered_arg = try self.genImportedMacroArg(plan, 0, call.args[0], hoisted_allocs);
+            const reg = try self.newTmp();
+            self.out.writer().print("    {s} = mul {s}, 1000000\n", .{ reg, lowered_arg.reg }) catch return CodegenError.CodegenError;
+            if (self.plannedCallArgReleaseReg(lowered_arg)) |release_reg| try self.emitRelease(release_reg);
+            return reg;
+        }
+
+        if (std.mem.eql(u8, plan.macro_name, "TIME_THREAD_SLEEP_NS")) {
+            if (plan.expression_output or call.args.len != 1) return CodegenError.CodegenError;
+            const lowered_arg = try self.genImportedMacroArg(plan, 0, call.args[0], hoisted_allocs);
+            const millis = try self.newTmp();
+            const remainder = try self.newTmp();
+            const has_remainder = try self.newTmp();
+            const rounded_millis = try self.newTmp();
+            const status = try self.newTmp();
+            self.out.writer().print("    {s} = div {s}, 1000000\n", .{ millis, lowered_arg.reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = rem {s}, 1000000\n", .{ remainder, lowered_arg.reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = ne {s}, 0\n", .{ has_remainder, remainder }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = add {s}, {s}\n", .{ rounded_millis, millis, has_remainder }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = call @sa_time_sleep_ms({s})\n", .{ status, rounded_millis }) catch return CodegenError.CodegenError;
+            try self.emitRelease(status);
+            try self.emitRelease(rounded_millis);
+            try self.emitRelease(has_remainder);
+            try self.emitRelease(remainder);
+            try self.emitRelease(millis);
+            if (self.plannedCallArgReleaseReg(lowered_arg)) |release_reg| try self.emitRelease(release_reg);
+            return "return_ty_sentinel";
+        }
+
+        return null;
+    }
+
     fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+        if (try self.genPlainTimeMacroCall(call, plan, hoisted_allocs)) |reg| return reg;
         const reg = if (plan.expression_output) try self.newTmp() else "return_ty_sentinel";
         var arg_regs = std.ArrayList([]const u8).init(self.allocator);
         defer arg_regs.deinit();
@@ -9808,6 +10102,10 @@ pub const Codegen = struct {
                     if (self.executor_task_counts.get(val_reg)) |task_count| {
                         self.executor_task_counts.put(let.name, task_count) catch return CodegenError.OutOfMemory;
                         _ = self.executor_task_counts.remove(val_reg);
+                    }
+                    if (self.inline_thread_handles.contains(val_reg)) {
+                        self.inline_thread_handles.put(let.name, {}) catch return CodegenError.OutOfMemory;
+                        _ = self.inline_thread_handles.remove(val_reg);
                     }
                     if (self.stack_alloc_bindings.contains(val_reg)) {
                         self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
@@ -12657,15 +12955,20 @@ pub const Codegen = struct {
                         self.out.writer().print("    {s} = alloc {}\n", .{ slot, helper.slot_size }) catch return CodegenError.CodegenError;
                         self.out.writer().print("    store {s}+0, 0 as i32\n", .{slot}) catch return CodegenError.CodegenError;
                         self.out.writer().print("    store {s}+8, 0 as {s}\n", .{ slot, typeString(helper.ret_ty) }) catch return CodegenError.CodegenError;
+                        if (helper.inline_join) {
+                            const value_reg = try self.genExpr(helper.closure.body, hoisted_allocs);
+                            self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ slot, value_reg, typeString(helper.ret_ty) }) catch return CodegenError.CodegenError;
+                            if (callArgNeedsRelease(helper.closure.body)) try self.emitRelease(value_reg);
+                            self.out.writer().print("    store {s}+0, -1 as i32\n", .{slot}) catch return CodegenError.CodegenError;
+                            self.inline_thread_handles.put(slot, {}) catch return CodegenError.OutOfMemory;
+                            return slot;
+                        }
                         for (helper.captures) |capture| {
                             const capture_name = self.resolveBindingName(capture.name);
                             const capture_reg = if (self.mpsc_sender_channels.get(capture_name)) |chan| chan else capture_name;
                             self.out.writer().print("    store {s}+{}, {s} as ptr\n", .{ slot, capture.offset, capture_reg }) catch return CodegenError.CodegenError;
                         }
-                        const handle = try self.newTmp();
-                        self.out.writer().print("    {s} = call @{s}(*{s})\n", .{ handle, helper.spawn_name, slot }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    store {s}+0, {s} as i32\n", .{ slot, handle }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    !{s}\n", .{handle}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    call @{s}(*{s})\n", .{ helper.spawn_name, slot }) catch return CodegenError.CodegenError;
                         return slot;
                     }
                     if (std.mem.eql(u8, target, "Box") and std.mem.eql(u8, call.func_name, "new")) {
@@ -13194,26 +13497,140 @@ pub const Codegen = struct {
                         capture_reg
                     else
                         self.resolveBindingName(call.func_name);
-                    const call_reg = try self.newTmp();
-                    self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ call_reg, fn_reg }) catch return CodegenError.CodegenError;
+                    const fn_ptr_ty = self.localBindingTypeForName(call.func_name) orelse return CodegenError.CodegenError;
+                    if (fn_ptr_ty.* != .fn_ptr or fn_ptr_ty.fn_ptr.params.len != call.args.len) return CodegenError.CodegenError;
 
-                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
-                    defer arg_regs.deinit();
-                    for (call.args) |arg| {
-                        arg_regs.append(try self.genCallArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
+                    var lowered_args = std.ArrayList(LoweredCallArg).init(self.allocator);
+                    defer lowered_args.deinit();
+                    var release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    defer release_regs.deinit();
+                    var consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                    defer consume_regs.deinit();
+                    for (call.args, fn_ptr_ty.fn_ptr.params) |arg, param_ty| {
+                        const param = ast.Param{
+                            .name = "",
+                            .ty = param_ty,
+                            .is_borrow = param_ty.* == .borrow,
+                            .is_move = !self.typeIsCopyValue(param_ty) and !lowering_rules.isBorrowLikeType(param_ty),
+                        };
+                        const lowered_arg = try self.genCallArgForParam(arg, param, hoisted_allocs);
+                        lowered_args.append(lowered_arg) catch return CodegenError.OutOfMemory;
+                        try self.appendLoweredCallArgCleanups(&release_regs, &consume_regs, lowered_arg);
                     }
 
-                    const ret_reg = try self.newTmp();
-                    self.out.writer().print("    {s} = call_indirect {s}(", .{ ret_reg, call_reg }) catch return CodegenError.CodegenError;
-                    for (arg_regs.items, 0..) |arg_reg, i| {
-                        if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+                    var candidates = std.ArrayList([]const u8).init(self.allocator);
+                    defer candidates.deinit();
+                    var func_iter = self.tc.funcs.iterator();
+                    while (func_iter.next()) |entry| {
+                        const candidate = entry.value_ptr.*;
+                        if (candidate.params.len != fn_ptr_ty.fn_ptr.params.len) continue;
+                        if (!lowering_rules.typesEquivalent(candidate.ret_ty, fn_ptr_ty.fn_ptr.ret)) continue;
+                        var params_match = true;
+                        for (candidate.params, fn_ptr_ty.fn_ptr.params) |candidate_param, param_ty| {
+                            if (!lowering_rules.typesEquivalent(candidate_param.ty, param_ty)) {
+                                params_match = false;
+                                break;
+                            }
+                        }
+                        if (!params_match) continue;
+                        candidates.append(entry.key_ptr.*) catch return CodegenError.OutOfMemory;
                     }
-                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
-                    try self.emitRelease(call_reg);
-                    for (call.args, arg_regs.items) |arg, arg_reg| {
-                        if (callArgNeedsRelease(arg)) try self.emitRelease(arg_reg);
+
+                    const returns_void = isVoidType(fn_ptr_ty.fn_ptr.ret);
+                    const ret_reg = if (returns_void) "return_ty_sentinel" else try self.newTmp();
+                    if (candidates.items.len == 0) {
+                        const call_reg = try self.newTmp();
+                        self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ call_reg, fn_reg }) catch return CodegenError.CodegenError;
+                        if (returns_void) {
+                            self.out.writer().print("    call_indirect {s}(", .{call_reg}) catch return CodegenError.CodegenError;
+                        } else {
+                            self.out.writer().print("    {s} = call_indirect {s}(", .{ ret_reg, call_reg }) catch return CodegenError.CodegenError;
+                        }
+                        for (lowered_args.items, 0..) |lowered_arg, i| {
+                            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+                            self.out.writer().print("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
+                        }
+                        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                        try self.emitRelease(call_reg);
+                    } else {
+                        const end_label = try self.newLabel("L_FNPTR_CALL_END");
+                        for (candidates.items, 0..) |candidate_name, candidate_i| {
+                            const lowered_name = try self.loweredFuncSymbol(candidate_name);
+                            defer self.allocator.free(lowered_name);
+                            if (candidate_i + 1 == candidates.items.len) {
+                                const candidate_func = self.tc.funcs.get(candidate_name) orelse return CodegenError.CodegenError;
+                                const inline_expr = if (self.fnPtrInlineCanConsumeMovedArgs(lowered_args.items, fn_ptr_ty.fn_ptr.params))
+                                    self.fnPtrInlineCandidateExpr(candidate_func)
+                                else
+                                    null;
+                                if (inline_expr) |inline_value_expr| {
+                                    if (!returns_void) {
+                                        const inline_value = try self.genExpr(@constCast(inline_value_expr), hoisted_allocs);
+                                        self.out.writer().print("    {s} = add {s}, 0\n", .{ ret_reg, inline_value }) catch return CodegenError.CodegenError;
+                                        if (exprResultNeedsRelease(inline_value_expr)) try self.emitRelease(inline_value);
+                                    } else {
+                                        _ = try self.genExpr(@constCast(inline_value_expr), hoisted_allocs);
+                                    }
+                                    try self.emitFnPtrInlineMovedArgConsumes(lowered_args.items, fn_ptr_ty.fn_ptr.params);
+                                } else if (returns_void) {
+                                    self.out.writer().print("    call @{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+                                } else {
+                                    self.out.writer().print("    {s} = call @{s}(", .{ ret_reg, lowered_name }) catch return CodegenError.CodegenError;
+                                }
+                                if (inline_expr == null) {
+                                    for (lowered_args.items, 0..) |lowered_arg, i| {
+                                        if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+                                        self.out.writer().print("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
+                                    }
+                                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                                }
+                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                break;
+                            }
+                            const match_label = try self.newLabel("L_FNPTR_CALL_MATCH");
+                            const next_label = try self.newLabel("L_FNPTR_CALL_NEXT");
+                            const vt_reg = try self.newTmp();
+                            const is_match = try self.newTmp();
+                            const vt_name = try self.fnPtrVTableName(candidate_name);
+                            defer self.allocator.free(vt_name);
+                            self.out.writer().print("    {s} = &{s}\n", .{ vt_reg, vt_name }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_match, fn_reg, vt_reg }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_match, match_label, next_label }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("{s}:\n", .{match_label}) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    !{s}\n    !{s}\n", .{ is_match, vt_reg }) catch return CodegenError.CodegenError;
+                            const candidate_func = self.tc.funcs.get(candidate_name) orelse return CodegenError.CodegenError;
+                            const inline_expr = if (self.fnPtrInlineCanConsumeMovedArgs(lowered_args.items, fn_ptr_ty.fn_ptr.params))
+                                self.fnPtrInlineCandidateExpr(candidate_func)
+                            else
+                                null;
+                            if (inline_expr) |inline_value_expr| {
+                                if (!returns_void) {
+                                    const inline_value = try self.genExpr(@constCast(inline_value_expr), hoisted_allocs);
+                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ ret_reg, inline_value }) catch return CodegenError.CodegenError;
+                                    if (exprResultNeedsRelease(inline_value_expr)) try self.emitRelease(inline_value);
+                                } else {
+                                    _ = try self.genExpr(@constCast(inline_value_expr), hoisted_allocs);
+                                }
+                                try self.emitFnPtrInlineMovedArgConsumes(lowered_args.items, fn_ptr_ty.fn_ptr.params);
+                            } else if (returns_void) {
+                                self.out.writer().print("    call @{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+                            } else {
+                                self.out.writer().print("    {s} = call @{s}(", .{ ret_reg, lowered_name }) catch return CodegenError.CodegenError;
+                            }
+                            if (inline_expr == null) {
+                                for (lowered_args.items, 0..) |lowered_arg, i| {
+                                    if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("{s}", .{lowered_arg.reg}) catch return CodegenError.CodegenError;
+                                }
+                                self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                            }
+                            self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                            self.out.writer().print("{s}:\n", .{next_label}) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    !{s}\n    !{s}\n", .{ is_match, vt_reg }) catch return CodegenError.CodegenError;
+                        }
+                        self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                     }
+                    try self.emitLoweredCallArgCleanups(release_regs.items, consume_regs.items, null);
                     return ret_reg;
                 }
 
@@ -13265,14 +13682,50 @@ pub const Codegen = struct {
                             if (std.mem.eql(u8, call.func_name, "join")) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                if (self.inline_thread_handles.contains(recv_reg)) {
+                                    const result_reg = try self.newTmp();
+                                    const value = try self.newTmp();
+                                    const ok_tag = try self.newTmp();
+                                    self.out.writer().print("    {s} = load {s}+8 as {s}\n", .{ value, recv_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    {s} = 0\n", .{ok_tag}) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    store {s}+0, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ result_reg, value, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    store {s}+16, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    !{s}\n", .{ok_tag}) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    !{s}\n", .{value}) catch return CodegenError.CodegenError;
+                                    _ = self.inline_thread_handles.remove(recv_reg);
+                                    try self.emitRelease(recv_reg);
+                                    return result_reg;
+                                }
                                 const handle = try self.newTmp();
+                                const is_inline = try self.newTmp();
                                 const status = try self.newTmp();
                                 const is_ok = try self.newTmp();
                                 const result_reg = try self.newTmp();
+                                const inline_label = try self.newLabel("L_THREAD_JOIN_INLINE");
+                                const pthread_label = try self.newLabel("L_THREAD_JOIN_PTHREAD");
                                 const ok_label = try self.newLabel("L_THREAD_JOIN_OK");
                                 const err_label = try self.newLabel("L_THREAD_JOIN_ERR");
                                 const end_label = try self.newLabel("L_THREAD_JOIN_END");
                                 self.out.writer().print("    {s} = load {s}+0 as i32\n", .{ handle, recv_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = eq {s}, -1\n", .{ is_inline, handle }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_inline, inline_label, pthread_label }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("{s}:\n", .{inline_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{is_inline}) catch return CodegenError.CodegenError;
+                                const inline_value = try self.newTmp();
+                                self.out.writer().print("    {s} = load {s}+8 as {s}\n", .{ inline_value, recv_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                const inline_ok_tag = try self.newTmp();
+                                self.out.writer().print("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = 0\n", .{inline_ok_tag}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+0, {s} as u64\n", .{ result_reg, inline_ok_tag }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ result_reg, inline_value, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+16, {s} as u64\n", .{ result_reg, inline_ok_tag }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{inline_ok_tag}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{inline_value}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("{s}:\n", .{pthread_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{is_inline}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    EXPAND THREAD_JOIN_STATUS {s}, {s}, *{s}\n", .{ status, handle, recv_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    EXPAND THREAD_DROP {s}\n", .{handle}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = eq {s}, 0\n", .{ is_ok, status }) catch return CodegenError.CodegenError;
@@ -13281,18 +13734,35 @@ pub const Codegen = struct {
                                 self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
                                 const value = try self.newTmp();
                                 self.out.writer().print("    {s} = load {s}+8 as {s}\n", .{ value, recv_reg, typeString(inner_ty) }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, value }) catch return CodegenError.CodegenError;
+                                const ok_tag = try self.newTmp();
+                                self.out.writer().print("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = 0\n", .{ok_tag}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+0, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ result_reg, value, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+16, {s} as u64\n", .{ result_reg, ok_tag }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{ok_tag}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    !{s}\n", .{value}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{status}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
                                 const err_value = try self.newTmp();
                                 self.out.writer().print("    {s} = add {s}, 0\n", .{ err_value, status }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, err_value }) catch return CodegenError.CodegenError;
+                                const err_tag = try self.newTmp();
+                                const err_zero = try self.newTmp();
+                                self.out.writer().print("    {s} = alloc 24\n", .{result_reg}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = 1\n", .{err_tag}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = 0\n", .{err_zero}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+0, {s} as u64\n", .{ result_reg, err_tag }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+8, {s} as {s}\n", .{ result_reg, err_zero, typeString(inner_ty) }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+16, {s} as i64\n", .{ result_reg, err_value }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{err_zero}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{err_tag}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    !{s}\n", .{err_value}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{status}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    !{s}\n    !{s}\n", .{ status, handle }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{handle}) catch return CodegenError.CodegenError;
                                 try self.markConsumedBinding(recv_reg);
                                 return result_reg;
                             }
@@ -13515,9 +13985,30 @@ pub const Codegen = struct {
                             }
                             if (std.mem.eql(u8, call.func_name, "unwrap")) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
+                                const result_recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
+                                const ok_ty = resultOkType(result_recv_ty) orelse return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND RESULT_UNWRAP {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
+                                const tag = try self.newTmp();
+                                const is_ok = try self.newTmp();
+                                const ok_label = try self.newLabel("L_RESULT_UNWRAP_OK");
+                                const err_label = try self.newLabel("L_RESULT_UNWRAP_ERR");
+                                const end_label = try self.newLabel("L_RESULT_UNWRAP_END");
+                                self.out.writer().print("    {s} = load {s}+0 as u64\n", .{ tag, recv_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = eq {s}, 0\n", .{ is_ok, tag }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ is_ok, ok_label, err_label }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = load {s}+8 as {s}\n", .{ reg, recv_reg, typeString(ok_ty) }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{tag}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{is_ok}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    panic(17)\n", .{}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = 0\n", .{reg}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    !{s}\n", .{tag}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
+                                self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 if (self.mutex_lock_results.get(recv_reg)) |handle| {
                                     self.mutex_guard_handles.put(reg, handle) catch return CodegenError.OutOfMemory;
                                     _ = self.mutex_lock_results.remove(recv_reg);

@@ -47,22 +47,21 @@ This makes automation treat an otherwise passing strict SAB test as failed. It a
 
 After printing `test result: ok`, the `sa sla test ... --test-backend sab` process should exit with status `0`.
 
-## 2026-07-17 Selection Passthrough Mitigation
+## 2026-07-17 Compiled Child Filter Handling
 
-Static runner analysis found a related information-loss bug in
-`sa_plugin_sla`: after compiling an SLA test input to `.sab` or `.test.sa`, the
-plugin removed `--filter` before invoking the child `sa test` process. That
-meant the child `.sab` runner could not see explicit test selection, so SCI's
-selected-test SAB path could not prune by selected tests or use its selected
-test verification mode. The SLA compiler had already pruned the source test
-set, but the child runner still benefits from seeing the original test
-selection.
+Static runner analysis found a related filter boundary in `sa_plugin_sla`.
+The SLA compiler already applies `--filter` / `--filter=...` before codegen by
+pruning unmatched source `@test` declarations. Forwarding that same filter to
+the compiled child `sa test <generated.sab>` process can fail on some SAB
+modules with `error: no matching test`, because the child runner's SAB test
+registry can disagree with the original source test title even though the
+source-side selected test was compiled.
 
-The plugin now preserves `--filter` / `--filter=...` in compiled-test
-passthrough arguments while still stripping the plugin-private
-`--test-backend` option. This is a mitigation for filtered strict-SAB tests
-on the same runner path; it does **not** close the original unfiltered
-`test_real_ts_project_reference_flow.sla` timeout by itself.
+Compiled-test passthrough therefore strips source-only `--filter` arguments
+when invoking child `sa test`, while still stripping the plugin-private
+`--test-backend` option and preserving ordinary runner arguments such as
+`--trace-panic` / `--jobs`. This keeps selection owned by the SLA source
+pipeline and avoids the child SAB filter mismatch.
 
 Historical focused repro state before the closure recheck: a 60s profiled
 rerun in the dirty

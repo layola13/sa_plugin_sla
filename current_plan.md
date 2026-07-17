@@ -30,11 +30,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
   the unfiltered single-file parser contract is the closure evidence. No full
   tests were run.
 - Docs/issue028 strict-SAB timeout current-non-repro closure (2026-07-17):
-  compiled-test passthrough preserves `--filter` / `--filter=...` when
-  invoking child `sa test` for generated `.sab` / `.test.sa` inputs, while
-  still stripping plugin-private `--test-backend`. After waiting for unrelated
-  external test processes, the remaining unfiltered path was rechecked
-  serially in the dirty `sla_tsgo` checkout: direct
+  compiled-test passthrough applies `--filter` / `--filter=...` at the SLA
+  source-pruning layer, then strips source-only filter args before invoking
+  child `sa test` for generated `.sab` / `.test.sa` inputs. This avoids the
+  child SAB runner's `no matching test` filter mismatch while still stripping
+  plugin-private `--test-backend`. After waiting for unrelated external test
+  processes, the remaining unfiltered path was rechecked serially in the dirty
+  `sla_tsgo` checkout: direct
   `sa test .sla-cache/sab/test_real_ts_project_reference_flow-96dd54743c5a82de.sab`
   exited 0 with 2/2, and the original outer
   `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test

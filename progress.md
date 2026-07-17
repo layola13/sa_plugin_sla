@@ -17,10 +17,12 @@ Update this file every time a compiler feature or demo milestone is completed an
   test suite was run.
 
 - docs/issue028 strict-SAB timeout current-non-repro closure (2026-07-17):
-  `sa sla test` compiled-test passthrough preserves user `--filter` /
-  `--filter=...` when invoking child `sa test` on generated `.sab` or
-  `.test.sa` inputs, while still stripping plugin-private `--test-backend`.
-  The remaining unfiltered timeout path was rechecked serially in the dirty
+  `sa sla test` applies user `--filter` / `--filter=...` at the SLA
+  source-pruning layer, then compiled-test passthrough strips those
+  source-only filter args before invoking child `sa test` on generated `.sab`
+  or `.test.sa` inputs. This avoids the child SAB runner's `no matching test`
+  filter mismatch while still stripping plugin-private `--test-backend`. The
+  remaining unfiltered timeout path was rechecked serially in the dirty
   `sla_tsgo` checkout after unrelated external tests finished. Direct
   `sa test .sla-cache/sab/test_real_ts_project_reference_flow-96dd54743c5a82de.sab`
   passed 2/2 and exited 0, and the original outer

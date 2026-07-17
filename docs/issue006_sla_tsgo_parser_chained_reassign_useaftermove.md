@@ -1,5 +1,30 @@
 # issue006: sla_tsgo parser chained `p2 = F(p2)` reassignment triggers SAB `UseAfterMove` even when the arrow path is never executed
 
+Status: fixed/current-non-repro on 2026-07-17.
+
+## 2026-07-17 Current Recheck
+
+The historical strict direct-SAB parser `p2` over-conservation blocker no
+longer reproduces against the installed dev plugin. The current dirty
+`/home/vscode/projects/mnt/sla_tsgo` checkout was rechecked serially after
+waiting for unrelated external tests to finish:
+
+```sh
+timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 \
+  sa sla test tests/test_parser_contract.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+Result: 204/204 passed, exit status `0`. This covers the previously red
+parser-direct contract, including `parse arrow expression`, `parse generic
+arrow expression with conditional return type`, and the parser helper paths
+that exercise the chained `p2 = F(p2)` / loop-merge surface.
+
+A narrower `--filter "parse arrow expression"` attempt was not used as closure
+evidence because the child runner reported `no matching test` after source-side
+selection; the unfiltered single-file issue target is the authoritative
+current check. No full suite was run.
+
 ## Update 2026-07-14: SA-text parser-state rebind surface closed for checker
 
 The later `sla_tsgo` checker SA-text blocker had the same source-level parser
@@ -178,7 +203,7 @@ produce this false-positive trap.
   GREEN) and the SA backend (`--test-backend sa`) is also reportedly fine
   before this pass; only the direct SAB no-fallback backend regression fails.
 
-## Reproduction (current repo state)
+## Historical Reproduction (2026-07-14 repo state)
 
 ```sh
 cd /home/vscode/projects/mnt/sla_tsgo

@@ -18,6 +18,17 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue006 strict direct-SAB parser chained-reassign current-non-repro
+  closure (2026-07-17): the historical `p2 = F(p2)` / parser loop-merge
+  `UseAfterMove` blocker no longer reproduces against the installed dev
+  plugin. After waiting for unrelated external test processes, the dirty
+  `sla_tsgo` checkout passed
+  `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test
+  tests/test_parser_contract.sla --test-backend sab --jobs 1 --trace-panic`
+  with 204/204 and exit 0. A narrower `--filter "parse arrow expression"`
+  attempt hit child-runner `no matching test` after source-side selection, so
+  the unfiltered single-file parser contract is the closure evidence. No full
+  tests were run.
 - Docs/issue028 strict-SAB timeout current-non-repro closure (2026-07-17):
   compiled-test passthrough preserves `--filter` / `--filter=...` when
   invoking child `sa test` for generated `.sab` / `.test.sa` inputs, while

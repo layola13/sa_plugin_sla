@@ -4,6 +4,18 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue006 strict direct-SAB parser chained-reassign current-non-repro
+  closure (2026-07-17): the historical `sla_tsgo` parser `p2 = F(p2)`
+  `UseAfterMove` / `Consumed/Consumed` over-conservation blocker no longer
+  reproduces against the installed dev plugin. After unrelated external tests
+  finished, the dirty `sla_tsgo` checkout passed
+  `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test
+  tests/test_parser_contract.sla --test-backend sab --jobs 1 --trace-panic`
+  with 204/204 and exit 0. A narrower `--filter "parse arrow expression"`
+  attempt hit child-runner `no matching test` after source-side selection, so
+  the unfiltered single-file parser contract is the closure evidence. No full
+  test suite was run.
+
 - docs/issue028 strict-SAB timeout current-non-repro closure (2026-07-17):
   `sa sla test` compiled-test passthrough preserves user `--filter` /
   `--filter=...` when invoking child `sa test` on generated `.sab` or

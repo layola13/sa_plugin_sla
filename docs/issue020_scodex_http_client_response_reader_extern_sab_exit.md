@@ -43,12 +43,14 @@ http client adapter response reader abi fails closed without response
 test result: ok
 ```
 
-## Current scodex workaround
+## Historical scodex workaround
 
 `scodex` keeps the additive response-reader ABI shape as a status/planning API
 and does not directly call the response-reader externs in the regular gate.
-This preserves the existing build/test gate while keeping the successful live
-reader execution slice pending.
+At the time this preserved the existing build/test gate while leaving the
+successful live reader execution slice outside the regular gate. Later
+issue031/issue016 installed/dev revalidation superseded this note for the
+tracked compiler issue.
 
 ## Expected behavior
 

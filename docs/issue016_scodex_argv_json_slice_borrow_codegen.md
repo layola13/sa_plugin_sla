@@ -216,13 +216,15 @@ Observed output:
 exit=1
 ```
 
-Updated interpretation:
+Historical interpretation at this point in the investigation:
 
 - The original borrowed JSON string pointer issue remains valid for general
   JSON/string ABI usage.
 - `scodex` has a working SA-backend workaround for CLI argv routing.
-- Direct SAB still needs either a control-flow/ptr-scan fix or at minimum a
-  diagnostic when a focused test binary exits nonzero.
+- Direct SAB then still needed either a control-flow/ptr-scan fix or at
+  minimum a diagnostic when a focused test binary exited nonzero. Later
+  issue031/issue016 installed/dev revalidation superseded this state and
+  marked the tracked scodex path fixed/current-non-repro.
 
 ## 2026-07-15 Update
 
@@ -260,9 +262,10 @@ SA_PLUGIN_DEV=1 sa sla test packages/scodex-cli/src/args.sla \
 ```
 
 and top-level `packages/scodex-cli/src/main.sla` SAB coverage imports the
-fallback through the workspace successfully. This does not close the compiler
-issue: SAB still needs a fix for pointer JSON scanning or at least diagnostics
-when the generated test exits nonzero.
+fallback through the workspace successfully. At that time this did not close
+the compiler issue: SAB still needed a fix for pointer JSON scanning or at
+least diagnostics when the generated test exited nonzero. Later
+issue031/issue016 installed/dev revalidation superseded this historical state.
 
 ## 2026-07-15 App-Server Slice Repro
 

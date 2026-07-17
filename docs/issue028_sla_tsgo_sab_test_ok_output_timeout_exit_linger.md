@@ -64,13 +64,13 @@ passthrough arguments while still stripping the plugin-private
 on the same runner path; it does **not** close the original unfiltered
 `test_real_ts_project_reference_flow.sla` timeout by itself.
 
-Current focused repro state: a 60s profiled rerun in the dirty
+Historical focused repro state before the closure recheck: a 60s profiled
+rerun in the dirty
 `/home/vscode/projects/mnt/sla_tsgo` checkout reached direct SAB codegen and
 then timed out while the nested `sa test <generated.sab>` phase was still
-running, before the pass summary. The generated SAB was about 5.2 MiB. Further
-closure still needs a serial direct `sa test <generated.sab>` check after
-external test processes are idle, to distinguish child-runner post-summary
-linger from parent plugin cleanup.
+running, before the pass summary. The generated SAB was about 5.2 MiB. The
+closure recheck below supplied the missing serial direct `sa test
+<generated.sab>` and original outer-command evidence.
 
 ## 2026-07-17 Closure Recheck
 

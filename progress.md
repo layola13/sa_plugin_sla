@@ -4,6 +4,19 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- issue019 focused SLAN/source-growth direct-SAB subcase (2026-07-17): direct
+  SAB imported macro lowering now detects leading output args whose binding is
+  an existing stack-slot local and emits `macro output temp -> store slot`
+  instead of letting the macro fragment define the stack slot register again.
+  This fixes the `NUM_U64_CHECKED_ADD(add_ok, end_tick, ...)` shape exposed by
+  the current dirty `sla_music_cli/src/midi.sla` SMF2 UMP `SLAN` coverage.
+  Added `tests/test_unit_checked_add_macro_output_direct.sla` plus decoded-SAB
+  regression coverage. Serial focused verification passed: Zig filter 2/2;
+  build 7/7; local and installed/dev SA plus strict SAB fixture 1/1 each; dev
+  install/help; downstream dirty-checkout strict SAB filter
+  `smf2 ump rejects unsupported packet types` 1/1. No full test suite was run;
+  broad issue019 remains open.
+
 - docs/issue historical wording cleanup (2026-07-17): fixed residual
   false-positive text in closed issue docs 014, 016, 020, 024, 031, and 040 so
   open-issue scans no longer confuse historical repro notes with current

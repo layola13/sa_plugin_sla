@@ -11381,6 +11381,15 @@ pub const Codegen = struct {
         if (plan.expression_output or call_arg_index >= plan.leading_outputs) return null;
         const name = self.importedMacroOutputTargetName(arg, ctx) orelse return null;
         const dst = try self.bindingReg(name);
+        if (self.stack_alloc_emitted.contains(dst)) {
+            const tmp = try self.intern(try self.newTmp());
+            return .{
+                .operand = self.symbols.items[tmp],
+                .release_reg = null,
+                .output_store_slot = dst,
+                .output_store_ty = try addressableSlotPrimType(arg_ty),
+            };
+        }
         return .{
             .operand = self.symbols.items[dst],
             .release_reg = null,
@@ -11804,6 +11813,8 @@ pub const Codegen = struct {
         defer restores.deinit();
         var output_rebindings = std.ArrayList(struct { name: []const u8, reg: u32, ty: *const ast.Type }).init(self.allocator);
         defer output_rebindings.deinit();
+        var output_stores = std.ArrayList(struct { slot: u32, value: u32, ty: sig.PrimType }).init(self.allocator);
+        defer output_stores.deinit();
 
         if (dst) |reg| try arg_names.append(self.symbols.items[reg]);
         for (call.args, 0..) |arg, i| {
@@ -11824,6 +11835,10 @@ pub const Codegen = struct {
                 const reg = try self.intern(lowered_arg.operand);
                 try output_rebindings.append(.{ .name = name, .reg = reg, .ty = lowered_arg.output_bind_ty orelse return Error.MissingType });
             }
+            if (lowered_arg.output_store_slot) |slot| {
+                const value = try self.intern(lowered_arg.operand);
+                try output_stores.append(.{ .slot = slot, .value = value, .ty = lowered_arg.output_store_ty orelse return Error.MissingType });
+            }
         }
 
         const emitted_direct = try self.emitDirectImportedMacroCall(plan.macro_name, arg_names.items);
@@ -11839,6 +11854,10 @@ pub const Codegen = struct {
         }
         for (output_rebindings.items) |binding| {
             try self.pushTypedLocal(binding.name, binding.reg, false, binding.ty);
+        }
+        for (output_stores.items) |store| {
+            try self.emitStore(store.slot, 0, store.value, store.ty);
+            try self.emitRelease(store.value);
         }
         if (!emitted_direct) {
             try self.releaseNonLocalTemps(release_regs.items);
@@ -12076,6 +12095,8 @@ pub const Codegen = struct {
         restore_value: ?u32 = null,
         output_bind_name: ?[]const u8 = null,
         output_bind_ty: ?*const ast.Type = null,
+        output_store_slot: ?u32 = null,
+        output_store_ty: ?sig.PrimType = null,
     };
 
     const DirectSabCallParam = struct {

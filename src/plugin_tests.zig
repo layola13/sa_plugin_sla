@@ -7615,6 +7615,57 @@ test "sla sab backend imported ptr add macro output does not redefine input para
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend stores imported scalar macro outputs into stack slots" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_checked_add_macro_output_direct.sla",
+        ".sla-cache/sab/checked_add_macro_output_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "direct sab checked add macro writes scalar slot outputs", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    const function_idx = for (module.function_sigs, 0..) |fsig, idx| {
+        if (std.mem.eql(u8, fsig.name, "sla__checked_add_slot")) break idx;
+    } else return error.TestUnexpectedResult;
+    const function_start: usize = @intCast(module.function_sigs[function_idx].entry_inst_idx);
+    const function_end: usize = if (function_idx + 1 < module.function_sigs.len)
+        @intCast(module.function_sigs[function_idx + 1].entry_inst_idx)
+    else
+        module.instructions.len;
+
+    var stack_slots = std.AutoHashMap(u32, void).init(std.testing.allocator);
+    defer stack_slots.deinit();
+    var saw_slot_store = false;
+    for (module.instructions[function_start..function_end]) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .stack_alloc and item.operands[0] == .reg) {
+            try stack_slots.put(item.operands[0].reg, {});
+            continue;
+        }
+        if (item.kind == .op and item.operands[0] == .reg) {
+            try std.testing.expect(!stack_slots.contains(item.operands[0].reg));
+            continue;
+        }
+        if (item.kind == .store and item.operands[0] == .reg and stack_slots.contains(item.operands[0].reg)) {
+            saw_slot_store = true;
+        }
+    }
+
+    try std.testing.expect(saw_slot_store);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab backend lowers tuple literals and destructuring directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

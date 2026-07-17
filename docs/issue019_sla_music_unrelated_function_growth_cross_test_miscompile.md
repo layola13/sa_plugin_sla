@@ -4,7 +4,7 @@ Date: 2026-07-14
 
 ## Status
 
-Open.
+Open; current SLAN/source-growth direct-SAB subcase fixed on 2026-07-17.
 
 ## Summary
 
@@ -86,3 +86,49 @@ small source growth in an imported module.
 This blocks continuing richer pure-SLA music patch serialization and stricter
 MIDI Clip header validation while keeping the required SA-text fallback gate
 healthy.
+
+## 2026-07-17 Focused Subcase
+
+While extending `/home/vscode/projects/sla_music_cli/src/midi.sla` with
+SMF2 UMP `SLAN` malformed-payload coverage, the single focused SA-text test:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test src/midi.sla --test-backend sa --jobs 1 \
+  --trace-panic --filter "smf2 ump rejects unsupported packet types"
+```
+
+passed 1/1, but the matching strict direct-SAB filter failed before assertions:
+
+```text
+error[RegisterRedefinition]: register is already live
+register: end_tick
+```
+
+The generated SAB showed `NUM_U64_CHECKED_ADD(add_ok, end_tick, ...)` lowering
+its leading output directly into the existing stack slot for `end_tick`, e.g.
+an `op.add` destination was the same register previously defined by
+`stack_alloc`. Direct SAB now routes imported scalar macro leading outputs that
+target stack-slot locals through a temporary register and stores the result
+back into the slot.
+
+Added focused compiler regression:
+
+- `tests/test_unit_checked_add_macro_output_direct.sla`
+- Zig regression: `sla sab backend stores imported scalar macro outputs into stack slots`
+
+Serial focused verification passed:
+
+- `zig build test -j1 -Dtest-filter='stores imported scalar macro outputs' --summary all`: 2/2.
+- `zig build -j1 --summary all`: 7/7.
+- local generated-SA fixture 1/1.
+- local strict direct-SAB fixture 1/1.
+- `SA_PLUGIN_DEV=1 sa plugin install --dev .`.
+- `SA_PLUGIN_DEV=1 sa sla help`.
+- installed/dev generated-SA fixture 1/1.
+- installed/dev strict direct-SAB fixture 1/1.
+- downstream dirty checkout focused strict direct-SAB
+  `src/midi.sla --filter "smf2 ump rejects unsupported packet types"`: 1/1.
+
+This does not close the whole issue019 cross-test instability: the current
+`sla_music_cli` checkout is dirty, and no broader `midi.sla` or fallback-gate
+rerun was used for this slice.

@@ -18,6 +18,18 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- issue019 focused SLAN/source-growth direct-SAB subcase (2026-07-17):
+  imported scalar macro leading outputs that target stack-slot locals now lower
+  through a temporary value and store back into the stack slot instead of
+  redefining the slot register. This fixes the current
+  `sla_music_cli/src/midi.sla` dirty-checkout `SLAN` coverage failure where
+  `NUM_U64_CHECKED_ADD(add_ok, end_tick, ...)` redefined `end_tick`. Added
+  `tests/test_unit_checked_add_macro_output_direct.sla` and a decoded-SAB Zig
+  regression. Serial focused gates passed: Zig filter 2/2; build 7/7; local
+  and installed/dev SA plus strict SAB fixture 1/1 each; dev install/help;
+  downstream dirty-checkout strict SAB filter
+  `smf2 ump rejects unsupported packet types` 1/1. No full suite was run, and
+  issue019 remains open for the broader cross-test instability.
 - Docs/issue historical wording cleanup (2026-07-17): reconciled residual
   false-positive wording in fixed issues 014, 016, 020, 024, 031, and 040 so
   `still fails`, `no diagnostics`, and `no longer open` phrases are marked as

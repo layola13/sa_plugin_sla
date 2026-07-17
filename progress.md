@@ -4,6 +4,20 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- docs/issue045 `u64::MAX` literal parser closure (2026-07-17): integer
+  suffixes are now identified before numeric parsing in `parsePrefixExpr`.
+  Explicit `u64` and `usize` literals parse through `u64` and retain their bit
+  pattern in the existing `i64` AST payload, so
+  `18446744073709551615u64` no longer fails with `InvalidCharacter`.
+  Unsuffixed and signed literals continue to use checked `i64` parsing. Added
+  `tests/test_unit_u64_max_literal.sla` for unsigned divide, modulo,
+  comparison, and shift behavior on the max literal. Serial focused
+  verification passed: `zig test src/parser.zig --test-filter "parser
+  accepts explicit u64 max literal suffix"` 1/1; `zig build -j1 --summary all`
+  7/7; local generated-SA and strict direct-SAB fixture 1/1 each; official dev
+  install/help; installed/dev generated-SA and strict direct-SAB fixture 1/1
+  each. No full suite was run.
+
 - docs/issue046 unsigned binary lowering closure (2026-07-17): ordinary scalar
   binary expressions now share signed/unsigned/float operation selection through
   `src/lowering_rules.zig`; generated-SA and direct SAB both select `udiv`,

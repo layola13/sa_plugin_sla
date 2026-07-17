@@ -2536,6 +2536,20 @@ pub const Parser = struct {
         };
     }
 
+    fn integerSuffixPrimitive(suffix: []const u8) ?ast.Primitive {
+        if (std.mem.eql(u8, suffix, "i8")) return .i8;
+        if (std.mem.eql(u8, suffix, "i16")) return .i16;
+        if (std.mem.eql(u8, suffix, "i32")) return .i32;
+        if (std.mem.eql(u8, suffix, "i64")) return .i64;
+        if (std.mem.eql(u8, suffix, "isize")) return .isize;
+        if (std.mem.eql(u8, suffix, "u8")) return .u8;
+        if (std.mem.eql(u8, suffix, "u16")) return .u16;
+        if (std.mem.eql(u8, suffix, "u32")) return .u32;
+        if (std.mem.eql(u8, suffix, "u64")) return .u64;
+        if (std.mem.eql(u8, suffix, "usize")) return .usize;
+        return null;
+    }
+
     fn parsePrefixExpr(self: *Parser) ParserError!*ast.Node {
         const tag = self.peek();
         switch (tag) {
@@ -2554,14 +2568,21 @@ pub const Parser = struct {
                 } else {
                     while (digit_len < str.len and std.ascii.isDigit(str[digit_len])) : (digit_len += 1) {}
                 }
-                const val = std.fmt.parseInt(i64, str[digits_start..digit_len], base) catch return ParserError.InvalidCharacter;
+                const primitive = if (digit_len < str.len)
+                    integerSuffixPrimitive(str[digit_len..]) orelse return ParserError.InvalidCharacter
+                else
+                    null;
+                const digits = str[digits_start..digit_len];
+                const unsigned_wide_suffix = if (primitive) |primitive_ty| primitive_ty == .u64 or primitive_ty == .usize else false;
+                const val: i64 = if (unsigned_wide_suffix) blk: {
+                    const unsigned = std.fmt.parseInt(u64, digits, base) catch return ParserError.InvalidCharacter;
+                    break :blk @bitCast(unsigned);
+                } else std.fmt.parseInt(i64, digits, base) catch return ParserError.InvalidCharacter;
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .literal = .{ .int_val = val } };
-                if (digit_len < str.len) {
-                    const suffix = str[digit_len..];
-                    const primitive: ast.Primitive = if (std.mem.eql(u8, suffix, "i8")) .i8 else if (std.mem.eql(u8, suffix, "i16")) .i16 else if (std.mem.eql(u8, suffix, "i32")) .i32 else if (std.mem.eql(u8, suffix, "i64")) .i64 else if (std.mem.eql(u8, suffix, "isize")) .isize else if (std.mem.eql(u8, suffix, "u8")) .u8 else if (std.mem.eql(u8, suffix, "u16")) .u16 else if (std.mem.eql(u8, suffix, "u32")) .u32 else if (std.mem.eql(u8, suffix, "u64")) .u64 else if (std.mem.eql(u8, suffix, "usize")) .usize else return ParserError.InvalidCharacter;
+                if (primitive) |primitive_ty| {
                     const ty = try self.allocator.create(ast.Type);
-                    ty.* = .{ .primitive = primitive };
+                    ty.* = .{ .primitive = primitive_ty };
                     const cast_node = try self.allocator.create(ast.Node);
                     cast_node.* = .{ .cast_expr = .{ .expr = node, .ty = ty } };
                     return cast_node;
@@ -3313,6 +3334,33 @@ test "parse sla import basename as module namespace" {
     const value = ret.return_stmt.value.?;
     try std.testing.expect(value.* == .call_expr);
     try std.testing.expectEqualSlices(u8, "dep__imported_a", value.call_expr.func_name);
+}
+
+test "parser accepts explicit u64 max literal suffix" {
+    const source =
+        \\fn max_literal() -> u64 {
+        \\    let max: u64 = 18446744073709551615u64;
+        \\    return max;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+
+    const fn_decl = prog.program.decls[0];
+    try std.testing.expect(fn_decl.* == .func_decl);
+    const let_stmt = fn_decl.func_decl.body[0];
+    try std.testing.expect(let_stmt.* == .let_stmt);
+    const value = let_stmt.let_stmt.value;
+    try std.testing.expect(value.* == .cast_expr);
+    try std.testing.expect(value.cast_expr.ty.* == .primitive);
+    try std.testing.expectEqual(ast.Primitive.u64, value.cast_expr.ty.primitive);
+    try std.testing.expect(value.cast_expr.expr.* == .literal);
+    try std.testing.expectEqual(@as(i64, -1), value.cast_expr.expr.literal.int_val);
 }
 
 test "sla import type prescan skips imported function bodies" {

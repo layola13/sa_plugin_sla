@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue045 `u64::MAX` literal parser closure (2026-07-17):
+  `parsePrefixExpr` now identifies integer suffixes before parsing the numeric
+  payload. Explicit `u64` and `usize` literals parse through `u64` and preserve
+  their bit pattern in the existing `i64` AST payload, while unsuffixed and
+  signed literals keep checked `i64` parsing. Added
+  `tests/test_unit_u64_max_literal.sla` covering `18446744073709551615u64`
+  through unsigned division, modulo, comparison, and logical shift. Serial
+  focused gates passed: parser Zig 1/1; build 7/7; local generated-SA and
+  strict SAB fixture 1/1 each; official dev install/help; installed/dev
+  generated-SA and strict SAB fixture 1/1 each. No full suite was run.
 - Docs/issue046 unsigned binary lowering closure (2026-07-17): shared scalar
   binary lowering now selects `udiv`, `urem`, unsigned comparisons, and `lshr`
   for unsigned integer operands, and both generated-SA and direct SAB consume

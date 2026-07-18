@@ -1202,45 +1202,39 @@ pub const Codegen = struct {
 
     fn storeResultSlotTransferredValueState(self: *Codegen, slot: []const u8, src: []const u8, target_ty: *const ast.Type, source_needs_release: bool) CodegenError!void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
-        switch (lowering_rules.planResultSlotStoreLifecycle(plan, source_needs_release)) {
-            .release_source => return self.emitRelease(src),
-            .keep_source => return,
-            .transfer_value_state => {},
-        }
+        const store_lifecycle = lowering_rules.planResultSlotStoreLifecycle(plan, source_needs_release);
+        if (store_lifecycle.releasesSource()) return self.emitRelease(src);
+        if (!store_lifecycle.transfersValueState()) return;
         const refcell_handle = self.refcell_borrow_handles.get(src);
-        switch (lowering_rules.planResultSlotRefCellStore(plan, refcell_handle != null)) {
-            .store_borrow_handle_companion => {
-                const handle = refcell_handle.?;
-                const meta = try self.ensureResultSlotRefCellHandle(slot, handle.kind);
-                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ meta.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
-                _ = self.refcell_borrow_handles.remove(src);
-                const cleanup_plan = lowering_rules.planRefCellCompanionStoreCleanup(
-                    if (handle.cell_release_temp) |temp| !std.mem.eql(u8, temp, src) else false,
-                    false,
-                    false,
-                );
-                if (cleanup_plan.consume_handle_value) try self.markConsumedBinding(src);
-                if (handle.cell_release_temp) |temp| {
-                    if (cleanup_plan.release_owner_temps) try self.emitRelease(temp);
-                }
-            },
-            .transfer_value_state => {},
+        const refcell_store = lowering_rules.planResultSlotRefCellStore(plan, refcell_handle != null);
+        if (refcell_store.storesBorrowHandleCompanion()) {
+            const handle = refcell_handle.?;
+            const meta = try self.ensureResultSlotRefCellHandle(slot, handle.kind);
+            self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ meta.cell_slot, handle.cell_reg }) catch return CodegenError.CodegenError;
+            _ = self.refcell_borrow_handles.remove(src);
+            const cleanup_plan = lowering_rules.planRefCellCompanionStoreCleanup(
+                if (handle.cell_release_temp) |temp| !std.mem.eql(u8, temp, src) else false,
+                false,
+                false,
+            );
+            if (cleanup_plan.consume_handle_value) try self.markConsumedBinding(src);
+            if (handle.cell_release_temp) |temp| {
+                if (cleanup_plan.release_owner_temps) try self.emitRelease(temp);
+            }
         }
         try self.transferResultSlotValueState(slot, src, true);
     }
 
     fn loadResultSlotTransferredValueState(self: *Codegen, dst: []const u8, slot: []const u8, target_ty: *const ast.Type) CodegenError!void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
-        switch (lowering_rules.planResultSlotLoadLifecycle(plan)) {
-            .no_value_state => return,
-            .load_value_state => {},
-        }
-        switch (lowering_rules.planResultSlotRefCellLoad(
+        if (!lowering_rules.planResultSlotLoadLifecycle(plan).loadsValueState()) return;
+        const refcell_load = lowering_rules.planResultSlotRefCellLoad(
             plan,
             self.result_slot_refcell_handles.contains(slot),
             self.result_slot_refcell_slots.contains(slot),
-        )) {
-            .restore_borrow_handle_companion => if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
+        );
+        if (refcell_load.restoresBorrowHandleCompanion()) {
+            if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
                 _ = self.result_slot_refcell_slots.fetchRemove(slot);
                 const cell_reg = try self.newTmp();
                 const restore_plan = lowering_rules.planRefCellCompanionRestore();
@@ -1251,11 +1245,11 @@ pub const Codegen = struct {
                     .cell_release_temp = if (restore_plan.track_loaded_cell_owner_temp) cell_reg else null,
                 }) catch return CodegenError.OutOfMemory;
                 if (restore_plan.release_companion_slot_after_restore) try self.emitRelease(entry.value.cell_slot);
-            },
-            .release_empty_companion => if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
+            }
+        } else if (refcell_load.releasesEmptyCompanion()) {
+            if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
                 try self.emitRelease(entry.value);
-            },
-            .transfer_value_state => {},
+            }
         }
         try self.transferResultSlotValueState(dst, slot, false);
     }

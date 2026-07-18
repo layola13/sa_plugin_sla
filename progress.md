@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared result-slot lifecycle helper normalization (2026-07-18):
+  `ResultSlotRefCellStoreAction`, `ResultSlotRefCellLoadAction`,
+  `ResultSlotLoadLifecycleAction`, and `ResultSlotStoreLifecycleAction` now
+  expose predicate helpers in `src/lowering_rules.zig`. SA-text and direct SAB
+  result-slot store/load paths consume those helpers instead of repeating local
+  switch logic for value-state transfer, source release, RefCell borrow-handle
+  companion restore, and empty companion cleanup. Serial focused verification
+  passed `zig build test -j1 -Dtest-filter='shared lowering rules classify
+  result-slot value transfer' --summary all` 2/2. No full tests or concurrent
+  unit tests were run.
+
 - Docs/issue013/issue027 status-header cleanup and focused recheck
   (2026-07-18): the remaining numbered `docs/issue*.md` files without a
   standard status header now have explicit fixed/verified status. Fresh

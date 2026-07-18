@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared result-slot lifecycle helper normalization (2026-07-18):
+  `src/lowering_rules.zig` now exposes predicate helpers for result-slot
+  store/load lifecycle and RefCell companion actions. `src/codegen.zig` and
+  `src/sab_codegen.zig` consume those shared helpers for result-slot value
+  transfer, source release, borrow-handle companion restore, and empty
+  companion cleanup instead of directly switching on lowering action enums.
+  Serial focused verification passed `zig build test -j1
+  -Dtest-filter='shared lowering rules classify result-slot value transfer'
+  --summary all` 2/2. No full tests or concurrent unit tests were run.
+
 - Focused shared call/materialization convergence slice (2026-07-18):
   `src/lowering_rules.zig` now owns
   `StackSlotIdentifierCallArgTempAction` /

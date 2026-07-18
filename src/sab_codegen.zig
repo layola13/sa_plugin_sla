@@ -2690,45 +2690,41 @@ pub const Codegen = struct {
 
     fn storeResultSlotTransferredValue(self: *Codegen, slot: u32, src: u32, target_ty: *const ast.Type) !void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
-        switch (lowering_rules.planResultSlotStoreLifecycle(plan, !self.isLocalReg(src))) {
-            .release_source => return self.emitRelease(src),
-            .keep_source => return,
-            .transfer_value_state => {},
-        }
+        const store_lifecycle = lowering_rules.planResultSlotStoreLifecycle(plan, !self.isLocalReg(src));
+        if (store_lifecycle.releasesSource()) return self.emitRelease(src);
+        if (!store_lifecycle.transfersValueState()) return;
 
-        switch (lowering_rules.planResultSlotRefCellStore(plan, self.refcell_borrow_values.contains(src))) {
-            .store_borrow_handle_companion => {
-                if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
-                    const meta = try self.ensureResultSlotRefCellHandle(slot, entry.value.kind);
-                    try self.emitStore(meta.cell_slot, 0, entry.value.cell_reg, .ptr);
-                    const cleanup_plan = lowering_rules.planRefCellCompanionStoreCleanup(
-                        entry.value.release_regs.len != 0,
-                        self.borrow_address_temps.contains(src),
-                        self.non_owning_regs.contains(src),
-                    );
-                    if (cleanup_plan.release_owner_temps) {
-                        try self.releaseNonLocalTemps(entry.value.release_regs);
-                        self.allocator.free(entry.value.release_regs);
-                    } else if (entry.value.release_regs.len != 0) {
-                        self.allocator.free(entry.value.release_regs);
-                    }
-                    if (cleanup_plan.release_borrow_address_temps) {
-                        if (self.borrow_address_temps.fetchRemove(src)) |temps| {
-                            if (temps.value.restore_slot) |restore_slot| {
-                                const restore_value = temps.value.restore_value orelse return Error.UnsupportedSabDirectFeature;
-                                try self.emitStore(restore_slot, 0, restore_value, .ptr);
-                                try self.markConsumed(restore_value);
-                            }
-                            try self.releaseNonLocalTemps(temps.value.release_regs);
-                            if (temps.value.release_regs.len != 0) self.allocator.free(temps.value.release_regs);
-                        }
-                    }
-                    if (cleanup_plan.clear_non_owning_metadata) _ = self.non_owning_regs.fetchRemove(src);
-                    if (cleanup_plan.consume_handle_value) try self.markConsumed(src);
-                    return;
+        const refcell_store = lowering_rules.planResultSlotRefCellStore(plan, self.refcell_borrow_values.contains(src));
+        if (refcell_store.storesBorrowHandleCompanion()) {
+            if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
+                const meta = try self.ensureResultSlotRefCellHandle(slot, entry.value.kind);
+                try self.emitStore(meta.cell_slot, 0, entry.value.cell_reg, .ptr);
+                const cleanup_plan = lowering_rules.planRefCellCompanionStoreCleanup(
+                    entry.value.release_regs.len != 0,
+                    self.borrow_address_temps.contains(src),
+                    self.non_owning_regs.contains(src),
+                );
+                if (cleanup_plan.release_owner_temps) {
+                    try self.releaseNonLocalTemps(entry.value.release_regs);
+                    self.allocator.free(entry.value.release_regs);
+                } else if (entry.value.release_regs.len != 0) {
+                    self.allocator.free(entry.value.release_regs);
                 }
-            },
-            .transfer_value_state => {},
+                if (cleanup_plan.release_borrow_address_temps) {
+                    if (self.borrow_address_temps.fetchRemove(src)) |temps| {
+                        if (temps.value.restore_slot) |restore_slot| {
+                            const restore_value = temps.value.restore_value orelse return Error.UnsupportedSabDirectFeature;
+                            try self.emitStore(restore_slot, 0, restore_value, .ptr);
+                            try self.markConsumed(restore_value);
+                        }
+                        try self.releaseNonLocalTemps(temps.value.release_regs);
+                        if (temps.value.release_regs.len != 0) self.allocator.free(temps.value.release_regs);
+                    }
+                }
+                if (cleanup_plan.clear_non_owning_metadata) _ = self.non_owning_regs.fetchRemove(src);
+                if (cleanup_plan.consume_handle_value) try self.markConsumed(src);
+                return;
+            }
         }
 
         try self.transferResultSlotValueState(slot, src, true);
@@ -2736,16 +2732,14 @@ pub const Codegen = struct {
 
     fn loadResultSlotTransferredValue(self: *Codegen, dst: u32, slot: u32, target_ty: *const ast.Type) !void {
         const plan = lowering_rules.planResultSlotTransfer(target_ty);
-        switch (lowering_rules.planResultSlotLoadLifecycle(plan)) {
-            .no_value_state => return,
-            .load_value_state => {},
-        }
-        switch (lowering_rules.planResultSlotRefCellLoad(
+        if (!lowering_rules.planResultSlotLoadLifecycle(plan).loadsValueState()) return;
+        const refcell_load = lowering_rules.planResultSlotRefCellLoad(
             plan,
             self.result_slot_refcell_handles.contains(slot),
             self.result_slot_refcell_slots.contains(slot),
-        )) {
-            .restore_borrow_handle_companion => if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
+        );
+        if (refcell_load.restoresBorrowHandleCompanion()) {
+            if (self.result_slot_refcell_handles.fetchRemove(slot)) |entry| {
                 _ = self.result_slot_refcell_slots.fetchRemove(slot);
                 const cell_reg = try self.intern(try self.newTmp());
                 const restore_plan = lowering_rules.planRefCellCompanionRestore();
@@ -2757,11 +2751,11 @@ pub const Codegen = struct {
                     .release_regs = release_regs,
                 });
                 if (restore_plan.release_companion_slot_after_restore) try self.emitRelease(entry.value.cell_slot);
-            },
-            .release_empty_companion => if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
+            }
+        } else if (refcell_load.releasesEmptyCompanion()) {
+            if (self.result_slot_refcell_slots.fetchRemove(slot)) |entry| {
                 try self.emitRelease(entry.value);
-            },
-            .transfer_value_state => {},
+            }
         }
         try self.transferResultSlotValueState(dst, slot, false);
     }

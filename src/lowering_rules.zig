@@ -2002,23 +2002,47 @@ pub const ResultSlotTransferPlan = struct {
 pub const ResultSlotRefCellStoreAction = enum {
     transfer_value_state,
     store_borrow_handle_companion,
+
+    pub fn storesBorrowHandleCompanion(self: ResultSlotRefCellStoreAction) bool {
+        return self == .store_borrow_handle_companion;
+    }
 };
 
 pub const ResultSlotRefCellLoadAction = enum {
     transfer_value_state,
     restore_borrow_handle_companion,
     release_empty_companion,
+
+    pub fn restoresBorrowHandleCompanion(self: ResultSlotRefCellLoadAction) bool {
+        return self == .restore_borrow_handle_companion;
+    }
+
+    pub fn releasesEmptyCompanion(self: ResultSlotRefCellLoadAction) bool {
+        return self == .release_empty_companion;
+    }
 };
 
 pub const ResultSlotLoadLifecycleAction = enum {
     load_value_state,
     no_value_state,
+
+    pub fn loadsValueState(self: ResultSlotLoadLifecycleAction) bool {
+        return self == .load_value_state;
+    }
 };
 
 pub const ResultSlotStoreLifecycleAction = enum {
     transfer_value_state,
     release_source,
     keep_source,
+
+    pub fn transfersValueState(self: ResultSlotStoreLifecycleAction) bool {
+        return self == .transfer_value_state;
+    }
+
+    pub fn releasesSource(self: ResultSlotStoreLifecycleAction) bool {
+        return self == .release_source;
+    }
 };
 
 pub const RefCellHandleBindingAction = enum {

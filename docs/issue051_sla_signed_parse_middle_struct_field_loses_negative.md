@@ -1,6 +1,6 @@
 # issue051: SLA signed parse middle struct field loses negative flag
 
-Status: open; compiler-local minimal shape currently passes.
+Status: fixed; compiler-local minimal shape verified.
 
 2026-07-18 update: added `tests/test_unit_signed_parse_field_projection.sla`
 to cover the reduced delayed scalar-field projection shape in this compiler
@@ -12,11 +12,19 @@ SA_PLUGIN_DEV=1 sa sla test tests/test_unit_signed_parse_field_projection.sla --
 SA_PLUGIN_DEV=1 sa sla test tests/test_unit_signed_parse_field_projection.sla --test-backend sab --jobs 1 --trace-panic
 ```
 
-This does not close the issue yet. The dirty downstream `sla_music_cli`
-checkout currently stops before the original repro at a separate
-`MusicPatchEditorContextLineCheck` typecheck failure, so the real source-growth
-surface still needs a fresh focused revalidation after that downstream edit is
-settled.
+2026-07-18 verification: the downstream `sla_music_cli` blocker was a missing
+`MusicPatchHunk` field in `src/music_ir.sla`, not a stale parser projection
+problem. Added the missing `glyph_ledger_x_*` fields to the `MusicPatchHunk`
+construction paths that read editor plans and build the local test hunk. The
+single-file source now passes both serial checks:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test src/music_ir.sla --test-backend sa --jobs 1 --trace-panic
+SA_PLUGIN_DEV=1 sa sla test src/music_ir.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+The original signed parse regression is therefore closed at the current
+source state.
 
 While extending `sla_music_cli` editor context records with three trailing
 signed stem-x coordinates, both generated-SA and direct SAB changed the middle

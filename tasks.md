@@ -40,6 +40,14 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Normalize shared DynDispatchReceiverPlan helper (2026-07-18).
+	  `DynDispatchReceiverPlan` now exposes `needsRcGetDyn()` / `isDirectDyn()`,
+	  and both SA-text and direct SAB dyn-dispatch receiver paths consume those
+	  shared helpers instead of switching locally on `receiver_plan.kind`.
+	  Serial focused verification passed `zig fmt --check src/lowering_rules.zig
+	  src/codegen.zig src/sab_codegen.zig` and `zig build test -j1
+	  -Dtest-filter='shared dyn coercion and receiver plans' --summary all` 2/2.
+	  No full tests or concurrent tests were run.
 	- [x] Normalize shared FutureRuntimeCallPlan macro-name helpers (2026-07-18).
 	  `FutureRuntimeCallPlan` now exposes `pairMacroName()` and
 	  `eitherValueMacroName()`, and both SA-text and direct SAB future runtime

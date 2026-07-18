@@ -10648,12 +10648,9 @@ pub const Codegen = struct {
         const receiver_reg = try self.genExpr(@constCast(call.args[0]));
         var dyn_reg = receiver_reg;
         if (lowering_rules.planDynDispatchReceiver(receiver_ty)) |receiver_plan| {
-            switch (receiver_plan.kind) {
-                .direct_dyn => {},
-                .rc_get_dyn => {
-                    dyn_reg = try self.intern(try self.newTmp());
-                    try self.emitStdSurfaceMethod(receiver_ty, "get", dyn_reg, receiver_reg);
-                },
+            if (receiver_plan.needsRcGetDyn()) {
+                dyn_reg = try self.intern(try self.newTmp());
+                try self.emitStdSurfaceMethod(receiver_ty, "get", dyn_reg, receiver_reg);
             }
         }
         const data_reg = try self.intern(try self.newTmp());

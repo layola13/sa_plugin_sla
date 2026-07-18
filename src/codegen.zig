@@ -14642,12 +14642,9 @@ pub const Codegen = struct {
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     var dyn_reg = recv_reg;
                     if (lowering_rules.planDynDispatchReceiver(recv_ty)) |receiver_plan| {
-                        switch (receiver_plan.kind) {
-                            .direct_dyn => {},
-                            .rc_get_dyn => {
-                                dyn_reg = try self.newTmp();
-                                self.out.writer().print("    EXPAND RC_GET {s}, {s}\n", .{ dyn_reg, recv_reg }) catch return CodegenError.CodegenError;
-                            },
+                        if (receiver_plan.needsRcGetDyn()) {
+                            dyn_reg = try self.newTmp();
+                            self.out.writer().print("    EXPAND RC_GET {s}, {s}\n", .{ dyn_reg, recv_reg }) catch return CodegenError.CodegenError;
                         }
                     }
 

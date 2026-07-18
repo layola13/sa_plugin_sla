@@ -4,6 +4,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared DynDispatchReceiverPlan helper normalization (2026-07-18):
+  `DynDispatchReceiverPlan` now exposes `needsRcGetDyn()` / `isDirectDyn()`,
+  and both SA-text and direct SAB dyn-dispatch receiver paths consume those
+  shared helpers instead of switching locally on `receiver_plan.kind`. Serial
+  focused verification passed `zig fmt --check src/lowering_rules.zig
+  src/codegen.zig src/sab_codegen.zig` and `zig build test -j1
+  -Dtest-filter='shared dyn coercion and receiver plans' --summary all` 2/2.
+  No full suite or concurrent tests were run.
+
 - Shared FutureRuntimeCallPlan macro-name helper normalization (2026-07-18):
   `FutureRuntimeCallPlan` now exposes `pairMacroName()` and
   `eitherValueMacroName()`, and both SA-text and direct SAB future runtime

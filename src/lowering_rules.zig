@@ -569,6 +569,14 @@ pub const DynDispatchReceiverKind = enum {
 
 pub const DynDispatchReceiverPlan = struct {
     kind: DynDispatchReceiverKind,
+
+    pub fn needsRcGetDyn(self: DynDispatchReceiverPlan) bool {
+        return self.kind == .rc_get_dyn;
+    }
+
+    pub fn isDirectDyn(self: DynDispatchReceiverPlan) bool {
+        return self.kind == .direct_dyn;
+    }
 };
 
 pub fn planDynDispatchReceiver(receiver_ty: *const ast.Type) ?DynDispatchReceiverPlan {

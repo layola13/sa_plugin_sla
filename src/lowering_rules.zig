@@ -333,6 +333,14 @@ pub const ImportedMacroArgLoweringAction = enum {
     reuse_existing_addressable,
     materialize_stack_slot,
     materialize_address_expression_stack_slot,
+
+    pub fn passesValue(self: ImportedMacroArgLoweringAction) bool {
+        return self == .pass_value;
+    }
+
+    pub fn passesRawPointerValue(self: ImportedMacroArgLoweringAction) bool {
+        return self == .pass_raw_pointer_value;
+    }
 };
 
 pub const BorrowedBindingStoragePlan = struct {

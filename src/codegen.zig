@@ -9680,13 +9680,13 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
         const arg_ty = try self.importedMacroArgType(arg);
-        if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| switch (action) {
-            .pass_value, .pass_raw_pointer_value => {
+        if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| {
+            if (action.passesValue() or action.passesRawPointerValue()) {
                 const reg = try self.genExpr(arg, hoisted_allocs);
                 return .{ .reg = reg, .release_after_call = self.importedMacroValueArgNeedsRelease(arg, reg) };
-            },
-            else => unreachable,
-        };
+            }
+            unreachable;
+        }
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg);
         const address_shape = try self.importedMacroArgAddressShape(arg);
         switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null, arg_ty)) {

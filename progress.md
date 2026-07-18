@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared imported-macro bypass helper normalization (2026-07-18):
+  `ImportedMacroArgLoweringAction` now exposes `passesValue()` /
+  `passesRawPointerValue()` in `src/lowering_rules.zig`. SA-text
+  `genImportedMacroArg()` and direct SAB `genImportedMacroArg()` consume those
+  shared predicates instead of repeating local switch logic for value and raw
+  pointer bypass actions. Serial focused verification passed `zig fmt --check
+  src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and `zig build
+  test -j1 -Dtest-filter='shared imported macro' --summary all` 5/5. No full
+  tests or concurrent unit tests were run.
+
 - Shared refcell borrow-result helper normalization (2026-07-18):
   `RefCellBorrowResultAction` now exposes `usesBorrowSlot()` /
   `loadsPointerPayload()` / `takesPointerPayload()` in `src/lowering_rules.zig`.

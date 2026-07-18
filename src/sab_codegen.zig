@@ -11559,10 +11559,10 @@ pub const Codegen = struct {
         const arg_ty = (try self.importedMacroArgType(arg, ctx)) orelse return Error.MissingType;
         if (try self.genImportedMacroLeadingOutputArg(plan, call_arg_index, arg, ctx, arg_ty)) |output_arg| return output_arg;
         const release_value = !self.importedMacroDirectCallConsumesValueArg(plan, call_arg_index);
-        if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| switch (action) {
-            .pass_value, .pass_raw_pointer_value => return self.genImportedMacroValueArg(arg, ctx, release_value),
-            else => unreachable,
-        };
+        if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| {
+            if (action.passesValue() or action.passesRawPointerValue()) return self.genImportedMacroValueArg(arg, ctx, release_value);
+            unreachable;
+        }
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg, ctx);
         const address_shape = try self.importedMacroArgAddressShape(arg, ctx);
         switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null, arg_ty)) {

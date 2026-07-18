@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared imported-macro bypass helper normalization (2026-07-18):
+  `ImportedMacroArgLoweringAction` now exposes `passesValue()` /
+  `passesRawPointerValue()` in `src/lowering_rules.zig`, and both SA-text and
+  direct SAB imported-macro arg bypass paths consume those shared predicates
+  instead of switching locally on the action enum. Serial focused verification
+  passed `zig fmt --check src/lowering_rules.zig src/codegen.zig
+  src/sab_codegen.zig` and `zig build test -j1 -Dtest-filter='shared imported
+  macro' --summary all` 5/5. No full tests or concurrent unit tests were run.
+
 - Shared refcell borrow-result helper normalization (2026-07-18):
   `RefCellBorrowResultAction` now exposes `usesBorrowSlot()` /
   `loadsPointerPayload()` / `takesPointerPayload()`, and direct SAB

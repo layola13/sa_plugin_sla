@@ -67,6 +67,9 @@ Likely area:
 
 Music-side workaround:
 
-- Capture `stem_x.negative`, `stem_x.value`, and `stem_x.next_offset` into
-  scalar locals before calling the parser for `stem_x_page`.
-
+- Convert each parsed signed result into its final `i64` scalar immediately
+  after validation, before calling the parser for the following field.
+- Capturing the middle result before the next call fixed that field but then
+  exposed the same delayed-projection failure on the final result at function
+  return. Immediate scalar conversion for all three results keeps both
+  generated-SA and direct SAB correct.

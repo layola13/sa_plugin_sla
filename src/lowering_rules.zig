@@ -35,6 +35,62 @@ pub const StaticCallLoweringPlan = struct {
     result: StaticCallResultPlan,
 };
 
+pub const ParamCleanupCapability = enum {
+    none,
+    raw,
+    borrow,
+    by_value,
+    other,
+};
+
+pub const ParamCleanupAction = enum {
+    skip,
+    mark_consumed,
+    consume,
+    release,
+
+    pub fn skips(self: ParamCleanupAction) bool {
+        return self == .skip;
+    }
+
+    pub fn marksConsumed(self: ParamCleanupAction) bool {
+        return self == .mark_consumed;
+    }
+
+    pub fn consumes(self: ParamCleanupAction) bool {
+        return self == .consume;
+    }
+
+    pub fn releases(self: ParamCleanupAction) bool {
+        return self == .release;
+    }
+};
+
+pub const ParamCleanupFacts = struct {
+    is_param: bool,
+    capability: ParamCleanupCapability,
+    has_type: bool,
+    abi_is_ptr: bool = false,
+    is_copy_value: bool = false,
+    is_fn_ptr: bool = false,
+};
+
+pub fn planParamCleanup(facts: ParamCleanupFacts) ParamCleanupAction {
+    if (!facts.is_param) return .release;
+    switch (facts.capability) {
+        .none, .raw => return .skip,
+        .borrow => return .release,
+        .by_value, .other => {},
+    }
+    if (!facts.has_type) return .skip;
+    if (facts.capability == .by_value and facts.abi_is_ptr) return .consume;
+    if (facts.capability == .by_value and facts.is_copy_value) return .skip;
+    if (facts.is_fn_ptr) return .consume;
+    if (facts.is_copy_value) return .consume;
+    if (facts.abi_is_ptr) return .consume;
+    return .skip;
+}
+
 pub const AddressOfShape = enum {
     identifier,
     deref_borrow_or_pointer,

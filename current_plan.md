@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared param-cleanup planner normalization (2026-07-18):
+  `src/lowering_rules.zig` now exposes `ParamCleanupCapability`,
+  `ParamCleanupAction`, `ParamCleanupFacts`, and `planParamCleanup()`, and the
+  direct SAB `paramCleanupAction` helper now maps local `Local` state into the
+  shared facts before classifying cleanup behavior. Serial focused verification
+  passed `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify result-slot
+  value transfer' --summary all` 2/2. No full tests or concurrent unit tests
+  were run.
+
 - Shared refcell branch-owner merge helper normalization (2026-07-18):
   `RefCellBranchHandleOwnerMergeAction` now exposes
   `isMergeDynamicOwner()`, and both SA-text and direct SAB branch-owner merge

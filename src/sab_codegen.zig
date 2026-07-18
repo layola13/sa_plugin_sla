@@ -63,13 +63,6 @@ const Local = struct {
     is_stack_alloc: bool = false,
 };
 
-const ParamCleanupAction = enum {
-    skip,
-    mark_consumed,
-    consume,
-    release,
-};
-
 const RefCellBorrowValue = struct {
     cell_reg: u32,
     kind: lowering_rules.RefCellBorrowKind,
@@ -2824,18 +2817,21 @@ pub const Codegen = struct {
         return try self.allocator.dupe(u32, self.current_reg_ids.items);
     }
 
-    fn paramCleanupAction(self: *Codegen, local: Local) !ParamCleanupAction {
-        if (!local.is_param) return .release;
-        const cap = local.param_cap orelse return .skip;
-        if (cap == .raw) return .skip;
-        if (cap == .borrow) return .release;
-        const ty = local.ty orelse return .skip;
-        if (cap == .by_value and (try primType(ty)) == .ptr) return .consume;
-        if (cap == .by_value and self.typeIsCopyValue(ty)) return .skip;
-        if (ty.* == .fn_ptr) return .consume;
-        if (self.typeIsCopyValue(ty)) return .consume;
-        if ((try primType(ty)) == .ptr) return .consume;
-        return .skip;
+    fn paramCleanupAction(self: *Codegen, local: Local) !lowering_rules.ParamCleanupAction {
+        const facts = lowering_rules.ParamCleanupFacts{
+            .is_param = local.is_param,
+            .capability = if (local.param_cap) |cap| switch (cap) {
+                .raw => .raw,
+                .borrow => .borrow,
+                .by_value => .by_value,
+                .move => .other,
+            } else .none,
+            .has_type = local.ty != null,
+            .abi_is_ptr = if (local.ty) |ty| (try primType(ty)) == .ptr else false,
+            .is_copy_value = if (local.ty) |ty| self.typeIsCopyValue(ty) else false,
+            .is_fn_ptr = if (local.ty) |ty| ty.* == .fn_ptr else false,
+        };
+        return lowering_rules.planParamCleanup(facts);
     }
 
     fn releaseLocalsFrom(self: *Codegen, start: usize, except: ?u32) !void {

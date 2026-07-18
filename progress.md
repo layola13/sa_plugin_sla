@@ -4,6 +4,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Docs/issue013/issue027 status-header cleanup and focused recheck
+  (2026-07-18): the remaining numbered `docs/issue*.md` files without a
+  standard status header now have explicit fixed/verified status. Fresh
+  source-built local CLI focused checks passed serially: issue013
+  `tests/test_unit_borrow_param_alias_cleanup.sla` SA 1/1 and strict SAB 1/1;
+  issue027 `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla` SA 3/3 and
+  strict SAB 3/3. No full tests, downstream broad suites, or concurrent tests
+  were run.
+
 - Docs/issue049 scodex CLI direct-SAB PhiStateConflict current-non-repro
   slice (2026-07-18): the current known external Responses CLI Phi family is
   covered by the issue050 raw pointer imported-macro address-slot fix. Focused

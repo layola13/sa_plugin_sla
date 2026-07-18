@@ -40,6 +40,13 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Complete issue013/issue027 status-header cleanup and focused recheck
+	  (2026-07-18). These were the remaining numbered `docs/issue*.md` files
+	  without a standard status header. Updated both with explicit fixed/verified
+	  status and fresh source-built local CLI evidence. Serial focused gates
+	  passed: issue013 borrow-param alias cleanup SA 1/1 and strict SAB 1/1;
+	  issue027 assigned ptr aggregate slot SA 3/3 and strict SAB 3/3. No full
+	  tests, downstream broad suites, or concurrent tests were run.
 	- [x] Close issue049's scodex CLI direct-SAB `PhiStateConflict` as
 	  current-non-repro for the documented external Responses CLI Phi family
 	  (2026-07-18). The issue050 raw pointer imported-macro address-slot fix

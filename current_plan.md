@@ -18,6 +18,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue013/issue027 status-header cleanup and focused recheck
+  (2026-07-18): the remaining numbered `docs/issue*.md` files without a
+  standard status header were issue013 and issue027. Updated both docs with
+  explicit fixed/verified status and fresh source-built local CLI evidence.
+  Serial focused gates passed: issue013 borrow-param alias cleanup SA 1/1 and
+  strict SAB 1/1; issue027 assigned ptr aggregate slot SA 3/3 and strict SAB
+  3/3. No full tests, downstream broad suites, or concurrent tests were run.
+
 - Docs/issue049 scodex CLI direct-SAB PhiStateConflict current-non-repro
   slice (2026-07-18): the issue050 raw pointer imported-macro address-slot
   fix covers the known external Responses CLI Phi family. Focused serial

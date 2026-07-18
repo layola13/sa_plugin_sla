@@ -1,5 +1,9 @@
 # issue027: sla_tsgo compiler-importing tests fail SA codegen with importedMacroArgType
 
+Status: fixed/verified. Rechecked on 2026-07-18 with the source-built local CLI
+against the focused repository regression under SA-text and strict direct SAB;
+no full suite was run.
+
 Date: 2026-07-15
 
 ## Summary
@@ -72,3 +76,12 @@ Focused serial verification:
 - downstream `tests/test_compiler_contract.sla` SA backend (41/41)
 
 No full test suite was run.
+
+2026-07-18 focused recheck:
+
+```sh
+timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_unit_sa_assigned_ptr_aggregate_slot.sla --test-backend sa --jobs 1 --trace-panic
+timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_unit_sa_assigned_ptr_aggregate_slot.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+Results: SA 3/3 passed and strict SAB 3/3 passed. No full test suite was run.

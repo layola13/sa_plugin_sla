@@ -1,8 +1,17 @@
 # issue013: 借用参数被赋值移动后，函数尾部仍生成 `!param`，触发 UseAfterMove
 
-- 状态: fixed（入库回归覆盖；2026-07-14 本地 SA/SAB 复验）
+状态：fixed/verified（入库回归覆盖；2026-07-18 本地 SA/SAB focused 复验）
 - 类别: codegen / 借用约束
 - 相关 issue: issue011（同属借用/路径状态的尾部清理）
+
+2026-07-18 复验使用 source-built local CLI 串行执行：
+
+```sh
+timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_unit_borrow_param_alias_cleanup.sla --test-backend sa --jobs 1 --trace-panic
+timeout 120s ./zig-out/bin/sla-local-cli sla test tests/test_unit_borrow_param_alias_cleanup.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+结果：SA 1/1 通过，strict SAB 1/1 通过。未运行全量测试。
 
 ## 现象
 

@@ -10203,7 +10203,7 @@ pub const Codegen = struct {
                         refcell_handle != null,
                         self.borrow_source_temps.contains(val_reg),
                     );
-                    const handle_binding = lowering_rules.planRefCellHandleBinding(refcell_transfer_plan.handle == .move_borrow_handle);
+                    const handle_binding = lowering_rules.planRefCellHandleBinding(refcell_transfer_plan.handle.movesBorrowHandle());
                     if (handle_binding.bindsBorrowHandle()) {
                         const handle = refcell_handle.?;
                         self.refcell_borrow_handles.put(let.name, handle) catch return CodegenError.OutOfMemory;

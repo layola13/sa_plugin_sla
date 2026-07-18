@@ -6496,7 +6496,7 @@ pub const Codegen = struct {
             self.refcell_borrow_values.contains(src),
             self.borrow_address_temps.contains(src),
         );
-        const handle_binding = lowering_rules.planRefCellHandleBinding(refcell_transfer_plan.handle == .move_borrow_handle);
+        const handle_binding = lowering_rules.planRefCellHandleBinding(refcell_transfer_plan.handle.movesBorrowHandle());
         if (handle_binding.bindsBorrowHandle()) {
             try self.pushTypedLocal(name, src, false, let_ty);
             return;

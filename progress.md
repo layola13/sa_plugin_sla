@@ -132,6 +132,15 @@ Update this file every time a compiler feature or demo milestone is completed an
   slot value transfer' --summary all` 2/2. No full tests or concurrent unit
   tests were run.
 
+- Shared RefCell handle-transfer binding helper normalization (2026-07-18):
+  SA-text and direct SAB let-binding transfer paths now consume
+  `RefCellHandleTransferAction.movesBorrowHandle()` when planning borrow-handle
+  rebinding instead of comparing locally on the transfer action enum. Serial
+  focused verification passed `zig fmt --check src/codegen.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify
+  result-slot value transfer' --summary all` 2/2. No full tests or concurrent
+  unit tests were run.
+
 - Shared RefCell binding/owner-transfer helper normalization (2026-07-18):
   `RefCellHandleBindingAction` now exposes `bindsBorrowHandle()`, and
   `RefCellHandleOwnerTransferAction` now exposes `rebindsOwner()` in

@@ -1668,18 +1668,30 @@ pub fn collectReachableModuleBodyNames(
     selected_function_bodies: *std.StringHashMap(void),
     selected_macro_bodies: *std.StringHashMap(void),
 ) !void {
-    const module_namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
-    defer allocator.free(module_namespace);
-
+    var needs_alias_scan = false;
     var func_iter = module.exports.function_decls.keyIterator();
     while (func_iter.next()) |name_ptr| {
         if (reachable.contains(name_ptr.*)) {
             try selected_function_bodies.put(name_ptr.*, {});
             continue;
         }
-        const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ module_namespace, name_ptr.* });
-        defer allocator.free(alias);
-        if (reachable.contains(alias)) try selected_function_bodies.put(name_ptr.*, {});
+        needs_alias_scan = true;
+    }
+
+    if (needs_alias_scan) {
+        const namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
+        defer allocator.free(namespace);
+        const prefix = try std.mem.concat(allocator, u8, &.{ namespace, "__" });
+        defer allocator.free(prefix);
+        var reachable_iter = reachable.keyIterator();
+        while (reachable_iter.next()) |reachable_ptr| {
+            const name = reachable_ptr.*;
+            if (!std.mem.startsWith(u8, name, prefix)) continue;
+            const raw_name = name[prefix.len..];
+            if (module.exports.function_decls.contains(raw_name)) {
+                try selected_function_bodies.put(raw_name, {});
+            }
+        }
     }
 
     var macro_iter = module.exports.macro_decls.keyIterator();

@@ -212,15 +212,10 @@ fn isModuleContributing(
     reachable: *const std.StringHashMap(void),
     referenced_types: *const std.StringHashMap(void),
 ) !bool {
-    const module_namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
-    defer allocator.free(module_namespace);
     // 1. Check if any exported function is reachable
     var func_iter = module.exports.function_decls.keyIterator();
     while (func_iter.next()) |name_ptr| {
         if (reachable.contains(name_ptr.*)) return true;
-        const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ module_namespace, name_ptr.* });
-        defer allocator.free(alias);
-        if (reachable.contains(alias)) return true;
     }
 
     // 2. Check if any exported type is referenced
@@ -246,6 +241,21 @@ fn isModuleContributing(
     while (associated_iter.next()) |symbol_ptr| {
         if (reachable.contains(symbol_ptr.*)) return true;
         if (referenced_types.contains(symbol_ptr.*)) return true;
+    }
+
+    // Namespace aliases are sparse in focused reachability sets. Scan those
+    // keys once instead of allocating one candidate alias per exported func.
+    if (module.exports.function_decls.count() != 0) {
+        const namespace = try moduleNamespaceFromImportPath(allocator, module.output_path);
+        defer allocator.free(namespace);
+        const prefix = try std.mem.concat(allocator, u8, &.{ namespace, "__" });
+        defer allocator.free(prefix);
+        var reachable_iter = reachable.keyIterator();
+        while (reachable_iter.next()) |reachable_ptr| {
+            const name = reachable_ptr.*;
+            if (!std.mem.startsWith(u8, name, prefix)) continue;
+            if (module.exports.function_decls.contains(name[prefix.len..])) return true;
+        }
     }
 
     return false;

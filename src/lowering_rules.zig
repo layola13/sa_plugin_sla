@@ -2636,12 +2636,20 @@ pub const SmartPointerAddressAction = enum {
 pub const SmartPointerValueSlotAction = enum {
     unsupported,
     as_ptr_slot,
+
+    pub fn isAsPtrSlot(self: SmartPointerValueSlotAction) bool {
+        return self == .as_ptr_slot;
+    }
 };
 
 pub const SmartPointerGetAction = enum {
     unsupported,
     dyn_box_identity,
     get_value,
+
+    pub fn isGetValue(self: SmartPointerGetAction) bool {
+        return self == .get_value;
+    }
 };
 
 pub fn planSmartPointerAddressAction(source_ty: *const ast.Type) SmartPointerAddressAction {

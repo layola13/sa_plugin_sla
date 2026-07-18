@@ -10369,11 +10369,9 @@ pub const Codegen = struct {
     }
 
     fn genSmartPointerGet(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?u32 {
-        switch (lowering_rules.planSmartPointerGetAction(source_ty)) {
-            .unsupported => return null,
-            .dyn_box_identity => return source,
-            .get_value => {},
-        }
+        const action = lowering_rules.planSmartPointerGetAction(source_ty);
+        if (action == .unsupported) return null;
+        if (!action.isGetValue()) return source;
         const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);
@@ -10388,10 +10386,7 @@ pub const Codegen = struct {
     }
 
     fn genSmartPointerValueSlot(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?u32 {
-        switch (lowering_rules.planSmartPointerValueSlotAction(source_ty)) {
-            .unsupported => return null,
-            .as_ptr_slot => {},
-        }
+        if (!lowering_rules.planSmartPointerValueSlotAction(source_ty).isAsPtrSlot()) return null;
         const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
             const loaded = try self.intern(try self.newTmp());
             try self.emitLoad(loaded, source, 0, .ptr);

@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared smart-pointer action helper normalization (2026-07-18):
+  `SmartPointerGetAction` now exposes `isGetValue()`, and
+  `SmartPointerValueSlotAction` now exposes `isAsPtrSlot()` in
+  `src/lowering_rules.zig`. Direct SAB smart-pointer get/value-slot paths use
+  those shared predicates instead of switching locally on the action enums.
+  Serial focused verification passed `zig fmt --check src/lowering_rules.zig
+  src/sab_codegen.zig` and `zig build test -j1 -Dtest-filter='shared lowering
+  rules classify result-slot value transfer' --summary all` 2/2. No full tests
+  or concurrent unit tests were run.
+
 - Shared RefCell loop-state merge helper normalization (2026-07-18):
   `RefCellLoopStateMergeAction` now exposes `restoresPreLoop()` in
   `src/lowering_rules.zig`. SA-text and direct SAB loop-body restore paths

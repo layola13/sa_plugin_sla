@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared RefCell loop-state merge helper normalization (2026-07-18):
+  `RefCellLoopStateMergeAction` now exposes `restoresPreLoop()` in
+  `src/lowering_rules.zig`. SA-text and direct SAB loop-body restore paths
+  consume that shared predicate instead of switching locally on the merge
+  action. Serial focused verification passed `zig fmt --check
+  src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and `zig build
+  test -j1 -Dtest-filter='shared lowering rules classify result-slot value
+  transfer' --summary all` 2/2. No full tests or concurrent unit tests were
+  run.
+
 - Shared RefCell value-state transfer helper normalization (2026-07-18):
   `RefCellHandleTransferAction` now exposes `movesBorrowHandle()`, and
   `BorrowAddressTempTransferAction` now exposes `movesBorrowAddressTemps()` in

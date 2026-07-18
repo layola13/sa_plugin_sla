@@ -10778,9 +10778,7 @@ pub const Codegen = struct {
                 try self.genBlock(f.body, hoisted_allocs);
                 _ = self.loop_continue_labels.pop();
                 _ = self.loop_break_labels.pop();
-                switch (lowering_rules.planRefCellLoopStateMerge()) {
-                    .restore_pre_loop => try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources),
-                }
+                if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources);
 
                 if (!blockTerminates(f.body)) {
                     self.out.writer().print("{s}:\n", .{loop_continue}) catch return CodegenError.CodegenError;
@@ -10891,9 +10889,7 @@ pub const Codegen = struct {
                     try self.genBlock(w.body, hoisted_allocs);
                     _ = self.loop_continue_labels.pop();
                     _ = self.loop_break_labels.pop();
-                    switch (lowering_rules.planRefCellLoopStateMerge()) {
-                        .restore_pre_loop => try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources),
-                    }
+                    if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources);
                     if (!blockTerminates(w.body)) {
                         for (pattern.bindings) |binding| {
                             if (!blockConsumesIdentifier(w.body, binding)) {
@@ -10931,9 +10927,7 @@ pub const Codegen = struct {
                 try self.genBlock(w.body, hoisted_allocs);
                 _ = self.loop_continue_labels.pop();
                 _ = self.loop_break_labels.pop();
-                switch (lowering_rules.planRefCellLoopStateMerge()) {
-                    .restore_pre_loop => try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources),
-                }
+                if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_loop_refcell_handles, &pre_loop_borrow_sources);
                 if (!blockTerminates(w.body)) {
                     try self.emitActiveLoopBodyLocalCleanups(null, false);
                     try self.emitLoopBodyTopLevelLocalCleanups(w.body);

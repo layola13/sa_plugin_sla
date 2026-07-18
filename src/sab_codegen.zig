@@ -13014,9 +13014,7 @@ pub const Codegen = struct {
 
             self.popLocalsTo(body_locals_len);
             try self.restoreReleased(&pre_released);
-            switch (lowering_rules.planRefCellLoopStateMerge()) {
-                .restore_pre_loop => try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps),
-            }
+            if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
 
             try self.emitLabel(cond_false_label);
             try self.emitBranchRelease(branch_flag);
@@ -13063,9 +13061,7 @@ pub const Codegen = struct {
 
         self.popLocalsTo(body_locals_len);
         try self.restoreReleased(&pre_released);
-        switch (lowering_rules.planRefCellLoopStateMerge()) {
-            .restore_pre_loop => try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps),
-        }
+        if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
 
         try self.emitLabel(cond_false_label);
         if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
@@ -13138,9 +13134,7 @@ pub const Codegen = struct {
 
         self.popLocalsTo(body_locals_len);
         try self.restoreReleased(&pre_released);
-        switch (lowering_rules.planRefCellLoopStateMerge()) {
-            .restore_pre_loop => try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps),
-        }
+        if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
 
         try self.emitLabel(cont_label);
         const next = try self.intern(try self.newTmp());
@@ -13245,9 +13239,7 @@ pub const Codegen = struct {
 
         self.popLocalsTo(body_locals_len);
         try self.restoreReleased(&pre_released);
-        switch (lowering_rules.planRefCellLoopStateMerge()) {
-            .restore_pre_loop => try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps),
-        }
+        if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
 
         try self.emitLabel(cont_label);
         const next = try self.intern(try self.newTmp());

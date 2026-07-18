@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared RefCell loop-state merge helper normalization (2026-07-18):
+  `RefCellLoopStateMergeAction` now exposes `restoresPreLoop()`, and both
+  SA-text and direct SAB loop bodies consume that shared predicate instead of
+  switching locally on the loop merge action. Serial focused verification
+  passed `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify result-slot
+  value transfer' --summary all` 2/2. No full tests or concurrent unit tests
+  were run.
+
 - Shared RefCell value-state transfer helper normalization (2026-07-18):
   `RefCellHandleTransferAction` now exposes `movesBorrowHandle()`, and
   `BorrowAddressTempTransferAction` now exposes `movesBorrowAddressTemps()`.

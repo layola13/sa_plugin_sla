@@ -2155,6 +2155,10 @@ pub const MultiBranchStateMergeAction = control_flow_rules.MultiBranchStateMerge
 
 pub const RefCellLoopStateMergeAction = enum {
     restore_pre_loop,
+
+    pub fn restoresPreLoop(self: RefCellLoopStateMergeAction) bool {
+        return self == .restore_pre_loop;
+    }
 };
 
 pub fn planResultSlotRefCellStore(transfer_plan: ResultSlotTransferPlan, source_has_refcell_handle: bool) ResultSlotRefCellStoreAction {

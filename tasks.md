@@ -40,6 +40,15 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Normalize shared OptionClosureCallPlan helper (2026-07-18).
+	  `OptionClosureCallPlan` now exposes `isMap()` / `isAndThen()` /
+	  `isUnwrapOrElse()`, and SA-text option closure dispatch consumes those
+	  shared helpers instead of switching locally on `plan.kind` for `map`,
+	  `and_then`, and `unwrap_or_else`. Serial focused verification passed `zig
+	  fmt --check src/lowering_rules.zig src/codegen.zig` and `zig build test -j1
+	  -Dtest-filter='option unwrap and map' --summary all` 1/1. No full suite or
+	  concurrent tests were run.
+
 	- [x] Normalize shared DynDispatchReceiverPlan helper (2026-07-18).
 	  `DynDispatchReceiverPlan` now exposes `needsRcGetDyn()` / `isDirectDyn()`,
 	  and both SA-text and direct SAB dyn-dispatch receiver paths consume those

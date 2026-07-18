@@ -13850,7 +13850,7 @@ pub const Codegen = struct {
                                 return reg;
                             }
                             const option_closure_plan = lowering_rules.planOptionClosureCall(call, ty);
-                            if (option_closure_plan != null and option_closure_plan.?.kind == .map) {
+                            if (option_closure_plan != null and option_closure_plan.?.isMap()) {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_some = try self.newTmp();
@@ -13880,7 +13880,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
                             }
-                            if (option_closure_plan != null and option_closure_plan.?.kind == .and_then) {
+                            if (option_closure_plan != null and option_closure_plan.?.isAndThen()) {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_some = try self.newTmp();
@@ -13936,7 +13936,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(default_reg);
                                 return reg;
                             }
-                            if (option_closure_plan != null and option_closure_plan.?.kind == .unwrap_or_else) {
+                            if (option_closure_plan != null and option_closure_plan.?.isUnwrapOrElse()) {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_some = try self.newTmp();

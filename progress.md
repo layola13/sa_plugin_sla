@@ -4,6 +4,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared OptionClosureCallPlan helper normalization (2026-07-18):
+  `OptionClosureCallPlan` now exposes `isMap()` / `isAndThen()` /
+  `isUnwrapOrElse()`, and SA-text option closure dispatch consumes those
+  shared helpers instead of switching locally on `plan.kind` for `map`,
+  `and_then`, and `unwrap_or_else`. Serial focused verification passed `zig
+  fmt --check src/lowering_rules.zig src/codegen.zig` and `zig build test -j1
+  -Dtest-filter='option unwrap and map' --summary all` 1/1. No full suite or
+  concurrent tests were run.
+
 - Shared DynDispatchReceiverPlan helper normalization (2026-07-18):
   `DynDispatchReceiverPlan` now exposes `needsRcGetDyn()` / `isDirectDyn()`,
   and both SA-text and direct SAB dyn-dispatch receiver paths consume those

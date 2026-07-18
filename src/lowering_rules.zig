@@ -2033,6 +2033,18 @@ pub const OptionClosureCallPlan = struct {
     receiver_arg_index: usize = 0,
     closure_arg_index: usize = 1,
     closure_arity: usize,
+
+    pub fn isMap(self: OptionClosureCallPlan) bool {
+        return self.kind == .map;
+    }
+
+    pub fn isAndThen(self: OptionClosureCallPlan) bool {
+        return self.kind == .and_then;
+    }
+
+    pub fn isUnwrapOrElse(self: OptionClosureCallPlan) bool {
+        return self.kind == .unwrap_or_else;
+    }
 };
 
 pub const SmartPointerKind = enum {

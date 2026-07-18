@@ -2066,6 +2066,12 @@ pub const RefCellCallArgLifecycleAction = enum {
     }
 };
 
+pub const StackSlotIdentifierCallArgTempAction = enum {
+    keep,
+    release_temp,
+    consume_temp,
+};
+
 pub const DerefAssignmentTargetLifecycleAction = enum {
     keep,
     release_value,
@@ -2164,6 +2170,16 @@ pub fn planRefCellCallArgLifecycle(release_after_call: bool, carries_refcell_bor
     if (!release_after_call) return .keep;
     if (carries_refcell_borrow_handle) return .release_borrow_handle;
     return .release_value;
+}
+
+pub fn planStackSlotIdentifierCallArgTemp(
+    param: ?ast.Param,
+    is_identifier_stack_slot_temp: bool,
+) StackSlotIdentifierCallArgTempAction {
+    if (!is_identifier_stack_slot_temp) return .keep;
+    const target_param = param orelse return .release_temp;
+    if (byValueRawPointerParam(target_param)) return .consume_temp;
+    return .release_temp;
 }
 
 pub fn planDerefAssignmentTargetLifecycle(target_is_temporary: bool, carries_refcell_borrow_handle: bool) DerefAssignmentTargetLifecycleAction {

@@ -18,6 +18,20 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Focused shared call/materialization convergence slice (2026-07-18):
+  `src/lowering_rules.zig` now owns
+  `StackSlotIdentifierCallArgTempAction` /
+  `planStackSlotIdentifierCallArgTemp()` so SA-text and direct SAB share the
+  decision for stack-slot identifier temporaries passed to raw-pointer
+  by-value params. `src/codegen.zig` and `src/sab_codegen.zig` consume that
+  shared rule for release/consume cleanup instead of carrying raw-pointer-only
+  local branches. Serial focused verification passed
+  `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`,
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify call
+  materialization decisions' --summary all` 2/2, and
+  `zig build test -j1 -Dtest-filter='direct sab normal sig keeps by-value ptr
+  params raw' --summary all` 2/2. No full suites or concurrent tests were run.
+
 - Docs/issue013/issue027 status-header cleanup and focused recheck
   (2026-07-18): the remaining numbered `docs/issue*.md` files without a
   standard status header were issue013 and issue027. Updated both docs with

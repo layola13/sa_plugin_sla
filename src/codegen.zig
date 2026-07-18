@@ -14261,16 +14261,17 @@ pub const Codegen = struct {
                                 self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                                 if (guard_plan.release_status_on_success) self.out.writer().print("    !{s}\n", .{ok_reg}) catch return CodegenError.CodegenError;
                                 const borrow_result_plan = lowering_rules.planRefCellBorrowResult(.sa_text, borrow_plan.value_kind);
-                                const borrow_reg = switch (borrow_result_plan.action) {
-                                    .use_borrow_slot => borrow_slot_reg,
-                                    .load_pointer_payload => blk: {
-                                        const payload_reg = try self.newTmp();
-                                        self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ payload_reg, borrow_slot_reg }) catch return CodegenError.CodegenError;
-                                        if (borrow_result_plan.release_borrow_slot_after_payload) try self.emitRelease(borrow_slot_reg);
-                                        break :blk payload_reg;
-                                    },
-                                    .take_pointer_payload => return CodegenError.CodegenError,
-                                };
+                                const borrow_reg = if (borrow_result_plan.action.usesBorrowSlot())
+                                    borrow_slot_reg
+                                else if (borrow_result_plan.action.loadsPointerPayload()) blk: {
+                                    const payload_reg = try self.newTmp();
+                                    self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ payload_reg, borrow_slot_reg }) catch return CodegenError.CodegenError;
+                                    if (borrow_result_plan.release_borrow_slot_after_payload) try self.emitRelease(borrow_slot_reg);
+                                    break :blk payload_reg;
+                                } else if (borrow_result_plan.action.takesPointerPayload())
+                                    return CodegenError.CodegenError
+                                else
+                                    return CodegenError.CodegenError;
                                 const handle_plan = lowering_rules.planRefCellBorrowHandleRegistration(borrow_plan);
                                 self.refcell_borrow_handles.put(borrow_reg, .{
                                     .cell_reg = recv_reg,

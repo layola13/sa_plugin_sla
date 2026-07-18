@@ -4,6 +4,18 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared RefCell borrow-result helper normalization continuation (2026-07-18):
+  `src/codegen.zig` SA-text `genRefCellBorrowCall()` now consumes
+  `RefCellBorrowResultAction.usesBorrowSlot()` /
+  `loadsPointerPayload()` /
+  `takesPointerPayload()` instead of switching locally on the borrow-result
+  action. Direct SAB already used the shared predicates, so both emitters now
+  read the same plan contract. Serial focused verification passed `zig fmt
+  --check src/codegen.zig src/sab_codegen.zig src/lowering_rules.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify refcell
+  borrow result' --summary all` 1/1. No full suite or concurrent tests were
+  run.
+
 - Shared imported-macro bypass helper normalization (2026-07-18):
   `ImportedMacroArgLoweringAction` now exposes `passesValue()` /
   `passesRawPointerValue()` in `src/lowering_rules.zig`. SA-text

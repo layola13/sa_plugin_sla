@@ -40,6 +40,15 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Normalize SA-text RefCell borrow-result helper use (2026-07-18).
+	  SA-text `genRefCellBorrowCall()` now consumes
+	  `RefCellBorrowResultAction.usesBorrowSlot()` /
+	  `loadsPointerPayload()` / `takesPointerPayload()` instead of switching
+	  locally on the borrow-result action, matching the already-normalized direct
+	  SAB path. Serial focused verification passed `zig fmt --check
+	  src/codegen.zig src/sab_codegen.zig src/lowering_rules.zig` and `zig build
+	  test -j1 -Dtest-filter='shared lowering rules classify refcell borrow
+	  result' --summary all` 1/1. No full tests or concurrent tests were run.
 	- [x] Normalize shared imported-macro bypass action helpers (2026-07-18).
 	  `ImportedMacroArgLoweringAction` now exposes `passesValue()` and
 	  `passesRawPointerValue()`, and both SA-text and direct SAB imported-macro

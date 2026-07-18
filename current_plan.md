@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared RefCell handle-cell-release helper normalization (2026-07-18):
+  `src/lowering_rules.zig` now exposes `RefCellHandleCellReleaseAction`
+  predicate helpers, and both SA-text and direct SAB emitters consume the
+  shared `shouldRelease()` check when scanning for borrow handles that must be
+  released with an owner or cell release. Serial focused verification passed
+  `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify
+  result-slot value transfer' --summary all` 2/2. No full tests or concurrent
+  unit tests were run.
+
 - Shared result-slot lifecycle helper normalization (2026-07-18):
   `src/lowering_rules.zig` now exposes predicate helpers for result-slot
   store/load lifecycle and RefCell companion actions. `src/codegen.zig` and

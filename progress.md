@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared RefCell handle-cell-release helper normalization (2026-07-18):
+  `RefCellHandleCellReleaseAction` now exposes `shouldRelease()` in
+  `src/lowering_rules.zig`. SA-text and direct SAB owner/cell release scans use
+  that shared predicate instead of switching locally on the action enum when
+  deciding whether a RefCell borrow handle must be released. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig src/codegen.zig
+  src/sab_codegen.zig` and `zig build test -j1 -Dtest-filter='shared lowering
+  rules classify result-slot value transfer' --summary all` 2/2. No full tests
+  or concurrent unit tests were run.
+
 - Shared result-slot lifecycle helper normalization (2026-07-18):
   `ResultSlotRefCellStoreAction`, `ResultSlotRefCellLoadAction`,
   `ResultSlotLoadLifecycleAction`, and `ResultSlotStoreLifecycleAction` now

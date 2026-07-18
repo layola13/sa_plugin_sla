@@ -901,13 +901,11 @@ pub const Codegen = struct {
         defer handles_to_release.deinit();
         var handle_iter = self.refcell_borrow_handles.iterator();
         while (handle_iter.next()) |entry| {
-            switch (lowering_rules.planRefCellHandleCellRelease(
+            const release_action = lowering_rules.planRefCellHandleCellRelease(
                 std.mem.eql(u8, entry.value_ptr.cell_reg, resolved_name),
                 std.mem.eql(u8, entry.key_ptr.*, resolved_name),
-            )) {
-                .release_handle => handles_to_release.append(entry.key_ptr.*) catch return CodegenError.OutOfMemory,
-                .skip => {},
-            }
+            );
+            if (release_action.shouldRelease()) handles_to_release.append(entry.key_ptr.*) catch return CodegenError.OutOfMemory;
         }
         for (handles_to_release.items) |handle_name| {
             if (self.refcell_borrow_handles.get(handle_name)) |handle| {

@@ -2069,6 +2069,10 @@ pub const RefCellHandleReleasePlan = struct {
 pub const RefCellHandleCellReleaseAction = enum {
     skip,
     release_handle,
+
+    pub fn shouldRelease(self: RefCellHandleCellReleaseAction) bool {
+        return self == .release_handle;
+    }
 };
 
 pub const RefCellHandleOwnerTransferAction = enum {

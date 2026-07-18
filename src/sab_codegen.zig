@@ -3411,13 +3411,11 @@ pub const Codegen = struct {
 
         var iter = self.refcell_borrow_values.iterator();
         while (iter.next()) |entry| {
-            switch (lowering_rules.planRefCellHandleCellRelease(
+            const release_action = lowering_rules.planRefCellHandleCellRelease(
                 entry.value_ptr.cell_reg == cell_reg,
                 entry.key_ptr.* == cell_reg,
-            )) {
-                .release_handle => try handles_to_release.append(entry.key_ptr.*),
-                .skip => {},
-            }
+            );
+            if (release_action.shouldRelease()) try handles_to_release.append(entry.key_ptr.*);
         }
 
         for (handles_to_release.items) |handle_reg| {
@@ -3433,13 +3431,11 @@ pub const Codegen = struct {
         defer handles_to_release.deinit();
         var iter = self.refcell_borrow_values.iterator();
         while (iter.next()) |entry| {
-            switch (lowering_rules.planRefCellHandleCellRelease(
+            const release_action = lowering_rules.planRefCellHandleCellRelease(
                 entry.value_ptr.cell_reg == reg,
                 entry.key_ptr.* == reg,
-            )) {
-                .release_handle => try handles_to_release.append(entry.key_ptr.*),
-                .skip => {},
-            }
+            );
+            if (release_action.shouldRelease()) try handles_to_release.append(entry.key_ptr.*);
         }
         for (handles_to_release.items) |handle_reg| try self.emitBranchReleaseWithMetadata(handle_reg, seen);
 

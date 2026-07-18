@@ -14237,11 +14237,15 @@ pub const Codegen = struct {
         defer self.deinitRefCellBorrowValueSnapshot(&pre_refcell_values);
         var pre_refcell_temps = try self.cloneBorrowAddressTemps();
         defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
+        var branch_refcell_owner_slots = std.AutoHashMap(u32, BranchRefCellHandleOwnerMergeSlot).init(self.allocator);
+        defer branch_refcell_owner_slots.deinit();
+        try self.prepareRefCellBranchHandleOwnerMergeSlots(&pre_refcell_values, &branch_refcell_owner_slots);
 
         try self.genIfLetChain(chain, then_label, else_label, branch_locals_len);
         const then_terminated = try self.genBlockTailValueStore(ife.then_block, result_slot, result_ty);
         if (!then_terminated) {
             try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_values);
             try self.emitJmp(merge_label);
         }
         var then_released = try self.released_regs.clone();
@@ -14259,6 +14263,7 @@ pub const Codegen = struct {
         const else_terminated = try self.genBlockTailValueStore(else_block, result_slot, result_ty);
         if (!else_terminated) {
             try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_values);
             try self.emitJmp(merge_label);
         }
         var else_released = try self.released_regs.clone();
@@ -14283,6 +14288,13 @@ pub const Codegen = struct {
 
         if (!then_terminated or !else_terminated) {
             try self.emitLabel(merge_label);
+            try self.loadRefCellBranchHandleOwnerMergeSlots(
+                &branch_refcell_owner_slots,
+                then_terminated,
+                &then_refcell_values,
+                else_terminated,
+                &else_refcell_values,
+            );
             const result = try self.intern(try self.newTmp());
             try self.emitLoad(result, result_slot, 0, try primType(result_ty));
             try self.loadResultSlotTransferredValue(result, result_slot, result_ty);
@@ -14307,12 +14319,16 @@ pub const Codegen = struct {
         defer self.deinitRefCellBorrowValueSnapshot(&pre_refcell_values);
         var pre_refcell_temps = try self.cloneBorrowAddressTemps();
         defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
+        var branch_refcell_owner_slots = std.AutoHashMap(u32, BranchRefCellHandleOwnerMergeSlot).init(self.allocator);
+        defer branch_refcell_owner_slots.deinit();
+        try self.prepareRefCellBranchHandleOwnerMergeSlots(&pre_refcell_values, &branch_refcell_owner_slots);
 
         try self.genIfLetChain(chain, then_label, else_label, branch_locals_len);
         try self.genBlock(ife.then_block);
         const then_terminated = self.lastIsTerminator();
         if (!then_terminated) {
             try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_values);
             try self.emitJmp(merge_label);
         }
         var then_released = try self.released_regs.clone();
@@ -14331,6 +14347,7 @@ pub const Codegen = struct {
         const else_terminated = self.lastIsTerminator();
         if (!else_terminated) {
             try self.releaseLocalsFrom(branch_locals_len, null);
+            try self.storeRefCellBranchHandleOwnerMergeSlots(&branch_refcell_owner_slots, &self.refcell_borrow_values);
             try self.emitJmp(merge_label);
         }
         var else_released = try self.released_regs.clone();
@@ -14354,6 +14371,13 @@ pub const Codegen = struct {
         );
 
         if (!then_terminated or !else_terminated) try self.emitLabel(merge_label);
+        if (!then_terminated or !else_terminated) try self.loadRefCellBranchHandleOwnerMergeSlots(
+            &branch_refcell_owner_slots,
+            then_terminated,
+            &then_refcell_values,
+            else_terminated,
+            &else_refcell_values,
+        );
         const result = try self.intern(try self.newTmp());
         try self.recordReg(result);
         return result;

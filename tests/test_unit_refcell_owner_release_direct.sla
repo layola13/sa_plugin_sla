@@ -269,6 +269,44 @@ fn owner_release_branch_reassign_handle(flag: bool) -> i64 {
     return 0i64;
 }
 
+fn owner_release_if_let_reassign_handle(flag: bool) -> i64 {
+    let left = RefCell::new(3i64);
+    let right = RefCell::new(4i64);
+    let borrowed = left.borrow_mut();
+    if let Some(_) = if flag { Some(1i64) } else { None } {
+        borrowed = right.borrow_mut();
+    } else {
+        let right_checked: &i64 = right.borrow();
+        if *right_checked != 4 {
+            panic(30959);
+        };
+        !right_checked;
+    };
+    if flag {
+        let left_checked: &i64 = left.borrow();
+        if *left_checked != 3 {
+            panic(30960);
+        };
+        !left_checked;
+        *borrowed = 44i64;
+        !borrowed;
+        let right_checked_after: &i64 = right.borrow();
+        if *right_checked_after != 44 {
+            panic(30961);
+        };
+        !right_checked_after;
+    } else {
+        *borrowed = 43i64;
+        !borrowed;
+        let left_checked_after: &i64 = left.borrow();
+        if *left_checked_after != 43 {
+            panic(30962);
+        };
+        !left_checked_after;
+    };
+    return 0i64;
+}
+
 @test "refcell owner release clears active borrow handle"() {
     let refcell = RefCell::new(OwnerReleasePayload { value: 17 });
     let borrowed: &OwnerReleasePayload = refcell.borrow();
@@ -528,5 +566,14 @@ fn owner_release_branch_reassign_handle(flag: bool) -> i64 {
     };
     if owner_release_branch_reassign_handle(false) != 0 {
         panic(30958);
+    };
+}
+
+@test "refcell if-let handle reassignment merges owner"() {
+    if owner_release_if_let_reassign_handle(true) != 0 {
+        panic(30963);
+    };
+    if owner_release_if_let_reassign_handle(false) != 0 {
+        panic(30964);
     };
 }

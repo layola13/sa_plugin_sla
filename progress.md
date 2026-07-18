@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- RefCell `if let` branch-dependent owner merge (2026-07-18): direct SAB now
+  carries the existing RefCell branch owner-companion merge through both
+  value-producing and statement `if let` paths. Each live branch stores its
+  active borrow owner, and the merge loads a dynamic owner when the branches
+  differ before later handle use/release. Added the focused owner fixture
+  `refcell if-let handle reassignment merges owner`. Serial verification:
+  `zig build -j1 --summary all` 7/7, local SA 1/1, and strict local SAB 1/1.
+  No full suite or concurrent test was run; official dev install was not
+  repeated because its prior ReleaseFast build approached the session OOM
+  limit.
+
 - RefCell branch-dependent assigned-handle owner merge (2026-07-17): fixed the
   `borrowed = right.borrow_mut()` in one live branch shape for SA-text assigned
   value slots by storing RefCell borrow owner metadata in a companion slot,

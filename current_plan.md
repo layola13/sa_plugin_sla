@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- RefCell `if let` branch-dependent owner merge (2026-07-18): direct SAB
+  `if let` value and statement paths now allocate companion owner slots for
+  pre-branch RefCell handles, store each live branch's owner, and restore the
+  merged runtime owner before subsequent handle use or explicit release.
+  Added `refcell if-let handle reassignment merges owner` coverage. Serial
+  verification passed `zig build -j1 --summary all` (7/7), local SA 1/1, and
+  strict local SAB 1/1. No full suite or concurrent test was run. Official
+  dev-install was not repeated because the prior ReleaseFast install held two
+  Zig children near 950MB RSS and was stopped to avoid another OOM.
+
 - RefCell branch-dependent assigned-handle owner merge (2026-07-17): SA-text
   assigned value slots that store RefCell borrow handles now keep a companion
   owner slot, release the previous dynamic borrow on reassignment without

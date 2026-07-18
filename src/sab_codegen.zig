@@ -2620,10 +2620,8 @@ pub const Codegen = struct {
         if (src == dst) return;
         var iter = self.refcell_borrow_values.valueIterator();
         while (iter.next()) |handle| {
-            switch (lowering_rules.planRefCellHandleOwnerTransfer(handle.cell_reg == src)) {
-                .keep_owner => {},
-                .rebind_owner => handle.cell_reg = dst,
-            }
+            const owner_transfer = lowering_rules.planRefCellHandleOwnerTransfer(handle.cell_reg == src);
+            if (owner_transfer.rebindsOwner()) handle.cell_reg = dst;
         }
     }
 
@@ -6510,12 +6508,10 @@ pub const Codegen = struct {
             self.refcell_borrow_values.contains(src),
             self.borrow_address_temps.contains(src),
         );
-        switch (lowering_rules.planRefCellHandleBinding(refcell_transfer_plan.handle == .move_borrow_handle)) {
-            .bind_borrow_handle => {
-                try self.pushTypedLocal(name, src, false, let_ty);
-                return;
-            },
-            .ordinary_binding => {},
+        const handle_binding = lowering_rules.planRefCellHandleBinding(refcell_transfer_plan.handle == .move_borrow_handle);
+        if (handle_binding.bindsBorrowHandle()) {
+            try self.pushTypedLocal(name, src, false, let_ty);
+            return;
         }
         if (value_expr.* == .identifier and lowering_rules.isBorrowLikeType(let_ty) and self.isLocalReg(src)) {
             try self.pushTypedLocal(name, src, false, let_ty);

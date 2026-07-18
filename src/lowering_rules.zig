@@ -2048,6 +2048,10 @@ pub const ResultSlotStoreLifecycleAction = enum {
 pub const RefCellHandleBindingAction = enum {
     ordinary_binding,
     bind_borrow_handle,
+
+    pub fn bindsBorrowHandle(self: RefCellHandleBindingAction) bool {
+        return self == .bind_borrow_handle;
+    }
 };
 
 pub const RefCellHandleTransferAction = enum {
@@ -2078,6 +2082,10 @@ pub const RefCellHandleCellReleaseAction = enum {
 pub const RefCellHandleOwnerTransferAction = enum {
     keep_owner,
     rebind_owner,
+
+    pub fn rebindsOwner(self: RefCellHandleOwnerTransferAction) bool {
+        return self == .rebind_owner;
+    }
 };
 
 pub const RefCellCallArgLifecycleAction = enum {

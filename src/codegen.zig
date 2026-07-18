@@ -991,14 +991,12 @@ pub const Codegen = struct {
         if (std.mem.eql(u8, src, dst)) return;
         var iter = self.refcell_borrow_handles.valueIterator();
         while (iter.next()) |handle| {
-            switch (lowering_rules.planRefCellHandleOwnerTransfer(std.mem.eql(u8, handle.cell_reg, src))) {
-                .keep_owner => {},
-                .rebind_owner => {
-                    handle.cell_reg = dst;
-                    if (handle.cell_release_temp) |temp| {
-                        if (std.mem.eql(u8, temp, src)) handle.cell_release_temp = dst;
-                    }
-                },
+            const owner_transfer = lowering_rules.planRefCellHandleOwnerTransfer(std.mem.eql(u8, handle.cell_reg, src));
+            if (owner_transfer.rebindsOwner()) {
+                handle.cell_reg = dst;
+                if (handle.cell_release_temp) |temp| {
+                    if (std.mem.eql(u8, temp, src)) handle.cell_release_temp = dst;
+                }
             }
         }
     }
@@ -10218,14 +10216,12 @@ pub const Codegen = struct {
                         refcell_handle != null,
                         self.borrow_source_temps.contains(val_reg),
                     );
-                    switch (lowering_rules.planRefCellHandleBinding(refcell_transfer_plan.handle == .move_borrow_handle)) {
-                        .bind_borrow_handle => {
-                            const handle = refcell_handle.?;
-                            self.refcell_borrow_handles.put(let.name, handle) catch return CodegenError.OutOfMemory;
-                            _ = self.refcell_borrow_handles.remove(val_reg);
-                            self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
-                        },
-                        .ordinary_binding => {},
+                    const handle_binding = lowering_rules.planRefCellHandleBinding(refcell_transfer_plan.handle == .move_borrow_handle);
+                    if (handle_binding.bindsBorrowHandle()) {
+                        const handle = refcell_handle.?;
+                        self.refcell_borrow_handles.put(let.name, handle) catch return CodegenError.OutOfMemory;
+                        _ = self.refcell_borrow_handles.remove(val_reg);
+                        self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
                     if (self.mutex_guard_handles.get(val_reg)) |handle| {
                         self.mutex_guard_handles.put(let.name, handle) catch return CodegenError.OutOfMemory;

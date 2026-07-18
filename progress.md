@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared RefCell binding/owner-transfer helper normalization (2026-07-18):
+  `RefCellHandleBindingAction` now exposes `bindsBorrowHandle()`, and
+  `RefCellHandleOwnerTransferAction` now exposes `rebindsOwner()` in
+  `src/lowering_rules.zig`. SA-text and direct SAB emitters consume those
+  shared predicates for borrow-handle binding and owner rebinding instead of
+  repeating local switches. Serial focused verification passed `zig fmt
+  --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify result-slot
+  value transfer' --summary all` 2/2. No full tests or concurrent unit tests
+  were run.
+
 - Shared RefCell handle-cell-release helper normalization (2026-07-18):
   `RefCellHandleCellReleaseAction` now exposes `shouldRelease()` in
   `src/lowering_rules.zig`. SA-text and direct SAB owner/cell release scans use

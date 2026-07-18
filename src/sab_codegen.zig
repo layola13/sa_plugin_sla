@@ -12546,24 +12546,19 @@ pub const Codegen = struct {
     }
 
     fn stackSlotIdentifierTempNeedsReleaseForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: u32) bool {
-        return switch (lowering_rules.planStackSlotIdentifierCallArgTemp(
+        const action = lowering_rules.planStackSlotIdentifierCallArgTemp(
             param,
             arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg),
-        )) {
-            .keep => arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg),
-            .release_temp => arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg),
-            .consume_temp => false,
-        };
+        );
+        return action.releasesTemp();
     }
 
     fn stackSlotIdentifierTempNeedsConsumeForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: u32) bool {
-        return switch (lowering_rules.planStackSlotIdentifierCallArgTemp(
+        const action = lowering_rules.planStackSlotIdentifierCallArgTemp(
             param,
             arg.* == .identifier and self.stackLocal(arg.identifier) != null and !self.isLocalReg(arg_reg),
-        )) {
-            .consume_temp => true,
-            else => false,
-        };
+        );
+        return action.consumesTemp();
     }
 
     fn genPlannedSabCallArg(

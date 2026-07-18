@@ -9300,25 +9300,19 @@ pub const Codegen = struct {
     }
 
     fn callArgResultTempNeedsReleaseForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: []const u8) bool {
-        return switch (lowering_rules.planStackSlotIdentifierCallArgTemp(
+        const action = lowering_rules.planStackSlotIdentifierCallArgTemp(
             param,
             self.identifierCallArgTempNeedsRelease(arg, arg_reg),
-        )) {
-            .keep => self.callArgResultTempNeedsRelease(arg, arg_reg),
-            .release_temp => self.callArgResultTempNeedsRelease(arg, arg_reg),
-            .consume_temp => false,
-        };
+        );
+        return action.releasesTemp() or (action == .keep and self.callArgResultTempNeedsRelease(arg, arg_reg));
     }
 
     fn callArgResultTempNeedsConsumeForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: []const u8) bool {
-        const target_param = param orelse return false;
-        return switch (lowering_rules.planStackSlotIdentifierCallArgTemp(
-            target_param,
+        const action = lowering_rules.planStackSlotIdentifierCallArgTemp(
+            param,
             self.identifierCallArgTempNeedsRelease(arg, arg_reg),
-        )) {
-            .consume_temp => true,
-            else => false,
-        };
+        );
+        return action.consumesTemp();
     }
 
     fn emitLoweredCallArgCleanups(

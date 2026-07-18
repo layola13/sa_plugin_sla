@@ -13,6 +13,17 @@ Update this file every time a compiler feature or demo milestone is completed an
   strict SAB 3/3. No full tests, downstream broad suites, or concurrent tests
   were run.
 
+- Shared stack-slot temp-action helper normalization (2026-07-18):
+  `StackSlotIdentifierCallArgTempAction` now exposes `releasesTemp()` /
+  `consumesTemp()`, and both SA-text and direct SAB consume those shared
+  predicates instead of repeating local switch logic for stack-slot identifier
+  call-arg temp cleanup. Serial focused verification passed
+  `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`,
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify call
+  materialization decisions' --summary all` 2/2, and `zig build test -j1
+  -Dtest-filter='direct sab normal sig keeps by-value ptr params raw'
+  --summary all` 2/2. No full tests were run.
+
 - Docs/issue049 scodex CLI direct-SAB PhiStateConflict current-non-repro
   slice (2026-07-18): the current known external Responses CLI Phi family is
   covered by the issue050 raw pointer imported-macro address-slot fix. Focused

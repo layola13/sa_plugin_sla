@@ -2070,6 +2070,14 @@ pub const StackSlotIdentifierCallArgTempAction = enum {
     keep,
     release_temp,
     consume_temp,
+
+    pub fn releasesTemp(self: StackSlotIdentifierCallArgTempAction) bool {
+        return self == .release_temp;
+    }
+
+    pub fn consumesTemp(self: StackSlotIdentifierCallArgTempAction) bool {
+        return self == .consume_temp;
+    }
 };
 
 pub const DerefAssignmentTargetLifecycleAction = enum {

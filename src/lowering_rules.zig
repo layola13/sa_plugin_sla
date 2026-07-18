@@ -2231,6 +2231,10 @@ pub const StackSlotIdentifierCallArgTempAction = enum {
     release_temp,
     consume_temp,
 
+    pub fn isKeep(self: StackSlotIdentifierCallArgTempAction) bool {
+        return self == .keep;
+    }
+
     pub fn releasesTemp(self: StackSlotIdentifierCallArgTempAction) bool {
         return self == .release_temp;
     }

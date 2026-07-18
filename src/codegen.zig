@@ -9286,7 +9286,7 @@ pub const Codegen = struct {
             param,
             self.identifierCallArgTempNeedsRelease(arg, arg_reg),
         );
-        return action.releasesTemp() or (action == .keep and self.callArgResultTempNeedsRelease(arg, arg_reg));
+        return action.releasesTemp() or (action.isKeep() and self.callArgResultTempNeedsRelease(arg, arg_reg));
     }
 
     fn callArgResultTempNeedsConsumeForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: []const u8) bool {

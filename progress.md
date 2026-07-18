@@ -101,6 +101,16 @@ Update this file every time a compiler feature or demo milestone is completed an
   -Dtest-filter='shared dyn coercion and receiver plans' --summary all` 2/2.
   No full tests or concurrent unit tests were run.
 
+- Shared stack-slot call-arg temp keep helper normalization (2026-07-18):
+  `StackSlotIdentifierCallArgTempAction` now exposes `isKeep()` in
+  `src/lowering_rules.zig`. SA-text call-arg cleanup uses that shared predicate
+  instead of comparing locally on the action enum when deciding whether to fall
+  back to ordinary result-temp release classification. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig src/codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify call
+  materialization decisions' --summary all` 2/2. No full tests or concurrent
+  unit tests were run.
+
 - Shared RefCell loop-state merge helper normalization (2026-07-18):
   `RefCellLoopStateMergeAction` now exposes `restoresPreLoop()` in
   `src/lowering_rules.zig`. SA-text and direct SAB loop-body restore paths

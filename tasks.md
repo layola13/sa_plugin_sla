@@ -953,6 +953,9 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [x] Normalize shared smart-pointer action helpers (2026-07-18).
     - `SmartPointerAddressAction` now exposes `isDynBoxIdentity()` and `isAsPtrTakePointerBackedValue()` in `src/lowering_rules.zig`, and direct SAB smart-pointer address lowering consumes those shared predicates instead of switching locally on the action enum.
     - Verified serially with `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig` and `zig build test -j1 -Dtest-filter='shared dyn coercion and receiver plans' --summary all` 2/2. No full tests or concurrent unit tests were run.
+  - [x] Normalize shared stack-slot call-arg temp keep helper (2026-07-18).
+    - `StackSlotIdentifierCallArgTempAction` now exposes `isKeep()` in `src/lowering_rules.zig`, and SA-text call-arg cleanup consumes that shared predicate instead of comparing locally on the action enum.
+    - Verified serially with `zig fmt --check src/lowering_rules.zig src/codegen.zig` and `zig build test -j1 -Dtest-filter='shared lowering rules classify call materialization decisions' --summary all` 2/2. No full tests or concurrent unit tests were run.
   - [ ] Extract a shared address-materialization plan for borrow/postfix precedence chains and consume it from both SA-text and SAB emitters.
     - Target: represent addressable sources such as `&item.field`, `&items[index]`, `&*smart`, `&**holder.item`, and nested field/index/deref chains as one shared plan that records base expression, projections, smart-pointer deref operations, required std-surface rules, and release order.
     - Reason: `tests/test_unit_borrow_temp_release_order.sla` is not only smart-pointer construction; it stresses owner temporary cleanup across fields, indexes, loops, branch merges, call arguments, and early returns. This should converge through a shared address plan rather than ad hoc `genAddressOf` behavior in one backend.

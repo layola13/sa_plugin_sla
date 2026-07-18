@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared refcell branch-owner merge helper normalization (2026-07-18):
+  `RefCellBranchHandleOwnerMergeAction` now exposes
+  `isMergeDynamicOwner()`, and both SA-text and direct SAB branch-owner merge
+  paths consume that shared predicate instead of switching locally on the
+  merge action. Serial focused verification passed `zig fmt --check
+  src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and `zig build
+  test -j1 -Dtest-filter='function tail cleanup' --summary all` 2/2. No full
+  tests or concurrent unit tests were run.
+
 - Shared function-exit cleanup helper normalization (2026-07-18):
   `FunctionExitCleanupAction` now exposes `releasesValue()` and
   `transfersResult()`, and SA-text function-tail cleanup consumes those shared

@@ -2150,6 +2150,10 @@ pub const RefCellBranchStateMergeAction = control_flow_rules.BranchStateMergeAct
 pub const RefCellBranchHandleOwnerMergeAction = enum {
     keep_static_owner,
     merge_dynamic_owner,
+
+    pub fn isMergeDynamicOwner(self: RefCellBranchHandleOwnerMergeAction) bool {
+        return self == .merge_dynamic_owner;
+    }
 };
 pub const MultiBranchStateMergeAction = control_flow_rules.MultiBranchStateMergeAction;
 

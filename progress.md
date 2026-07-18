@@ -4,6 +4,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared refcell branch-owner merge helper normalization (2026-07-18):
+  `RefCellBranchHandleOwnerMergeAction` now exposes
+  `isMergeDynamicOwner()` in `src/lowering_rules.zig`. SA-text and direct SAB
+  branch-owner merge paths consume that shared predicate instead of switching
+  locally on the merge action. Serial focused verification passed `zig fmt
+  --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='function tail cleanup' --summary all`
+  2/2. No full tests or concurrent unit tests were run.
+
 - Shared function-exit cleanup helper normalization (2026-07-18):
   `FunctionExitCleanupAction` now exposes `releasesValue()` and
   `transfersResult()` in `src/control_flow_rules.zig`. SA-text function-tail

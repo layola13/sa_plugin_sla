@@ -1433,19 +1433,18 @@ pub const Codegen = struct {
                 then_handle != null and else_handle != null and then_handle.?.kind == else_handle.?.kind,
                 then_handle != null and else_handle != null and std.mem.eql(u8, then_handle.?.cell_reg, else_handle.?.cell_reg),
             );
-            switch (action) {
-                .merge_dynamic_owner => {
-                    const cell_reg = try self.newTmp();
-                    const restore_plan = lowering_rules.planRefCellCompanionRestore();
-                    self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.value_ptr.cell_slot }) catch return CodegenError.CodegenError;
-                    self.refcell_borrow_handles.put(key, .{
-                        .cell_reg = cell_reg,
-                        .kind = then_handle.?.kind,
-                        .cell_release_temp = if (restore_plan.track_loaded_cell_owner_temp) cell_reg else null,
-                    }) catch return CodegenError.OutOfMemory;
-                    if (restore_plan.release_companion_slot_after_restore) try self.emitRelease(entry.value_ptr.cell_slot);
-                },
-                .keep_static_owner => try self.emitRelease(entry.value_ptr.cell_slot),
+            if (action.isMergeDynamicOwner()) {
+                const cell_reg = try self.newTmp();
+                const restore_plan = lowering_rules.planRefCellCompanionRestore();
+                self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ cell_reg, entry.value_ptr.cell_slot }) catch return CodegenError.CodegenError;
+                self.refcell_borrow_handles.put(key, .{
+                    .cell_reg = cell_reg,
+                    .kind = then_handle.?.kind,
+                    .cell_release_temp = if (restore_plan.track_loaded_cell_owner_temp) cell_reg else null,
+                }) catch return CodegenError.OutOfMemory;
+                if (restore_plan.release_companion_slot_after_restore) try self.emitRelease(entry.value_ptr.cell_slot);
+            } else {
+                try self.emitRelease(entry.value_ptr.cell_slot);
             }
         }
     }

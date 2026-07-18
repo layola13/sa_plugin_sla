@@ -2566,23 +2566,22 @@ pub const Codegen = struct {
                 then_value != null and else_value != null and then_value.?.kind == else_value.?.kind,
                 then_value != null and else_value != null and then_value.?.cell_reg == else_value.?.cell_reg,
             );
-            switch (action) {
-                .merge_dynamic_owner => {
-                    const cell_reg = try self.intern(try self.newTmp());
-                    const restore_plan = lowering_rules.planRefCellCompanionRestore();
-                    try self.emitLoad(cell_reg, entry.value_ptr.cell_slot, 0, .ptr);
-                    if (self.refcell_borrow_values.fetchRemove(key)) |old| {
-                        if (old.value.release_regs.len != 0) self.allocator.free(old.value.release_regs);
-                    }
-                    const release_regs = if (restore_plan.track_loaded_cell_owner_temp) try self.singleReleaseReg(cell_reg) else &.{};
-                    try self.refcell_borrow_values.put(key, .{
-                        .cell_reg = cell_reg,
-                        .kind = then_value.?.kind,
-                        .release_regs = release_regs,
-                    });
-                    if (restore_plan.release_companion_slot_after_restore) try self.emitRelease(entry.value_ptr.cell_slot);
-                },
-                .keep_static_owner => try self.emitRelease(entry.value_ptr.cell_slot),
+            if (action.isMergeDynamicOwner()) {
+                const cell_reg = try self.intern(try self.newTmp());
+                const restore_plan = lowering_rules.planRefCellCompanionRestore();
+                try self.emitLoad(cell_reg, entry.value_ptr.cell_slot, 0, .ptr);
+                if (self.refcell_borrow_values.fetchRemove(key)) |old| {
+                    if (old.value.release_regs.len != 0) self.allocator.free(old.value.release_regs);
+                }
+                const release_regs = if (restore_plan.track_loaded_cell_owner_temp) try self.singleReleaseReg(cell_reg) else &.{};
+                try self.refcell_borrow_values.put(key, .{
+                    .cell_reg = cell_reg,
+                    .kind = then_value.?.kind,
+                    .release_regs = release_regs,
+                });
+                if (restore_plan.release_companion_slot_after_restore) try self.emitRelease(entry.value_ptr.cell_slot);
+            } else {
+                try self.emitRelease(entry.value_ptr.cell_slot);
             }
         }
     }

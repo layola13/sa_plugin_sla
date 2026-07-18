@@ -6534,12 +6534,16 @@ pub const Codegen = struct {
         if (self.borrowedBindingNeedsStackStorage(name, let_ty)) {
             try self.emitStackAlloc(dst, typeSize(let_ty));
             try self.emitStore(dst, 0, src, try storagePrimType(let_ty));
-            if (!self.isLocalReg(src)) {
+            if (src != dst and (!self.isLocalReg(src) or value_expr.* != .identifier)) {
                 _ = self.non_owning_regs.remove(src);
                 if (typeIsPointerScalarValue(let_ty)) {
-                    try self.markConsumed(src);
+                    if (self.stack_alloc_emitted.contains(src)) {
+                        try self.markConsumed(src);
+                    } else {
+                        try self.emitMove(src);
+                    }
                 } else {
-                    try self.emitRelease(src);
+                    if (!self.isLocalReg(src)) try self.emitRelease(src);
                 }
             }
             try self.pushStackLocal(name, dst, let_ty);
@@ -11522,8 +11526,22 @@ pub const Codegen = struct {
             return err;
         };
         try self.emitStore(slot, 0, value_reg, store_ty);
-        if (try self.importedMacroValueArgNeedsRelease(arg, value_reg, ctx)) try self.emitRelease(value_reg);
+        try self.cleanupImportedMacroMaterializedSlotValue(arg, arg_ty, value_reg, ctx);
         return .{ .operand = self.symbols.items[slot], .release_reg = null };
+    }
+
+    fn cleanupImportedMacroMaterializedSlotValue(self: *Codegen, arg: *const ast.Node, arg_ty: *const ast.Type, value_reg: u32, ctx: ?*MacroExpansionContext) anyerror!void {
+        if (try self.importedMacroValueArgNeedsRelease(arg, value_reg, ctx)) {
+            try self.emitRelease(value_reg);
+            return;
+        }
+        if (!self.isLocalReg(value_reg) and typeIsPointerScalarValue(arg_ty)) {
+            if (self.stack_alloc_emitted.contains(value_reg)) {
+                try self.markConsumed(value_reg);
+            } else {
+                try self.emitMove(value_reg);
+            }
+        }
     }
 
     fn genImportedMacroAddressExpressionMaterializedSlotArg(self: *Codegen, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
@@ -11544,7 +11562,7 @@ pub const Codegen = struct {
         const loaded = try self.intern(try self.newTmp());
         try self.emitLoad(loaded, source.reg, 0, store_ty);
         try self.emitStore(slot, 0, loaded, store_ty);
-        if (try self.importedMacroValueArgNeedsRelease(arg, loaded, ctx)) try self.emitRelease(loaded);
+        try self.cleanupImportedMacroMaterializedSlotValue(arg, arg_ty, loaded, ctx);
         if (!self.isLocalReg(source.reg)) try self.emitRelease(source.reg);
         for (source.release_regs) |release_reg| try self.emitRelease(release_reg);
         if (source.release_regs.len != 0) self.allocator.free(source.release_regs);

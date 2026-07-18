@@ -4,6 +4,24 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Docs/issue050 scodex-model stream completion direct-SAB PhiStateConflict
+  closure (2026-07-18): the reported stream-completion SAB failure was traced
+  to imported HTTP-client adapter setup code. A branch-local
+  `STR_PTR("application/json")` raw pointer borrow temporary was stored into an
+  addressable stack slot for an imported macro `&%value` argument without a
+  SAB-visible consume marker, so verifier merge state saw `tmp_429` as
+  `Composite` on one path and `Uninitialized` on the other. Direct SAB now
+  consumes raw pointer borrow temporaries with `move_` after storing them into
+  borrowed stack slots or imported macro materialized slots, but keeps
+  stack-allocated string slice temporaries internally consumed to avoid
+  StackEscape. Added focused coverage in
+  `tests/test_unit_stream_completion_aggregate_phi_direct.sla` and
+  `tests/import_fixtures/imported_ptr_slot_helpers.sa`. Serial focused gates
+  passed: `zig fmt --check src/sab_codegen.zig`; `zig build -j1 --summary all`
+  7/7; local SA and strict SAB fixture 1/1 each; downstream strict SAB filter
+  `responses live external api stream completion requires eof cleanup and db
+  commit` 1/1. No full suite or concurrent test was run.
+
 - RefCell `if let` branch-dependent owner merge (2026-07-18): direct SAB now
   carries the existing RefCell branch owner-companion merge through both
   value-producing and statement `if let` paths. Each live branch stores its

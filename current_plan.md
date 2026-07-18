@@ -18,6 +18,21 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue050 scodex-model stream completion direct-SAB PhiStateConflict
+  closure (2026-07-18): the failing downstream stream-completion filter was
+  actually blocked in imported HTTP-client adapter code before reaching the
+  aggregate. Direct SAB now emits SAB-visible consumption for raw pointer borrow
+  temporaries stored into borrowed stack slots or imported macro materialized
+  address slots, while keeping stack-allocated string slice values internal so
+  they do not trigger StackEscape. Added
+  `tests/test_unit_stream_completion_aggregate_phi_direct.sla` plus
+  `tests/import_fixtures/imported_ptr_slot_helpers.sa` for the branch-local
+  `STR_PTR(...)` + imported macro `&%value` reducer. Serial verification passed
+  `zig fmt --check src/sab_codegen.zig`, `zig build -j1 --summary all` 7/7,
+  local focused SA/SAB fixture 1/1 each, and the downstream focused strict SAB
+  filter `responses live external api stream completion requires eof cleanup
+  and db commit` 1/1. No full tests or concurrent tests were run.
+
 - RefCell `if let` branch-dependent owner merge (2026-07-18): direct SAB
   `if let` value and statement paths now allocate companion owner slots for
   pre-branch RefCell handles, store each live branch's owner, and restore the

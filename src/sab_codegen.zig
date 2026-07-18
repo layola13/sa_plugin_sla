@@ -12399,11 +12399,10 @@ pub const Codegen = struct {
 
     fn genArrayBorrowToSliceArgFromBase(
         self: *Codegen,
-        inner: *const ast.Node,
+        inner_ty: *const ast.Type,
         release_after_call: bool,
         base_source_reg: u32,
     ) anyerror!SabLoweredCallArg {
-        const inner_ty = self.tc.expr_types.get(inner) orelse return Error.MissingType;
         if (inner_ty.* != .array) return Error.UnsupportedSabDirectFeature;
         const arr = inner_ty.array;
 
@@ -12427,7 +12426,7 @@ pub const Codegen = struct {
         }
 
         return .{
-            .operand = self.symbols.items[slice_reg],
+            .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[slice_reg]}),
             .release_reg = null,
             .release_regs = try self.ownedReleaseRegs(extra_releases.items),
         };
@@ -12440,8 +12439,9 @@ pub const Codegen = struct {
     ) anyerror!SabLoweredCallArg {
         if (arg.* != .borrow_expr) return Error.UnsupportedSabDirectFeature;
         const inner = arg.borrow_expr.expr;
+        const inner_ty = self.tc.expr_types.get(inner) orelse return Error.MissingType;
         const base_source_reg = try self.genExpr(@constCast(inner));
-        return try self.genArrayBorrowToSliceArgFromBase(inner, release_after_call, base_source_reg);
+        return try self.genArrayBorrowToSliceArgFromBase(inner_ty, release_after_call, base_source_reg);
     }
 
     fn genMacroArrayBorrowToSliceArg(
@@ -12453,13 +12453,30 @@ pub const Codegen = struct {
     ) anyerror!SabLoweredCallArg {
         if (arg.* == .borrow_expr) {
             const inner = arg.borrow_expr.expr;
+            const inner_ty = (try self.macroExprType(inner, ctx)) orelse return Error.MissingType;
             const base_source_reg = try self.genMacroExpr(@constCast(inner), ctx);
-            return try self.genArrayBorrowToSliceArgFromBase(inner, release_after_call, base_source_reg);
+            return try self.genArrayBorrowToSliceArgFromBase(inner_ty, release_after_call, base_source_reg);
         }
         if (effective_arg.* != .borrow_expr) return Error.UnsupportedSabDirectFeature;
         const inner = effective_arg.borrow_expr.expr;
+        const inner_ty = self.tc.expr_types.get(inner) orelse return Error.MissingType;
         const base_source_reg = try self.genExpr(@constCast(inner));
-        return try self.genArrayBorrowToSliceArgFromBase(inner, release_after_call, base_source_reg);
+        return try self.genArrayBorrowToSliceArgFromBase(inner_ty, release_after_call, base_source_reg);
+    }
+
+    fn macroArrayToSliceBorrowArg(self: *Codegen, arg: *const ast.Node, ctx: *MacroExpansionContext, param: ?ast.Param) anyerror!bool {
+        if (arg.* != .borrow_expr) return false;
+        const target_param = param orelse return false;
+        if (!target_param.is_borrow and target_param.ty.* != .borrow) return false;
+        var target_ty = target_param.ty;
+        while (true) switch (target_ty.*) {
+            .borrow => |inner| target_ty = inner,
+            .pointer => |inner| target_ty = inner,
+            else => break,
+        };
+        if (target_ty.* != .user_defined or !std.mem.eql(u8, target_ty.user_defined.name, "Slice")) return false;
+        const inner_ty = (try self.macroExprType(arg.borrow_expr.expr, ctx)) orelse return false;
+        return inner_ty.* == .array;
     }
 
     fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
@@ -12715,7 +12732,8 @@ pub const Codegen = struct {
             .arg_index = arg_index,
             .auto_borrow_receiver = auto_borrow_receiver,
             .abi_borrow_auto_borrow = abi_borrow_auto_borrow,
-            .array_to_slice_borrow = self.tc.array_to_slice_borrow_args.contains(effective_arg),
+            .array_to_slice_borrow = self.tc.array_to_slice_borrow_args.contains(effective_arg) or
+                try self.macroArrayToSliceBorrowArg(arg, ctx, param),
             .dyn_borrow_trait_name = self.tc.dyn_borrow_args.get(effective_arg),
             .copy_struct_value = if (param) |p| !p.is_borrow and !p.is_move and effective_arg.* == .identifier and self.typeIsCopyStruct(p.ty) else false,
             .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(effective_arg),

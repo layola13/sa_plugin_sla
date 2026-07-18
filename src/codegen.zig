@@ -9340,6 +9340,16 @@ pub const Codegen = struct {
         include_copy_struct_value: bool = true,
     };
 
+    fn macroArrayToSliceBorrowArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param) bool {
+        if (self.active_inline_macro == null or arg.* != .borrow_expr) return false;
+        const inner = arg.borrow_expr.expr;
+        if (inner.* != .identifier) return false;
+        const target_param = param orelse return false;
+        if ((!target_param.is_borrow and target_param.ty.* != .borrow) or sliceElementType(target_param.ty) == null) return false;
+        const inner_ty = self.macroArgTypeForName(inner.identifier) orelse return false;
+        return arrayType(inner_ty) != null;
+    }
+
     fn genCallArgFromMaterializationPlan(
         self: *Codegen,
         arg: *ast.Node,
@@ -9472,7 +9482,8 @@ pub const Codegen = struct {
             .auto_borrow_receiver = options.auto_borrow_receiver,
             .receiver_style_auto_borrow = options.receiver_style_auto_borrow,
             .statement_receiver_auto_borrow = options.statement_receiver_auto_borrow,
-            .array_to_slice_borrow = options.include_array_to_slice_borrow and self.tc.array_to_slice_borrow_args.contains(arg),
+            .array_to_slice_borrow = options.include_array_to_slice_borrow and
+                (self.tc.array_to_slice_borrow_args.contains(arg) or self.macroArrayToSliceBorrowArg(arg, options.param)),
             .dyn_borrow_trait_name = if (options.include_dyn_borrow) self.tc.dyn_borrow_args.get(arg) else null,
             .copy_struct_value = copy_struct_value,
             .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(arg),
@@ -9788,7 +9799,7 @@ pub const Codegen = struct {
     fn genArrayBorrowToSliceInto(self: *Codegen, target: []const u8, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
         if (arg.* != .borrow_expr) return CodegenError.CodegenError;
         const inner = arg.borrow_expr.expr;
-        const inner_ty = self.tc.expr_types.get(inner) orelse return CodegenError.CodegenError;
+        const inner_ty = self.resolvedTypeForExpr(inner) orelse return CodegenError.CodegenError;
         const arr = arrayType(inner_ty) orelse return CodegenError.CodegenError;
 
         const base_source_reg = try self.genExpr(inner, hoisted_allocs);
@@ -9811,7 +9822,8 @@ pub const Codegen = struct {
     fn genArrayBorrowToSliceArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
         const slice_reg = try self.newTmp();
         const base_release_reg = try self.genArrayBorrowToSliceInto(slice_reg, arg, hoisted_allocs);
-        return .{ .reg = slice_reg, .release_after_call = false, .release_reg = base_release_reg };
+        const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{slice_reg}) catch return CodegenError.OutOfMemory;
+        return .{ .reg = borrow_arg, .release_after_call = false, .release_reg = base_release_reg };
     }
 
     fn genOwnedStringLiteral(self: *Codegen, value: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {

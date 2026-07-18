@@ -270,6 +270,23 @@ pub const FutureRuntimeCallKind = enum {
 
 pub const FutureRuntimeCallPlan = struct {
     kind: FutureRuntimeCallKind,
+
+    pub fn pairMacroName(self: FutureRuntimeCallPlan) ?[]const u8 {
+        return switch (self.kind) {
+            .pair_left => "FUTURE_PAIR_LEFT",
+            .pair_right => "FUTURE_PAIR_RIGHT",
+            else => null,
+        };
+    }
+
+    pub fn eitherValueMacroName(self: FutureRuntimeCallPlan) ?[]const u8 {
+        return switch (self.kind) {
+            .either_side => "FUTURE_EITHER_SIDE",
+            .either_left => "FUTURE_EITHER_LEFT_VALUE",
+            .either_right => "FUTURE_EITHER_RIGHT_VALUE",
+            else => null,
+        };
+    }
 };
 
 pub const TaskRuntimeCallKind = enum {

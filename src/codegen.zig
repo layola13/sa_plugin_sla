@@ -12823,7 +12823,7 @@ pub const Codegen = struct {
                             if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
                             const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const value_reg = try self.newTmp();
-                            const macro_name = if (future_plan.kind == .pair_left) "FUTURE_PAIR_LEFT" else "FUTURE_PAIR_RIGHT";
+                            const macro_name = future_plan.pairMacroName() orelse return CodegenError.CodegenError;
                             self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
                             return value_reg;
@@ -12832,12 +12832,7 @@ pub const Codegen = struct {
                             if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
                             const either_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const value_reg = try self.newTmp();
-                            const macro_name = switch (future_plan.kind) {
-                                .either_side => "FUTURE_EITHER_SIDE",
-                                .either_left => "FUTURE_EITHER_LEFT_VALUE",
-                                .either_right => "FUTURE_EITHER_RIGHT_VALUE",
-                                else => unreachable,
-                            };
+                            const macro_name = future_plan.eitherValueMacroName() orelse return CodegenError.CodegenError;
                             self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, either_reg }) catch return CodegenError.CodegenError;
                             if (callArgNeedsRelease(call.args[0])) try self.emitRelease(either_reg);
                             return value_reg;
@@ -12916,7 +12911,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
                                 const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.newTmp();
-                                const macro_name = if (future_plan.kind == .pair_left) "FUTURE_PAIR_LEFT" else "FUTURE_PAIR_RIGHT";
+                                const macro_name = future_plan.pairMacroName() orelse return CodegenError.CodegenError;
                                 self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
                                 return value_reg;
@@ -12925,12 +12920,7 @@ pub const Codegen = struct {
                                 if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
                                 const either_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.newTmp();
-                                const macro_name = switch (future_plan.kind) {
-                                    .either_side => "FUTURE_EITHER_SIDE",
-                                    .either_left => "FUTURE_EITHER_LEFT_VALUE",
-                                    .either_right => "FUTURE_EITHER_RIGHT_VALUE",
-                                    else => unreachable,
-                                };
+                                const macro_name = future_plan.eitherValueMacroName() orelse return CodegenError.CodegenError;
                                 self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, either_reg }) catch return CodegenError.CodegenError;
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(either_reg);
                                 return value_reg;

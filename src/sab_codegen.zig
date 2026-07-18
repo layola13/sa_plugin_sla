@@ -7457,7 +7457,7 @@ pub const Codegen = struct {
                     if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
                     const pair_reg = try self.genExpr(call.args[0]);
                     const value_reg = try self.intern(try self.newTmp());
-                    const macro_name = if (future_plan.kind == .pair_left) "FUTURE_PAIR_LEFT" else "FUTURE_PAIR_RIGHT";
+                    const macro_name = future_plan.pairMacroName() orelse return Error.UnsupportedSabDirectFeature;
                     try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
                         self.symbols.items[value_reg],
                         self.symbols.items[pair_reg],
@@ -7469,12 +7469,7 @@ pub const Codegen = struct {
                     if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
                     const either_reg = try self.genExpr(call.args[0]);
                     const value_reg = try self.intern(try self.newTmp());
-                    const macro_name = switch (future_plan.kind) {
-                        .either_side => "FUTURE_EITHER_SIDE",
-                        .either_left => "FUTURE_EITHER_LEFT_VALUE",
-                        .either_right => "FUTURE_EITHER_RIGHT_VALUE",
-                        else => unreachable,
-                    };
+                    const macro_name = future_plan.eitherValueMacroName() orelse return Error.UnsupportedSabDirectFeature;
                     try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
                         self.symbols.items[value_reg],
                         self.symbols.items[either_reg],

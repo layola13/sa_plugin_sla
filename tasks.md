@@ -40,6 +40,15 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Normalize shared FutureRuntimeCallPlan macro-name helpers (2026-07-18).
+	  `FutureRuntimeCallPlan` now exposes `pairMacroName()` and
+	  `eitherValueMacroName()`, and both SA-text and direct SAB future runtime
+	  accessor paths consume those shared helpers instead of branching locally on
+	  `future_plan.kind` for `FUTURE_PAIR_*` and `FUTURE_EITHER_*` macro names.
+	  Serial focused verification passed `zig fmt --check src/lowering_rules.zig
+	  src/codegen.zig src/sab_codegen.zig` and `zig build test -j1
+	  -Dtest-filter='shared future runtime call classification' --summary all`
+	  2/2. No full tests or concurrent tests were run.
 	- [x] Normalize shared PollRuntimeCallPlan macro-name helper (2026-07-18).
 	  `PollRuntimeCallPlan` now exposes `pollStatusMacroName()`, and both SA-text
 	  and direct SAB poll-status runtime call paths consume that shared helper

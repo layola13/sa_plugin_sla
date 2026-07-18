@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared FutureRuntimeCallPlan macro-name helper normalization (2026-07-18):
+  `FutureRuntimeCallPlan` now exposes `pairMacroName()` and
+  `eitherValueMacroName()`, and both SA-text and direct SAB future runtime
+  accessor paths consume those shared helpers instead of branching locally on
+  `future_plan.kind` for `FUTURE_PAIR_*` and `FUTURE_EITHER_*` macro names.
+  Serial focused verification passed `zig fmt --check src/lowering_rules.zig
+  src/codegen.zig src/sab_codegen.zig` and `zig build test -j1
+  -Dtest-filter='shared future runtime call classification' --summary all`
+  2/2. No full suite or concurrent tests were run.
+
 - Shared PollRuntimeCallPlan macro-name helper normalization (2026-07-18):
   `PollRuntimeCallPlan` now exposes `pollStatusMacroName()`, and both SA-text
   and direct SAB poll-status runtime call paths consume that shared helper

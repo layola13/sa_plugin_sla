@@ -1343,17 +1343,14 @@ pub const Codegen = struct {
     fn emitFunctionTailCleanups(self: *Codegen, stmt: *const ast.Node, tail_expr: *const ast.Node) CodegenError!void {
         if (self.tc.cleanups.get(stmt)) |list| {
             for (list.items) |name| {
-                switch (try self.planFunctionResultCleanup(name, tail_expr)) {
-                    .release => try self.emitRelease(name),
-                    .transfer_result => {},
-                }
+                if ((try self.planFunctionResultCleanup(name, tail_expr)).releasesValue()) try self.emitRelease(name);
             }
         }
     }
 
     fn planFunctionResultCleanup(self: *Codegen, cleanup_name: []const u8, result_expr: *const ast.Node) CodegenError!lowering_rules.FunctionTailCleanupAction {
         const base_plan = lowering_rules.planFunctionTailCleanup(cleanup_name, result_expr);
-        if (base_plan == .transfer_result) return base_plan;
+        if (base_plan.transfersResult()) return base_plan;
         const root_name = lowering_rules.rootIdentifier(result_expr) orelse return base_plan;
         if (!std.mem.eql(u8, cleanup_name, root_name)) return base_plan;
         const result_ty = self.resolvedTypeForExpr(result_expr) orelse self.tc.expr_types.get(result_expr) orelse return base_plan;
@@ -10654,10 +10651,7 @@ pub const Codegen = struct {
                 if (self.tc.cleanups.get(stmt)) |list| {
                     for (list.items) |c_var| {
                         if (ret.value) |v| {
-                            switch (try self.planFunctionResultCleanup(c_var, v)) {
-                                .release => try self.emitRelease(c_var),
-                                .transfer_result => {},
-                            }
+                            if ((try self.planFunctionResultCleanup(c_var, v)).releasesValue()) try self.emitRelease(c_var);
                         } else {
                             try self.emitRelease(c_var);
                         }

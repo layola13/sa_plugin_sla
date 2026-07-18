@@ -23,6 +23,14 @@ pub const BranchStateMergeAction = enum {
 pub const FunctionExitCleanupAction = enum {
     release,
     transfer_result,
+
+    pub fn releasesValue(self: FunctionExitCleanupAction) bool {
+        return self == .release;
+    }
+
+    pub fn transfersResult(self: FunctionExitCleanupAction) bool {
+        return self == .transfer_result;
+    }
 };
 
 pub fn planFunctionExitCleanup(cleanup_name: []const u8, result_expr: *const ast.Node) FunctionExitCleanupAction {

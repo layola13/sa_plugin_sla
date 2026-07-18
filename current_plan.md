@@ -18,6 +18,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared function-exit cleanup helper normalization (2026-07-18):
+  `FunctionExitCleanupAction` now exposes `releasesValue()` and
+  `transfersResult()`, and SA-text function-tail cleanup consumes those shared
+  helpers instead of switching or comparing directly on cleanup actions. Serial
+  focused verification passed `zig fmt --check src/control_flow_rules.zig
+  src/codegen.zig` and `zig build test -j1 -Dtest-filter='function tail cleanup'
+  --summary all` 2/2. No full tests or concurrent unit tests were run.
+
 - Shared println-argument plan helper normalization (2026-07-18):
   `PrintlnArgPlan` now exposes `isFormatString()` / `isStringLike()` /
   `borrowedPrimitive()` / `boxedPrimitive()` / `primitiveFormat()`, and the

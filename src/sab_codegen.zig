@@ -2399,85 +2399,82 @@ pub const Codegen = struct {
         live_snapshots: []const BranchEmitterStateSnapshot,
         pre_snapshot: *const BranchEmitterStateSnapshot,
     ) !void {
-        switch (lowering_rules.planMultiBranchStateMerge(live_snapshots.len)) {
-            .restore_pre => {
-                try self.restoreReleased(&pre_snapshot.released);
-                try self.restoreRefCellBranchState(&pre_snapshot.refcell_values, &pre_snapshot.borrow_temps);
-            },
-            .restore_single => {
-                try self.restoreReleased(&live_snapshots[0].released);
-                try self.restoreRefCellBranchState(&live_snapshots[0].refcell_values, &live_snapshots[0].borrow_temps);
-            },
-            .intersect_live => {
-                self.released_regs.clearRetainingCapacity();
-                var released_iter = live_snapshots[0].released.iterator();
-                while (released_iter.next()) |entry| {
-                    const reg = entry.key_ptr.*;
-                    var shared = true;
-                    for (live_snapshots[1..]) |snapshot| {
-                        if (!snapshot.released.contains(reg)) {
-                            shared = false;
-                            break;
-                        }
+        const merge_action = lowering_rules.planMultiBranchStateMerge(live_snapshots.len);
+        if (merge_action.restoresPre()) {
+            try self.restoreReleased(&pre_snapshot.released);
+            try self.restoreRefCellBranchState(&pre_snapshot.refcell_values, &pre_snapshot.borrow_temps);
+        } else if (merge_action.restoresSingle()) {
+            try self.restoreReleased(&live_snapshots[0].released);
+            try self.restoreRefCellBranchState(&live_snapshots[0].refcell_values, &live_snapshots[0].borrow_temps);
+        } else if (merge_action.intersectsLive()) {
+            self.released_regs.clearRetainingCapacity();
+            var released_iter = live_snapshots[0].released.iterator();
+            while (released_iter.next()) |entry| {
+                const reg = entry.key_ptr.*;
+                var shared = true;
+                for (live_snapshots[1..]) |snapshot| {
+                    if (!snapshot.released.contains(reg)) {
+                        shared = false;
+                        break;
                     }
-                    if (shared) try self.released_regs.put(reg, {});
                 }
+                if (shared) try self.released_regs.put(reg, {});
+            }
 
-                self.clearRefCellBorrowValues();
-                var value_iter = live_snapshots[0].refcell_values.iterator();
-                while (value_iter.next()) |entry| {
-                    const reg = entry.key_ptr.*;
-                    const value = entry.value_ptr.*;
-                    var shared = true;
-                    for (live_snapshots[1..]) |snapshot| {
-                        const other = snapshot.refcell_values.get(reg) orelse {
-                            shared = false;
-                            break;
-                        };
-                        if (!refCellBorrowValueEqual(value, other)) {
-                            shared = false;
-                            break;
-                        }
-                    }
-                    if (shared) {
-                        const copied_release_regs = if (value.release_regs.len == 0) &.{} else try self.allocator.dupe(u32, value.release_regs);
-                        try self.refcell_borrow_values.put(reg, .{
-                            .cell_reg = value.cell_reg,
-                            .kind = value.kind,
-                            .release_regs = copied_release_regs,
-                        });
+            self.clearRefCellBorrowValues();
+            var value_iter = live_snapshots[0].refcell_values.iterator();
+            while (value_iter.next()) |entry| {
+                const reg = entry.key_ptr.*;
+                const value = entry.value_ptr.*;
+                var shared = true;
+                for (live_snapshots[1..]) |snapshot| {
+                    const other = snapshot.refcell_values.get(reg) orelse {
+                        shared = false;
+                        break;
+                    };
+                    if (!refCellBorrowValueEqual(value, other)) {
+                        shared = false;
+                        break;
                     }
                 }
+                if (shared) {
+                    const copied_release_regs = if (value.release_regs.len == 0) &.{} else try self.allocator.dupe(u32, value.release_regs);
+                    try self.refcell_borrow_values.put(reg, .{
+                        .cell_reg = value.cell_reg,
+                        .kind = value.kind,
+                        .release_regs = copied_release_regs,
+                    });
+                }
+            }
 
-                self.clearBorrowAddressTemps();
-                var temp_iter = live_snapshots[0].borrow_temps.iterator();
-                while (temp_iter.next()) |entry| {
-                    const reg = entry.key_ptr.*;
-                    const state = entry.value_ptr.*;
-                    var shared = true;
-                    for (live_snapshots[1..]) |snapshot| {
-                        const other = snapshot.borrow_temps.get(reg) orelse {
-                            shared = false;
-                            break;
-                        };
-                        if (!std.mem.eql(u32, state.release_regs, other.release_regs) or
-                            state.restore_slot != other.restore_slot or
-                            state.restore_value != other.restore_value)
-                        {
-                            shared = false;
-                            break;
-                        }
-                    }
-                    if (shared) {
-                        const copied = if (state.release_regs.len == 0) &.{} else try self.allocator.dupe(u32, state.release_regs);
-                        try self.borrow_address_temps.put(reg, .{
-                            .release_regs = copied,
-                            .restore_slot = state.restore_slot,
-                            .restore_value = state.restore_value,
-                        });
+            self.clearBorrowAddressTemps();
+            var temp_iter = live_snapshots[0].borrow_temps.iterator();
+            while (temp_iter.next()) |entry| {
+                const reg = entry.key_ptr.*;
+                const state = entry.value_ptr.*;
+                var shared = true;
+                for (live_snapshots[1..]) |snapshot| {
+                    const other = snapshot.borrow_temps.get(reg) orelse {
+                        shared = false;
+                        break;
+                    };
+                    if (!std.mem.eql(u32, state.release_regs, other.release_regs) or
+                        state.restore_slot != other.restore_slot or
+                        state.restore_value != other.restore_value)
+                    {
+                        shared = false;
+                        break;
                     }
                 }
-            },
+                if (shared) {
+                    const copied = if (state.release_regs.len == 0) &.{} else try self.allocator.dupe(u32, state.release_regs);
+                    try self.borrow_address_temps.put(reg, .{
+                        .release_regs = copied,
+                        .restore_slot = state.restore_slot,
+                        .restore_value = state.restore_value,
+                    });
+                }
+            }
         }
     }
 

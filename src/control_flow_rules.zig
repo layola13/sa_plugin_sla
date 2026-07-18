@@ -179,6 +179,18 @@ pub const MultiBranchStateMergeAction = enum {
     restore_pre,
     restore_single,
     intersect_live,
+
+    pub fn restoresPre(self: MultiBranchStateMergeAction) bool {
+        return self == .restore_pre;
+    }
+
+    pub fn restoresSingle(self: MultiBranchStateMergeAction) bool {
+        return self == .restore_single;
+    }
+
+    pub fn intersectsLive(self: MultiBranchStateMergeAction) bool {
+        return self == .intersect_live;
+    }
 };
 
 pub fn planBranchStateMerge(then_terminated: bool, else_terminated: bool) BranchStateMergeAction {

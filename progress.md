@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared multi-branch merge helper normalization (2026-07-18):
+  `MultiBranchStateMergeAction` now exposes `restoresPre()` /
+  `restoresSingle()` / `intersectsLive()` in `src/control_flow_rules.zig`, and
+  direct SAB consumes those shared predicates in the multi-branch merge path
+  instead of switching locally on the merge action. Serial focused verification
+  passed `zig fmt --check src/control_flow_rules.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify result-slot
+  value transfer' --summary all` 2/2. No full tests or concurrent unit tests
+  were run.
+
 - Shared smart-pointer action helper normalization (2026-07-18):
   `SmartPointerGetAction` now exposes `isGetValue()`, and
   `SmartPointerValueSlotAction` now exposes `isAsPtrSlot()` in

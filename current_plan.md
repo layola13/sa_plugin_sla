@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared multi-branch merge helper normalization (2026-07-18):
+  `MultiBranchStateMergeAction` now exposes `restoresPre()` /
+  `restoresSingle()` / `intersectsLive()`, and direct SAB consumes those shared
+  predicates in the multi-branch merge path instead of switching locally on
+  the merge action. Serial focused verification passed `zig fmt --check
+  src/control_flow_rules.zig src/sab_codegen.zig` and `zig build test -j1
+  -Dtest-filter='shared lowering rules classify result-slot value transfer'
+  --summary all` 2/2. No full tests or concurrent unit tests were run.
+
 - Shared smart-pointer action helper normalization (2026-07-18):
   `SmartPointerGetAction` now exposes `isGetValue()`, and
   `SmartPointerValueSlotAction` now exposes `isAsPtrSlot()`. The direct SAB

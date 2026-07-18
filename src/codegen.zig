@@ -9689,21 +9689,16 @@ pub const Codegen = struct {
         }
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg);
         const address_shape = try self.importedMacroArgAddressShape(arg);
-        switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null, arg_ty)) {
-            .pass_value => {
-                const reg = try self.genExpr(arg, hoisted_allocs);
-                return .{ .reg = reg, .release_after_call = self.importedMacroValueArgNeedsRelease(arg, reg) };
-            },
-            .pass_raw_pointer_value => unreachable,
-            .pass_address_expression => return self.genImportedMacroAddressExpressionArg(arg, hoisted_allocs),
-            .pass_pointer_backed_projection => {
-                const reg = try self.genExpr(arg, hoisted_allocs);
-                return .{ .reg = reg, .release_after_call = self.importedMacroValueArgNeedsRelease(arg, reg) };
-            },
-            .reuse_existing_addressable => return .{ .reg = existing_symbol.?, .release_after_call = false },
-            .materialize_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, hoisted_allocs),
-            .materialize_address_expression_stack_slot => return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, hoisted_allocs),
+        const action = plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null, arg_ty);
+        if (action.passesValue() or action.passesPointerBackedProjection()) {
+            const reg = try self.genExpr(arg, hoisted_allocs);
+            return .{ .reg = reg, .release_after_call = self.importedMacroValueArgNeedsRelease(arg, reg) };
         }
+        if (action.passesAddressExpression()) return self.genImportedMacroAddressExpressionArg(arg, hoisted_allocs);
+        if (action.reusesExistingAddressable()) return .{ .reg = existing_symbol.?, .release_after_call = false };
+        if (action.materializesStackSlot()) return self.genImportedMacroMaterializedSlotArg(arg, hoisted_allocs);
+        if (action.materializesAddressExpressionStackSlot()) return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, hoisted_allocs);
+        unreachable;
     }
 
     fn genPlainTimeMacroCall(

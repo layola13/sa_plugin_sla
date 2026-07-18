@@ -323,6 +323,26 @@ pub const ImportedMacroAddressableArgAction = enum {
     reuse_existing_addressable,
     materialize_stack_slot,
     materialize_address_expression_stack_slot,
+
+    pub fn passesValue(self: ImportedMacroAddressableArgAction) bool {
+        return self == .pass_value;
+    }
+
+    pub fn passesAddressExpression(self: ImportedMacroAddressableArgAction) bool {
+        return self == .pass_address_expression;
+    }
+
+    pub fn reusesExistingAddressable(self: ImportedMacroAddressableArgAction) bool {
+        return self == .reuse_existing_addressable;
+    }
+
+    pub fn materializesStackSlot(self: ImportedMacroAddressableArgAction) bool {
+        return self == .materialize_stack_slot;
+    }
+
+    pub fn materializesAddressExpressionStackSlot(self: ImportedMacroAddressableArgAction) bool {
+        return self == .materialize_address_expression_stack_slot;
+    }
 };
 
 pub const ImportedMacroArgLoweringAction = enum {
@@ -340,6 +360,26 @@ pub const ImportedMacroArgLoweringAction = enum {
 
     pub fn passesRawPointerValue(self: ImportedMacroArgLoweringAction) bool {
         return self == .pass_raw_pointer_value;
+    }
+
+    pub fn passesAddressExpression(self: ImportedMacroArgLoweringAction) bool {
+        return self == .pass_address_expression;
+    }
+
+    pub fn passesPointerBackedProjection(self: ImportedMacroArgLoweringAction) bool {
+        return self == .pass_pointer_backed_projection;
+    }
+
+    pub fn reusesExistingAddressable(self: ImportedMacroArgLoweringAction) bool {
+        return self == .reuse_existing_addressable;
+    }
+
+    pub fn materializesStackSlot(self: ImportedMacroArgLoweringAction) bool {
+        return self == .materialize_stack_slot;
+    }
+
+    pub fn materializesAddressExpressionStackSlot(self: ImportedMacroArgLoweringAction) bool {
+        return self == .materialize_address_expression_stack_slot;
     }
 };
 

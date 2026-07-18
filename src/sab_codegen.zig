@@ -11565,15 +11565,13 @@ pub const Codegen = struct {
         }
         const existing_symbol = self.importedMacroExistingAddressableSymbol(arg, ctx);
         const address_shape = try self.importedMacroArgAddressShape(arg, ctx);
-        switch (plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null, arg_ty)) {
-            .pass_value => return self.genImportedMacroValueArg(arg, ctx, release_value),
-            .pass_raw_pointer_value => unreachable,
-            .pass_address_expression => return self.genImportedMacroAddressExpressionArg(arg, ctx),
-            .pass_pointer_backed_projection => return self.genImportedMacroValueArg(arg, ctx, release_value),
-            .reuse_existing_addressable => return .{ .operand = existing_symbol.?, .release_reg = null },
-            .materialize_stack_slot => return self.genImportedMacroMaterializedSlotArg(arg, ctx),
-            .materialize_address_expression_stack_slot => return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, ctx),
-        }
+        const action = plan.planAddressableArgLoweringAction(call_arg_index, address_shape, existing_symbol != null, arg_ty);
+        if (action.passesValue() or action.passesPointerBackedProjection()) return self.genImportedMacroValueArg(arg, ctx, release_value);
+        if (action.passesAddressExpression()) return self.genImportedMacroAddressExpressionArg(arg, ctx);
+        if (action.reusesExistingAddressable()) return .{ .operand = existing_symbol.?, .release_reg = null };
+        if (action.materializesStackSlot()) return self.genImportedMacroMaterializedSlotArg(arg, ctx);
+        if (action.materializesAddressExpressionStackSlot()) return self.genImportedMacroAddressExpressionMaterializedSlotArg(arg, ctx);
+        unreachable;
     }
 
     fn directImportedMacroReg(self: *Codegen, name: []const u8) !u32 {

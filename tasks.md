@@ -40,6 +40,15 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Close issue049's scodex CLI direct-SAB `PhiStateConflict` as
+	  current-non-repro for the documented external Responses CLI Phi family
+	  (2026-07-18). The issue050 raw pointer imported-macro address-slot fix
+	  covers the current known shape. Focused serial strict-SAB checks with the
+	  source-built local CLI passed the single filter `scodex cli imports
+	  external responses stream completion through workspace` 1/1 and the grouped
+	  filter `scodex cli imports external responses` 9/9. The full 114-test CLI
+	  file, full suites, and dev-plugin install were not run in this slice to
+	  honor the focused-issue and OOM constraints.
 	- [x] Complete docs/issue status sweep (2026-07-17). Added explicit fixed/verified status headers to early issue001-009/029 docs, marked issue011's original `sf_pos` RegisterRedefinition fixed/current-non-repro while leaving the later `vm_table_set_index` / `tm` UseAfterMove as a separate future reducer, and corrected issue029 task text to match `abiFalliblePayloadOffset` (`i32!` payload at `+4`, 8-byte payloads at `+8`). Focused installed/dev issue001 fixture passed 2/2 under SA and 2/2 under strict SAB. No full suite was run.
 	- [x] Close issue019's source-growth cross-test instability as fixed/current-non-repro (2026-07-17). Current `sla_music_cli` already contains the two documented growth shapes: full 13-byte MIDI indicator-header checking and expanded music-patch editor context/layout serialization. Focused serial rechecks now pass on that source after the direct-SAB `NUM_U64_CHECKED_ADD` fix: `music patch editor text serializes intents and spans` 1/1 SA-text, `music parser captures top level track and score` 1/1 SA-text, `smf1 imports back into midi ir` 1/1 SA-text, `music ir writes smf1 through midi ir` 1/1 SA-text, `smf1 decompiles into normalized sla source` 1/1 strict SAB, and `midi import any detects smf clip and raw ump containers` 1/1 strict SAB. No compiler source change and no full suite was run.
 	- [x] Close issue048's `sla_music_cli` struct-literal `Vec::new()` field direct-SAB `MemoryLeak` (2026-07-17). `src/sab_codegen.zig::genStructLiteral()` now emits a SAB-visible consumed marker when a non-identifier moved field temporary is stored into an aggregate, fixing the downstream dirty `src/music_lower.sla --filter "music normalized sla orders same track notes by tick"` strict SAB leak on `tmp_8253` / `MusicIrTrack.imported_name: Vec::new()`. Added `tests/test_unit_vec_push_call_result_struct.sla` coverage. Focused serial gates passed: fmt check; build 7/7; local and installed/dev strict SAB fixture 1/1; dev install/help; downstream dirty strict SAB filter 1/1. No full tests were run.

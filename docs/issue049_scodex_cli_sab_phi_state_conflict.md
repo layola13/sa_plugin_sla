@@ -1,5 +1,23 @@
 # issue049: scodex CLI SAB test PhiStateConflict
 
+Status: fixed/current-non-repro for the external Responses CLI Phi family on
+2026-07-18. The full 114-test CLI file was not rerun because this workstream is
+limited to `docs/issue*.md` focused checks and avoids broad downstream suites.
+The issue050 raw pointer imported-macro address-slot fix covers the current
+known external Responses CLI shape: focused serial strict-SAB filters pass for
+the single stream-completion test and the 9-test `scodex cli imports external
+responses` group.
+
+Verification used the source-built local CLI only, with no concurrent tests:
+
+```sh
+timeout 120s ./zig-out/bin/sla-local-cli sla test /home/vscode/projects/sla_codex/crates/scodex-cli/src/main.sla --filter 'scodex cli imports external responses stream completion through workspace' --test-backend sab --jobs 1 --trace-panic
+timeout 120s ./zig-out/bin/sla-local-cli sla test /home/vscode/projects/sla_codex/crates/scodex-cli/src/main.sla --filter 'scodex cli imports external responses' --test-backend sab --jobs 1 --trace-panic
+```
+
+Results: 1/1 and 9/9 passed. No full CLI suite, full repo suite, or dev-plugin
+install was run in this slice.
+
 ## Summary
 
 `scodex` 的 CLI 文件在 SA 后端测试通过，但同一入口切到 SAB 后端时，

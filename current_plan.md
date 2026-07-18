@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Docs/issue049 scodex CLI direct-SAB PhiStateConflict current-non-repro
+  slice (2026-07-18): the issue050 raw pointer imported-macro address-slot
+  fix covers the known external Responses CLI Phi family. Focused serial
+  strict-SAB checks with the source-built local CLI passed the single filter
+  `scodex cli imports external responses stream completion through workspace`
+  1/1 and the grouped filter `scodex cli imports external responses` 9/9.
+  The full 114-test `crates/scodex-cli/src/main.sla` file, full suites, and
+  dev-plugin install were not run in this slice to honor the focused-issue and
+  OOM constraints.
+
 - Docs/issue050 scodex-model stream completion direct-SAB PhiStateConflict
   closure (2026-07-18): the failing downstream stream-completion filter was
   actually blocked in imported HTTP-client adapter code before reaching the

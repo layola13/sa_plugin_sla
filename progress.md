@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Docs/issue049 scodex CLI direct-SAB PhiStateConflict current-non-repro
+  slice (2026-07-18): the current known external Responses CLI Phi family is
+  covered by the issue050 raw pointer imported-macro address-slot fix. Focused
+  serial strict-SAB checks with the source-built local CLI passed
+  `scodex cli imports external responses stream completion through workspace`
+  1/1 and the grouped filter `scodex cli imports external responses` 9/9.
+  The full 114-test CLI file, full suites, and dev-plugin install were not run
+  in this slice to avoid broad downstream testing and the current OOM-prone
+  dev-install path.
+
 - Docs/issue050 scodex-model stream completion direct-SAB PhiStateConflict
   closure (2026-07-18): the reported stream-completion SAB failure was traced
   to imported HTTP-client adapter setup code. A branch-local

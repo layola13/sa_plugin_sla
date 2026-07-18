@@ -2841,18 +2841,18 @@ pub const Codegen = struct {
             const local = self.locals.items[i];
             if (except != null and local.reg == except.?) continue;
             if (self.released_regs.contains(local.reg)) continue;
-            if (local.is_param) switch (try self.paramCleanupAction(local)) {
-                .skip => continue,
-                .mark_consumed => {
+            if (local.is_param) {
+                const action = try self.paramCleanupAction(local);
+                if (action.skips()) continue;
+                if (action.marksConsumed()) {
                     try self.markConsumed(local.reg);
                     continue;
-                },
-                .consume => {
+                }
+                if (action.consumes()) {
                     try self.emitMove(local.reg);
                     continue;
-                },
-                .release => {},
-            };
+                }
+            }
             if (local.stack_ty != null) {
                 try self.releaseStackLocalValue(local);
                 continue;
@@ -2875,18 +2875,18 @@ pub const Codegen = struct {
             const local = self.locals.items[i];
             if (except != null and local.reg == except.?) continue;
             if (self.released_regs.contains(local.reg)) continue;
-            if (local.is_param) switch (try self.paramCleanupAction(local)) {
-                .skip => continue,
-                .mark_consumed => {
+            if (local.is_param) {
+                const action = try self.paramCleanupAction(local);
+                if (action.skips()) continue;
+                if (action.marksConsumed()) {
                     try self.markConsumed(local.reg);
                     continue;
-                },
-                .consume => {
+                }
+                if (action.consumes()) {
                     try self.emitBranchMove(local.reg);
                     continue;
-                },
-                .release => {},
-            };
+                }
+            }
             if (local.stack_ty != null) {
                 try self.releaseStackLocalValue(local);
                 continue;
@@ -2905,18 +2905,18 @@ pub const Codegen = struct {
             const abi_ty = primType(ty) catch return;
             if (abi_ty == .ptr) return;
         }
-        if (local.is_param) switch (try self.paramCleanupAction(local)) {
-            .skip => return,
-            .mark_consumed => {
+        if (local.is_param) {
+            const action = try self.paramCleanupAction(local);
+            if (action.skips()) return;
+            if (action.marksConsumed()) {
                 try self.markConsumed(local.reg);
                 return;
-            },
-            .consume => {
+            }
+            if (action.consumes()) {
                 try self.emitMove(local.reg);
                 return;
-            },
-            .release => {},
-        };
+            }
+        }
         if (local.stack_ty != null) return try self.releaseStackLocalValue(local);
         if (local.is_stack_alloc) {
             if (self.stack_alloc_emitted.contains(local.reg)) try self.emitRelease(local.reg);
@@ -2972,18 +2972,18 @@ pub const Codegen = struct {
             i -= 1;
             const local = self.locals.items[i];
             if (!std.mem.eql(u8, local.name, name)) continue;
-            if (local.is_param) switch (try self.paramCleanupAction(local)) {
-                .skip => return,
-                .mark_consumed => {
+            if (local.is_param) {
+                const action = try self.paramCleanupAction(local);
+                if (action.skips()) return;
+                if (action.marksConsumed()) {
                     try self.markConsumed(local.reg);
                     return;
-                },
-                .consume => {
+                }
+                if (action.consumes()) {
                     if (!self.released_regs.contains(local.reg)) try self.emitMove(local.reg);
                     return;
-                },
-                .release => {},
-            };
+                }
+            }
             if (local.stack_ty != null) return try self.releaseStackLocalValue(local);
             if (local.is_stack_alloc) {
                 if (self.stack_alloc_emitted.contains(local.reg)) try self.emitRelease(local.reg);
@@ -11311,20 +11311,21 @@ pub const Codegen = struct {
         try self.emitLabel(ok_label);
         if (guard_plan.release_status_on_success) try self.emitBranchRelease(ok_reg);
         const result_plan = lowering_rules.planRefCellBorrowResult(.direct_sab, plan.value_kind);
-        const borrow_reg = switch (result_plan.action) {
-            .use_borrow_slot => borrow_slot_reg,
-            .take_pointer_payload => blk: {
-                const payload_reg = try self.intern(try self.newTmp());
-                try self.emitTake(payload_reg, borrow_slot_reg, 0, .ptr);
-                const temp_plan = lowering_rules.planBorrowAddressTemps(result_plan.track_borrow_slot_release_temp, false);
-                if (temp_plan.track_primary_temp) {
-                    try self.borrow_address_temps.put(payload_reg, .{
-                        .release_regs = try self.singleReleaseReg(borrow_slot_reg),
-                    });
-                }
-                break :blk payload_reg;
-            },
-            .load_pointer_payload => return Error.UnsupportedSabDirectFeature,
+        const borrow_reg = if (result_plan.action.usesBorrowSlot())
+            borrow_slot_reg
+        else if (result_plan.action.takesPointerPayload()) blk: {
+            const payload_reg = try self.intern(try self.newTmp());
+            try self.emitTake(payload_reg, borrow_slot_reg, 0, .ptr);
+            const temp_plan = lowering_rules.planBorrowAddressTemps(result_plan.track_borrow_slot_release_temp, false);
+            if (temp_plan.track_primary_temp) {
+                try self.borrow_address_temps.put(payload_reg, .{
+                    .release_regs = try self.singleReleaseReg(borrow_slot_reg),
+                });
+            }
+            break :blk payload_reg;
+        } else {
+            if (result_plan.action.loadsPointerPayload()) return Error.UnsupportedSabDirectFeature;
+            return Error.UnsupportedSabDirectFeature;
         };
         const handle_plan = lowering_rules.planRefCellBorrowHandleRegistration(plan);
         const release_regs = if (handle_plan.track_receiver_owner_temp) try self.singleReleaseReg(recv_reg) else &.{};

@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared refcell borrow-result helper normalization (2026-07-18):
+  `RefCellBorrowResultAction` now exposes `usesBorrowSlot()` /
+  `loadsPointerPayload()` / `takesPointerPayload()`, and direct SAB
+  `genRefCellBorrowCall()` consumes those shared predicates instead of
+  switching locally on the borrow-result action. Serial focused verification
+  passed `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify refcell
+  borrow result' --summary all` 1/1. No full tests or concurrent unit tests
+  were run.
+
 - Shared param-cleanup planner normalization (2026-07-18):
   `src/lowering_rules.zig` now exposes `ParamCleanupCapability`,
   `ParamCleanupAction`, `ParamCleanupFacts`, and `planParamCleanup()`, and the

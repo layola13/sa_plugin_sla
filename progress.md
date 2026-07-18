@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared refcell borrow-result helper normalization (2026-07-18):
+  `RefCellBorrowResultAction` now exposes `usesBorrowSlot()` /
+  `loadsPointerPayload()` / `takesPointerPayload()` in `src/lowering_rules.zig`.
+  Direct SAB `genRefCellBorrowCall()` uses those shared predicates instead of
+  switching locally on the borrow-result action. Serial focused verification
+  passed `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify refcell
+  borrow result' --summary all` 1/1. No full tests or concurrent unit tests
+  were run.
+
 - Shared param-cleanup planner normalization (2026-07-18):
   `src/lowering_rules.zig` now exposes `ParamCleanupCapability`,
   `ParamCleanupAction`, `ParamCleanupFacts`, and `planParamCleanup()`, and the

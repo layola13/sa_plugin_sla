@@ -59,6 +59,15 @@ This document tracks the tasks and implementation progress of the Sla compiler p
 	  src/sab_codegen.zig` and `zig build test -j1 -Dtest-filter='function tail
 	  cleanup' --summary all` 2/2. No full tests or concurrent unit tests were
 	  run.
+	- [x] Normalize shared refcell borrow-result helper (2026-07-18).
+	  `src/lowering_rules.zig` now exposes `RefCellBorrowResultAction`
+	  `usesBorrowSlot()` / `loadsPointerPayload()` / `takesPointerPayload()`, and
+	  direct SAB `genRefCellBorrowCall()` consumes those shared predicates
+	  instead of switching locally on the borrow-result action. Serial focused
+	  verification passed `zig fmt --check src/lowering_rules.zig
+	  src/sab_codegen.zig` and `zig build test -j1 -Dtest-filter='shared lowering
+	  rules classify refcell borrow result' --summary all` 1/1. No full tests or
+	  concurrent unit tests were run.
 	- [x] Normalize shared function-exit cleanup helper (2026-07-18).
 	  `src/control_flow_rules.zig` now exposes
 	  `FunctionExitCleanupAction.releasesValue()` and

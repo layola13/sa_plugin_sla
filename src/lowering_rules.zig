@@ -2004,6 +2004,18 @@ pub const RefCellBorrowResultAction = enum {
     use_borrow_slot,
     load_pointer_payload,
     take_pointer_payload,
+
+    pub fn usesBorrowSlot(self: RefCellBorrowResultAction) bool {
+        return self == .use_borrow_slot;
+    }
+
+    pub fn loadsPointerPayload(self: RefCellBorrowResultAction) bool {
+        return self == .load_pointer_payload;
+    }
+
+    pub fn takesPointerPayload(self: RefCellBorrowResultAction) bool {
+        return self == .take_pointer_payload;
+    }
 };
 
 pub const RefCellBorrowResultPlan = struct {

@@ -10097,45 +10097,49 @@ pub const Codegen = struct {
         }
 
         const arg_ty = self.tc.expr_types.get(arg);
-        switch (lowering_rules.planPrintlnArg(arg_ty)) {
-            .format_string => {
-                const owner_reg = try self.genExpr(@constCast(arg));
-                const slice_reg = try self.intern(try self.newTmp());
-                try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_AS_STR", &.{ self.symbols.items[slice_reg], self.symbols.items[owner_reg] });
-                try self.emitPrintSliceValue(slice_reg);
-                try self.emitRelease(slice_reg);
-                try self.releaseExprResultIfNeeded(arg, owner_reg);
-            },
-            .string_like => {
-                const slice_reg = try self.genExpr(@constCast(arg));
-                try self.emitPrintSliceValue(slice_reg);
-                try self.releaseExprResultIfNeeded(arg, slice_reg);
-            },
-            .borrowed_primitive => |inner_ty| {
-                const ptr_reg = try self.genExpr(@constCast(arg));
-                const value_reg = try self.intern(try self.newTmp());
-                try self.emitLoad(value_reg, ptr_reg, 0, try storagePrimType(inner_ty));
-                const format = lowering_rules.printPrimitiveFormat(inner_ty) orelse return Error.UnsupportedSabDirectFeature;
-                try self.emitPrintPrimitiveValue(value_reg, format);
-                try self.emitRelease(value_reg);
-                try self.releaseExprResultIfNeeded(arg, ptr_reg);
-            },
-            .boxed_primitive => |inner_ty| {
-                const box_reg = try self.genExpr(@constCast(arg));
-                const value_reg = try self.intern(try self.newTmp());
-                try self.emitLoad(value_reg, box_reg, 0, try storagePrimType(inner_ty));
-                const format = lowering_rules.printPrimitiveFormat(inner_ty) orelse return Error.UnsupportedSabDirectFeature;
-                try self.emitPrintPrimitiveValue(value_reg, format);
-                try self.emitRelease(value_reg);
-                try self.releaseExprResultIfNeeded(arg, box_reg);
-            },
-            .primitive => |format| {
-                const value_reg = try self.genExpr(@constCast(arg));
-                try self.emitPrintPrimitiveValue(value_reg, format);
-                try self.releaseExprResultIfNeeded(arg, value_reg);
-            },
-            .unsupported => return Error.UnsupportedSabDirectFeature,
+        const plan = lowering_rules.planPrintlnArg(arg_ty);
+        if (plan.isFormatString()) {
+            const owner_reg = try self.genExpr(@constCast(arg));
+            const slice_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_AS_STR", &.{ self.symbols.items[slice_reg], self.symbols.items[owner_reg] });
+            try self.emitPrintSliceValue(slice_reg);
+            try self.emitRelease(slice_reg);
+            try self.releaseExprResultIfNeeded(arg, owner_reg);
+            return;
         }
+        if (plan.isStringLike()) {
+            const slice_reg = try self.genExpr(@constCast(arg));
+            try self.emitPrintSliceValue(slice_reg);
+            try self.releaseExprResultIfNeeded(arg, slice_reg);
+            return;
+        }
+        if (plan.borrowedPrimitive()) |inner_ty| {
+            const ptr_reg = try self.genExpr(@constCast(arg));
+            const value_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(value_reg, ptr_reg, 0, try storagePrimType(inner_ty));
+            const format = lowering_rules.printPrimitiveFormat(inner_ty) orelse return Error.UnsupportedSabDirectFeature;
+            try self.emitPrintPrimitiveValue(value_reg, format);
+            try self.emitRelease(value_reg);
+            try self.releaseExprResultIfNeeded(arg, ptr_reg);
+            return;
+        }
+        if (plan.boxedPrimitive()) |inner_ty| {
+            const box_reg = try self.genExpr(@constCast(arg));
+            const value_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(value_reg, box_reg, 0, try storagePrimType(inner_ty));
+            const format = lowering_rules.printPrimitiveFormat(inner_ty) orelse return Error.UnsupportedSabDirectFeature;
+            try self.emitPrintPrimitiveValue(value_reg, format);
+            try self.emitRelease(value_reg);
+            try self.releaseExprResultIfNeeded(arg, box_reg);
+            return;
+        }
+        if (plan.primitiveFormat()) |format| {
+            const value_reg = try self.genExpr(@constCast(arg));
+            try self.emitPrintPrimitiveValue(value_reg, format);
+            try self.releaseExprResultIfNeeded(arg, value_reg);
+            return;
+        }
+        return Error.UnsupportedSabDirectFeature;
     }
 
     fn genPrintlnCall(self: *Codegen, call: ast.CallExpr) !u32 {

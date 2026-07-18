@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared println-argument plan helper normalization (2026-07-18):
+  `PrintlnArgPlan` now exposes `isFormatString()` / `isStringLike()` /
+  `borrowedPrimitive()` / `boxedPrimitive()` / `primitiveFormat()` in
+  `src/lowering_rules.zig`. Direct SAB `emitPrintlnArg` consumes those shared
+  helpers instead of switching directly on the union payload. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify result-slot
+  value transfer' --summary all` 2/2. No full tests or concurrent unit tests
+  were run.
+
 - Shared refcell branch-state merge helper normalization (2026-07-18):
   `BranchStateMergeAction` now exposes `restoresPre()` / `restoresThen()` /
   `restoresElse()` in `src/control_flow_rules.zig`. SA-text and direct SAB

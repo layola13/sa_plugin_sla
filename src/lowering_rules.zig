@@ -2685,6 +2685,35 @@ pub const PrintlnArgPlan = union(enum) {
     boxed_primitive: *const ast.Type,
     primitive: PrintPrimitiveFormat,
     unsupported,
+
+    pub fn isFormatString(self: PrintlnArgPlan) bool {
+        return self == .format_string;
+    }
+
+    pub fn isStringLike(self: PrintlnArgPlan) bool {
+        return self == .string_like;
+    }
+
+    pub fn borrowedPrimitive(self: PrintlnArgPlan) ?*const ast.Type {
+        return switch (self) {
+            .borrowed_primitive => |inner| inner,
+            else => null,
+        };
+    }
+
+    pub fn boxedPrimitive(self: PrintlnArgPlan) ?*const ast.Type {
+        return switch (self) {
+            .boxed_primitive => |inner| inner,
+            else => null,
+        };
+    }
+
+    pub fn primitiveFormat(self: PrintlnArgPlan) ?PrintPrimitiveFormat {
+        return switch (self) {
+            .primitive => |format| format,
+            else => null,
+        };
+    }
 };
 
 pub fn borrowedPrimitiveType(ty: *const ast.Type) ?*const ast.Type {

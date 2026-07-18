@@ -6,6 +6,18 @@ pub const BranchStateMergeAction = enum {
     restore_then,
     restore_else,
     keep_current,
+
+    pub fn restoresPre(self: BranchStateMergeAction) bool {
+        return self == .restore_pre;
+    }
+
+    pub fn restoresThen(self: BranchStateMergeAction) bool {
+        return self == .restore_then;
+    }
+
+    pub fn restoresElse(self: BranchStateMergeAction) bool {
+        return self == .restore_else;
+    }
 };
 
 pub const FunctionExitCleanupAction = enum {

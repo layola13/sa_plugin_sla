@@ -40,6 +40,16 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Normalize shared refcell branch-state merge action helpers
+	  (2026-07-18). `src/control_flow_rules.zig` now exposes
+	  `BranchStateMergeAction.restoresPre()` / `restoresThen()` /
+	  `restoresElse()`, and both SA-text and direct SAB consume those shared
+	  predicates when restoring branch-local refcell state instead of switching
+	  locally on the branch merge action. Serial focused verification passed
+	  `zig fmt --check src/control_flow_rules.zig src/codegen.zig src/sab_codegen.zig`
+	  and `zig build test -j1 -Dtest-filter='shared lowering rules classify
+	  result-slot value transfer' --summary all` 2/2. No full tests or concurrent
+	  unit tests were run.
 	- [x] Normalize shared multi-branch merge action helpers (2026-07-18).
 	  `src/control_flow_rules.zig` now exposes
 	  `MultiBranchStateMergeAction.restoresPre()` /

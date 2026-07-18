@@ -2512,12 +2512,10 @@ pub const Codegen = struct {
         pre_values: *const std.AutoHashMap(u32, RefCellBorrowValue),
         pre_temps: *const std.AutoHashMap(u32, BorrowAddressTempState),
     ) !void {
-        switch (lowering_rules.planRefCellBranchStateMerge(then_terminated, else_terminated)) {
-            .restore_pre => try self.restoreRefCellBranchState(pre_values, pre_temps),
-            .restore_then => try self.restoreRefCellBranchState(then_values, then_temps),
-            .restore_else => try self.restoreRefCellBranchState(else_values, else_temps),
-            .keep_current => {},
-        }
+        const merge_action = lowering_rules.planRefCellBranchStateMerge(then_terminated, else_terminated);
+        if (merge_action.restoresPre()) return try self.restoreRefCellBranchState(pre_values, pre_temps);
+        if (merge_action.restoresThen()) return try self.restoreRefCellBranchState(then_values, then_temps);
+        if (merge_action.restoresElse()) return try self.restoreRefCellBranchState(else_values, else_temps);
     }
 
     fn prepareRefCellBranchHandleOwnerMergeSlots(

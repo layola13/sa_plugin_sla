@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared refcell branch-state merge helper normalization (2026-07-18):
+  `BranchStateMergeAction` now exposes `restoresPre()` / `restoresThen()` /
+  `restoresElse()` in `src/control_flow_rules.zig`. SA-text and direct SAB
+  branch-local refcell restore paths consume those shared predicates instead of
+  switching locally on the merge action. Serial focused verification passed
+  `zig fmt --check src/control_flow_rules.zig src/codegen.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify
+  result-slot value transfer' --summary all` 2/2. No full tests or concurrent
+  unit tests were run.
+
 - Shared multi-branch merge helper normalization (2026-07-18):
   `MultiBranchStateMergeAction` now exposes `restoresPre()` /
   `restoresSingle()` / `intersectsLive()` in `src/control_flow_rules.zig`, and

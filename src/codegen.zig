@@ -1382,12 +1382,10 @@ pub const Codegen = struct {
         pre_handles: *std.StringHashMap(RefCellBorrowHandle),
         pre_borrow_sources: *std.StringHashMap([]const u8),
     ) CodegenError!void {
-        switch (lowering_rules.planRefCellBranchStateMerge(then_terminated, else_terminated)) {
-            .restore_pre => try self.restoreRefCellBranchState(pre_handles, pre_borrow_sources),
-            .restore_then => try self.restoreRefCellBranchState(then_handles, then_borrow_sources),
-            .restore_else => try self.restoreRefCellBranchState(else_handles, else_borrow_sources),
-            .keep_current => {},
-        }
+        const merge_action = lowering_rules.planRefCellBranchStateMerge(then_terminated, else_terminated);
+        if (merge_action.restoresPre()) return try self.restoreRefCellBranchState(pre_handles, pre_borrow_sources);
+        if (merge_action.restoresThen()) return try self.restoreRefCellBranchState(then_handles, then_borrow_sources);
+        if (merge_action.restoresElse()) return try self.restoreRefCellBranchState(else_handles, else_borrow_sources);
     }
 
     fn prepareRefCellBranchHandleOwnerMergeSlots(

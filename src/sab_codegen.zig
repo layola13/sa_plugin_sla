@@ -2632,21 +2632,19 @@ pub const Codegen = struct {
             self.refcell_borrow_values.contains(src),
             self.borrow_address_temps.contains(src),
         );
-        switch (refcell_transfer_plan.handle) {
-            .move_borrow_handle => if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
+        if (refcell_transfer_plan.handle.movesBorrowHandle()) {
+            if (self.refcell_borrow_values.fetchRemove(src)) |entry| {
                 _ = self.refcell_borrow_values.remove(dst);
                 try self.refcell_borrow_values.put(dst, entry.value);
-            },
-            .transfer_value_state => {},
+            }
         }
-        switch (refcell_transfer_plan.borrow_address_temps) {
-            .move_borrow_address_temps => if (self.borrow_address_temps.fetchRemove(src)) |entry| {
+        if (refcell_transfer_plan.borrow_address_temps.movesBorrowAddressTemps()) {
+            if (self.borrow_address_temps.fetchRemove(src)) |entry| {
                 if (self.borrow_address_temps.fetchRemove(dst)) |old| {
                     if (old.value.release_regs.len != 0) self.allocator.free(old.value.release_regs);
                 }
                 try self.borrow_address_temps.put(dst, entry.value);
-            },
-            .transfer_value_state => {},
+            }
         }
         if (self.non_owning_regs.fetchRemove(src)) |_| {
             try self.non_owning_regs.put(dst, {});

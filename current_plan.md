@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared RefCell value-state transfer helper normalization (2026-07-18):
+  `RefCellHandleTransferAction` now exposes `movesBorrowHandle()`, and
+  `BorrowAddressTempTransferAction` now exposes `movesBorrowAddressTemps()`.
+  SA-text and direct SAB consume those shared predicates for `refcell`
+  transfer/rebinding paths instead of switching locally on the transfer enums.
+  Serial focused verification passed `zig fmt --check src/lowering_rules.zig
+  src/codegen.zig src/sab_codegen.zig` and `zig build test -j1 -Dtest-filter=
+  'shared lowering rules classify result-slot value transfer' --summary all`
+  2/2. No full tests or concurrent unit tests were run.
+
 - Shared RefCell binding/owner-transfer helper normalization (2026-07-18):
   `src/lowering_rules.zig` now exposes `RefCellHandleBindingAction`
   `bindsBorrowHandle()` and `RefCellHandleOwnerTransferAction`

@@ -1975,6 +1975,10 @@ pub const BorrowAddressTempPlan = struct {
 pub const BorrowAddressTempTransferAction = enum {
     transfer_value_state,
     move_borrow_address_temps,
+
+    pub fn movesBorrowAddressTemps(self: BorrowAddressTempTransferAction) bool {
+        return self == .move_borrow_address_temps;
+    }
 };
 
 pub const BorrowAddressTempReleasePlan = struct {
@@ -2057,6 +2061,10 @@ pub const RefCellHandleBindingAction = enum {
 pub const RefCellHandleTransferAction = enum {
     transfer_value_state,
     move_borrow_handle,
+
+    pub fn movesBorrowHandle(self: RefCellHandleTransferAction) bool {
+        return self == .move_borrow_handle;
+    }
 };
 
 pub const RefCellValueStateTransferPlan = struct {

@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared RefCell value-state transfer helper normalization (2026-07-18):
+  `RefCellHandleTransferAction` now exposes `movesBorrowHandle()`, and
+  `BorrowAddressTempTransferAction` now exposes `movesBorrowAddressTemps()` in
+  `src/lowering_rules.zig`. SA-text and direct SAB consume those shared
+  predicates for `refcell` transfer and rebinding paths instead of repeating
+  local switches on the transfer enums. Serial focused verification passed
+  `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify result-
+  slot value transfer' --summary all` 2/2. No full tests or concurrent unit
+  tests were run.
+
 - Shared RefCell binding/owner-transfer helper normalization (2026-07-18):
   `RefCellHandleBindingAction` now exposes `bindsBorrowHandle()`, and
   `RefCellHandleOwnerTransferAction` now exposes `rebindsOwner()` in

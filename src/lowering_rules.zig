@@ -315,6 +315,14 @@ pub const PollRuntimeCallKind = enum {
 
 pub const PollRuntimeCallPlan = struct {
     kind: PollRuntimeCallKind,
+
+    pub fn pollStatusMacroName(self: PollRuntimeCallPlan) ?[]const u8 {
+        return switch (self.kind) {
+            .is_ready => "POLL_IS_READY",
+            .is_pending => "POLL_IS_PENDING",
+            else => null,
+        };
+    }
 };
 
 pub const ImportedMacroAddressableArgAction = enum {

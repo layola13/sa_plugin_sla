@@ -8900,7 +8900,7 @@ pub const Codegen = struct {
                 if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
                 const poll_reg = try self.genExpr(call.args[0], hoisted_allocs);
                 const out_reg = try self.newTmp();
-                const macro_name = if (plan.kind == .is_ready) "POLL_IS_READY" else "POLL_IS_PENDING";
+                const macro_name = plan.pollStatusMacroName() orelse return CodegenError.CodegenError;
                 self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, out_reg, poll_reg }) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(poll_reg);
                 break :blk out_reg;

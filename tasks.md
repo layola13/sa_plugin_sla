@@ -40,6 +40,15 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Normalize shared PollRuntimeCallPlan macro-name helper (2026-07-18).
+	  `PollRuntimeCallPlan` now exposes `pollStatusMacroName()`, and both SA-text
+	  and direct SAB poll-status runtime call paths consume that shared helper
+	  instead of branching locally on `plan.kind` to choose `POLL_IS_READY` vs
+	  `POLL_IS_PENDING`. Serial focused verification passed `zig fmt --check
+	  src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and `zig build
+	  test -j1 -Dtest-filter='shared async single await continuation plan is
+	  defer-ready only' --summary all` 2/2. No full tests or concurrent tests
+	  were run.
 	- [x] Normalize SA-text RefCell borrow-result helper use (2026-07-18).
 	  SA-text `genRefCellBorrowCall()` now consumes
 	  `RefCellBorrowResultAction.usesBorrowSlot()` /

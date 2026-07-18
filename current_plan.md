@@ -18,6 +18,16 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared PollRuntimeCallPlan macro-name helper normalization (2026-07-18):
+  `PollRuntimeCallPlan` now exposes `pollStatusMacroName()`, and both SA-text
+  and direct SAB poll-status runtime call paths consume that shared helper
+  instead of branching locally on `plan.kind` to choose `POLL_IS_READY` vs
+  `POLL_IS_PENDING`. Serial focused verification passed `zig fmt --check
+  src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and `zig build
+  test -j1 -Dtest-filter='shared async single await continuation plan is
+  defer-ready only' --summary all` 2/2. No full suite or concurrent tests
+  were run.
+
 - Shared RefCell borrow-result helper normalization continuation (2026-07-18):
   `src/codegen.zig` SA-text `genRefCellBorrowCall()` now consumes
   `RefCellBorrowResultAction.usesBorrowSlot()` /

@@ -7327,7 +7327,7 @@ pub const Codegen = struct {
                 if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
                 const poll_reg = try self.genExpr(call.args[0]);
                 const out_reg = try self.intern(try self.newTmp());
-                const macro_name = if (plan.kind == .is_ready) "POLL_IS_READY" else "POLL_IS_PENDING";
+                const macro_name = plan.pollStatusMacroName() orelse return Error.UnsupportedSabDirectFeature;
                 try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
                     self.symbols.items[out_reg],
                     self.symbols.items[poll_reg],

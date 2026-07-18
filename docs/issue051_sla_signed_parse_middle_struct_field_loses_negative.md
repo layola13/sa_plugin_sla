@@ -1,6 +1,22 @@
 # issue051: SLA signed parse middle struct field loses negative flag
 
-Status: open.
+Status: open; compiler-local minimal shape currently passes.
+
+2026-07-18 update: added `tests/test_unit_signed_parse_field_projection.sla`
+to cover the reduced delayed scalar-field projection shape in this compiler
+repo. Focused serial verification passes under both generated-SA and strict
+direct SAB:
+
+```sh
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_signed_parse_field_projection.sla --test-backend sa --jobs 1 --trace-panic
+SA_PLUGIN_DEV=1 sa sla test tests/test_unit_signed_parse_field_projection.sla --test-backend sab --jobs 1 --trace-panic
+```
+
+This does not close the issue yet. The dirty downstream `sla_music_cli`
+checkout currently stops before the original repro at a separate
+`MusicPatchEditorContextLineCheck` typecheck failure, so the real source-growth
+surface still needs a fresh focused revalidation after that downstream edit is
+settled.
 
 While extending `sla_music_cli` editor context records with three trailing
 signed stem-x coordinates, both generated-SA and direct SAB changed the middle

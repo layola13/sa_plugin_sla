@@ -10396,7 +10396,7 @@ pub const Codegen = struct {
     fn genSmartPointerAddressSource(self: *Codegen, source_ty: *const ast.Type, source: u32) anyerror!?AddressSource {
         const action = lowering_rules.planSmartPointerAddressAction(source_ty);
         if (action == .unsupported) return null;
-        if (action == .dyn_box_identity) return .{ .reg = source };
+        if (action.isDynBoxIdentity()) return .{ .reg = source };
 
         const receiver = if (lowering_rules.smartPointerReceiverNeedsLoad(source_ty)) blk: {
             const loaded = try self.intern(try self.newTmp());
@@ -10409,7 +10409,7 @@ pub const Codegen = struct {
 
         const slot = try self.intern(try self.newTmp());
         try self.emitStdSurfaceMethod(source_ty, "as_ptr", slot, receiver);
-        if (action == .as_ptr_take_pointer_backed_value) {
+        if (action.isAsPtrTakePointerBackedValue()) {
             const value = try self.intern(try self.newTmp());
             try self.emitTake(value, slot, 0, .ptr);
             try release_regs.append(slot);

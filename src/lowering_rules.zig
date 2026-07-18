@@ -2751,6 +2751,14 @@ pub const SmartPointerAddressAction = enum {
     dyn_box_identity,
     as_ptr_slot,
     as_ptr_take_pointer_backed_value,
+
+    pub fn isDynBoxIdentity(self: SmartPointerAddressAction) bool {
+        return self == .dyn_box_identity;
+    }
+
+    pub fn isAsPtrTakePointerBackedValue(self: SmartPointerAddressAction) bool {
+        return self == .as_ptr_take_pointer_backed_value;
+    }
 };
 
 pub const SmartPointerValueSlotAction = enum {
@@ -5695,6 +5703,8 @@ test "shared dyn coercion and receiver plans" {
     try std.testing.expectEqual(SmartPointerAddressAction.as_ptr_take_pointer_backed_value, planSmartPointerAddressAction(&box_concrete_ty));
     try std.testing.expectEqual(SmartPointerAddressAction.as_ptr_slot, planSmartPointerAddressAction(&rc_box_ty));
     try std.testing.expectEqual(SmartPointerAddressAction.unsupported, planSmartPointerAddressAction(&concrete_ty));
+    try std.testing.expect(planSmartPointerAddressAction(&box_dyn_ty).isDynBoxIdentity());
+    try std.testing.expect(planSmartPointerAddressAction(&box_concrete_ty).isAsPtrTakePointerBackedValue());
     try std.testing.expectEqual(SmartPointerValueSlotAction.as_ptr_slot, planSmartPointerValueSlotAction(&box_box_i32_ty));
     try std.testing.expectEqual(SmartPointerValueSlotAction.unsupported, planSmartPointerValueSlotAction(&box_i32_ty));
     try std.testing.expectEqual(SmartPointerGetAction.dyn_box_identity, planSmartPointerGetAction(&box_dyn_ty));

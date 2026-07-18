@@ -103,6 +103,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
   transfer' --summary all` 2/2. No full tests or concurrent unit tests were
   run.
 
+- Shared smart-pointer address-action helper normalization (2026-07-18):
+  `SmartPointerAddressAction` now exposes `isDynBoxIdentity()` and
+  `isAsPtrTakePointerBackedValue()`, and direct SAB smart-pointer address
+  lowering consumes those shared predicates instead of switching locally on
+  the action enum. Serial focused verification passed `zig fmt --check
+  src/lowering_rules.zig src/sab_codegen.zig` and `zig build test -j1
+  -Dtest-filter='shared dyn coercion and receiver plans' --summary all` 2/2.
+  No full tests or concurrent unit tests were run.
+
 - Shared RefCell loop-state merge helper normalization (2026-07-18):
   `RefCellLoopStateMergeAction` now exposes `restoresPreLoop()`, and both
   SA-text and direct SAB loop bodies consume that shared predicate instead of

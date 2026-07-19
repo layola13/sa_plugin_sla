@@ -19,6 +19,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- SA-text by-value assign/discard consume parity (2026-07-19):
+  `src/codegen.zig` now emits `^src` for by-value non-Copy identifier assignment
+  into stack/assigned-value slots and for `let _ = owner` discards, matching the
+  type-checker consume state used by branch merges. Minimal fixture
+  `tests/test_unit_branch_param_consume_merge_direct.sla` now passes SA 2/2 and
+  SAB 2/2; whole-file `task_pool_builder.sla` SA and default/SAB both 6/6.
+
 - Parallel-runner child-scope + Arc<*World> combination (2026-07-19):
   Added `tests/test_unit_parallel_runner_child_scope_arc_direct.sla` covering
   `Vec<fn(Arc<*World>) -> Holder>` child-scope return, Arc world call of nested

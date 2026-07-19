@@ -10164,6 +10164,18 @@ pub const Codegen = struct {
                 if (std.mem.eql(u8, let.name, "_")) {
                     const discard_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
+                    // Match type-checker discard moves: `let _ = owner` must
+                    // consume by-value non-Copy identifiers so if-branch merges
+                    // do not leave Active vs Consumed PhiStateConflict.
+                    if (let.value.* == .identifier) {
+                        const value_ty = self.resolvedTypeForExpr(let.value) orelse self.tc.expr_types.get(let.value);
+                        if (value_ty) |ty| {
+                            if (!self.typeIsCopyValue(ty) and !lowering_rules.isBorrowLikeType(ty)) {
+                                try self.emitForgetMovedValue(discard_reg);
+                                return;
+                            }
+                        }
+                    }
                     if (callArgNeedsRelease(let.value)) try self.emitRelease(discard_reg);
                     return;
                 }
@@ -10691,21 +10703,23 @@ pub const Codegen = struct {
                     const target_name = self.resolveBindingName(assign.target.identifier);
                     if (self.bindingStorageAddress(target_name)) |address| {
                         self.out.writer().print("    store {s}, {s} as {s}\n", .{ address, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(assign.value)) try self.emitRelease(stored_val_reg);
+                        try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                     } else if (self.assigned_value_slots.contains(target_name)) {
                         _ = try self.releaseResultSlotRefCellHandle(target_name, false);
                         self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         if (self.refcell_borrow_handles.contains(stored_val_reg)) {
                             try self.storeResultSlotTransferredValueState(target_name, stored_val_reg, target_ty, callArgNeedsRelease(assign.value));
                             try self.markConsumedBinding(stored_val_reg);
-                        } else if (self.storedIdentifierNeedsRelease(assign.value, target_ty)) {
-                            try self.transferResultSlotValueState(target_name, stored_val_reg, true);
-                            try self.markConsumedBinding(stored_val_reg);
+                        } else {
+                            // Same as finishStoredValueAfterSlotStore: by-value
+                            // non-Copy identifier assignment must emit `^src`
+                            // so branch merges see Consumed on the then path.
+                            try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                         }
                         _ = self.consumed_bindings.remove(target_name);
-                    } else if (self.addressable_bindings.contains(target_name)) {
+                    } else if (self.addressable_bindings.contains(target_name) or self.stack_alloc_bindings.contains(target_name)) {
                         self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_name, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(assign.value)) try self.emitRelease(stored_val_reg);
+                        try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                     } else {
                         try self.emitRelease(assign.target.identifier);
                         if (assign.value.* == .identifier and target_ty.* == .primitive) {
@@ -12996,7 +13010,17 @@ pub const Codegen = struct {
                         for (helper.captures) |capture| {
                             const capture_name = self.resolveBindingName(capture.name);
                             const capture_reg = if (self.mpsc_sender_channels.get(capture_name)) |chan| chan else capture_name;
-                            self.out.writer().print("    store {s}+{}, {s} as ptr\n", .{ slot, capture.offset, capture_reg }) catch return CodegenError.CodegenError;
+                            // Non-copy payloads transfer ownership into the thread
+                            // slot (same plan as SAB planEscapedClosureCapture).
+                            // Without the move prefix, branch merges see Active vs
+                            // Consumed PhiStateConflict when the else path also
+                            // moves the same local into a plain call.
+                            if (capture.is_noncopy_payload) {
+                                self.out.writer().print("    store {s}+{}, ^{s} as ptr\n", .{ slot, capture.offset, capture_reg }) catch return CodegenError.CodegenError;
+                                try self.markConsumedBinding(capture_name);
+                            } else {
+                                self.out.writer().print("    store {s}+{}, {s} as ptr\n", .{ slot, capture.offset, capture_reg }) catch return CodegenError.CodegenError;
+                            }
                         }
                         self.out.writer().print("    call @{s}(*{s})\n", .{ helper.spawn_name, slot }) catch return CodegenError.CodegenError;
                         return slot;

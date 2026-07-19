@@ -13012,15 +13012,11 @@ pub const Codegen = struct {
                             const capture_reg = if (self.mpsc_sender_channels.get(capture_name)) |chan| chan else capture_name;
                             // Non-copy payloads transfer ownership into the thread
                             // slot (same plan as SAB planEscapedClosureCapture).
-                            // Without the move prefix, branch merges see Active vs
-                            // Consumed PhiStateConflict when the else path also
-                            // moves the same local into a plain call.
-                            if (capture.is_noncopy_payload) {
-                                self.out.writer().print("    store {s}+{}, ^{s} as ptr\n", .{ slot, capture.offset, capture_reg }) catch return CodegenError.CodegenError;
-                                try self.markConsumedBinding(capture_name);
-                            } else {
-                                self.out.writer().print("    store {s}+{}, {s} as ptr\n", .{ slot, capture.offset, capture_reg }) catch return CodegenError.CodegenError;
-                            }
+                            // Store keeps a plain value write; emitForgetMovedValue
+                            // then emits a SAB-style consume (`^name`) so branch
+                            // merges agree when the else path also moves the local.
+                            self.out.writer().print("    store {s}+{}, {s} as ptr\n", .{ slot, capture.offset, capture_reg }) catch return CodegenError.CodegenError;
+                            if (capture.is_noncopy_payload) try self.emitForgetMovedValue(capture_reg);
                         }
                         self.out.writer().print("    call @{s}(*{s})\n", .{ helper.spawn_name, slot }) catch return CodegenError.CodegenError;
                         return slot;

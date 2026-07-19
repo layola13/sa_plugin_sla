@@ -19,6 +19,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Struct-literal owner move_ emit + issue doc closures (2026-07-19):
+  Direct SAB struct-literal field ownership transfer now emits visible `.move_`
+  for source locals (`tests/test_unit_struct_literal_owner_move_direct.sla`
+  SA/SAB 1/1). Updated issue docs for task_pool_builder whole-file closure,
+  issue028, and http loopback check/build status.
+
 - SA-text by-value assign/discard consume parity (2026-07-19):
   `src/codegen.zig` now emits `^src` for by-value non-Copy identifier assignment
   into stack/assigned-value slots and for `let _ = owner` discards, matching the

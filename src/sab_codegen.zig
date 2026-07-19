@@ -13667,8 +13667,12 @@ pub const Codegen = struct {
             }
         }
 
+        // Emit SAB-visible move_ for locals transferred into the struct so the
+        // verifier sees ownership leave the source (e.g. `items` in
+        // CleanupQuery { items: vec }). markConsumed alone only updates codegen
+        // state and leaves Active registers at function exit.
         var iter = pending_moved_fields.keyIterator();
-        while (iter.next()) |reg| try self.markConsumed(reg.*);
+        while (iter.next()) |reg| try self.emitMove(reg.*);
 
         return dst;
     }

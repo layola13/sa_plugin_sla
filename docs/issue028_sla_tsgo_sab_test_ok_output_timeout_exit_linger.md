@@ -4,6 +4,8 @@ Date: 2026-07-15
 
 ## Status
 
+Status: fixed/verified (2026-07-17; reaffirmed 2026-07-19).
+
 Fixed / current non-repro as of 2026-07-17.
 
 After the filtered child-runner selection passthrough mitigation, the remaining

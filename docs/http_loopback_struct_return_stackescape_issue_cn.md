@@ -1,5 +1,7 @@
 # HTTP loopback adapter test backend regressions
 
+状态：partial/check-build fixed（2026-07-19）。`sa sla check` 与 `sa sla sab build` 对 `http_loopback_sse_adapter.sla` 当前通过；测试/native-link 历史失败面若仍复现需单独复验。
+
 ## 背景
 
 在 `/home/vscode/projects/sla_codex` 中实现 SLA-native Codex 的

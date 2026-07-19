@@ -39,6 +39,8 @@ pub fn expand(allocator: std.mem.Allocator, source: []const u8) SourceExpandErro
     }
 
     var out = std.ArrayList(u8).init(allocator);
+    // Large ECS modules use many @expand_tuple blocks; avoid geometric realloc churn.
+    try out.ensureTotalCapacity(source.len * 2);
     var i: usize = 0;
     while (i < source.len) {
         if (startsWithAt(source, i, "@expand_tuple")) {

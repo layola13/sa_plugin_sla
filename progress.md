@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Expand capacity pre-size + share i32like/zeroLiteral (2026-07-19):
+  source_expand pre-reserves capacity for @expand_tuple heavy modules; SA
+  zeroLiteralForType/isI32LikeType delegate to lowering_rules. Fixtures green.
+
 - Share void/numeric/float type classifiers on Y (2026-07-19):
   SA and SAB now delegate isVoidType/isNumericType/isFloatType/isUnsignedIntegerType
   to lowering_rules. Fixed-array/vec/branch fixtures still green.

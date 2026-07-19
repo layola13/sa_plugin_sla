@@ -3521,6 +3521,15 @@ pub fn isUnsignedIntegerType(ty: *const ast.Type) bool {
     };
 }
 
+pub fn isI32LikeType(ty: *const ast.Type) bool {
+    return ty.* == .primitive and (ty.primitive == .i32 or ty.primitive == .integer);
+}
+
+pub fn zeroLiteralForType(ty: *const ast.Type) []const u8 {
+    if (isFloatType(ty)) return "0.0";
+    return "0";
+}
+
 pub fn isNumericType(ty: *const ast.Type) bool {
     return switch (ty.*) {
         .primitive => |p| switch (p) {

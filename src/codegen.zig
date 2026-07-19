@@ -3562,13 +3562,7 @@ pub const Codegen = struct {
     }
 
     fn zeroLiteralForType(ty: *const ast.Type) []const u8 {
-        return switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .f32, .f64, .float => "0.0",
-                else => "0",
-            },
-            else => "0",
-        };
+        return lowering_rules.zeroLiteralForType(ty);
     }
 
     fn literalZero(expr: *const ast.Node) bool {
@@ -4576,10 +4570,7 @@ pub const Codegen = struct {
     }
 
     fn isI32LikeType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| p == .i32 or p == .integer,
-            else => false,
-        };
+        return lowering_rules.isI32LikeType(ty);
     }
 
     fn isRawPtrAliasType(ty: *const ast.Type) bool {

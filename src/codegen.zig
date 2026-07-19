@@ -2401,8 +2401,7 @@ pub const Codegen = struct {
     }
 
     fn abiParamTypeString(p: ast.Param) []const u8 {
-        if (p.is_borrow or p.is_move) return "ptr";
-        return typeString(p.ty);
+        return lowering_rules.abiParamTypeString(p.is_borrow, p.is_move, p.ty);
     }
 
     fn abiParamPrefix(self: *Codegen, p: ast.Param) []const u8 {
@@ -2413,7 +2412,7 @@ pub const Codegen = struct {
     }
 
     fn abiParamNeedsBorrowArg(p: ast.Param) bool {
-        return p.is_borrow or p.ty.* == .borrow;
+        return lowering_rules.abiParamNeedsBorrowArg(p.is_borrow, p.ty);
     }
 
     fn abiReturnTypeString(ty: *const ast.Type) []const u8 {

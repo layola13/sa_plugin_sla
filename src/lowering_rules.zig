@@ -1047,6 +1047,15 @@ pub fn abiReturnTypeString(ty: *const ast.Type) []const u8 {
     };
 }
 
+pub fn abiParamTypeString(is_borrow: bool, is_move: bool, ty: *const ast.Type) []const u8 {
+    if (is_borrow or is_move) return "ptr";
+    return abiTypeString(ty);
+}
+
+pub fn abiParamNeedsBorrowArg(is_borrow: bool, ty: *const ast.Type) bool {
+    return is_borrow or ty.* == .borrow;
+}
+
 pub fn abiRawPayloadTypeString(raw: []const u8) []const u8 {
     var name = std.mem.trim(u8, raw, " \t\r");
     if (name.len > 0 and (name[0] == '&' or name[0] == '^' or name[0] == '*')) {

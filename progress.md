@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Share ABI param type/borrow helpers on Y (2026-07-19):
+  abiParamTypeString/abiParamNeedsBorrowArg pure facts moved into lowering_rules;
+  SA wrappers delegate. Ownership fixtures green.
+
 - Share remaining SA ABI string helpers on Y (2026-07-19):
   abiReturnTypeString/abiRawPayloadTypeString/ptrReadVolatileMacroName moved into
   lowering_rules; SA wrappers delegate. vec/box fixtures green.

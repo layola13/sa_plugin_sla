@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- SA derive checks call shared structHasDerive directly (2026-07-19):
+  hash/debug/ord derive paths use lowering_rules.structHasDerive for consistency
+  with copy-derive alignment.
+
 - Align SA/SAB typeHasCopyDerive semantics (2026-07-19):
   SA now short-circuits std owners as non-Copy and uses shared structHasDerive;
   SAB treats void primitives as non-Copy like SA. Ownership fixtures SA/SAB green.

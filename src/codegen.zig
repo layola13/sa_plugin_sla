@@ -3482,7 +3482,7 @@ pub const Codegen = struct {
             },
             .user_defined => blk: {
                 const decl = self.structDeclForType(ty) orelse break :blk false;
-                if (!structHasDerive(decl, "hash") or decl.is_opaque or decl.is_union) break :blk false;
+                if (!lowering_rules.structHasDerive(decl, "hash") or decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {
                     if (!self.typeHasHashDerive(field.ty)) break :blk false;
                 }
@@ -3497,7 +3497,7 @@ pub const Codegen = struct {
             .primitive => |p| p != .void_type,
             .user_defined => blk: {
                 const decl = self.structDeclForType(ty) orelse break :blk false;
-                if (!structHasDerive(decl, "debug") or decl.is_opaque or decl.is_union) break :blk false;
+                if (!lowering_rules.structHasDerive(decl, "debug") or decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {
                     if (!self.typeHasDebugDerive(field.ty)) break :blk false;
                 }
@@ -3699,7 +3699,7 @@ pub const Codegen = struct {
         const left_struct = self.structDeclForType(left_ty) orelse return null;
         const right_struct = self.structDeclForType(right_ty) orelse return null;
         if (left_struct != right_struct or left_struct.is_opaque or left_struct.is_union) return null;
-        if (!structHasDerive(left_struct, "ord")) return null;
+        if (!lowering_rules.structHasDerive(left_struct, "ord")) return null;
 
         const left_reg = try self.genExpr(bin.left, hoisted_allocs);
         const right_reg = try self.genExpr(bin.right, hoisted_allocs);

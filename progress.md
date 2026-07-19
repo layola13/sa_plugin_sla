@@ -4,6 +4,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared FutureRuntimeCallPlan predicate test strengthening (2026-07-19):
+  `FutureRuntimeCallPlan` now exposes `isReady()` / `isPending()` /
+  `isDeferReady()` / `isJoin2()` / `isSelect2()` / `isPairAccessor()` /
+  `isEitherAccessor()`, and the shared future runtime call classification test
+  now exercises those helpers directly for `ready`, `pending`, `defer_ready`,
+  `join2`, `pair_left`, `select2`, and `either_right`. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig` and `zig build
+  test -j1 -Dtest-filter='shared future runtime call classification'
+  --summary all` 2/2. No full suite or concurrent tests were run.
+
 - Shared FutureRuntimeCallPlan predicate helper normalization (2026-07-18):
   `FutureRuntimeCallPlan` now exposes `isReady()` / `isPending()` /
   `isDeferReady()` / `isJoin2()` / `isSelect2()` / `isPairAccessor()` /

@@ -4840,18 +4840,24 @@ test "shared future runtime call classification" {
     var value_node = ast.Node{ .literal = .{ .int_val = 1 } };
     const args = [_]*ast.Node{&value_node};
     const ready = ast.CallExpr{ .func_name = "ready", .associated_target = "future", .generics = &.{}, .args = args[0..] };
-    try std.testing.expectEqual(FutureRuntimeCallKind.ready, planFutureRuntimeCall(ready).?.kind);
+    const ready_plan = planFutureRuntimeCall(ready).?;
+    try std.testing.expectEqual(FutureRuntimeCallKind.ready, ready_plan.kind);
+    try std.testing.expect(ready_plan.isReady());
 
     var i32_ty = ast.Type{ .primitive = .i32 };
     const generics = [_]*ast.Type{&i32_ty};
     const pending = ast.CallExpr{ .func_name = "pending", .associated_target = "future", .generics = generics[0..], .args = &.{} };
-    try std.testing.expectEqual(FutureRuntimeCallKind.pending, planFutureRuntimeCall(pending).?.kind);
+    const pending_plan = planFutureRuntimeCall(pending).?;
+    try std.testing.expectEqual(FutureRuntimeCallKind.pending, pending_plan.kind);
+    try std.testing.expect(pending_plan.isPending());
 
     const flat_pending = ast.CallExpr{ .func_name = "future__pending", .generics = generics[0..], .args = &.{} };
     try std.testing.expectEqual(FutureRuntimeCallKind.pending, planFutureRuntimeCall(flat_pending).?.kind);
 
     const defer_ready = ast.CallExpr{ .func_name = "defer_ready", .associated_target = "future", .generics = &.{}, .args = args[0..] };
-    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, planFutureRuntimeCall(defer_ready).?.kind);
+    const defer_ready_plan = planFutureRuntimeCall(defer_ready).?;
+    try std.testing.expectEqual(FutureRuntimeCallKind.defer_ready, defer_ready_plan.kind);
+    try std.testing.expect(defer_ready_plan.isDeferReady());
     var defer_ready_node = ast.Node{ .call_expr = defer_ready };
     try std.testing.expectEqual(FutureReadiness.unknown, exprFutureReadiness(&defer_ready_node, null));
 
@@ -4860,7 +4866,9 @@ test "shared future runtime call classification" {
 
     const join_args = [_]*ast.Node{ &value_node, &value_node };
     const join2 = ast.CallExpr{ .func_name = "join2", .associated_target = "future", .generics = &.{}, .args = join_args[0..] };
-    try std.testing.expectEqual(FutureRuntimeCallKind.join2, planFutureRuntimeCall(join2).?.kind);
+    const join2_plan = planFutureRuntimeCall(join2).?;
+    try std.testing.expectEqual(FutureRuntimeCallKind.join2, join2_plan.kind);
+    try std.testing.expect(join2_plan.isJoin2());
 
     var ready_left = ast.Node{ .call_expr = ready };
     var ready_right = ast.Node{ .call_expr = ready };
@@ -4893,13 +4901,19 @@ test "shared future runtime call classification" {
     try std.testing.expect(pending_await_plan.pending_return_if_async);
 
     const pair_left = ast.CallExpr{ .func_name = "pair_left", .associated_target = "future", .generics = &.{}, .args = args[0..] };
-    try std.testing.expectEqual(FutureRuntimeCallKind.pair_left, planFutureRuntimeCall(pair_left).?.kind);
+    const pair_left_plan = planFutureRuntimeCall(pair_left).?;
+    try std.testing.expectEqual(FutureRuntimeCallKind.pair_left, pair_left_plan.kind);
+    try std.testing.expect(pair_left_plan.isPairAccessor());
 
     const select2 = ast.CallExpr{ .func_name = "select2", .associated_target = "future", .generics = &.{}, .args = join_args[0..] };
-    try std.testing.expectEqual(FutureRuntimeCallKind.select2, planFutureRuntimeCall(select2).?.kind);
+    const select2_plan = planFutureRuntimeCall(select2).?;
+    try std.testing.expectEqual(FutureRuntimeCallKind.select2, select2_plan.kind);
+    try std.testing.expect(select2_plan.isSelect2());
 
     const either_right = ast.CallExpr{ .func_name = "either_right", .associated_target = "future", .generics = &.{}, .args = args[0..] };
-    try std.testing.expectEqual(FutureRuntimeCallKind.either_right, planFutureRuntimeCall(either_right).?.kind);
+    const either_right_plan = planFutureRuntimeCall(either_right).?;
+    try std.testing.expectEqual(FutureRuntimeCallKind.either_right, either_right_plan.kind);
+    try std.testing.expect(either_right_plan.isEitherAccessor());
 
     const state = ast.CallExpr{ .func_name = "state", .associated_target = "task", .generics = &.{}, .args = args[0..] };
     try std.testing.expectEqual(TaskRuntimeCallKind.state, planTaskRuntimeCall(state).?.kind);

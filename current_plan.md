@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share remaining SA ABI string helpers on Y (2026-07-19):
+  abiReturnTypeString/abiRawPayloadTypeString/ptrReadVolatileMacroName moved into
+  lowering_rules; SA wrappers delegate. vec/box fixtures green.
+
 - Share abiTypeString on Y (2026-07-19):
   SA-text typeString now uses lowering_rules.abiTypeString for scalar/ptr ABI
   names. Ownership/fixed-array fixtures green.

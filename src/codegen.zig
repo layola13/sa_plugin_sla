@@ -2397,11 +2397,7 @@ pub const Codegen = struct {
     }
 
     fn ptrReadVolatileMacroName(ty: *const ast.Type) ?[]const u8 {
-        const ty_str = typeString(ty);
-        if (std.mem.eql(u8, ty_str, "i32")) return "PTR_READ_VOLATILE_I32";
-        if (std.mem.eql(u8, ty_str, "u64")) return "PTR_READ_VOLATILE_U64";
-        if (std.mem.eql(u8, ty_str, "u8")) return "PTR_READ_VOLATILE_U8";
-        return null;
+        return lowering_rules.ptrReadVolatileMacroName(ty);
     }
 
     fn abiParamTypeString(p: ast.Param) []const u8 {

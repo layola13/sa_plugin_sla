@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- SAB aggregate bool storage uses u8 (2026-07-19):
+  storagePrimType maps boolean to u8 for struct field load/store parity with SA.
+  shallow_copy_call_arg_direct still fails under strict SAB (investigation open).
+
 - Skip function-body span capture on check path (2026-07-19):
   SlaModuleTable.capture_body_spans=false for sla check include_all imports.
   Compile/test materialize still captures spans.

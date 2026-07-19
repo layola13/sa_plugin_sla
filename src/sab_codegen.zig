@@ -1386,6 +1386,8 @@ pub const Codegen = struct {
     }
 
     fn storagePrimType(ty: *const ast.Type) !sig.PrimType {
+        // Aggregate/struct field storage matches SA ABI: bool is a byte, not i1.
+        if (ty.* == .primitive and ty.primitive == .boolean) return .u8;
         if (ty.* == .primitive and ty.primitive == .void_type) return .ptr;
         return try primType(ty);
     }

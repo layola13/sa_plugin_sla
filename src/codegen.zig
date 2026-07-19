@@ -8328,6 +8328,58 @@ pub const Codegen = struct {
         return select_state;
     }
 
+    fn genFutureRuntimeCall(self: *Codegen, future_plan: lowering_rules.FutureRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+        if (future_plan.isReady()) {
+            if (call.args.len != 1) return CodegenError.CodegenError;
+            const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const future_reg = try self.genReadyFutureI64(value_reg);
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+            return future_reg;
+        }
+        if (future_plan.isPending()) {
+            if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
+            return try self.genPendingFuture();
+        }
+        if (future_plan.isDeferReady()) {
+            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+            const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const future_reg = try self.genDeferReadyFutureI64(value_reg);
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+            return future_reg;
+        }
+        if (future_plan.isJoin2()) {
+            if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
+            const left_state = try self.genExpr(call.args[0], hoisted_allocs);
+            const right_state = try self.genExpr(call.args[1], hoisted_allocs);
+            return try self.genJoin2Future(left_state, right_state);
+        }
+        if (future_plan.isSelect2()) {
+            if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
+            const left_state = try self.genExpr(call.args[0], hoisted_allocs);
+            const right_state = try self.genExpr(call.args[1], hoisted_allocs);
+            return try self.genSelect2Future(left_state, right_state);
+        }
+        if (future_plan.isPairAccessor()) {
+            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+            const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const value_reg = try self.newTmp();
+            const macro_name = future_plan.pairMacroName() orelse return CodegenError.CodegenError;
+            self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
+            return value_reg;
+        }
+        if (future_plan.isEitherAccessor()) {
+            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+            const either_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const value_reg = try self.newTmp();
+            const macro_name = future_plan.eitherValueMacroName() orelse return CodegenError.CodegenError;
+            self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, either_reg }) catch return CodegenError.CodegenError;
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(either_reg);
+            return value_reg;
+        }
+        return CodegenError.CodegenError;
+    }
+
     fn asyncSingleAwaitVTableName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
         return std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_VT", .{name}) catch return CodegenError.OutOfMemory;
     }
@@ -12788,56 +12840,7 @@ pub const Codegen = struct {
                 if (try self.genPollRuntimeCall(call, hoisted_allocs)) |poll_reg| return poll_reg;
                 if (try self.genExecutorRuntimeCall(call, hoisted_allocs)) |executor_reg| return executor_reg;
                 if (lowering_rules.planFutureRuntimeCall(call)) |future_plan| {
-                    switch (future_plan.kind) {
-                        .ready => {
-                            if (call.args.len != 1) return CodegenError.CodegenError;
-                            const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                            const future_reg = try self.genReadyFutureI64(value_reg);
-                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
-                            return future_reg;
-                        },
-                        .pending => {
-                            if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
-                            return try self.genPendingFuture();
-                        },
-                        .defer_ready => {
-                            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
-                            const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                            const future_reg = try self.genDeferReadyFutureI64(value_reg);
-                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
-                            return future_reg;
-                        },
-                        .join2 => {
-                            if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
-                            const left_state = try self.genExpr(call.args[0], hoisted_allocs);
-                            const right_state = try self.genExpr(call.args[1], hoisted_allocs);
-                            return try self.genJoin2Future(left_state, right_state);
-                        },
-                        .select2 => {
-                            if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
-                            const left_state = try self.genExpr(call.args[0], hoisted_allocs);
-                            const right_state = try self.genExpr(call.args[1], hoisted_allocs);
-                            return try self.genSelect2Future(left_state, right_state);
-                        },
-                        .pair_left, .pair_right => {
-                            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
-                            const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                            const value_reg = try self.newTmp();
-                            const macro_name = future_plan.pairMacroName() orelse return CodegenError.CodegenError;
-                            self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
-                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
-                            return value_reg;
-                        },
-                        .either_side, .either_left, .either_right => {
-                            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
-                            const either_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                            const value_reg = try self.newTmp();
-                            const macro_name = future_plan.eitherValueMacroName() orelse return CodegenError.CodegenError;
-                            self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, either_reg }) catch return CodegenError.CodegenError;
-                            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(either_reg);
-                            return value_reg;
-                        },
-                    }
+                    return try self.genFutureRuntimeCall(future_plan, call, hoisted_allocs);
                 }
                 if (std.mem.eql(u8, call.func_name, "std__ptr__read_volatile") or std.mem.eql(u8, call.func_name, "ptr__read_volatile")) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
@@ -12876,56 +12879,7 @@ pub const Codegen = struct {
                         return reg;
                     }
                     if (lowering_rules.planFutureRuntimeCall(call)) |future_plan| {
-                        switch (future_plan.kind) {
-                            .ready => {
-                                if (call.args.len != 1) return CodegenError.CodegenError;
-                                const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const future_reg = try self.genReadyFutureI64(value_reg);
-                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
-                                return future_reg;
-                            },
-                            .pending => {
-                                if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
-                                return try self.genPendingFuture();
-                            },
-                            .defer_ready => {
-                                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
-                                const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const future_reg = try self.genDeferReadyFutureI64(value_reg);
-                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
-                                return future_reg;
-                            },
-                            .join2 => {
-                                if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
-                                const left_state = try self.genExpr(call.args[0], hoisted_allocs);
-                                const right_state = try self.genExpr(call.args[1], hoisted_allocs);
-                                return try self.genJoin2Future(left_state, right_state);
-                            },
-                            .select2 => {
-                                if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
-                                const left_state = try self.genExpr(call.args[0], hoisted_allocs);
-                                const right_state = try self.genExpr(call.args[1], hoisted_allocs);
-                                return try self.genSelect2Future(left_state, right_state);
-                            },
-                            .pair_left, .pair_right => {
-                                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
-                                const pair_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const value_reg = try self.newTmp();
-                                const macro_name = future_plan.pairMacroName() orelse return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, pair_reg }) catch return CodegenError.CodegenError;
-                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(pair_reg);
-                                return value_reg;
-                            },
-                            .either_side, .either_left, .either_right => {
-                                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
-                                const either_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                                const value_reg = try self.newTmp();
-                                const macro_name = future_plan.eitherValueMacroName() orelse return CodegenError.CodegenError;
-                                self.out.writer().print("    EXPAND {s} {s}, {s}\n", .{ macro_name, value_reg, either_reg }) catch return CodegenError.CodegenError;
-                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(either_reg);
-                                return value_reg;
-                            },
-                        }
+                        return try self.genFutureRuntimeCall(future_plan, call, hoisted_allocs);
                     }
                     if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;

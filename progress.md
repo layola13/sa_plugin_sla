@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Shared FutureRuntimeCallPlan dispatcher normalization (2026-07-19):
+  `src/codegen.zig` now routes SA-text future runtime calls through the shared
+  `genFutureRuntimeCall()` helper instead of duplicating the `future_plan.kind`
+  switch in both call-expression lowering sites. The helper reuses the shared
+  `FutureRuntimeCallPlan` predicates and macro-name helpers for `ready`,
+  `pending`, `defer_ready`, `join2`, `select2`, `pair_left`/`pair_right`, and
+  `either_side`/`either_left`/`either_right`.
+  Serial focused verification passed `zig fmt --check src/codegen.zig src/lowering_rules.zig`
+  and `zig build test -j1 -Dtest-filter='shared future runtime call classification'
+  --summary all` 2/2. No full suite or concurrent tests were run.
+
 - Shared FutureRuntimeCallPlan predicate test strengthening (2026-07-19):
   `FutureRuntimeCallPlan` now exposes `isReady()` / `isPending()` /
   `isDeferReady()` / `isJoin2()` / `isSelect2()` / `isPairAccessor()` /

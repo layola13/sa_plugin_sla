@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Share abiTypeString on Y (2026-07-19):
+  SA-text typeString now uses lowering_rules.abiTypeString for scalar/ptr ABI
+  names. Ownership/fixed-array fixtures green.
+
 - Disk-backed @expand_tuple source cache (2026-07-19):
   getOrParse caches expanded sources under `.sla-cache/expand/` keyed by path+
   content hash. Warm check of parallel_runner: world_table expand 149ms→1ms,

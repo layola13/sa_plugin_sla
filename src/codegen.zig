@@ -2393,29 +2393,7 @@ pub const Codegen = struct {
     }
 
     fn typeString(ty: *const ast.Type) []const u8 {
-        return switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .boolean => "u8",
-                .i8 => "i8",
-                .i16 => "i16",
-                .i32 => "i32",
-                .i64 => "i64",
-                .isize => "i64",
-                .u8 => "u8",
-                .u16 => "u16",
-                .u32 => "u32",
-                .u64 => "u64",
-                .usize => "u64",
-                .f32 => "f32",
-                .f64 => "f64",
-                .integer => "i64",
-                .float => "f64",
-                .void_type => "ptr",
-            },
-            .array => "ptr",
-            .tuple => "ptr",
-            else => "ptr",
-        };
+        return lowering_rules.abiTypeString(ty);
     }
 
     fn ptrReadVolatileMacroName(ty: *const ast.Type) ?[]const u8 {

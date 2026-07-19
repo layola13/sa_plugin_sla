@@ -23,6 +23,7 @@ const ReachabilitySession = plugin_reachability.ReachabilitySession;
 const UnresolvedCallableSet = plugin_reachability.UnresolvedCallableSet;
 const associatedCandidateMatchesReceiverType = plugin_reachability.associatedCandidateMatchesReceiverType;
 const collectReachableModuleBodyNames = plugin_reachability.collectReachableModuleBodyNames;
+const materializeImportedModuleBodiesForReachableSet = plugin_reachability.materializeImportedModuleBodiesForReachableSet;
 const loadImportedMacrosFromExpandedSource = plugin_imported_macros.loadImportedMacrosFromExpandedSource;
 
 fn profileImportExpandStage(enabled: bool, label: []const u8, start_ns: i128) void {
@@ -856,6 +857,77 @@ fn resolvedImportGroupForDecl(groups: []const SlaResolvedImportGroup, decl: *con
     return null;
 }
 
+
+fn reachablePlanCachePath(allocator: std.mem.Allocator, source_file: []const u8, root_source: []const u8, ordered_modules: []const *SlaModule) ![]u8 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(source_file);
+    hasher.update(&std.mem.toBytes(@as(u64, root_source.len)));
+    hasher.update(root_source);
+    for (ordered_modules) |module| {
+        hasher.update(module.path);
+        hasher.update(&std.mem.toBytes(@as(u64, module.expanded_source.len)));
+        // Content already expanded; length + path is a cheap invalidation proxy with expand caches.
+        hasher.update(module.expanded_source);
+    }
+    const digest = hasher.final();
+    const stem = std.fs.path.basename(source_file);
+    return try std.fmt.allocPrint(allocator, ".sla-cache/reachable/{s}-{x}.plan", .{ stem, digest });
+}
+
+fn tryLoadReachablePlan(
+    allocator: std.mem.Allocator,
+    cache_path: []const u8,
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+) !bool {
+    const bytes = std.fs.cwd().readFileAlloc(allocator, cache_path, 8 * 1024 * 1024) catch return false;
+    defer allocator.free(bytes);
+    var section: enum { reachable, types } = .reachable;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        if (std.mem.eql(u8, line, "[reachable]")) {
+            section = .reachable;
+            continue;
+        }
+        if (std.mem.eql(u8, line, "[types]")) {
+            section = .types;
+            continue;
+        }
+        const owned = try allocator.dupe(u8, line);
+        switch (section) {
+            .reachable => try reachable.put(owned, {}),
+            .types => try referenced_types.put(owned, {}),
+        }
+    }
+    return reachable.count() != 0;
+}
+
+fn storeReachablePlan(
+    allocator: std.mem.Allocator,
+    cache_path: []const u8,
+    reachable: *const std.StringHashMap(void),
+    referenced_types: *const std.StringHashMap(void),
+) void {
+    _ = allocator;
+    const dir = std.fs.path.dirname(cache_path) orelse return;
+    std.fs.cwd().makePath(dir) catch return;
+    const file = std.fs.cwd().createFile(cache_path, .{}) catch return;
+    defer file.close();
+    file.writeAll("[reachable]\n") catch return;
+    var r_iter = reachable.keyIterator();
+    while (r_iter.next()) |k| {
+        file.writeAll(k.*) catch return;
+        file.writeAll("\n") catch return;
+    }
+    file.writeAll("[types]\n") catch return;
+    var t_iter = referenced_types.keyIterator();
+    while (t_iter.next()) |k| {
+        file.writeAll(k.*) catch return;
+        file.writeAll("\n") catch return;
+    }
+}
+
 pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
     allocator: std.mem.Allocator,
     program: *ast.Node,
@@ -936,31 +1008,67 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
 
     var reachability_session: ?ReachabilitySession = null;
     defer if (reachability_session) |*session| session.deinit();
+    var used_reachable_plan_cache = false;
     if (effective_options.include_all_imported_decls) {
         if (profile_enabled) {
             std.debug.print("[sla-profile] import expand buildReachable skipped (include_all_imported_decls)\n", .{});
         }
     } else if (shouldKeepReachableImportedBody(effective_options)) {
-        reachability_session = try ReachabilitySession.init(
-            allocator,
-            program,
-            ordered_modules.items,
-            modules,
-            effective_options,
-            imported_macros,
-            &reachable,
-            &referenced_types,
-        );
-        try advanceReachabilitySessionWithLazyModuleDiscovery(
-            allocator,
-            &reachability_session.?,
-            modules,
-            &ordered_modules,
-            &visited_modules,
-            effective_options,
-            &reachable,
-            &referenced_types,
-        );
+        const root_source = std.fs.cwd().readFileAlloc(allocator, source_file, 16 * 1024 * 1024) catch null;
+        if (root_source) |root_bytes| {
+            defer allocator.free(root_bytes);
+            if (reachablePlanCachePath(allocator, source_file, root_bytes, ordered_modules.items)) |plan_path| {
+                defer allocator.free(plan_path);
+                if (try tryLoadReachablePlan(allocator, plan_path, &reachable, &referenced_types)) {
+                    used_reachable_plan_cache = true;
+                    if (profile_enabled) {
+                        std.debug.print(
+                            "[sla-profile] import expand reachable plan cache hit symbols={d} types={d}\n",
+                            .{ reachable.count(), referenced_types.count() },
+                        );
+                    }
+                    _ = try materializeImportedModuleBodiesForReachableSet(
+                        allocator,
+                        ordered_modules.items,
+                        modules,
+                        effective_options,
+                        imported_macros,
+                        &reachable,
+                        &referenced_types,
+                    );
+                }
+            } else |_| {}
+        }
+        if (!used_reachable_plan_cache) {
+            reachability_session = try ReachabilitySession.init(
+                allocator,
+                program,
+                ordered_modules.items,
+                modules,
+                effective_options,
+                imported_macros,
+                &reachable,
+                &referenced_types,
+            );
+            try advanceReachabilitySessionWithLazyModuleDiscovery(
+                allocator,
+                &reachability_session.?,
+                modules,
+                &ordered_modules,
+                &visited_modules,
+                effective_options,
+                &reachable,
+                &referenced_types,
+            );
+            const root_source2 = std.fs.cwd().readFileAlloc(allocator, source_file, 16 * 1024 * 1024) catch null;
+            if (root_source2) |root_bytes| {
+                defer allocator.free(root_bytes);
+                if (reachablePlanCachePath(allocator, source_file, root_bytes, ordered_modules.items)) |plan_path| {
+                    defer allocator.free(plan_path);
+                    storeReachablePlan(allocator, plan_path, &reachable, &referenced_types);
+                } else |_| {}
+            }
+        }
     } else {
         const reachable_start = std.time.nanoTimestamp();
         try buildReachableWithoutMaterializedSession(

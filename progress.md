@@ -5,6 +5,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Warm reachable-plan disk cache for compile materialize (2026-07-19):
+  Stores reachable/type sets under `.sla-cache/reachable/*` after first compile
+  expand; warm hits materialize from cache without re-running full multipass
+  discovery. parallel_runner warm build ~1.36s (import expand ~809ms vs ~1.2s cold).
+
 - SA enumDeclForValueType uses shared typeBaseName (2026-07-19):
   Matches SAB peel for Option/Result exclusion + enum lookup.
 

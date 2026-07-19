@@ -542,3 +542,12 @@ gap vs check is primarily registry-driven materialize body walks (~1.0s).
 AST walks for the same function when `prune_for_test_codegen` is false (compile
 path). Warm `parallel_runner` build ~1.61s.
 
+## 2026-07-19 reachable plan cache
+
+Compile-path (`load_reachable_imported_bodies_from_registry`) now caches the
+final reachable symbol/type sets under `.sla-cache/reachable/<root>-<hash>.plan`.
+
+Warm second-process `parallel_runner` build:
+- import expand: ~1.2s → ~0.81s on cache hit
+- wall-clock: ~1.36s
+

@@ -1794,7 +1794,7 @@ fn enqueueMaterializedFunctionBodies(
     }
 }
 
-fn materializeReachableImportedModuleBodiesWithState(
+pub fn materializeReachableImportedModuleBodiesWithState(
     state: *ReachabilityBuildState,
     allocator: std.mem.Allocator,
     ordered_modules: []const *SlaModule,
@@ -1920,6 +1920,27 @@ pub fn buildAndMaterializeReachableImportedModuleBodies(
     var state = ReachabilityBuildState.init(allocator);
     defer state.deinit();
     try initializeReachabilityBuildState(&state, root_program, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
+    return try materializeReachableImportedModuleBodiesWithState(&state, allocator, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
+}
+
+
+/// Materialize imported bodies for an already-populated reachable set.
+/// Does not clear or recompute reachability (used by warm plan-cache hits).
+pub fn materializeImportedModuleBodiesForReachableSet(
+    allocator: std.mem.Allocator,
+    ordered_modules: []const *SlaModule,
+    modules: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+) !ReachabilityMaterializationStats {
+    var state = ReachabilityBuildState.init(allocator);
+    defer state.deinit();
+    // Seed callable index from already-loaded modules so selection can resolve symbols.
+    for (ordered_modules) |module| {
+        try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
+    }
     return try materializeReachableImportedModuleBodiesWithState(&state, allocator, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
 }
 

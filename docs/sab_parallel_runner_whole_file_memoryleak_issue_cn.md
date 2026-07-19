@@ -262,3 +262,51 @@ Status remains partial/open for whole-file `parallel_runner.sla` /
 `task_pool_builder.sla`. Next remaining local dimensions are still
 child-scope returns and thread spawn over the Arc lanes, each as separate
 fixtures under the 10s rule.
+
+## 2026-07-19 Child-scope return + by-value fnptr object bits
+
+Fixture:
+
+- `tests/test_unit_parallel_runner_child_scope_return_direct.sla`
+
+Stages:
+
+1. store `Vec<fn() -> Holder>` only
+2. call returned holder and invoke its runs
+3. ordinary holder-to-holder extend
+4. alias then call a returned holder run
+5. spawn one run loaded from a returned holder
+6. loop-extend runs from a returned holder
+
+Root cause of the strict SAB signal 11 on stages 5/6:
+
+Direct SAB previously passed by-value `fn` args as `&stack_slot` (address of an
+8-byte word holding the function-object / vtable pointer). `sa_vec_push` stores
+that raw value into the Vec. After the callee returned, the stack slot was gone,
+so later loads/calls through the stored bits crashed. SA-text already passed the
+function-object pointer bits themselves (`tmp = &SLA_FNPTR_VT_...; call(f, tmp)`).
+
+Fix in `src/sab_codegen.zig`:
+
+- generated and local by-value fnptr call args now pass object-pointer bits
+- non-identifier by-value fnptr temps such as `child.runs[i]` also pass bits
+- matches SA-text and keeps stored Vec fnptrs stable across call returns
+
+Serial verification:
+
+```bash
+timeout 180s zig build -j1 --summary all
+timeout 40s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_child_scope_return_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+timeout 30s ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_child_scope_return_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic
+```
+
+Results: SA 6/6, strict SAB 6/6. Prior multi-lane / Arc-world / loop-fnptr /
+`test_unit_fn_ptr_value.sla` / thread-pair fixtures still pass strict SAB.
+
+Whole-file `parallel_runner.sla` / `task_pool_builder.sla` remain open dangerous
+smoke; next remaining dimensions are thread-spawn over Arc lanes under the 10s
+rule.

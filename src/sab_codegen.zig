@@ -12602,15 +12602,22 @@ pub const Codegen = struct {
                 break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
             },
             .generated_fn_ptr_value_slot => blk: {
-                const arg_reg = try self.genExpr(@constCast(arg));
-                var fnptr_slot = try self.materializeFnPtrValueArgSlot(arg_reg, materialization.release_after_call);
-                fnptr_slot.operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{fnptr_slot.operand});
-                break :blk fnptr_slot;
-            },
-            .borrow_local_fn_ptr_value => blk: {
+                // Pass function-object pointer bits (vtable address), matching
+                // SA-text `tmp = &SLA_FNPTR_VT_...; call(f, tmp)`. Do not pass
+                // a stack-slot address: sa_vec_push stores the raw value, and a
+                // caller stack slot dangles after the callee returns.
                 const arg_reg = try self.genExpr(@constCast(arg));
                 break :blk .{
-                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[arg_reg]}),
+                    .operand = self.symbols.items[arg_reg],
+                    .release_reg = if (materialization.release_after_call) arg_reg else null,
+                };
+            },
+            .borrow_local_fn_ptr_value => blk: {
+                // Local `let run: fn(...) = ...` already holds object-pointer
+                // bits. Pass those bits by value for the same reason as above.
+                const arg_reg = try self.genExpr(@constCast(arg));
+                break :blk .{
+                    .operand = self.symbols.items[arg_reg],
                     .release_reg = null,
                 };
             },
@@ -12662,6 +12669,17 @@ pub const Codegen = struct {
                         .forget_reg = if (prefix == '^') arg_reg else null,
                     };
                 }
+                // Non-identifier by-value fnptr temps (e.g. `child.runs[i]`) already
+                // hold function-object pointer bits from the load. Pass them as
+                // raw values so sa_vec_push stores stable VT addresses rather
+                // than ephemeral stack-slot addresses.
+                if (arg.* != .identifier and self.needsFnPtrValueArgSlot(param, arg_ty)) {
+                    const arg_reg = try self.genExpr(@constCast(arg));
+                    break :blk .{
+                        .operand = self.symbols.items[arg_reg],
+                        .release_reg = if (materialization.release_after_call) arg_reg else null,
+                    };
+                }
                 const arg_reg = try self.genExpr(@constCast(arg));
                 if (materialization.transfers_ownership) {
                     break :blk .{
@@ -12697,6 +12715,14 @@ pub const Codegen = struct {
                 };
             },
         };
+    }
+
+    fn needsFnPtrValueArgSlot(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
+        _ = self;
+        const target_param = param orelse return false;
+        if (target_param.is_borrow or target_param.is_move or target_param.ty.* != .fn_ptr) return false;
+        const ty = arg_ty orelse return false;
+        return ty.* == .fn_ptr;
     }
 
     fn genPlannedSabMacroCallArg(
@@ -12759,14 +12785,15 @@ pub const Codegen = struct {
             },
             .generated_fn_ptr_value_slot => blk: {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
-                var fnptr_slot = try self.materializeFnPtrValueArgSlot(arg_reg, materialization.release_after_call);
-                fnptr_slot.operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{fnptr_slot.operand});
-                break :blk fnptr_slot;
+                break :blk .{
+                    .operand = self.symbols.items[arg_reg],
+                    .release_reg = if (materialization.release_after_call) arg_reg else null,
+                };
             },
             .borrow_local_fn_ptr_value => blk: {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 break :blk .{
-                    .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[arg_reg]}),
+                    .operand = self.symbols.items[arg_reg],
                     .release_reg = null,
                 };
             },

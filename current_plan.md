@@ -19,6 +19,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Parallel-runner child-scope return + by-value fnptr bits (2026-07-19):
+  Added `tests/test_unit_parallel_runner_child_scope_return_direct.sla` and fixed
+  direct SAB by-value `fn` call args to pass function-object pointer bits instead
+  of dangling stack-slot addresses, matching SA-text. This closed the strict SAB
+  signal 11 when spawning/extending runs loaded from a holder returned by
+  `call_indirect`. Serial SA 6/6 and strict SAB 6/6; prior multi-lane/Arc/loop
+  and broader fnptr fixtures still pass. Whole-file parallel_runner aggregation
+  remains open.
+
 - Parallel-runner Arc<*World> multi-lane fixture (2026-07-19):
   Added `tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla` covering
   threaded + on-scope `Vec<fn(Arc<*World>) -> i32>` lanes with ordered extend

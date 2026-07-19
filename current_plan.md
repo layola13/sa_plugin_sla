@@ -19,6 +19,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Reserve selective-append decls capacity (2026-07-19):
+  Pre-size decls ArrayList during import expand flatten to cut realloc churn.
+
 - Skip root test bodies on check/compile parse (2026-07-19):
   Root Parser uses parse_test_bodies=false for sla check and compile frontends.
   Also reserve capacity when loading reachable plan caches.

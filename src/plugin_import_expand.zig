@@ -1166,7 +1166,9 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
         );
     }
 
-    for (program.program.decls) |decl| {
+    // Avoid geometric growth while flattening imported decls.
+    try decls.ensureTotalCapacity(decls.items.len + ordered_modules.items.len * 64 + program.program.decls.len);
+        for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
             const resolved_imports = resolvedImportGroupForDecl(root_import_groups.items, decl) orelse &.{};
             for (resolved_imports) |resolved| {

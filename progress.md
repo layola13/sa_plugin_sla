@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Reserve selective-append decls capacity (2026-07-19):
+  Pre-size decls ArrayList during import expand flatten to cut realloc churn.
+
 - Skip root test bodies on check/compile parse (2026-07-19):
   Root Parser uses parse_test_bodies=false for sla check and compile frontends.
   Also reserve capacity when loading reachable plan caches.

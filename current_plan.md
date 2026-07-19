@@ -19,6 +19,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Adaptive include_all threshold abandoned (2026-07-19):
+  Selective reachability for large roots regressed system_param check to ~3.4s.
+  Keep include_all for all check roots. Warm wall-clock: parallel_runner ~0.5-0.8s,
+  system_param ~1.3s (root parse+typecheck residual).
+
 - Unit test for expandForModulePath disk cache (2026-07-19):
   source_expand test covers @expand_tuple cache hit path.
 

@@ -473,3 +473,13 @@ and use it for:
 Warm second-process `system_param_table_erased` check:
 - check source expand: 148ms → 3ms
 
+## 2026-07-19 adaptive include_all abandoned
+
+Tried `include_all` only when root source <= 200KB. Large roots then used
+selective materialize and system_param check regressed to ~3.45s (materialize
+~1.5s + contracts/typecheck). Reverted to always-on include_all for check.
+
+Warm wall-clock now:
+- parallel_runner: ~0.5-0.8s
+- system_param_table_erased: ~1.3s (root parse ~0.4-0.5s, typecheck ~0.3s)
+

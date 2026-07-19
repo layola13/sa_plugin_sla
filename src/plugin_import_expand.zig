@@ -322,7 +322,7 @@ pub fn appendModuleDeclsSelective(
         }
     }
 
-    const is_contributing = try isModuleContributing(allocator, module, reachable, referenced_types);
+    const is_contributing = options.include_all_imported_decls or try isModuleContributing(allocator, module, reachable, referenced_types);
     if (!is_contributing) {
         for (module.resolved_imports) |child_resolved| {
             if (std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
@@ -347,15 +347,26 @@ pub fn appendModuleDeclsSelective(
             const before = out_decls.items.len;
             switch (decl.*) {
                 .func_decl => |fd| {
-                    if (try importedFuncNodeForReachability(allocator, decl, fd.name, module_namespace, reachable, options)) |func_node| {
+                    if (options.include_all_imported_decls) {
+                        const func_node = try maybeDeclOnlyFuncNode(allocator, decl, options.imported_bodies_decl_only);
                         try out_decls.append(func_node);
                         try primary_decls.put(func_node, {});
-                    }
-                    if (try reachableImportedAlias(allocator, module_namespace, fd.name, reachable)) |alias| {
+                        const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ module_namespace, fd.name });
                         defer allocator.free(alias);
                         const alias_node = try makeAliasedFuncNode(allocator, &decl.func_decl, alias, options);
                         try out_decls.append(alias_node);
                         try primary_decls.put(alias_node, {});
+                    } else {
+                        if (try importedFuncNodeForReachability(allocator, decl, fd.name, module_namespace, reachable, options)) |func_node| {
+                            try out_decls.append(func_node);
+                            try primary_decls.put(func_node, {});
+                        }
+                        if (try reachableImportedAlias(allocator, module_namespace, fd.name, reachable)) |alias| {
+                            defer allocator.free(alias);
+                            const alias_node = try makeAliasedFuncNode(allocator, &decl.func_decl, alias, options);
+                            try out_decls.append(alias_node);
+                            try primary_decls.put(alias_node, {});
+                        }
                     }
                 },
                 .impl_decl => {
@@ -365,10 +376,10 @@ pub fn appendModuleDeclsSelective(
                     try appendFilteredOverloadDeclWithOptions(allocator, decl, reachable, out_decls, options);
                 },
                 .macro_decl => |macro_decl| {
-                    if (referenced_types.contains(macro_decl.name)) try out_decls.append(decl);
+                    if (options.include_all_imported_decls or referenced_types.contains(macro_decl.name)) try out_decls.append(decl);
                 },
                 .const_stmt => |const_stmt| {
-                    if (!options.prune_for_test_codegen or referenced_types.contains(const_stmt.name)) try out_decls.append(decl);
+                    if (options.include_all_imported_decls or !options.prune_for_test_codegen or referenced_types.contains(const_stmt.name)) try out_decls.append(decl);
                 },
                 .test_decl => {},
                 else => {
@@ -667,8 +678,8 @@ fn appendFilteredImplDeclWithOptions(
             try lowering_rules.mangleTraitMethodName(allocator, type_name, trait_name, method.func_decl.name)
         else
             try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-        if (method.func_decl.is_decl_only or reachable.contains(symbol)) {
-            const keep_body = reachable.contains(symbol) and shouldKeepReachableImportedBody(options);
+        if (options.include_all_imported_decls or method.func_decl.is_decl_only or reachable.contains(symbol)) {
+            const keep_body = !options.include_all_imported_decls and reachable.contains(symbol) and shouldKeepReachableImportedBody(options);
             try methods.append(try maybeDeclOnlyFuncNode(allocator, method, options.imported_bodies_decl_only and !keep_body));
             if (options.imported_bodies_decl_only and !keep_body and !method.func_decl.is_decl_only) changed = true;
         } else if (impl_decl.trait_name != null) {
@@ -720,8 +731,8 @@ fn appendFilteredOverloadDeclWithOptions(
             continue;
         }
         const symbol = try lowering_rules.mangleMethodName(allocator, type_name, method.func_decl.name);
-        if (method.func_decl.is_decl_only or reachable.contains(symbol)) {
-            const keep_body = reachable.contains(symbol) and shouldKeepReachableImportedBody(options);
+        if (options.include_all_imported_decls or method.func_decl.is_decl_only or reachable.contains(symbol)) {
+            const keep_body = !options.include_all_imported_decls and reachable.contains(symbol) and shouldKeepReachableImportedBody(options);
             try methods.append(try maybeDeclOnlyFuncNode(allocator, method, options.imported_bodies_decl_only and !keep_body));
         }
     }
@@ -848,7 +859,11 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
 
     var reachability_session: ?ReachabilitySession = null;
     defer if (reachability_session) |*session| session.deinit();
-    if (shouldKeepReachableImportedBody(effective_options)) {
+    if (effective_options.include_all_imported_decls) {
+        if (profile_enabled) {
+            std.debug.print("[sla-profile] import expand buildReachable skipped (include_all_imported_decls)\n", .{});
+        }
+    } else if (shouldKeepReachableImportedBody(effective_options)) {
         reachability_session = try ReachabilitySession.init(
             allocator,
             program,

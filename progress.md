@@ -5,6 +5,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Check-path include_all_imported_decls skips root reachability (2026-07-19):
+  `sla check` now expands imports with include_all_imported_decls + decl-only
+  stubs, skipping buildReachableSymbols (~300ms body walks on parallel_runner).
+  Measured: parallel_runner/system_param materialize 0ms; typecheck still green.
+  Test/codegen paths keep selective reachability.
+
 - Share arrayType peel on Y (2026-07-19):
   `lowering_rules.arrayType` peels borrow/pointer to array; SA delegates.
   Fixed-array ptr struct fixtures SA/SAB green.

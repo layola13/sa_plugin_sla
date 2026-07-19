@@ -439,6 +439,7 @@ pub fn runSlaCommandImpl(
         defer contract_imports.deinit();
         const expanded_prog = expandSlaImportsWithModuleTable(allocator, prog, file, &primary_decls, .{
             .imported_bodies_decl_only = true,
+            .include_all_imported_decls = true,
         }, &import_modules, &root_import_groups, &contract_imports) catch |err| {
             try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
             return 1;

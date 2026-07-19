@@ -396,3 +396,16 @@ On `parallel_runner.sla` check:
 So further materialize cuts need cheaper root-body reachability scanning or a
 check-path mode that retains less imported surface without full syntactic walks.
 
+## 2026-07-19 check-path include_all shortcut
+
+`sla check` now uses `include_all_imported_decls=true` with decl-only imported
+bodies. That skips `buildReachableSymbols` root-body walks (previously
+~300ms on parallel_runner: 121 non-empty bodies). Imported methods/impls are
+retained decl-only without reachability filtering.
+
+Measured:
+- parallel_runner: materialize 0ms (was ~315-370ms), typecheck OK
+- system_param_table_erased: materialize 0ms, typecheck OK
+
+Test/codegen paths still use selective reachability.
+

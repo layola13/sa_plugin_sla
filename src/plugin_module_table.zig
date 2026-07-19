@@ -288,6 +288,10 @@ pub const SlaImportExpansionOptions = struct {
     imported_bodies_decl_only: bool = false,
     load_reachable_imported_bodies_from_registry: bool = false,
     lazy_transitive_sla_imports: bool = false,
+    /// When true, skip expensive root-body reachability walks and retain every
+    /// imported module's declarations (typically decl-only). Used by `sla check`
+    /// where correctness does not require selective import pruning.
+    include_all_imported_decls: bool = false,
 };
 
 pub const SlaResolvedImportGroup = struct {

@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Shared FutureRuntimeCallPlan predicate helper normalization (2026-07-18):
+  `FutureRuntimeCallPlan` now exposes `isReady()` / `isPending()` /
+  `isDeferReady()` / `isJoin2()` / `isSelect2()` / `isPairAccessor()` /
+  `isEitherAccessor()`, and the shared future runtime call classification test
+  now exercises those helpers alongside the existing kind checks. Serial
+  focused verification passed `zig fmt --check src/lowering_rules.zig` and
+  `zig build test -j1 -Dtest-filter='shared future runtime call classification'
+  --summary all` 2/2. No full suite or concurrent tests were run.
+
 - Shared OptionClosureCallPlan helper normalization (2026-07-18):
   `OptionClosureCallPlan` now exposes `isMap()` / `isAndThen()` /
   `isUnwrapOrElse()`, and SA-text option closure dispatch consumes those

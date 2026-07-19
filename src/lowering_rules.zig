@@ -271,6 +271,34 @@ pub const FutureRuntimeCallKind = enum {
 pub const FutureRuntimeCallPlan = struct {
     kind: FutureRuntimeCallKind,
 
+    pub fn isReady(self: FutureRuntimeCallPlan) bool {
+        return self.kind == .ready;
+    }
+
+    pub fn isPending(self: FutureRuntimeCallPlan) bool {
+        return self.kind == .pending;
+    }
+
+    pub fn isDeferReady(self: FutureRuntimeCallPlan) bool {
+        return self.kind == .defer_ready;
+    }
+
+    pub fn isJoin2(self: FutureRuntimeCallPlan) bool {
+        return self.kind == .join2;
+    }
+
+    pub fn isSelect2(self: FutureRuntimeCallPlan) bool {
+        return self.kind == .select2;
+    }
+
+    pub fn isPairAccessor(self: FutureRuntimeCallPlan) bool {
+        return self.pairMacroName() != null;
+    }
+
+    pub fn isEitherAccessor(self: FutureRuntimeCallPlan) bool {
+        return self.eitherValueMacroName() != null;
+    }
+
     pub fn pairMacroName(self: FutureRuntimeCallPlan) ?[]const u8 {
         return switch (self.kind) {
             .pair_left => "FUTURE_PAIR_LEFT",

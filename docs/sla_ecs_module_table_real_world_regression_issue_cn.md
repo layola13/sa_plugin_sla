@@ -409,3 +409,14 @@ Measured:
 
 Test/codegen paths still use selective reachability.
 
+## 2026-07-19 disk-backed expand cache
+
+Large modules such as `world_table_erased.sla` spend ~140ms in `@expand_tuple`
+source expansion on cold process starts. `getOrParse` now stores expanded
+sources under `.sla-cache/expand/<stem>-<content-hash>.sla`.
+
+Warm second-process check (parallel_runner):
+- world_table_erased expand: 149ms → 1ms
+- world_table_erased getOrParse total: 275ms → 108ms (remaining mostly parse)
+- resolve-roots: 333ms → 156ms
+

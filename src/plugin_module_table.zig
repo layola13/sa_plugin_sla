@@ -12,6 +12,48 @@ const moduleNamespaceMatchesImportPath = plugin_imports.moduleNamespaceMatchesIm
 const resolveImportFiles = plugin_imports.resolveImportFiles;
 const splitImportedMangledSymbol = plugin_imports.splitImportedMangledSymbol;
 
+
+
+fn expandSourceWithDiskCache(allocator: std.mem.Allocator, module_path: []const u8, source: []const u8) ![]const u8 {
+    // Skip cache machinery when expansion is a pure copy.
+    if (std.mem.indexOf(u8, source, "@expand_tuple") == null) {
+        return source_expand.expand(allocator, source);
+    }
+    const cache_path = try expandCachePath(allocator, module_path, source);
+    defer allocator.free(cache_path);
+    if (try loadExpandedSourceCache(allocator, cache_path)) |cached| {
+        return cached;
+    }
+    const expanded = try source_expand.expand(allocator, source);
+    storeExpandedSourceCache(cache_path, expanded);
+    return expanded;
+}
+
+fn expandCachePath(allocator: std.mem.Allocator, module_path: []const u8, source: []const u8) ![]u8 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(module_path);
+    hasher.update(&std.mem.toBytes(@as(u64, source.len)));
+    hasher.update(source);
+    const digest = hasher.final();
+    const stem = std.fs.path.basename(module_path);
+    return try std.fmt.allocPrint(allocator, ".sla-cache/expand/{s}-{x}.sla", .{ stem, digest });
+}
+
+fn loadExpandedSourceCache(allocator: std.mem.Allocator, cache_path: []const u8) !?[]u8 {
+    return std.fs.cwd().readFileAlloc(allocator, cache_path, 64 * 1024 * 1024) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => err,
+    };
+}
+
+fn storeExpandedSourceCache(cache_path: []const u8, expanded: []const u8) void {
+    const dir = std.fs.path.dirname(cache_path) orelse return;
+    std.fs.cwd().makePath(dir) catch return;
+    const file = std.fs.cwd().createFile(cache_path, .{}) catch return;
+    defer file.close();
+    file.writeAll(expanded) catch {};
+}
+
 fn moduleTableProfileEnabled() bool {
     // Match SLA_PROFILE used by import-expand / compile stages.
     const value = std.process.getEnvVarOwned(std.heap.page_allocator, "SLA_PROFILE") catch return false;
@@ -432,10 +474,10 @@ pub const SlaModuleTable = struct {
         const expand_start = if (profile) std.time.nanoTimestamp() else 0;
         const cache_lookup_path = std.fs.cwd().realpathAlloc(self.allocator, resolved.path) catch resolved.path;
         const expanded_source = if (self.import_type_scan_cache.get(cache_lookup_path) orelse self.import_type_scan_cache.get(resolved.path)) |surface| blk: {
-            if (!surface.complete) break :blk try source_expand.expand(self.allocator, resolved.source);
+            if (!surface.complete) break :blk try expandSourceWithDiskCache(self.allocator, resolved.path, resolved.source);
             self.expanded_source_cache_hits += 1;
             break :blk surface.expanded_source;
-        } else try source_expand.expand(self.allocator, resolved.source);
+        } else try expandSourceWithDiskCache(self.allocator, resolved.path, resolved.source);
         const expand_ns = if (profile) std.time.nanoTimestamp() - expand_start else 0;
         const parse_start = if (profile) std.time.nanoTimestamp() else 0;
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, base_dir, self.parse_options);

@@ -19,6 +19,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Disk-backed @expand_tuple source cache (2026-07-19):
+  getOrParse caches expanded sources under `.sla-cache/expand/` keyed by path+
+  content hash. Warm check of parallel_runner: world_table expand 149ms→1ms,
+  getOrParse total 275ms→108ms, resolve-roots 333ms→156ms. Correctness fixtures green.
+
 - Share isRawPtrAliasType on Y (2026-07-19):
   Void-as-raw-ptr alias classification moved into lowering_rules; SA delegates.
 

@@ -40,6 +40,11 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Parallel-runner child-scope + Arc<*World> combination fixture (2026-07-19).
+	  Added `tests/test_unit_parallel_runner_child_scope_arc_direct.sla` for
+	  `fn(Arc<*World>) -> Holder` child-scope return + extend/call. SA/SAB 3/3;
+	  prior parallel-runner fixtures green; `task_pool_builder.sla` still 6/6.
+
 	- [x] Branch-param consume merge fix + thread Arc lane fixture (2026-07-19).
 	  Fixed SAB `let _ = owner` consume and branch balance for by-value params;
 	  added branch-merge and thread-Arc unit fixtures. `task_pool_builder.sla`

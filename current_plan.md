@@ -19,6 +19,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Parallel-runner child-scope + Arc<*World> combination (2026-07-19):
+  Added `tests/test_unit_parallel_runner_child_scope_arc_direct.sla` covering
+  `Vec<fn(Arc<*World>) -> Holder>` child-scope return, Arc world call of nested
+  runs, and loop-extend of returned Arc fnptrs into a parent. Serial SA 3/3 and
+  strict SAB 3/3 (`sab direct codegen` ~5.3s). Prior thread-Arc / child-scope /
+  Arc-world fixtures still pass. `task_pool_builder.sla` whole-file SAB still
+  6/6 under 10s; `parallel_runner.sla` has no `@test` (0/0) under SAB smoke.
+
 - Branch-param consume merge + task_pool_builder whole-file SAB (2026-07-19):
   Fixed direct SAB discard/branch balancing for by-value non-Copy params so
   then/else ownership of `get_or_init(pools, pool)` merges cleanly. Added

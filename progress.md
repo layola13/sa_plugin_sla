@@ -5,6 +5,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Parallel-runner child-scope + Arc<*World> combination (2026-07-19):
+  Added `tests/test_unit_parallel_runner_child_scope_arc_direct.sla` covering
+  child-scope returns of holders with Arc world fnptrs, call of returned holder,
+  and loop-extend into parent. Serial SA 3/3 and strict SAB 3/3. Prior
+  parallel-runner fixtures and `task_pool_builder.sla` whole-file SAB 6/6 still
+  green. Remaining gap is residual whole-file `parallel_runner.sla` cost / any
+  host suite growth onto external/result/recursive child-scope lanes.
+
 - Branch-param consume merge + task_pool_builder whole-file SAB (2026-07-19):
   Fixed direct SAB discard/branch balancing for by-value non-Copy params so
   then/else ownership of `get_or_init(pools, pool)` merges cleanly. Added

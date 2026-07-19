@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Share Option/Result pattern helpers + atomicOrderingToken (2026-07-19):
+  patternUsesOptionMacros/patternUsesResultMacros and atomicOrderingToken live
+  in lowering_rules; SA wrappers delegate. Stack/vec fixtures green.
+
 - getOrParse body_spans timer (2026-07-19):
   SLA_PROFILE reports body_spans cost separately; world_table_erased spans ~2ms
   of ~130ms parse, confirming residual cost is lexer/parser of expanded surface.

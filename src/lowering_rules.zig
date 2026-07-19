@@ -2902,6 +2902,10 @@ pub fn patternUsesResultMacros(enum_name: []const u8, variant_name: []const u8) 
     return std.mem.eql(u8, enum_name, "Result") or std.mem.eql(u8, variant_name, "Ok") or std.mem.eql(u8, variant_name, "Err");
 }
 
+pub fn patternUsesOptionMacros(enum_name: []const u8, variant_name: []const u8) bool {
+    return std.mem.eql(u8, enum_name, "Option") or std.mem.eql(u8, variant_name, "Some") or std.mem.eql(u8, variant_name, "None");
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     var curr = ty;
     while (true) {
@@ -3064,6 +3068,15 @@ pub fn isAtomicI32Type(ty: *const ast.Type) bool {
 
 pub fn isAtomicUsizeType(ty: *const ast.Type) bool {
     return isUserDefinedNamed(ty, "AtomicUsize");
+}
+
+pub fn atomicOrderingToken(name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, name, "Ordering::SeqCst")) return "seq_cst";
+    if (std.mem.eql(u8, name, "Ordering::Acquire")) return "acquire";
+    if (std.mem.eql(u8, name, "Ordering::Release")) return "release";
+    if (std.mem.eql(u8, name, "Ordering::Relaxed")) return "relaxed";
+    if (std.mem.eql(u8, name, "Ordering::AcqRel")) return "acq_rel";
+    return null;
 }
 
 pub fn refCellInnerType(ty: *const ast.Type) ?*ast.Type {

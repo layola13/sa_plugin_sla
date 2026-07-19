@@ -4560,13 +4560,7 @@ pub const Codegen = struct {
 
     fn atomicOrderingToken(expr: *const ast.Node) CodegenError![]const u8 {
         if (expr.* != .identifier) return CodegenError.CodegenError;
-        const name = expr.identifier;
-        if (std.mem.eql(u8, name, "Ordering::SeqCst")) return "seq_cst";
-        if (std.mem.eql(u8, name, "Ordering::Acquire")) return "acquire";
-        if (std.mem.eql(u8, name, "Ordering::Release")) return "release";
-        if (std.mem.eql(u8, name, "Ordering::Relaxed")) return "relaxed";
-        if (std.mem.eql(u8, name, "Ordering::AcqRel")) return "acq_rel";
-        return CodegenError.CodegenError;
+        return lowering_rules.atomicOrderingToken(expr.identifier) orelse CodegenError.CodegenError;
     }
 
     const HashMapTypes = lowering_rules.MapTypes;
@@ -4620,7 +4614,7 @@ pub const Codegen = struct {
     }
 
     fn patternUsesOptionMacros(pattern: ast.EnumPattern) bool {
-        return std.mem.eql(u8, pattern.enum_name, "Option") or std.mem.eql(u8, pattern.variant_name, "Some") or std.mem.eql(u8, pattern.variant_name, "None");
+        return lowering_rules.patternUsesOptionMacros(pattern.enum_name, pattern.variant_name);
     }
 
     fn enumNameMatchesDecl(pattern_name: []const u8, decl_name: []const u8) bool {

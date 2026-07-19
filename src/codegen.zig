@@ -4676,33 +4676,11 @@ pub const Codegen = struct {
     }
 
     fn resultOkType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Result") and ud.generics.len == 2) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.resultOkType(ty);
     }
 
     fn resultErrType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Result") and ud.generics.len == 2) return ud.generics[1];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.resultErrType(ty);
     }
 
     fn patternUsesResultMacros(pattern: ast.EnumPattern) bool {

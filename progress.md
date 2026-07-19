@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- SA Result ok/err peels delegate to shared Y helpers (2026-07-19):
+  `resultOkType`/`resultErrType` in SA-text now call lowering_rules helpers.
+  Result entity cleanup fixture SA/SAB green.
+
 - Reachability drain profiling + empty-body skip (2026-07-19):
   Profiled reachability init as index/roots/drain and drain body walks.
   parallel_runner: drain ~310ms of which body_walk ~309ms across 121 non-empty

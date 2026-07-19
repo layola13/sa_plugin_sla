@@ -5,6 +5,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Module/Y/SAB campaign status (2026-07-19):
+  Warm parallel_runner: check ~0.5-0.8s, build ~0.85-1.1s.
+  Caches: expand, macros, import-lists, reachable plans; check include_all.
+  Y: ownership/peels/copy/array/smart-pointer/type peels heavily shared.
+  Residual: root parse + getOrParse; SAB shallow_copy/str_eq known issues.
+
 - Lazy callable-index on warm one-shot materialize (2026-07-19):
   Skip seeding callable index when plan-cache hit needs no reparse.
   parallel_runner warm import expand ~296ms, build ~0.85s.

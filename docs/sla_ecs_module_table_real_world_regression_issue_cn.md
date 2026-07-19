@@ -450,3 +450,16 @@ aliases continue to be registered via `registerImportedFunctionAliases*`.
 
 `parallel_runner` check selective append decls: 2345 → 1339.
 
+## 2026-07-19 check stage profile
+
+Warm `sla check parallel_runner.sla`:
+
+- check parse (root): ~281ms
+- check import expand: ~182ms
+- monomorphize: ~3ms
+- load contracts: ~41ms
+- import aliases: ~4ms
+- type check: ~6ms
+
+After import-expand wins, residual check cost is primarily root-source full parse.
+

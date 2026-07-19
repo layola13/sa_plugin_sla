@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- SLA_PROFILE stages for `sla check` (2026-07-19):
+  check path now reports read/expand/parse/import/mono/contracts/aliases/typecheck.
+  Warm parallel_runner: parse root ~281ms, import expand ~182ms, typecheck ~6ms.
+
 - Check-path include_all keeps raw decls only (2026-07-19):
   Skip duplicate namespaced alias function nodes during include_all append;
   aliases still come from registerImportedFunctionAliases. Decls 2345→1339 on

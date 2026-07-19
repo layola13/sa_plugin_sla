@@ -1,5 +1,7 @@
 # sla_ts main direct SAB 10s timeout
 
+状态：fixed/verified（2026-07-19）。根因是 direct SAB 对 struct 字段类型为固定数组（如 `[ptr; N]`）不支持；现已按元素拷贝内联字段。新增 `tests/test_unit_fixed_array_ptr_struct_direct.sla`；`sla_ts` `src/tsgo/runtime.sla` SAB 3/3、`src/main.sla` focused SAB 1/1。
+
 ## 状态
 
 待排查。该问题来自 `/home/vscode/projects/sa_plugins/sla_ts` 当前重构分支的验证限制。

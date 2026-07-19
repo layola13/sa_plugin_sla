@@ -9506,6 +9506,7 @@ pub const Codegen = struct {
     }
 
     fn stringLiteralShouldBeRawPointer(self: *Codegen, ty: ?*const ast.Type) bool {
+        // fixed-array-ptr-string-literal-raw-2026-07-19
         _ = self;
         // Default to raw data-pointer (SLA string literal type is often void/ptr).
         // Only build a Slice when the expected type is explicitly Slice/String.
@@ -13613,6 +13614,22 @@ pub const Codegen = struct {
         defer self.allocator.free(plans);
         for (plans, 0..) |plan, field_index| {
             const layout = plan.layout;
+            // Fixed-array fields are not a single primitive store. Copy each
+            // element into the inline field region (needed for shapes like
+            // `values: [ptr; N]` in sla_ts RuntimeArgs).
+            if (plan.field_ty.* == .array) {
+                if (plan.source != .explicit) return Error.UnsupportedSabDirectFeature;
+                const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
+                const later_mark = if (nodeMayContainCall(value))
+                    try self.pushStructLiteralLaterFieldExprsFromPlans(plans, field_index)
+                else
+                    self.current_expr_later_nodes.items.len;
+                defer self.popExprLaterNodesTo(later_mark);
+                const value_reg = try self.genExpr(value);
+                try self.storeArrayValueIntoStructField(dst, layout.offset, plan.field_ty.array, value_reg);
+                try self.releaseStoredExprResultIfNeeded(value, value_reg, plan.field_ty);
+                continue;
+            }
             const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
             var transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
             var copy_elided_move = false;
@@ -14184,6 +14201,21 @@ pub const Codegen = struct {
             try self.releaseStoredExprResultIfNeeded(elem, value, arr_ty.array.elem);
         }
         return dst;
+    }
+
+    fn storeArrayValueIntoStructField(self: *Codegen, dst: u32, field_offset: usize, arr: ast.ArrayType, value_reg: u32) !void {
+        // Inline array fields are stored as contiguous elements. The value
+        // register is the temporary array allocation produced by genArrayLiteral.
+        // Element loads are value copies (including raw ptr bits); do not
+        // release them as owners or string/const data gets double-freed.
+        for (0..arr.len) |idx| {
+            const elem_layout = arrayElementLayout(arr, idx) orelse return Error.UnsupportedSabDirectFeature;
+            const elem_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(elem_reg, value_reg, elem_layout.offset, elem_layout.ty);
+            try self.emitStore(dst, field_offset + elem_layout.offset, elem_reg, elem_layout.ty);
+            try self.emitConsumedMarker(elem_reg);
+            try self.markConsumed(elem_reg);
+        }
     }
 
     fn genRepeatArrayLiteral(self: *Codegen, expr: *const ast.Node, lit: ast.RepeatArrayLiteral) anyerror!u32 {

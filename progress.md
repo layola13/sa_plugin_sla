@@ -5,6 +5,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Fixed-array ptr struct field SAB lowering (2026-07-19):
+  Direct SAB now stores inline fixed-array struct fields by element copy and
+  treats string literals as raw data pointers when expected type is `ptr`.
+  Added `tests/test_unit_fixed_array_ptr_struct_direct.sla` (SA/SAB 2/2).
+  `sla_ts` `runtime.sla` strict SAB 3/3 and `main.sla` focused SAB 1/1.
+
 - Struct-literal owner move_ emit + issue doc closures (2026-07-19):
   Direct SAB struct-literal field ownership transfer now emits visible `.move_`
   for source locals (`tests/test_unit_struct_literal_owner_move_direct.sla`

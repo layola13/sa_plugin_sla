@@ -1044,18 +1044,7 @@ pub const TypeChecker = struct {
     }
 
     fn sliceElementType(ty: *ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Slice") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.sliceElementType(ty);
     }
 
     fn canCoerceBorrowArrayToBorrowSlice(self: *TypeChecker, param_ty: *ast.Type, arg_ty: *ast.Type) bool {
@@ -1572,20 +1561,8 @@ pub const TypeChecker = struct {
     };
 
     fn hashMapTypes(ty: *const ast.Type) ?HashMapTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "HashMap") and ud.generics.len == 2) {
-                        return .{ .key = ud.generics[0], .value = ud.generics[1] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        const mapped = lowering_rules.hashMapTypes(ty) orelse return null;
+        return .{ .key = mapped.key, .value = mapped.value };
     }
 
     const HashSetTypes = struct {
@@ -1593,20 +1570,8 @@ pub const TypeChecker = struct {
     };
 
     fn hashSetTypes(ty: *const ast.Type) ?HashSetTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "HashSet") and ud.generics.len == 1) {
-                        return .{ .key = ud.generics[0] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        const key = lowering_rules.hashSetElementType(ty) orelse return null;
+        return .{ .key = key };
     }
 
     const BTreeMapTypes = struct {
@@ -1615,20 +1580,8 @@ pub const TypeChecker = struct {
     };
 
     fn btreeMapTypes(ty: *const ast.Type) ?BTreeMapTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "BTreeMap") and ud.generics.len == 2) {
-                        return .{ .key = ud.generics[0], .value = ud.generics[1] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        const mapped = lowering_rules.btreeMapTypes(ty) orelse return null;
+        return .{ .key = mapped.key, .value = mapped.value };
     }
 
     const BTreeSetTypes = struct {
@@ -1636,20 +1589,8 @@ pub const TypeChecker = struct {
     };
 
     fn btreeSetTypes(ty: *const ast.Type) ?BTreeSetTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "BTreeSet") and ud.generics.len == 1) {
-                        return .{ .key = ud.generics[0] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        const key = lowering_rules.btreeSetElementType(ty) orelse return null;
+        return .{ .key = key };
     }
 
     fn optionInnerType(ty: *const ast.Type) ?*ast.Type {

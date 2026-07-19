@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Type-checker map/set/slice peels use shared Y helpers (2026-07-19):
+  hashMap/btreeMap/hashSet/btreeSet/slice peels in type_checker now wrap
+  lowering_rules. Check/fixtures green.
+
 - Type-checker peels consume shared Y helpers (2026-07-19):
   type_checker now delegates Vec/Option/Result/Box/Arc/Rc/Mutex/RwLock/channel/
   task/future peels and numeric/raw-ptr classifiers to lowering_rules. Check and

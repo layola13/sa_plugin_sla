@@ -1936,13 +1936,16 @@ pub fn materializeImportedModuleBodiesOneShot(
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
 ) !ReachabilityMaterializationStats {
+    var stats = ReachabilityMaterializationStats{};
+    stats.passes = 1;
+
+    var any_reparse = false;
     var state = ReachabilityBuildState.init(allocator);
     defer state.deinit();
     for (ordered_modules) |module| {
         try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
     }
-    var stats = ReachabilityMaterializationStats{};
-    stats.passes = 1;
+
     for (ordered_modules) |module| {
         if (module.has_function_bodies and module.has_macro_bodies) continue;
         var selected_functions = std.StringHashMap(void).init(allocator);
@@ -1959,20 +1962,16 @@ pub fn materializeImportedModuleBodiesOneShot(
             stringSetsEqual(&selected_macros, &module.parsed_macro_bodies)) continue;
         _ = try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
         stats.reparses += 1;
+        any_reparse = true;
         try state.callable_index.refreshDeclsFromModule(module);
-        var newly = std.ArrayList([]const u8).init(allocator);
-        defer {
-            for (newly.items) |n| allocator.free(n);
-            newly.deinit();
-        }
-        var it = selected_functions.keyIterator();
-        while (it.next()) |name_ptr| try newly.append(try allocator.dupe(u8, name_ptr.*));
-        try enqueueMaterializedFunctionBodies(&state, module, newly.items, reachable);
     }
-    // Single drain of newly enqueued bodies to discover any missing, then if needed fall back to multipass.
+
+    // When all selected bodies are already present (common warm plan-cache hit
+    // after a prior process-local materialize), skip the expensive drain entirely.
+    if (!any_reparse) return stats;
+
     try drainReachabilityBuildState(&state, modules, options, imported_macros, reachable, referenced_types);
     stats.incremental_extensions = 1;
-    // Finish any remaining multipass work (usually small on warm cache hits).
     const more = try materializeReachableImportedModuleBodiesWithState(&state, allocator, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
     stats.passes += more.passes;
     stats.reparses += more.reparses;

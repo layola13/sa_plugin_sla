@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Skip warm one-shot drain when no reparse needed (2026-07-19):
+  Plan-cache hits with already-present bodies return immediately.
+  parallel_runner warm import expand ~358ms, build ~1.09s; SA byte-identical.
+
 - One-shot materialize on reachable plan cache hits (2026-07-19):
   Warm compile materialize is ~0ms (reparses=0) with identical SA output to cold
   path. parallel_runner warm build ~1.25s.

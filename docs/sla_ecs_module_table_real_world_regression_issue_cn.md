@@ -557,3 +557,13 @@ Warm plan-cache hits now use `materializeImportedModuleBodiesOneShot` and often
 report `reparses=0/extend=0` when module tables already hold bodies from prior
 work in-process, while cold vs warm generated SA for parallel_runner is byte-identical.
 
+## 2026-07-19 warm one-shot early exit
+
+When a reachable plan cache hits and selected bodies are already present,
+materialize returns without drain/reparse.
+
+Warm `parallel_runner` build:
+- import expand: ~358ms
+- wall-clock: ~1.09s
+- SA output remains byte-identical to cold path
+

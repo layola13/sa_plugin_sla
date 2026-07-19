@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- SAB enumDeclForValueType uses typeBaseName (2026-07-19):
+  Option/Result exclusion + enum lookup go through shared typeBaseName peel.
+
 - Share typeBaseName/firstGenericArg on Y (2026-07-19):
   SAB wrappers delegate to lowering_rules; concreteTypeName reused for base name.
 

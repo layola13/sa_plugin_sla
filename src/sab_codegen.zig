@@ -1449,18 +1449,10 @@ pub const Codegen = struct {
     }
 
     fn enumDeclForValueType(self: *Codegen, ty: *const ast.Type) ?*ast.EnumDecl {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Option") or std.mem.eql(u8, ud.name, "Result")) return null;
-                    return self.tc.enums.get(ud.name);
-                },
-                else => return null,
-            }
-        }
+        const name = lowering_rules.typeBaseName(ty) orelse return null;
+        // Option/Result are std enums with dedicated lowering, not user enum decls.
+        if (std.mem.eql(u8, name, "Option") or std.mem.eql(u8, name, "Result")) return null;
+        return self.tc.enums.get(name);
     }
 
     fn enumDeclForPatternValue(self: *Codegen, value: *const ast.Node, pattern: ast.EnumPattern) !?*ast.EnumDecl {

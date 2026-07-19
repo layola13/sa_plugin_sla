@@ -3374,7 +3374,6 @@ pub const Codegen = struct {
         return lowering_rules.deriveNameMatches(actual, wanted);
     }
 
-
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
         return switch (ty.*) {
             .primitive => |p| p != .void_type,

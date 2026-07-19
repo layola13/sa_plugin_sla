@@ -3105,6 +3105,14 @@ pub fn pollInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Poll");
 }
 
+pub fn futurePairInnerTypes(ty: *const ast.Type) ?MapTypes {
+    return userDefinedMapTypes(ty, "FuturePair");
+}
+
+pub fn futureEitherInnerTypes(ty: *const ast.Type) ?MapTypes {
+    return userDefinedMapTypes(ty, "FutureEither");
+}
+
 pub fn unwrapPointerLikeType(ty: *ast.Type) *ast.Type {
     var curr = ty;
     while (true) {

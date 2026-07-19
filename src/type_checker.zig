@@ -1623,20 +1623,8 @@ pub const TypeChecker = struct {
     };
 
     fn futurePairInnerTypes(ty: *const ast.Type) ?FuturePairInnerTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "FuturePair") and ud.generics.len == 2) {
-                        return .{ .left = ud.generics[0], .right = ud.generics[1] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        const mapped = lowering_rules.futurePairInnerTypes(ty) orelse return null;
+        return .{ .left = mapped.key, .right = mapped.value };
     }
 
     fn checkFutureJoin2Call(self: *TypeChecker, call: ast.CallExpr, scope: *Scope) TypeError!*ast.Type {
@@ -1667,20 +1655,8 @@ pub const TypeChecker = struct {
     };
 
     fn futureEitherInnerTypes(ty: *const ast.Type) ?FutureEitherInnerTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "FutureEither") and ud.generics.len == 2) {
-                        return .{ .left = ud.generics[0], .right = ud.generics[1] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        const mapped = lowering_rules.futureEitherInnerTypes(ty) orelse return null;
+        return .{ .left = mapped.key, .right = mapped.value };
     }
 
     fn checkFutureSelect2Call(self: *TypeChecker, call: ast.CallExpr, scope: *Scope) TypeError!*ast.Type {

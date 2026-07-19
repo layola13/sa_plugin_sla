@@ -19,6 +19,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share FuturePair/FutureEither peels on Y (2026-07-19):
+  type_checker wraps shared future pair/either generic peels. Async fixture green.
+
 - Share Ordering/Executor/Poll/unwrap peels on Y (2026-07-19):
   type_checker uses shared isOrderingType/executorInnerType/pollInnerType/
   unwrapPointerLikeType/executorTaskBufferInnerType. Async/check fixtures green.

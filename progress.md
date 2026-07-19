@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Share FuturePair/FutureEither peels on Y (2026-07-19):
+  type_checker wraps shared future pair/either generic peels. Async fixture green.
+
 - Share Ordering/Executor/Poll/unwrap peels on Y (2026-07-19):
   type_checker uses shared isOrderingType/executorInnerType/pollInnerType/
   unwrapPointerLikeType/executorTaskBufferInnerType. Async/check fixtures green.

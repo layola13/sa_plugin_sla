@@ -2928,6 +2928,26 @@ pub fn arcInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Arc");
 }
 
+pub fn manuallyDropInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "ManuallyDrop");
+}
+
+pub fn joinHandleInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "JoinHandle");
+}
+
+pub fn senderInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Sender");
+}
+
+pub fn receiverInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Receiver");
+}
+
+pub fn atomicPtrInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "AtomicPtr");
+}
+
 pub fn refCellInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "RefCell");
 }

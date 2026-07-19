@@ -3006,18 +3006,7 @@ pub const Codegen = struct {
     }
 
     fn manuallyDropInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "ManuallyDrop") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.manuallyDropInnerType(ty);
     }
 
     fn borrowedPrimitiveType(ty: *const ast.Type) ?*const ast.Type {
@@ -4786,48 +4775,15 @@ pub const Codegen = struct {
     }
 
     fn joinHandleInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "JoinHandle") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.joinHandleInnerType(ty);
     }
 
     fn senderInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Sender") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.senderInnerType(ty);
     }
 
     fn receiverInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Receiver") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.receiverInnerType(ty);
     }
 
     fn rcInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -4839,18 +4795,7 @@ pub const Codegen = struct {
     }
 
     fn atomicPtrInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "AtomicPtr") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.atomicPtrInnerType(ty);
     }
 
     fn ifLetChainNeedsNoSelf(comptime predicate: fn (*const ast.Node) bool, chain: ?[]const ast.IfLetCond) bool {

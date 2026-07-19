@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Y-share ManuallyDrop/JoinHandle/channel/AtomicPtr peelers (2026-07-19):
+  Shared remaining pure generic peels into lowering_rules and delegated SA
+  wrappers. Thread/smart-pointer/vec ownership fixtures remain SA/SAB green.
+
 - Module import-expand ordered-module profile counter (2026-07-19):
   SLA_PROFILE now prints `import expand ordered modules=N` after resolve-roots.
   Real ECS check samples: world_table_erased N=12 (~70ms roots / ~517ms materialize),

@@ -19,6 +19,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Y-share HashSet/BTreeSet/Slice type peelers (2026-07-19):
+  Shared `hashSetElementType`, `btreeSetElementType`, `sliceElementType` into
+  lowering_rules; SA wrappers delegate. Collection peeler unit test extended;
+  ownership/smart-pointer fixtures still SA/SAB green.
+
 - Y-share std-owner noncopy + collection type peelers (2026-07-19):
   Shared `userDefinedStdOwnerIsNonCopy`, `vecDequeElementType`, `hashMapTypes`,
   `btreeMapTypes` into lowering_rules; SA wrappers delegate, SAB uses shared

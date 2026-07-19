@@ -4756,20 +4756,8 @@ pub const Codegen = struct {
     };
 
     fn hashSetTypes(ty: *const ast.Type) ?HashSetTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "HashSet") and ud.generics.len == 1) {
-                        return .{ .key = ud.generics[0] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        const key = lowering_rules.hashSetElementType(ty) orelse return null;
+        return .{ .key = key };
     }
 
     const BTreeMapTypes = lowering_rules.MapTypes;
@@ -4783,35 +4771,12 @@ pub const Codegen = struct {
     };
 
     fn btreeSetTypes(ty: *const ast.Type) ?BTreeSetTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "BTreeSet") and ud.generics.len == 1) {
-                        return .{ .key = ud.generics[0] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        const key = lowering_rules.btreeSetElementType(ty) orelse return null;
+        return .{ .key = key };
     }
 
     fn sliceElementType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Slice") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.sliceElementType(ty);
     }
 
     fn optionInnerType(ty: *const ast.Type) ?*ast.Type {

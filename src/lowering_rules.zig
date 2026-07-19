@@ -2877,6 +2877,18 @@ pub fn btreeMapTypes(ty: *const ast.Type) ?MapTypes {
     return userDefinedMapTypes(ty, "BTreeMap");
 }
 
+pub fn hashSetElementType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "HashSet");
+}
+
+pub fn btreeSetElementType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "BTreeSet");
+}
+
+pub fn sliceElementType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Slice");
+}
+
 pub fn taskInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Task");
 }
@@ -6220,11 +6232,17 @@ test "collection type peelers" {
     var gens = [_]*ast.Type{&i32_ty};
     var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
     var deque_ty = ast.Type{ .user_defined = .{ .name = "VecDeque", .generics = gens[0..] } };
+    var set_ty = ast.Type{ .user_defined = .{ .name = "HashSet", .generics = gens[0..] } };
+    var bset_ty = ast.Type{ .user_defined = .{ .name = "BTreeSet", .generics = gens[0..] } };
+    var slice_ty = ast.Type{ .user_defined = .{ .name = "Slice", .generics = gens[0..] } };
     var map_gens = [_]*ast.Type{ &i32_ty, &str_ty };
     var map_ty = ast.Type{ .user_defined = .{ .name = "HashMap", .generics = map_gens[0..] } };
     var btree_ty = ast.Type{ .user_defined = .{ .name = "BTreeMap", .generics = map_gens[0..] } };
     try std.testing.expect(vecElementType(&vec_ty) == &i32_ty);
     try std.testing.expect(vecDequeElementType(&deque_ty) == &i32_ty);
+    try std.testing.expect(hashSetElementType(&set_ty) == &i32_ty);
+    try std.testing.expect(btreeSetElementType(&bset_ty) == &i32_ty);
+    try std.testing.expect(sliceElementType(&slice_ty) == &i32_ty);
     const hm = hashMapTypes(&map_ty) orelse return error.TestExpectedEqual;
     try std.testing.expect(hm.key == &i32_ty);
     try std.testing.expect(hm.value == &str_ty);

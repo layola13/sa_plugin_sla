@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Compile-path materialize scales with root size (2026-07-19):
+  task_pool_builder build import expand ~316ms materialize ~50ms (warm).
+  parallel_runner build still ~2.9s dominated by multi-pass body walks.
+
 - Unit test for isStdCollectionType (2026-07-19):
   Shared collection classifier covered by lowering_rules unit test.
 

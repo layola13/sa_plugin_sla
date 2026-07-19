@@ -483,3 +483,13 @@ Warm wall-clock now:
 - parallel_runner: ~0.5-0.8s
 - system_param_table_erased: ~1.3s (root parse ~0.4-0.5s, typecheck ~0.3s)
 
+## 2026-07-19 compile-path scaling note
+
+Warm compile import-expand:
+
+- `task_pool_builder.sla`: import expand ~316ms, materialize ~50ms, selective decls=70
+- `parallel_runner.sla`: import expand ~1.0-1.4s with materialize extend ~0.5-0.6s
+
+Small roots stay healthy under registry-driven reachable materialize; large roots
+still pay multi-pass body walks.
+

@@ -313,6 +313,7 @@ pub const SlaModuleTable = struct {
     resolved_import_source_cache_hits: usize,
     expanded_source_cache_hits: usize,
     parse_options: parser_mod.Parser.Options,
+    capture_body_spans: bool = true,
 
     pub fn init(allocator: std.mem.Allocator) SlaModuleTable {
         return initWithParserOptions(allocator, .{
@@ -333,6 +334,7 @@ pub const SlaModuleTable = struct {
             .resolved_import_source_cache_hits = 0,
             .expanded_source_cache_hits = 0,
             .parse_options = parse_options,
+            .capture_body_spans = true,
         };
     }
 
@@ -481,7 +483,9 @@ pub const SlaModuleTable = struct {
             .function_body_spans = std.StringHashMap([]const u8).init(self.allocator),
         };
         const spans_start = if (profile) std.time.nanoTimestamp() else 0;
-        try captureModuleFunctionBodySpans(self.allocator, module, &parser);
+        if (self.capture_body_spans) {
+            try captureModuleFunctionBodySpans(self.allocator, module, &parser);
+        }
         if (profile) {
             const spans_ms = @divTrunc(std.time.nanoTimestamp() - spans_start, std.time.ns_per_ms);
             if (spans_ms > 0) {

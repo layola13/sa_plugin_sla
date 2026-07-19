@@ -440,6 +440,8 @@ pub fn runSlaCommandImpl(
             .parse_test_bodies = false,
             .prescan_sla_import_types = false,
         });
+        // Check include_all never materializes imported bodies; skip span capture.
+        import_modules.capture_body_spans = false;
         defer import_modules.deinit();
         var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
         defer root_import_groups.deinit();

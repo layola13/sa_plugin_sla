@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Skip function-body span capture on check path (2026-07-19):
+  SlaModuleTable.capture_body_spans=false for sla check include_all imports.
+  Compile/test materialize still captures spans.
+
 - Module/Y/SAB campaign status (2026-07-19):
   Warm parallel_runner: check ~0.5-0.8s, build ~0.85-1.1s.
   Caches: expand, macros, import-lists, reachable plans; check include_all.

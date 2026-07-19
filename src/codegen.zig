@@ -4786,7 +4786,7 @@ pub const Codegen = struct {
         return switch (expr.*) {
             .call_expr => |call| blk: {
                 if (call.associated_target) |target| {
-                    if (std.mem.eql(u8, target, "Box") and
+                    if (lowering_rules.isBoxTypeName(target) and
                         (std.mem.eql(u8, call.func_name, "new") or
                             std.mem.eql(u8, call.func_name, "into_raw") or
                             std.mem.eql(u8, call.func_name, "from_raw"))) break :blk true;
@@ -5398,7 +5398,7 @@ pub const Codegen = struct {
         return switch (expr.*) {
             .call_expr => |call| blk: {
                 if (call.associated_target) |target| {
-                    if (std.mem.eql(u8, target, "Rc") and std.mem.eql(u8, call.func_name, "new")) break :blk true;
+                    if (lowering_rules.isRcTypeName(target) and std.mem.eql(u8, call.func_name, "new")) break :blk true;
                 }
                 if (std.mem.eql(u8, call.func_name, "clone") and call.args.len == 1) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
@@ -12807,7 +12807,7 @@ pub const Codegen = struct {
                         self.out.writer().print("    call @{s}(*{s})\n", .{ helper.spawn_name, slot }) catch return CodegenError.CodegenError;
                         return slot;
                     }
-                    if (std.mem.eql(u8, target, "Box") and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isBoxTypeName(target) and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12815,7 +12815,7 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
                         return reg;
                     }
-                    if (std.mem.eql(u8, target, "Box") and std.mem.eql(u8, call.func_name, "into_raw")) {
+                    if (lowering_rules.isBoxTypeName(target) and std.mem.eql(u8, call.func_name, "into_raw")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const box_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12823,7 +12823,7 @@ pub const Codegen = struct {
                         self.consumed_bindings.put(box_reg, {}) catch return CodegenError.OutOfMemory;
                         return reg;
                     }
-                    if (std.mem.eql(u8, target, "Box") and std.mem.eql(u8, call.func_name, "from_raw")) {
+                    if (lowering_rules.isBoxTypeName(target) and std.mem.eql(u8, call.func_name, "from_raw")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const raw_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12831,7 +12831,7 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(raw_reg);
                         return reg;
                     }
-                    if (std.mem.eql(u8, target, "Rc") and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isRcTypeName(target) and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12839,7 +12839,7 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
                         return reg;
                     }
-                    if (std.mem.eql(u8, target, "Arc") and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isArcTypeName(target) and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();

@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share Box/Rc/Arc type-name helpers on Y (2026-07-19):
+  isBoxTypeName/isRcTypeName/isArcTypeName/smartPointerStdImportPath shared;
+  SA constructor/from_raw/into_raw paths and SAB Rc/Arc receivers use them.
+
 - Wall-clock refresh after contract/macro caches (2026-07-19):
   Warm parallel_runner: check ~0.65s, build ~1.68s (was ~2.4-2.9s). Remaining
   build cost is mostly import materialize body walks (~1.0s).

@@ -3233,6 +3233,29 @@ pub fn smartPointerType(ty: *const ast.Type) ?SmartPointerType {
     return null;
 }
 
+pub fn isBoxTypeName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Box");
+}
+
+pub fn isRcTypeName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Rc");
+}
+
+pub fn isArcTypeName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Arc");
+}
+
+pub fn isSmartPointerTypeName(name: []const u8) bool {
+    return isBoxTypeName(name) or isRcTypeName(name) or isArcTypeName(name);
+}
+
+pub fn smartPointerStdImportPath(name: []const u8) ?[]const u8 {
+    if (isBoxTypeName(name)) return "sa_std/box.sa";
+    if (isRcTypeName(name)) return "sa_std/rc.sa";
+    if (isArcTypeName(name)) return "sa_std/arc.sa";
+    return null;
+}
+
 pub fn smartPointerDerefType(ty: *const ast.Type) ?SmartPointerType {
     const smart = smartPointerType(ty) orelse return null;
     return switch (smart.kind) {
@@ -6591,4 +6614,13 @@ test "primitiveIsCopyValue classifies void as non-copy" {
     try std.testing.expect(primitiveIsCopyValue(.i32));
     try std.testing.expect(primitiveIsCopyValue(.u64));
     try std.testing.expect(!primitiveIsCopyValue(.void_type));
+}
+
+test "isSmartPointerTypeName classifies box/rc/arc" {
+    try std.testing.expect(isBoxTypeName("Box"));
+    try std.testing.expect(isRcTypeName("Rc"));
+    try std.testing.expect(isArcTypeName("Arc"));
+    try std.testing.expect(isSmartPointerTypeName("Box"));
+    try std.testing.expect(!isSmartPointerTypeName("Vec"));
+    try std.testing.expectEqualStrings("sa_std/box.sa", smartPointerStdImportPath("Box").?);
 }

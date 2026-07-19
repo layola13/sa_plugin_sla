@@ -11425,13 +11425,13 @@ pub const Codegen = struct {
         if (!std.mem.eql(u8, call.func_name, "clone") or call.args.len != 1) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         const receiver_type_name = typeBaseName(receiver_ty) orelse return null;
-        const macro_name = if (std.mem.eql(u8, receiver_type_name, "Rc"))
+        const macro_name = if (lowering_rules.isRcTypeName(receiver_type_name))
             "RC_CLONE_OUT"
-        else if (std.mem.eql(u8, receiver_type_name, "Arc"))
+        else if (lowering_rules.isArcTypeName(receiver_type_name))
             "ARC_CLONE_OUT"
         else
             return null;
-        const import_path = if (std.mem.eql(u8, receiver_type_name, "Rc"))
+        const import_path = if (lowering_rules.isRcTypeName(receiver_type_name))
             "sa_std/core/rc.sa"
         else
             "sa_std/core/arc.sa";

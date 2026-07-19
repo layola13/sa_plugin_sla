@@ -418,7 +418,7 @@ pub fn runSlaCommandImpl(
         plugin_compile_options.slaProfileStage(stderr, profile, "check read source", stage_start);
 
         stage_start = std.time.nanoTimestamp();
-        const expanded_content = source_expand.expand(allocator, content) catch |err| {
+        const expanded_content = source_expand.expandForModulePath(allocator, file, content) catch |err| {
             try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
             return 1;
         };

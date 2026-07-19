@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Unified disk expand cache for root + imports (2026-07-19):
+  `source_expand.expandForModulePath` caches @expand_tuple output for both root
+  check/compile and module getOrParse. Warm system_param root expand 148ms→3ms.
+
 - SLA_PROFILE stages for `sla check` (2026-07-19):
   check path now reports read/expand/parse/import/mono/contracts/aliases/typecheck.
   Warm parallel_runner: parse root ~281ms, import expand ~182ms, typecheck ~6ms.

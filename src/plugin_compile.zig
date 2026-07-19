@@ -83,7 +83,7 @@ pub fn testFilterSelectsNoTests(
         try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
         return null;
     };
-    const expanded_content = source_expand.expand(allocator, content) catch |err| {
+    const expanded_content = source_expand.expandForModulePath(allocator, file, content) catch |err| {
         try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
         return null;
     };
@@ -596,7 +596,7 @@ fn runSlaFrontend(
     slaProfileStage(stderr, profile, "read source", stage_start);
 
     stage_start = std.time.nanoTimestamp();
-    const expanded_content = source_expand.expand(allocator, content) catch |err| {
+    const expanded_content = source_expand.expandForModulePath(allocator, file, content) catch |err| {
         try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
         return null;
     };

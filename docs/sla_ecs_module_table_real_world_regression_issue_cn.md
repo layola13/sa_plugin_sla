@@ -463,3 +463,13 @@ Warm `sla check parallel_runner.sla`:
 
 After import-expand wins, residual check cost is primarily root-source full parse.
 
+## 2026-07-19 unified expandForModulePath cache
+
+Moved disk-backed `@expand_tuple` caching into `source_expand.expandForModulePath`
+and use it for:
+- root expand in `sla check` / compile
+- imported-module expand in `getOrParse`
+
+Warm second-process `system_param_table_erased` check:
+- check source expand: 148ms → 3ms
+

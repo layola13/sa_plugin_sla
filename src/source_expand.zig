@@ -65,6 +65,45 @@ pub fn expand(allocator: std.mem.Allocator, source: []const u8) SourceExpandErro
     return out.toOwnedSlice() catch return SourceExpandError.OutOfMemory;
 }
 
+pub fn expandForModulePath(allocator: std.mem.Allocator, module_path: []const u8, source: []const u8) SourceExpandError![]const u8 {
+    if (std.mem.indexOf(u8, source, "@expand_tuple") == null) {
+        return expand(allocator, source);
+    }
+    const cache_path = expandCachePath(allocator, module_path, source) catch return expand(allocator, source);
+    defer allocator.free(cache_path);
+    if (loadExpandedSourceCache(allocator, cache_path) catch null) |cached| {
+        return cached;
+    }
+    const expanded = try expand(allocator, source);
+    storeExpandedSourceCache(cache_path, expanded);
+    return expanded;
+}
+
+fn expandCachePath(allocator: std.mem.Allocator, module_path: []const u8, source: []const u8) ![]u8 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(module_path);
+    hasher.update(&std.mem.toBytes(@as(u64, source.len)));
+    hasher.update(source);
+    const digest = hasher.final();
+    const stem = std.fs.path.basename(module_path);
+    return try std.fmt.allocPrint(allocator, ".sla-cache/expand/{s}-{x}.sla", .{ stem, digest });
+}
+
+fn loadExpandedSourceCache(allocator: std.mem.Allocator, cache_path: []const u8) !?[]u8 {
+    return std.fs.cwd().readFileAlloc(allocator, cache_path, 64 * 1024 * 1024) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => err,
+    };
+}
+
+fn storeExpandedSourceCache(cache_path: []const u8, expanded: []const u8) void {
+    const dir = std.fs.path.dirname(cache_path) orelse return;
+    std.fs.cwd().makePath(dir) catch return;
+    const file = std.fs.cwd().createFile(cache_path, .{}) catch return;
+    defer file.close();
+    file.writeAll(expanded) catch {};
+}
+
 const ExpandTupleSpec = struct {
     min: usize,
     max: usize,

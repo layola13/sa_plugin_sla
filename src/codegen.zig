@@ -760,10 +760,13 @@ pub const Codegen = struct {
     }
 
     fn genDynCoercionExpr(self: *Codegen, expr: *ast.Node, plan: lowering_rules.DynCoercionPlan, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
-        return switch (plan.kind) {
-            .box_to_dyn => try self.genDynBoxCoercionExpr(expr, plan.trait_name, hoisted_allocs),
-            .rc_new_to_dyn_rc => try self.genDynRcCoercionExpr(expr, plan.trait_name, hoisted_allocs),
-        };
+        if (plan.isBoxToDyn()) {
+            return try self.genDynBoxCoercionExpr(expr, plan.trait_name, hoisted_allocs);
+        }
+        if (plan.isRcNewToDynRc()) {
+            return try self.genDynRcCoercionExpr(expr, plan.trait_name, hoisted_allocs);
+        }
+        return CodegenError.CodegenError;
     }
 
     fn emitIntConst(self: *Codegen, target: []const u8, value: i64) CodegenError!void {
@@ -5203,7 +5206,7 @@ pub const Codegen = struct {
 
     fn exprNeedsVecMacros(self: *Codegen, expr: *const ast.Node) bool {
         if (lowering_rules.planDynCoercion(self.tc, expr)) |plan| {
-            if (plan.kind == .box_to_dyn) return true;
+            if (plan.isBoxToDyn()) return true;
         }
         if (self.tc.expr_types.get(expr)) |ty| {
             if (vecElementType(ty) != null) return true;
@@ -8380,6 +8383,60 @@ pub const Codegen = struct {
         return CodegenError.CodegenError;
     }
 
+    fn genTaskRuntimeCall(self: *Codegen, task_plan: lowering_rules.TaskRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+        if (task_plan.isNew()) {
+            if (call.args.len != 1) return CodegenError.CodegenError;
+            const state_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const ctx = try self.newTmp();
+            const task = try self.newTmp();
+            const future_obj = try self.genFutureObjectForState(state_reg);
+            self.out.writer().print("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
+            self.out.writer().print("    EXPAND TASK_NEW {s}, {s}, {s}\n", .{ task, future_obj, ctx }) catch return CodegenError.CodegenError;
+            try self.emitRelease(ctx);
+            self.task_future_objects.put(task, future_obj) catch return CodegenError.OutOfMemory;
+            return task;
+        }
+        if (task_plan.isPoll()) {
+            if (call.args.len != 1) return CodegenError.CodegenError;
+            const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const poll_reg = try self.newTmp();
+            const tag_reg = try self.newTmp();
+            const ready_reg = try self.newTmp();
+            self.out.writer().print("    EXPAND TASK_POLL {s}, {s}\n", .{ poll_reg, task_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
+            try self.emitRelease(tag_reg);
+            try self.emitRelease(poll_reg);
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
+            return ready_reg;
+        }
+        if (task_plan.isIsReady()) {
+            if (call.args.len != 1) return CodegenError.CodegenError;
+            const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const ready_reg = try self.newTmp();
+            self.out.writer().print("    EXPAND TASK_IS_READY {s}, {s}\n", .{ ready_reg, task_reg }) catch return CodegenError.CodegenError;
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
+            return ready_reg;
+        }
+        if (task_plan.isResult()) {
+            if (call.args.len != 1) return CodegenError.CodegenError;
+            const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const value_reg = try self.newTmp();
+            self.out.writer().print("    EXPAND TASK_RESULT {s}, {s}\n", .{ value_reg, task_reg }) catch return CodegenError.CodegenError;
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
+            return value_reg;
+        }
+        if (task_plan.isState()) {
+            if (call.args.len != 1) return CodegenError.CodegenError;
+            const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const state_reg = try self.newTmp();
+            self.out.writer().print("    EXPAND TASK_STATE {s}, {s}\n", .{ state_reg, task_reg }) catch return CodegenError.CodegenError;
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
+            return state_reg;
+        }
+        return CodegenError.CodegenError;
+    }
+
     fn asyncSingleAwaitVTableName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
         return std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_VT", .{name}) catch return CodegenError.OutOfMemory;
     }
@@ -8969,66 +9026,64 @@ pub const Codegen = struct {
 
     fn genExecutorRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
         const plan = lowering_rules.planExecutorRuntimeCall(call) orelse return null;
-        return switch (plan.kind) {
-            .new => blk: {
-                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
-                const tasks_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
-                const tasks_plan = lowering_rules.executorTaskBufferPlan(tasks_ty) orelse return CodegenError.CodegenError;
-                const tasks_owner_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                var tasks_ptr_reg: []const u8 = tasks_owner_reg;
-                var release_tasks_ptr = false;
-                const len_reg = try self.newTmp();
-                const executor_reg = try self.newTmp();
-                switch (tasks_plan.kind) {
-                    .fixed_array => {
-                        try self.emitIntConst(len_reg, @as(i64, @intCast(tasks_plan.fixed_len.?)));
-                        self.executor_task_counts.put(executor_reg, tasks_plan.fixed_len.?) catch return CodegenError.OutOfMemory;
-                    },
-                    .vec => {
-                        tasks_ptr_reg = try self.newTmp();
-                        release_tasks_ptr = true;
-                        self.out.writer().print("    EXPAND VEC_AS_PTR {s}, {s}\n", .{ tasks_ptr_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND VEC_LEN {s}, {s}\n", .{ len_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
-                    },
+        if (plan.isNew()) {
+            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+            const tasks_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
+            const tasks_plan = lowering_rules.executorTaskBufferPlan(tasks_ty) orelse return CodegenError.CodegenError;
+            const tasks_owner_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            var tasks_ptr_reg: []const u8 = tasks_owner_reg;
+            var release_tasks_ptr = false;
+            const len_reg = try self.newTmp();
+            const executor_reg = try self.newTmp();
+            if (tasks_plan.isFixedArray()) {
+                try self.emitIntConst(len_reg, @as(i64, @intCast(tasks_plan.fixed_len.?)));
+                self.executor_task_counts.put(executor_reg, tasks_plan.fixed_len.?) catch return CodegenError.OutOfMemory;
+            } else if (tasks_plan.isVec()) {
+                tasks_ptr_reg = try self.newTmp();
+                release_tasks_ptr = true;
+                self.out.writer().print("    EXPAND VEC_AS_PTR {s}, {s}\n", .{ tasks_ptr_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    EXPAND VEC_LEN {s}, {s}\n", .{ len_reg, tasks_owner_reg }) catch return CodegenError.CodegenError;
+            } else {
+                return CodegenError.CodegenError;
+            }
+            self.out.writer().print("    EXPAND EXECUTOR_NEW {s}, {s}, {s}\n", .{ executor_reg, tasks_ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+            try self.emitRelease(len_reg);
+            if (release_tasks_ptr) try self.emitRelease(tasks_ptr_reg);
+            return executor_reg;
+        }
+        if (plan.isPollOne()) {
+            if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
+            const executor_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const index_reg = try self.genExpr(call.args[1], hoisted_allocs);
+            const poll_reg = try self.newTmp();
+            const tag_reg = try self.newTmp();
+            const ready_reg = try self.newTmp();
+            self.out.writer().print("    EXPAND EXECUTOR_POLL_ONE {s}, {s}, {s}\n", .{ poll_reg, executor_reg, index_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
+            try self.emitRelease(tag_reg);
+            try self.emitRelease(poll_reg);
+            if (callArgNeedsRelease(call.args[1])) try self.emitRelease(index_reg);
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);
+            return ready_reg;
+        }
+        if (plan.isPollReadyCount()) {
+            if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
+            const executor_reg = try self.genExpr(call.args[0], hoisted_allocs);
+            const task_count = self.executor_task_counts.get(self.resolveBindingName(executor_reg)) orelse blk_count: {
+                if (call.args[0].* == .identifier) {
+                    if (self.executor_task_counts.get(self.resolveBindingName(call.args[0].identifier))) |count| break :blk_count count;
                 }
-                self.out.writer().print("    EXPAND EXECUTOR_NEW {s}, {s}, {s}\n", .{ executor_reg, tasks_ptr_reg, len_reg }) catch return CodegenError.CodegenError;
-                try self.emitRelease(len_reg);
-                if (release_tasks_ptr) try self.emitRelease(tasks_ptr_reg);
-                break :blk executor_reg;
-            },
-            .poll_one => blk: {
-                if (call.args.len != 2 or call.generics.len != 0) return CodegenError.CodegenError;
-                const executor_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                const index_reg = try self.genExpr(call.args[1], hoisted_allocs);
-                const poll_reg = try self.newTmp();
-                const tag_reg = try self.newTmp();
-                const ready_reg = try self.newTmp();
-                self.out.writer().print("    EXPAND EXECUTOR_POLL_ONE {s}, {s}, {s}\n", .{ poll_reg, executor_reg, index_reg }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
-                try self.emitRelease(tag_reg);
-                try self.emitRelease(poll_reg);
-                if (callArgNeedsRelease(call.args[1])) try self.emitRelease(index_reg);
+                const count_reg = try self.newTmp();
+                self.out.writer().print("    EXPAND EXECUTOR_POLL_READY_COUNT {s}, {s}\n", .{ count_reg, executor_reg }) catch return CodegenError.CodegenError;
                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);
-                break :blk ready_reg;
-            },
-            .poll_ready_count => blk: {
-                if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
-                const executor_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                const task_count = self.executor_task_counts.get(self.resolveBindingName(executor_reg)) orelse blk_count: {
-                    if (call.args[0].* == .identifier) {
-                        if (self.executor_task_counts.get(self.resolveBindingName(call.args[0].identifier))) |count| break :blk_count count;
-                    }
-                    const count_reg = try self.newTmp();
-                    self.out.writer().print("    EXPAND EXECUTOR_POLL_READY_COUNT {s}, {s}\n", .{ count_reg, executor_reg }) catch return CodegenError.CodegenError;
-                    if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);
-                    break :blk count_reg;
-                };
-                const count_reg = try self.genExecutorPollReadyCountUnrolled(executor_reg, task_count);
-                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);
-                break :blk count_reg;
-            },
-        };
+                return count_reg;
+            };
+            const count_reg = try self.genExecutorPollReadyCountUnrolled(executor_reg, task_count);
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(executor_reg);
+            return count_reg;
+        }
+        return CodegenError.CodegenError;
     }
 
     fn genExecutorPollReadyCountUnrolled(self: *Codegen, executor_reg: []const u8, task_count: usize) CodegenError![]const u8 {
@@ -12880,55 +12935,8 @@ pub const Codegen = struct {
                     if (lowering_rules.planFutureRuntimeCall(call)) |future_plan| {
                         return try self.genFutureRuntimeCall(future_plan, call, hoisted_allocs);
                     }
-                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "new")) {
-                        if (call.args.len != 1) return CodegenError.CodegenError;
-                        const state_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                        const ctx = try self.newTmp();
-                        const task = try self.newTmp();
-                        const future_obj = try self.genFutureObjectForState(state_reg);
-                        self.out.writer().print("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND TASK_NEW {s}, {s}, {s}\n", .{ task, future_obj, ctx }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(ctx);
-                        self.task_future_objects.put(task, future_obj) catch return CodegenError.OutOfMemory;
-                        return task;
-                    }
-                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "poll")) {
-                        if (call.args.len != 1) return CodegenError.CodegenError;
-                        const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                        const poll_reg = try self.newTmp();
-                        const tag_reg = try self.newTmp();
-                        const ready_reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND TASK_POLL {s}, {s}\n", .{ poll_reg, task_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = load {s}+Poll_tag as u64\n", .{ tag_reg, poll_reg }) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = eq {s}, Poll_READY\n", .{ ready_reg, tag_reg }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(tag_reg);
-                        try self.emitRelease(poll_reg);
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
-                        return ready_reg;
-                    }
-                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "is_ready")) {
-                        if (call.args.len != 1) return CodegenError.CodegenError;
-                        const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                        const ready_reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND TASK_IS_READY {s}, {s}\n", .{ ready_reg, task_reg }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
-                        return ready_reg;
-                    }
-                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "result")) {
-                        if (call.args.len != 1) return CodegenError.CodegenError;
-                        const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                        const value_reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND TASK_RESULT {s}, {s}\n", .{ value_reg, task_reg }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
-                        return value_reg;
-                    }
-                    if (std.mem.eql(u8, target, "task") and std.mem.eql(u8, call.func_name, "state")) {
-                        if (call.args.len != 1) return CodegenError.CodegenError;
-                        const task_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                        const state_reg = try self.newTmp();
-                        self.out.writer().print("    EXPAND TASK_STATE {s}, {s}\n", .{ state_reg, task_reg }) catch return CodegenError.CodegenError;
-                        if (callArgNeedsRelease(call.args[0])) try self.emitRelease(task_reg);
-                        return state_reg;
+                    if (lowering_rules.planTaskRuntimeCall(call)) |task_plan| {
+                        return try self.genTaskRuntimeCall(task_plan, call, hoisted_allocs);
                     }
                     if (std.mem.eql(u8, target, "mem") and std.mem.eql(u8, call.func_name, "forget")) {
                         if (call.args.len != 1) return CodegenError.CodegenError;

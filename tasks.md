@@ -40,6 +40,37 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Normalize residual shared plan helpers (2026-07-19).
+	  `DynCoercionPlan`, SAB `OptionClosureCallPlan` dispatch, and
+	  `WhileLetPatternPlan`/`LetPatternPlan` now expose shared predicates that
+	  both emitters (or direct SAB for option/while-let/match) consume instead of
+	  switching on `plan.kind`. Serial focused verification passed `zig fmt
+	  --check`, `git diff --check`, and filters `shared while let pattern
+	  classification` 2/2, `shared dyn coercion and receiver plans` 2/2,
+	  `shared future runtime call classification` 2/2, and `shared executor task
+	  buffer classification` 2/2. No full suite or concurrent tests were run.
+
+	- [x] Normalize shared TaskRuntimeCallPlan dispatcher (2026-07-19).
+	  `src/codegen.zig` and `src/sab_codegen.zig` now route task runtime calls
+	  through a shared `genTaskRuntimeCall()` helper that consumes
+	  `TaskRuntimeCallPlan` predicates (`isNew` / `isPoll` / `isIsReady` /
+	  `isResult` / `isState`) instead of string-matching task call names.
+	  Serial focused verification passed `zig fmt --check` for the touched Zig
+	  files, `git diff --check`, and focused filters `shared future runtime call
+	  classification` 2/2 plus `shared executor task buffer classification` 2/2.
+	  No full suite or concurrent tests were run.
+
+	- [x] Normalize shared ExecutorRuntimeCallPlan dispatcher (2026-07-19).
+	  `src/codegen.zig` and `src/sab_codegen.zig` now route executor runtime calls
+	  through the shared `ExecutorRuntimeCallPlan` predicates instead of switching
+	  directly on `plan.kind` for `new`, `poll_one`, and `poll_ready_count`.
+	  `ExecutorTaskBufferPlan` now exposes `isFixedArray()` / `isVec()`, and both
+	  emitters consume those helpers for the task-buffer branch of `executor::new`.
+	  Serial focused verification passed `zig fmt --check` for the touched Zig
+	  files, `git diff --check`, and focused filters `shared future runtime call
+	  classification` 2/2 plus `shared executor task buffer classification` 2/2.
+	  No full suite or concurrent tests were run.
+
 	- [x] Normalize shared PollRuntimeCallPlan dispatcher (2026-07-19).
 	  `src/codegen.zig` and `src/sab_codegen.zig` now route poll runtime calls
 	  through the shared `PollRuntimeCallPlan` predicates instead of switching

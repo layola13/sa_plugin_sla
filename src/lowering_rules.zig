@@ -327,6 +327,26 @@ pub const TaskRuntimeCallKind = enum {
 
 pub const TaskRuntimeCallPlan = struct {
     kind: TaskRuntimeCallKind,
+
+    pub fn isNew(self: TaskRuntimeCallPlan) bool {
+        return self.kind == .new;
+    }
+
+    pub fn isPoll(self: TaskRuntimeCallPlan) bool {
+        return self.kind == .poll;
+    }
+
+    pub fn isIsReady(self: TaskRuntimeCallPlan) bool {
+        return self.kind == .is_ready;
+    }
+
+    pub fn isResult(self: TaskRuntimeCallPlan) bool {
+        return self.kind == .result;
+    }
+
+    pub fn isState(self: TaskRuntimeCallPlan) bool {
+        return self.kind == .state;
+    }
 };
 
 pub const ExecutorRuntimeCallKind = enum {
@@ -337,6 +357,18 @@ pub const ExecutorRuntimeCallKind = enum {
 
 pub const ExecutorRuntimeCallPlan = struct {
     kind: ExecutorRuntimeCallKind,
+
+    pub fn isNew(self: ExecutorRuntimeCallPlan) bool {
+        return self.kind == .new;
+    }
+
+    pub fn isPollOne(self: ExecutorRuntimeCallPlan) bool {
+        return self.kind == .poll_one;
+    }
+
+    pub fn isPollReadyCount(self: ExecutorRuntimeCallPlan) bool {
+        return self.kind == .poll_ready_count;
+    }
 };
 
 pub const ExecutorTaskBufferKind = enum {
@@ -348,6 +380,14 @@ pub const ExecutorTaskBufferPlan = struct {
     kind: ExecutorTaskBufferKind,
     inner: *ast.Type,
     fixed_len: ?usize = null,
+
+    pub fn isFixedArray(self: ExecutorTaskBufferPlan) bool {
+        return self.kind == .fixed_array;
+    }
+
+    pub fn isVec(self: ExecutorTaskBufferPlan) bool {
+        return self.kind == .vec;
+    }
 };
 
 pub const PollRuntimeCallKind = enum {
@@ -582,6 +622,34 @@ pub const WhileLetPatternPlan = struct {
     success_on_true: bool,
     binding_count: usize,
 
+    pub fn isEnumVariant(self: WhileLetPatternPlan) bool {
+        return self.kind == .enum_variant;
+    }
+
+    pub fn isOptionSome(self: WhileLetPatternPlan) bool {
+        return self.kind == .option_some;
+    }
+
+    pub fn isOptionNone(self: WhileLetPatternPlan) bool {
+        return self.kind == .option_none;
+    }
+
+    pub fn isResultOk(self: WhileLetPatternPlan) bool {
+        return self.kind == .result_ok;
+    }
+
+    pub fn isResultErr(self: WhileLetPatternPlan) bool {
+        return self.kind == .result_err;
+    }
+
+    pub fn isOptionCheck(self: WhileLetPatternPlan) bool {
+        return self.kind == .option_some or self.kind == .option_none;
+    }
+
+    pub fn isResultCheck(self: WhileLetPatternPlan) bool {
+        return self.kind == .result_ok or self.kind == .result_err;
+    }
+
     pub fn bindsPayload(self: WhileLetPatternPlan) bool {
         return switch (self.kind) {
             .enum_variant, .option_some, .result_ok, .result_err => self.binding_count != 0,
@@ -601,6 +669,14 @@ pub const DynCoercionKind = enum {
 pub const DynCoercionPlan = struct {
     kind: DynCoercionKind,
     trait_name: []const u8,
+
+    pub fn isBoxToDyn(self: DynCoercionPlan) bool {
+        return self.kind == .box_to_dyn;
+    }
+
+    pub fn isRcNewToDynRc(self: DynCoercionPlan) bool {
+        return self.kind == .rc_new_to_dyn_rc;
+    }
 };
 
 pub fn planDynCoercion(tc: *type_checker.TypeChecker, expr: *const ast.Node) ?DynCoercionPlan {
@@ -4762,6 +4838,9 @@ test "shared while let pattern classification" {
     const some_if_plan = planLetPattern(some, false).?;
     try std.testing.expectEqual(WhileLetPatternKind.option_some, some_plan.kind);
     try std.testing.expectEqual(LetPatternKind.option_some, some_if_plan.kind);
+    try std.testing.expect(some_plan.isOptionSome());
+    try std.testing.expect(some_plan.isOptionCheck());
+    try std.testing.expect(some_if_plan.isOptionSome());
     try std.testing.expect(some_plan.success_on_true);
     try std.testing.expect(some_if_plan.success_on_true);
     try std.testing.expect(some_plan.bindsPayload());
@@ -4770,6 +4849,8 @@ test "shared while let pattern classification" {
     const none = ast.EnumPattern{ .enum_name = "Option", .variant_name = "None", .bindings = &.{} };
     const none_plan = planWhileLetPattern(none, false).?;
     try std.testing.expectEqual(WhileLetPatternKind.option_none, none_plan.kind);
+    try std.testing.expect(none_plan.isOptionNone());
+    try std.testing.expect(none_plan.isOptionCheck());
     try std.testing.expect(!none_plan.success_on_true);
     try std.testing.expect(!none_plan.bindsPayload());
 
@@ -4777,12 +4858,15 @@ test "shared while let pattern classification" {
     const err = ast.EnumPattern{ .enum_name = "Result", .variant_name = "Err", .bindings = err_bindings[0..] };
     const err_plan = planWhileLetPattern(err, false).?;
     try std.testing.expectEqual(WhileLetPatternKind.result_err, err_plan.kind);
+    try std.testing.expect(err_plan.isResultErr());
+    try std.testing.expect(err_plan.isResultCheck());
     try std.testing.expect(!err_plan.success_on_true);
     try std.testing.expect(err_plan.bindsPayload());
 
     const message = ast.EnumPattern{ .enum_name = "Message", .variant_name = "Move", .bindings = &.{} };
     const enum_plan = planWhileLetPattern(message, true).?;
     try std.testing.expectEqual(WhileLetPatternKind.enum_variant, enum_plan.kind);
+    try std.testing.expect(enum_plan.isEnumVariant());
     try std.testing.expect(enum_plan.success_on_true);
 }
 
@@ -4844,6 +4928,8 @@ test "shared executor task buffer classification" {
     var array_ty = ast.Type{ .array = .{ .elem = &task_ty, .len = 3 } };
     const array_plan = executorTaskBufferPlan(&array_ty).?;
     try std.testing.expectEqual(ExecutorTaskBufferKind.fixed_array, array_plan.kind);
+    try std.testing.expect(array_plan.isFixedArray());
+    try std.testing.expect(!array_plan.isVec());
     try std.testing.expectEqual(@as(?usize, 3), array_plan.fixed_len);
     try std.testing.expect(array_plan.inner == &i32_ty);
 
@@ -4851,6 +4937,8 @@ test "shared executor task buffer classification" {
     var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = vec_generics[0..] } };
     const vec_plan = executorTaskBufferPlan(&vec_ty).?;
     try std.testing.expectEqual(ExecutorTaskBufferKind.vec, vec_plan.kind);
+    try std.testing.expect(vec_plan.isVec());
+    try std.testing.expect(!vec_plan.isFixedArray());
     try std.testing.expectEqual(@as(?usize, null), vec_plan.fixed_len);
     try std.testing.expect(vec_plan.inner == &i32_ty);
 }
@@ -4934,14 +5022,45 @@ test "shared future runtime call classification" {
     try std.testing.expectEqual(FutureRuntimeCallKind.either_right, either_right_plan.kind);
     try std.testing.expect(either_right_plan.isEitherAccessor());
 
+    const task_new = ast.CallExpr{ .func_name = "new", .associated_target = "task", .generics = &.{}, .args = args[0..] };
+    const task_new_plan = planTaskRuntimeCall(task_new).?;
+    try std.testing.expectEqual(TaskRuntimeCallKind.new, task_new_plan.kind);
+    try std.testing.expect(task_new_plan.isNew());
+
+    const task_poll = ast.CallExpr{ .func_name = "poll", .associated_target = "task", .generics = &.{}, .args = args[0..] };
+    const task_poll_plan = planTaskRuntimeCall(task_poll).?;
+    try std.testing.expectEqual(TaskRuntimeCallKind.poll, task_poll_plan.kind);
+    try std.testing.expect(task_poll_plan.isPoll());
+
+    const task_is_ready = ast.CallExpr{ .func_name = "is_ready", .associated_target = "task", .generics = &.{}, .args = args[0..] };
+    const task_is_ready_plan = planTaskRuntimeCall(task_is_ready).?;
+    try std.testing.expectEqual(TaskRuntimeCallKind.is_ready, task_is_ready_plan.kind);
+    try std.testing.expect(task_is_ready_plan.isIsReady());
+
+    const task_result = ast.CallExpr{ .func_name = "result", .associated_target = "task", .generics = &.{}, .args = args[0..] };
+    const task_result_plan = planTaskRuntimeCall(task_result).?;
+    try std.testing.expectEqual(TaskRuntimeCallKind.result, task_result_plan.kind);
+    try std.testing.expect(task_result_plan.isResult());
+
     const state = ast.CallExpr{ .func_name = "state", .associated_target = "task", .generics = &.{}, .args = args[0..] };
-    try std.testing.expectEqual(TaskRuntimeCallKind.state, planTaskRuntimeCall(state).?.kind);
+    const state_plan = planTaskRuntimeCall(state).?;
+    try std.testing.expectEqual(TaskRuntimeCallKind.state, state_plan.kind);
+    try std.testing.expect(state_plan.isState());
 
     const executor_new = ast.CallExpr{ .func_name = "new", .associated_target = "executor", .generics = &.{}, .args = args[0..] };
-    try std.testing.expectEqual(ExecutorRuntimeCallKind.new, planExecutorRuntimeCall(executor_new).?.kind);
+    const executor_new_plan = planExecutorRuntimeCall(executor_new).?;
+    try std.testing.expectEqual(ExecutorRuntimeCallKind.new, executor_new_plan.kind);
+    try std.testing.expect(executor_new_plan.isNew());
 
     const executor_poll_one = ast.CallExpr{ .func_name = "poll_one", .associated_target = "executor", .generics = &.{}, .args = args[0..] };
-    try std.testing.expectEqual(ExecutorRuntimeCallKind.poll_one, planExecutorRuntimeCall(executor_poll_one).?.kind);
+    const executor_poll_one_plan = planExecutorRuntimeCall(executor_poll_one).?;
+    try std.testing.expectEqual(ExecutorRuntimeCallKind.poll_one, executor_poll_one_plan.kind);
+    try std.testing.expect(executor_poll_one_plan.isPollOne());
+
+    const executor_poll_ready_count = ast.CallExpr{ .func_name = "poll_ready_count", .associated_target = "executor", .generics = &.{}, .args = args[0..] };
+    const executor_poll_ready_count_plan = planExecutorRuntimeCall(executor_poll_ready_count).?;
+    try std.testing.expectEqual(ExecutorRuntimeCallKind.poll_ready_count, executor_poll_ready_count_plan.kind);
+    try std.testing.expect(executor_poll_ready_count_plan.isPollReadyCount());
 
     const poll_ready = ast.CallExpr{ .func_name = "ready", .associated_target = "poll", .generics = &.{}, .args = args[0..] };
     const poll_ready_plan = planPollRuntimeCall(poll_ready).?;
@@ -5836,9 +5955,13 @@ test "shared dyn coercion and receiver plans" {
 
     const rc_coercion = planDynCoercion(&tc, &rc_expr) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(DynCoercionKind.rc_new_to_dyn_rc, rc_coercion.kind);
+    try std.testing.expect(rc_coercion.isRcNewToDynRc());
+    try std.testing.expect(!rc_coercion.isBoxToDyn());
     try std.testing.expectEqualSlices(u8, "Draw", rc_coercion.trait_name);
     const box_coercion = planDynCoercion(&tc, &box_expr) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(DynCoercionKind.box_to_dyn, box_coercion.kind);
+    try std.testing.expect(box_coercion.isBoxToDyn());
+    try std.testing.expect(!box_coercion.isRcNewToDynRc());
     try std.testing.expectEqualSlices(u8, "Draw", box_coercion.trait_name);
 }
 

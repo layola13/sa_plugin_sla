@@ -1481,24 +1481,30 @@ pub const Codegen = struct {
         plan: lowering_rules.LetPatternPlan,
         branch_flag: u32,
     ) !void {
-        switch (plan.kind) {
-            .enum_variant => {
-                const decl = enum_decl orelse return Error.UnsupportedSabDirectFeature;
-                const tag = lowering_rules.enumVariantIndex(decl, pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
-                const tag_reg = try self.intern(try self.newTmp());
-                try self.emitLoad(tag_reg, value_reg, lowering_rules.enum_tag_offset, .i64);
-                try self.emitOp(branch_flag, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = @intCast(tag) });
-                try self.emitRelease(tag_reg);
-            },
-            .option_some, .option_none => try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_IS_SOME", &.{
-                self.symbols.items[branch_flag],
-                self.symbols.items[value_reg],
-            }),
-            .result_ok, .result_err => try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_IS_OK", &.{
-                self.symbols.items[branch_flag],
-                self.symbols.items[value_reg],
-            }),
+        if (plan.isEnumVariant()) {
+            const decl = enum_decl orelse return Error.UnsupportedSabDirectFeature;
+            const tag = lowering_rules.enumVariantIndex(decl, pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+            const tag_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(tag_reg, value_reg, lowering_rules.enum_tag_offset, .i64);
+            try self.emitOp(branch_flag, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = @intCast(tag) });
+            try self.emitRelease(tag_reg);
+            return;
         }
+        if (plan.isOptionCheck()) {
+            try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_IS_SOME", &.{
+                self.symbols.items[branch_flag],
+                self.symbols.items[value_reg],
+            });
+            return;
+        }
+        if (plan.isResultCheck()) {
+            try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_IS_OK", &.{
+                self.symbols.items[branch_flag],
+                self.symbols.items[value_reg],
+            });
+            return;
+        }
+        return Error.UnsupportedSabDirectFeature;
     }
 
     fn bindLetPatternPayload(
@@ -1509,59 +1515,65 @@ pub const Codegen = struct {
         enum_decl: ?*ast.EnumDecl,
         plan: lowering_rules.LetPatternPlan,
     ) !void {
-        switch (plan.kind) {
-            .enum_variant => {
-                const decl = enum_decl orelse return Error.UnsupportedSabDirectFeature;
-                const variant = lowering_rules.enumVariant(decl, pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
-                if (pattern.bindings.len != variant.fields.len) return Error.UnsupportedSabDirectFeature;
-                for (pattern.bindings, variant.fields) |binding, field| {
-                    const layout = lowering_rules.enumFieldLayout(variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
-                    const binding_reg = try self.intern(try self.newTmp());
-                    try self.emitLoad(binding_reg, value_reg, layout.offset, try storagePrimType(layout.ty));
-                    try self.pushTypedLocal(binding, binding_reg, false, field.ty);
-                }
-            },
-            .option_some => {
-                if (pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
-                if (pattern.bindings.len == 1) {
-                    const inner_ty = lowering_rules.optionInnerType(value_ty) orelse return Error.UnsupportedSabDirectFeature;
-                    const binding_reg = try self.intern(try self.newTmp());
-                    try self.recordReg(binding_reg);
-                    try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_GET", &.{
-                        self.symbols.items[binding_reg],
-                        self.symbols.items[value_reg],
-                    });
-                    try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, inner_ty);
-                }
-            },
-            .option_none => if (pattern.bindings.len != 0) return Error.UnsupportedSabDirectFeature,
-            .result_ok => {
-                if (pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
-                if (pattern.bindings.len == 1) {
-                    const ok_ty = lowering_rules.resultOkType(value_ty) orelse return Error.UnsupportedSabDirectFeature;
-                    const binding_reg = try self.intern(try self.newTmp());
-                    try self.recordReg(binding_reg);
-                    try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_OK", &.{
-                        self.symbols.items[binding_reg],
-                        self.symbols.items[value_reg],
-                    });
-                    try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, ok_ty);
-                }
-            },
-            .result_err => {
-                if (pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
-                if (pattern.bindings.len == 1) {
-                    const err_ty = lowering_rules.resultErrType(value_ty) orelse return Error.UnsupportedSabDirectFeature;
-                    const binding_reg = try self.intern(try self.newTmp());
-                    try self.recordReg(binding_reg);
-                    try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_ERR", &.{
-                        self.symbols.items[binding_reg],
-                        self.symbols.items[value_reg],
-                    });
-                    try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, err_ty);
-                }
-            },
+        if (plan.isEnumVariant()) {
+            const decl = enum_decl orelse return Error.UnsupportedSabDirectFeature;
+            const variant = lowering_rules.enumVariant(decl, pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+            if (pattern.bindings.len != variant.fields.len) return Error.UnsupportedSabDirectFeature;
+            for (pattern.bindings, variant.fields) |binding, field| {
+                const layout = lowering_rules.enumFieldLayout(variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
+                const binding_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(binding_reg, value_reg, layout.offset, try storagePrimType(layout.ty));
+                try self.pushTypedLocal(binding, binding_reg, false, field.ty);
+            }
+            return;
         }
+        if (plan.isOptionSome()) {
+            if (pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
+            if (pattern.bindings.len == 1) {
+                const inner_ty = lowering_rules.optionInnerType(value_ty) orelse return Error.UnsupportedSabDirectFeature;
+                const binding_reg = try self.intern(try self.newTmp());
+                try self.recordReg(binding_reg);
+                try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_GET", &.{
+                    self.symbols.items[binding_reg],
+                    self.symbols.items[value_reg],
+                });
+                try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, inner_ty);
+            }
+            return;
+        }
+        if (plan.isOptionNone()) {
+            if (pattern.bindings.len != 0) return Error.UnsupportedSabDirectFeature;
+            return;
+        }
+        if (plan.isResultOk()) {
+            if (pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
+            if (pattern.bindings.len == 1) {
+                const ok_ty = lowering_rules.resultOkType(value_ty) orelse return Error.UnsupportedSabDirectFeature;
+                const binding_reg = try self.intern(try self.newTmp());
+                try self.recordReg(binding_reg);
+                try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_OK", &.{
+                    self.symbols.items[binding_reg],
+                    self.symbols.items[value_reg],
+                });
+                try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, ok_ty);
+            }
+            return;
+        }
+        if (plan.isResultErr()) {
+            if (pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
+            if (pattern.bindings.len == 1) {
+                const err_ty = lowering_rules.resultErrType(value_ty) orelse return Error.UnsupportedSabDirectFeature;
+                const binding_reg = try self.intern(try self.newTmp());
+                try self.recordReg(binding_reg);
+                try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_ERR", &.{
+                    self.symbols.items[binding_reg],
+                    self.symbols.items[value_reg],
+                });
+                try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, err_ty);
+            }
+            return;
+        }
+        return Error.UnsupportedSabDirectFeature;
     }
 
     fn fieldLayout(self: *Codegen, ty: *const ast.Type, name: []const u8) !FieldLayout {
@@ -7350,73 +7362,73 @@ pub const Codegen = struct {
 
     fn genExecutorRuntimeCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         const plan = lowering_rules.planExecutorRuntimeCall(call) orelse return null;
-        return switch (plan.kind) {
-            .new => blk: {
-                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                const tasks_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
-                const tasks_plan = lowering_rules.executorTaskBufferPlan(tasks_ty) orelse return Error.UnsupportedSabDirectFeature;
-                const tasks_owner_reg = try self.genExpr(call.args[0]);
-                var tasks_ptr_reg: u32 = tasks_owner_reg;
-                var release_tasks_ptr = false;
-                const len_reg = try self.intern(try self.newTmp());
-                const executor_reg = try self.intern(try self.newTmp());
-                switch (tasks_plan.kind) {
-                    .fixed_array => try self.emitAssignImm(len_reg, @as(i64, @intCast(tasks_plan.fixed_len.?))),
-                    .vec => {
-                        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
-                        tasks_ptr_reg = try self.intern(try self.newTmp());
-                        release_tasks_ptr = true;
-                        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
-                            self.symbols.items[tasks_ptr_reg],
-                            self.symbols.items[tasks_owner_reg],
-                        });
-                        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
-                            self.symbols.items[len_reg],
-                            self.symbols.items[tasks_owner_reg],
-                        });
-                    },
-                }
-                try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_NEW", &.{
-                    self.symbols.items[executor_reg],
+        if (plan.isNew()) {
+            if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+            const tasks_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
+            const tasks_plan = lowering_rules.executorTaskBufferPlan(tasks_ty) orelse return Error.UnsupportedSabDirectFeature;
+            const tasks_owner_reg = try self.genExpr(call.args[0]);
+            var tasks_ptr_reg: u32 = tasks_owner_reg;
+            var release_tasks_ptr = false;
+            const len_reg = try self.intern(try self.newTmp());
+            const executor_reg = try self.intern(try self.newTmp());
+            if (tasks_plan.isFixedArray()) {
+                try self.emitAssignImm(len_reg, @as(i64, @intCast(tasks_plan.fixed_len.?)));
+            } else if (tasks_plan.isVec()) {
+                try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
+                tasks_ptr_reg = try self.intern(try self.newTmp());
+                release_tasks_ptr = true;
+                try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
                     self.symbols.items[tasks_ptr_reg],
+                    self.symbols.items[tasks_owner_reg],
+                });
+                try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
                     self.symbols.items[len_reg],
+                    self.symbols.items[tasks_owner_reg],
                 });
-                try self.emitRelease(len_reg);
-                if (release_tasks_ptr) try self.emitRelease(tasks_ptr_reg);
-                break :blk executor_reg;
-            },
-            .poll_one => blk: {
-                if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                const executor_reg = try self.genExpr(call.args[0]);
-                const index_reg = try self.genExpr(call.args[1]);
-                const poll_reg = try self.intern(try self.newTmp());
-                const tag_reg = try self.intern(try self.newTmp());
-                const ready_reg = try self.intern(try self.newTmp());
-                try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_POLL_ONE", &.{
-                    self.symbols.items[poll_reg],
-                    self.symbols.items[executor_reg],
-                    self.symbols.items[index_reg],
-                });
-                try self.emitLoad(tag_reg, poll_reg, 0, .u64);
-                try self.emitOp(ready_reg, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = 1 });
-                try self.emitRelease(tag_reg);
-                try self.emitRelease(poll_reg);
-                if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
-                if (!self.isLocalReg(executor_reg)) try self.emitRelease(executor_reg);
-                break :blk ready_reg;
-            },
-            .poll_ready_count => blk: {
-                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                const executor_reg = try self.genExpr(call.args[0]);
-                const count_reg = try self.intern(try self.newTmp());
-                try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_POLL_READY_COUNT", &.{
-                    self.symbols.items[count_reg],
-                    self.symbols.items[executor_reg],
-                });
-                if (!self.isLocalReg(executor_reg)) try self.emitRelease(executor_reg);
-                break :blk count_reg;
-            },
-        };
+            } else {
+                return Error.UnsupportedSabDirectFeature;
+            }
+            try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_NEW", &.{
+                self.symbols.items[executor_reg],
+                self.symbols.items[tasks_ptr_reg],
+                self.symbols.items[len_reg],
+            });
+            try self.emitRelease(len_reg);
+            if (release_tasks_ptr) try self.emitRelease(tasks_ptr_reg);
+            return executor_reg;
+        }
+        if (plan.isPollOne()) {
+            if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+            const executor_reg = try self.genExpr(call.args[0]);
+            const index_reg = try self.genExpr(call.args[1]);
+            const poll_reg = try self.intern(try self.newTmp());
+            const tag_reg = try self.intern(try self.newTmp());
+            const ready_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_POLL_ONE", &.{
+                self.symbols.items[poll_reg],
+                self.symbols.items[executor_reg],
+                self.symbols.items[index_reg],
+            });
+            try self.emitLoad(tag_reg, poll_reg, 0, .u64);
+            try self.emitOp(ready_reg, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = 1 });
+            try self.emitRelease(tag_reg);
+            try self.emitRelease(poll_reg);
+            if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+            if (!self.isLocalReg(executor_reg)) try self.emitRelease(executor_reg);
+            return ready_reg;
+        }
+        if (plan.isPollReadyCount()) {
+            if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+            const executor_reg = try self.genExpr(call.args[0]);
+            const count_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/core/task.sa", "EXECUTOR_POLL_READY_COUNT", &.{
+                self.symbols.items[count_reg],
+                self.symbols.items[executor_reg],
+            });
+            if (!self.isLocalReg(executor_reg)) try self.emitRelease(executor_reg);
+            return count_reg;
+        }
+        return Error.UnsupportedSabDirectFeature;
     }
 
     fn genFutureTaskCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
@@ -7478,10 +7490,15 @@ pub const Codegen = struct {
             return Error.UnsupportedSabDirectFeature;
         }
 
-        const target = call.associated_target orelse return null;
-        if (!std.mem.eql(u8, target, "task")) return null;
+        if (lowering_rules.planTaskRuntimeCall(call)) |task_plan| {
+            return try self.genTaskRuntimeCall(task_plan, call);
+        }
 
-        if (std.mem.eql(u8, call.func_name, "new")) {
+        return null;
+    }
+
+    fn genTaskRuntimeCall(self: *Codegen, task_plan: lowering_rules.TaskRuntimeCallPlan, call: ast.CallExpr) anyerror!u32 {
+        if (task_plan.isNew()) {
             if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
             const state_reg = try self.genExpr(call.args[0]);
             const ctx = try self.intern(try self.newTmp());
@@ -7497,8 +7514,7 @@ pub const Codegen = struct {
             try self.emitRelease(future_obj);
             return task;
         }
-
-        if (std.mem.eql(u8, call.func_name, "poll")) {
+        if (task_plan.isPoll()) {
             if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
             const task_reg = try self.genExpr(call.args[0]);
             const poll_reg = try self.intern(try self.newTmp());
@@ -7515,8 +7531,7 @@ pub const Codegen = struct {
             if (!self.isLocalReg(task_reg)) try self.emitRelease(task_reg);
             return ready_reg;
         }
-
-        if (std.mem.eql(u8, call.func_name, "is_ready")) {
+        if (task_plan.isIsReady()) {
             if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
             const task_reg = try self.genExpr(call.args[0]);
             const ready_reg = try self.intern(try self.newTmp());
@@ -7527,8 +7542,7 @@ pub const Codegen = struct {
             if (!self.isLocalReg(task_reg)) try self.emitRelease(task_reg);
             return ready_reg;
         }
-
-        if (std.mem.eql(u8, call.func_name, "result")) {
+        if (task_plan.isResult()) {
             if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
             const task_reg = try self.genExpr(call.args[0]);
             const value_reg = try self.intern(try self.newTmp());
@@ -7539,8 +7553,7 @@ pub const Codegen = struct {
             if (!self.isLocalReg(task_reg)) try self.emitRelease(task_reg);
             return value_reg;
         }
-
-        if (std.mem.eql(u8, call.func_name, "state")) {
+        if (task_plan.isState()) {
             if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
             const task_reg = try self.genExpr(call.args[0]);
             const state_reg = try self.intern(try self.newTmp());
@@ -7551,8 +7564,7 @@ pub const Codegen = struct {
             if (!self.isLocalReg(task_reg)) try self.emitRelease(task_reg);
             return state_reg;
         }
-
-        return null;
+        return Error.UnsupportedSabDirectFeature;
     }
 
     fn genAwait(self: *Codegen, expr: *const ast.Node, aw: ast.AwaitExpr) !u32 {
@@ -10618,10 +10630,13 @@ pub const Codegen = struct {
     }
 
     fn genDynCoercionExpr(self: *Codegen, expr: *ast.Node, plan: lowering_rules.DynCoercionPlan) anyerror!u32 {
-        return switch (plan.kind) {
-            .box_to_dyn => try self.genDynBoxCoercionExpr(expr, plan.trait_name),
-            .rc_new_to_dyn_rc => try self.genDynRcCoercionExpr(expr, plan.trait_name),
-        };
+        if (plan.isBoxToDyn()) {
+            return try self.genDynBoxCoercionExpr(expr, plan.trait_name);
+        }
+        if (plan.isRcNewToDynRc()) {
+            return try self.genDynRcCoercionExpr(expr, plan.trait_name);
+        }
+        return Error.UnsupportedSabDirectFeature;
     }
 
     fn genDynBorrowArg(self: *Codegen, arg: *const ast.Node, trait_name: []const u8) anyerror!u32 {
@@ -11122,11 +11137,16 @@ pub const Codegen = struct {
         const plan = lowering_rules.planOptionClosureCall(call, receiver_ty) orelse return null;
         const closure = closureLiteralFromExpr(call.args[plan.closure_arg_index]) orelse return Error.UnsupportedSabDirectFeature;
         if (closure.params.len != plan.closure_arity) return Error.UnsupportedSabDirectFeature;
-        return switch (plan.kind) {
-            .map => try self.genOptionMapClosureCall(expr, call, receiver_ty, closure),
-            .and_then => try self.genOptionAndThenClosureCall(expr, call, receiver_ty, closure),
-            .unwrap_or_else => try self.genOptionUnwrapOrElseClosureCall(call, receiver_ty, closure),
-        };
+        if (plan.isMap()) {
+            return try self.genOptionMapClosureCall(expr, call, receiver_ty, closure);
+        }
+        if (plan.isAndThen()) {
+            return try self.genOptionAndThenClosureCall(expr, call, receiver_ty, closure);
+        }
+        if (plan.isUnwrapOrElse()) {
+            return try self.genOptionUnwrapOrElseClosureCall(call, receiver_ty, closure);
+        }
+        return Error.UnsupportedSabDirectFeature;
     }
 
     fn genVecLiteralCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
@@ -12891,24 +12911,7 @@ pub const Codegen = struct {
             const branch_flag = try self.intern(try self.newTmp());
             try self.recordReg(branch_flag);
 
-            switch (plan.kind) {
-                .enum_variant => {
-                    const decl = enum_decl orelse return Error.UnsupportedSabDirectFeature;
-                    const tag = lowering_rules.enumVariantIndex(decl, pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
-                    const tag_reg = try self.intern(try self.newTmp());
-                    try self.emitLoad(tag_reg, cond, lowering_rules.enum_tag_offset, .i64);
-                    try self.emitOp(branch_flag, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = @intCast(tag) });
-                    try self.emitRelease(tag_reg);
-                },
-                .option_some, .option_none => try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_IS_SOME", &.{
-                    self.symbols.items[branch_flag],
-                    self.symbols.items[cond],
-                }),
-                .result_ok, .result_err => try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_IS_OK", &.{
-                    self.symbols.items[branch_flag],
-                    self.symbols.items[cond],
-                }),
-            }
+            try self.emitLetPatternCheck(pattern, cond, enum_decl, plan, branch_flag);
 
             try self.emitBranch(
                 branch_flag,
@@ -12926,59 +12929,7 @@ pub const Codegen = struct {
 
             try self.emitLabel(body_label);
             try self.emitBranchRelease(branch_flag);
-            switch (plan.kind) {
-                .enum_variant => {
-                    const decl = enum_decl orelse return Error.UnsupportedSabDirectFeature;
-                    const variant = lowering_rules.enumVariant(decl, pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
-                    if (pattern.bindings.len != variant.fields.len) return Error.UnsupportedSabDirectFeature;
-                    for (pattern.bindings, variant.fields) |binding, field| {
-                        const layout = lowering_rules.enumFieldLayout(variant, field.name) orelse return Error.UnsupportedSabDirectFeature;
-                        const binding_reg = try self.intern(try self.newTmp());
-                        try self.emitLoad(binding_reg, cond, layout.offset, try storagePrimType(layout.ty));
-                        try self.pushTypedLocal(binding, binding_reg, false, field.ty);
-                    }
-                },
-                .option_some => {
-                    if (pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
-                    if (pattern.bindings.len == 1) {
-                        const inner_ty = lowering_rules.optionInnerType(cond_ty) orelse return Error.UnsupportedSabDirectFeature;
-                        const binding_reg = try self.intern(try self.newTmp());
-                        try self.recordReg(binding_reg);
-                        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_GET", &.{
-                            self.symbols.items[binding_reg],
-                            self.symbols.items[cond],
-                        });
-                        try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, inner_ty);
-                    }
-                },
-                .option_none => if (pattern.bindings.len != 0) return Error.UnsupportedSabDirectFeature,
-                .result_ok => {
-                    if (pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
-                    if (pattern.bindings.len == 1) {
-                        const ok_ty = lowering_rules.resultOkType(cond_ty) orelse return Error.UnsupportedSabDirectFeature;
-                        const binding_reg = try self.intern(try self.newTmp());
-                        try self.recordReg(binding_reg);
-                        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_OK", &.{
-                            self.symbols.items[binding_reg],
-                            self.symbols.items[cond],
-                        });
-                        try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, ok_ty);
-                    }
-                },
-                .result_err => {
-                    if (pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
-                    if (pattern.bindings.len == 1) {
-                        const err_ty = lowering_rules.resultErrType(cond_ty) orelse return Error.UnsupportedSabDirectFeature;
-                        const binding_reg = try self.intern(try self.newTmp());
-                        try self.recordReg(binding_reg);
-                        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_ERR", &.{
-                            self.symbols.items[binding_reg],
-                            self.symbols.items[cond],
-                        });
-                        try self.pushTypedLocal(pattern.bindings[0], binding_reg, false, err_ty);
-                    }
-                },
-            }
+            try self.bindLetPatternPayload(pattern, cond, cond_ty, enum_decl, plan);
             if (!self.isLocalReg(cond)) try self.emitBranchRelease(cond);
             try self.loop_continue_labels.append(head_label);
             try self.loop_break_labels.append(exit_label);
@@ -13818,23 +13769,29 @@ pub const Codegen = struct {
                     }
                 } else if (case.pattern.bindings.len == 1) {
                     const binding_reg = case_binding_regs.items[i][0];
-                    const binding_ty = switch (plan.kind) {
-                        .option_some => lowering_rules.optionInnerType(val_ty),
-                        .result_ok => lowering_rules.resultOkType(val_ty),
-                        .result_err => lowering_rules.resultErrType(val_ty),
-                        else => null,
-                    } orelse return Error.UnsupportedSabDirectFeature;
-                    if (binding_ty.* != .infer and
-                        (storagePrimType(binding_ty) catch return Error.UnsupportedSabDirectFeature) == .ptr)
+                    const binding_ty = if (plan.isOptionSome())
+                        lowering_rules.optionInnerType(val_ty)
+                    else if (plan.isResultOk())
+                        lowering_rules.resultOkType(val_ty)
+                    else if (plan.isResultErr())
+                        lowering_rules.resultErrType(val_ty)
+                    else
+                        null;
+                    const resolved_binding_ty = binding_ty orelse return Error.UnsupportedSabDirectFeature;
+                    if (resolved_binding_ty.* != .infer and
+                        (storagePrimType(resolved_binding_ty) catch return Error.UnsupportedSabDirectFeature) == .ptr)
                         return Error.UnsupportedSabDirectFeature;
-                    switch (plan.kind) {
-                        .option_some => try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_GET", &.{ self.symbols.items[binding_reg], self.symbols.items[val_reg] }),
-                        .result_ok => try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_OK", &.{ self.symbols.items[binding_reg], self.symbols.items[val_reg] }),
-                        .result_err => try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_ERR", &.{ self.symbols.items[binding_reg], self.symbols.items[val_reg] }),
-                        else => return Error.UnsupportedSabDirectFeature,
+                    if (plan.isOptionSome()) {
+                        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_GET", &.{ self.symbols.items[binding_reg], self.symbols.items[val_reg] });
+                    } else if (plan.isResultOk()) {
+                        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_OK", &.{ self.symbols.items[binding_reg], self.symbols.items[val_reg] });
+                    } else if (plan.isResultErr()) {
+                        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_ERR", &.{ self.symbols.items[binding_reg], self.symbols.items[val_reg] });
+                    } else {
+                        return Error.UnsupportedSabDirectFeature;
                     }
                     try self.recordReg(binding_reg);
-                    try self.locals.append(.{ .name = case.pattern.bindings[0], .reg = binding_reg, .is_param = false, .ty = binding_ty, .is_stack_alloc = true });
+                    try self.locals.append(.{ .name = case.pattern.bindings[0], .reg = binding_reg, .is_param = false, .ty = resolved_binding_ty, .is_stack_alloc = true });
                 }
             } else {
                 try self.bindLetPatternPayload(case.pattern, val_reg, val_ty, decl, plan);

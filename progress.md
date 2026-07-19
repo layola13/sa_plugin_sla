@@ -5,6 +5,49 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Shared residual plan helper normalization (2026-07-19):
+  `DynCoercionPlan` now exposes `isBoxToDyn()` / `isRcNewToDynRc()`, and both
+  SA-text and direct SAB dyn-coercion paths consume those helpers. Direct SAB
+  option-closure dispatch now uses `OptionClosureCallPlan` predicates instead
+  of switching on `plan.kind`. `WhileLetPatternPlan` / `LetPatternPlan` now
+  expose `isEnumVariant()` / `isOptionSome()` / `isOptionNone()` /
+  `isResultOk()` / `isResultErr()` / `isOptionCheck()` / `isResultCheck()`, and
+  direct SAB let-pattern check/bind, while-let, and match guard payload paths
+  consume those helpers instead of local `plan.kind` switches. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig src/codegen.zig
+  src/sab_codegen.zig`, `git diff --check`, and filters `shared while let
+  pattern classification` 2/2, `shared dyn coercion and receiver plans` 2/2,
+  `shared future runtime call classification` 2/2, and `shared executor task
+  buffer classification` 2/2. No full suite or concurrent tests were run.
+
+- Shared TaskRuntimeCallPlan dispatcher normalization (2026-07-19):
+  `src/codegen.zig` and `src/sab_codegen.zig` now route task runtime calls
+  through a shared `genTaskRuntimeCall()` helper that consumes
+  `TaskRuntimeCallPlan` predicates (`isNew` / `isPoll` / `isIsReady` /
+  `isResult` / `isState`) instead of string-matching `task::{new,poll,
+  is_ready,result,state}` in each emitter. The shared future/runtime
+  classification test exercises those helpers. Serial focused verification
+  passed `zig fmt --check src/lowering_rules.zig src/codegen.zig
+  src/sab_codegen.zig`, `git diff --check`, `zig build test -j1
+  -Dtest-filter='shared future runtime call classification' --summary all`
+  2/2, and `zig build test -j1 -Dtest-filter='shared executor task buffer
+  classification' --summary all` 2/2. No full suite or concurrent tests were
+  run.
+
+- Shared ExecutorRuntimeCallPlan dispatcher normalization (2026-07-19):
+  `src/codegen.zig` and `src/sab_codegen.zig` now route executor runtime calls
+  through the shared `ExecutorRuntimeCallPlan` predicates instead of switching
+  directly on `plan.kind` for `new`, `poll_one`, and `poll_ready_count`.
+  `ExecutorTaskBufferPlan` now exposes `isFixedArray()` / `isVec()`, and both
+  emitters consume those helpers for the task-buffer branch of `executor::new`.
+  The shared executor task-buffer and future/runtime classification tests
+  exercise the new predicates. Serial focused verification passed `zig fmt
+  --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`, `git
+  diff --check`, `zig build test -j1 -Dtest-filter='shared future runtime call
+  classification' --summary all` 2/2, and `zig build test -j1
+  -Dtest-filter='shared executor task buffer classification' --summary all`
+  2/2. No full suite or concurrent tests were run.
+
 - Shared PollRuntimeCallPlan dispatcher normalization (2026-07-19):
   `src/codegen.zig` and `src/sab_codegen.zig` now route poll runtime calls
   through the shared `PollRuntimeCallPlan` predicates instead of switching

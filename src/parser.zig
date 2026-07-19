@@ -1,6 +1,7 @@
 const std = @import("std");
 const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
+const lowering_rules = @import("lowering_rules.zig");
 const source_expand = @import("source_expand.zig");
 
 pub const ParserError = error{
@@ -1526,15 +1527,7 @@ pub const Parser = struct {
     }
 
     fn concreteTypeNameForMethodSelection(ty: *const ast.Type) ?[]const u8 {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .borrow => |inner| curr = inner,
-                .pointer => |inner| curr = inner,
-                .user_defined => |ud| return ud.name,
-                else => return null,
-            }
-        }
+        return lowering_rules.concreteTypeName(ty);
     }
 
     fn shouldParseMethodBody(self: *const Parser, target_ty: *const ast.Type, trait_name: ?[]const u8, method_name: []const u8) !bool {

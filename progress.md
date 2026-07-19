@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Parser method-selection type peel uses shared concreteTypeName (2026-07-19):
+  parser.concreteTypeNameForMethodSelection delegates to lowering_rules.
+
 - Extend isStdCollectionType unit coverage (2026-07-19):
   HashMap classified as std collection in shared unit test.
 

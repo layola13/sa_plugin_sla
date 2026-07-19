@@ -19,6 +19,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Parser method-selection type peel uses shared concreteTypeName (2026-07-19):
+  parser.concreteTypeNameForMethodSelection delegates to lowering_rules.
+
 - Extend isStdCollectionType unit coverage (2026-07-19):
   HashMap classified as std collection in shared unit test.
 

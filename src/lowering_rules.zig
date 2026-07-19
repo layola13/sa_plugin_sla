@@ -361,6 +361,25 @@ pub const PollRuntimeCallKind = enum {
 pub const PollRuntimeCallPlan = struct {
     kind: PollRuntimeCallKind,
 
+    pub fn isReady(self: PollRuntimeCallPlan) bool {
+        return self.kind == .ready;
+    }
+
+    pub fn isPending(self: PollRuntimeCallPlan) bool {
+        return self.kind == .pending;
+    }
+
+    pub fn isStatusCheck(self: PollRuntimeCallPlan) bool {
+        return switch (self.kind) {
+            .is_ready, .is_pending => true,
+            else => false,
+        };
+    }
+
+    pub fn isValue(self: PollRuntimeCallPlan) bool {
+        return self.kind == .value;
+    }
+
     pub fn pollStatusMacroName(self: PollRuntimeCallPlan) ?[]const u8 {
         return switch (self.kind) {
             .is_ready => "POLL_IS_READY",
@@ -4925,16 +4944,22 @@ test "shared future runtime call classification" {
     try std.testing.expectEqual(ExecutorRuntimeCallKind.poll_one, planExecutorRuntimeCall(executor_poll_one).?.kind);
 
     const poll_ready = ast.CallExpr{ .func_name = "ready", .associated_target = "poll", .generics = &.{}, .args = args[0..] };
-    try std.testing.expectEqual(PollRuntimeCallKind.ready, planPollRuntimeCall(poll_ready).?.kind);
+    const poll_ready_plan = planPollRuntimeCall(poll_ready).?;
+    try std.testing.expectEqual(PollRuntimeCallKind.ready, poll_ready_plan.kind);
+    try std.testing.expect(poll_ready_plan.isReady());
 
     const poll_pending = ast.CallExpr{ .func_name = "pending", .associated_target = "poll", .generics = generics[0..], .args = &.{} };
-    try std.testing.expectEqual(PollRuntimeCallKind.pending, planPollRuntimeCall(poll_pending).?.kind);
+    const poll_pending_plan = planPollRuntimeCall(poll_pending).?;
+    try std.testing.expectEqual(PollRuntimeCallKind.pending, poll_pending_plan.kind);
+    try std.testing.expect(poll_pending_plan.isPending());
 
     const flat_poll_pending = ast.CallExpr{ .func_name = "poll__pending", .generics = generics[0..], .args = &.{} };
-    try std.testing.expectEqual(PollRuntimeCallKind.pending, planPollRuntimeCall(flat_poll_pending).?.kind);
+    try std.testing.expect(planPollRuntimeCall(flat_poll_pending).?.isPending());
 
     const poll_value = ast.CallExpr{ .func_name = "value", .associated_target = "poll", .generics = &.{}, .args = args[0..] };
-    try std.testing.expectEqual(PollRuntimeCallKind.value, planPollRuntimeCall(poll_value).?.kind);
+    const poll_value_plan = planPollRuntimeCall(poll_value).?;
+    try std.testing.expectEqual(PollRuntimeCallKind.value, poll_value_plan.kind);
+    try std.testing.expect(poll_value_plan.isValue());
 }
 
 test "shared async single await continuation plan is defer-ready only" {

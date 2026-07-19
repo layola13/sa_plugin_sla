@@ -19,6 +19,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Shared PollRuntimeCallPlan dispatcher normalization (2026-07-19):
+  `src/codegen.zig` and `src/sab_codegen.zig` now route poll runtime calls
+  through the shared `PollRuntimeCallPlan` predicates instead of switching
+  directly on `plan.kind` for `ready`, `pending`, `is_ready`/`is_pending`,
+  and `value`. `src/lowering_rules.zig` now exposes `isReady()` / `isPending()` /
+  `isStatusCheck()` / `isValue()` on the shared plan, and the shared
+  classification test exercises those helpers directly. Serial focused
+  verification passed `zig fmt /home/vscode/projects/sa_plugins/sa_plugin_sla/src/lowering_rules.zig /home/vscode/projects/sa_plugins/sa_plugin_sla/src/codegen.zig /home/vscode/projects/sa_plugins/sa_plugin_sla/src/sab_codegen.zig`, `git diff --check`, and `zig build test -j1 -Dtest-filter='shared future runtime call classification' --summary all` 2/2. No full suite or concurrent tests were run.
+
 - Shared FutureRuntimeCallPlan direct SAB dispatcher normalization (2026-07-19):
   `src/sab_codegen.zig` now routes direct SAB future runtime calls through the
   shared `FutureRuntimeCallPlan` predicates instead of switching locally on

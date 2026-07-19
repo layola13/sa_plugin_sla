@@ -7313,40 +7313,39 @@ pub const Codegen = struct {
 
     fn genPollRuntimeCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         const plan = lowering_rules.planPollRuntimeCall(call) orelse return null;
-        return switch (plan.kind) {
-            .ready => blk: {
-                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                const value_reg = try self.genExpr(call.args[0]);
-                break :blk try self.genReadyPoll(value_reg);
-            },
-            .pending => blk: {
-                if (call.args.len != 0 or call.generics.len != 1) return Error.UnsupportedSabDirectFeature;
-                break :blk try self.genPendingPoll();
-            },
-            .is_ready, .is_pending => blk: {
-                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                const poll_reg = try self.genExpr(call.args[0]);
-                const out_reg = try self.intern(try self.newTmp());
-                const macro_name = plan.pollStatusMacroName() orelse return Error.UnsupportedSabDirectFeature;
-                try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
-                    self.symbols.items[out_reg],
-                    self.symbols.items[poll_reg],
-                });
-                if (!self.isLocalReg(poll_reg)) try self.emitRelease(poll_reg);
-                break :blk out_reg;
-            },
-            .value => blk: {
-                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                const poll_reg = try self.genExpr(call.args[0]);
-                const value_reg = try self.intern(try self.newTmp());
-                try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_VALUE", &.{
-                    self.symbols.items[value_reg],
-                    self.symbols.items[poll_reg],
-                });
-                if (!self.isLocalReg(poll_reg)) try self.emitRelease(poll_reg);
-                break :blk value_reg;
-            },
-        };
+        if (plan.isReady()) {
+            if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+            const value_reg = try self.genExpr(call.args[0]);
+            return try self.genReadyPoll(value_reg);
+        }
+        if (plan.isPending()) {
+            if (call.args.len != 0 or call.generics.len != 1) return Error.UnsupportedSabDirectFeature;
+            return try self.genPendingPoll();
+        }
+        if (plan.isStatusCheck()) {
+            if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+            const poll_reg = try self.genExpr(call.args[0]);
+            const out_reg = try self.intern(try self.newTmp());
+            const macro_name = plan.pollStatusMacroName() orelse return Error.UnsupportedSabDirectFeature;
+            try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
+                self.symbols.items[out_reg],
+                self.symbols.items[poll_reg],
+            });
+            if (!self.isLocalReg(poll_reg)) try self.emitRelease(poll_reg);
+            return out_reg;
+        }
+        if (plan.isValue()) {
+            if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+            const poll_reg = try self.genExpr(call.args[0]);
+            const value_reg = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_VALUE", &.{
+                self.symbols.items[value_reg],
+                self.symbols.items[poll_reg],
+            });
+            if (!self.isLocalReg(poll_reg)) try self.emitRelease(poll_reg);
+            return value_reg;
+        }
+        return Error.UnsupportedSabDirectFeature;
     }
 
     fn genExecutorRuntimeCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {

@@ -870,6 +870,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
             &referenced_types,
         );
     } else {
+        const reachable_start = std.time.nanoTimestamp();
         try buildReachableWithoutMaterializedSession(
             allocator,
             program,
@@ -881,6 +882,9 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
             &reachable,
             &referenced_types,
         );
+        if (profile_enabled) {
+            std.debug.print("[sla-profile] import expand buildReachable symbols={d} types={d} modules={d} elapsed={d}ms\n", .{ reachable.count(), referenced_types.count(), ordered_modules.items.len, @divTrunc(std.time.nanoTimestamp() - reachable_start, std.time.ns_per_ms) });
+        }
     }
     profileImportExpandStage(profile_enabled, "reachable materialize", profile_start);
     profile_start = std.time.nanoTimestamp();

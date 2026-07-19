@@ -19,6 +19,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Module getOrParse stage timers + buildReachable counters (2026-07-19):
+  SLA_PROFILE now reports per-module getOrParse expand/parse/exports costs and
+  buildReachable symbol/type/module counts. Confirms remaining materialize cost
+  is primarily buildReachableSymbols over large decl-only ASTs (~370ms on
+  parallel_runner), not reparse of tiny importers.
+
 - Module import type-scan cache reuse + disable redundant prescan (2026-07-19):
   getOrParse now publishes completed type surfaces into the shared import-type
   scan cache, and module-table parser options set prescan_sla_import_types=false

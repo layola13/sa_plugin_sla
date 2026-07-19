@@ -823,6 +823,9 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
         }
     }
     profileImportExpandStage(profile_enabled, "resolve roots", profile_start);
+    if (profile_enabled) {
+        std.debug.print("[sla-profile] import expand ordered modules={d}\n", .{ordered_modules.items.len});
+    }
     profile_start = std.time.nanoTimestamp();
 
     var reachable = std.StringHashMap(void).init(allocator);

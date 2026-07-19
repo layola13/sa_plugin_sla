@@ -357,3 +357,12 @@ resolve-roots dropped on some modules but reachable materialize inflated
 (system_param materialize ~2.5s). Reverted that enablement; keep historical
 small filtered-test lazy path only until materialize is reworked.
 
+## 2026-07-19 ordered-module counts
+
+`SLA_PROFILE=1` now reports transitive ordered module count after resolve-roots:
+
+- `world_table_erased.sla`: ordered modules=12
+- `parallel_runner.sla`: ordered modules=16
+
+Roots cost is dominated by `getOrParse` of that diamond (source expand + decl-only parse + export build). Materialize is a separate second pass.
+

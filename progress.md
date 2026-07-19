@@ -5,6 +5,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Module import-expand ordered-module profile counter (2026-07-19):
+  SLA_PROFILE now prints `import expand ordered modules=N` after resolve-roots.
+  Real ECS check samples: world_table_erased N=12 (~70ms roots / ~517ms materialize),
+  parallel_runner N=16 (~678ms roots / ~510ms materialize). Resolve-roots cost scales
+  with getOrParse of the transitive diamond; further cuts need cheaper first parse
+  or deferred child discovery without inflating materialize.
+
 - Y-share Cell/Mutex/RwLock type peelers (2026-07-19):
   Shared Cell/Mutex/MutexGuard/RwLock/ReadGuard/WriteGuard peels into
   lowering_rules; SA wrappers delegate. Sync peeler unit test + smart-pointer

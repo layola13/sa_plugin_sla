@@ -188,3 +188,42 @@ timeout 10s env SA_PLUGIN_DEV=1 sa sla test lib/task_pool_builder.sla --test-bac
 如果 10s smoke 无输出，不能把它当作失败细节；必须回到本仓库细化 fixture 或缓存 SAB 反汇编定位。
 
 下游当前继续以 generated-SA 整文件通过和默认/SAB focused tests 作为 `TaskPoolBuilder` facade 的验证证据。
+
+## 2026-07-19 Multi Vec<fn> lane extend dimension
+
+Next local fixture for the multi-lane shape of `EcsParallelScopedTaskSet`
+(threaded `runs` + `on_scope_runs` with independent order-position vectors and
+loop-time ordered merge):
+
+- `tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla`
+
+This keeps Arc/World/thread out of the graph and only adds a second `Vec<fn>`
+lane plus `find_order` lookup merge, matching the extend loop shape in
+`sla_ecs/lib/parallel_runner.sla` without importing that whole file.
+
+Serial verification (after local `zig build -j1`):
+
+```bash
+timeout 30s env SLA_PROFILE=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic
+timeout 15s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+timeout 10s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_loop_fnptr_transfer_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+Results:
+
+- SA backend 1/1 pass; profile `import expand` ~548ms, `sa codegen` ~6ms
+  (cold first 10s attempt can still linger in the SA backend compile/run tail).
+- Strict direct SAB 1/1 pass; profile `import expand` ~519ms,
+  `sab direct codegen` ~3650ms, under the 10s smoke budget.
+- Prior loop fnptr-transfer fixture still 1/1 under 10s strict SAB.
+
+Status remains partial/open for whole-file `parallel_runner.sla` /
+`task_pool_builder.sla` aggregation. Do not long-run those 10s+ smokes; next
+dimensions are still Arc<*World> parameter lanes and child-scope returns, each
+as a separate local fixture under the 10s rule.

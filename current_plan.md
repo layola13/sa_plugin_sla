@@ -19,6 +19,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Parallel-runner multi-lane Vec<fn> fixture (2026-07-19):
+  Added `tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla` for the
+  next open dimension of `docs/sab_parallel_runner_whole_file_memoryleak_issue_cn.md`:
+  two `Vec<fn>` lanes with independent order-position vectors and loop-time
+  ordered extend. Serial local verification after `zig build -j1`: SA backend
+  1/1, strict direct SAB 1/1 with `sab direct codegen` ~3.65s, and prior
+  `loop_fnptr_transfer` fixture still 1/1 under 10s. Whole-file
+  `parallel_runner.sla` / `task_pool_builder.sla` remain open dangerous smoke.
+
 - Shared residual plan helper normalization (2026-07-19):
   `DynCoercionPlan` now exposes `isBoxToDyn()` / `isRcNewToDynRc()`, and both
   SA-text and direct SAB dyn-coercion paths consume those helpers. Direct SAB

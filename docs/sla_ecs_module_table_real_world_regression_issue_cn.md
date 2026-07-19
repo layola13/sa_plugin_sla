@@ -536,3 +536,9 @@ Warm local sla-local-cli:
 Contract/macro/import-list caches cut load-contracts to ~50-90ms. Remaining build
 gap vs check is primarily registry-driven materialize body walks (~1.0s).
 
+## 2026-07-19 non-test body-walk memo
+
+`ReachabilityBuildState` now tracks `scanned_function_bodies` and skips repeat
+AST walks for the same function when `prune_for_test_codegen` is false (compile
+path). Warm `parallel_runner` build ~1.61s.
+

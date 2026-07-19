@@ -1347,6 +1347,7 @@ const ReachabilityBuildState = struct {
     scanned_type_roots: std.StringHashMap(void),
     analysis: ReachabilityAnalysis,
     unresolved_callables: UnresolvedCallableSet,
+    scanned_function_bodies: std.StringHashMap(void),
     worklist_index: usize = 0,
 
     fn init(allocator: std.mem.Allocator) ReachabilityBuildState {
@@ -1356,6 +1357,7 @@ const ReachabilityBuildState = struct {
             .worklist = std.ArrayList([]const u8).init(allocator),
             .scanned_symbol_roots = std.StringHashMap(void).init(allocator),
             .scanned_type_roots = std.StringHashMap(void).init(allocator),
+            .scanned_function_bodies = std.StringHashMap(void).init(allocator),
             .analysis = ReachabilityAnalysis.init(allocator, false),
             .unresolved_callables = UnresolvedCallableSet.init(allocator),
         };
@@ -1365,6 +1367,7 @@ const ReachabilityBuildState = struct {
         self.unresolved_callables.deinit();
         self.analysis.deinit();
         self.scanned_type_roots.deinit();
+        self.scanned_function_bodies.deinit();
         self.scanned_symbol_roots.deinit();
         self.worklist.deinit();
         self.callable_index.deinit();
@@ -1467,10 +1470,19 @@ fn drainReachabilityBuildState(
             }
             // Decl-only imported stubs have empty bodies; skip the walk entirely.
             if (fd.body.len != 0) {
-                if (profile) non_empty_bodies += 1;
-                const body_start = if (profile) std.time.nanoTimestamp() else 0;
-                try collectSyntacticReachableBlock(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, name, out_reachable, out_referenced_types, &state.worklist, fd.body);
-                if (profile) body_walk_ns += std.time.nanoTimestamp() - body_start;
+                // Non-test drains never use fact-sensitive branch pruning, so each
+                // function body only needs a single syntactic walk.
+                if (!options.prune_for_test_codegen and state.scanned_function_bodies.contains(name)) {
+                    // already walked
+                } else {
+                    if (profile) non_empty_bodies += 1;
+                    const body_start = if (profile) std.time.nanoTimestamp() else 0;
+                    try collectSyntacticReachableBlock(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, name, out_reachable, out_referenced_types, &state.worklist, fd.body);
+                    if (profile) body_walk_ns += std.time.nanoTimestamp() - body_start;
+                    if (!options.prune_for_test_codegen) {
+                        try state.scanned_function_bodies.put(name, {});
+                    }
+                }
             }
             state.analysis.current_facts = prev_facts;
         }

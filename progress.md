@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Memoize non-test reachability body walks (2026-07-19):
+  ReachabilityBuildState.scanned_function_bodies skips rewalking the same body
+  when prune_for_test_codegen is off. Warm parallel_runner build ~1.61s.
+
 - Share Box/Rc/Arc type-name helpers on Y (2026-07-19):
   isBoxTypeName/isRcTypeName/isArcTypeName/smartPointerStdImportPath shared;
   SA constructor/from_raw/into_raw paths and SAB Rc/Arc receivers use them.

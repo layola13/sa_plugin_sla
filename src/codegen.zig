@@ -3533,33 +3533,15 @@ pub const Codegen = struct {
     }
 
     fn isNumericType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize, .integer, .f32, .f64, .float => true,
-                else => false,
-            },
-            else => false,
-        };
+        return lowering_rules.isNumericType(ty);
     }
 
     fn isFloatType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .f32, .f64, .float => true,
-                else => false,
-            },
-            else => false,
-        };
+        return lowering_rules.isFloatType(ty);
     }
 
     fn isUnsignedIntegerType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .u8, .u16, .u32, .u64, .usize => true,
-                else => false,
-            },
-            else => false,
-        };
+        return lowering_rules.isUnsignedIntegerType(ty);
     }
 
     fn binaryOpName(op: ast.BinaryOp, left_ty: *const ast.Type, right_ty: *const ast.Type) ?[]const u8 {
@@ -4085,10 +4067,7 @@ pub const Codegen = struct {
     }
 
     fn isVoidType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| p == .void_type,
-            else => false,
-        };
+        return lowering_rules.isVoidType(ty);
     }
 
     fn makeAbiPtrType(self: *Codegen) CodegenError!*const ast.Type {

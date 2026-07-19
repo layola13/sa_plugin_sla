@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share void/numeric/float type classifiers on Y (2026-07-19):
+  SA and SAB now delegate isVoidType/isNumericType/isFloatType/isUnsignedIntegerType
+  to lowering_rules. Fixed-array/vec/branch fixtures still green.
+
 - Check-path include_all_imported_decls skips root reachability (2026-07-19):
   `sla check` now expands imports with include_all_imported_decls + decl-only
   stubs, skipping buildReachableSymbols (~300ms body walks on parallel_runner).

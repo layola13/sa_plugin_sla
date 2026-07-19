@@ -2086,7 +2086,7 @@ pub const Codegen = struct {
     }
 
     fn isVoidType(ty: *const ast.Type) bool {
-        return ty.* == .primitive and ty.primitive == .void_type;
+        return lowering_rules.isVoidType(ty);
     }
 
     fn typeIsPointerScalarValue(ty: *const ast.Type) bool {
@@ -2098,10 +2098,7 @@ pub const Codegen = struct {
     }
 
     fn isFloatType(ty: *const ast.Type) bool {
-        return ty.* == .primitive and switch (ty.primitive) {
-            .f32, .f64, .float => true,
-            else => false,
-        };
+        return lowering_rules.isFloatType(ty);
     }
 
     fn isIntegerPrimType(ty: sig.PrimType) bool {
@@ -2126,10 +2123,7 @@ pub const Codegen = struct {
     }
 
     fn isNumericType(ty: *const ast.Type) bool {
-        return ty.* == .primitive and switch (ty.primitive) {
-            .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize, .integer, .f32, .f64, .float => true,
-            else => false,
-        };
+        return lowering_rules.isNumericType(ty);
     }
 
     fn borrowedBindingNeedsStackStorage(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {

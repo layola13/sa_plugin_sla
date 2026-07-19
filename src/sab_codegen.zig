@@ -1582,7 +1582,7 @@ pub const Codegen = struct {
 
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
         return switch (ty.*) {
-            .primitive => true,
+            .primitive => |p| p != .void_type,
             .user_defined => blk: {
                 const cache_name: ?[]const u8 = if (ty.user_defined.generics.len == 0) ty.user_defined.name else null;
                 if (cache_name) |name| {

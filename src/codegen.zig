@@ -3382,8 +3382,10 @@ pub const Codegen = struct {
         return switch (ty.*) {
             .primitive => |p| p != .void_type,
             .user_defined => blk: {
+                // Match SAB: std owners are never Copy even with derives absent/present noise.
+                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
-                if (!structHasDerive(decl, "copy") or decl.is_opaque or decl.is_union) break :blk false;
+                if (!lowering_rules.structHasDerive(decl, "copy") or decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {
                     if (!self.typeHasCopyDerive(field.ty)) break :blk false;
                 }

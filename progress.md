@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Align SA/SAB typeHasCopyDerive semantics (2026-07-19):
+  SA now short-circuits std owners as non-Copy and uses shared structHasDerive;
+  SAB treats void primitives as non-Copy like SA. Ownership fixtures SA/SAB green.
+
 - Adaptive include_all threshold abandoned (2026-07-19):
   Selective reachability for large roots regressed system_param check to ~3.4s.
   Keep include_all for all check roots. Warm wall-clock: parallel_runner ~0.5-0.8s,

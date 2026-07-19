@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Warm parallel_runner build ~1.06s (2026-07-19):
+  Residual dominated by root parse + import resolve-roots getOrParse.
+  Materialize/load-contracts largely cached on warm path.
+
 - Skip warm one-shot drain when no reparse needed (2026-07-19):
   Plan-cache hits with already-present bodies return immediately.
   parallel_runner warm import expand ~358ms, build ~1.09s; SA byte-identical.

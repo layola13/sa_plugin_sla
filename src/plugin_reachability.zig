@@ -1923,7 +1923,6 @@ pub fn buildAndMaterializeReachableImportedModuleBodies(
     return try materializeReachableImportedModuleBodiesWithState(&state, allocator, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
 }
 
-
 /// Materialize imported bodies for an already-populated reachable set.
 /// Does not clear or recompute reachability (used by warm plan-cache hits).
 pub fn materializeImportedModuleBodiesForReachableSet(

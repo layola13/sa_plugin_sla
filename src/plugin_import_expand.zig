@@ -857,7 +857,6 @@ fn resolvedImportGroupForDecl(groups: []const SlaResolvedImportGroup, decl: *con
     return null;
 }
 
-
 fn reachablePlanCachePath(allocator: std.mem.Allocator, source_file: []const u8, root_source: []const u8, ordered_modules: []const *SlaModule) ![]u8 {
     var hasher = std.hash.Wyhash.init(0);
     hasher.update(source_file);

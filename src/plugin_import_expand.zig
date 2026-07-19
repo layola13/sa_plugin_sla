@@ -1107,7 +1107,7 @@ fn loadImportContractsRecursive(
         try visited.put(resolved.path, {});
 
         const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-        const expanded_source = try source_expand.expand(allocator, resolved.source);
+        const expanded_source = try source_expand.expandForModulePath(allocator, resolved.path, resolved.source);
         try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited);
 
         if (std.mem.endsWith(u8, resolved.path, ".sai")) {
@@ -1130,7 +1130,7 @@ fn loadResolvedImportContractsRecursive(
     try visited.put(resolved.path, {});
 
     const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
-    const expanded_source = try source_expand.expand(allocator, resolved.source);
+    const expanded_source = try source_expand.expandForModulePath(allocator, resolved.path, resolved.source);
     try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited);
 
     if (std.mem.endsWith(u8, resolved.path, ".sai")) {
@@ -1148,11 +1148,25 @@ pub fn loadImportedContractsFromResolvedImports(
 ) !void {
     var visited = std.StringHashMap(void).init(allocator);
     defer visited.deinit();
+    const profile = plugin_compile_options.slaProfileEnabled(allocator);
+    var loaded: usize = 0;
+    const start = if (profile) std.time.nanoTimestamp() else 0;
 
     for (imports) |resolved| {
         if (std.mem.endsWith(u8, resolved.path, ".sla")) continue;
+        if (visited.contains(resolved.path)) continue;
         const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
+        if (profile) {
+            std.debug.print("[sla-profile] load contract {s}\n", .{std.fs.path.basename(resolved.path)});
+        }
         try loadResolvedImportContractsRecursive(tc, allocator, resolved, base_dir, &visited);
+        loaded += 1;
+    }
+    if (profile) {
+        std.debug.print(
+            "[sla-profile] load contracts summary: roots={d} visited={d} elapsed={d}ms\n",
+            .{ loaded, visited.count(), @divTrunc(std.time.nanoTimestamp() - start, std.time.ns_per_ms) },
+        );
     }
 }
 

@@ -493,3 +493,13 @@ Warm compile import-expand:
 Small roots stay healthy under registry-driven reachable materialize; large roots
 still pay multi-pass body walks.
 
+## 2026-07-19 contract load dedupe
+
+`loadImportedContractsFromResolvedImports` was reprocessing duplicate `.sa`
+contract roots (vec/box repeated). Now skips visited roots and expands through
+`expandForModulePath`.
+
+Warm `parallel_runner` build:
+- load contracts: ~730ms → ~558ms
+- wall-clock: ~1.89s
+

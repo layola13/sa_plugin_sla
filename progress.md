@@ -5,6 +5,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- HTTP loopback StackEscape slot-name uniqueness (2026-07-19):
+  Thread spawn/worker generated params use unique `__thread_*_slot_*` names so
+  they do not collide with user `slot = stack_alloc` symbols. SAB StackEscape on
+  http_loopback_sse_adapter is gone; llvmc return mismatch is current-non-repro.
+  Residual: SA assert panics / SAB runtime signal 11 on loopback tests.
+
 - Loop-live by-value Vec call-arg clone (2026-07-19):
   SA-text and direct SAB clone by-value `Vec` identifiers when they must stay
   live across a loop back-edge or later statement, so ABI `^` transfer does not

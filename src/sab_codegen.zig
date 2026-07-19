@@ -5309,8 +5309,13 @@ pub const Codegen = struct {
         defer self.popLocalsTo(old_locals);
         self.beginFunction();
 
-        const param = try self.oneGeneratedParam("slot", .raw);
-        try self.pushRawParamLocal("slot", param.id, .raw);
+        // Use a generated-unique param name. Reusing the bare name `slot`
+        // collides with ordinary locals such as `slot = stack_alloc 8` in the
+        // same module (same symbol id), which confuses SAB verify/disasm and
+        // can surface as StackEscape when move_ is applied to the shared id.
+        const param_name = try std.fmt.allocPrint(self.allocator, "__thread_spawn_slot_{s}", .{entry.spawn_name});
+        const param = try self.oneGeneratedParam(param_name, .raw);
+        try self.pushRawParamLocal(param_name, param.id, .raw);
         const fsig = try self.appendGeneratedFuncSig(entry.spawn_name, .ffi_wrapper, param.specs, param.ids, .i32, true);
         const sig_idx = self.function_sigs.items.len;
         try self.function_sigs.append(fsig);
@@ -5527,8 +5532,9 @@ pub const Codegen = struct {
         defer self.popLocalsTo(old_locals);
         self.beginFunction();
 
-        const param = try self.oneGeneratedParam("slot", .borrow);
-        try self.pushRawParamLocal("slot", param.id, .borrow);
+        const param_name = try std.fmt.allocPrint(self.allocator, "__thread_worker_slot_{s}", .{entry.worker_name});
+        const param = try self.oneGeneratedParam(param_name, .borrow);
+        try self.pushRawParamLocal(param_name, param.id, .borrow);
         const fsig = try self.appendGeneratedFuncSig(entry.worker_name, .normal, param.specs, param.ids, .i32, false);
         const sig_idx = self.function_sigs.items.len;
         try self.function_sigs.append(fsig);

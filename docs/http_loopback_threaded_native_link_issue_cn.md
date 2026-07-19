@@ -1,6 +1,6 @@
 # HTTP loopback threaded native link issue
 
-状态：partial（2026-07-19）。`sa sla check` 与 `sa sla sab build` 通过；`sa sla test` / native `sa build-obj` 仍命中 llvmc `ret { i32, i32 } zeroinitializer` vs `i32` 返回类型不匹配（SCI native backend / stack-return ABI 层，非当前 SAB MemoryLeak 类）。
+状态：partial/runtime residual（2026-07-19）。llvmc `ret {i32,i32}` 与 SAB StackEscape 已消除：check/sab build/build-obj 通过；SA test 运行时 panic 断言失败，SAB test 运行时 signal 11。线程 spawn 参数名改为唯一符号，避免与 `slot = stack_alloc` 冲突。
 
 日期: 2026-07-17
 
@@ -86,3 +86,20 @@ This residual is a native-backend ABI/return-shape issue (SCI `llvmc`), not the 
 ## 2026-07-19 复核
 
 仍 open。`http_loopback_sse_adapter.sla`：check 通过；strict SAB test 仍 `StackEscape`（tmp 寄存器）。threaded native link 工单仍依赖 thread worker 结构体返回/slot capture 修复；exec-safe 单线程 workaround 仍是下游规避路径。
+
+## 2026-07-19 SCI/native + SAB follow-up
+
+### Closed in this pass
+1. **llvmc return-type mismatch** (`ret { i32, i32 } zeroinitializer` vs `i32`): current SCI `sa build-obj` on the generated adapter `.sa` succeeds; no longer a compile blocker.
+2. **SAB StackEscape on thread spawn**: direct SAB thread spawn/worker params no longer reuse the bare name `slot`, which collided with ordinary `slot = stack_alloc 8` locals in the same module (same symbol id). Fix in `sa_plugin_sla` `emitEscapedSpawnWrapper` / `emitEscapedWorker`.
+
+### Still open
+- SA backend focused tests compile and run but **assert-fail** (`panic 19021/19031/...`) — adapter/runtime behavior, not native ABI compile.
+- SAB backend focused tests now pass verify/codegen but **signal 11** at runtime under the loopback worker path — remaining correctness residual.
+
+Verification:
+```sh
+timeout 40s sa build-obj /tmp/http_loop_new.sa -o /tmp/http_loop_ok.o
+timeout 60s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla sab build crates/scodex-runtime/src/http_loopback_sse_adapter.sla --out /tmp/http.sab
+timeout 60s env SA_PLUGIN_DEV=1 sa sla test crates/scodex-runtime/src/http_loopback_sse_adapter.sla --test-backend sa --jobs 1 --filter "http loopback sse fails closed on non success response"
+```

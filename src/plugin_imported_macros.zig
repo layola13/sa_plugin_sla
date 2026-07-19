@@ -119,6 +119,64 @@ pub fn appendExpandedImportedMacroDirectCallees(
     for (expanded.direct_callees) |callee| try appendUniqueDirectCallee(callees, callee);
 }
 
+fn macroIndexCachePath(allocator: std.mem.Allocator, import_path: []const u8, expanded_source: []const u8) ![]u8 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(import_path);
+    hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
+    hasher.update(expanded_source);
+    const digest = hasher.final();
+    const stem = std.fs.path.basename(import_path);
+    return try std.fmt.allocPrint(allocator, ".sla-cache/macros/{s}-{x}.idx", .{ stem, digest });
+}
+
+fn tryLoadImportedMacrosFromCache(
+    tc: *type_checker_mod.TypeChecker,
+    allocator: std.mem.Allocator,
+    cache_path: []const u8,
+    import_path: ?[]const u8,
+) !bool {
+    const bytes = std.fs.cwd().readFileAlloc(allocator, cache_path, 16 * 1024 * 1024) catch return false;
+    defer allocator.free(bytes);
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw| {
+        if (raw.len == 0) continue;
+        var parts = std.mem.splitScalar(u8, raw, '|');
+        const name = parts.next() orelse continue;
+        const arity_s = parts.next() orelse continue;
+        const leading_s = parts.next() orelse continue;
+        const borrow_s = parts.next() orelse continue;
+        const address_s = parts.next() orelse continue;
+        const callees_s = parts.next() orelse "";
+        const arity = std.fmt.parseInt(usize, arity_s, 10) catch continue;
+        const leading = std.fmt.parseInt(usize, leading_s, 10) catch continue;
+        const borrowed = std.fmt.parseInt(u64, borrow_s, 10) catch continue;
+        const address = std.fmt.parseInt(u64, address_s, 10) catch continue;
+        var callee_list = std.ArrayList([]const u8).init(allocator);
+        defer callee_list.deinit();
+        if (callees_s.len != 0) {
+            var cparts = std.mem.splitScalar(u8, callees_s, ',');
+            while (cparts.next()) |c| {
+                if (c.len == 0) continue;
+                try callee_list.append(try allocator.dupe(u8, c));
+            }
+        }
+        const owned_import = if (import_path) |path| try allocator.dupe(u8, path) else null;
+        try tc.registerImportedMacro(try allocator.dupe(u8, name), arity, leading, owned_import, borrowed, address, try callee_list.toOwnedSlice());
+    }
+    return true;
+}
+
+fn storeImportedMacrosCache(cache_path: []const u8, records: []const []const u8) void {
+    const dir = std.fs.path.dirname(cache_path) orelse return;
+    std.fs.cwd().makePath(dir) catch return;
+    const file = std.fs.cwd().createFile(cache_path, .{}) catch return;
+    defer file.close();
+    for (records) |line| {
+        file.writeAll(line) catch return;
+        file.writeAll("\n") catch return;
+    }
+}
+
 pub fn loadImportedMacrosFromExpandedSource(
     tc: *type_checker_mod.TypeChecker,
     allocator: std.mem.Allocator,
@@ -126,6 +184,18 @@ pub fn loadImportedMacrosFromExpandedSource(
     import_path: ?[]const u8,
 ) !void {
     if (!expandedSourceMayContainImportedMacros(expanded_source)) return;
+    if (import_path) |path| {
+        const cache_path = macroIndexCachePath(allocator, path, expanded_source) catch null;
+        if (cache_path) |cp| {
+            defer allocator.free(cp);
+            if (try tryLoadImportedMacrosFromCache(tc, allocator, cp, import_path)) return;
+        }
+    }
+    var cache_records = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (cache_records.items) |line| allocator.free(line);
+        cache_records.deinit();
+    }
     var lines = std.mem.splitScalar(u8, expanded_source, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -167,7 +237,24 @@ pub fn loadImportedMacrosFromExpandedSource(
         }
 
         const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
-        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, try direct_callees.toOwnedSlice());
+        const owned_callees = try direct_callees.toOwnedSlice();
+        // Cache line: name|arity|leading|borrow|address|callee1,callee2
+        var callee_joined = std.ArrayList(u8).init(allocator);
+        defer callee_joined.deinit();
+        for (owned_callees, 0..) |callee, idx| {
+            if (idx != 0) try callee_joined.append(',');
+            try callee_joined.appendSlice(callee);
+        }
+        const record = try std.fmt.allocPrint(allocator, "{s}|{d}|{d}|{d}|{d}|{s}", .{ name, arity, leading_outputs, borrowed_arg_mask, address_slot_arg_mask, callee_joined.items });
+        try cache_records.append(record);
+        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, owned_callees);
+    }
+    if (import_path) |path| {
+        const cache_path = macroIndexCachePath(allocator, path, expanded_source) catch null;
+        if (cache_path) |cp| {
+            defer allocator.free(cp);
+            storeImportedMacrosCache(cp, cache_records.items);
+        }
     }
 }
 

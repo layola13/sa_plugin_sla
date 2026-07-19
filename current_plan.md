@@ -19,6 +19,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share isRawPtrAliasType on Y (2026-07-19):
+  Void-as-raw-ptr alias classification moved into lowering_rules; SA delegates.
+
 - Expand capacity pre-size + share i32like/zeroLiteral (2026-07-19):
   source_expand pre-reserves capacity for @expand_tuple heavy modules; SA
   zeroLiteralForType/isI32LikeType delegate to lowering_rules. Fixtures green.

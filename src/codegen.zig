@@ -4574,10 +4574,7 @@ pub const Codegen = struct {
     }
 
     fn isRawPtrAliasType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| p == .void_type,
-            else => false,
-        };
+        return lowering_rules.isRawPtrAliasType(ty);
     }
 
     fn isPointerCarrierCastType(ty: *const ast.Type) bool {

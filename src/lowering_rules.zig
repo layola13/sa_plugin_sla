@@ -4005,6 +4005,10 @@ pub fn isPointerCarrierCastType(ty: *const ast.Type) bool {
     };
 }
 
+pub fn isRawPtrAliasType(ty: *const ast.Type) bool {
+    return ty.* == .primitive and ty.primitive == .void_type;
+}
+
 /// Result slots used by `if`/`match`-style expression lowering must treat
 /// pointer-passing values as moves into the slot, not copy-and-release temps.
 /// The loaded merge result becomes the sole owner/borrow carrier.

@@ -2948,6 +2948,34 @@ pub fn atomicPtrInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "AtomicPtr");
 }
 
+fn isUserDefinedNamed(ty: *const ast.Type, name: []const u8) bool {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| return std.mem.eql(u8, ud.name, name) and ud.generics.len == 0,
+            else => return false,
+        }
+    }
+}
+
+pub fn isFileType(ty: *const ast.Type) bool {
+    return isUserDefinedNamed(ty, "File");
+}
+
+pub fn isMetadataType(ty: *const ast.Type) bool {
+    return isUserDefinedNamed(ty, "Metadata");
+}
+
+pub fn isAtomicI32Type(ty: *const ast.Type) bool {
+    return isUserDefinedNamed(ty, "AtomicI32");
+}
+
+pub fn isAtomicUsizeType(ty: *const ast.Type) bool {
+    return isUserDefinedNamed(ty, "AtomicUsize");
+}
+
 pub fn refCellInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "RefCell");
 }

@@ -4561,27 +4561,11 @@ pub const Codegen = struct {
     }
 
     fn isAtomicI32Type(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "AtomicI32") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isAtomicI32Type(ty);
     }
 
     fn isAtomicUsizeType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "AtomicUsize") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isAtomicUsizeType(ty);
     }
 
     fn cellInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -4613,27 +4597,11 @@ pub const Codegen = struct {
     }
 
     fn isFileType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "File") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isFileType(ty);
     }
 
     fn isMetadataType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "Metadata") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isMetadataType(ty);
     }
 
     fn isI32LikeType(ty: *const ast.Type) bool {

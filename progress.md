@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Y-share File/Metadata/Atomic named type peels (2026-07-19):
+  Shared isFileType/isMetadataType/isAtomicI32Type/isAtomicUsizeType into
+  lowering_rules; SA wrappers delegate. FS/vec/smart-pointer fixtures green.
+
 - Y-share ManuallyDrop/JoinHandle/channel/AtomicPtr peelers (2026-07-19):
   Shared remaining pure generic peels into lowering_rules and delegated SA
   wrappers. Thread/smart-pointer/vec ownership fixtures remain SA/SAB green.

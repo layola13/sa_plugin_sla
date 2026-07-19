@@ -3531,11 +3531,7 @@ pub const Codegen = struct {
     }
 
     fn literalZero(expr: *const ast.Node) bool {
-        return expr.* == .literal and switch (expr.literal) {
-            .int_val => |v| v == 0,
-            .float_val => |v| v == 0.0,
-            else => false,
-        };
+        return lowering_rules.literalZero(expr);
     }
 
     fn arithmeticOpName(op: ast.BinaryOp) ?[]const u8 {

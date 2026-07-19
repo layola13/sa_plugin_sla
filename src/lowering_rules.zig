@@ -2925,6 +2925,14 @@ pub fn enumNameMatchesDecl(pattern_name: []const u8, decl_name: []const u8) bool
     return decl_name[pattern_name.len] == '_';
 }
 
+pub fn literalZero(expr: *const ast.Node) bool {
+    return expr.* == .literal and switch (expr.literal) {
+        .int_val => |v| v == 0,
+        .float_val => |v| v == 0.0,
+        else => false,
+    };
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     var curr = ty;
     while (true) {

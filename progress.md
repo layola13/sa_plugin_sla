@@ -5,6 +5,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Share literalZero on Y (2026-07-19):
+  Zero-literal detection moved into lowering_rules.literalZero; SA delegates.
+  Compile-path materialize still dominated by multi-pass body walks
+  (parallel_runner extend ~614ms across 5 extensions).
+
 - Module check wall-clock after optimizations (2026-07-19):
   Warm local sla-local-cli check: parallel_runner ~0.68s, system_param_table_erased
   ~0.98s (was multi-second materialize dominated). Remaining check cost is mostly

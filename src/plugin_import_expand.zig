@@ -31,6 +31,58 @@ fn profileImportExpandStage(enabled: bool, label: []const u8, start_ns: i128) vo
     std.debug.print("[sla-profile] import expand {s}: {d}ms\n", .{ label, elapsed_ms });
 }
 
+fn importListCachePath(allocator: std.mem.Allocator, source_path: []const u8, expanded_source: []const u8) ![]u8 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(source_path);
+    hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
+    hasher.update(expanded_source);
+    const digest = hasher.final();
+    const stem = std.fs.path.basename(source_path);
+    return try std.fmt.allocPrint(allocator, ".sla-cache/imports/{s}-{x}.lst", .{ stem, digest });
+}
+
+fn collectImportPathsFromExpandedSource(allocator: std.mem.Allocator, expanded_source: []const u8) ![]const []const u8 {
+    var out = std.ArrayList([]const u8).init(allocator);
+    errdefer {
+        for (out.items) |item| allocator.free(item);
+        out.deinit();
+    }
+    var lines = std.mem.splitScalar(u8, expanded_source, '\n');
+    while (lines.next()) |line| {
+        if (importPathFromLine(line)) |child_import| {
+            try out.append(try allocator.dupe(u8, child_import));
+        }
+    }
+    return try out.toOwnedSlice();
+}
+
+fn loadImportListCache(allocator: std.mem.Allocator, cache_path: []const u8) !?[]const []const u8 {
+    const bytes = std.fs.cwd().readFileAlloc(allocator, cache_path, 1024 * 1024) catch return null;
+    defer allocator.free(bytes);
+    var out = std.ArrayList([]const u8).init(allocator);
+    errdefer {
+        for (out.items) |item| allocator.free(item);
+        out.deinit();
+    }
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        try out.append(try allocator.dupe(u8, line));
+    }
+    return try out.toOwnedSlice();
+}
+
+fn storeImportListCache(cache_path: []const u8, imports: []const []const u8) void {
+    const dir = std.fs.path.dirname(cache_path) orelse return;
+    std.fs.cwd().makePath(dir) catch return;
+    const file = std.fs.cwd().createFile(cache_path, .{}) catch return;
+    defer file.close();
+    for (imports) |imp| {
+        file.writeAll(imp) catch return;
+        file.writeAll("\n") catch return;
+    }
+}
+
 fn scanExpandedSourceImports(
     tc: *type_checker_mod.TypeChecker,
     allocator: std.mem.Allocator,
@@ -40,6 +92,33 @@ fn scanExpandedSourceImports(
     visited: *std.StringHashMap(void),
 ) anyerror!void {
     if (!expandedSourceMayContainImports(expanded_source)) return;
+
+    // Prefer a content-hash cache of @import paths for large std sources (e.g. vec.sa)
+    // so warm compiles skip line-scanning ~200KB+ expanded text.
+    var owned_imports: ?[]const []const u8 = null;
+    defer if (owned_imports) |imports| {
+        for (imports) |item| allocator.free(item);
+        allocator.free(imports);
+    };
+    if (exclude_path) |source_path| {
+        if (importListCachePath(allocator, source_path, expanded_source)) |cache_path| {
+            defer allocator.free(cache_path);
+            if (loadImportListCache(allocator, cache_path) catch null) |cached| {
+                owned_imports = cached;
+            } else {
+                const collected = try collectImportPathsFromExpandedSource(allocator, expanded_source);
+                owned_imports = collected;
+                storeImportListCache(cache_path, collected);
+            }
+        } else |_| {}
+    }
+    if (owned_imports) |imports| {
+        for (imports) |child_import| {
+            try loadImportContractsRecursive(tc, allocator, import_dir, child_import, exclude_path, visited);
+        }
+        return;
+    }
+
     var lines = std.mem.splitScalar(u8, expanded_source, '\n');
     while (lines.next()) |line| {
         if (importPathFromLine(line)) |child_import| {

@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Cache @import lists for contract scan (2026-07-19):
+  scanExpandedSourceImports stores/loads `.sla-cache/imports/*` so warm vec.sa
+  contract scans avoid full line walks. Warm load contracts ~51-90ms.
+
 - Share primitiveIsCopyValue on Y (2026-07-19):
   SA/SAB typeIsCopyValue and copy/debug derive primitive arms use shared
   primitiveIsCopyValue. Ownership fixtures green.

@@ -518,3 +518,11 @@ Warm second-process `parallel_runner` build:
 - load contracts: ~820ms → ~90ms
 - `vec.sa` macros: ~122ms → ~6ms
 
+## 2026-07-19 contract @import list cache
+
+`scanExpandedSourceImports` now caches extracted `@import` paths under
+`.sla-cache/imports/<stem>-<hash>.lst`.
+
+Warm `parallel_runner` build load contracts: ~51-90ms after expand/macro/import
+list caches.
+

@@ -5,6 +5,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Known residual: SAB shallow_copy aggregate call-arg (2026-07-19):
+  tests/test_unit_shallow_copy_call_arg_direct.sla still fails under strict SAB
+  (panic 51600/51602/51604) while SA passes; not introduced by fixed-array copy fix.
+  str_eq_direct SAB MemoryLeak also residual/pre-existing.
+
 - Fixed-array copy-value classification (2026-07-19):
   typeIsCopyValue treats `[T; N]` as copy when element is copy on SA/SAB.
   Restores tests/test_unit_array_direct.sla and borrow index fixtures (UseAfterMove

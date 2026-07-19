@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Remove unused SA structHasDerive wrapper (2026-07-19):
+  Call sites already use lowering_rules.structHasDerive directly.
+
 - Hash/Debug derive short-circuit std owners (2026-07-19):
   typeHasHashDerive/typeHasDebugDerive treat std owners as non-derived, matching
   Copy ownership policy. Smart-pointer fixtures SA/SAB green.

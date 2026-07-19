@@ -3374,9 +3374,6 @@ pub const Codegen = struct {
         return lowering_rules.deriveNameMatches(actual, wanted);
     }
 
-    fn structHasDerive(decl: *const ast.StructDecl, name: []const u8) bool {
-        return lowering_rules.structHasDerive(decl, name);
-    }
 
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
         return switch (ty.*) {

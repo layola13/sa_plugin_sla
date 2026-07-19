@@ -19,6 +19,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Fixed-array copy-value classification (2026-07-19):
+  typeIsCopyValue treats `[T; N]` as copy when element is copy on SA/SAB.
+  Restores tests/test_unit_array_direct.sla and borrow index fixtures (UseAfterMove
+  from false non-copy fixed arrays). Ownership fixtures still green.
+
 - Parser method-selection type peel uses shared concreteTypeName (2026-07-19):
   parser.concreteTypeNameForMethodSelection delegates to lowering_rules.
 

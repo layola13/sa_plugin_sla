@@ -1629,6 +1629,7 @@ pub const Codegen = struct {
                 }
                 break :blk true;
             },
+            .array => |arr| self.typeIsCopyValue(arr.elem),
             else => false,
         };
     }

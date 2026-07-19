@@ -4506,6 +4506,16 @@ pub fn primitiveIsCopyValue(p: ast.Primitive) bool {
     return p != .void_type;
 }
 
+/// Non-recursive copy-value facts for shapes that do not need struct tables.
+pub fn typeIsCopyValueLeaf(ty: *const ast.Type) ?bool {
+    return switch (ty.*) {
+        .primitive => |p| primitiveIsCopyValue(p),
+        .fn_ptr => true,
+        .pointer, .borrow => false,
+        else => null,
+    };
+}
+
 pub fn typeShapeIsCopyValueWithoutUserDefined(ty: *const ast.Type) ?bool {
     return switch (ty.*) {
         .primitive => |p| primitiveIsCopyValue(p),
@@ -6652,4 +6662,13 @@ test "typeBaseName and firstGenericArg peels" {
     var borrow = ast.Type{ .borrow = &vec_ty };
     try std.testing.expectEqualStrings("Vec", typeBaseName(&borrow).?);
     try std.testing.expect(firstGenericArg(&borrow) == &i32_ty);
+}
+
+test "typeIsCopyValueLeaf classifies primitives and fnptrs" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var void_ty = ast.Type{ .primitive = .void_type };
+    var fn_ty = ast.Type{ .fn_ptr = .{ .abi = null, .params = &.{}, .ret = &i32_ty } };
+    try std.testing.expect(typeIsCopyValueLeaf(&i32_ty).?);
+    try std.testing.expect(!typeIsCopyValueLeaf(&void_ty).?);
+    try std.testing.expect(typeIsCopyValueLeaf(&fn_ty).?);
 }

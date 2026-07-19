@@ -19,6 +19,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share typeIsCopyValueLeaf for primitive/fnptr (2026-07-19):
+  SA/SAB typeIsCopyValue use shared leaf facts; array/shallow/vec fixtures green.
+
 - Reserve primary_decls capacity during selective append (2026-07-19):
   Pre-size primary_decls map while flattening import decls.
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const lowering_rules = @import("lowering_rules.zig");
 
 pub const MonomorphizeError = error{
     TemplateNotFound,
@@ -1082,9 +1083,7 @@ pub const Monomorphizer = struct {
                     for (ud.generics) |g| {
                         try spec_args.append(try self.specializeType(g));
                     }
-                    if (std.mem.eql(u8, ud.name, "Box") or
-                        std.mem.eql(u8, ud.name, "Vec") or
-                        std.mem.startsWith(u8, ud.name, "__dyn_") or
+                    if (lowering_rules.keepsGenericUserDefinedName(ud.name) or
                         (!self.struct_templates.contains(ud.name) and !self.enum_templates.contains(ud.name)))
                     {
                         const res = try self.allocator.create(ast.Type);

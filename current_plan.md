@@ -19,6 +19,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share monomorphizer keepsGenericUserDefinedName on Y (2026-07-19):
+  Box/Vec/__dyn_* monomorphization name policy lives in lowering_rules.
+  Box/vec fixtures and check green.
+
+- Module check wall-clock refresh (2026-07-19):
+  Warm check: parallel_runner ~0.60s, task_pool_builder ~0.59s, system_param ~0.98s.
+  task_pool_builder SAB whole-file 6/6 still green after Y/module work.
+
 - Share FuturePair/FutureEither peels on Y (2026-07-19):
   type_checker wraps shared future pair/either generic peels. Async fixture green.
 

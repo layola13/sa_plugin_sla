@@ -3190,6 +3190,14 @@ pub fn userDefinedStdOwnerIsNonCopy(ty: *const ast.Type) bool {
         std.mem.eql(u8, name, "JoinHandle");
 }
 
+/// Names that keep their generic user-defined form under monomorphization
+/// rather than being specialized as struct/enum templates.
+pub fn keepsGenericUserDefinedName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Box") or
+        std.mem.eql(u8, name, "Vec") or
+        std.mem.startsWith(u8, name, "__dyn_");
+}
+
 pub fn smartPointerType(ty: *const ast.Type) ?SmartPointerType {
     if (boxInnerType(ty)) |inner| return .{ .kind = .box, .inner = inner };
     if (rcInnerType(ty)) |inner| return .{ .kind = .rc, .inner = inner };

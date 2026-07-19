@@ -19,6 +19,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Reachability drain profiling + empty-body skip (2026-07-19):
+  Profiled reachability init as index/roots/drain and drain body walks.
+  parallel_runner: drain ~310ms of which body_walk ~309ms across 121 non-empty
+  bodies (root program). Empty imported decl-only stubs skip collect walks.
+  Remaining materialize cost is root-body syntactic reachability, not tiny-import
+  reparse.
+
 - Module getOrParse stage timers + buildReachable counters (2026-07-19):
   SLA_PROFILE now reports per-module getOrParse expand/parse/exports costs and
   buildReachable symbol/type/module counts. Confirms remaining materialize cost

@@ -1440,8 +1440,17 @@ fn drainReachabilityBuildState(
     out_reachable: *std.StringHashMap(void),
     out_referenced_types: *std.StringHashMap(void),
 ) !void {
+    const profile = plugin_compile_options.slaProfileEnabled(state.allocator);
+    var outer_passes: usize = 0;
+    var work_items: usize = 0;
+    var scan_sym_ns: i128 = 0;
+    var scan_ty_ns: i128 = 0;
+    var body_walk_ns: i128 = 0;
+    var non_empty_bodies: usize = 0;
     while (true) {
+        outer_passes += 1;
         while (state.worklist_index < state.worklist.items.len) : (state.worklist_index += 1) {
+            work_items += 1;
             const name = state.worklist.items[state.worklist_index];
             const fd = state.callable_index.decls.get(name) orelse continue;
             for (fd.params) |param| {
@@ -1456,12 +1465,28 @@ fn drainReachabilityBuildState(
                     state.analysis.current_facts = null;
                 }
             }
-            try collectSyntacticReachableBlock(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, name, out_reachable, out_referenced_types, &state.worklist, fd.body);
+            // Decl-only imported stubs have empty bodies; skip the walk entirely.
+            if (fd.body.len != 0) {
+                if (profile) non_empty_bodies += 1;
+                const body_start = if (profile) std.time.nanoTimestamp() else 0;
+                try collectSyntacticReachableBlock(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, name, out_reachable, out_referenced_types, &state.worklist, fd.body);
+                if (profile) body_walk_ns += std.time.nanoTimestamp() - body_start;
+            }
             state.analysis.current_facts = prev_facts;
         }
+        const scan_sym_start = if (profile) std.time.nanoTimestamp() else 0;
         const scanned_symbols = try scanReferencedSymbolRoots(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, out_reachable, out_referenced_types, &state.scanned_symbol_roots, &state.worklist);
+        if (profile) scan_sym_ns += std.time.nanoTimestamp() - scan_sym_start;
+        const scan_ty_start = if (profile) std.time.nanoTimestamp() else 0;
         const scanned_types = try scanReferencedExportedTypeSignatures(&state.callable_index, out_referenced_types, &state.scanned_type_roots);
+        if (profile) scan_ty_ns += std.time.nanoTimestamp() - scan_ty_start;
         if (!scanned_symbols and !scanned_types) break;
+    }
+    if (profile) {
+        std.debug.print(
+            "[sla-profile] reachability drain: passes={d} work_items={d} non_empty_bodies={d} reachable={d} types={d} body_walk={d}ms scan_sym={d}ms scan_ty={d}ms\n",
+            .{ outer_passes, work_items, non_empty_bodies, out_reachable.count(), out_referenced_types.count(), @divTrunc(body_walk_ns, std.time.ns_per_ms), @divTrunc(scan_sym_ns, std.time.ns_per_ms), @divTrunc(scan_ty_ns, std.time.ns_per_ms) },
+        );
     }
 }
 
@@ -1476,11 +1501,28 @@ fn initializeReachabilityBuildState(
     out_referenced_types: *std.StringHashMap(void),
 ) !void {
     if (root_program.* != .program) return error.InvalidProgram;
+    const profile = plugin_compile_options.slaProfileEnabled(state.allocator);
     state.callable_index.unresolved_callables = &state.unresolved_callables;
+    const index_start = if (profile) std.time.nanoTimestamp() else 0;
     try state.callable_index.addDecls(root_program.program.decls);
     for (modules) |module| try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
+    const index_ns = if (profile) std.time.nanoTimestamp() - index_start else 0;
+    const roots_start = if (profile) std.time.nanoTimestamp() else 0;
     try collectInitialReachabilityRoots(state, root_program, module_table, options, imported_macros, out_reachable, out_referenced_types);
+    const roots_ns = if (profile) std.time.nanoTimestamp() - roots_start else 0;
+    const drain_start = if (profile) std.time.nanoTimestamp() else 0;
     try drainReachabilityBuildState(state, module_table, options, imported_macros, out_reachable, out_referenced_types);
+    if (profile) {
+        std.debug.print(
+            "[sla-profile] reachability init: index={d}ms roots={d}ms drain={d}ms modules={d}\n",
+            .{
+                @divTrunc(index_ns, std.time.ns_per_ms),
+                @divTrunc(roots_ns, std.time.ns_per_ms),
+                @divTrunc(std.time.nanoTimestamp() - drain_start, std.time.ns_per_ms),
+                modules.len,
+            },
+        );
+    }
 }
 
 fn unresolvedCallableCanResolve(

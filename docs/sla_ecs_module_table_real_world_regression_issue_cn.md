@@ -384,3 +384,15 @@ Measured (SLA_PROFILE, local sla-local-cli):
 
 Remaining dominant cost: first getOrParse of large bodies such as `world_table_erased.sla` (expand+parse ~250-300ms).
 
+## 2026-07-19 reachability materialize attribution
+
+On `parallel_runner.sla` check:
+
+- resolve-roots improved by type-scan cache reuse / no redundant prescan
+- remaining "reachable materialize" is almost entirely `buildReachableSymbols` drain:
+  - work_items=311, non_empty_bodies=121, body_walk~309ms
+  - non-empty bodies come from the large root program, not reparsed imports
+
+So further materialize cuts need cheaper root-body reachability scanning or a
+check-path mode that retains less imported surface without full syntactic walks.
+

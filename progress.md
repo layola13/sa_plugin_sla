@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Reserve primary_decls capacity during selective append (2026-07-19):
+  Pre-size primary_decls map while flattening import decls.
+
 - Wall-clock refresh (2026-07-19 late):
   Warm parallel_runner check ~0.59s / build ~0.9-1.0s; system_param check ~0.83s;
   task_pool build ~0.65s. Residual mainly root parse + resolve-roots getOrParse.

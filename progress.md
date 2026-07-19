@@ -5,6 +5,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Type-checker peels consume shared Y helpers (2026-07-19):
+  type_checker now delegates Vec/Option/Result/Box/Arc/Rc/Mutex/RwLock/channel/
+  task/future peels and numeric/raw-ptr classifiers to lowering_rules. Check and
+  focused fixtures remain green.
+
 - Share literalZero on Y (2026-07-19):
   Zero-literal detection moved into lowering_rules.literalZero; SA delegates.
   Compile-path materialize still dominated by multi-pass body walks

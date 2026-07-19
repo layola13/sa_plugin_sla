@@ -40,6 +40,8 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Type-checker peels consume shared Y helpers (2026-07-19).
+
 	- [x] Disk-backed @expand_tuple source cache (2026-07-19).
 
 	- [x] Check-path include_all_imported_decls skips root reachability (2026-07-19).

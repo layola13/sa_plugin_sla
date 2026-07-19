@@ -5,6 +5,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Issue-doc status sweep (2026-07-19):
+  Closed/reaffirmed fixed docs (module specifier, sla_ts main SAB, parallel
+  MemoryLeak/Phi, scalar/anyof/call-target/result-entity). HTTP loopback remains
+  partial on SCI llvmc return ABI. Module Table correctness closed with
+  performance still open. Checker-pool remains downstream 10s performance smoke.
+
 - POD enum struct vec.push reuse (2026-07-19):
   SA-text vec.push no longer consumes shallow-copy/POD elements that include
   pure enums, so `push(info); return (registry, info)` stays valid. Added

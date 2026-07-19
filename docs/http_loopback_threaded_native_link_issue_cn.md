@@ -1,6 +1,6 @@
 # HTTP loopback threaded native link issue
 
-状态：partial/check-build fixed（2026-07-19）。`sa sla check` 与 `sa sla sab build` 对 `http_loopback_sse_adapter.sla` 当前通过；测试/native-link 历史失败面若仍复现需单独复验。
+状态：partial（2026-07-19）。`sa sla check` 与 `sa sla sab build` 通过；`sa sla test` / native `sa build-obj` 仍命中 llvmc `ret { i32, i32 } zeroinitializer` vs `i32` 返回类型不匹配（SCI native backend / stack-return ABI 层，非当前 SAB MemoryLeak 类）。
 
 日期: 2026-07-17
 
@@ -65,3 +65,19 @@ Responses loopback 仍需要 threaded/concurrent path 能够 native link。
   `@sla_thread_worker_*` 中产生 slot `UseAfterMove`。
 - 成功 native link 后，`sla_codex` 可以移除 executable-only workaround，直接复用
   request-aware HTTP loopback observed persistence adapter。
+
+## 2026-07-19 recheck
+
+```sh
+timeout 60s env SA_PLUGIN_DEV=1 sa sla check crates/scodex-runtime/src/http_loopback_sse_adapter.sla
+timeout 60s env SA_PLUGIN_DEV=1 sa sla sab build crates/scodex-runtime/src/http_loopback_sse_adapter.sla --out /tmp/scodex-http.sab
+timeout 90s env SA_PLUGIN_DEV=1 sa sla test crates/scodex-runtime/src/http_loopback_sse_adapter.sla --test-backend sa --jobs 1 --trace-panic
+timeout 90s env SA_PLUGIN_DEV=1 sa build-obj /tmp/http_loop.sa -o /tmp/http_loop.o
+```
+
+Results:
+
+- check / sab build: pass
+- test / build-obj: llvmc `Function return type does not match operand type of return inst! ret { i32, i32 } zeroinitializer` vs `i32`
+
+This residual is a native-backend ABI/return-shape issue (SCI `llvmc`), not the original SLA plugin SAB MemoryLeak path. Keep open until native return lowering is fixed or adapter return shapes are rewritten.

@@ -1,5 +1,7 @@
 # SAB compiler checker-pool 单测 10 秒无输出超时
 
+状态：open/performance（downstream sla_tsgo 10s smoke；非当前编译器 correctness trap）。
+
 日期：2026-07-07
 
 ## 现象

@@ -1,6 +1,6 @@
 # sla_ecs Module Table 真实项目复测回归 issue
 
-状态：编译器/SAB 回归已修复；真实性能目标仍开放。
+状态：correctness closed / performance still open（2026-07-19）。编译器/SAB 回归已修复；真实 `import expand` 延迟目标仍开放（非 correctness blocker）。
 
 发现时间：2026-07-09。
 

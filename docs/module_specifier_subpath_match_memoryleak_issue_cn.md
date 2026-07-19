@@ -1,8 +1,9 @@
 # module specifier helper cleanup MemoryLeak
 
+状态：fixed/verified（2026-07-19）。历史 direct scanner helper 复现面已由 imported macro value-arg receiver-temp cleanup 覆盖修复。
+
 日期：2026-07-06
 
-状态：当前仍存在的 direct scanner helper 复现面已修复并复验。该工单由 imported macro value-arg receiver-temp cleanup 覆盖修复，根因是 `STR_PTR(...)` / `STR_LEN(...)` 的 receiver load 临时寄存器没有在宏展开后释放。文档早期提到的部分 subpath/imports helper 在当前下游源码中已移除或改写，无法原样复验。
 
 ## 背景
 

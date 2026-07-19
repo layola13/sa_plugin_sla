@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Contract-load detail profiling gated (2026-07-19):
+  Per-file contract scan/macro timings require SLA_PROFILE_CONTRACTS=1.
+  vec.sa still dominates (~scan 491ms + macros 132ms) under normal compile.
+
 - Dedupe contract loads + expand cache in contract path (2026-07-19):
   loadImportedContractsFromResolvedImports skips already-visited roots and uses
   expandForModulePath. parallel_runner build load contracts ~730ms→~558ms; warm

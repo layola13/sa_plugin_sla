@@ -1131,14 +1131,28 @@ fn loadResolvedImportContractsRecursive(
 
     const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
     const expanded_source = try source_expand.expandForModulePath(allocator, resolved.path, resolved.source);
+    const profile = plugin_compile_options.slaProfileEnabled(allocator);
+    const t0 = if (profile) std.time.nanoTimestamp() else 0;
     try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited);
-
+    const t1 = if (profile) std.time.nanoTimestamp() else 0;
     if (std.mem.endsWith(u8, resolved.path, ".sai")) {
         try tc.loadContracts(expanded_source, "");
     } else if (std.mem.endsWith(u8, resolved.path, ".sal")) {
         try tc.loadContracts("", expanded_source);
     }
+    const t2 = if (profile) std.time.nanoTimestamp() else 0;
     try loadImportedMacrosFromExpandedSource(tc, allocator, expanded_source, resolved.output_path);
+    if (profile and plugin_compile_options.slaProfileContractsEnabled(allocator)) {
+        std.debug.print(
+            "[sla-profile] contract detail {s}: scan={d}ms contracts={d}ms macros={d}ms\n",
+            .{
+                std.fs.path.basename(resolved.path),
+                @divTrunc(t1 - t0, std.time.ns_per_ms),
+                @divTrunc(t2 - t1, std.time.ns_per_ms),
+                @divTrunc(std.time.nanoTimestamp() - t2, std.time.ns_per_ms),
+            },
+        );
+    }
 }
 
 pub fn loadImportedContractsFromResolvedImports(
@@ -1156,7 +1170,7 @@ pub fn loadImportedContractsFromResolvedImports(
         if (std.mem.endsWith(u8, resolved.path, ".sla")) continue;
         if (visited.contains(resolved.path)) continue;
         const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
-        if (profile) {
+        if (profile and plugin_compile_options.slaProfileContractsEnabled(allocator)) {
             std.debug.print("[sla-profile] load contract {s}\n", .{std.fs.path.basename(resolved.path)});
         }
         try loadResolvedImportContractsRecursive(tc, allocator, resolved, base_dir, &visited);

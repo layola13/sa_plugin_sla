@@ -503,3 +503,9 @@ Warm `parallel_runner` build:
 - load contracts: ~730ms → ~558ms
 - wall-clock: ~1.89s
 
+## 2026-07-19 contract load residual
+
+Warm parallel_runner build load contracts ~550-650ms, dominated by `vec.sa`
+macro/import scan (~scan 491ms, macros 132ms). Detail timings are behind
+`SLA_PROFILE_CONTRACTS=1`.
+

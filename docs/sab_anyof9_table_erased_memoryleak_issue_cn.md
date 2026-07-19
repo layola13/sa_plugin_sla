@@ -1,39 +1,32 @@
 # SAB AnyOf9 table-erased world query cleanup MemoryLeak issue
 
-状态：fixed/verified（2026-07-19）。compiler-owned first_type_id MemoryLeak 已修复；剩余 world focused panic 15305 为下游语义断言。
+状态：fixed/verified（2026-07-19）。compiler-owned first_type_id MemoryLeak 已修复；剩余 host surface 可能有其它下游失败（非 MemoryLeak）。
 
 ## 状态
 - 发现日期: 2026-07-06
 - 发现仓库: `/home/vscode/projects/sla_ecs`
 - 状态：编译器-owned `first_type_id` MemoryLeak 已修复并复验。direct SAB 对入口 stack-slot 化后的 by-value Copy 标量参数现在发出 SAB 可见 `.move_` consume 指令，而不是只更新 codegen 内部状态。
-- 剩余 world focused `panic 15305` 在 generated-SA backend 与 strict SAB backend 同样复现，属于下游 table-erased AnyOf10 业务/语义断言，不再是 SAB verifier blocker。
+- 本地 focused 守卫：`tests/test_unit_first_type_id_stack_slot_param_direct.sla`（SA + strict SAB 均通过）。
+- host ECS 整文件/filter 可能仍因无关下游错误失败（例如 UseAfterMove / UnsupportedSabDirectFeature），不再是本 issue 的 `first_type_id` MemoryLeak。
 
-## 最新复验
+## 最新复验（2026-07-19）
 ```bash
-cd /home/vscode/projects/sla_ecs
-timeout 120s env SA_PLUGIN_DEV=1 sa sla test lib/world_table_erased.sla \
-  --filter "anyof nested" --test-backend sa --jobs 1 --trace-panic
+./zig-out/bin/sla-local-cli sla test tests/test_unit_first_type_id_stack_slot_param_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic
+# ok. 1 passed
 
-timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test lib/world_table_erased.sla \
-  --filter "anyof nested" --test-backend sab --jobs 1 --trace-panic
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_first_type_id_stack_slot_param_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+# ok. 1 passed
 
-timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test lib/system_param_table_erased.sla \
-  --filter "filtered pair mut system params" --test-backend sab --jobs 1 --trace-panic
-
-timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test lib/system_param_table_erased_relationship.sla \
-  --filter "relationship anyof query resource" --test-backend sab --jobs 1 --trace-panic
-
-timeout 120s env SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test lib/system_param_table_erased_observer.sla \
-  --filter "observer anyof6 query resource" --test-backend sab --jobs 1 --trace-panic
+./zig-out/bin/sla-local-cli sla sab build tests/test_unit_first_type_id_stack_slot_param_direct.sla \
+  --out /tmp/ftid.sab
+./zig-out/bin/sla-local-cli sla sab disasm /tmp/ftid.sab --out /tmp/ftid.disasm.sa
+# uses_borrow: stack_alloc + store + move_ on ABI first_type_id param
 ```
 
-结果：`system_param_table_erased`、relationship wrapper、observer wrapper focused strict SAB gate 均通过，不再出现 active `first_type_id`。`world_table_erased --filter "anyof nested"` 不再出现 verifier `MemoryLeak`，但 SA backend 和 strict SAB backend 均失败于同一个业务断言：
-
-```text
-panic: code=15305
-```
-
-因此本 issue 的 compiler/SAB cleanup blocker 已关闭；`15305` 应在下游语义/业务断言上下文中单独处理。
+修复点：`src/sab_codegen.zig` `materializeBorrowedParams` 在入口 stack-slot 化 by-value copy 标量后发出 `move_`。
 
 ## 复现命令
 ```bash

@@ -56,16 +56,9 @@ SAB Error: failed to encode SAB for .../.sla-cache/sab/test_ecs_result_facades-6
 
 状态：fixed/verified（2026-07-19）。
 
-已验证修复当前可复现的 host surface。历史 focused filter：
-
-```sh
-SA_PLUGIN_DEV=1 sa sla test /home/vscode/projects/sla_ecs/tests/test_ecs_result_facades.sla \
-  --test-backend sa --jobs 1 --trace-panic \
-  --filter "ecs_world_try_query_single returns one"
-```
-
-当前仍选中 `0` 个测试，因此它是 stale filter，不作为修复证据。修复证据改用当前 host 文件的
-完整 installed SA/SAB gate 和插件内 focused regressions。
+历史 host filter `"ecs_world_try_query_single returns one"` 仍为 stale（选中 0 个测试），不作为修复证据。
+本轮以本地 focused regressions 为守卫，并修复了 direct SAB struct-literal 字段 move 未发
+SAB-visible `move_` 导致的 `items` MemoryLeak（`cleanup_query_new` 路径）。
 
 ## 修复摘要
 
@@ -78,26 +71,24 @@ SA_PLUGIN_DEV=1 sa sla test /home/vscode/projects/sla_ecs/tests/test_ecs_result_
 - direct SAB 会把后续被赋值的 primitive `let`/参数绑定物化成 stack slot，避免
   `scan = scan - 1`、`found = scan` 这类循环变量在 SAB verifier 中变成 UseAfterMove 或
   RegisterRedefinition。
+- direct SAB struct-literal field move 对源 local 发出 `move_`（不再只 `markConsumed`）。
 
-新增 focused regressions：
+新增/守卫 focused regressions：
 
 - `tests/test_unit_result_entityitem_self_cleanup.sla`
 - `tests/test_unit_box_from_raw_direct.sla`
 - `tests/test_unit_fn_ptr_void_direct.sla`
 - `tests/test_unit_scalar_reassign_scan_direct.sla`
 
-## 验证证据
+## 验证证据（2026-07-19 local CLI）
 
-- `zig build --summary all` 通过。
-- `zig build test --summary all`：85/85 通过。
-- local strict direct-SAB no-fallback sweep：107/107 `tests/test_unit_*.sla` files，260/260 cases。
-- `sa plugin install --dev .` 通过。
-- `SA_PLUGIN_DEV=1 sa sla help` 通过。
-- installed host ECS strict direct-SAB no-fallback：`/home/vscode/projects/sla_ecs/tests/test_ecs_result_facades.sla` 172/172 通过。
-- installed host ECS SA-text：同文件 172/172 通过。
-- installed host `parallel.sla` strict direct-SAB no-fallback：1/1 通过。
-- installed focused borrow-temp 25/25、RefCell payload 7/7 通过。
-- SAB disasm call-target guard 无非法 `@...(` target 匹配。
+```sh
+./zig-out/bin/sla-local-cli sla test tests/test_unit_result_entityitem_self_cleanup.sla \
+  --test-backend sa --jobs 1 --trace-panic   # 1/1
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_result_entityitem_self_cleanup.sla --test-backend sab --jobs 1 --trace-panic  # 1/1
+# box/fn_ptr/scalar_reassign fixtures likewise SA+SAB 1/1 each
+```
 
 ## 剩余说明
 

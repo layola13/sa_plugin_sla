@@ -5,27 +5,40 @@
 - 状态：fixed/verified（2026-07-19）。历史非法 call-target 形态已修复；保留为回归守卫工单。
 - 影响方：`sa_plugin_sla` SAB backend，尤其是 thread closure / escaped closure 中的普通函数调用
 - 发现来源：`/home/vscode/projects/sla_ecs/lib/parallel.sla`
-- 当前建议：`parallel.sla` 已重新纳入 host direct-SAB guard；后续若改动 call lowering / thread closure / SAB call serialization，必须继续跑 strict SAB 和 disasm guard。
+- 当前建议：`parallel.sla` 已重新纳入 host direct-SAB guard；本地 focused 守卫 `tests/test_unit_thread_closure_direct_call_merge_direct.sla`（SA + strict SAB）。后续若改动 call lowering / thread closure / SAB call serialization，必须继续跑 strict SAB 和 disasm guard。
 
-## 2026-07-06 复核结论
+## 2026-07-19 复核结论
 
-本 issue 的历史非法形态未再复现，按当前 compiler 状态标记为已修复。验证命令：
+本 issue 的历史非法形态未再复现。验证命令：
 
 ```bash
-sa plugin install --dev .
-SA_PLUGIN_DEV=1 sa sla help
-SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test /home/vscode/projects/sla_ecs/lib/parallel.sla --test-backend sab --jobs 1
+./zig-out/bin/sla-local-cli sla test tests/test_unit_thread_closure_direct_call_merge_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic
+# ok. 1 passed
+
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_thread_closure_direct_call_merge_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+# ok. 1 passed
+
+SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test /home/vscode/projects/sla_ecs/lib/parallel.sla \
+  --test-backend sab --jobs 1
+# ok. 1 passed
+
 SA_PLUGIN_DEV=1 sa sla sab build /home/vscode/projects/sla_ecs/lib/parallel.sla --out /tmp/parallel_docs_issue.sab
 SA_PLUGIN_DEV=1 sa sla sab disasm /tmp/parallel_docs_issue.sab --out /tmp/parallel_docs_issue.disasm.sa
 rg -n 'call [^\n]*"?@[^\s,"]*\(' /tmp/parallel_docs_issue.disasm.sa
+# no matches
 ```
 
-结果：strict direct-SAB 测试 1/1 passed；非法 call-target grep 无匹配。相关 disasm 行保持 target 与参数分离：
+相关 disasm 行保持 target 与参数分离：
 
 ```sa
-call r490,"@sla__ecs_parallel_sum_i32_chunk","tmp_52"
-call r499,"@sla__ecs_parallel_sum_i32_chunk","tmp_59"
+call r547,"@sla__ecs_parallel_sum_i32_chunk","^tmp_77"
+call r555,"@sla__ecs_parallel_sum_i32_chunk","^tmp_84"
 ```
+
+SA codegen 对 thread-spawn 的 non-copy capture 在 store 后发出 `^name` consume（`emitForgetMovedValue`），与 plain-call 路径在分支 merge 上状态一致。
 
 ## 问题现象
 

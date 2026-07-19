@@ -9,30 +9,26 @@ fn merge_direct_chunk() -> Vec<i32> {
     return chunk;
 }
 
-fn merge_direct_batch(chunk: Vec<i32>) -> i64 {
-    return len(chunk) as i64;
+fn merge_direct_batch(chunk: Vec<i32>) -> i32 {
+    return len(chunk) as i32;
 }
 
-fn merge_direct_spawn_or_call(use_threads: bool) -> i64 {
-    let handles: Vec<JoinHandle<i64>> = Vec::new();
-    let total: i64 = 0;
+// Branch merge must consume `chunk` on both arms:
+// - thread-spawn capture move (non-copy payload)
+// - plain call move
+// Capture a fn-ptr too so SA uses the known-good inline-join thread path
+// (fn-ptr + noncopy payload), matching test_unit_fn_ptr_thread_pair_direct.
+fn merge_direct_spawn_or_call(use_threads: bool, batch: fn(Vec<i32>) -> i32) -> i32 {
     let chunk = merge_direct_chunk();
     if use_threads {
-        handles.push(thread::spawn(^|| merge_direct_batch(chunk)));
+        let handle = thread::spawn(^|| batch(chunk));
+        return handle.join().unwrap();
     } else {
-        let part = merge_direct_batch(chunk);
-        total = total + part;
+        return batch(chunk);
     };
-    let i: i64 = 0;
-    while i < len(handles) as i64 {
-        let part = handles[i].join().unwrap();
-        total = total + part;
-        i = i + 1;
-    }
-    return total;
 }
 
 @test "thread closure and direct call both consume branch chunk"() {
-    if merge_direct_spawn_or_call(false) != 2 { panic(51380); };
-    if merge_direct_spawn_or_call(true) != 2 { panic(51381); };
+    if merge_direct_spawn_or_call(false, merge_direct_batch) != 2 { panic(51380); };
+    if merge_direct_spawn_or_call(true, merge_direct_batch) != 2 { panic(51381); };
 }

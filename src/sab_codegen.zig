@@ -1667,8 +1667,10 @@ pub const Codegen = struct {
                 break :blk true;
             },
             .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
-            .user_defined => blk: {
+            .user_defined => |ud| blk: {
                 if (userDefinedStdOwnerIsNonCopy(ty)) break :blk depth > 0;
+                // Pure enums are POD-like; keep push/call-arg shallow-copy in sync with SA.
+                if (self.tc.enums.contains(ud.name)) break :blk true;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
                 if (decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {
@@ -5659,7 +5661,12 @@ pub const Codegen = struct {
             const param_reg = self.localReg(param.name) orelse return Error.UnsupportedSabDirectFeature;
             try self.emitStackAlloc(slot, typeSize(param.ty));
             try self.emitStore(slot, 0, param_reg, try storagePrimType(param.ty));
-            if ((try primType(param.ty)) != .ptr and !self.typeIsCopyValue(param.ty)) {
+            // After the entry stack slot owns a copy of the ABI param value, the
+            // original by-value param register must leave Active. Non-copy
+            // owners already moved; copy-value scalars (e.g. first_type_id)
+            // also need a SAB-visible move_ so exit does not MemoryLeak.
+            // Pointer-shaped non-copy params keep the previous store-only path.
+            if ((try primType(param.ty)) != .ptr or self.typeIsCopyValue(param.ty)) {
                 try self.emitMove(param_reg);
             }
             try self.pushStackLocal(param.name, slot, param.ty);
@@ -9484,9 +9491,30 @@ pub const Codegen = struct {
             .int_val => |v| try self.emitAssignInt(reg, v, ty),
             .float_val => |v| try self.emitAssignFloat(reg, v),
             .bool_val => |v| try self.emitAssignImm(reg, if (v) 1 else 0),
-            .string_val => |v| return try self.genStringLiteral(v),
+            .string_val => |v| {
+                // SLA string literals are `ptr` (void_type) in many call/array/struct
+                // contexts such as `values: [ptr; N] = ["", ...]`. Emit a raw
+                // data-pointer there; only build a Slice when the expected type
+                // is explicitly string/slice-like.
+                if (self.stringLiteralShouldBeRawPointer(ty)) {
+                    return try self.genRawPointerStringLiteralArg(v);
+                }
+                return try self.genStringLiteral(v);
+            },
         }
         return reg;
+    }
+
+    fn stringLiteralShouldBeRawPointer(self: *Codegen, ty: ?*const ast.Type) bool {
+        _ = self;
+        // Default to raw data-pointer (SLA string literal type is often void/ptr).
+        // Only build a Slice when the expected type is explicitly Slice/String.
+        const expected = ty orelse return true;
+        if (expected.* == .primitive and expected.primitive == .void_type) return true;
+        if (typeBaseName(expected)) |name| {
+            if (std.mem.eql(u8, name, "Slice") or std.mem.eql(u8, name, "String") or std.mem.eql(u8, name, "str")) return false;
+        }
+        return true;
     }
 
     fn genLiteral(self: *Codegen, lit: ast.Literal) anyerror!u32 {
@@ -11202,7 +11230,8 @@ pub const Codegen = struct {
         const vec_reg = try self.intern(try self.newTmp());
         try self.recordReg(vec_reg);
         try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_NEW", &.{self.symbols.items[vec_reg]});
-        const elem_transfers_ownership = lowering_rules.vecElementPushTransfersOwnership(elem_ty, self.typeIsCopyValue(elem_ty));
+        const copy_like = self.typeIsCopyValue(elem_ty) or self.typeIsShallowCopyCallArgValue(elem_ty, 0);
+        const elem_transfers_ownership = lowering_rules.vecElementPushTransfersOwnership(elem_ty, copy_like);
         for (call.args) |arg| {
             const arg_reg = try self.genExpr(@constCast(arg));
             try self.emitStdMacroFragmentWithLiteralArgs("sa_std/vec.sa", "VEC_PUSH", &.{
@@ -11323,7 +11352,8 @@ pub const Codegen = struct {
         }));
 
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
-        if (lowering_rules.vecElementPushTransfersOwnership(elem_ty, self.typeIsCopyValue(elem_ty))) {
+        const copy_like = self.typeIsCopyValue(elem_ty) or self.typeIsShallowCopyCallArgValue(elem_ty, 0);
+        if (lowering_rules.vecElementPushTransfersOwnership(elem_ty, copy_like)) {
             if (!self.isLocalReg(value_reg)) try self.emitMove(value_reg);
         } else if (!self.isLocalReg(value_reg)) {
             try self.emitRelease(value_reg);

@@ -94,6 +94,15 @@ cd /home/vscode/projects/mnt/sla_tsgo
 
 结果：本 repo focused SA/strict SAB 为 5/5 通过；下游原始 filter 为 1/1 通过。
 
+## 2026-07-19 复验
+
+```sh
+./zig-out/bin/sla-local-cli sla test tests/test_unit_tsconfig_buffer_cleanup.sla \
+  --test-backend sa --jobs 1 --trace-panic   # 5/5
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_tsconfig_buffer_cleanup.sla --test-backend sab --jobs 1 --trace-panic  # 5/5
+```
+
 ## 备注
 
 同文件中 JSON string 比较已经改为显式 `ptr + len` byte compare，原先由 `str_eq` 读取非 NUL JSON slice 导致的崩溃已在下游修正。当前问题集中在动态 path buffer 与 FS read 的交互。

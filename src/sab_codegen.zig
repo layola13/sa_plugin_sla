@@ -1637,15 +1637,7 @@ pub const Codegen = struct {
         if (depth > 8) return false;
         // Nested std collections are only shallow-copy when not the top-level
         // call-arg owner (depth > 0), matching SA-text.
-        if (lowering_rules.vecElementType(ty) != null or
-            lowering_rules.hashMapTypes(ty) != null or
-            lowering_rules.btreeMapTypes(ty) != null or
-            lowering_rules.hashSetElementType(ty) != null or
-            lowering_rules.btreeSetElementType(ty) != null or
-            lowering_rules.vecDequeElementType(ty) != null)
-        {
-            return depth > 0;
-        }
+        if (lowering_rules.isStdCollectionType(ty)) return depth > 0;
         return switch (ty.*) {
             .primitive => true,
             .pointer, .borrow, .fn_ptr => true,

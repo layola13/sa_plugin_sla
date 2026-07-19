@@ -4453,6 +4453,15 @@ pub fn vecElementPushTransfersOwnership(elem_ty: *const ast.Type, elem_is_copy: 
     return !elem_is_copy and !isBorrowLikeType(elem_ty);
 }
 
+pub fn isStdCollectionType(ty: *const ast.Type) bool {
+    return vecElementType(ty) != null or
+        vecDequeElementType(ty) != null or
+        hashMapTypes(ty) != null or
+        btreeMapTypes(ty) != null or
+        hashSetElementType(ty) != null or
+        btreeSetElementType(ty) != null;
+}
+
 /// Pure call-arg ownership facts shared by SA-text and direct SAB emitters.
 /// Type identity / Copy-ness are supplied by the emitter (which owns the TC).
 pub const ValueArgOwnershipFacts = struct {

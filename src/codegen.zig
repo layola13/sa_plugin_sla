@@ -3412,8 +3412,7 @@ pub const Codegen = struct {
 
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
         if (depth > 8) return false;
-        if (vecElementType(ty) != null or hashMapTypes(ty) != null or btreeMapTypes(ty) != null or
-            hashSetTypes(ty) != null or btreeSetTypes(ty) != null or vecDequeElementType(ty) != null) return depth > 0;
+        if (lowering_rules.isStdCollectionType(ty)) return depth > 0;
         return switch (ty.*) {
             .primitive => true,
             .pointer, .borrow, .fn_ptr => true,

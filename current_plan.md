@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share asyncContinuationConditionOpName on Y (2026-07-19):
+  Comparison op names for async continuations moved into lowering_rules; SA
+  delegates. Async defer-ready scalar fixture green.
+
 - Share Option/Result pattern helpers + atomicOrderingToken (2026-07-19):
   patternUsesOptionMacros/patternUsesResultMacros and atomicOrderingToken live
   in lowering_rules; SA wrappers delegate. Stack/vec fixtures green.

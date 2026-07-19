@@ -420,3 +420,15 @@ Warm second-process check (parallel_runner):
 - world_table_erased getOrParse total: 275ms → 108ms (remaining mostly parse)
 - resolve-roots: 333ms → 156ms
 
+## 2026-07-19 compile-path materialize profile
+
+`sla build` of `parallel_runner.sla` (registry-driven reachable bodies):
+
+- resolve-roots ~138-176ms (warm expand cache)
+- materialize ~836ms-1s with `passes=6 reparses=37 extensions=5`
+  - select ~11ms, reparse ~16ms, **extend ~496ms**
+- selective append ~52ms with ~704 decls (selective, not include_all)
+
+Extend cost is drainReachabilityBuildState walking newly materialized imported
+function bodies. Check-path remains much cheaper via include_all shortcut.
+

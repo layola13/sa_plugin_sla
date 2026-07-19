@@ -2906,6 +2906,18 @@ pub fn patternUsesOptionMacros(enum_name: []const u8, variant_name: []const u8) 
     return std.mem.eql(u8, enum_name, "Option") or std.mem.eql(u8, variant_name, "Some") or std.mem.eql(u8, variant_name, "None");
 }
 
+pub fn asyncContinuationConditionOpName(op: ast.BinaryOp) ?[]const u8 {
+    return switch (op) {
+        .eq => "eq",
+        .ne => "ne",
+        .lt => "slt",
+        .le => "sle",
+        .gt => "sgt",
+        .ge => "sge",
+        else => null,
+    };
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     var curr = ty;
     while (true) {

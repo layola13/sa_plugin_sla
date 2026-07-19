@@ -3523,15 +3523,7 @@ pub const Codegen = struct {
     }
 
     fn asyncContinuationConditionOpName(op: ast.BinaryOp) ?[]const u8 {
-        return switch (op) {
-            .eq => "eq",
-            .ne => "ne",
-            .lt => "slt",
-            .le => "sle",
-            .gt => "sgt",
-            .ge => "sge",
-            else => null,
-        };
+        return lowering_rules.asyncContinuationConditionOpName(op);
     }
 
     fn zeroLiteralForType(ty: *const ast.Type) []const u8 {

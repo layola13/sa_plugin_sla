@@ -5,6 +5,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Parallel-runner Arc<*World> multi-lane fixture (2026-07-19):
+  Added `tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla` covering
+  threaded + on-scope `Vec<fn(Arc<*World>) -> i32>` lanes with ordered extend
+  and Arc shared-world call. Serial local SA 1/1 and strict SAB 1/1
+  (`sab direct codegen` ~3.95s). Whole-file parallel_runner aggregation remains
+  open; child-scope and thread-spawn dimensions still deferred.
+
 - Parallel-runner multi-lane Vec<fn> fixture (2026-07-19):
   Added `tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla` for the
   next open dimension of `docs/sab_parallel_runner_whole_file_memoryleak_issue_cn.md`:

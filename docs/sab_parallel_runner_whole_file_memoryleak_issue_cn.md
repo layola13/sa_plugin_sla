@@ -227,3 +227,38 @@ Status remains partial/open for whole-file `parallel_runner.sla` /
 `task_pool_builder.sla` aggregation. Do not long-run those 10s+ smokes; next
 dimensions are still Arc<*World> parameter lanes and child-scope returns, each
 as a separate local fixture under the 10s rule.
+
+## 2026-07-19 Arc<*World> multi-lane Vec<fn> dimension
+
+Next local fixture after multi-lane plain `Vec<fn>`:
+
+- `tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla`
+
+Shape:
+
+- `Vec<fn(Arc<*ParallelRunnerTinyWorld>) -> i32>` threaded + on-scope lanes
+- independent order-position vectors and loop-time ordered extend
+- Arc world shared via `Box::into_raw` + `Arc::new` + `clone`, then both
+  extended callbacks are invoked (return constants; no Arc field projection)
+
+Serial verification (no concurrent builds; using existing local CLI):
+
+```bash
+timeout 30s env SLA_PROFILE=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic
+timeout 15s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+Results:
+
+- SA backend 1/1 pass; `import expand` ~489ms, `sa codegen` ~6ms.
+- Strict direct SAB 1/1 pass; `import expand` ~485ms,
+  `sab direct codegen` ~3952ms, under the 10s smoke budget.
+
+Status remains partial/open for whole-file `parallel_runner.sla` /
+`task_pool_builder.sla`. Next remaining local dimensions are still
+child-scope returns and thread spawn over the Arc lanes, each as separate
+fixtures under the 10s rule.

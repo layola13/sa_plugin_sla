@@ -40,6 +40,12 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Parallel-runner Arc<*World> multi-lane local fixture (2026-07-19).
+	  Added `tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla` covering
+	  Arc world fnptr lanes with ordered multi-lane extend and shared Arc call.
+	  Local SA and strict SAB both pass under the smoke budget. Whole-file
+	  downstream parallel_runner aggregation remains open.
+
 	- [x] Parallel-runner multi-lane Vec<fn> local fixture (2026-07-19).
 	  Added `tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla` covering
 	  threaded + on-scope `Vec<fn>` lanes with ordered extend. Local SA and

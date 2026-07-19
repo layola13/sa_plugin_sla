@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Lazy callable-index on warm one-shot materialize (2026-07-19):
+  Skip seeding callable index when plan-cache hit needs no reparse.
+  parallel_runner warm import expand ~296ms, build ~0.85s.
+
 - Warm parallel_runner build ~1.06s (2026-07-19):
   Residual dominated by root parse + import resolve-roots getOrParse.
   Materialize/load-contracts largely cached on warm path.

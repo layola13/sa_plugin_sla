@@ -1942,9 +1942,6 @@ pub fn materializeImportedModuleBodiesOneShot(
     var any_reparse = false;
     var state = ReachabilityBuildState.init(allocator);
     defer state.deinit();
-    for (ordered_modules) |module| {
-        try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
-    }
 
     for (ordered_modules) |module| {
         if (module.has_function_bodies and module.has_macro_bodies) continue;
@@ -1960,14 +1957,18 @@ pub fn materializeImportedModuleBodiesOneShot(
         if (selected_functions.count() == 0 and selected_macros.count() == 0) continue;
         if (stringSetsEqual(&selected_functions, &module.parsed_function_bodies) and
             stringSetsEqual(&selected_macros, &module.parsed_macro_bodies)) continue;
+        if (!any_reparse) {
+            // Lazily seed the callable index only if we will need drain multipass.
+            for (ordered_modules) |m| {
+                try state.callable_index.addDeclsFromModule(m.program.program.decls, m);
+            }
+        }
         _ = try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
         stats.reparses += 1;
         any_reparse = true;
         try state.callable_index.refreshDeclsFromModule(module);
     }
 
-    // When all selected bodies are already present (common warm plan-cache hit
-    // after a prior process-local materialize), skip the expensive drain entirely.
     if (!any_reparse) return stats;
 
     try drainReachabilityBuildState(&state, modules, options, imported_macros, reachable, referenced_types);

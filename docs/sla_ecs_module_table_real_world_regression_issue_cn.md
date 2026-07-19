@@ -567,3 +567,12 @@ Warm `parallel_runner` build:
 - wall-clock: ~1.09s
 - SA output remains byte-identical to cold path
 
+## 2026-07-19 lazy callable-index on warm one-shot
+
+Warm plan-cache hits no longer seed the full callable index when no module
+reparses are required.
+
+Warm `parallel_runner` build:
+- import expand: ~296ms
+- wall-clock: ~0.85s
+

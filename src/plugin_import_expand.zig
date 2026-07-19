@@ -884,8 +884,7 @@ fn tryLoadReachablePlan(
     var reachable_count: usize = 0;
     var type_count: usize = 0;
     var section: enum { reachable, types } = .reachable;
-    var count_lines = std.mem.splitScalar(u8, bytes, '
-');
+    var count_lines = std.mem.splitScalar(u8, bytes, '\n');
     while (count_lines.next()) |line| {
         if (line.len == 0) continue;
         if (std.mem.eql(u8, line, "[reachable]")) {
@@ -904,8 +903,7 @@ fn tryLoadReachablePlan(
     try reachable.ensureTotalCapacity(@intCast(reachable_count));
     try referenced_types.ensureTotalCapacity(@intCast(type_count));
     section = .reachable;
-    var lines = std.mem.splitScalar(u8, bytes, '
-');
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
         if (std.mem.eql(u8, line, "[reachable]")) {

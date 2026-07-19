@@ -1925,6 +1925,61 @@ pub fn buildAndMaterializeReachableImportedModuleBodies(
 
 /// Materialize imported bodies for an already-populated reachable set.
 /// Does not clear or recompute reachability (used by warm plan-cache hits).
+/// One-shot materialize for warm plan-cache hits: select all currently reachable
+/// bodies once, reparse each module once, then drain once.
+pub fn materializeImportedModuleBodiesOneShot(
+    allocator: std.mem.Allocator,
+    ordered_modules: []const *SlaModule,
+    modules: *SlaModuleTable,
+    options: SlaImportExpansionOptions,
+    imported_macros: ?*const std.StringHashMap(type_checker_mod.ImportedMacro),
+    reachable: *std.StringHashMap(void),
+    referenced_types: *std.StringHashMap(void),
+) !ReachabilityMaterializationStats {
+    var state = ReachabilityBuildState.init(allocator);
+    defer state.deinit();
+    for (ordered_modules) |module| {
+        try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
+    }
+    var stats = ReachabilityMaterializationStats{};
+    stats.passes = 1;
+    for (ordered_modules) |module| {
+        if (module.has_function_bodies and module.has_macro_bodies) continue;
+        var selected_functions = std.StringHashMap(void).init(allocator);
+        defer selected_functions.deinit();
+        var selected_macros = std.StringHashMap(void).init(allocator);
+        defer selected_macros.deinit();
+        var parsed_func_iter = module.parsed_function_bodies.keyIterator();
+        while (parsed_func_iter.next()) |name_ptr| try selected_functions.put(name_ptr.*, {});
+        var parsed_macro_iter = module.parsed_macro_bodies.keyIterator();
+        while (parsed_macro_iter.next()) |name_ptr| try selected_macros.put(name_ptr.*, {});
+        try collectReachableModuleBodyNames(allocator, module, reachable, referenced_types, &selected_functions, &selected_macros);
+        if (selected_functions.count() == 0 and selected_macros.count() == 0) continue;
+        if (stringSetsEqual(&selected_functions, &module.parsed_function_bodies) and
+            stringSetsEqual(&selected_macros, &module.parsed_macro_bodies)) continue;
+        _ = try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
+        stats.reparses += 1;
+        try state.callable_index.refreshDeclsFromModule(module);
+        var newly = std.ArrayList([]const u8).init(allocator);
+        defer {
+            for (newly.items) |n| allocator.free(n);
+            newly.deinit();
+        }
+        var it = selected_functions.keyIterator();
+        while (it.next()) |name_ptr| try newly.append(try allocator.dupe(u8, name_ptr.*));
+        try enqueueMaterializedFunctionBodies(&state, module, newly.items, reachable);
+    }
+    // Single drain of newly enqueued bodies to discover any missing, then if needed fall back to multipass.
+    try drainReachabilityBuildState(&state, modules, options, imported_macros, reachable, referenced_types);
+    stats.incremental_extensions = 1;
+    // Finish any remaining multipass work (usually small on warm cache hits).
+    const more = try materializeReachableImportedModuleBodiesWithState(&state, allocator, ordered_modules, modules, options, imported_macros, reachable, referenced_types);
+    stats.passes += more.passes;
+    stats.reparses += more.reparses;
+    stats.incremental_extensions += more.incremental_extensions;
+    return stats;
+}
+
 pub fn materializeImportedModuleBodiesForReachableSet(
     allocator: std.mem.Allocator,
     ordered_modules: []const *SlaModule,

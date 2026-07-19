@@ -551,3 +551,9 @@ Warm second-process `parallel_runner` build:
 - import expand: ~1.2s → ~0.81s on cache hit
 - wall-clock: ~1.36s
 
+## 2026-07-19 one-shot materialize on plan cache hit
+
+Warm plan-cache hits now use `materializeImportedModuleBodiesOneShot` and often
+report `reparses=0/extend=0` when module tables already hold bodies from prior
+work in-process, while cold vs warm generated SA for parallel_runner is byte-identical.
+

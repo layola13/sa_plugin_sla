@@ -23,7 +23,7 @@ const ReachabilitySession = plugin_reachability.ReachabilitySession;
 const UnresolvedCallableSet = plugin_reachability.UnresolvedCallableSet;
 const associatedCandidateMatchesReceiverType = plugin_reachability.associatedCandidateMatchesReceiverType;
 const collectReachableModuleBodyNames = plugin_reachability.collectReachableModuleBodyNames;
-const materializeImportedModuleBodiesForReachableSet = plugin_reachability.materializeImportedModuleBodiesForReachableSet;
+const materializeImportedModuleBodiesOneShot = plugin_reachability.materializeImportedModuleBodiesOneShot;
 const loadImportedMacrosFromExpandedSource = plugin_imported_macros.loadImportedMacrosFromExpandedSource;
 
 fn profileImportExpandStage(enabled: bool, label: []const u8, start_ns: i128) void {
@@ -1026,7 +1026,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
                             .{ reachable.count(), referenced_types.count() },
                         );
                     }
-                    _ = try materializeImportedModuleBodiesForReachableSet(
+                    _ = try materializeImportedModuleBodiesOneShot(
                         allocator,
                         ordered_modules.items,
                         modules,

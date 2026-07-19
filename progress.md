@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- One-shot materialize on reachable plan cache hits (2026-07-19):
+  Warm compile materialize is ~0ms (reparses=0) with identical SA output to cold
+  path. parallel_runner warm build ~1.25s.
+
 - Warm reachable-plan disk cache for compile materialize (2026-07-19):
   Stores reachable/type sets under `.sla-cache/reachable/*` after first compile
   expand; warm hits materialize from cache without re-running full multipass

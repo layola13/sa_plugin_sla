@@ -4101,6 +4101,39 @@ pub fn vecElementPushTransfersOwnership(elem_ty: *const ast.Type, elem_is_copy: 
     return !elem_is_copy and !isBorrowLikeType(elem_ty);
 }
 
+/// Pure call-arg ownership facts shared by SA-text and direct SAB emitters.
+/// Type identity / Copy-ness are supplied by the emitter (which owns the TC).
+pub const ValueArgOwnershipFacts = struct {
+    param_is_present: bool,
+    param_is_borrow: bool,
+    param_is_move: bool,
+    param_is_by_value_raw_pointer: bool,
+    arg_is_borrow_like: bool,
+    arg_is_copy_value: bool,
+};
+
+pub fn planValueArgTransfersOwnership(facts: ValueArgOwnershipFacts) bool {
+    if (!facts.param_is_present) return false;
+    if (facts.param_is_borrow or facts.param_is_move) return false;
+    if (facts.param_is_by_value_raw_pointer) return false;
+    if (facts.arg_is_borrow_like) return false;
+    return !facts.arg_is_copy_value;
+}
+
+pub const FnPtrValueArgSlotFacts = struct {
+    param_is_present: bool,
+    param_is_borrow: bool,
+    param_is_move: bool,
+    param_ty_is_fn_ptr: bool,
+    arg_ty_is_fn_ptr: bool,
+};
+
+pub fn planNeedsFnPtrValueArgSlot(facts: FnPtrValueArgSlotFacts) bool {
+    if (!facts.param_is_present) return false;
+    if (facts.param_is_borrow or facts.param_is_move or !facts.param_ty_is_fn_ptr) return false;
+    return facts.arg_ty_is_fn_ptr;
+}
+
 test "shared lowering rules normalize derives and call argument prefixes" {
     const derives = [_][]const u8{ "PartialEq", "Hash" };
     const decl = ast.StructDecl{
@@ -6053,4 +6086,66 @@ test "shared scalar binary plan selects unsigned high bit operations" {
     try std.testing.expectEqual(ScalarBinaryOp.ashr, planScalarBinaryOp(.shr, &i64_ty, &u64_ty).?);
     try std.testing.expectEqualStrings("udiv", scalarBinaryOpName(.udiv));
     try std.testing.expectEqualStrings("lshr", scalarBinaryOpName(.lshr));
+}
+
+test "shared value-arg ownership and fnptr slot plans" {
+    try std.testing.expect(!planValueArgTransfersOwnership(.{
+        .param_is_present = false,
+        .param_is_borrow = false,
+        .param_is_move = false,
+        .param_is_by_value_raw_pointer = false,
+        .arg_is_borrow_like = false,
+        .arg_is_copy_value = false,
+    }));
+    try std.testing.expect(!planValueArgTransfersOwnership(.{
+        .param_is_present = true,
+        .param_is_borrow = true,
+        .param_is_move = false,
+        .param_is_by_value_raw_pointer = false,
+        .arg_is_borrow_like = false,
+        .arg_is_copy_value = false,
+    }));
+    try std.testing.expect(!planValueArgTransfersOwnership(.{
+        .param_is_present = true,
+        .param_is_borrow = false,
+        .param_is_move = false,
+        .param_is_by_value_raw_pointer = true,
+        .arg_is_borrow_like = false,
+        .arg_is_copy_value = false,
+    }));
+    try std.testing.expect(!planValueArgTransfersOwnership(.{
+        .param_is_present = true,
+        .param_is_borrow = false,
+        .param_is_move = false,
+        .param_is_by_value_raw_pointer = false,
+        .arg_is_borrow_like = false,
+        .arg_is_copy_value = true,
+    }));
+    try std.testing.expect(planValueArgTransfersOwnership(.{
+        .param_is_present = true,
+        .param_is_borrow = false,
+        .param_is_move = false,
+        .param_is_by_value_raw_pointer = false,
+        .arg_is_borrow_like = false,
+        .arg_is_copy_value = false,
+    }));
+
+    try std.testing.expect(!planNeedsFnPtrValueArgSlot(.{
+        .param_is_present = true,
+        .param_is_borrow = false,
+        .param_is_move = false,
+        .param_ty_is_fn_ptr = false,
+        .arg_ty_is_fn_ptr = true,
+    }));
+    try std.testing.expect(planNeedsFnPtrValueArgSlot(.{
+        .param_is_present = true,
+        .param_is_borrow = false,
+        .param_is_move = false,
+        .param_ty_is_fn_ptr = true,
+        .arg_ty_is_fn_ptr = true,
+    }));
+
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    try std.testing.expect(!vecElementPushTransfersOwnership(&i32_ty, true));
+    try std.testing.expect(vecElementPushTransfersOwnership(&i32_ty, false));
 }

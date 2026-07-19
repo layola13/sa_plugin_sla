@@ -12629,12 +12629,23 @@ pub const Codegen = struct {
     }
 
     fn valueArgTransfersOwnership(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
-        const target_param = param orelse return false;
-        if (target_param.is_borrow or target_param.is_move) return false;
-        if (lowering_rules.byValueRawPointerParam(target_param)) return false;
+        const target_param = param orelse return lowering_rules.planValueArgTransfersOwnership(.{
+            .param_is_present = false,
+            .param_is_borrow = false,
+            .param_is_move = false,
+            .param_is_by_value_raw_pointer = false,
+            .arg_is_borrow_like = false,
+            .arg_is_copy_value = false,
+        });
         const ty = arg_ty orelse target_param.ty;
-        if (lowering_rules.isBorrowLikeType(ty)) return false;
-        return !self.typeIsCopyValue(ty);
+        return lowering_rules.planValueArgTransfersOwnership(.{
+            .param_is_present = true,
+            .param_is_borrow = target_param.is_borrow,
+            .param_is_move = target_param.is_move,
+            .param_is_by_value_raw_pointer = lowering_rules.byValueRawPointerParam(target_param),
+            .arg_is_borrow_like = lowering_rules.isBorrowLikeType(ty),
+            .arg_is_copy_value = self.typeIsCopyValue(ty),
+        });
     }
 
     fn stackSlotIdentifierTempNeedsReleaseForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: u32) bool {
@@ -12854,10 +12865,27 @@ pub const Codegen = struct {
 
     fn needsFnPtrValueArgSlot(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
         _ = self;
-        const target_param = param orelse return false;
-        if (target_param.is_borrow or target_param.is_move or target_param.ty.* != .fn_ptr) return false;
-        const ty = arg_ty orelse return false;
-        return ty.* == .fn_ptr;
+        const target_param = param orelse return lowering_rules.planNeedsFnPtrValueArgSlot(.{
+            .param_is_present = false,
+            .param_is_borrow = false,
+            .param_is_move = false,
+            .param_ty_is_fn_ptr = false,
+            .arg_ty_is_fn_ptr = false,
+        });
+        const ty = arg_ty orelse return lowering_rules.planNeedsFnPtrValueArgSlot(.{
+            .param_is_present = true,
+            .param_is_borrow = target_param.is_borrow,
+            .param_is_move = target_param.is_move,
+            .param_ty_is_fn_ptr = target_param.ty.* == .fn_ptr,
+            .arg_ty_is_fn_ptr = false,
+        });
+        return lowering_rules.planNeedsFnPtrValueArgSlot(.{
+            .param_is_present = true,
+            .param_is_borrow = target_param.is_borrow,
+            .param_is_move = target_param.is_move,
+            .param_ty_is_fn_ptr = target_param.ty.* == .fn_ptr,
+            .arg_ty_is_fn_ptr = ty.* == .fn_ptr,
+        });
     }
 
     fn genPlannedSabMacroCallArg(

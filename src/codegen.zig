@@ -10143,12 +10143,23 @@ pub const Codegen = struct {
     }
 
     fn valueArgTransfersOwnership(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
-        const target_param = param orelse return false;
-        if (target_param.is_borrow or target_param.is_move) return false;
-        if (lowering_rules.byValueRawPointerParam(target_param)) return false;
+        const target_param = param orelse return lowering_rules.planValueArgTransfersOwnership(.{
+            .param_is_present = false,
+            .param_is_borrow = false,
+            .param_is_move = false,
+            .param_is_by_value_raw_pointer = false,
+            .arg_is_borrow_like = false,
+            .arg_is_copy_value = false,
+        });
         const ty = arg_ty orelse target_param.ty;
-        if (lowering_rules.isBorrowLikeType(ty)) return false;
-        return !self.typeIsCopyValue(ty);
+        return lowering_rules.planValueArgTransfersOwnership(.{
+            .param_is_present = true,
+            .param_is_borrow = target_param.is_borrow,
+            .param_is_move = target_param.is_move,
+            .param_is_by_value_raw_pointer = lowering_rules.byValueRawPointerParam(target_param),
+            .arg_is_borrow_like = lowering_rules.isBorrowLikeType(ty),
+            .arg_is_copy_value = self.typeIsCopyValue(ty),
+        });
     }
 
     fn isNonOwningPointerCarrierCastArg(arg: *const ast.Node) bool {

@@ -788,9 +788,13 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
         const stat = std.fs.cwd().statFile(source_file) catch break :blk @as(u64, 0);
         break :blk stat.size;
     };
-    effective_options.lazy_transitive_sla_imports = options.prune_for_test_codegen and
-        program.program.decls.len <= 64 and
-        root_source_size <= 32 * 1024;
+    // Historical small filtered-test root path. Larger registry-driven check/compile
+    // roots still eagerly collect the transitive diamond in resolve-roots because
+    // lazy discovery currently inflates reachable materialize on real ECS graphs.
+    effective_options.lazy_transitive_sla_imports = options.lazy_transitive_sla_imports or
+        (options.prune_for_test_codegen and
+            program.program.decls.len <= 64 and
+            root_source_size <= 32 * 1024);
 
     var emitted = std.StringHashMap(void).init(allocator);
     defer emitted.deinit();

@@ -5,6 +5,16 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Y-share value-arg ownership + fnptr slot plans (2026-07-19):
+  Lifted pure ownership decisions into `lowering_rules.planValueArgTransfersOwnership`
+  and `planNeedsFnPtrValueArgSlot`; SA-text and direct SAB now consume the same
+  contracts. Zig unit test covers the shared plans; focused SA/SAB fixtures
+  (pod vec push, fnptr thread pair, branch merge, child-scope) still pass.
+  Module import-expand real ECS baseline remeasured: world_table_erased
+  roots~45ms/materialize~396ms; parallel_runner roots~408ms/materialize~339ms;
+  system_param_table_erased roots~509ms/materialize~746ms. Aggressive lazy
+  transitive on check path was tried and reverted (inflated materialize).
+
 - HTTP loopback StackEscape slot-name uniqueness (2026-07-19):
   Thread spawn/worker generated params use unique `__thread_*_slot_*` names so
   they do not collide with user `slot = stack_alloc` symbols. SAB StackEscape on

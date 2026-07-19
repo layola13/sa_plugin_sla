@@ -343,3 +343,17 @@ Profile detail shows the remaining tail in import root resolution and repeated r
 SA 全路径 `parallel_table_erased` focused 仍暴露另一类 `CapabilityMismatch`（`ecs_box_drop` 前缀），与上述 UAM/Phi 不同，记为剩余 SA-backend 问题。
 
 性能目标仍 open：真实 focused generated-SA 前端仍约 1–2s 量级（import expand 主导），未压到几百毫秒。
+
+## 2026-07-19 baseline remeasure (local sla-local-cli, SLA_PROFILE=1)
+
+Correctness still closed. Current check import-expand profile (warmish):
+
+- `world_table_erased.sla`: resolve roots ~45ms, reachable materialize ~396ms
+- `parallel_runner.sla`: resolve roots ~408ms, reachable materialize ~339ms
+- `system_param_table_erased.sla`: resolve roots ~509ms, reachable materialize ~746ms
+
+Tried enabling lazy transitive discovery for registry-driven check/compile roots;
+resolve-roots dropped on some modules but reachable materialize inflated
+(system_param materialize ~2.5s). Reverted that enablement; keep historical
+small filtered-test lazy path only until materialize is reworked.
+

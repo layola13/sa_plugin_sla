@@ -576,3 +576,8 @@ Warm `parallel_runner` build:
 - import expand: ~296ms
 - wall-clock: ~0.85s
 
+## 2026-07-19 SAB shallow_copy bool storage
+
+SAB aggregate `bool` field storage now uses `u8` (matching SA ABI). After purging
+stale managed SAB cache entries, `tests/test_unit_shallow_copy_call_arg_direct.sla`
+passes under `SLA_SAB_NO_FALLBACK=1`.

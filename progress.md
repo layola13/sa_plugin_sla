@@ -21,7 +21,7 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 - SAB aggregate bool storage uses u8 (2026-07-19):
   storagePrimType maps boolean to u8 for struct field load/store parity with SA.
-  shallow_copy_call_arg_direct still fails under strict SAB (investigation open).
+  shallow_copy_call_arg_direct green after cache purge.
 
 - Skip function-body span capture on check path (2026-07-19):
   SlaModuleTable.capture_body_spans=false for sla check include_all imports.
@@ -63,10 +63,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 - Share typeBaseName/firstGenericArg on Y (2026-07-19):
   SAB wrappers delegate to lowering_rules; concreteTypeName reused for base name.
 
-- Known residual: SAB shallow_copy aggregate call-arg (2026-07-19):
-  tests/test_unit_shallow_copy_call_arg_direct.sla still fails under strict SAB
-  (panic 51600/51602/51604) while SA passes; not introduced by fixed-array copy fix.
-  str_eq_direct SAB MemoryLeak also residual/pre-existing.
+- SAB shallow_copy fixed via bool u8 storage + cache bust (2026-07-19):
+  tests/test_unit_shallow_copy_call_arg_direct.sla green under strict SAB after
+  aggregate bool storagePrimType=u8 (stale .sla-cache/sab needed purge).
 
 - Fixed-array copy-value classification (2026-07-19):
   typeIsCopyValue treats `[T; N]` as copy when element is copy on SA/SAB.

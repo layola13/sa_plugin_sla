@@ -3014,15 +3014,7 @@ pub const Codegen = struct {
     }
 
     fn arrayType(ty: *const ast.Type) ?ast.ArrayType {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .array => |arr| return arr,
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                else => return null,
-            }
-        }
+        return lowering_rules.arrayType(ty);
     }
 
     fn isStringLikeType(ty: *const ast.Type) bool {

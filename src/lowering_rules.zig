@@ -2889,6 +2889,18 @@ pub fn sliceElementType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Slice");
 }
 
+pub fn arrayType(ty: *const ast.Type) ?ast.ArrayType {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .array => |arr| return arr,
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            else => return null,
+        }
+    }
+}
+
 pub fn taskInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Task");
 }

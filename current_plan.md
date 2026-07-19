@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share arrayType peel on Y (2026-07-19):
+  `lowering_rules.arrayType` peels borrow/pointer to array; SA delegates.
+  Fixed-array ptr struct fixtures SA/SAB green.
+
 - SA Result ok/err peels delegate to shared Y helpers (2026-07-19):
   `resultOkType`/`resultErrType` in SA-text now call lowering_rules helpers.
   Result entity cleanup fixture SA/SAB green.

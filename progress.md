@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Share arrayType peel on Y (2026-07-19):
+  `lowering_rules.arrayType` peels borrow/pointer to array; SA delegates.
+  Fixed-array ptr struct fixtures SA/SAB green.
+
 - SA Result ok/err peels delegate to shared Y helpers (2026-07-19):
   `resultOkType`/`resultErrType` in SA-text now call lowering_rules helpers.
   Result entity cleanup fixture SA/SAB green.

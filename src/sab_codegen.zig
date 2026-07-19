@@ -1591,7 +1591,7 @@ pub const Codegen = struct {
                 if (cache_name) |name| {
                     if (self.copy_value_cache.get(name)) |cached| break :blk cached;
                 }
-                if (userDefinedStdOwnerIsNonCopy(ty)) {
+                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) {
                     if (cache_name) |name| self.copy_value_cache.put(name, false) catch {};
                     break :blk false;
                 }
@@ -1615,25 +1615,6 @@ pub const Codegen = struct {
             },
             else => false,
         };
-    }
-
-    fn userDefinedStdOwnerIsNonCopy(ty: *const ast.Type) bool {
-        if (ty.* != .user_defined) return false;
-        const name = ty.user_defined.name;
-        return std.mem.eql(u8, name, "Vec") or
-            std.mem.eql(u8, name, "VecDeque") or
-            std.mem.eql(u8, name, "String") or
-            std.mem.eql(u8, name, "Box") or
-            std.mem.eql(u8, name, "Rc") or
-            std.mem.eql(u8, name, "Arc") or
-            std.mem.eql(u8, name, "HashMap") or
-            std.mem.eql(u8, name, "BTreeMap") or
-            std.mem.eql(u8, name, "HashSet") or
-            std.mem.eql(u8, name, "BTreeSet") or
-            std.mem.eql(u8, name, "RefCell") or
-            std.mem.eql(u8, name, "Mutex") or
-            std.mem.eql(u8, name, "RwLock") or
-            std.mem.eql(u8, name, "JoinHandle");
     }
 
     fn typeIsCopyStruct(self: *Codegen, ty: *const ast.Type) bool {
@@ -1668,7 +1649,7 @@ pub const Codegen = struct {
             },
             .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
             .user_defined => |ud| blk: {
-                if (userDefinedStdOwnerIsNonCopy(ty)) break :blk depth > 0;
+                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk depth > 0;
                 // Pure enums are POD-like; keep push/call-arg shallow-copy in sync with SA.
                 if (self.tc.enums.contains(ud.name)) break :blk true;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
@@ -12849,7 +12830,7 @@ pub const Codegen = struct {
                     if (arg_ty) |ty| self.typeIsCopyValue(ty) else false,
                     false,
                     self.isParamReg(arg_reg),
-                    if (arg_ty) |ty| userDefinedStdOwnerIsNonCopy(ty) else false,
+                    if (arg_ty) |ty| lowering_rules.userDefinedStdOwnerIsNonCopy(ty) else false,
                     self.current_expr_result_escapes,
                 );
                 const keep_for_later_use = arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier);
@@ -13019,7 +13000,7 @@ pub const Codegen = struct {
                     if (effective_ty) |arg_ty| self.typeIsCopyValue(arg_ty) else false,
                     false,
                     self.isParamReg(arg_reg),
-                    if (effective_ty) |ty| userDefinedStdOwnerIsNonCopy(ty) else false,
+                    if (effective_ty) |ty| lowering_rules.userDefinedStdOwnerIsNonCopy(ty) else false,
                     self.current_expr_result_escapes,
                 );
                 const keep_for_later_use = effective_arg.* == .identifier and self.identifierMustStayLiveForLaterUse(effective_arg.identifier);
@@ -14247,7 +14228,7 @@ pub const Codegen = struct {
             const layout = try self.fieldLayout(ty, field.name);
             const field_reg = try self.intern(try self.newTmp());
             try self.emitLoad(field_reg, source, layout.offset, layout.ty);
-            if (self.structDeclForType(field.ty) != null and !userDefinedStdOwnerIsNonCopy(field.ty)) {
+            if (self.structDeclForType(field.ty) != null and !lowering_rules.userDefinedStdOwnerIsNonCopy(field.ty)) {
                 const copied_field = try self.genShallowCopyCallArgValue(field_reg, field.ty);
                 try self.emitStore(dst, layout.offset, copied_field, layout.ty);
                 try self.emitConsumedMarker(copied_field);

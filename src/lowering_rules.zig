@@ -2843,6 +2843,40 @@ pub fn vecElementType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Vec");
 }
 
+pub fn vecDequeElementType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "VecDeque");
+}
+
+pub const MapTypes = struct {
+    key: *ast.Type,
+    value: *ast.Type,
+};
+
+fn userDefinedMapTypes(ty: *const ast.Type, name: []const u8) ?MapTypes {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, name) and ud.generics.len == 2) {
+                    return .{ .key = ud.generics[0], .value = ud.generics[1] };
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+}
+
+pub fn hashMapTypes(ty: *const ast.Type) ?MapTypes {
+    return userDefinedMapTypes(ty, "HashMap");
+}
+
+pub fn btreeMapTypes(ty: *const ast.Type) ?MapTypes {
+    return userDefinedMapTypes(ty, "BTreeMap");
+}
+
 pub fn taskInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "Task");
 }
@@ -2884,6 +2918,27 @@ pub fn arcInnerType(ty: *const ast.Type) ?*ast.Type {
 
 pub fn refCellInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "RefCell");
+}
+
+/// Std container/owner types that are never treated as Copy at the call-arg ABI
+/// layer, even when nested inside user structs. Shared by SA-text and direct SAB.
+pub fn userDefinedStdOwnerIsNonCopy(ty: *const ast.Type) bool {
+    if (ty.* != .user_defined) return false;
+    const name = ty.user_defined.name;
+    return std.mem.eql(u8, name, "Vec") or
+        std.mem.eql(u8, name, "VecDeque") or
+        std.mem.eql(u8, name, "String") or
+        std.mem.eql(u8, name, "Box") or
+        std.mem.eql(u8, name, "Rc") or
+        std.mem.eql(u8, name, "Arc") or
+        std.mem.eql(u8, name, "HashMap") or
+        std.mem.eql(u8, name, "BTreeMap") or
+        std.mem.eql(u8, name, "HashSet") or
+        std.mem.eql(u8, name, "BTreeSet") or
+        std.mem.eql(u8, name, "RefCell") or
+        std.mem.eql(u8, name, "Mutex") or
+        std.mem.eql(u8, name, "RwLock") or
+        std.mem.eql(u8, name, "JoinHandle");
 }
 
 pub fn smartPointerType(ty: *const ast.Type) ?SmartPointerType {
@@ -6148,4 +6203,32 @@ test "shared value-arg ownership and fnptr slot plans" {
     var i32_ty = ast.Type{ .primitive = .i32 };
     try std.testing.expect(!vecElementPushTransfersOwnership(&i32_ty, true));
     try std.testing.expect(vecElementPushTransfersOwnership(&i32_ty, false));
+}
+
+test "userDefinedStdOwnerIsNonCopy classifies std owners" {
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = &.{} } };
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var foo_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
+    try std.testing.expect(userDefinedStdOwnerIsNonCopy(&vec_ty));
+    try std.testing.expect(!userDefinedStdOwnerIsNonCopy(&i32_ty));
+    try std.testing.expect(!userDefinedStdOwnerIsNonCopy(&foo_ty));
+}
+
+test "collection type peelers" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var str_ty = ast.Type{ .primitive = .void_type };
+    var gens = [_]*ast.Type{&i32_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
+    var deque_ty = ast.Type{ .user_defined = .{ .name = "VecDeque", .generics = gens[0..] } };
+    var map_gens = [_]*ast.Type{ &i32_ty, &str_ty };
+    var map_ty = ast.Type{ .user_defined = .{ .name = "HashMap", .generics = map_gens[0..] } };
+    var btree_ty = ast.Type{ .user_defined = .{ .name = "BTreeMap", .generics = map_gens[0..] } };
+    try std.testing.expect(vecElementType(&vec_ty) == &i32_ty);
+    try std.testing.expect(vecDequeElementType(&deque_ty) == &i32_ty);
+    const hm = hashMapTypes(&map_ty) orelse return error.TestExpectedEqual;
+    try std.testing.expect(hm.key == &i32_ty);
+    try std.testing.expect(hm.value == &str_ty);
+    const bm = btreeMapTypes(&btree_ty) orelse return error.TestExpectedEqual;
+    try std.testing.expect(bm.key == &i32_ty);
+    try std.testing.expect(bm.value == &str_ty);
 }

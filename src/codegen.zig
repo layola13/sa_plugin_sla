@@ -3472,7 +3472,7 @@ pub const Codegen = struct {
             },
             .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
             .user_defined => |ud| blk: {
-                if (lowering_rules.smartPointerType(ty) != null) break :blk depth > 0;
+                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty) or lowering_rules.smartPointerType(ty) != null) break :blk depth > 0;
                 // Pure enums are POD-like at the register/ABI level even without
                 // an explicit Copy derive. Treating them as non-shallow-copy made
                 // structs such as ComponentInfo (i32 + enum) look ownership-only,
@@ -4562,33 +4562,12 @@ pub const Codegen = struct {
     }
 
     fn vecElementType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Vec") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        // Shared Y-layer peel; keep local wrapper for historic call sites.
+        return lowering_rules.vecElementType(ty);
     }
 
     fn vecDequeElementType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "VecDeque") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.vecDequeElementType(ty);
     }
 
     fn isAtomicI32Type(ty: *const ast.Type) bool {
@@ -4766,26 +4745,10 @@ pub const Codegen = struct {
         return CodegenError.CodegenError;
     }
 
-    const HashMapTypes = struct {
-        key: *ast.Type,
-        value: *ast.Type,
-    };
+    const HashMapTypes = lowering_rules.MapTypes;
 
     fn hashMapTypes(ty: *const ast.Type) ?HashMapTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "HashMap") and ud.generics.len == 2) {
-                        return .{ .key = ud.generics[0], .value = ud.generics[1] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.hashMapTypes(ty);
     }
 
     const HashSetTypes = struct {
@@ -4809,26 +4772,10 @@ pub const Codegen = struct {
         }
     }
 
-    const BTreeMapTypes = struct {
-        key: *ast.Type,
-        value: *ast.Type,
-    };
+    const BTreeMapTypes = lowering_rules.MapTypes;
 
     fn btreeMapTypes(ty: *const ast.Type) ?BTreeMapTypes {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "BTreeMap") and ud.generics.len == 2) {
-                        return .{ .key = ud.generics[0], .value = ud.generics[1] };
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.btreeMapTypes(ty);
     }
 
     const BTreeSetTypes = struct {

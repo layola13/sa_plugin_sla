@@ -5,6 +5,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Y-share std-owner noncopy + collection type peelers (2026-07-19):
+  Shared `userDefinedStdOwnerIsNonCopy`, `vecDequeElementType`, `hashMapTypes`,
+  `btreeMapTypes` into lowering_rules; SA wrappers delegate, SAB uses shared
+  noncopy. Zig unit tests cover peelers/noncopy; SA/SAB ownership fixtures still
+  pass. Module import-expand still dominated by resolve-roots + materialize on
+  real ECS graphs; check-path lazy-transitive remains disabled after regression.
+
 - Y-share value-arg ownership + fnptr slot plans (2026-07-19):
   Lifted pure ownership decisions into `lowering_rules.planValueArgTransfersOwnership`
   and `planNeedsFnPtrValueArgSlot`; SA-text and direct SAB now consume the same

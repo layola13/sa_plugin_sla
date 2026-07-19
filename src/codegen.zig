@@ -4616,7 +4616,7 @@ pub const Codegen = struct {
     }
 
     fn patternUsesResultMacros(pattern: ast.EnumPattern) bool {
-        return std.mem.eql(u8, pattern.enum_name, "Result") or std.mem.eql(u8, pattern.variant_name, "Ok") or std.mem.eql(u8, pattern.variant_name, "Err");
+        return lowering_rules.patternUsesResultMacros(pattern.enum_name, pattern.variant_name);
     }
 
     fn patternUsesOptionMacros(pattern: ast.EnumPattern) bool {

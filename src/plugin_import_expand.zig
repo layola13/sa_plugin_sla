@@ -983,6 +983,9 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
         }
     }
     profileImportExpandStage(profile_enabled, "selective append", profile_start);
+    if (profile_enabled) {
+        std.debug.print("[sla-profile] import expand selective append decls={d} primary={d}\n", .{ decls.items.len, primary_decls.count() });
+    }
 
     const expanded = try allocator.create(ast.Node);
     expanded.* = .{ .program = .{ .decls = try decls.toOwnedSlice() } };

@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Share patternUsesResultMacros + selective-append decl counters (2026-07-19):
+  Result pattern classification shared on Y; check-path selective append reports
+  decls/primary counts (parallel_runner ~2345 decls under include_all).
+
 - Share ABI param type/borrow helpers on Y (2026-07-19):
   abiParamTypeString/abiParamNeedsBorrowArg pure facts moved into lowering_rules;
   SA wrappers delegate. Ownership fixtures green.

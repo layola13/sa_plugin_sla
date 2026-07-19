@@ -2898,6 +2898,10 @@ pub fn resultErrType(ty: *const ast.Type) ?*ast.Type {
     }
 }
 
+pub fn patternUsesResultMacros(enum_name: []const u8, variant_name: []const u8) bool {
+    return std.mem.eql(u8, enum_name, "Result") or std.mem.eql(u8, variant_name, "Ok") or std.mem.eql(u8, variant_name, "Err");
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     var curr = ty;
     while (true) {

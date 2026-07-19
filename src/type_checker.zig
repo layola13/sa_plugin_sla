@@ -559,15 +559,7 @@ pub const TypeChecker = struct {
     }
 
     fn isStringType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "String") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isStringType(ty);
     }
 
     fn isBorrowLikeType(ty: *const ast.Type) bool {
@@ -1001,46 +993,15 @@ pub const TypeChecker = struct {
     }
 
     fn isStringLikeType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .primitive => |p| return p == .void_type,
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .array => return true,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "String"),
-                else => return false,
-            }
-        }
+        return lowering_rules.isStringLikeType(ty);
     }
 
     fn dynTraitName(ty: *ast.Type) ?[]const u8 {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .borrow => |b| curr = b,
-                .pointer => |p| curr = p,
-                .user_defined => |ud| {
-                    if (std.mem.startsWith(u8, ud.name, "__dyn_")) {
-                        return ud.name["__dyn_".len..];
-                    }
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.dynTraitName(ty);
     }
 
     fn arrayType(ty: *ast.Type) ?ast.ArrayType {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .array => |arr| return arr,
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                else => return null,
-            }
-        }
+        return lowering_rules.arrayType(ty);
     }
 
     fn sliceElementType(ty: *ast.Type) ?*ast.Type {
@@ -1456,27 +1417,11 @@ pub const TypeChecker = struct {
     }
 
     fn isAtomicI32Type(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "AtomicI32") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isAtomicI32Type(ty);
     }
 
     fn isAtomicUsizeType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "AtomicUsize") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isAtomicUsizeType(ty);
     }
 
     fn atomicPtrInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -1524,27 +1469,11 @@ pub const TypeChecker = struct {
     }
 
     fn isFileType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "File") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isFileType(ty);
     }
 
     fn isMetadataType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "Metadata") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isMetadataType(ty);
     }
 
     fn isOrderingName(name: []const u8) bool {
@@ -2009,15 +1938,7 @@ pub const TypeChecker = struct {
     }
 
     fn concreteTypeName(ty: *const ast.Type) ?[]const u8 {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .borrow => |b| curr = b,
-                .pointer => |p| curr = p,
-                .user_defined => |ud| return ud.name,
-                else => return null,
-            }
-        }
+        return lowering_rules.concreteTypeName(ty);
     }
 
     fn traitExtendsTrait(self: *TypeChecker, trait_name: []const u8, target_trait: []const u8) bool {

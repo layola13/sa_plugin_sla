@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- More type-checker peels routed to Y (2026-07-19):
+  isStringLike/array/atomic/file/metadata/concreteTypeName/dynTraitName and
+  isStringType now shared. Check/fixtures green.
+
 - Type-checker map/set/slice peels use shared Y helpers (2026-07-19):
   hashMap/btreeMap/hashSet/btreeSet/slice peels in type_checker now wrap
   lowering_rules. Check/fixtures green.

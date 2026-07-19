@@ -3089,6 +3089,11 @@ pub fn isMetadataType(ty: *const ast.Type) bool {
     return isUserDefinedNamed(ty, "Metadata");
 }
 
+
+pub fn isStringType(ty: *const ast.Type) bool {
+    return isUserDefinedNamed(ty, "String");
+}
+
 pub fn isAtomicI32Type(ty: *const ast.Type) bool {
     return isUserDefinedNamed(ty, "AtomicI32");
 }

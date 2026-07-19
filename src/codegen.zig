@@ -4596,18 +4596,7 @@ pub const Codegen = struct {
     }
 
     fn cellInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Cell") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.cellInnerType(ty);
     }
 
     fn refCellInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -4615,78 +4604,23 @@ pub const Codegen = struct {
     }
 
     fn mutexInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Mutex") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.mutexInnerType(ty);
     }
 
     fn mutexGuardInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "MutexGuard") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.mutexGuardInnerType(ty);
     }
 
     fn rwLockInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "RwLock") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.rwLockInnerType(ty);
     }
 
     fn rwLockReadGuardInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "RwLockReadGuard") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.rwLockReadGuardInnerType(ty);
     }
 
     fn rwLockWriteGuardInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "RwLockWriteGuard") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.rwLockWriteGuardInnerType(ty);
     }
 
     fn isFileType(ty: *const ast.Type) bool {

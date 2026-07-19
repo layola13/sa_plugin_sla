@@ -19,6 +19,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Y-share Cell/Mutex/RwLock type peelers (2026-07-19):
+  Shared Cell/Mutex/MutexGuard/RwLock/ReadGuard/WriteGuard peels into
+  lowering_rules; SA wrappers delegate. Sync peeler unit test + smart-pointer
+  fixtures green.
+
 - Align SA/SAB shallow-copy collection depth rules (2026-07-19):
   Direct SAB `typeIsShallowCopyCallArgValue` now treats nested std collections
   (Vec/Map/Set/Deque) as depth>0 only, matching SA-text, and uses shared

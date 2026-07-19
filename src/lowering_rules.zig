@@ -2932,6 +2932,30 @@ pub fn refCellInnerType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "RefCell");
 }
 
+pub fn cellInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Cell");
+}
+
+pub fn mutexInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Mutex");
+}
+
+pub fn mutexGuardInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "MutexGuard");
+}
+
+pub fn rwLockInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "RwLock");
+}
+
+pub fn rwLockReadGuardInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "RwLockReadGuard");
+}
+
+pub fn rwLockWriteGuardInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "RwLockWriteGuard");
+}
+
 /// Std container/owner types that are never treated as Copy at the call-arg ABI
 /// layer, even when nested inside user structs. Shared by SA-text and direct SAB.
 pub fn userDefinedStdOwnerIsNonCopy(ty: *const ast.Type) bool {
@@ -6249,4 +6273,15 @@ test "collection type peelers" {
     const bm = btreeMapTypes(&btree_ty) orelse return error.TestExpectedEqual;
     try std.testing.expect(bm.key == &i32_ty);
     try std.testing.expect(bm.value == &str_ty);
+}
+
+test "sync type peelers" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var gens = [_]*ast.Type{&i32_ty};
+    var cell_ty = ast.Type{ .user_defined = .{ .name = "Cell", .generics = gens[0..] } };
+    var mutex_ty = ast.Type{ .user_defined = .{ .name = "Mutex", .generics = gens[0..] } };
+    var guard_ty = ast.Type{ .user_defined = .{ .name = "MutexGuard", .generics = gens[0..] } };
+    try std.testing.expect(cellInnerType(&cell_ty) == &i32_ty);
+    try std.testing.expect(mutexInnerType(&mutex_ty) == &i32_ty);
+    try std.testing.expect(mutexGuardInnerType(&guard_ty) == &i32_ty);
 }

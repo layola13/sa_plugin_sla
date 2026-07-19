@@ -3193,8 +3193,35 @@ pub fn userDefinedStdOwnerIsNonCopy(ty: *const ast.Type) bool {
 /// Names that keep their generic user-defined form under monomorphization
 /// rather than being specialized as struct/enum templates.
 pub fn keepsGenericUserDefinedName(name: []const u8) bool {
+    // Std containers / smart pointers / wrappers keep generic user-defined form
+    // rather than monomorphizing as struct/enum templates.
     return std.mem.eql(u8, name, "Box") or
+        std.mem.eql(u8, name, "Rc") or
+        std.mem.eql(u8, name, "Arc") or
         std.mem.eql(u8, name, "Vec") or
+        std.mem.eql(u8, name, "VecDeque") or
+        std.mem.eql(u8, name, "HashMap") or
+        std.mem.eql(u8, name, "BTreeMap") or
+        std.mem.eql(u8, name, "HashSet") or
+        std.mem.eql(u8, name, "BTreeSet") or
+        std.mem.eql(u8, name, "Option") or
+        std.mem.eql(u8, name, "Result") or
+        std.mem.eql(u8, name, "String") or
+        std.mem.eql(u8, name, "Cell") or
+        std.mem.eql(u8, name, "RefCell") or
+        std.mem.eql(u8, name, "Mutex") or
+        std.mem.eql(u8, name, "RwLock") or
+        std.mem.eql(u8, name, "JoinHandle") or
+        std.mem.eql(u8, name, "Sender") or
+        std.mem.eql(u8, name, "Receiver") or
+        std.mem.eql(u8, name, "Task") or
+        std.mem.eql(u8, name, "Future") or
+        std.mem.eql(u8, name, "Poll") or
+        std.mem.eql(u8, name, "Executor") or
+        std.mem.eql(u8, name, "ManuallyDrop") or
+        std.mem.eql(u8, name, "AtomicPtr") or
+        std.mem.eql(u8, name, "FuturePair") or
+        std.mem.eql(u8, name, "FutureEither") or
         std.mem.startsWith(u8, name, "__dyn_");
 }
 
@@ -6518,4 +6545,11 @@ test "sync type peelers" {
     try std.testing.expect(cellInnerType(&cell_ty) == &i32_ty);
     try std.testing.expect(mutexInnerType(&mutex_ty) == &i32_ty);
     try std.testing.expect(mutexGuardInnerType(&guard_ty) == &i32_ty);
+}
+
+test "keepsGenericUserDefinedName classifies std containers" {
+    try std.testing.expect(keepsGenericUserDefinedName("Vec"));
+    try std.testing.expect(keepsGenericUserDefinedName("HashMap"));
+    try std.testing.expect(keepsGenericUserDefinedName("__dyn_Trait"));
+    try std.testing.expect(!keepsGenericUserDefinedName("MyStruct"));
 }

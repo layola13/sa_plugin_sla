@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Expand keepsGenericUserDefinedName std surface (2026-07-19):
+  Shared monomorphizer keep-generic policy covers maps/sets/sync/async/channel
+  containers plus __dyn_*. Unit test added; box/vec/async/check green.
+
 - Share monomorphizer keepsGenericUserDefinedName on Y (2026-07-19):
   Box/Vec/__dyn_* monomorphization name policy lives in lowering_rules.
   Box/vec fixtures and check green.

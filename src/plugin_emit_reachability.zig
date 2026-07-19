@@ -1,4 +1,5 @@
 const std = @import("std");
+const lowering_rules = @import("lowering_rules.zig");
 const ast = @import("ast.zig");
 const type_checker_mod = @import("type_checker.zig");
 
@@ -203,6 +204,7 @@ pub fn collectReachableBlock(
 }
 
 fn dynConcreteTypeName(ty: *const ast.Type) ?[]const u8 {
+    if (lowering_rules.dynTraitName(ty) != null) return null;
     var curr = ty;
     while (true) {
         switch (curr.*) {
@@ -210,8 +212,8 @@ fn dynConcreteTypeName(ty: *const ast.Type) ?[]const u8 {
             .pointer => |p| curr = p,
             .user_defined => |ud| {
                 if (std.mem.startsWith(u8, ud.name, "__dyn_")) return null;
-                if ((std.mem.eql(u8, ud.name, "Box") or std.mem.eql(u8, ud.name, "Rc") or std.mem.eql(u8, ud.name, "Arc")) and ud.generics.len == 1) {
-                    return dynConcreteTypeName(ud.generics[0]);
+                if (lowering_rules.smartPointerType(curr)) |smart| {
+                    return dynConcreteTypeName(smart.inner);
                 }
                 return ud.name;
             },

@@ -6586,3 +6586,9 @@ test "isStdCollectionType classifies std collections" {
     try std.testing.expect(!isStdCollectionType(&i32_ty));
     try std.testing.expect(!isStdCollectionType(&foo_ty));
 }
+
+test "primitiveIsCopyValue classifies void as non-copy" {
+    try std.testing.expect(primitiveIsCopyValue(.i32));
+    try std.testing.expect(primitiveIsCopyValue(.u64));
+    try std.testing.expect(!primitiveIsCopyValue(.void_type));
+}

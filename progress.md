@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- dynConcreteTypeName uses shared dyn/smart peels (2026-07-19):
+  plugin_emit_reachability peels dyn trait names via lowering_rules.dynTraitName
+  and smart-pointer layers via smartPointerType. Box/smart fixtures green.
+
 - Cache @import lists for contract scan (2026-07-19):
   scanExpandedSourceImports stores/loads `.sla-cache/imports/*` so warm vec.sa
   contract scans avoid full line walks. Warm load contracts ~51-90ms.

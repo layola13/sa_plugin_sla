@@ -520,7 +520,14 @@ pub const SlaModuleTable = struct {
             .parsed_macro_bodies = std.StringHashMap(void).init(self.allocator),
             .function_body_spans = std.StringHashMap([]const u8).init(self.allocator),
         };
+        const spans_start = if (profile) std.time.nanoTimestamp() else 0;
         try captureModuleFunctionBodySpans(self.allocator, module, &parser);
+        if (profile) {
+            const spans_ms = @divTrunc(std.time.nanoTimestamp() - spans_start, std.time.ns_per_ms);
+            if (spans_ms > 0) {
+                std.debug.print("[sla-profile] getOrParse {s}: body_spans={d}ms\n", .{ std.fs.path.basename(module.path), spans_ms });
+            }
+        }
         if (self.parse_options.parse_function_bodies) {
             if (self.parse_options.function_body_names) |selected| {
                 var selected_iter = selected.keyIterator();

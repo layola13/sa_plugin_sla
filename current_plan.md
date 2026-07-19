@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- getOrParse body_spans timer (2026-07-19):
+  SLA_PROFILE reports body_spans cost separately; world_table_erased spans ~2ms
+  of ~130ms parse, confirming residual cost is lexer/parser of expanded surface.
+
 - Share patternUsesResultMacros + selective-append decl counters (2026-07-19):
   Result pattern classification shared on Y; check-path selective append reports
   decls/primary counts (parallel_runner ~2345 decls under include_all).

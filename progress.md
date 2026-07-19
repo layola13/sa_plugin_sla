@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Share Ordering/Executor/Poll/unwrap peels on Y (2026-07-19):
+  type_checker uses shared isOrderingType/executorInnerType/pollInnerType/
+  unwrapPointerLikeType/executorTaskBufferInnerType. Async/check fixtures green.
+
 - More type-checker peels routed to Y (2026-07-19):
   isStringLike/array/atomic/file/metadata/concreteTypeName/dynTraitName and
   isStringType now shared. Check/fixtures green.

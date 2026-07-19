@@ -578,14 +578,7 @@ pub const TypeChecker = struct {
     }
 
     fn unwrappedReceiverType(ty: *ast.Type) *ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .borrow => |b| curr = b,
-                .pointer => |p| curr = p,
-                else => return curr,
-            }
-        }
+        return lowering_rules.unwrapPointerLikeType(ty);
     }
 
     pub fn methodForType(self: *TypeChecker, ty: *ast.Type, method_name: []const u8) ?*ast.FuncDecl {
@@ -809,14 +802,7 @@ pub const TypeChecker = struct {
     }
 
     fn unwrapPointerLikeType(ty: *ast.Type) *ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                else => return curr,
-            }
-        }
+        return lowering_rules.unwrapPointerLikeType(ty);
     }
 
     fn structDeclForType(self: *TypeChecker, ty: *ast.Type) ?*ast.StructDecl {
@@ -1457,15 +1443,7 @@ pub const TypeChecker = struct {
     }
 
     fn isOrderingType(ty: *const ast.Type) bool {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return std.mem.eql(u8, ud.name, "Ordering") and ud.generics.len == 0,
-                else => return false,
-            }
-        }
+        return lowering_rules.isOrderingType(ty);
     }
 
     fn isFileType(ty: *const ast.Type) bool {
@@ -1631,18 +1609,8 @@ pub const TypeChecker = struct {
     }
 
     fn executorTaskBufferInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .array => |arr| return taskInnerType(arr.elem),
-                else => {
-                    const elem_ty = vecElementType(curr) orelse return null;
-                    return taskInnerType(elem_ty);
-                },
-            }
-        }
+        const plan = lowering_rules.executorTaskBufferPlan(ty) orelse return null;
+        return plan.inner;
     }
 
     fn futureInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -1746,33 +1714,11 @@ pub const TypeChecker = struct {
     }
 
     fn executorInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Executor") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.executorInnerType(ty);
     }
 
     fn pollInnerType(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| {
-                    if (std.mem.eql(u8, ud.name, "Poll") and ud.generics.len == 1) return ud.generics[0];
-                    return null;
-                },
-                else => return null,
-            }
-        }
+        return lowering_rules.pollInnerType(ty);
     }
 
     fn senderInnerType(ty: *const ast.Type) ?*ast.Type {

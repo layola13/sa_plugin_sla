@@ -3093,6 +3093,29 @@ pub fn isStringType(ty: *const ast.Type) bool {
     return isUserDefinedNamed(ty, "String");
 }
 
+pub fn isOrderingType(ty: *const ast.Type) bool {
+    return isUserDefinedNamed(ty, "Ordering");
+}
+
+pub fn executorInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Executor");
+}
+
+pub fn pollInnerType(ty: *const ast.Type) ?*ast.Type {
+    return userDefinedGenericInner(ty, "Poll");
+}
+
+pub fn unwrapPointerLikeType(ty: *ast.Type) *ast.Type {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            else => return curr,
+        }
+    }
+}
+
 pub fn isAtomicI32Type(ty: *const ast.Type) bool {
     return isUserDefinedNamed(ty, "AtomicI32");
 }

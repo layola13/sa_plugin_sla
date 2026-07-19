@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share Ordering/Executor/Poll/unwrap peels on Y (2026-07-19):
+  type_checker uses shared isOrderingType/executorInnerType/pollInnerType/
+  unwrapPointerLikeType/executorTaskBufferInnerType. Async/check fixtures green.
+
 - More type-checker peels routed to Y (2026-07-19):
   isStringLike/array/atomic/file/metadata/concreteTypeName/dynTraitName and
   isStringType now shared. Check/fixtures green.

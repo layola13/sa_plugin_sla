@@ -3376,7 +3376,7 @@ pub const Codegen = struct {
 
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
         return switch (ty.*) {
-            .primitive => |p| p != .void_type,
+            .primitive => |p| lowering_rules.primitiveIsCopyValue(p),
             .user_defined => blk: {
                 // Match SAB: std owners are never Copy even with derives absent/present noise.
                 if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
@@ -3397,7 +3397,7 @@ pub const Codegen = struct {
 
     fn typeIsCopyValue(self: *Codegen, ty: *const ast.Type) bool {
         return switch (ty.*) {
-            .primitive => |p| p != .void_type,
+            .primitive => |p| lowering_rules.primitiveIsCopyValue(p),
             .fn_ptr => true,
             .user_defined => self.typeHasCopyDerive(ty),
             .tuple => |tuple| blk: {
@@ -3490,7 +3490,7 @@ pub const Codegen = struct {
 
     fn typeHasDebugDerive(self: *Codegen, ty: *const ast.Type) bool {
         return switch (ty.*) {
-            .primitive => |p| p != .void_type,
+            .primitive => |p| lowering_rules.primitiveIsCopyValue(p),
             .user_defined => blk: {
                 if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
                 const decl = self.structDeclForType(ty) orelse break :blk false;

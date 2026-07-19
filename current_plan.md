@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share primitiveIsCopyValue on Y (2026-07-19):
+  SA/SAB typeIsCopyValue and copy/debug derive primitive arms use shared
+  primitiveIsCopyValue. Ownership fixtures green.
+
 - Disk cache for imported macro index (2026-07-19):
   loadImportedMacrosFromExpandedSource stores/loads `.sla-cache/macros/*`.
   Warm parallel_runner build load contracts ~820ms→~90ms (vec macros 122ms→6ms).

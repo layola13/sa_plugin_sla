@@ -4462,6 +4462,20 @@ pub fn isStdCollectionType(ty: *const ast.Type) bool {
         btreeSetElementType(ty) != null;
 }
 
+pub fn primitiveIsCopyValue(p: ast.Primitive) bool {
+    return p != .void_type;
+}
+
+pub fn typeShapeIsCopyValueWithoutUserDefined(ty: *const ast.Type) ?bool {
+    return switch (ty.*) {
+        .primitive => |p| primitiveIsCopyValue(p),
+        .fn_ptr => true,
+        .tuple => null, // needs recursive user-defined checks
+        .user_defined => null,
+        else => false,
+    };
+}
+
 /// Pure call-arg ownership facts shared by SA-text and direct SAB emitters.
 /// Type identity / Copy-ness are supplied by the emitter (which owns the TC).
 pub const ValueArgOwnershipFacts = struct {

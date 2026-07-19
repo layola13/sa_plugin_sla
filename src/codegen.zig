@@ -3469,8 +3469,13 @@ pub const Codegen = struct {
                 break :blk true;
             },
             .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
-            .user_defined => blk: {
+            .user_defined => |ud| blk: {
                 if (lowering_rules.smartPointerType(ty) != null) break :blk depth > 0;
+                // Pure enums are POD-like at the register/ABI level even without
+                // an explicit Copy derive. Treating them as non-shallow-copy made
+                // structs such as ComponentInfo (i32 + enum) look ownership-only,
+                // so SA vec.push emitted ^value and then reusing the local failed.
+                if (self.tc.enums.contains(ud.name)) break :blk true;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
                 if (decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {
@@ -3480,6 +3485,14 @@ pub const Codegen = struct {
             },
             else => false,
         };
+    }
+
+    /// Vec push may copy bit-patterns for POD / shallow-copyable elements even when
+    /// the type lacks an explicit Copy derive. Ownership transfer is only required
+    /// for true non-copy owners (Vec, Box, String, etc.).
+    fn vecElementPushConsumesSource(self: *Codegen, elem_ty: *const ast.Type) bool {
+        const copy_like = self.typeIsCopyValue(elem_ty) or self.typeIsShallowCopyCallArgValue(elem_ty, 0);
+        return lowering_rules.vecElementPushTransfersOwnership(elem_ty, copy_like);
     }
 
     fn typeIsSmallPlainSlotStruct(self: *Codegen, ty: *const ast.Type) bool {
@@ -13286,7 +13299,7 @@ pub const Codegen = struct {
                     const vec_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                     const elem_ty = vecElementType(vec_ty) orelse return CodegenError.CodegenError;
                     const elem_size = self.vecElementSlotSize(elem_ty);
-                    const elem_transfers_ownership = lowering_rules.vecElementPushTransfersOwnership(elem_ty, self.typeIsCopyValue(elem_ty));
+                    const elem_transfers_ownership = self.vecElementPushConsumesSource(elem_ty);
                     for (call.args) |arg| {
                         const arg_reg = try self.genExpr(arg, hoisted_allocs);
                         self.out.writer().print("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ reg, arg_reg, elem_size }) catch return CodegenError.CodegenError;
@@ -13393,7 +13406,11 @@ pub const Codegen = struct {
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const arg_reg = try self.genExpr(call.args[1], hoisted_allocs);
                     self.out.writer().print("    EXPAND VEC_PUSH {s}, {s}, {}\n", .{ recv_reg, arg_reg, self.vecElementSlotSize(elem_ty) }) catch return CodegenError.CodegenError;
-                    if (lowering_rules.vecElementPushTransfersOwnership(elem_ty, self.typeIsCopyValue(elem_ty))) {
+                    // POD / shallow-copy elements (including pure enums and structs of
+                    // them) must remain usable after push so patterns like
+                    // `registry.infos.push(info); return (registry, info);` match the
+                    // typechecker and direct SAB backends.
+                    if (self.vecElementPushConsumesSource(elem_ty)) {
                         try self.emitForgetMovedValue(arg_reg);
                     } else if (self.callArgResultTempNeedsRelease(call.args[1], arg_reg)) try self.emitRelease(arg_reg);
                     if (exprResultNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);

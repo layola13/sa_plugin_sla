@@ -19,6 +19,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- POD enum struct vec.push reuse (2026-07-19):
+  SA-text vec.push no longer consumes shallow-copy/POD elements that include
+  pure enums, so `push(info); return (registry, info)` stays valid. Added
+  `tests/test_unit_vec_push_pod_struct_return_direct.sla` SA/SAB 1/1.
+
 - Fixed-array ptr struct field SAB lowering (2026-07-19):
   Direct SAB now stores inline fixed-array struct fields by element copy and
   treats string literals as raw data pointers when expected type is `ptr`.

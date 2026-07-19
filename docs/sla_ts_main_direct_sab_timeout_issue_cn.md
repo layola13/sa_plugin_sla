@@ -4,7 +4,7 @@
 
 ## 状态
 
-待排查。该问题来自 `/home/vscode/projects/sa_plugins/sla_ts` 当前重构分支的验证限制。
+历史记录（已关闭）：该问题来自 `/home/vscode/projects/sa_plugins/sla_ts` 当前重构分支的验证限制。
 
 ## 复现命令
 

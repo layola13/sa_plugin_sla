@@ -4,6 +4,17 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+
+- Shared FutureRuntimeCallPlan direct SAB dispatcher normalization (2026-07-19):
+  `src/sab_codegen.zig` now routes direct SAB future runtime calls through the
+  shared `FutureRuntimeCallPlan` predicates instead of switching locally on
+  `future_plan.kind` in `genFutureTaskCall()`. The SAB path still keeps direct
+  `task` lowering and release behavior, but shares the same ready/pending/
+  defer_ready/join2/select2/pair/either classification surface.
+  Serial focused verification passed `zig fmt --check src/sab_codegen.zig src/lowering_rules.zig`
+  and `zig build test -j1 -Dtest-filter='shared future runtime call classification'
+  --summary all` 2/2. No full suite or concurrent tests were run.
+
 - Shared FutureRuntimeCallPlan dispatcher normalization (2026-07-19):
   `src/codegen.zig` now routes SA-text future runtime calls through the shared
   `genFutureRuntimeCall()` helper instead of duplicating the `future_plan.kind`

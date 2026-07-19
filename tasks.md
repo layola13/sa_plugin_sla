@@ -48,6 +48,14 @@ This document tracks the tasks and implementation progress of the Sla compiler p
 	  build test -j1 -Dtest-filter='shared future runtime call classification'
 	  --summary all` 2/2. No full suite or concurrent tests were run.
 
+	- [x] Normalize shared FutureRuntimeCallPlan direct SAB dispatcher (2026-07-19).
+	  `src/sab_codegen.zig` now routes direct SAB future runtime calls through the
+	  shared `FutureRuntimeCallPlan` predicates instead of switching locally on
+	  `future_plan.kind` in `genFutureTaskCall()`. Serial focused verification
+	  passed `zig fmt --check src/sab_codegen.zig src/lowering_rules.zig` and
+	  `zig build test -j1 -Dtest-filter='shared future runtime call classification'
+	  --summary all` 2/2. No full suite or concurrent tests were run.
+
 	- [x] Strengthen shared FutureRuntimeCallPlan predicate test (2026-07-19).
 	  `FutureRuntimeCallPlan` now exposes `isReady()` / `isPending()` /
 	  `isDeferReady()` / `isJoin2()` / `isSelect2()` / `isPairAccessor()` /

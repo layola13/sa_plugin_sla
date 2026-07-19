@@ -7426,58 +7426,57 @@ pub const Codegen = struct {
         if (try self.genExecutorRuntimeCall(call)) |executor_reg| return executor_reg;
 
         if (lowering_rules.planFutureRuntimeCall(call)) |future_plan| {
-            return switch (future_plan.kind) {
-                .ready => blk: {
-                    if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
-                    const value_reg = try self.genExpr(call.args[0]);
-                    break :blk try self.genReadyFuture(value_reg);
-                },
-                .pending => blk: {
-                    if (call.args.len != 0 or call.generics.len != 1) return Error.UnsupportedSabDirectFeature;
-                    break :blk try self.genPendingFuture();
-                },
-                .defer_ready => blk: {
-                    if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                    const value_reg = try self.genExpr(call.args[0]);
-                    break :blk try self.genDeferReadyFuture(value_reg);
-                },
-                .join2 => blk: {
-                    if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                    const left_state = try self.genExpr(call.args[0]);
-                    const right_state = try self.genExpr(call.args[1]);
-                    break :blk try self.genJoin2Future(left_state, right_state);
-                },
-                .select2 => blk: {
-                    if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                    const left_state = try self.genExpr(call.args[0]);
-                    const right_state = try self.genExpr(call.args[1]);
-                    break :blk try self.genSelect2Future(left_state, right_state);
-                },
-                .pair_left, .pair_right => blk: {
-                    if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                    const pair_reg = try self.genExpr(call.args[0]);
-                    const value_reg = try self.intern(try self.newTmp());
-                    const macro_name = future_plan.pairMacroName() orelse return Error.UnsupportedSabDirectFeature;
-                    try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
-                        self.symbols.items[value_reg],
-                        self.symbols.items[pair_reg],
-                    });
-                    try self.releaseExprResultIfNeeded(call.args[0], pair_reg);
-                    break :blk value_reg;
-                },
-                .either_side, .either_left, .either_right => blk: {
-                    if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
-                    const either_reg = try self.genExpr(call.args[0]);
-                    const value_reg = try self.intern(try self.newTmp());
-                    const macro_name = future_plan.eitherValueMacroName() orelse return Error.UnsupportedSabDirectFeature;
-                    try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
-                        self.symbols.items[value_reg],
-                        self.symbols.items[either_reg],
-                    });
-                    try self.releaseExprResultIfNeeded(call.args[0], either_reg);
-                    break :blk value_reg;
-                },
-            };
+            if (future_plan.isReady()) {
+                if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+                const value_reg = try self.genExpr(call.args[0]);
+                return try self.genReadyFuture(value_reg);
+            }
+            if (future_plan.isPending()) {
+                if (call.args.len != 0 or call.generics.len != 1) return Error.UnsupportedSabDirectFeature;
+                return try self.genPendingFuture();
+            }
+            if (future_plan.isDeferReady()) {
+                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                const value_reg = try self.genExpr(call.args[0]);
+                return try self.genDeferReadyFuture(value_reg);
+            }
+            if (future_plan.isJoin2()) {
+                if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                const left_state = try self.genExpr(call.args[0]);
+                const right_state = try self.genExpr(call.args[1]);
+                return try self.genJoin2Future(left_state, right_state);
+            }
+            if (future_plan.isSelect2()) {
+                if (call.args.len != 2 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                const left_state = try self.genExpr(call.args[0]);
+                const right_state = try self.genExpr(call.args[1]);
+                return try self.genSelect2Future(left_state, right_state);
+            }
+            if (future_plan.isPairAccessor()) {
+                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                const pair_reg = try self.genExpr(call.args[0]);
+                const value_reg = try self.intern(try self.newTmp());
+                const macro_name = future_plan.pairMacroName() orelse return Error.UnsupportedSabDirectFeature;
+                try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
+                    self.symbols.items[value_reg],
+                    self.symbols.items[pair_reg],
+                });
+                try self.releaseExprResultIfNeeded(call.args[0], pair_reg);
+                return value_reg;
+            }
+            if (future_plan.isEitherAccessor()) {
+                if (call.args.len != 1 or call.generics.len != 0) return Error.UnsupportedSabDirectFeature;
+                const either_reg = try self.genExpr(call.args[0]);
+                const value_reg = try self.intern(try self.newTmp());
+                const macro_name = future_plan.eitherValueMacroName() orelse return Error.UnsupportedSabDirectFeature;
+                try self.emitStdMacroFragment("sa_std/core/future.sa", macro_name, &.{
+                    self.symbols.items[value_reg],
+                    self.symbols.items[either_reg],
+                });
+                try self.releaseExprResultIfNeeded(call.args[0], either_reg);
+                return value_reg;
+            }
+            return Error.UnsupportedSabDirectFeature;
         }
 
         const target = call.associated_target orelse return null;

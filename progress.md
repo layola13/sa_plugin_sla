@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Unit test for isStdCollectionType (2026-07-19):
+  Shared collection classifier covered by lowering_rules unit test.
+
 - Share isStdCollectionType for shallow-copy guards (2026-07-19):
   SA/SAB typeIsShallowCopyCallArgValue use one shared collection classifier.
 

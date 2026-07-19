@@ -6562,3 +6562,13 @@ test "keepsGenericUserDefinedName classifies std containers" {
     try std.testing.expect(keepsGenericUserDefinedName("__dyn_Trait"));
     try std.testing.expect(!keepsGenericUserDefinedName("MyStruct"));
 }
+
+test "isStdCollectionType classifies std collections" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var gens = [_]*ast.Type{&i32_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
+    var foo_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
+    try std.testing.expect(isStdCollectionType(&vec_ty));
+    try std.testing.expect(!isStdCollectionType(&i32_ty));
+    try std.testing.expect(!isStdCollectionType(&foo_ty));
+}

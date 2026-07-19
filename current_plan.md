@@ -19,6 +19,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Unit test for isStdCollectionType (2026-07-19):
+  Shared collection classifier covered by lowering_rules unit test.
+
 - Share isStdCollectionType for shallow-copy guards (2026-07-19):
   SA/SAB typeIsShallowCopyCallArgValue use one shared collection classifier.
 

@@ -526,3 +526,13 @@ Warm second-process `parallel_runner` build:
 Warm `parallel_runner` build load contracts: ~51-90ms after expand/macro/import
 list caches.
 
+## 2026-07-19 latest wall-clock
+
+Warm local sla-local-cli:
+
+- `sla check parallel_runner.sla`: ~0.65s
+- `sla build parallel_runner.sla`: ~1.68s
+
+Contract/macro/import-list caches cut load-contracts to ~50-90ms. Remaining build
+gap vs check is primarily registry-driven materialize body walks (~1.0s).
+

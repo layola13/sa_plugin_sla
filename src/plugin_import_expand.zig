@@ -348,14 +348,12 @@ pub fn appendModuleDeclsSelective(
             switch (decl.*) {
                 .func_decl => |fd| {
                     if (options.include_all_imported_decls) {
+                        // Keep raw decls (needed for bare exported names/templates).
+                        // Namespaced aliases are registered later via
+                        // registerImportedFunctionAliasesFromResolvedImports for check.
                         const func_node = try maybeDeclOnlyFuncNode(allocator, decl, options.imported_bodies_decl_only);
                         try out_decls.append(func_node);
                         try primary_decls.put(func_node, {});
-                        const alias = try std.fmt.allocPrint(allocator, "{s}__{s}", .{ module_namespace, fd.name });
-                        defer allocator.free(alias);
-                        const alias_node = try makeAliasedFuncNode(allocator, &decl.func_decl, alias, options);
-                        try out_decls.append(alias_node);
-                        try primary_decls.put(alias_node, {});
                     } else {
                         if (try importedFuncNodeForReachability(allocator, decl, fd.name, module_namespace, reachable, options)) |func_node| {
                             try out_decls.append(func_node);

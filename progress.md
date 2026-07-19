@@ -5,6 +5,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Check-path include_all keeps raw decls only (2026-07-19):
+  Skip duplicate namespaced alias function nodes during include_all append;
+  aliases still come from registerImportedFunctionAliases. Decls 2345→1339 on
+  parallel_runner check; system_param/task_pool/world checks still green.
+
 - Expand keepsGenericUserDefinedName std surface (2026-07-19):
   Shared monomorphizer keep-generic policy covers maps/sets/sync/async/channel
   containers plus __dyn_*. Unit test added; box/vec/async/check green.

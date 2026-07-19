@@ -442,3 +442,11 @@ Warm `sla check` with current optimizations:
 Import expand materialize is ~0ms on check via include_all. Residual is first
 parse of large expanded sources (world_table_erased expanded ~678KB / 571 fns).
 
+## 2026-07-19 check include_all raw-only decls
+
+Under `include_all_imported_decls`, selective append no longer emits both raw
+and namespaced alias function nodes. Raw decl-only imports are kept; namespaced
+aliases continue to be registered via `registerImportedFunctionAliases*`.
+
+`parallel_runner` check selective append decls: 2345 → 1339.
+

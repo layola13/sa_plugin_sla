@@ -1,5 +1,7 @@
 # SAB AnyOf9 table-erased world query cleanup MemoryLeak issue
 
+状态：fixed/verified（2026-07-19）。compiler-owned first_type_id MemoryLeak 已修复；剩余 world focused panic 15305 为下游语义断言。
+
 ## 状态
 - 发现日期: 2026-07-06
 - 发现仓库: `/home/vscode/projects/sla_ecs`

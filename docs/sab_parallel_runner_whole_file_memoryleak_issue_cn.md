@@ -1,6 +1,6 @@
 # SAB parallel_runner whole-file MemoryLeak issue
 
-状态：部分修复，仍开放。最小危险 repro 中的 loop 内动态索引 `Vec<fn>` 并转存到另一个 holder 已修复为 10s 内稳定通过，SAB build 从约 9.6s 降到约 2.9s；但下游整文件 `lib/parallel_runner.sla` / `task_pool_builder.sla` 仍归类为危险测试，尚未证明整文件聚合 `MemoryLeak` 全面消失。下游 `sla_ecs` 已用 generated-SA 后端验证新增 `TaskPoolBuilder` / global task-pool facade 通过；默认/SAB 后端的单个 focused tests 也通过。但当测试文件导入 `lib/parallel_runner.sla` 并执行整文件聚合测试时，历史上 SAB verifier 在 `.sab` 文件尾部报告无源码定位的 `MemoryLeak`。当前全量 `lib/parallel_runner.sla` 在本地 direct-SAB 路径 10 秒内无输出且不写出 `.sab` 产物，后续不得用长超时反复探测，应先用编译器仓库内的细化模拟 fixture 定位。
+状态：部分修复/大幅收敛（2026-07-19）。`task_pool_builder.sla` whole-file default/SAB 已 6/6；local 维度 fixture 与 branch-param merge 修复已入库；`parallel_runner.sla` 仍按 10-15s 危险 smoke 处理。最小危险 repro 中的 loop 内动态索引 `Vec<fn>` 并转存到另一个 holder 已修复为 10s 内稳定通过，SAB build 从约 9.6s 降到约 2.9s；但下游整文件 `lib/parallel_runner.sla` / `task_pool_builder.sla` 仍归类为危险测试，尚未证明整文件聚合 `MemoryLeak` 全面消失。下游 `sla_ecs` 已用 generated-SA 后端验证新增 `TaskPoolBuilder` / global task-pool facade 通过；默认/SAB 后端的单个 focused tests 也通过。但当测试文件导入 `lib/parallel_runner.sla` 并执行整文件聚合测试时，历史上 SAB verifier 在 `.sab` 文件尾部报告无源码定位的 `MemoryLeak`。当前全量 `lib/parallel_runner.sla` 在本地 direct-SAB 路径 10 秒内无输出且不写出 `.sab` 产物，后续不得用长超时反复探测，应先用编译器仓库内的细化模拟 fixture 定位。
 
 ## 触发背景
 
@@ -310,3 +310,44 @@ Results: SA 6/6, strict SAB 6/6. Prior multi-lane / Arc-world / loop-fnptr /
 Whole-file `parallel_runner.sla` / `task_pool_builder.sla` remain open dangerous
 smoke; next remaining dimensions are thread-spawn over Arc lanes under the 10s
 rule.
+
+## 2026-07-19 Branch-param consume merge + thread Arc lane
+
+### Compiler fix: branch by-value param merge (task_pool_builder PhiStateConflict)
+
+Minimal fixture:
+
+- `tests/test_unit_branch_param_consume_merge_direct.sla`
+
+Root cause:
+
+1. `let _ = bag` on the else path did not consume by-value non-Copy params in direct SAB.
+2. Branch-exit balancing skipped params whose ABI storage was a pointer word, so Active vs Consumed disagreed at merge for shapes like `get_or_init(pools, pool)`.
+
+Fix in `src/sab_codegen.zig`:
+
+- `consumeDiscardedLocalBinding` for `let _ = <local/param>`
+- `emitBalanceReleaseLocal` balances params even when ABI is ptr
+
+Verification:
+
+```bash
+timeout 40s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_branch_param_consume_merge_direct.sla --test-backend sab --jobs 1 --trace-panic
+timeout 40s env SA_PLUGIN_DEV=1 ./zig-out/bin/sla-local-cli \
+  sla test /home/vscode/projects/sla_ecs/lib/task_pool_builder.sla --jobs 1 --trace-panic
+```
+
+Results: branch fixture SA/SAB 2/2; whole-file `task_pool_builder.sla` default/SAB **6/6 passed**.
+
+### Thread Arc multi-lane fixture
+
+- `tests/test_unit_parallel_runner_thread_arc_lane_direct.sla`
+- multi-lane extend + `thread::spawn` over `fn(Arc<*World>)` lanes
+- SA 1/1 and strict SAB 1/1
+
+### Status update
+
+- `task_pool_builder.sla` whole-file SAB aggregation is fixed/verified for the current source.
+- Local parallel_runner dimensions (multi-lane, Arc world, child-scope return, thread Arc) all have unit fixtures under the smoke budget.
+- Full `lib/parallel_runner.sla` may still be a long/dangerous smoke depending on suite size; keep 10-15s smoke only and treat remaining timeouts as residual cost, not the previous MemoryLeak/PhiStateConflict blockers.

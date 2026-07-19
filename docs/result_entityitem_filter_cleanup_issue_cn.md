@@ -54,6 +54,8 @@ SAB Error: failed to encode SAB for .../.sla-cache/sab/test_ecs_result_facades-6
 
 ## 当前状态
 
+状态：fixed/verified（2026-07-19）。
+
 已验证修复当前可复现的 host surface。历史 focused filter：
 
 ```sh

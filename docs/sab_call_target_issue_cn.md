@@ -2,7 +2,7 @@
 
 ## 状态
 
-- 状态：已验证修复 / 保留为回归守卫工单
+- 状态：fixed/verified（2026-07-19）。历史非法 call-target 形态已修复；保留为回归守卫工单。
 - 影响方：`sa_plugin_sla` SAB backend，尤其是 thread closure / escaped closure 中的普通函数调用
 - 发现来源：`/home/vscode/projects/sla_ecs/lib/parallel.sla`
 - 当前建议：`parallel.sla` 已重新纳入 host direct-SAB guard；后续若改动 call lowering / thread closure / SAB call serialization，必须继续跑 strict SAB 和 disasm guard。

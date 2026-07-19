@@ -2913,10 +2913,10 @@ pub const Codegen = struct {
 
     fn emitBalanceReleaseLocal(self: *Codegen, local: Local) !void {
         if (self.released_regs.contains(local.reg)) return;
-        if (local.ty) |ty| {
-            const abi_ty = primType(ty) catch return;
-            if (abi_ty == .ptr) return;
-        }
+        // Params must still be balanced even when their ABI storage is a pointer
+        // word (by-value aggregate owners like `pool: EcsParallelTaskPool`).
+        // Skipping them leaves Active vs Consumed PhiStateConflict on branch
+        // merges such as get_or_init then/else ownership.
         if (local.is_param) {
             const action = try self.paramCleanupAction(local);
             if (action.skips()) return;
@@ -2928,6 +2928,11 @@ pub const Codegen = struct {
                 try self.emitMove(local.reg);
                 return;
             }
+            return;
+        }
+        if (local.ty) |ty| {
+            const abi_ty = primType(ty) catch return;
+            if (abi_ty == .ptr) return;
         }
         if (local.stack_ty != null) return try self.releaseStackLocalValue(local);
         if (local.is_stack_alloc) {
@@ -6591,10 +6596,47 @@ pub const Codegen = struct {
         const src = try self.genExpr(let.value);
         if (self.lastIsTerminator()) return;
         if (std.mem.eql(u8, let.name, "_")) {
+            // `let _ = owner` must consume by-value non-Copy locals/params so
+            // branch merges and function-exit cleanup agree with SA-text.
+            if (let.value.* == .identifier) {
+                if (try self.consumeDiscardedLocalBinding(let.value.identifier)) return;
+            }
             if (!self.isLocalReg(src)) try self.emitRelease(src);
             return;
         }
         try self.genLetFromValue(let.name, let.ty, let.value, src);
+    }
+
+    fn consumeDiscardedLocalBinding(self: *Codegen, name: []const u8) !bool {
+        var i = self.locals.items.len;
+        while (i > 0) {
+            i -= 1;
+            const local = self.locals.items[i];
+            if (!std.mem.eql(u8, local.name, name)) continue;
+            if (self.released_regs.contains(local.reg)) return true;
+            if (local.is_param) {
+                const action = try self.paramCleanupAction(local);
+                if (action.skips()) return true;
+                if (action.marksConsumed()) {
+                    try self.markConsumed(local.reg);
+                    return true;
+                }
+                if (action.consumes()) {
+                    try self.emitMove(local.reg);
+                    return true;
+                }
+                return true;
+            }
+            if (local.ty) |ty| {
+                if (self.typeIsCopyValue(ty) or lowering_rules.isBorrowLikeType(ty)) {
+                    try self.markConsumed(local.reg);
+                    return true;
+                }
+            }
+            try self.emitRelease(local.reg);
+            return true;
+        }
+        return false;
     }
 
     fn genReadyFuture(self: *Codegen, value: u32) !u32 {

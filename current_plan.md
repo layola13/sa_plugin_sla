@@ -19,6 +19,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Branch-param consume merge + task_pool_builder whole-file SAB (2026-07-19):
+  Fixed direct SAB discard/branch balancing for by-value non-Copy params so
+  then/else ownership of `get_or_init(pools, pool)` merges cleanly. Added
+  `tests/test_unit_branch_param_consume_merge_direct.sla` (SA/SAB 2/2) and
+  `tests/test_unit_parallel_runner_thread_arc_lane_direct.sla` (SA/SAB 1/1).
+  Downstream whole-file `sla_ecs/lib/task_pool_builder.sla` default/SAB now
+  passes 6/6. Child-scope/multi-lane/Arc fixtures remain green.
+
 - Parallel-runner child-scope return + by-value fnptr bits (2026-07-19):
   Added `tests/test_unit_parallel_runner_child_scope_return_direct.sla` and fixed
   direct SAB by-value `fn` call args to pass function-object pointer bits instead

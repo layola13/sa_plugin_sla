@@ -1638,6 +1638,17 @@ pub const Codegen = struct {
 
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
         if (depth > 8) return false;
+        // Nested std collections are only shallow-copy when not the top-level
+        // call-arg owner (depth > 0), matching SA-text.
+        if (lowering_rules.vecElementType(ty) != null or
+            lowering_rules.hashMapTypes(ty) != null or
+            lowering_rules.btreeMapTypes(ty) != null or
+            lowering_rules.hashSetElementType(ty) != null or
+            lowering_rules.btreeSetElementType(ty) != null or
+            lowering_rules.vecDequeElementType(ty) != null)
+        {
+            return depth > 0;
+        }
         return switch (ty.*) {
             .primitive => true,
             .pointer, .borrow, .fn_ptr => true,
@@ -1649,7 +1660,7 @@ pub const Codegen = struct {
             },
             .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
             .user_defined => |ud| blk: {
-                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk depth > 0;
+                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty) or lowering_rules.smartPointerType(ty) != null) break :blk depth > 0;
                 // Pure enums are POD-like; keep push/call-arg shallow-copy in sync with SA.
                 if (self.tc.enums.contains(ud.name)) break :blk true;
                 const decl = self.structDeclForType(ty) orelse break :blk false;

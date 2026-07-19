@@ -881,8 +881,31 @@ fn tryLoadReachablePlan(
 ) !bool {
     const bytes = std.fs.cwd().readFileAlloc(allocator, cache_path, 8 * 1024 * 1024) catch return false;
     defer allocator.free(bytes);
+    var reachable_count: usize = 0;
+    var type_count: usize = 0;
     var section: enum { reachable, types } = .reachable;
-    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    var count_lines = std.mem.splitScalar(u8, bytes, '
+');
+    while (count_lines.next()) |line| {
+        if (line.len == 0) continue;
+        if (std.mem.eql(u8, line, "[reachable]")) {
+            section = .reachable;
+            continue;
+        }
+        if (std.mem.eql(u8, line, "[types]")) {
+            section = .types;
+            continue;
+        }
+        switch (section) {
+            .reachable => reachable_count += 1,
+            .types => type_count += 1,
+        }
+    }
+    try reachable.ensureTotalCapacity(@intCast(reachable_count));
+    try referenced_types.ensureTotalCapacity(@intCast(type_count));
+    section = .reachable;
+    var lines = std.mem.splitScalar(u8, bytes, '
+');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
         if (std.mem.eql(u8, line, "[reachable]")) {
@@ -895,8 +918,8 @@ fn tryLoadReachablePlan(
         }
         const owned = try allocator.dupe(u8, line);
         switch (section) {
-            .reachable => try reachable.put(owned, {}),
-            .types => try referenced_types.put(owned, {}),
+            .reachable => reachable.putAssumeCapacity(owned, {}),
+            .types => referenced_types.putAssumeCapacity(owned, {}),
         }
     }
     return reachable.count() != 0;

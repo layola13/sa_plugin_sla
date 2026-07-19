@@ -5,6 +5,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Skip root test bodies on check/compile parse (2026-07-19):
+  Root Parser uses parse_test_bodies=false for sla check and compile frontends.
+  Also reserve capacity when loading reachable plan caches.
+
 - SAB aggregate bool storage uses u8 (2026-07-19):
   storagePrimType maps boolean to u8 for struct field load/store parity with SA.
   shallow_copy_call_arg_direct still fails under strict SAB (investigation open).

@@ -89,7 +89,9 @@ pub fn testFilterSelectsNoTests(
     };
 
     const sla_base_dir = std.fs.path.dirname(file) orelse ".";
-    var p = parser_mod.Parser.initWithDir(allocator, expanded_content, sla_base_dir);
+    var p = parser_mod.Parser.initWithDirAndOptions(allocator, expanded_content, sla_base_dir, .{
+        .parse_test_bodies = false,
+    });
     const prog = p.parseProgram() catch |err| {
         try p.printDiagnostic(stderr, file, err);
         return null;
@@ -604,7 +606,9 @@ fn runSlaFrontend(
 
     stage_start = std.time.nanoTimestamp();
     const sla_base_dir = std.fs.path.dirname(file) orelse ".";
-    var p = parser_mod.Parser.initWithDir(allocator, expanded_content, sla_base_dir);
+    var p = parser_mod.Parser.initWithDirAndOptions(allocator, expanded_content, sla_base_dir, .{
+        .parse_test_bodies = false,
+    });
     const prog = p.parseProgram() catch |err| {
         try p.printDiagnostic(stderr, file, err);
         return null;

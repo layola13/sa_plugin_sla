@@ -1673,29 +1673,11 @@ pub const Codegen = struct {
     }
 
     fn typeBaseName(ty: *const ast.Type) ?[]const u8 {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                else => break,
-            }
-        }
-        if (curr.* != .user_defined) return null;
-        return curr.user_defined.name;
+        return lowering_rules.typeBaseName(ty);
     }
 
     fn firstGenericArg(ty: *const ast.Type) ?*ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                else => break,
-            }
-        }
-        if (curr.* != .user_defined or curr.user_defined.generics.len == 0) return null;
-        return curr.user_defined.generics[0];
+        return lowering_rules.firstGenericArg(ty);
     }
 
     fn elementSlotSize(self: *Codegen, ty: *const ast.Type) usize {

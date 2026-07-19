@@ -19,6 +19,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Share typeBaseName/firstGenericArg on Y (2026-07-19):
+  SAB wrappers delegate to lowering_rules; concreteTypeName reused for base name.
+
 - Known residual: SAB shallow_copy aggregate call-arg (2026-07-19):
   tests/test_unit_shallow_copy_call_arg_direct.sla still fails under strict SAB
   (panic 51600/51602/51604) while SA passes; not introduced by fixed-array copy fix.

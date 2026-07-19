@@ -3980,6 +3980,23 @@ pub fn concreteTypeName(ty: *const ast.Type) ?[]const u8 {
     }
 }
 
+pub fn typeBaseName(ty: *const ast.Type) ?[]const u8 {
+    return concreteTypeName(ty);
+}
+
+pub fn firstGenericArg(ty: *const ast.Type) ?*ast.Type {
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            else => break,
+        }
+    }
+    if (curr.* != .user_defined or curr.user_defined.generics.len == 0) return null;
+    return curr.user_defined.generics[0];
+}
+
 pub fn dynTraitName(ty: *const ast.Type) ?[]const u8 {
     var curr = ty;
     while (true) {
@@ -6626,4 +6643,13 @@ test "isSmartPointerTypeName classifies box/rc/arc" {
     try std.testing.expect(isSmartPointerTypeName("Box"));
     try std.testing.expect(!isSmartPointerTypeName("Vec"));
     try std.testing.expectEqualStrings("sa_std/box.sa", smartPointerStdImportPath("Box").?);
+}
+
+test "typeBaseName and firstGenericArg peels" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var gens = [_]*ast.Type{&i32_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
+    var borrow = ast.Type{ .borrow = &vec_ty };
+    try std.testing.expectEqualStrings("Vec", typeBaseName(&borrow).?);
+    try std.testing.expect(firstGenericArg(&borrow) == &i32_ty);
 }

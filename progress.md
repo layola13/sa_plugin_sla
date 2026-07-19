@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Share enumNameMatchesDecl on Y (2026-07-19):
+  SA and SAB enum pattern name matching now uses lowering_rules.enumNameMatchesDecl.
+
 - Share asyncContinuationConditionOpName on Y (2026-07-19):
   Comparison op names for async continuations moved into lowering_rules; SA
   delegates. Async defer-ready scalar fixture green.

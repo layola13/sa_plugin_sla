@@ -4610,10 +4610,7 @@ pub const Codegen = struct {
     }
 
     fn enumNameMatchesDecl(pattern_name: []const u8, decl_name: []const u8) bool {
-        if (std.mem.eql(u8, pattern_name, decl_name)) return true;
-        if (decl_name.len <= pattern_name.len) return false;
-        if (!std.mem.startsWith(u8, decl_name, pattern_name)) return false;
-        return decl_name[pattern_name.len] == '_';
+        return lowering_rules.enumNameMatchesDecl(pattern_name, decl_name);
     }
 
     fn enumDeclForValueType(self: *Codegen, value_ty: *const ast.Type) ?*ast.EnumDecl {

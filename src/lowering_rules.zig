@@ -2918,6 +2918,13 @@ pub fn asyncContinuationConditionOpName(op: ast.BinaryOp) ?[]const u8 {
     };
 }
 
+pub fn enumNameMatchesDecl(pattern_name: []const u8, decl_name: []const u8) bool {
+    if (std.mem.eql(u8, pattern_name, decl_name)) return true;
+    if (decl_name.len <= pattern_name.len) return false;
+    if (!std.mem.startsWith(u8, decl_name, pattern_name)) return false;
+    return decl_name[pattern_name.len] == '_';
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     var curr = ty;
     while (true) {

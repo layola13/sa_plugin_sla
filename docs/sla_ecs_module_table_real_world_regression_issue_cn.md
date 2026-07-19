@@ -331,3 +331,15 @@ parallel_table_erased.sla: parse 246ms, import expand 1156ms, load contracts 0ms
 ```
 
 Profile detail shows the remaining tail in import root resolution and repeated reachability/materialization extension, including several passes over the large `world_table_erased.sla` module. Therefore the real latency target remains open. This checkpoint also does not claim full namespace isolation for imported const initializers, SLA macro bodies, types, or every raw AST binding; those belong in the Typed HIR/module symbol identity work.
+
+
+## 2026-07-19 复核
+
+编译器侧新增两处与真实 ECS 路径相关的修复（本插件）：
+
+1. SA `vec.push` 对含纯 enum 的 POD 结构体不再错误 `^` 消费；`component_register_table` 的 `push(info); return (registry, info)` 在 SA 后端恢复通过。回归：`tests/test_unit_vec_push_pod_struct_return_direct.sla`。
+2. 循环内对仍需存活的 by-value `Vec` 参数在 SA/SAB 调用点克隆，避免 `find_archetype` 类 `PhiStateConflict`。回归：`tests/test_unit_param_vec_loop_equals_direct.sla`。strict SAB `lib/parallel_table_erased.sla` focused 通过。
+
+SA 全路径 `parallel_table_erased` focused 仍暴露另一类 `CapabilityMismatch`（`ecs_box_drop` 前缀），与上述 UAM/Phi 不同，记为剩余 SA-backend 问题。
+
+性能目标仍 open：真实 focused generated-SA 前端仍约 1–2s 量级（import expand 主导），未压到几百毫秒。

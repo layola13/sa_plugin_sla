@@ -5,6 +5,15 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Loop-live by-value Vec call-arg clone (2026-07-19):
+  SA-text and direct SAB clone by-value `Vec` identifiers when they must stay
+  live across a loop back-edge or later statement, so ABI `^` transfer does not
+  invent `PhiStateConflict`. Fixture
+  `tests/test_unit_param_vec_loop_equals_direct.sla` SA/SAB 1/1. Issue-doc
+  rechecks: issue028 filtered non-repro, compile-emit trap still closed,
+  checker-pool still open/perf, module-table correctness closed/perf open,
+  HTTP loopback still partial (StackEscape + llvmc return ABI).
+
 - Issue-doc status sweep (2026-07-19):
   Closed/reaffirmed fixed docs (module specifier, sla_ts main SAB, parallel
   MemoryLeak/Phi, scalar/anyof/call-target/result-entity). HTTP loopback remains

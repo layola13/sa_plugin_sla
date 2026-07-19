@@ -4,6 +4,7 @@
 
 - 日期：2026-07-07
 - 修复：2026-07-11，编译器侧 direct-SAB register trap 已关闭
+- 复核：2026-07-19，`tests/test_unit_sibling_scope_plain_let_direct.sla` strict SAB 2/2；原 UseAfterMove/UnknownRegister trap 不再复现。完整 Program emit 合同在 60s 内主要耗在 import expand/typecheck/SAB codegen（前端性能另见 checker-pool 工单），不属于本寄存器 trap。
 - 触发仓库：`/home/vscode/projects/mnt/sla_tsgo`
 - 测试文件：
   - `tests/test_compile_ts_to_js_text_contract.sla`

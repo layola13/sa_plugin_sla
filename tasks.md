@@ -40,6 +40,12 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Loop-live by-value Vec call-arg clone (2026-07-19).
+	  Clone by-value Vec at call when still needed after loop/later use; fixture
+	  `tests/test_unit_param_vec_loop_equals_direct.sla` SA/SAB 1/1. Residual:
+	  checker-pool 10s perf, HTTP loopback StackEscape/llvmc ABI, module-table
+	  import-expand latency, parallel_runner.sla residual cost (no @test).
+
 	- [x] POD enum struct vec.push reuse (2026-07-19).
 	  Keep pure-enum POD structs usable after vec.push; unit fixture SA/SAB 1/1.
 

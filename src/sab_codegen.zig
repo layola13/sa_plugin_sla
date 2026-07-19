@@ -6359,7 +6359,38 @@ pub const Codegen = struct {
     }
 
     fn identifierMustStayLiveForLaterUse(self: *Codegen, name: []const u8) bool {
-        return self.identifierUsedLaterInCurrentBlock(name) or self.identifierUsedLaterInCurrentExpr(name);
+        if (self.identifierUsedLaterInCurrentBlock(name) or self.identifierUsedLaterInCurrentExpr(name)) return true;
+        if (self.loop_continue_labels.items.len == 0) return false;
+        // Outer/param bindings used by the loop body stay live across back-edges.
+        if (self.identifierDefinedInCurrentBlock(name)) return false;
+        const block = self.current_block orelse return false;
+        for (block) |stmt| {
+            if (nodeUsesIdentifier(stmt, name)) return true;
+        }
+        return false;
+    }
+
+    fn identifierDefinedInCurrentBlock(self: *Codegen, name: []const u8) bool {
+        const block = self.current_block orelse return false;
+        var idx: usize = 0;
+        while (idx <= self.current_stmt_index and idx < block.len) : (idx += 1) {
+            if (nodeBindsIdentifier(block[idx], name)) return true;
+        }
+        return false;
+    }
+
+    fn genVecCloneValue(self: *Codegen, source_reg: u32, elem_ty: *const ast.Type) anyerror!u32 {
+        try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_new", "sa_vec_push", "sa_mem_copy", "sa_vec_with_capacity", "sa_vec_extend_from_slice" });
+        const out = try self.intern(try self.newTmp());
+        try self.recordReg(out);
+        const elem_size_text = try std.fmt.allocPrint(self.allocator, "{}", .{lowering_rules.vecElementSlotSize(elem_ty)});
+        defer self.allocator.free(elem_size_text);
+        try self.emitStdMacroFragmentWithLiteralArgs("sa_std/vec.sa", "VEC_CLONE", &.{
+            self.symbols.items[out],
+            self.symbols.items[source_reg],
+            elem_size_text,
+        }, &.{ false, false, true });
+        return out;
     }
 
     fn structLiteralFieldPlans(
@@ -12734,6 +12765,19 @@ pub const Codegen = struct {
                             .forget_reg = copied,
                         };
                     }
+                    if (prefix == '^' and arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
+                        if (arg_ty) |ty| {
+                            if (lowering_rules.vecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
+                                const operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[cloned]});
+                                break :blk .{
+                                    .operand = operand,
+                                    .release_reg = null,
+                                    .forget_reg = cloned,
+                                };
+                            }
+                        }
+                    }
                     const release_reg: ?u32 = if (materialization.release_after_call) arg_reg else null;
                     const operand = try std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefix, self.symbols.items[arg_reg] });
                     break :blk .{
@@ -12755,6 +12799,18 @@ pub const Codegen = struct {
                 }
                 const arg_reg = try self.genExpr(@constCast(arg));
                 if (materialization.transfers_ownership) {
+                    if (arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
+                        if (arg_ty) |ty| {
+                            if (lowering_rules.vecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
+                                break :blk .{
+                                    .operand = self.symbols.items[cloned],
+                                    .release_reg = null,
+                                    .forget_reg = cloned,
+                                };
+                            }
+                        }
+                    }
                     break :blk .{
                         .operand = self.symbols.items[arg_reg],
                         .release_reg = null,

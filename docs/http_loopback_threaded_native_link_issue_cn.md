@@ -81,3 +81,8 @@ Results:
 - test / build-obj: llvmc `Function return type does not match operand type of return inst! ret { i32, i32 } zeroinitializer` vs `i32`
 
 This residual is a native-backend ABI/return-shape issue (SCI `llvmc`), not the original SLA plugin SAB MemoryLeak path. Keep open until native return lowering is fixed or adapter return shapes are rewritten.
+
+
+## 2026-07-19 复核
+
+仍 open。`http_loopback_sse_adapter.sla`：check 通过；strict SAB test 仍 `StackEscape`（tmp 寄存器）。threaded native link 工单仍依赖 thread worker 结构体返回/slot capture 修复；exec-safe 单线程 workaround 仍是下游规避路径。

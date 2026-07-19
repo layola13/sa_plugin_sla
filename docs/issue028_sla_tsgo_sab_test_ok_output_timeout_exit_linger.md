@@ -96,3 +96,10 @@ timeout 90s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 \
 The original outer path also printed the 2/2 pass summary and exited with
 status `0` in about 17.5s. The profile showed direct SAB codegen finishing in
 about 6.4s. No full suite was run.
+
+
+## 2026-07-19 recheck
+
+Filtered managed SAB (`test_real_ts_project_reference_flow-96dd54743c5a82de.sab`, ~5.2 MiB) direct child runner still exits 0 in ~1.7s with 2/2 pass. Source filter strip passthrough remains in place.
+
+Unfiltered whole-module SAB (~10 MiB from `sla sab build` without test prune) still produces no stdout within 90s in `sa test` child — that is a large-module runner cost, not the original ok-then-linger after printed summary. Original issue (pass summary printed then timeout exit) remains non-repro on the filtered path.

@@ -151,6 +151,8 @@ pub const Codegen = struct {
     loop_body_local_scopes: std.ArrayList(std.ArrayList([]const u8)),
     loop_body_block_depths: std.ArrayList(usize),
     current_expr_later_nodes: std.ArrayList(*const ast.Node),
+    current_block: ?[]const *ast.Node = null,
+    current_stmt_index: usize = 0,
     current_async: bool,
     current_async_return_ty: ?*const ast.Type,
     async_pending_return_emitted: bool,
@@ -8090,6 +8092,14 @@ pub const Codegen = struct {
         self.enterBlockForLoopLocalTracking();
         defer self.leaveBlockForLoopLocalTracking();
 
+        const prev_block = self.current_block;
+        const prev_stmt_index = self.current_stmt_index;
+        self.current_block = block;
+        defer {
+            self.current_block = prev_block;
+            self.current_stmt_index = prev_stmt_index;
+        }
+
         var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
         defer {
             var i = scoped_aliases.items.len;
@@ -8100,7 +8110,8 @@ pub const Codegen = struct {
             scoped_aliases.deinit();
         }
 
-        for (block) |stmt| {
+        for (block, 0..) |stmt, stmt_index| {
+            self.current_stmt_index = stmt_index;
             if (stmt.* == .let_stmt and !isDiscardName(stmt.let_stmt.name)) {
                 const source_name = stmt.let_stmt.name;
                 const resolved_name = self.resolveBindingName(source_name);
@@ -9236,6 +9247,21 @@ pub const Codegen = struct {
         return false;
     }
 
+    fn nodeBindsIdentifier(node: *const ast.Node, name: []const u8) bool {
+        return switch (node.*) {
+            .let_stmt => |let| std.mem.eql(u8, let.name, name),
+            .const_stmt => |constant| std.mem.eql(u8, constant.name, name),
+            .var_stmt => |variable| std.mem.eql(u8, variable.name, name),
+            .let_destructure_stmt => |let| blk: {
+                for (let.names) |binding| {
+                    if (std.mem.eql(u8, binding, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
     fn nodeUsesIdentifier(node: *const ast.Node, name: []const u8) bool {
         return switch (node.*) {
             .identifier => |ident| std.mem.eql(u8, ident, name),
@@ -9292,8 +9318,38 @@ pub const Codegen = struct {
                         if (nodeUsesIdentifier(item.value, name)) break :blk true;
                     }
                 }
+                for (ife.then_block) |stmt| {
+                    if (nodeUsesIdentifier(stmt, name)) break :blk true;
+                }
+                if (ife.else_block) |else_block| {
+                    for (else_block) |stmt| {
+                        if (nodeUsesIdentifier(stmt, name)) break :blk true;
+                    }
+                }
                 break :blk false;
             },
+            .while_stmt => |w| blk: {
+                if (nodeUsesIdentifier(w.cond, name)) break :blk true;
+                for (w.body) |stmt| {
+                    if (nodeUsesIdentifier(stmt, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .for_stmt => |f| blk: {
+                if (nodeUsesIdentifier(f.start, name)) break :blk true;
+                if (f.end) |end_expr| {
+                    if (nodeUsesIdentifier(end_expr, name)) break :blk true;
+                }
+                if (std.mem.eql(u8, f.var_name, name)) break :blk false;
+                for (f.body) |stmt| {
+                    if (nodeUsesIdentifier(stmt, name)) break :blk true;
+                }
+                break :blk false;
+            },
+            .expr_stmt => |e| nodeUsesIdentifier(e, name),
+            .return_stmt => |r| if (r.value) |v| nodeUsesIdentifier(v, name) else false,
+            .let_stmt => |let| nodeUsesIdentifier(let.value, name),
+            .assign_stmt => |a| nodeUsesIdentifier(a.target, name) or nodeUsesIdentifier(a.value, name),
             .switch_expr => |switch_expr| nodeUsesIdentifier(switch_expr.val, name),
             .match_expr => |match_expr| nodeUsesIdentifier(match_expr.val, name),
             else => false,
@@ -9305,6 +9361,47 @@ pub const Codegen = struct {
             if (nodeUsesIdentifier(node, name)) return true;
         }
         return false;
+    }
+
+    fn identifierUsedLaterInCurrentBlock(self: *Codegen, name: []const u8) bool {
+        const block = self.current_block orelse return false;
+        var idx = self.current_stmt_index + 1;
+        while (idx < block.len) : (idx += 1) {
+            const stmt = block[idx];
+            if (nodeUsesIdentifier(stmt, name)) return true;
+            if (nodeBindsIdentifier(stmt, name)) return false;
+        }
+        return false;
+    }
+
+    fn identifierDefinedInCurrentBlock(self: *Codegen, name: []const u8) bool {
+        const block = self.current_block orelse return false;
+        var idx: usize = 0;
+        while (idx <= self.current_stmt_index and idx < block.len) : (idx += 1) {
+            if (nodeBindsIdentifier(block[idx], name)) return true;
+        }
+        return false;
+    }
+
+    fn identifierMustStayLiveForLaterUse(self: *Codegen, name: []const u8) bool {
+        if (self.identifierUsedLaterInCurrentExpr(name) or self.identifierUsedLaterInCurrentBlock(name)) return true;
+        // Loop back-edge: outer/param bindings that the body reads must remain
+        // Active across iterations even when the current statement is the only
+        // textual use in this pass through the body.
+        if (self.loop_continue_labels.items.len == 0) return false;
+        // Loop-local bindings are owned by this iteration and may be consumed.
+        if (self.identifierDefinedInCurrentBlock(name)) return false;
+        // Outer/param bindings remain live across the while/for back-edge.
+        return true;
+    }
+
+    fn genVecCloneValue(self: *Codegen, source_reg: []const u8, elem_ty: *const ast.Type) CodegenError![]const u8 {
+        const out = try self.newTmp();
+        self.out.writer().print(
+            "    EXPAND VEC_CLONE {s}, {s}, {}\n",
+            .{ out, source_reg, self.vecElementSlotSize(elem_ty) },
+        ) catch return CodegenError.CodegenError;
+        return out;
     }
 
     fn pushCallSiblingArgExprs(self: *Codegen, args: []const *ast.Node, arg_index: usize) CodegenError!usize {
@@ -9526,6 +9623,23 @@ pub const Codegen = struct {
                 else
                     false;
                 if (materialization.transfers_ownership or abi_moves_arg) {
+                    // Language semantics allow reusing a by-value Vec after a plain
+                    // call (typechecker does not consume it). The SA ABI still uses
+                    // ^ and the callee frees, so keep the source live by cloning
+                    // when the binding is still needed after this call.
+                    if (arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier)) {
+                        if (self.resolvedTypeForExpr(arg) orelse self.tc.expr_types.get(arg)) |ty| {
+                            if (vecElementType(ty)) |elem_ty| {
+                                const cloned = try self.genVecCloneValue(arg_reg, elem_ty);
+                                const move_arg = std.fmt.allocPrint(self.allocator, "^{s}", .{cloned}) catch return CodegenError.OutOfMemory;
+                                break :blk .{
+                                    .reg = move_arg,
+                                    .release_after_call = false,
+                                    .consume_reg = move_arg,
+                                };
+                            }
+                        }
+                    }
                     const move_arg = if (std.mem.startsWith(u8, arg_reg, "^"))
                         arg_reg
                     else

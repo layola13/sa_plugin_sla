@@ -277,3 +277,16 @@ cd /home/vscode/projects/mnt/sla_tsgo
 - `reachable decl filter`: 5ms
 
 判断不变：这是 callable/exported-symbol index 的基础优化，减少方法调用可达性分析的全符号扫描，但仍未关闭本工单。下一步仍应集中在真实 exported-signature index、lazy imported-body typecheck，以及 reachable filter 之后 direct-SAB codegen/依赖加载的按需化。
+
+
+## 2026-07-19 复核
+
+仍 open：`timeout 10s` strict SAB `tests/test_compiler_checker_pool_api_contract.sla` 退出 124。
+
+代表性 profile（已能进入 sab direct codegen）：
+
+- import expand: ~1.6s（含 multi-pass materialize）
+- type check: ~1.0s
+- sab direct codegen: ~5.2s 后仍被 10s 硬超时切断
+
+前端已从历史 typecheck 主导变为 “import materialize + typecheck + sab codegen” 合计超 10s。剩余硬性能缺口：true lazy imported-body / exported signature index、以及 direct-SAB codegen 对大图的按需化。

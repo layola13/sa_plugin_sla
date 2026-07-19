@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- SAB joinHandleInnerType uses shared Y peeler (2026-07-19):
+  Direct SAB now delegates JoinHandle peels to lowering_rules.joinHandleInnerType.
+
 - Y-share File/Metadata/Atomic named type peels (2026-07-19):
   Shared isFileType/isMetadataType/isAtomicI32Type/isAtomicUsizeType into
   lowering_rules; SA wrappers delegate. FS/vec/smart-pointer fixtures green.

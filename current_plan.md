@@ -19,6 +19,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Module check wall-clock after optimizations (2026-07-19):
+  Warm local sla-local-cli check: parallel_runner ~0.68s, system_param_table_erased
+  ~0.98s (was multi-second materialize dominated). Remaining check cost is mostly
+  resolve-roots first parse of large expanded modules (~90-130ms world_table).
+
 - Share enumNameMatchesDecl on Y (2026-07-19):
   SA and SAB enum pattern name matching now uses lowering_rules.enumNameMatchesDecl.
 

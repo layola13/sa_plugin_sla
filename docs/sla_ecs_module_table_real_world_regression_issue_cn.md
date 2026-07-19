@@ -432,3 +432,13 @@ Warm second-process check (parallel_runner):
 Extend cost is drainReachabilityBuildState walking newly materialized imported
 function bodies. Check-path remains much cheaper via include_all shortcut.
 
+## 2026-07-19 wall-clock check status
+
+Warm `sla check` with current optimizations:
+
+- `parallel_runner.sla`: ~0.68s
+- `system_param_table_erased.sla`: ~0.98s
+
+Import expand materialize is ~0ms on check via include_all. Residual is first
+parse of large expanded sources (world_table_erased expanded ~678KB / 571 fns).
+

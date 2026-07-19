@@ -19,6 +19,10 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Wall-clock refresh (2026-07-19 late):
+  Warm parallel_runner check ~0.59s / build ~0.9-1.0s; system_param check ~0.83s;
+  task_pool build ~0.65s. Residual mainly root parse + resolve-roots getOrParse.
+
 - Reserve selective-append decls capacity (2026-07-19):
   Pre-size decls ArrayList during import expand flatten to cut realloc churn.
 

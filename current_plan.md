@@ -19,6 +19,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- SA enumDeclForValueType uses shared typeBaseName (2026-07-19):
+  Matches SAB peel for Option/Result exclusion + enum lookup.
+
 - SAB enumDeclForValueType uses typeBaseName (2026-07-19):
   Option/Result exclusion + enum lookup go through shared typeBaseName peel.
 

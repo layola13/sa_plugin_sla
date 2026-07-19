@@ -5,6 +5,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Latest warm wall-clock (2026-07-19):
+  parallel_runner check ~0.55-0.65s / build ~0.9-1.1s; system_param check ~0.7-0.9s;
+  task_pool build ~0.6-0.7s. Residual: root parse + resolve-roots getOrParse +
+  selective append/codegen.
+
 - Share typeIsCopyValueLeaf for primitive/fnptr (2026-07-19):
   SA/SAB typeIsCopyValue use shared leaf facts; array/shallow/vec fixtures green.
 

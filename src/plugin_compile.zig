@@ -618,6 +618,7 @@ fn runSlaFrontend(
             .parse_function_bodies = false,
             .parse_macro_bodies = false,
             .parse_test_bodies = false,
+            .prescan_sla_import_types = false,
         })
     else
         SlaModuleTable.init(allocator);

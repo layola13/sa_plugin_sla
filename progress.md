@@ -5,6 +5,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Module import type-scan cache reuse + disable redundant prescan (2026-07-19):
+  getOrParse now publishes completed type surfaces into the shared import-type
+  scan cache, and module-table parser options set prescan_sla_import_types=false
+  because diamond discovery is already getOrParse-driven. Result on real ECS:
+  table_erased_access ~259ms→~0-2ms; schedule_table_erased ~327ms→~5ms;
+  system_param resolve-roots ~494ms→~321ms. world_table_erased first parse remains
+  the dominant unavoidable cost (~110-260ms for 466KB source).
+
 - SAB joinHandleInnerType uses shared Y peeler (2026-07-19):
   Direct SAB now delegates JoinHandle peels to lowering_rules.joinHandleInnerType.
 

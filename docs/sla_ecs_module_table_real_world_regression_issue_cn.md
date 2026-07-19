@@ -366,3 +366,21 @@ small filtered-test lazy path only until materialize is reworked.
 
 Roots cost is dominated by `getOrParse` of that diamond (source expand + decl-only parse + export build). Materialize is a separate second pass.
 
+## 2026-07-19 type-scan cache reuse / no redundant prescan
+
+Root cause of tiny-module parse spikes: `getOrParse` of a large module did not
+publish its type surface into the shared import-type scan cache, so later small
+importers re-prescanned/reparsed the large dependency.
+
+Fixes:
+1. Publish complete ImportTypeSurface after each successful `getOrParse`.
+2. Disable `prescan_sla_import_types` for module-table parsers (discovery already walks imports via getOrParse).
+
+Measured (SLA_PROFILE, local sla-local-cli):
+- `table_erased_access.sla` getOrParse: ~259ms → ~0-2ms
+- `schedule_table_erased.sla` getOrParse: ~327ms → ~5ms
+- `system_param_table_erased.sla` resolve-roots: ~494ms → ~321ms
+- `parallel_runner.sla` resolve-roots: ~577-630ms → ~321ms (varies with world_table first-parse)
+
+Remaining dominant cost: first getOrParse of large bodies such as `world_table_erased.sla` (expand+parse ~250-300ms).
+

@@ -430,6 +430,7 @@ pub fn runSlaCommandImpl(
         var import_modules = SlaModuleTable.initWithParserOptions(allocator, .{
             .parse_function_bodies = false,
             .parse_test_bodies = false,
+            .prescan_sla_import_types = false,
         });
         defer import_modules.deinit();
         var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);

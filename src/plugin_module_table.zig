@@ -12,6 +12,13 @@ const moduleNamespaceMatchesImportPath = plugin_imports.moduleNamespaceMatchesIm
 const resolveImportFiles = plugin_imports.resolveImportFiles;
 const splitImportedMangledSymbol = plugin_imports.splitImportedMangledSymbol;
 
+fn moduleTableProfileEnabled() bool {
+    // Match SLA_PROFILE used by import-expand / compile stages.
+    const value = std.process.getEnvVarOwned(std.heap.page_allocator, "SLA_PROFILE") catch return false;
+    defer std.heap.page_allocator.free(value);
+    return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
+}
+
 pub const SlaModuleExports = struct {
     pub const FunctionSignature = struct {
         name: []const u8,
@@ -306,6 +313,10 @@ pub const SlaModuleTable = struct {
     pub fn init(allocator: std.mem.Allocator) SlaModuleTable {
         return initWithParserOptions(allocator, .{
             .parse_test_bodies = false,
+            // Module-table import discovery already walks @import via getOrParse.
+            // Recursive parser prescanning would re-expand/reparse large dependencies
+            // (e.g. schedule_table_erased -> world_table_erased) before getOrParse.
+            .prescan_sla_import_types = false,
         });
     }
 
@@ -411,23 +422,40 @@ pub const SlaModuleTable = struct {
     pub fn getOrParse(self: *SlaModuleTable, resolved: ResolvedImport) !*SlaModule {
         if (self.modules.get(resolved.path)) |module| return module;
 
+        const profile = moduleTableProfileEnabled();
+        const total_start = if (profile) std.time.nanoTimestamp() else 0;
         const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
-        const expanded_source = if (self.import_type_scan_cache.get(resolved.path)) |surface| blk: {
+        const expand_start = if (profile) std.time.nanoTimestamp() else 0;
+        const cache_lookup_path = std.fs.cwd().realpathAlloc(self.allocator, resolved.path) catch resolved.path;
+        const expanded_source = if (self.import_type_scan_cache.get(cache_lookup_path) orelse self.import_type_scan_cache.get(resolved.path)) |surface| blk: {
             if (!surface.complete) break :blk try source_expand.expand(self.allocator, resolved.source);
             self.expanded_source_cache_hits += 1;
             break :blk surface.expanded_source;
         } else try source_expand.expand(self.allocator, resolved.source);
+        const expand_ns = if (profile) std.time.nanoTimestamp() - expand_start else 0;
+        const parse_start = if (profile) std.time.nanoTimestamp() else 0;
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, base_dir, self.parse_options);
         parser.seedImportTypeScanCache(self.import_type_scan_cache);
         const parsed = try parser.parseProgram();
         self.import_type_scan_cache = parser.importTypeScanCache();
         self.import_type_scan_cache_hits += parser.importTypeScanCacheHitCount();
         if (parsed.* != .program) return error.InvalidProgram;
+        const parse_ns = if (profile) std.time.nanoTimestamp() - parse_start else 0;
 
+        const exports_start = if (profile) std.time.nanoTimestamp() else 0;
         var exports = SlaModuleExports.init(self.allocator, resolved.path);
         try exports.buildFromDecls(parsed.program.decls);
         const resolved_imports = try self.resolveModuleImports(resolved.path, base_dir, parsed.program.decls);
         const resolved_module_imports = try self.buildModuleImportNamespaces(resolved_imports);
+        const exports_ns = if (profile) std.time.nanoTimestamp() - exports_start else 0;
+        if (profile) {
+            const total_ms = @divTrunc(std.time.nanoTimestamp() - total_start, std.time.ns_per_ms);
+            const expand_ms = @divTrunc(expand_ns, std.time.ns_per_ms);
+            const parse_ms = @divTrunc(parse_ns, std.time.ns_per_ms);
+            const exports_ms = @divTrunc(exports_ns, std.time.ns_per_ms);
+            const base_name = std.fs.path.basename(resolved.path);
+            std.debug.print("[sla-profile] getOrParse {s}: total={d}ms expand={d}ms parse={d}ms exports+imports={d}ms\n", .{ base_name, total_ms, expand_ms, parse_ms, exports_ms });
+        }
 
         const module = try self.allocator.create(SlaModule);
         module.* = .{
@@ -462,6 +490,44 @@ pub const SlaModuleTable = struct {
             }
         }
         try self.modules.put(module.path, module);
+
+        // Publish this module's type surface into the shared import-type scan
+        // cache so later parsers that `@import` it (e.g. tiny table_erased_access
+        // depending on huge world_table_erased) hit mergeKnownTypeSurface instead
+        // of re-expanding and re-parsing the whole file during prescan.
+        const cache_path = std.fs.cwd().realpathAlloc(self.allocator, module.path) catch module.path;
+        if (self.import_type_scan_cache.get(cache_path)) |existing| {
+            if (!existing.complete) {
+                try self.import_type_scan_cache.put(cache_path, .{
+                    .types = module.known_types,
+                    .enums = module.known_enums,
+                    .source = module.source,
+                    .expanded_source = module.expanded_source,
+                    .complete = true,
+                });
+            }
+        } else {
+            try self.import_type_scan_cache.put(cache_path, .{
+                .types = module.known_types,
+                .enums = module.known_enums,
+                .source = module.source,
+                .expanded_source = module.expanded_source,
+                .complete = true,
+            });
+        }
+        // Also key by the unresolved path form used by some callers.
+        if (!std.mem.eql(u8, cache_path, module.path)) {
+            if (self.import_type_scan_cache.get(module.path) == null) {
+                try self.import_type_scan_cache.put(module.path, .{
+                    .types = module.known_types,
+                    .enums = module.known_enums,
+                    .source = module.source,
+                    .expanded_source = module.expanded_source,
+                    .complete = true,
+                });
+            }
+        }
+
         return module;
     }
 

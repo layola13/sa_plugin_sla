@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Extend isStdCollectionType unit coverage (2026-07-19):
+  HashMap classified as std collection in shared unit test.
+
 - Wall-clock baseline after body-walk memo (2026-07-19):
   Warm: parallel_runner check ~0.53s / build ~1.7s; system_param check ~0.98s;
   task_pool build ~0.59s. Broad SAB ownership/async/thread fixtures all green.

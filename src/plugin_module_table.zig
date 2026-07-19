@@ -12,8 +12,6 @@ const moduleNamespaceMatchesImportPath = plugin_imports.moduleNamespaceMatchesIm
 const resolveImportFiles = plugin_imports.resolveImportFiles;
 const splitImportedMangledSymbol = plugin_imports.splitImportedMangledSymbol;
 
-
-
 fn expandSourceWithDiskCache(allocator: std.mem.Allocator, module_path: []const u8, source: []const u8) ![]const u8 {
     // Skip cache machinery when expansion is a pure copy.
     if (std.mem.indexOf(u8, source, "@expand_tuple") == null) {

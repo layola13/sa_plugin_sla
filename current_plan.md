@@ -19,6 +19,9 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 ## Verified State
 
 
+- Unit test for expandForModulePath disk cache (2026-07-19):
+  source_expand test covers @expand_tuple cache hit path.
+
 - Unified disk expand cache for root + imports (2026-07-19):
   `source_expand.expandForModulePath` caches @expand_tuple output for both root
   check/compile and module getOrParse. Warm system_param root expand 148ms→3ms.

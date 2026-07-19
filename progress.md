@@ -5,6 +5,9 @@ Update this file every time a compiler feature or demo milestone is completed an
 ## Latest Counted / In Progress
 
 
+- Unit test for expandForModulePath disk cache (2026-07-19):
+  source_expand test covers @expand_tuple cache hit path.
+
 - Unified disk expand cache for root + imports (2026-07-19):
   `source_expand.expandForModulePath` caches @expand_tuple output for both root
   check/compile and module getOrParse. Warm system_param root expand 148ms→3ms.

@@ -429,3 +429,18 @@ test "expand tuple processes multiple top level directives" {
     try std.testing.expect(std.mem.indexOf(u8, expanded, "struct Second3<T0, T1, T2>") != null);
     try std.testing.expect(std.mem.indexOf(u8, expanded, "@expand_tuple") == null);
 }
+test "expandForModulePath uses disk cache for expand_tuple" {
+    const source =
+        \\@expand_tuple(1, 2, T) {
+        \\fn f_$N() -> i32 { return $N; }
+        \\}
+    ;
+    const path = "unit_expand_cache_mod.sla";
+    const first = try expandForModulePath(std.testing.allocator, path, source);
+    defer std.testing.allocator.free(first);
+    try std.testing.expect(std.mem.indexOf(u8, first, "fn f_1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first, "fn f_2") != null);
+    const second = try expandForModulePath(std.testing.allocator, path, source);
+    defer std.testing.allocator.free(second);
+    try std.testing.expectEqualStrings(first, second);
+}

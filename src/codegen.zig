@@ -3481,6 +3481,7 @@ pub const Codegen = struct {
                 else => true,
             },
             .user_defined => blk: {
+                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
                 if (!lowering_rules.structHasDerive(decl, "hash") or decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {
@@ -3496,6 +3497,7 @@ pub const Codegen = struct {
         return switch (ty.*) {
             .primitive => |p| p != .void_type,
             .user_defined => blk: {
+                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
                 if (!lowering_rules.structHasDerive(decl, "debug") or decl.is_opaque or decl.is_union) break :blk false;
                 for (decl.fields) |field| {

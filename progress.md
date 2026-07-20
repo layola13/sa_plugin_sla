@@ -4,9 +4,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Fix pre-existing sla module table Zig filters (2026-07-20):
+  Test-codegen parses `@test` bodies again; scan-cache count expectations match
+  getOrParse publish behavior. `sla module table` 15/15; build 7/7.
+
 - Share emit-reachability dynConcreteTypeName peel on Y (2026-07-20):
   emit reachability peels via shared helper. Build 7/7; dyn/method/result fixtures
-  green. Pre-existing clean-HEAD module-table Zig failures noted separately.
+  green.
 
 - Fold residual lowering_rules multi-layer peels onto peelBorrowPointerType
   (2026-07-20): option/result/future/array/map/generic/named/string/executor peels

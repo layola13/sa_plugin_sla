@@ -18,13 +18,19 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Fix pre-existing sla module table Zig filters (2026-07-20):
+  1) Test-codegen roots now parse `@test` bodies so reachability/monomorphize see
+  roots such as `leaf_identity<i32>` generic_func_ref; empty-body parse made
+  transitive generic templates disappear from SA output.
+  2) Shared import-type scan cache count expectations updated for getOrParse
+  publishing each completed module surface (left/common/right => 2 then 3).
+  Verified: `sla module table` 15/15, the two previously failing filters 2/2 each,
+  build 7/7. No full suite/host install.
+
 - Share emit-reachability dynConcreteTypeName peel on Y (2026-07-20):
   `plugin_emit_reachability.dynConcreteTypeName` peels borrow/pointer through
   `lowering_rules.peelBorrowPointerType` before smart-pointer/dyn name handling.
   Build 7/7; focused SA+SAB dyn_borrow_arg, impl_static_methods, result_direct green.
-  Note: two `sla module table` Zig filters still fail on clean HEAD
-  (`shares imported type scan surfaces`, `discovers transitive generic function
-  references`) and are unrelated to this peel rewrite.
 
 - Fold residual lowering_rules multi-layer peels onto peelBorrowPointerType
   (2026-07-20): option/result/future/array/map/generic-inner/named/string-like/

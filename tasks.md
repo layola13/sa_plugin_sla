@@ -40,9 +40,12 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Fix pre-existing sla module table Zig filters (2026-07-20).
+	  Test-codegen parses `@test` bodies; scan-cache count expectations updated.
+	  `sla module table` 15/15; build 7/7.
+
 	- [x] Share emit-reachability dynConcreteTypeName peel on Y (2026-07-20).
-	  Build 7/7; dyn/method/result fixtures green. Pre-existing clean-HEAD
-	  module-table Zig failures remain open separately.
+	  Build 7/7; dyn/method/result fixtures green.
 
 	- [x] Fold residual lowering_rules multi-layer peels onto
 	  peelBorrowPointerType (2026-07-20). option/result/future/array/map/

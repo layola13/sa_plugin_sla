@@ -4656,7 +4656,9 @@ test "sla module table shares imported type scan surfaces across modules" {
 
     const left_imports = try resolveImportFiles(allocator, ".", "left.sla", "main.sla");
     const left = try modules.getOrParse(left_imports[0]);
-    try std.testing.expectEqual(@as(usize, 1), modules.importTypeScanCacheCount());
+    // getOrParse publishes each completed module surface into the shared scan cache
+    // (left + common). Count is therefore 2, not only the imported dependency.
+    try std.testing.expectEqual(@as(usize, 2), modules.importTypeScanCacheCount());
     try std.testing.expectEqual(@as(usize, 1), modules.resolvedImportSourceCacheHitCount());
     var left_has_shared = false;
     for (left.known_types) |name| left_has_shared = left_has_shared or std.mem.eql(u8, name, "SharedThing");
@@ -4664,7 +4666,8 @@ test "sla module table shares imported type scan surfaces across modules" {
 
     const right_imports = try resolveImportFiles(allocator, ".", "right.sla", "main.sla");
     const right = try modules.getOrParse(right_imports[0]);
-    try std.testing.expectEqual(@as(usize, 1), modules.importTypeScanCacheCount());
+    // right reuses common's cached surface (hit) and publishes itself => 3 entries.
+    try std.testing.expectEqual(@as(usize, 3), modules.importTypeScanCacheCount());
     try std.testing.expectEqual(@as(usize, 1), modules.importTypeScanCacheHitCount());
     try std.testing.expectEqual(@as(usize, 2), modules.resolvedImportSourceCacheHitCount());
     var right_has_shared = false;

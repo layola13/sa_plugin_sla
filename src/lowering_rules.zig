@@ -128,21 +128,6 @@ pub fn peelBorrowPointerType(ty: *const ast.Type) *const ast.Type {
     }
 }
 
-/// Strip trailing local name from a possibly qualified user type name.
-/// Accepts both `ns.Type` and `ns::Type` forms and returns the original name
-/// when no qualifier separator is present.
-pub fn userDefinedLocalName(name: []const u8) []const u8 {
-    const dot = std.mem.lastIndexOfScalar(u8, name, '.');
-    const colon = std.mem.lastIndexOf(u8, name, "::");
-    const local_start = blk: {
-        const dot_start = if (dot) |idx| idx + 1 else 0;
-        const colon_start = if (colon) |idx| idx + 2 else 0;
-        break :blk @max(dot_start, colon_start);
-    };
-    if (local_start == 0 or local_start >= name.len) return name;
-    return name[local_start..];
-}
-
 pub fn ordinaryIndexAddressTargetType(ty: *const ast.Type) ?*const ast.Type {
     const target = peelBorrowPointerType(ty);
     return switch (target.*) {
@@ -1904,9 +1889,15 @@ pub fn exprNeedsPollOnceForReadyAwait(expr: *const ast.Node, readiness_by_name: 
 }
 
 pub fn futureInnerType(ty: *const ast.Type) ?*ast.Type {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .future) return null;
-    return curr.future;
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .future => |inner| return inner,
+            else => return null,
+        }
+    }
 }
 
 pub fn typesEquivalent(a: *const ast.Type, b: *const ast.Type) bool {
@@ -2863,24 +2854,48 @@ pub fn arrayRestLen(arr: ast.ArrayType, prefix_count: usize) ?usize {
 }
 
 pub fn optionInnerType(ty: *const ast.Type) ?*ast.Type {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .user_defined) return null;
-    if (!std.mem.eql(u8, curr.user_defined.name, "Option") or curr.user_defined.generics.len != 1) return null;
-    return curr.user_defined.generics[0];
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, "Option") and ud.generics.len == 1) return ud.generics[0];
+                return null;
+            },
+            else => return null,
+        }
+    }
 }
 
 pub fn resultOkType(ty: *const ast.Type) ?*ast.Type {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .user_defined) return null;
-    if (!std.mem.eql(u8, curr.user_defined.name, "Result") or curr.user_defined.generics.len != 2) return null;
-    return curr.user_defined.generics[0];
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, "Result") and ud.generics.len == 2) return ud.generics[0];
+                return null;
+            },
+            else => return null,
+        }
+    }
 }
 
 pub fn resultErrType(ty: *const ast.Type) ?*ast.Type {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .user_defined) return null;
-    if (!std.mem.eql(u8, curr.user_defined.name, "Result") or curr.user_defined.generics.len != 2) return null;
-    return curr.user_defined.generics[1];
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, "Result") and ud.generics.len == 2) return ud.generics[1];
+                return null;
+            },
+            else => return null,
+        }
+    }
 }
 
 pub fn patternUsesResultMacros(enum_name: []const u8, variant_name: []const u8) bool {
@@ -2919,10 +2934,18 @@ pub fn literalZero(expr: *const ast.Node) bool {
 }
 
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .user_defined) return null;
-    if (!std.mem.eql(u8, curr.user_defined.name, name) or curr.user_defined.generics.len != 1) return null;
-    return curr.user_defined.generics[0];
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, name) and ud.generics.len == 1) return ud.generics[0];
+                return null;
+            },
+            else => return null,
+        }
+    }
 }
 
 pub fn vecElementType(ty: *const ast.Type) ?*ast.Type {
@@ -2939,10 +2962,20 @@ pub const MapTypes = struct {
 };
 
 fn userDefinedMapTypes(ty: *const ast.Type, name: []const u8) ?MapTypes {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .user_defined) return null;
-    if (!std.mem.eql(u8, curr.user_defined.name, name) or curr.user_defined.generics.len != 2) return null;
-    return .{ .key = curr.user_defined.generics[0], .value = curr.user_defined.generics[1] };
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| {
+                if (std.mem.eql(u8, ud.name, name) and ud.generics.len == 2) {
+                    return .{ .key = ud.generics[0], .value = ud.generics[1] };
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
 }
 
 pub fn hashMapTypes(ty: *const ast.Type) ?MapTypes {
@@ -2966,9 +2999,15 @@ pub fn sliceElementType(ty: *const ast.Type) ?*ast.Type {
 }
 
 pub fn arrayType(ty: *const ast.Type) ?ast.ArrayType {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .array) return null;
-    return curr.array;
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .array => |arr| return arr,
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            else => return null,
+        }
+    }
 }
 
 pub fn taskInnerType(ty: *const ast.Type) ?*ast.Type {
@@ -2976,15 +3015,22 @@ pub fn taskInnerType(ty: *const ast.Type) ?*ast.Type {
 }
 
 pub fn executorTaskBufferPlan(ty: *const ast.Type) ?ExecutorTaskBufferPlan {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* == .array) {
-        const arr = curr.array;
-        const inner = taskInnerType(arr.elem) orelse return null;
-        return .{ .kind = .fixed_array, .inner = inner, .fixed_len = arr.len };
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .array => |arr| {
+                const inner = taskInnerType(arr.elem) orelse return null;
+                return .{ .kind = .fixed_array, .inner = inner, .fixed_len = arr.len };
+            },
+            else => {
+                const elem = vecElementType(curr) orelse return null;
+                const inner = taskInnerType(elem) orelse return null;
+                return .{ .kind = .vec, .inner = inner };
+            },
+        }
     }
-    const elem = vecElementType(curr) orelse return null;
-    const inner = taskInnerType(elem) orelse return null;
-    return .{ .kind = .vec, .inner = inner };
 }
 
 pub fn vecElementSlotSize(ty: *const ast.Type) usize {
@@ -3024,9 +3070,15 @@ pub fn atomicPtrInnerType(ty: *const ast.Type) ?*ast.Type {
 }
 
 fn isUserDefinedNamed(ty: *const ast.Type, name: []const u8) bool {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .user_defined) return false;
-    return std.mem.eql(u8, curr.user_defined.name, name) and curr.user_defined.generics.len == 0;
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| return std.mem.eql(u8, ud.name, name) and ud.generics.len == 0,
+            else => return false,
+        }
+    }
 }
 
 pub fn isFileType(ty: *const ast.Type) bool {
@@ -3062,7 +3114,14 @@ pub fn futureEitherInnerTypes(ty: *const ast.Type) ?MapTypes {
 }
 
 pub fn unwrapPointerLikeType(ty: *ast.Type) *ast.Type {
-    return @constCast(peelBorrowPointerType(ty));
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            else => return curr,
+        }
+    }
 }
 
 pub fn isAtomicI32Type(ty: *const ast.Type) bool {
@@ -3328,19 +3387,29 @@ pub fn borrowedPrimitiveType(ty: *const ast.Type) ?*const ast.Type {
 }
 
 pub fn isStringLikeType(ty: *const ast.Type) bool {
-    const curr = peelBorrowPointerType(ty);
-    return switch (curr.*) {
-        .primitive => |p| p == .void_type,
-        .array => true,
-        .user_defined => |ud| std.mem.eql(u8, ud.name, "String"),
-        else => false,
-    };
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .primitive => |p| return p == .void_type,
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .array => return true,
+            .user_defined => |ud| return std.mem.eql(u8, ud.name, "String"),
+            else => return false,
+        }
+    }
 }
 
 pub fn isFormatStringType(ty: *const ast.Type) bool {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .user_defined) return false;
-    return std.mem.eql(u8, curr.user_defined.name, "String");
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            .user_defined => |ud| return std.mem.eql(u8, ud.name, "String"),
+            else => return false,
+        }
+    }
 }
 
 pub fn printPrimitiveFormat(ty: *const ast.Type) ?PrintPrimitiveFormat {
@@ -3900,9 +3969,15 @@ pub fn mangleTraitMethodName(allocator: std.mem.Allocator, ty_name: []const u8, 
 }
 
 pub fn concreteTypeName(ty: *const ast.Type) ?[]const u8 {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .user_defined) return null;
-    return curr.user_defined.name;
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .borrow => |b| curr = b,
+            .pointer => |p| curr = p,
+            .user_defined => |ud| return ud.name,
+            else => return null,
+        }
+    }
 }
 
 pub fn typeBaseName(ty: *const ast.Type) ?[]const u8 {
@@ -3910,16 +3985,31 @@ pub fn typeBaseName(ty: *const ast.Type) ?[]const u8 {
 }
 
 pub fn firstGenericArg(ty: *const ast.Type) ?*ast.Type {
-    const curr = peelBorrowPointerType(ty);
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .pointer => |p| curr = p,
+            .borrow => |b| curr = b,
+            else => break,
+        }
+    }
     if (curr.* != .user_defined or curr.user_defined.generics.len == 0) return null;
     return curr.user_defined.generics[0];
 }
 
 pub fn dynTraitName(ty: *const ast.Type) ?[]const u8 {
-    const curr = peelBorrowPointerType(ty);
-    if (curr.* != .user_defined) return null;
-    if (!std.mem.startsWith(u8, curr.user_defined.name, "__dyn_")) return null;
-    return curr.user_defined.name["__dyn_".len..];
+    var curr = ty;
+    while (true) {
+        switch (curr.*) {
+            .borrow => |b| curr = b,
+            .pointer => |p| curr = p,
+            .user_defined => |ud| {
+                if (std.mem.startsWith(u8, ud.name, "__dyn_")) return ud.name["__dyn_".len..];
+                return null;
+            },
+            else => return null,
+        }
+    }
 }
 
 pub fn vtableName(allocator: std.mem.Allocator, trait_name: []const u8, type_name: []const u8) ![]u8 {
@@ -6572,13 +6662,6 @@ test "typeBaseName and firstGenericArg peels" {
     var borrow = ast.Type{ .borrow = &vec_ty };
     try std.testing.expectEqualStrings("Vec", typeBaseName(&borrow).?);
     try std.testing.expect(firstGenericArg(&borrow) == &i32_ty);
-}
-
-test "userDefinedLocalName strips qualified type names" {
-    try std.testing.expectEqualStrings("Sprite", userDefinedLocalName("ns.Sprite"));
-    try std.testing.expectEqualStrings("Sprite", userDefinedLocalName("pkg::Sprite"));
-    try std.testing.expectEqualStrings("Sprite", userDefinedLocalName("Sprite"));
-    try std.testing.expectEqualStrings("Inner", userDefinedLocalName("outer.mid::Inner"));
 }
 
 test "typeIsCopyValueLeaf classifies primitives and fnptrs" {

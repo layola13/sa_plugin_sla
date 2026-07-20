@@ -18,6 +18,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Fold residual lowering_rules multi-layer peels onto peelBorrowPointerType
+  (2026-07-20): option/result/future/array/map/generic-inner/named/string-like/
+  executor-task-buffer peels now call the shared helper instead of local walks.
+  Unit filters typeBaseName peels, executor task buffer, collection peelers 2/2
+  each; build 7/7; focused SA+SAB option/result/borrow/field/vec fixtures green.
+  Only peelBorrowPointerType itself retains the while-true borrow/pointer walk.
+
 - Share userDefinedLocalName and fold concrete/firstGeneric/dyn peels (2026-07-20):
   Added `lowering_rules.userDefinedLocalName` for `ns.Type` / `ns::Type` local-name
   stripping. SA and SAB `structDeclForType` both use that shared fallback after the

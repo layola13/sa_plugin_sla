@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Fold residual lowering_rules multi-layer peels onto peelBorrowPointerType
+  (2026-07-20): option/result/future/array/map/generic/named/string/executor peels
+  share one walk. Unit 2/2x3; build 7/7; focused SA/SAB option/result/field green.
+
 - Share userDefinedLocalName and fold concrete/firstGeneric/dyn peels (2026-07-20):
   Shared qualified-name local strip for SA/SAB `structDeclForType`; folded
   `concreteTypeName`/`firstGenericArg`/`dynTraitName` onto `peelBorrowPointerType`.

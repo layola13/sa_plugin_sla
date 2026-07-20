@@ -40,6 +40,11 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Fold residual lowering_rules multi-layer peels onto
+	  peelBorrowPointerType (2026-07-20). option/result/future/array/map/
+	  generic/named/string/executor peels share one walk. Unit 2/2x3; build
+	  7/7; focused SA/SAB option/result/field green.
+
 	- [x] Share userDefinedLocalName + fold concrete/firstGeneric/dyn peels
 	  (2026-07-20). SA/SAB structDecl use shared qualified-name local strip;
 	  peel helpers unified. Unit 2/2x2; build 7/7; focused SA/SAB green.

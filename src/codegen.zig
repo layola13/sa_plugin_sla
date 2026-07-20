@@ -3149,15 +3149,8 @@ pub const Codegen = struct {
         if (self.tc.structs.get(name)) |decl| return decl;
         if (self.tc.alias_struct_cache.get(name)) |decl| return decl;
 
-        const dot = std.mem.lastIndexOfScalar(u8, name, '.');
-        const colon = std.mem.lastIndexOf(u8, name, "::");
-        const local_start = blk: {
-            const dot_start = if (dot) |idx| idx + 1 else 0;
-            const colon_start = if (colon) |idx| idx + 2 else 0;
-            break :blk @max(dot_start, colon_start);
-        };
-        if (local_start == 0 or local_start >= name.len) return null;
-        const local_name = name[local_start..];
+        const local_name = lowering_rules.userDefinedLocalName(name);
+        if (std.mem.eql(u8, local_name, name)) return null;
         if (self.tc.structs.get(local_name)) |decl| return decl;
         if (self.tc.alias_struct_cache.get(local_name)) |decl| return decl;
         return null;

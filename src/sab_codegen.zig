@@ -1434,8 +1434,14 @@ pub const Codegen = struct {
     fn structDeclForType(self: *Codegen, ty: *const ast.Type) ?*ast.StructDecl {
         const curr = lowering_rules.peelBorrowPointerType(ty);
         if (curr.* != .user_defined) return null;
-        if (self.tc.structs.get(curr.user_defined.name)) |decl| return decl;
-        if (self.tc.alias_struct_cache.get(curr.user_defined.name)) |decl| return decl;
+        const name = curr.user_defined.name;
+        if (self.tc.structs.get(name)) |decl| return decl;
+        if (self.tc.alias_struct_cache.get(name)) |decl| return decl;
+
+        const local_name = lowering_rules.userDefinedLocalName(name);
+        if (std.mem.eql(u8, local_name, name)) return null;
+        if (self.tc.structs.get(local_name)) |decl| return decl;
+        if (self.tc.alias_struct_cache.get(local_name)) |decl| return decl;
         return null;
     }
 

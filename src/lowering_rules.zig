@@ -128,6 +128,21 @@ pub fn peelBorrowPointerType(ty: *const ast.Type) *const ast.Type {
     }
 }
 
+/// Strip trailing local name from a possibly qualified user type name.
+/// Accepts both `ns.Type` and `ns::Type` forms and returns the original name
+/// when no qualifier separator is present.
+pub fn userDefinedLocalName(name: []const u8) []const u8 {
+    const dot = std.mem.lastIndexOfScalar(u8, name, '.');
+    const colon = std.mem.lastIndexOf(u8, name, "::");
+    const local_start = blk: {
+        const dot_start = if (dot) |idx| idx + 1 else 0;
+        const colon_start = if (colon) |idx| idx + 2 else 0;
+        break :blk @max(dot_start, colon_start);
+    };
+    if (local_start == 0 or local_start >= name.len) return name;
+    return name[local_start..];
+}
+
 pub fn ordinaryIndexAddressTargetType(ty: *const ast.Type) ?*const ast.Type {
     const target = peelBorrowPointerType(ty);
     return switch (target.*) {
@@ -3962,15 +3977,9 @@ pub fn mangleTraitMethodName(allocator: std.mem.Allocator, ty_name: []const u8, 
 }
 
 pub fn concreteTypeName(ty: *const ast.Type) ?[]const u8 {
-    var curr = ty;
-    while (true) {
-        switch (curr.*) {
-            .borrow => |b| curr = b,
-            .pointer => |p| curr = p,
-            .user_defined => |ud| return ud.name,
-            else => return null,
-        }
-    }
+    const curr = peelBorrowPointerType(ty);
+    if (curr.* != .user_defined) return null;
+    return curr.user_defined.name;
 }
 
 pub fn typeBaseName(ty: *const ast.Type) ?[]const u8 {
@@ -3978,31 +3987,16 @@ pub fn typeBaseName(ty: *const ast.Type) ?[]const u8 {
 }
 
 pub fn firstGenericArg(ty: *const ast.Type) ?*ast.Type {
-    var curr = ty;
-    while (true) {
-        switch (curr.*) {
-            .pointer => |p| curr = p,
-            .borrow => |b| curr = b,
-            else => break,
-        }
-    }
+    const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined or curr.user_defined.generics.len == 0) return null;
     return curr.user_defined.generics[0];
 }
 
 pub fn dynTraitName(ty: *const ast.Type) ?[]const u8 {
-    var curr = ty;
-    while (true) {
-        switch (curr.*) {
-            .borrow => |b| curr = b,
-            .pointer => |p| curr = p,
-            .user_defined => |ud| {
-                if (std.mem.startsWith(u8, ud.name, "__dyn_")) return ud.name["__dyn_".len..];
-                return null;
-            },
-            else => return null,
-        }
-    }
+    const curr = peelBorrowPointerType(ty);
+    if (curr.* != .user_defined) return null;
+    if (!std.mem.startsWith(u8, curr.user_defined.name, "__dyn_")) return null;
+    return curr.user_defined.name["__dyn_".len..];
 }
 
 pub fn vtableName(allocator: std.mem.Allocator, trait_name: []const u8, type_name: []const u8) ![]u8 {
@@ -6655,6 +6649,13 @@ test "typeBaseName and firstGenericArg peels" {
     var borrow = ast.Type{ .borrow = &vec_ty };
     try std.testing.expectEqualStrings("Vec", typeBaseName(&borrow).?);
     try std.testing.expect(firstGenericArg(&borrow) == &i32_ty);
+}
+
+test "userDefinedLocalName strips qualified type names" {
+    try std.testing.expectEqualStrings("Sprite", userDefinedLocalName("ns.Sprite"));
+    try std.testing.expectEqualStrings("Sprite", userDefinedLocalName("pkg::Sprite"));
+    try std.testing.expectEqualStrings("Sprite", userDefinedLocalName("Sprite"));
+    try std.testing.expectEqualStrings("Inner", userDefinedLocalName("outer.mid::Inner"));
 }
 
 test "typeIsCopyValueLeaf classifies primitives and fnptrs" {

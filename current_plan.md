@@ -18,6 +18,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share userDefinedLocalName and fold concrete/firstGeneric/dyn peels (2026-07-20):
+  Added `lowering_rules.userDefinedLocalName` for `ns.Type` / `ns::Type` local-name
+  stripping. SA and SAB `structDeclForType` both use that shared fallback after the
+  shared peel. `concreteTypeName`, `firstGenericArg`, and `dynTraitName` now peel via
+  `peelBorrowPointerType`. Unit filters `typeBaseName and firstGenericArg peels` and
+  `userDefinedLocalName strips qualified type names` 2/2 each; `zig build -j1` 7/7;
+  focused SA+SAB field/alias/import/result fixtures green. No full suite/host install.
+
 - Align SA structDeclForType peel with SAB + fold unwrapPointerLikeType (2026-07-20):
   SA-text `structDeclForType` now peels borrow/pointer through
   `lowering_rules.peelBorrowPointerType`, matching direct SAB. Mutable

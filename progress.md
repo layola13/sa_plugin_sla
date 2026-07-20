@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share userDefinedLocalName and fold concrete/firstGeneric/dyn peels (2026-07-20):
+  Shared qualified-name local strip for SA/SAB `structDeclForType`; folded
+  `concreteTypeName`/`firstGenericArg`/`dynTraitName` onto `peelBorrowPointerType`.
+  Unit 2/2 each for peel + local-name tests; build 7/7; focused SA/SAB fixtures green.
+
 - Align SA structDeclForType peel with SAB + fold unwrapPointerLikeType (2026-07-20):
   SA-text `structDeclForType` peels via shared `peelBorrowPointerType`; mutable
   `unwrapPointerLikeType` is now a thin wrapper. Build 7/7; focused SA/SAB field/

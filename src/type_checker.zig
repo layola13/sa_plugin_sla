@@ -1565,15 +1565,9 @@ pub const TypeChecker = struct {
     }
 
     fn enumDeclForValueType(self: *TypeChecker, value_ty: *const ast.Type) ?*ast.EnumDecl {
-        var curr = value_ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                .user_defined => |ud| return self.enums.get(ud.name),
-                else => return null,
-            }
-        }
+        const curr = lowering_rules.peelBorrowPointerType(value_ty);
+        if (curr.* != .user_defined) return null;
+        return self.enums.get(curr.user_defined.name);
     }
 
     fn definePatternBindings(self: *TypeChecker, scope: *Scope, pattern: ast.EnumPattern, value_ty: *const ast.Type, comptime context: []const u8, writable: bool) TypeError!void {
@@ -3295,14 +3289,7 @@ pub const TypeChecker = struct {
                     return ty;
                 }
                 const struct_ty = try self.checkExpr(field.expr, scope);
-                var curr_ty = struct_ty;
-                while (true) {
-                    switch (curr_ty.*) {
-                        .borrow => |b| curr_ty = b,
-                        .pointer => |p| curr_ty = p,
-                        else => break,
-                    }
-                }
+                const curr_ty = @constCast(lowering_rules.peelBorrowPointerType(struct_ty));
                 switch (curr_ty.*) {
                     .user_defined => |ud| {
                         const decl = self.structDeclForType(curr_ty) orelse {
@@ -4802,18 +4789,10 @@ pub const TypeChecker = struct {
                 const method_match = blk: {
                     if (call.args.len == 0) break :blk null;
                     const recv_ty = try self.checkExpr(call.args[0], scope);
-                    var curr = recv_ty;
-                    while (true) {
-                        switch (curr.*) {
-                            .borrow => |b| curr = b,
-                            .pointer => |p| curr = p,
-                            .user_defined => |ud| {
-                                var method_buf: [256]u8 = undefined;
-                                break :blk std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ ud.name, call.func_name }) catch null;
-                            },
-                            else => break :blk null,
-                        }
-                    }
+                    const curr = lowering_rules.peelBorrowPointerType(recv_ty);
+                    if (curr.* != .user_defined) break :blk null;
+                    var method_buf: [256]u8 = undefined;
+                    break :blk std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ curr.user_defined.name, call.func_name }) catch null;
                 };
 
                 if (method_match) |method_name| {
@@ -5079,76 +5058,70 @@ pub const TypeChecker = struct {
                 self.setError("Undefined call: {s}", .{call.func_name});
                 if (call.args.len > 0) {
                     const recv_ty = try self.checkExpr(call.args[0], scope);
-                    var curr = recv_ty;
-                    while (true) {
-                        switch (curr.*) {
-                            .borrow => |b| curr = b,
-                            .pointer => |p| curr = p,
-                            .user_defined => |ud| {
-                                var method_buf: [256]u8 = undefined;
-                                const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ ud.name, call.func_name }) catch break;
-                                if (self.funcs.get(method_key)) |func| {
-                                    if (func.params.len != call.args.len) return TypeError.InvalidArgsCount;
-                                    for (func.params, call.args) |param, arg| {
-                                        if (param.is_move and arg.* != .move_expr) {
-                                            self.setError("Call to {s} requires move argument for parameter {s}", .{ call.func_name, param.name });
-                                            return TypeError.TypeMismatch;
-                                        }
-                                        if (param.is_borrow) {
-                                            if (dynTraitName(param.ty)) |trait_name| {
-                                                const arg_ty = try self.checkExpr(arg, scope);
-                                                if (dynDispatchTraitName(arg_ty)) |arg_trait_name| {
-                                                    if (!self.traitExtendsTrait(arg_trait_name, trait_name)) {
-                                                        self.setError("Type does not implement trait {s} for parameter {s}", .{ trait_name, param.name });
-                                                        return TypeError.TypeMismatch;
-                                                    }
-                                                    continue;
-                                                }
-                                                const concrete_ty = switch (arg_ty.*) {
-                                                    .borrow => |inner| inner,
-                                                    else => null,
-                                                } orelse {
-                                                    self.setError("Call to {s} requires dyn borrow for parameter {s}", .{ call.func_name, param.name });
-                                                    return TypeError.TypeMismatch;
-                                                };
-                                                if (!self.typeImplementsTrait(concrete_ty, trait_name)) {
+                    const curr = lowering_rules.peelBorrowPointerType(recv_ty);
+                    if (curr.* == .user_defined) {
+                        var method_buf: [256]u8 = undefined;
+                        const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ curr.user_defined.name, call.func_name }) catch null;
+                        if (method_key) |mk| {
+                            if (self.funcs.get(mk)) |func| {
+                                if (func.params.len != call.args.len) return TypeError.InvalidArgsCount;
+                                for (func.params, call.args) |param, arg| {
+                                    if (param.is_move and arg.* != .move_expr) {
+                                        self.setError("Call to {s} requires move argument for parameter {s}", .{ call.func_name, param.name });
+                                        return TypeError.TypeMismatch;
+                                    }
+                                    if (param.is_borrow) {
+                                        if (dynTraitName(param.ty)) |trait_name| {
+                                            const arg_ty = try self.checkExpr(arg, scope);
+                                            if (dynDispatchTraitName(arg_ty)) |arg_trait_name| {
+                                                if (!self.traitExtendsTrait(arg_trait_name, trait_name)) {
                                                     self.setError("Type does not implement trait {s} for parameter {s}", .{ trait_name, param.name });
                                                     return TypeError.TypeMismatch;
                                                 }
-                                                self.dyn_borrow_args.put(arg, trait_name) catch return TypeError.OutOfMemory;
+                                                continue;
+                                            }
+                                            const concrete_ty = switch (arg_ty.*) {
+                                                .borrow => |inner| inner,
+                                                else => null,
+                                            } orelse {
+                                                self.setError("Call to {s} requires dyn borrow for parameter {s}", .{ call.func_name, param.name });
+                                                return TypeError.TypeMismatch;
+                                            };
+                                            if (!self.typeImplementsTrait(concrete_ty, trait_name)) {
+                                                self.setError("Type does not implement trait {s} for parameter {s}", .{ trait_name, param.name });
+                                                return TypeError.TypeMismatch;
+                                            }
+                                            self.dyn_borrow_args.put(arg, trait_name) catch return TypeError.OutOfMemory;
+                                            continue;
+                                        }
+                                    }
+                                    if (param.is_borrow and arg.* != .borrow_expr) {
+                                        const arg_ty = try self.checkExpr(arg, scope);
+                                        if (dynTraitName(param.ty)) |target_trait| {
+                                            if (dynDispatchTraitName(arg_ty)) |arg_trait_name| {
+                                                if (!self.traitExtendsTrait(arg_trait_name, target_trait)) {
+                                                    self.setError("Type does not implement trait {s} for parameter {s}", .{ target_trait, param.name });
+                                                    return TypeError.TypeMismatch;
+                                                }
                                                 continue;
                                             }
                                         }
-                                        if (param.is_borrow and arg.* != .borrow_expr) {
-                                            const arg_ty = try self.checkExpr(arg, scope);
-                                            if (dynTraitName(param.ty)) |target_trait| {
-                                                if (dynDispatchTraitName(arg_ty)) |arg_trait_name| {
-                                                    if (!self.traitExtendsTrait(arg_trait_name, target_trait)) {
-                                                        self.setError("Type does not implement trait {s} for parameter {s}", .{ target_trait, param.name });
-                                                        return TypeError.TypeMismatch;
-                                                    }
-                                                    continue;
-                                                }
-                                            }
-                                            if (arg_ty.* != .borrow or !self.typesEqual(param.ty, arg_ty.borrow)) {
-                                                self.setError("Call to {s} requires borrow argument for parameter {s}", .{ call.func_name, param.name });
-                                                return TypeError.TypeMismatch;
-                                            }
-                                            continue;
-                                        }
-                                        if (!param.is_move and !param.is_borrow and arg.* == .move_expr) {
-                                            self.setError("Call to {s} passes capability argument to plain parameter {s}", .{ call.func_name, param.name });
+                                        if (arg_ty.* != .borrow or !self.typesEqual(param.ty, arg_ty.borrow)) {
+                                            self.setError("Call to {s} requires borrow argument for parameter {s}", .{ call.func_name, param.name });
                                             return TypeError.TypeMismatch;
                                         }
-                                        const arg_ty = try self.checkExpr(arg, scope);
-                                        if (!self.plainCallArgMatches(param.ty, arg, arg_ty)) return TypeError.TypeMismatch;
+                                        continue;
                                     }
-                                    if (func.is_async) return try self.makeFutureType(func.ret_ty);
-                                    return func.ret_ty;
+                                    if (!param.is_move and !param.is_borrow and arg.* == .move_expr) {
+                                        self.setError("Call to {s} passes capability argument to plain parameter {s}", .{ call.func_name, param.name });
+                                        return TypeError.TypeMismatch;
+                                    }
+                                    const arg_ty = try self.checkExpr(arg, scope);
+                                    if (!self.plainCallArgMatches(param.ty, arg, arg_ty)) return TypeError.TypeMismatch;
                                 }
-                                break;
-                            },
-                            else => break,
+                                if (func.is_async) return try self.makeFutureType(func.ret_ty);
+                                return func.ret_ty;
+                            }
                         }
                     }
                 }
@@ -5620,14 +5593,7 @@ pub const TypeChecker = struct {
                 }
 
                 // Unwrapped type is the type of the "value" field of the Result struct
-                var struct_ty = inner_ty;
-                while (true) {
-                    switch (struct_ty.*) {
-                        .pointer => |p| struct_ty = p,
-                        .borrow => |b| struct_ty = b,
-                        else => break,
-                    }
-                }
+                const struct_ty = lowering_rules.peelBorrowPointerType(inner_ty);
 
                 if (struct_ty.* != .user_defined) return TypeError.NotAStruct;
                 const struct_decl = self.structs.get(struct_ty.user_defined.name) orelse return TypeError.NotAStruct;

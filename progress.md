@@ -4,6 +4,14 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share residual peelBorrowPointerType call sites on Y (2026-07-20):
+  SA-text field/method/Result peels, direct SAB Result/Slice peels, and type-checker
+  field/method/enum/Result peels now consume `lowering_rules.peelBorrowPointerType`
+  instead of local borrow/pointer walk loops. Remaining emitter `while (true)` blocks
+  are const-fold fixpoints. Verified serially: `zig fmt --check`, `git diff --check`,
+  `zig build -j1 --summary all` 7/7, local SA+SAB focused fixtures for
+  field_compare/nested_len, result_direct, impl_static_methods, borrow_direct, and
+  vec_index_field_assign. No full suite or host install in this slice.
 
 - Latest warm wall-clock (2026-07-19):
   parallel_runner check ~0.55-0.65s / build ~0.9-1.1s; system_param check ~0.7-0.9s;

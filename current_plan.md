@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share residual peelBorrowPointerType call sites on Y (2026-07-20):
+  SA-text field/method/Result peels, direct SAB Result/Slice peels, and type-checker
+  field/method/enum/Result peels now consume `lowering_rules.peelBorrowPointerType`
+  instead of local borrow/pointer walk loops. Remaining `while (true)` blocks in
+  emitters are const-fold fixpoints, not type peels. Serial verification: `zig fmt
+  --check` on touched files, `git diff --check`, `zig build -j1 --summary all` 7/7,
+  local SA+SAB focused fixtures for field_compare/nested_len, result_direct,
+  impl_static_methods, borrow_direct, and vec_index_field_assign (all green).
+  No full suite, host install, or concurrent tests were run.
 
 - Latest warm wall-clock (2026-07-19):
   parallel_runner check ~0.55-0.65s / build ~0.9-1.1s; system_param check ~0.7-0.9s;

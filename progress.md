@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Align SA structDeclForType peel with SAB + fold unwrapPointerLikeType (2026-07-20):
+  SA-text `structDeclForType` peels via shared `peelBorrowPointerType`; mutable
+  `unwrapPointerLikeType` is now a thin wrapper. Build 7/7; focused SA/SAB field/
+  borrow/result fixtures green. No full suite or host install.
+
 - Share residual peelBorrowPointerType call sites on Y (2026-07-20):
   SA-text field/method/Result peels, direct SAB Result/Slice peels, and type-checker
   field/method/enum/Result peels now consume `lowering_rules.peelBorrowPointerType`

@@ -3143,7 +3143,7 @@ pub const Codegen = struct {
     }
 
     fn structDeclForType(self: *Codegen, ty: *const ast.Type) ?*ast.StructDecl {
-        const curr = ty;
+        const curr = lowering_rules.peelBorrowPointerType(ty);
         if (curr.* != .user_defined) return null;
         const name = curr.user_defined.name;
         if (self.tc.structs.get(name)) |decl| return decl;

@@ -3114,14 +3114,7 @@ pub fn futureEitherInnerTypes(ty: *const ast.Type) ?MapTypes {
 }
 
 pub fn unwrapPointerLikeType(ty: *ast.Type) *ast.Type {
-    var curr = ty;
-    while (true) {
-        switch (curr.*) {
-            .pointer => |p| curr = p,
-            .borrow => |b| curr = b,
-            else => return curr,
-        }
-    }
+    return @constCast(peelBorrowPointerType(ty));
 }
 
 pub fn isAtomicI32Type(ty: *const ast.Type) bool {

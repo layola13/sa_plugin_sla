@@ -40,6 +40,10 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Align SA structDeclForType peel with SAB + fold unwrapPointerLikeType
+	  (2026-07-20). SA peels via shared helper; mutable unwrap is thin wrapper.
+	  Build 7/7; focused SA/SAB field/borrow/result fixtures green.
+
 	- [x] Share residual peelBorrowPointerType call sites on Y (2026-07-20).
 	  SA field/method/Result, SAB Result/Slice, and type-checker field/method/enum/
 	  Result peels now call `lowering_rules.peelBorrowPointerType`. Build 7/7;

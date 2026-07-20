@@ -18,6 +18,15 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Align SA structDeclForType peel with SAB + fold unwrapPointerLikeType (2026-07-20):
+  SA-text `structDeclForType` now peels borrow/pointer through
+  `lowering_rules.peelBorrowPointerType`, matching direct SAB. Mutable
+  `unwrapPointerLikeType` is now a thin `@constCast` wrapper over the same shared
+  peel. Serial verification: `zig fmt --check`, `git diff --check`, `zig build -j1
+  --summary all` 7/7, local SA+SAB focused fixtures for field_compare/nested_len,
+  borrow_direct, vec_index_field_assign, struct_field_copy_not_move, and
+  result_direct (all green). No full suite or host install in this slice.
+
 - Share residual peelBorrowPointerType call sites on Y (2026-07-20):
   SA-text field/method/Result peels, direct SAB Result/Slice peels, and type-checker
   field/method/enum/Result peels now consume `lowering_rules.peelBorrowPointerType`

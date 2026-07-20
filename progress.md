@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share emit-reachability dynConcreteTypeName peel on Y (2026-07-20):
+  emit reachability peels via shared helper. Build 7/7; dyn/method/result fixtures
+  green. Pre-existing clean-HEAD module-table Zig failures noted separately.
+
 - Fold residual lowering_rules multi-layer peels onto peelBorrowPointerType
   (2026-07-20): option/result/future/array/map/generic/named/string/executor peels
   share one walk. Unit 2/2x3; build 7/7; focused SA/SAB option/result/field green.

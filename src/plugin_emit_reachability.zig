@@ -205,21 +205,13 @@ pub fn collectReachableBlock(
 
 fn dynConcreteTypeName(ty: *const ast.Type) ?[]const u8 {
     if (lowering_rules.dynTraitName(ty) != null) return null;
-    var curr = ty;
-    while (true) {
-        switch (curr.*) {
-            .borrow => |b| curr = b,
-            .pointer => |p| curr = p,
-            .user_defined => |ud| {
-                if (std.mem.startsWith(u8, ud.name, "__dyn_")) return null;
-                if (lowering_rules.smartPointerType(curr)) |smart| {
-                    return dynConcreteTypeName(smart.inner);
-                }
-                return ud.name;
-            },
-            else => return null,
-        }
+    const curr = lowering_rules.peelBorrowPointerType(ty);
+    if (curr.* != .user_defined) return null;
+    if (std.mem.startsWith(u8, curr.user_defined.name, "__dyn_")) return null;
+    if (lowering_rules.smartPointerType(curr)) |smart| {
+        return dynConcreteTypeName(smart.inner);
     }
+    return curr.user_defined.name;
 }
 
 fn markNeededTraitImplForExpr(

@@ -18,6 +18,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share emit-reachability dynConcreteTypeName peel on Y (2026-07-20):
+  `plugin_emit_reachability.dynConcreteTypeName` peels borrow/pointer through
+  `lowering_rules.peelBorrowPointerType` before smart-pointer/dyn name handling.
+  Build 7/7; focused SA+SAB dyn_borrow_arg, impl_static_methods, result_direct green.
+  Note: two `sla module table` Zig filters still fail on clean HEAD
+  (`shares imported type scan surfaces`, `discovers transitive generic function
+  references`) and are unrelated to this peel rewrite.
+
 - Fold residual lowering_rules multi-layer peels onto peelBorrowPointerType
   (2026-07-20): option/result/future/array/map/generic-inner/named/string-like/
   executor-task-buffer peels now call the shared helper instead of local walks.

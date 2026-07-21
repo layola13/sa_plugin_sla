@@ -4540,6 +4540,32 @@ pub fn planValueArgTransfersOwnership(facts: ValueArgOwnershipFacts) bool {
     return !facts.arg_is_copy_value;
 }
 
+/// Shared param/type packaging for `planValueArgTransfersOwnership`. Emitters
+/// only supply the local copy-value fact for the resolved argument type.
+pub fn valueArgTransfersOwnershipFromParam(
+    param: ?ast.Param,
+    arg_ty: ?*const ast.Type,
+    arg_is_copy_value: bool,
+) bool {
+    const target = param orelse return planValueArgTransfersOwnership(.{
+        .param_is_present = false,
+        .param_is_borrow = false,
+        .param_is_move = false,
+        .param_is_by_value_raw_pointer = false,
+        .arg_is_borrow_like = false,
+        .arg_is_copy_value = false,
+    });
+    const ty = arg_ty orelse target.ty;
+    return planValueArgTransfersOwnership(.{
+        .param_is_present = true,
+        .param_is_borrow = target.is_borrow,
+        .param_is_move = target.is_move,
+        .param_is_by_value_raw_pointer = byValueRawPointerParam(target),
+        .arg_is_borrow_like = isBorrowLikeType(ty),
+        .arg_is_copy_value = arg_is_copy_value,
+    });
+}
+
 pub const FnPtrValueArgSlotFacts = struct {
     param_is_present: bool,
     param_is_borrow: bool,
@@ -6558,6 +6584,13 @@ test "shared value-arg ownership and fnptr slot plans" {
         .arg_is_borrow_like = false,
         .arg_is_copy_value = false,
     }));
+    var plain_ty = ast.Type{ .user_defined = .{ .name = "Owned", .generics = &.{} } };
+    const plain_param = ast.Param{ .name = "value", .ty = &plain_ty };
+    try std.testing.expect(!valueArgTransfersOwnershipFromParam(null, null, false));
+    try std.testing.expect(valueArgTransfersOwnershipFromParam(plain_param, &plain_ty, false));
+    try std.testing.expect(!valueArgTransfersOwnershipFromParam(plain_param, &plain_ty, true));
+    const borrow_param = ast.Param{ .name = "value", .ty = &plain_ty, .is_borrow = true };
+    try std.testing.expect(!valueArgTransfersOwnershipFromParam(borrow_param, &plain_ty, false));
 
     try std.testing.expect(!planNeedsFnPtrValueArgSlot(.{
         .param_is_present = true,

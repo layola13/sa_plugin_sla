@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share valueArgTransfersOwnershipFromParam packaging helper (2026-07-21):
+  SA-text and direct-SAB `valueArgTransfersOwnership` wrappers now call shared
+  `valueArgTransfersOwnershipFromParam` instead of duplicating
+  ValueArgOwnershipFacts packaging. Unit ownership 2/2 + materialization 2/2;
+  build 7/7; SA+SAB field_copy/dyn/result green.
+
 - Share callArgIsShallowCopyValueCandidate for planned call-arg input
   (2026-07-21): pure by-value non-Copy identifier shape shared by SA/SAB; emitters
   pass local copy/shallow-copy depth facts. Unit materialization 2/2; build 7/7;

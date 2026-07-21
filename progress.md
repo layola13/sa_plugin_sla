@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share valueArgTransfersOwnershipFromParam packaging helper (2026-07-21):
+  SA/SAB wrappers no longer package ValueArgOwnershipFacts locally. Unit 2/2x2;
+  build 7/7; field_copy/dyn/result SA+SAB green.
+
 - Share callArgIsShallowCopyValueCandidate for planned call-arg input
   (2026-07-21): pure by-value non-Copy identifier shape; emitters pass depth
   facts. Unit 2/2; build 7/7; field_copy/dyn/result SA+SAB green.

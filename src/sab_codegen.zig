@@ -12551,23 +12551,12 @@ pub const Codegen = struct {
     }
 
     fn valueArgTransfersOwnership(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
-        const target_param = param orelse return lowering_rules.planValueArgTransfersOwnership(.{
-            .param_is_present = false,
-            .param_is_borrow = false,
-            .param_is_move = false,
-            .param_is_by_value_raw_pointer = false,
-            .arg_is_borrow_like = false,
-            .arg_is_copy_value = false,
-        });
-        const ty = arg_ty orelse target_param.ty;
-        return lowering_rules.planValueArgTransfersOwnership(.{
-            .param_is_present = true,
-            .param_is_borrow = target_param.is_borrow,
-            .param_is_move = target_param.is_move,
-            .param_is_by_value_raw_pointer = lowering_rules.byValueRawPointerParam(target_param),
-            .arg_is_borrow_like = lowering_rules.isBorrowLikeType(ty),
-            .arg_is_copy_value = self.typeIsCopyValue(ty),
-        });
+        const ty = arg_ty orelse if (param) |p| p.ty else null;
+        return lowering_rules.valueArgTransfersOwnershipFromParam(
+            param,
+            arg_ty,
+            if (ty) |t| self.typeIsCopyValue(t) else false,
+        );
     }
 
     fn stackSlotIdentifierTempNeedsReleaseForParam(self: *Codegen, param: ?ast.Param, arg: *const ast.Node, arg_reg: u32) bool {

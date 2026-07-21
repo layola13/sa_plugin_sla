@@ -3047,6 +3047,40 @@ pub fn isThreadSpawnCall(call: ast.CallExpr) bool {
         call.args.len == 1;
 }
 
+/// Shared pure fact: std-macro template integer literal argument text.
+pub fn isStdMacroTemplateIntegerArg(arg: []const u8) bool {
+    if (arg.len == 0) return false;
+    var start: usize = 0;
+    if (arg[0] == '-') {
+        if (arg.len == 1) return false;
+        start = 1;
+    }
+    for (arg[start..]) |ch| {
+        if (ch < '0' or ch > '9') return false;
+    }
+    return true;
+}
+
+/// Shared pure fact: std-macro template identifier argument text.
+pub fn isStdMacroTemplateIdentArg(arg: []const u8) bool {
+    if (arg.len == 0) return false;
+    for (arg, 0..) |ch, idx| {
+        const is_alpha = (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or ch == '_';
+        const is_digit = ch >= '0' and ch <= '9';
+        if (idx == 0) {
+            if (!is_alpha) return false;
+        } else if (!is_alpha and !is_digit) return false;
+    }
+    return true;
+}
+
+/// Shared pure fact: std-macro template argument text is integer or identifier.
+pub fn isStdMacroTemplateArgSafe(arg: []const u8) bool {
+    if (arg.len == 0) return false;
+    if (isStdMacroTemplateIntegerArg(arg)) return true;
+    return isStdMacroTemplateIdentArg(arg);
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7150,6 +7184,21 @@ test "isDiscardName and isThreadSpawnCall" {
         .generics = &.{},
     };
     try std.testing.expect(!isThreadSpawnCall(bare));
+}
+
+test "isStdMacroTemplate arg classifiers" {
+    try std.testing.expect(isStdMacroTemplateIntegerArg("0"));
+    try std.testing.expect(isStdMacroTemplateIntegerArg("-12"));
+    try std.testing.expect(!isStdMacroTemplateIntegerArg("-"));
+    try std.testing.expect(!isStdMacroTemplateIntegerArg("1a"));
+    try std.testing.expect(isStdMacroTemplateIdentArg("tmp_0"));
+    try std.testing.expect(isStdMacroTemplateIdentArg("_x"));
+    try std.testing.expect(!isStdMacroTemplateIdentArg("1x"));
+    try std.testing.expect(!isStdMacroTemplateIdentArg("a-b"));
+    try std.testing.expect(isStdMacroTemplateArgSafe("42"));
+    try std.testing.expect(isStdMacroTemplateArgSafe("foo"));
+    try std.testing.expect(!isStdMacroTemplateArgSafe(""));
+    try std.testing.expect(!isStdMacroTemplateArgSafe("a b"));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

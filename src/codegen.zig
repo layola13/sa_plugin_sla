@@ -6443,10 +6443,8 @@ pub const Codegen = struct {
     fn collectThreadSpawnInExpr(self: *Codegen, expr: *const ast.Node) CodegenError!void {
         switch (expr.*) {
             .call_expr => |call| {
-                if (call.associated_target) |target| {
-                    if (std.mem.eql(u8, target, "thread") and std.mem.eql(u8, call.func_name, "spawn") and call.args.len == 1) {
-                        _ = try self.threadSpawnHelperForExpr(expr);
-                    }
+                if (lowering_rules.isThreadSpawnCall(call)) {
+                    _ = try self.threadSpawnHelperForExpr(expr);
                 }
                 for (call.args) |arg| try self.collectThreadSpawnInExpr(arg);
             },
@@ -12657,8 +12655,7 @@ pub const Codegen = struct {
                         self.out.writer().print("    store {s}+8, {s} as ptr\n", .{ tuple, chan }) catch return CodegenError.CodegenError;
                         return tuple;
                     }
-                    if (std.mem.eql(u8, target, "thread") and std.mem.eql(u8, call.func_name, "spawn")) {
-                        if (call.args.len != 1) return CodegenError.CodegenError;
+                    if (lowering_rules.isThreadSpawnCall(call)) {
                         const helper = self.thread_spawn_helpers.get(expr) orelse return CodegenError.CodegenError;
                         const slot = try self.newTmp();
                         self.out.writer().print("    {s} = alloc {}\n", .{ slot, helper.slot_size }) catch return CodegenError.CodegenError;

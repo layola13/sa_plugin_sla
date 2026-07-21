@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share std-macro template arg classifiers and residual thread-spawn peels on Y
+  (2026-07-21): Pure template integer/ident/safe args; SAB wrappers thin; SA
+  residual spawn sites use isThreadSpawnCall. Unit 2/2; build 7/7; thread pair
+  SAB, println SAB, derive SA, result green.
+
 - Share isDiscardName and isThreadSpawnCall on Y (2026-07-21):
   Pure discard name + thread::spawn recognition; SA/SAB wrappers thin. Unit
   2/2; build 7/7; thread pair SA+SAB, result green.

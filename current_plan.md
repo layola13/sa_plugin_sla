@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share std-macro template arg classifiers and residual thread-spawn peels on Y
+  (2026-07-21): Pure isStdMacroTemplateInteger/Ident/ArgSafe shared; SAB
+  wrappers thin; remaining SA thread-spawn collection/emit sites use
+  isThreadSpawnCall. Unit 2/2; build 7/7; thread pair SAB, println SAB, derive
+  SA, result green.
+
 - Share isDiscardName and isThreadSpawnCall on Y (2026-07-21):
   Pure discard-binding name and thread::spawn call recognition shared; SA
   discard cleanup and thread-spawn helper path, SAB spawn path consume them.

@@ -4903,41 +4903,15 @@ pub const Codegen = struct {
     }
 
     fn isStdMacroTemplateArgSafe(arg: []const u8) bool {
-        if (arg.len == 0) return false;
-        if (isStdMacroTemplateIntegerArg(arg)) return true;
-        for (arg, 0..) |ch, idx| {
-            const is_alpha = (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or ch == '_';
-            const is_digit = ch >= '0' and ch <= '9';
-            if (idx == 0) {
-                if (!is_alpha) return false;
-            } else if (!is_alpha and !is_digit) return false;
-        }
-        return true;
+        return lowering_rules.isStdMacroTemplateArgSafe(arg);
     }
 
     fn isStdMacroTemplateIntegerArg(arg: []const u8) bool {
-        if (arg.len == 0) return false;
-        var start: usize = 0;
-        if (arg[0] == '-') {
-            if (arg.len == 1) return false;
-            start = 1;
-        }
-        for (arg[start..]) |ch| {
-            if (ch < '0' or ch > '9') return false;
-        }
-        return true;
+        return lowering_rules.isStdMacroTemplateIntegerArg(arg);
     }
 
     fn isStdMacroTemplateIdentArg(arg: []const u8) bool {
-        if (arg.len == 0) return false;
-        for (arg, 0..) |ch, idx| {
-            const is_alpha = (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or ch == '_';
-            const is_digit = ch >= '0' and ch <= '9';
-            if (idx == 0) {
-                if (!is_alpha) return false;
-            } else if (!is_alpha and !is_digit) return false;
-        }
-        return true;
+        return lowering_rules.isStdMacroTemplateIdentArg(arg);
     }
 
     fn stdMacroTemplateArgsSafe(args: []const []const u8) bool {

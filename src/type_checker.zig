@@ -1914,21 +1914,11 @@ pub const TypeChecker = struct {
     }
 
     fn isPointerAbiType(name: []const u8) bool {
-        const raw = std.mem.trim(u8, name, " \t\r");
-        return raw.len > 0 and (raw[0] == '^' or raw[0] == '&' or raw[0] == '*');
+        return lowering_rules.isPointerAbiTypeName(name);
     }
 
     fn isIntegerAbiType(name: []const u8) bool {
-        return std.mem.eql(u8, name, "i8") or
-            std.mem.eql(u8, name, "u8") or
-            std.mem.eql(u8, name, "i16") or
-            std.mem.eql(u8, name, "u16") or
-            std.mem.eql(u8, name, "i32") or
-            std.mem.eql(u8, name, "u32") or
-            std.mem.eql(u8, name, "i64") or
-            std.mem.eql(u8, name, "u64") or
-            std.mem.eql(u8, name, "usize") or
-            std.mem.eql(u8, name, "isize");
+        return lowering_rules.isIntegerAbiTypeName(name);
     }
 
     fn setTypeFromAbiReturn(allocator: std.mem.Allocator, ret: *ast.Type, abi_ret_ty: []const u8) void {
@@ -2535,7 +2525,7 @@ pub const TypeChecker = struct {
 
     fn exprTerminates(expr: *const ast.Node) bool {
         return switch (expr.*) {
-            .call_expr => |call| std.mem.eql(u8, call.func_name, "panic") or std.mem.eql(u8, call.func_name, "panic_msg"),
+            .call_expr => |call| lowering_rules.isPanicBuiltinName(call.func_name),
             .unsafe_expr => |ue| blockTerminates(ue.body),
             .if_expr => |ife| blockTerminates(ife.then_block) and if (ife.else_block) |eb| blockTerminates(eb) else false,
             .match_expr => |mat| blk: {
@@ -4072,7 +4062,7 @@ pub const TypeChecker = struct {
                     return ret;
                 }
 
-                if (std.mem.eql(u8, call.func_name, "panic") or std.mem.eql(u8, call.func_name, "panic_msg")) {
+                if (lowering_rules.isPanicBuiltinName(call.func_name)) {
                     for (call.args) |arg| {
                         _ = try self.checkExpr(arg, scope);
                     }
@@ -4093,20 +4083,11 @@ pub const TypeChecker = struct {
                         return TypeError.TypeMismatch;
                     }
                     const body_call = closure_expr.closure_literal.body.call_expr;
-                    if (!std.mem.eql(u8, body_call.func_name, "panic") and !std.mem.eql(u8, body_call.func_name, "panic_msg")) {
+                    if (!lowering_rules.isPanicBuiltinName(body_call.func_name)) {
                         self.setError("catch_unwind currently only supports direct panic bodies", .{});
                         return TypeError.TypeMismatch;
                     }
                     return try self.makeResultType(try self.makeI32Type(), try self.makeI32Type());
-                }
-
-                if (std.mem.eql(u8, call.func_name, "panic_msg")) {
-                    for (call.args) |arg| {
-                        _ = try self.checkExpr(arg, scope);
-                    }
-                    const ret = try self.allocator.create(ast.Type);
-                    ret.* = .{ .primitive = .void_type };
-                    return ret;
                 }
 
                 if (scope.lookup(call.func_name)) |sym| {
@@ -4866,7 +4847,7 @@ pub const TypeChecker = struct {
 
                 // 3. Check if it's a built-in: stack_alloc, panic
                 if (std.mem.eql(u8, call.func_name, "stack_alloc") or
-                    std.mem.eql(u8, call.func_name, "panic"))
+                    lowering_rules.isPanicBuiltinName(call.func_name))
                 {
                     for (call.args) |arg| {
                         _ = try self.checkExpr(arg, scope);

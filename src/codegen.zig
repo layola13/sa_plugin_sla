@@ -813,7 +813,7 @@ pub const Codegen = struct {
 
     fn emitRelease(self: *Codegen, name: []const u8) CodegenError!void {
         const resolved_name = self.resolveBindingName(name);
-        if (std.mem.eql(u8, resolved_name, "return_ty_sentinel")) return;
+        if (lowering_rules.isInternalSymbol(resolved_name)) return;
         const borrow_temp_release = lowering_rules.planBorrowAddressTempRelease(self.borrow_source_temps.contains(resolved_name));
         if (borrow_temp_release.release_source_temps) {
             if (self.borrow_source_temps.get(resolved_name)) |source_temp| {
@@ -1608,7 +1608,7 @@ pub const Codegen = struct {
         if (self.global_const_bindings.contains(name)) return;
         if (self.tc.funcs.contains(name)) return;
         if (self.tc.macros.contains(name)) return;
-        if (std.mem.eql(u8, name, "return_ty_sentinel")) return;
+        if (lowering_rules.isInternalSymbol(name)) return;
         var info = captures.get(name) orelse ThreadCaptureInfo{};
         if (used_as_fn_ptr) info.is_fn_ptr = true;
         if (ty) |capture_ty| {
@@ -1822,7 +1822,7 @@ pub const Codegen = struct {
             if (func.is_async) return false;
             return isVoidType(func.ret_ty);
         }
-        return std.mem.eql(u8, call.func_name, "panic");
+        return lowering_rules.isPanicBuiltinName(call.func_name);
     }
 
     fn genCallStmt(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
@@ -10764,9 +10764,9 @@ pub const Codegen = struct {
                 try self.emitRelease(self.resolveBindingName(rel.var_name));
             },
             .expr_stmt => |expr| {
-                if (expr.* == .call_expr and self.isVoidCall(&expr.call_expr) and !std.mem.eql(u8, expr.call_expr.func_name, "panic")) {
+                if (expr.* == .call_expr and self.isVoidCall(&expr.call_expr) and !lowering_rules.isPanicBuiltinName(expr.call_expr.func_name)) {
                     try self.genCallStmt(&expr.call_expr, hoisted_allocs);
-                } else if (expr.* == .call_expr and std.mem.eql(u8, expr.call_expr.func_name, "panic")) {
+                } else if (expr.* == .call_expr and lowering_rules.isPanicBuiltinName(expr.call_expr.func_name)) {
                     _ = try self.genExpr(expr, hoisted_allocs);
                 } else if (expr.* == .if_expr or expr.* == .switch_expr or expr.* == .match_expr) {
                     _ = try self.genExpr(expr, hoisted_allocs);
@@ -14554,7 +14554,7 @@ pub const Codegen = struct {
                     const result_reg = try self.newTmp();
                     const body = closure.body;
                     const panics = switch (body.*) {
-                        .call_expr => |body_call| std.mem.eql(u8, body_call.func_name, "panic") or std.mem.eql(u8, body_call.func_name, "panic_msg"),
+                        .call_expr => |body_call| lowering_rules.isPanicBuiltinName(body_call.func_name),
                         else => false,
                     };
                     if (panics) {

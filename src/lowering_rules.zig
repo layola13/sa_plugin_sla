@@ -3123,6 +3123,36 @@ pub fn isNonOwningPointerCarrierCastArg(arg: *const ast.Node) bool {
     };
 }
 
+/// Shared pure ABI type-name fact: pointer carrier markers (`^`, `&`, `*`).
+pub fn isPointerAbiTypeName(name: []const u8) bool {
+    const raw = std.mem.trim(u8, name, " \t\r");
+    return raw.len > 0 and (raw[0] == '^' or raw[0] == '&' or raw[0] == '*');
+}
+
+/// Shared pure ABI type-name fact: integer primitive ABI spellings.
+pub fn isIntegerAbiTypeName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "i8") or
+        std.mem.eql(u8, name, "u8") or
+        std.mem.eql(u8, name, "i16") or
+        std.mem.eql(u8, name, "u16") or
+        std.mem.eql(u8, name, "i32") or
+        std.mem.eql(u8, name, "u32") or
+        std.mem.eql(u8, name, "i64") or
+        std.mem.eql(u8, name, "u64") or
+        std.mem.eql(u8, name, "usize") or
+        std.mem.eql(u8, name, "isize");
+}
+
+/// Shared pure builtin panic function-name fact (`panic` / `panic_msg`).
+pub fn isPanicBuiltinName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "panic") or std.mem.eql(u8, name, "panic_msg");
+}
+
+/// Shared pure bare `panic` / `panic_msg` builtin call recognition.
+pub fn isPanicBuiltinCall(call: ast.CallExpr) bool {
+    return call.associated_target == null and isPanicBuiltinName(call.func_name);
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7296,6 +7326,42 @@ test "isNonOwningPointerCarrierCastArg" {
     try std.testing.expect(isNonOwningPointerCarrierCastArg(&cast_ok));
     try std.testing.expect(!isNonOwningPointerCarrierCastArg(&cast_bad));
     try std.testing.expect(!isNonOwningPointerCarrierCastArg(&ident));
+}
+
+test "isPointerAbiTypeName isIntegerAbiTypeName and isPanicBuiltinCall" {
+    try std.testing.expect(isPointerAbiTypeName("^i32"));
+    try std.testing.expect(isPointerAbiTypeName(" &u8"));
+    try std.testing.expect(isPointerAbiTypeName("*void"));
+    try std.testing.expect(!isPointerAbiTypeName("i32"));
+    try std.testing.expect(isIntegerAbiTypeName("i32"));
+    try std.testing.expect(isIntegerAbiTypeName("usize"));
+    try std.testing.expect(!isIntegerAbiTypeName("f64"));
+    try std.testing.expect(!isIntegerAbiTypeName("^i32"));
+
+    try std.testing.expect(isPanicBuiltinName("panic"));
+    try std.testing.expect(isPanicBuiltinName("panic_msg"));
+    try std.testing.expect(!isPanicBuiltinName("println"));
+    const panic = ast.CallExpr{
+        .func_name = "panic",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(isPanicBuiltinCall(panic));
+    const panic_msg = ast.CallExpr{
+        .func_name = "panic_msg",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(isPanicBuiltinCall(panic_msg));
+    const associated = ast.CallExpr{
+        .func_name = "panic",
+        .args = &.{},
+        .associated_target = "std",
+        .generics = &.{},
+    };
+    try std.testing.expect(!isPanicBuiltinCall(associated));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

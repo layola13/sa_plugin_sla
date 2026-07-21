@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share ABI type-name peels, residual internal-symbol, and panic-name facts on Y
+  (2026-07-21): Pure pointer/integer ABI names + panic name/call peels; typecheck
+  ABI wrappers and SA/SAB capture/release/panic stmt sites thin. Unit 2/2; panic
+  SA+SAB, result SA+SAB, switch SAB, borrow SAB, println SA, field_copy SA green.
+
 - Share switch-default, stack_alloc, internal-symbol, ordering-name, and
   non-owning pointer-cast peels on Y (2026-07-21): Pure pattern/call/name peels
   shared; SA/SAB/typecheck thin. Unit 3/3; switch SA+SAB, stack-slot SA+SAB,

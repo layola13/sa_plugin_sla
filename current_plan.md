@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share ABI type-name peels, residual internal-symbol, and panic-name facts on Y
+  (2026-07-21): Pure isPointerAbiTypeName/isIntegerAbiTypeName/isPanicBuiltinName/
+  isPanicBuiltinCall shared; typecheck ABI wrappers thin; SA/SAB capture/release
+  and panic stmt peels use shared helpers. Unit 2/2; build green; panic SA+SAB,
+  result SA+SAB, switch SAB, borrow SAB, println SA, field_copy SA green.
+
 - Share switch-default, stack_alloc, internal-symbol, ordering-name, and
   non-owning pointer-cast peels on Y (2026-07-21): Pure isSwitchDefaultPattern,
   isStackAllocCall/Node, isInternalSymbol, isOrderingName,

@@ -3092,7 +3092,7 @@ pub const Codegen = struct {
         if (locals.contains(name)) return;
         if (self.tc.funcs.contains(name)) return;
         if (self.tc.macros.contains(name)) return;
-        if (std.mem.eql(u8, name, "return_ty_sentinel")) return;
+        if (lowering_rules.isInternalSymbol(name)) return;
         if (captures.seen.contains(name)) return;
         const capture_ty = ty orelse self.localType(name) orelse return Error.MissingType;
         const offset = 16 + captures.ordered.items.len * 8;
@@ -8732,7 +8732,7 @@ pub const Codegen = struct {
             .var_stmt => |v| try self.genMacroVar(v, ctx),
             .assign_stmt => |assign| try self.genMacroAssign(assign, ctx),
             .expr_stmt => |expr| {
-                if (expr.* == .call_expr and std.mem.eql(u8, expr.call_expr.func_name, "panic")) {
+                if (expr.* == .call_expr and lowering_rules.isPanicBuiltinName(expr.call_expr.func_name)) {
                     _ = try self.genMacroExpr(expr, ctx);
                     return;
                 }
@@ -8866,7 +8866,7 @@ pub const Codegen = struct {
             .expr_stmt => |expr| {
                 if (expr.* == .if_expr or expr.* == .switch_expr) {
                     _ = try self.genExpr(expr);
-                } else if (expr.* == .call_expr and std.mem.eql(u8, expr.call_expr.func_name, "panic")) {
+                } else if (expr.* == .call_expr and lowering_rules.isPanicBuiltinName(expr.call_expr.func_name)) {
                     _ = try self.genExpr(expr);
                 } else if (expr.* == .call_expr) {
                     if (self.tc.macros.get(expr.call_expr.func_name)) |macro_decl| {

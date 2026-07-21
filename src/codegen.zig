@@ -10875,27 +10875,23 @@ pub const Codegen = struct {
             const update_reg = try self.genExpr(update_expr, hoisted_allocs);
             for (struct_decl.fields) |decl_field| {
                 const plan = lowering_rules.planStructLiteralField(struct_decl, lit, decl_field) orelse return CodegenError.CodegenError;
-                if (plan.source != .update) continue;
+                if (!plan.isUpdate()) continue;
                 const layout = self.aggregateFieldLayout(lit.ty, decl_field.name) orelse return CodegenError.CodegenError;
                 const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
                 const loaded_reg = try self.newTmp();
                 self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ loaded_reg, update_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-                switch (transfer) {
-                    .direct => {
-                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, loaded_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                        if (plan.release_loaded) try self.emitRelease(loaded_reg);
-                    },
-                    .deep_copy => {
-                        const copied = try self.newTmp();
-                        try self.genCopyValueInto(copied, loaded_reg, plan.field_ty);
-                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
-                        if (plan.release_loaded) try self.emitRelease(loaded_reg);
-                    },
-                    .move => {
-                        const move_reg = if (std.mem.startsWith(u8, loaded_reg, "^")) loaded_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{loaded_reg});
-                        self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                    },
-                }
+                if (transfer.isDirect()) {
+                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, loaded_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                    if (plan.release_loaded) try self.emitRelease(loaded_reg);
+                } else if (transfer.isDeepCopy()) {
+                    const copied = try self.newTmp();
+                    try self.genCopyValueInto(copied, loaded_reg, plan.field_ty);
+                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                    if (plan.release_loaded) try self.emitRelease(loaded_reg);
+                } else if (transfer.isMove()) {
+                    const move_reg = if (std.mem.startsWith(u8, loaded_reg, "^")) loaded_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{loaded_reg});
+                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                } else unreachable;
             }
             if (callArgNeedsRelease(update_expr)) try self.emitRelease(update_reg);
         }
@@ -10963,26 +10959,22 @@ pub const Codegen = struct {
                     continue;
                 }
             }
-            switch (transfer) {
-                .deep_copy => {
-                    const source_reg = try self.genExpr(value, hoisted_allocs);
-                    const copied = try self.newTmp();
-                    try self.genCopyValueInto(copied, source_reg, plan.field_ty);
-                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
-                    if (callArgNeedsRelease(value)) try self.emitRelease(source_reg);
-                },
-                .direct => {
-                    const val_reg = try self.genExpr(value, hoisted_allocs);
-                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                    if (callArgNeedsRelease(value)) try self.emitRelease(val_reg);
-                },
-                .move => {
-                    const val_reg = try self.genExpr(value, hoisted_allocs);
-                    const move_reg = if (std.mem.startsWith(u8, val_reg, "^")) val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg});
-                    self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
-                    try self.markMovedExprBinding(value, val_reg);
-                },
-            }
+            if (transfer.isDeepCopy()) {
+                const source_reg = try self.genExpr(value, hoisted_allocs);
+                const copied = try self.newTmp();
+                try self.genCopyValueInto(copied, source_reg, plan.field_ty);
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, copied, layout.ty_str }) catch return CodegenError.CodegenError;
+                if (callArgNeedsRelease(value)) try self.emitRelease(source_reg);
+            } else if (transfer.isDirect()) {
+                const val_reg = try self.genExpr(value, hoisted_allocs);
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                if (callArgNeedsRelease(value)) try self.emitRelease(val_reg);
+            } else if (transfer.isMove()) {
+                const val_reg = try self.genExpr(value, hoisted_allocs);
+                const move_reg = if (std.mem.startsWith(u8, val_reg, "^")) val_reg else try std.fmt.allocPrint(self.allocator, "^{s}", .{val_reg});
+                self.out.writer().print("    store {s}+{}, {s} as {s}\n", .{ target, layout.offset, move_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                try self.markMovedExprBinding(value, val_reg);
+            } else unreachable;
         }
     }
 

@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share StructLiteralFieldPlan source/transfer predicates (2026-07-21):
+  `StructLiteralFieldPlan` exposes isExplicit/isUpdate; transfer enum exposes
+  isDirect/isDeepCopy/isMove. SA-text and direct-SAB struct-literal/update
+  paths consume those helpers. Unit `shared struct literal field plan` 1/1;
+  build 7/7; SA+SAB struct_field_copy_not_move, struct_update, result_direct green.
+
 - Consume CallArgMaterializationPlan predicates in SA/SAB emitters (2026-07-21):
   SA-text and both direct-SAB planned call-arg paths dispatch via
   `materialization.is*()` helpers instead of switching on `materialization.kind`.

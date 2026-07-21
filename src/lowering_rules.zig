@@ -2228,6 +2228,16 @@ pub const StructLiteralFieldTransfer = enum {
     direct,
     deep_copy,
     move,
+
+    pub fn isDirect(self: StructLiteralFieldTransfer) bool {
+        return self == .direct;
+    }
+    pub fn isDeepCopy(self: StructLiteralFieldTransfer) bool {
+        return self == .deep_copy;
+    }
+    pub fn isMove(self: StructLiteralFieldTransfer) bool {
+        return self == .move;
+    }
 };
 
 pub const StructLiteralFieldPlan = struct {
@@ -2241,6 +2251,13 @@ pub const StructLiteralFieldPlan = struct {
     /// so identifier-backed sources are not released (move-by-reuse) while
     /// temporary sources are released.
     release_loaded: bool,
+
+    pub fn isExplicit(self: StructLiteralFieldPlan) bool {
+        return self.source == .explicit;
+    }
+    pub fn isUpdate(self: StructLiteralFieldPlan) bool {
+        return self.source == .update;
+    }
 };
 
 pub const SliceAbi = struct {
@@ -5126,14 +5143,14 @@ test "shared struct literal update field plan" {
     };
 
     const x_plan = planStructLiteralField(&decl, &lit, fields[0]) orelse return error.TestExpectedEqual;
-    try std.testing.expectEqual(StructLiteralFieldSource.explicit, x_plan.source);
+    try std.testing.expect(x_plan.isExplicit());
     try std.testing.expect(x_plan.value.? == &x_value);
     try std.testing.expectEqual(@as(usize, 0), x_plan.layout.offset);
     try std.testing.expect(x_plan.field_ty == &i32_ty);
     try std.testing.expect(!x_plan.release_loaded);
 
     const y_plan = planStructLiteralField(&decl, &lit, fields[1]) orelse return error.TestExpectedEqual;
-    try std.testing.expectEqual(StructLiteralFieldSource.update, y_plan.source);
+    try std.testing.expect(y_plan.isUpdate());
     try std.testing.expect(y_plan.value == null);
     try std.testing.expectEqual(@as(usize, 4), y_plan.layout.offset);
     try std.testing.expect(y_plan.field_ty == &i32_ty);
@@ -5141,7 +5158,7 @@ test "shared struct literal update field plan" {
     try std.testing.expect(!y_plan.release_loaded);
     // i32 is a primitive scalar, not pointer-backed.
     try std.testing.expect(!structFieldIsPointerBacked(&i32_ty));
-    try std.testing.expectEqual(StructLiteralFieldTransfer.direct, planStructLiteralFieldTransfer(y_plan, false));
+    try std.testing.expect(planStructLiteralFieldTransfer(y_plan, false).isDirect());
 
     var raw_ptr_ty = ast.Type{ .primitive = .void_type };
     var pointer_ty = ast.Type{ .pointer = &i32_ty };
@@ -5166,8 +5183,8 @@ test "shared struct literal update field plan" {
     };
     const nested_plan = planStructLiteralField(&nested_decl, &nested_lit, nested_fields[0]) orelse return error.TestExpectedEqual;
     try std.testing.expect(structFieldIsPointerBacked(nested_plan.field_ty));
-    try std.testing.expectEqual(StructLiteralFieldTransfer.move, planStructLiteralFieldTransfer(nested_plan, false));
-    try std.testing.expectEqual(StructLiteralFieldTransfer.deep_copy, planStructLiteralFieldTransfer(nested_plan, true));
+    try std.testing.expect(planStructLiteralFieldTransfer(nested_plan, false).isMove());
+    try std.testing.expect(planStructLiteralFieldTransfer(nested_plan, true).isDeepCopy());
 
     var nested_identifier = ast.Node{ .identifier = "existing_nested" };
     const nested_identifier_fields = [_]ast.StructLiteralField{.{ .name = "payload", .value = &nested_identifier }};
@@ -5177,7 +5194,7 @@ test "shared struct literal update field plan" {
         .update_expr = null,
     };
     const explicit_nested_identifier_plan = planStructLiteralField(&nested_decl, &nested_identifier_lit, nested_fields[0]) orelse return error.TestExpectedEqual;
-    try std.testing.expectEqual(StructLiteralFieldTransfer.deep_copy, planStructLiteralFieldTransfer(explicit_nested_identifier_plan, true));
+    try std.testing.expect(planStructLiteralFieldTransfer(explicit_nested_identifier_plan, true).isDeepCopy());
 
     var moved_nested_identifier = ast.Node{ .move_expr = .{ .expr = &nested_identifier } };
     const moved_nested_identifier_fields = [_]ast.StructLiteralField{.{ .name = "payload", .value = &moved_nested_identifier }};
@@ -5187,7 +5204,7 @@ test "shared struct literal update field plan" {
         .update_expr = null,
     };
     const moved_nested_identifier_plan = planStructLiteralField(&nested_decl, &moved_nested_identifier_lit, nested_fields[0]) orelse return error.TestExpectedEqual;
-    try std.testing.expectEqual(StructLiteralFieldTransfer.move, planStructLiteralFieldTransfer(moved_nested_identifier_plan, true));
+    try std.testing.expect(planStructLiteralFieldTransfer(moved_nested_identifier_plan, true).isMove());
 
     const nested_temp_lit = ast.StructLiteral{ .ty = undefined, .fields = &.{}, .update_expr = null };
     var nested_temp = ast.Node{ .struct_literal = nested_temp_lit };
@@ -5198,7 +5215,7 @@ test "shared struct literal update field plan" {
         .update_expr = null,
     };
     const explicit_nested_temp_plan = planStructLiteralField(&nested_decl, &nested_temp_outer_lit, nested_fields[0]) orelse return error.TestExpectedEqual;
-    try std.testing.expectEqual(StructLiteralFieldTransfer.deep_copy, planStructLiteralFieldTransfer(explicit_nested_temp_plan, true));
+    try std.testing.expect(planStructLiteralFieldTransfer(explicit_nested_temp_plan, true).isDeepCopy());
 }
 
 test "shared enum tag/payload layout" {

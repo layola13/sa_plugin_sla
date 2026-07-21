@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share StructLiteralFieldPlan source/transfer predicates (2026-07-21):
+  isExplicit/isUpdate + transfer isDirect/isDeepCopy/isMove drive SA/SAB.
+  Unit 1/1; build 7/7; struct_update/field_copy/result SA+SAB green.
+
 - Consume CallArgMaterializationPlan predicates in SA/SAB emitters (2026-07-21):
   planned call-arg paths use is* helpers. Build 7/7; materialization 2/2;
   dyn/borrow/result/method SA+SAB green.

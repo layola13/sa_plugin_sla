@@ -8169,50 +8169,40 @@ pub const Codegen = struct {
             const layout = plan.layout;
             const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
             const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
-            switch (plan.source) {
-                .explicit => {
-                    const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
-                    switch (transfer) {
-                        .deep_copy => {
-                            const source_reg = try self.genMacroExpr(value, ctx);
-                            const copied = try self.genCopyValue(source_reg, plan.field_ty);
-                            try self.emitStore(dst, layout.offset, copied, prim);
-                            try self.emitRelease(copied);
-                        },
-                        .direct, .move => {
-                            const value_reg = try self.genMacroExpr(value, ctx);
-                            if (transfer == .move) {
-                                try self.emitStore(dst, layout.offset, value_reg, prim);
-                                try self.emitConsumedMarker(value_reg);
-                                try self.consumeStoredMoveValue(value, value_reg, plan.field_ty);
-                            } else {
-                                try self.emitStore(dst, layout.offset, value_reg, prim);
-                                try self.releaseStoredExprResultIfNeeded(value, value_reg, plan.field_ty);
-                            }
-                        },
+            if (plan.isExplicit()) {
+                const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
+                if (transfer.isDeepCopy()) {
+                    const source_reg = try self.genMacroExpr(value, ctx);
+                    const copied = try self.genCopyValue(source_reg, plan.field_ty);
+                    try self.emitStore(dst, layout.offset, copied, prim);
+                    try self.emitRelease(copied);
+                } else if (transfer.isDirect() or transfer.isMove()) {
+                    const value_reg = try self.genMacroExpr(value, ctx);
+                    if (transfer.isMove()) {
+                        try self.emitStore(dst, layout.offset, value_reg, prim);
+                        try self.emitConsumedMarker(value_reg);
+                        try self.consumeStoredMoveValue(value, value_reg, plan.field_ty);
+                    } else {
+                        try self.emitStore(dst, layout.offset, value_reg, prim);
+                        try self.releaseStoredExprResultIfNeeded(value, value_reg, plan.field_ty);
                     }
-                },
-                .update => {
-                    const src = update_reg orelse return Error.UnsupportedSabDirectFeature;
-                    const loaded = try self.intern(try self.newTmp());
-                    try self.emitLoad(loaded, src, layout.offset, prim);
-                    switch (transfer) {
-                        .direct => {
-                            try self.emitStore(dst, layout.offset, loaded, prim);
-                            if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
-                        },
-                        .deep_copy => {
-                            const copied = try self.genCopyValue(loaded, plan.field_ty);
-                            try self.emitStore(dst, layout.offset, copied, prim);
-                            try self.emitRelease(copied);
-                            if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
-                        },
-                        .move => {
-                            try self.emitStore(dst, layout.offset, loaded, prim);
-                        },
-                    }
-                },
-            }
+                } else unreachable;
+            } else if (plan.isUpdate()) {
+                const src = update_reg orelse return Error.UnsupportedSabDirectFeature;
+                const loaded = try self.intern(try self.newTmp());
+                try self.emitLoad(loaded, src, layout.offset, prim);
+                if (transfer.isDirect()) {
+                    try self.emitStore(dst, layout.offset, loaded, prim);
+                    if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                } else if (transfer.isDeepCopy()) {
+                    const copied = try self.genCopyValue(loaded, plan.field_ty);
+                    try self.emitStore(dst, layout.offset, copied, prim);
+                    try self.emitRelease(copied);
+                    if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                } else if (transfer.isMove()) {
+                    try self.emitStore(dst, layout.offset, loaded, prim);
+                } else unreachable;
+            } else unreachable;
         }
 
         return dst;
@@ -13655,7 +13645,7 @@ pub const Codegen = struct {
             // element into the inline field region (needed for shapes like
             // `values: [ptr; N]` in sla_ts RuntimeArgs).
             if (plan.field_ty.* == .array) {
-                if (plan.source != .explicit) return Error.UnsupportedSabDirectFeature;
+                if (!plan.isExplicit()) return Error.UnsupportedSabDirectFeature;
                 const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
                 const later_mark = if (nodeMayContainCall(value))
                     try self.pushStructLiteralLaterFieldExprsFromPlans(plans, field_index)
@@ -13670,7 +13660,7 @@ pub const Codegen = struct {
             const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
             var transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
             var copy_elided_move = false;
-            if (transfer == .deep_copy and plan.source == .explicit) {
+            if (transfer.isDeepCopy() and plan.isExplicit()) {
                 if (plan.value) |field_value| {
                     if (field_value.* == .identifier and !self.identifierMustStayLiveForLaterUse(field_value.identifier)) {
                         transfer = .move;
@@ -13678,77 +13668,67 @@ pub const Codegen = struct {
                     }
                 }
             }
-            switch (plan.source) {
-                .explicit => {
-                    const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
-                    const later_mark = if (nodeMayContainCall(value))
-                        try self.pushStructLiteralLaterFieldExprsFromPlans(plans, field_index)
+            if (plan.isExplicit()) {
+                const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
+                const later_mark = if (nodeMayContainCall(value))
+                    try self.pushStructLiteralLaterFieldExprsFromPlans(plans, field_index)
+                else
+                    self.current_expr_later_nodes.items.len;
+                defer self.popExprLaterNodesTo(later_mark);
+                if (transfer.isDeepCopy()) {
+                    const source_reg = try self.genExpr(value);
+                    const copied = try self.genCopyValue(source_reg, plan.field_ty);
+                    try self.emitStore(dst, layout.offset, copied, prim);
+                    try self.emitRelease(copied);
+                } else if (transfer.isDirect() or transfer.isMove()) {
+                    const value_reg = if (transfer.isMove() and value.* == .move_expr)
+                        try self.genExpr(value.move_expr.expr)
                     else
-                        self.current_expr_later_nodes.items.len;
-                    defer self.popExprLaterNodesTo(later_mark);
-                    switch (transfer) {
-                        .deep_copy => {
-                            const source_reg = try self.genExpr(value);
-                            const copied = try self.genCopyValue(source_reg, plan.field_ty);
-                            try self.emitStore(dst, layout.offset, copied, prim);
-                            try self.emitRelease(copied);
-                        },
-                        .direct, .move => {
-                            const value_reg = if (transfer == .move and value.* == .move_expr)
-                                try self.genExpr(value.move_expr.expr)
-                            else
-                                try self.genExpr(value);
-                            const explicit_move = value.* == .move_expr;
-                            const moved_value = if (explicit_move) value.move_expr.expr else value;
-                            const moves_identifier = moved_id: {
-                                if (moved_value.* != .identifier) break :moved_id false;
-                                if (lowering_rules.storedValueMovesIdentifier(moved_value, plan.field_ty, self.typeIsCopyValue(plan.field_ty)) != null) break :moved_id true;
-                                break :moved_id explicit_move or copy_elided_move;
-                            };
-                            if (transfer == .move and !explicit_move and !copy_elided_move and !moves_identifier and self.typeIsShallowCopyCallArgValue(plan.field_ty, 0)) {
-                                const copied = try self.genShallowCopyCallArgValue(value_reg, plan.field_ty);
-                                try self.emitStore(dst, layout.offset, copied, prim);
-                                try self.emitConsumedMarker(copied);
-                                try self.releaseMovedShallowCopySource(value, value_reg, plan.field_ty);
-                            } else {
-                                try self.emitStore(dst, layout.offset, value_reg, prim);
-                            }
-                            if (transfer == .move) {
-                                if (moved_value.* == .identifier) {
-                                    if (moves_identifier) {
-                                        if (self.localReg(moved_value.identifier)) |reg| try pending_moved_fields.put(reg, {});
-                                    }
-                                } else if (lowering_rules.exprResultNeedsRelease(moved_value)) {
-                                    try self.emitConsumedMarker(value_reg);
-                                    try self.markConsumed(value_reg);
-                                }
-                            } else {
-                                try self.releaseStoredExprResultIfNeeded(value, value_reg, plan.field_ty);
-                            }
-                        },
+                        try self.genExpr(value);
+                    const explicit_move = value.* == .move_expr;
+                    const moved_value = if (explicit_move) value.move_expr.expr else value;
+                    const moves_identifier = moved_id: {
+                        if (moved_value.* != .identifier) break :moved_id false;
+                        if (lowering_rules.storedValueMovesIdentifier(moved_value, plan.field_ty, self.typeIsCopyValue(plan.field_ty)) != null) break :moved_id true;
+                        break :moved_id explicit_move or copy_elided_move;
+                    };
+                    if (transfer.isMove() and !explicit_move and !copy_elided_move and !moves_identifier and self.typeIsShallowCopyCallArgValue(plan.field_ty, 0)) {
+                        const copied = try self.genShallowCopyCallArgValue(value_reg, plan.field_ty);
+                        try self.emitStore(dst, layout.offset, copied, prim);
+                        try self.emitConsumedMarker(copied);
+                        try self.releaseMovedShallowCopySource(value, value_reg, plan.field_ty);
+                    } else {
+                        try self.emitStore(dst, layout.offset, value_reg, prim);
                     }
-                },
-                .update => {
-                    const src = update_reg orelse return Error.UnsupportedSabDirectFeature;
-                    const loaded = try self.intern(try self.newTmp());
-                    try self.emitLoad(loaded, src, layout.offset, prim);
-                    switch (transfer) {
-                        .direct => {
-                            try self.emitStore(dst, layout.offset, loaded, prim);
-                            if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
-                        },
-                        .deep_copy => {
-                            const copied = try self.genCopyValue(loaded, plan.field_ty);
-                            try self.emitStore(dst, layout.offset, copied, prim);
-                            try self.emitRelease(copied);
-                            if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
-                        },
-                        .move => {
-                            try self.emitStore(dst, layout.offset, loaded, prim);
-                        },
+                    if (transfer.isMove()) {
+                        if (moved_value.* == .identifier) {
+                            if (moves_identifier) {
+                                if (self.localReg(moved_value.identifier)) |reg| try pending_moved_fields.put(reg, {});
+                            }
+                        } else if (lowering_rules.exprResultNeedsRelease(moved_value)) {
+                            try self.emitConsumedMarker(value_reg);
+                            try self.markConsumed(value_reg);
+                        }
+                    } else {
+                        try self.releaseStoredExprResultIfNeeded(value, value_reg, plan.field_ty);
                     }
-                },
-            }
+                } else unreachable;
+            } else if (plan.isUpdate()) {
+                const src = update_reg orelse return Error.UnsupportedSabDirectFeature;
+                const loaded = try self.intern(try self.newTmp());
+                try self.emitLoad(loaded, src, layout.offset, prim);
+                if (transfer.isDirect()) {
+                    try self.emitStore(dst, layout.offset, loaded, prim);
+                    if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                } else if (transfer.isDeepCopy()) {
+                    const copied = try self.genCopyValue(loaded, plan.field_ty);
+                    try self.emitStore(dst, layout.offset, copied, prim);
+                    try self.emitRelease(copied);
+                    if (plan.release_loaded and !self.isLocalReg(loaded)) try self.emitRelease(loaded);
+                } else if (transfer.isMove()) {
+                    try self.emitStore(dst, layout.offset, loaded, prim);
+                } else unreachable;
+            } else unreachable;
         }
 
         // Emit SAB-visible move_ for locals transferred into the struct so the

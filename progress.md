@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Reserve expand-path root import / ordered-module capacity + warm residual
+  (2026-07-21): pre-size root_import_groups/ordered_modules/visited_modules.
+  Module table 15/15; build 7/7. Warm parallel_runner check expand ~230ms;
+  build expand ~458ms / codegen ~153ms. Residual: resolve-roots + selective append.
+
 - Share SpaceshipPlan predicates and SA/SAB consumption (2026-07-20):
   planSpaceship drives both emitters; isNumeric/isSameStruct helpers. Unit 2/2;
   build 7/7; spaceship_cmp SA/SAB 3/3.

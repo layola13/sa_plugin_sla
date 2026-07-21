@@ -18,6 +18,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Reserve expand-path root import / ordered-module capacity + warm residual
+  (2026-07-21): pre-size `root_import_groups`, `ordered_modules`, and
+  `visited_modules` during import expand resolve-roots. Module table 15/15;
+  build 7/7; focused SA/SAB result/spaceship green. Warm parallel_runner sample:
+  check import-expand ~230ms / typecheck ~8ms; build import-expand ~458ms /
+  sa-codegen ~153ms. Residual still dominated by resolve-roots getOrParse and
+  selective append on large graphs.
+
 - Share SpaceshipPlan predicates and SA/SAB consumption (2026-07-20):
   `SpaceshipPlan` exposes `isNumeric()` / `isSameStruct()`; SA-text
   `genSpaceshipExpr` and direct SAB `genSpaceship` both consume

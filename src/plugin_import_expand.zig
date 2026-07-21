@@ -987,6 +987,11 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
     defer ordered_modules.deinit();
     var visited_modules = std.StringHashMap(void).init(allocator);
     defer visited_modules.deinit();
+    // Upper-bound pre-size for root import_decl fan-out. Real ECS graphs still grow
+    // beyond this during recursive discovery; the reservation only cuts early churn.
+    try root_import_groups.ensureTotalCapacity(root_import_groups.items.len + program.program.decls.len);
+    try ordered_modules.ensureTotalCapacity(32);
+    try visited_modules.ensureTotalCapacity(32);
 
     for (program.program.decls) |decl| {
         if (decl.* != .import_decl) continue;

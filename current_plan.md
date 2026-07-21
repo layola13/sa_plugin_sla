@@ -18,6 +18,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share callArgIsCopyStructValue for planned call-arg input (2026-07-21):
+  Pure helper classifies by-value Copy-struct identifier args; SA-text and both
+  direct-SAB planned call-arg paths consume it instead of local formulas. Unit
+  materialization 2/2; build 7/7; SA+SAB struct_field_copy/dyn/result green.
+
 - Share StructLiteralFieldPlan source/transfer predicates (2026-07-21):
   `StructLiteralFieldPlan` exposes isExplicit/isUpdate; transfer enum exposes
   isDirect/isDeepCopy/isMove. SA-text and direct-SAB struct-literal/update

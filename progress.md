@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share callArgIsCopyStructValue for planned call-arg input (2026-07-21):
+  Pure by-value Copy-struct identifier classifier shared by SA/SAB. Unit 2/2;
+  build 7/7; field_copy/dyn/result SA+SAB green.
+
 - Share StructLiteralFieldPlan source/transfer predicates (2026-07-21):
   isExplicit/isUpdate + transfer isDirect/isDeepCopy/isMove drive SA/SAB.
   Unit 1/1; build 7/7; struct_update/field_copy/result SA+SAB green.

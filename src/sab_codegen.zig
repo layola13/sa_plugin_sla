@@ -12605,7 +12605,11 @@ pub const Codegen = struct {
             .abi_borrow_auto_borrow = abi_borrow_auto_borrow,
             .array_to_slice_borrow = self.tc.array_to_slice_borrow_args.contains(arg),
             .dyn_borrow_trait_name = self.tc.dyn_borrow_args.get(arg),
-            .copy_struct_value = if (param) |p| !p.is_borrow and !p.is_move and arg.* == .identifier and self.typeIsCopyStruct(p.ty) else false,
+            .copy_struct_value = lowering_rules.callArgIsCopyStructValue(
+                arg,
+                param,
+                if (param) |p| self.typeIsCopyStruct(p.ty) else false,
+            ),
             .generated_fn_ptr_identifier = self.isGeneratedFnPtrValueArg(arg, param),
             .local_fn_ptr_identifier = self.isLocalFnPtrValueArg(arg, param),
             .preserve_identifier_for_later_use = arg.* == .identifier and self.identifierMustStayLiveForLaterUse(arg.identifier),
@@ -12838,7 +12842,11 @@ pub const Codegen = struct {
             .array_to_slice_borrow = self.tc.array_to_slice_borrow_args.contains(effective_arg) or
                 try self.macroArrayToSliceBorrowArg(arg, ctx, param),
             .dyn_borrow_trait_name = self.tc.dyn_borrow_args.get(effective_arg),
-            .copy_struct_value = if (param) |p| !p.is_borrow and !p.is_move and effective_arg.* == .identifier and self.typeIsCopyStruct(p.ty) else false,
+            .copy_struct_value = lowering_rules.callArgIsCopyStructValue(
+                effective_arg,
+                param,
+                if (param) |p| self.typeIsCopyStruct(p.ty) else false,
+            ),
             .generated_fn_ptr_identifier = self.generatedFnPtrIdentifierArg(effective_arg),
             .generated_scalar_const_identifier = self.generatedScalarConstIdentifierArg(effective_arg),
             .preserve_identifier_for_later_use = effective_arg.* == .identifier and self.identifierMustStayLiveForLaterUse(effective_arg.identifier),

@@ -9298,10 +9298,12 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
         options: CallArgLoweringOptions,
     ) CodegenError!LoweredCallArg {
-        const copy_struct_value = if (options.param) |param|
-            options.include_copy_struct_value and !param.is_borrow and !param.is_move and arg.* == .identifier and self.typeIsCopyStruct(param.ty)
-        else
-            false;
+        const copy_struct_value = options.include_copy_struct_value and
+            lowering_rules.callArgIsCopyStructValue(
+                arg,
+                options.param,
+                if (options.param) |param| self.typeIsCopyStruct(param.ty) else false,
+            );
         const arg_ty = self.resolvedTypeForExpr(arg);
         const shallow_copy_value = if (options.param) |param|
             !param.is_borrow and !param.is_move and

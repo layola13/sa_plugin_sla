@@ -4399,6 +4399,19 @@ pub fn callArgUsesRawPointerStringLiteralValue(arg: *const ast.Node, param: ast.
     return byValueRawPointerParam(param);
 }
 
+/// Shared pure predicate for by-value Copy-struct identifier args that both
+/// emitters lower through `copy_struct_value` materialization.
+pub fn callArgIsCopyStructValue(
+    arg: *const ast.Node,
+    param: ?ast.Param,
+    param_is_copy_struct: bool,
+) bool {
+    const target = param orelse return false;
+    if (target.is_borrow or target.is_move) return false;
+    if (arg.* != .identifier) return false;
+    return param_is_copy_struct;
+}
+
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
     if (input.param) |param| {
         if (callArgUsesRawPointerStringLiteralValue(arg, param)) {
@@ -4946,6 +4959,10 @@ test "shared lowering rules classify call materialization decisions" {
     });
     try std.testing.expect(statement_receiver_plan.isValue());
 
+    try std.testing.expect(callArgIsCopyStructValue(&value, plain_param, true));
+    try std.testing.expect(!callArgIsCopyStructValue(&value, plain_param, false));
+    try std.testing.expect(!callArgIsCopyStructValue(&value, borrow_param, true));
+    try std.testing.expect(!callArgIsCopyStructValue(&borrowed_value, plain_param, true));
     const copy_plan = planCallArgMaterialization(&value, .{ .copy_struct_value = true });
     try std.testing.expect(copy_plan.isCopyStructValue());
     try std.testing.expect(copy_plan.release_after_call);

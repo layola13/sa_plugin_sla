@@ -1627,13 +1627,10 @@ pub const Codegen = struct {
     }
 
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
-        if (depth > 8) return false;
         // Nested std collections are only shallow-copy when not the top-level
-        // call-arg owner (depth > 0), matching SA-text.
-        if (lowering_rules.isStdCollectionType(ty)) return depth > 0;
+        // call-arg owner (depth > 0), matching SA-text via shared base facts.
+        if (lowering_rules.shallowCopyCallArgValueBase(ty, depth)) |decision| return decision;
         return switch (ty.*) {
-            .primitive => true,
-            .pointer, .borrow, .fn_ptr => true,
             .tuple => |tuple| blk: {
                 for (tuple.elems) |elem| {
                     if (!self.typeIsShallowCopyCallArgValue(elem, depth + 1)) break :blk false;

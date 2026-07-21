@@ -4431,6 +4431,19 @@ pub fn callArgIsShallowCopyValueCandidate(
     return arg_is_shallow_copy_call_arg_value;
 }
 
+/// Shared pure leaf/base decisions for recursive shallow-copy call-arg typing.
+/// Returns null when the emitter must recurse into aggregates or look up
+/// user-defined/enum decls.
+pub fn shallowCopyCallArgValueBase(ty: *const ast.Type, depth: usize) ?bool {
+    if (depth > 8) return false;
+    if (isStdCollectionType(ty)) return depth > 0;
+    return switch (ty.*) {
+        .primitive, .pointer, .borrow, .fn_ptr => true,
+        .tuple, .array, .user_defined => null,
+        else => false,
+    };
+}
+
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
     if (input.param) |param| {
         if (callArgUsesRawPointerStringLiteralValue(arg, param)) {
@@ -6680,6 +6693,24 @@ test "shared value-arg ownership and fnptr slot plans" {
     var i32_ty = ast.Type{ .primitive = .i32 };
     try std.testing.expect(!vecElementPushTransfersOwnership(&i32_ty, true));
     try std.testing.expect(vecElementPushTransfersOwnership(&i32_ty, false));
+}
+
+test "shallowCopyCallArgValueBase classifies pure leaves" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var ptr_ty = ast.Type{ .pointer = &i32_ty };
+    var borrow_ty = ast.Type{ .borrow = &i32_ty };
+    var fn_ty = ast.Type{ .fn_ptr = .{ .abi = null, .params = &.{}, .ret = &i32_ty } };
+    var gens = [_]*ast.Type{&i32_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
+    var tuple_ty = ast.Type{ .tuple = .{ .elems = gens[0..] } };
+    try std.testing.expect(shallowCopyCallArgValueBase(&i32_ty, 0).?);
+    try std.testing.expect(shallowCopyCallArgValueBase(&ptr_ty, 0).?);
+    try std.testing.expect(shallowCopyCallArgValueBase(&borrow_ty, 0).?);
+    try std.testing.expect(shallowCopyCallArgValueBase(&fn_ty, 0).?);
+    try std.testing.expect(!shallowCopyCallArgValueBase(&vec_ty, 0).?);
+    try std.testing.expect(shallowCopyCallArgValueBase(&vec_ty, 1).?);
+    try std.testing.expect(shallowCopyCallArgValueBase(&i32_ty, 9) == false);
+    try std.testing.expect(shallowCopyCallArgValueBase(&tuple_ty, 0) == null);
 }
 
 test "userDefinedStdOwnerIsNonCopy classifies std owners" {

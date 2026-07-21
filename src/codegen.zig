@@ -3381,11 +3381,8 @@ pub const Codegen = struct {
     }
 
     fn typeIsShallowCopyCallArgValue(self: *Codegen, ty: *const ast.Type, depth: usize) bool {
-        if (depth > 8) return false;
-        if (lowering_rules.isStdCollectionType(ty)) return depth > 0;
+        if (lowering_rules.shallowCopyCallArgValueBase(ty, depth)) |decision| return decision;
         return switch (ty.*) {
-            .primitive => true,
-            .pointer, .borrow, .fn_ptr => true,
             .tuple => |tuple| blk: {
                 for (tuple.elems) |elem| {
                     if (!self.typeIsShallowCopyCallArgValue(elem, depth + 1)) break :blk false;

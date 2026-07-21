@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share shallowCopyCallArgValueBase leaf facts on Y (2026-07-21):
+  Shared depth/leaf/collection base for recursive shallow-copy call-arg typing.
+  Unit 2/2; build 7/7; field_copy/fn_ptr_value/result SA+SAB green.
+
 - Share identifierIsGeneratedScalarConst classifier on Y (2026-07-21):
   Pure scalar-const identifier fact. Unit 2/2; build 7/7; toplevel_const_alias
   SA/SAB 1/1; fn_ptr_value 12/12.

@@ -2018,32 +2018,26 @@ pub fn testMatchesFilter(test_decl: *const ast.TestDecl, filter: ?[]const u8) bo
 }
 
 pub fn recordReferencedType(referenced_types: *std.StringHashMap(void), ty: *const ast.Type) anyerror!void {
-    var curr = ty;
-    while (true) {
-        switch (curr.*) {
-            .borrow => |b| curr = b,
-            .pointer => |p| curr = p,
-            .array => |arr| curr = arr.elem,
-            .tuple => |tup| {
-                for (tup.elems) |t| try recordReferencedType(referenced_types, t);
-                return;
-            },
-            .future => |f| curr = f,
-            .closure => |cl| {
-                for (cl.params) |t| try recordReferencedType(referenced_types, t);
-                curr = cl.ret;
-            },
-            .fn_ptr => |fp| {
-                for (fp.params) |t| try recordReferencedType(referenced_types, t);
-                curr = fp.ret;
-            },
-            .user_defined => |ud| {
-                try referenced_types.put(ud.name, {});
-                for (ud.generics) |g| try recordReferencedType(referenced_types, g);
-                return;
-            },
-            else => return,
-        }
+    const curr = lowering_rules.peelBorrowPointerType(ty);
+    switch (curr.*) {
+        .array => |arr| try recordReferencedType(referenced_types, arr.elem),
+        .tuple => |tup| {
+            for (tup.elems) |t| try recordReferencedType(referenced_types, t);
+        },
+        .future => |f| try recordReferencedType(referenced_types, f),
+        .closure => |cl| {
+            for (cl.params) |t| try recordReferencedType(referenced_types, t);
+            try recordReferencedType(referenced_types, cl.ret);
+        },
+        .fn_ptr => |fp| {
+            for (fp.params) |t| try recordReferencedType(referenced_types, t);
+            try recordReferencedType(referenced_types, fp.ret);
+        },
+        .user_defined => |ud| {
+            try referenced_types.put(ud.name, {});
+            for (ud.generics) |g| try recordReferencedType(referenced_types, g);
+        },
+        else => {},
     }
 }
 

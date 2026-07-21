@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share reachability recordReferencedType peel on Y (2026-07-20):
+  `plugin_reachability.recordReferencedType` peels borrow/pointer through
+  `lowering_rules.peelBorrowPointerType` then recurses on array/tuple/future/
+  closure/fn_ptr/user_defined. Build 7/7; `sla module table` 15/15; reachability
+  session filter 2/2; focused SA+SAB result/option fixtures green.
+
 - Restore peel-share files after accidental 8ed15b4 content mix (2026-07-20):
   `8ed15b4` reintroduced pre-peel local borrow/pointer walks into codegen/
   sab_codegen/type_checker/lowering_rules/emit-reachability. Restored those five

@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share reachability recordReferencedType peel on Y (2026-07-20):
+  recordReferencedType uses shared peel. Build 7/7; module table 15/15;
+  reachability session 2/2; SA/SAB result/option green.
+
 - Restore peel-share after accidental 8ed15b4 content mix (2026-07-20):
   Restored codegen/sab/type_checker/lowering_rules/emit-reachability peels from
   `9158a63` while keeping module-table fixes. Build 7/7; module table 15/15;

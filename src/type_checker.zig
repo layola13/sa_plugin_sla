@@ -520,7 +520,7 @@ pub const TypeChecker = struct {
     }
 
     fn isInternalSymbol(name: []const u8) bool {
-        return std.mem.eql(u8, name, "return_ty_sentinel");
+        return lowering_rules.isInternalSymbol(name);
     }
 
     fn isPrimitiveType(ty: *const ast.Type, primitive: ast.Primitive) bool {
@@ -1392,11 +1392,7 @@ pub const TypeChecker = struct {
     }
 
     fn isOrderingName(name: []const u8) bool {
-        return std.mem.eql(u8, name, "Ordering::SeqCst") or
-            std.mem.eql(u8, name, "Ordering::Acquire") or
-            std.mem.eql(u8, name, "Ordering::Release") or
-            std.mem.eql(u8, name, "Ordering::Relaxed") or
-            std.mem.eql(u8, name, "Ordering::AcqRel");
+        return lowering_rules.isOrderingName(name);
     }
 
     const HashMapTypes = struct {

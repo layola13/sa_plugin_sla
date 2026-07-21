@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share switch-default, stack_alloc, internal-symbol, ordering-name, and
+  non-owning pointer-cast peels on Y (2026-07-21): Pure pattern/call/name peels
+  shared; SA/SAB/typecheck thin. Unit 3/3; switch SA+SAB, stack-slot SA+SAB,
+  result SA+SAB, borrow SAB, println SA+SAB, field_copy SA+SAB green.
+
 - Route residual discard/tmp peels through shared helpers on Y (2026-07-21):
   Remaining SA/SAB discard and fragment tmp_ peels shared. Build 7/7; result SA,
   thread pair SAB, borrow SAB, field_copy SA green.

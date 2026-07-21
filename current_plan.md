@@ -18,6 +18,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share switch-default, stack_alloc, internal-symbol, ordering-name, and
+  non-owning pointer-cast peels on Y (2026-07-21): Pure isSwitchDefaultPattern,
+  isStackAllocCall/Node, isInternalSymbol, isOrderingName,
+  isNonOwningPointerCarrierCastArg shared; SA/SAB/typecheck wrappers and residual
+  call sites thin to them. Unit 3/3; build green; switch SA+SAB, stack-slot
+  SA+SAB, result SA+SAB, borrow SAB, println SA+SAB, field_copy SA+SAB green.
+
 - Route residual discard/tmp peels through shared helpers on Y (2026-07-21):
   Remaining SA/SAB `eql(_, "_")` and fragment `tmp_` internal checks use
   isDiscardName/isTemporaryRegisterName. Build 7/7; result SA, thread pair SAB,

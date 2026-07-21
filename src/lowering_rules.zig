@@ -3086,6 +3086,43 @@ pub fn isIdentChar(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_';
 }
 
+/// Shared pure switch-default pattern fact (`default` identifier).
+pub fn isSwitchDefaultPattern(pattern: *const ast.Node) bool {
+    return pattern.* == .identifier and std.mem.eql(u8, pattern.identifier, "default");
+}
+
+/// Shared pure recognition of bare `stack_alloc(...)` (no associated target).
+pub fn isStackAllocCall(call: ast.CallExpr) bool {
+    return call.associated_target == null and std.mem.eql(u8, call.func_name, "stack_alloc");
+}
+
+/// Shared pure node peel for bare `stack_alloc(...)` expressions.
+pub fn isStackAllocNode(node: *const ast.Node) bool {
+    return node.* == .call_expr and isStackAllocCall(node.call_expr);
+}
+
+/// Shared pure typecheck internal sentinel symbol name.
+pub fn isInternalSymbol(name: []const u8) bool {
+    return std.mem.eql(u8, name, "return_ty_sentinel");
+}
+
+/// Shared pure atomic Ordering path-name fact used by typecheck identifier typing.
+pub fn isOrderingName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "Ordering::SeqCst") or
+        std.mem.eql(u8, name, "Ordering::Acquire") or
+        std.mem.eql(u8, name, "Ordering::Release") or
+        std.mem.eql(u8, name, "Ordering::Relaxed") or
+        std.mem.eql(u8, name, "Ordering::AcqRel");
+}
+
+/// Shared pure non-owning pointer-carrier cast-of-identifier call-arg fact.
+pub fn isNonOwningPointerCarrierCastArg(arg: *const ast.Node) bool {
+    return switch (arg.*) {
+        .cast_expr => |cast| cast.expr.* == .identifier and isPointerCarrierCastType(cast.ty),
+        else => false,
+    };
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7214,6 +7251,51 @@ test "isIdentChar" {
     try std.testing.expect(!isIdentChar('-'));
     try std.testing.expect(!isIdentChar(' '));
     try std.testing.expect(!isIdentChar('@'));
+}
+
+test "isSwitchDefaultPattern and stack_alloc peels" {
+    var default_pat = ast.Node{ .identifier = "default" };
+    var other_pat = ast.Node{ .identifier = "x" };
+    try std.testing.expect(isSwitchDefaultPattern(&default_pat));
+    try std.testing.expect(!isSwitchDefaultPattern(&other_pat));
+
+    const bare = ast.CallExpr{
+        .func_name = "stack_alloc",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(isStackAllocCall(bare));
+    const associated = ast.CallExpr{
+        .func_name = "stack_alloc",
+        .args = &.{},
+        .associated_target = "mem",
+        .generics = &.{},
+    };
+    try std.testing.expect(!isStackAllocCall(associated));
+    var node = ast.Node{ .call_expr = bare };
+    try std.testing.expect(isStackAllocNode(&node));
+    try std.testing.expect(!isStackAllocNode(&default_pat));
+}
+
+test "isInternalSymbol and isOrderingName" {
+    try std.testing.expect(isInternalSymbol("return_ty_sentinel"));
+    try std.testing.expect(!isInternalSymbol("return"));
+    try std.testing.expect(isOrderingName("Ordering::SeqCst"));
+    try std.testing.expect(isOrderingName("Ordering::AcqRel"));
+    try std.testing.expect(!isOrderingName("Ordering"));
+    try std.testing.expect(!isOrderingName("SeqCst"));
+}
+
+test "isNonOwningPointerCarrierCastArg" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var ptr_ty = ast.Type{ .pointer = &i32_ty };
+    var ident = ast.Node{ .identifier = "p" };
+    var cast_ok = ast.Node{ .cast_expr = .{ .expr = &ident, .ty = &ptr_ty } };
+    var cast_bad = ast.Node{ .cast_expr = .{ .expr = &ident, .ty = &i32_ty } };
+    try std.testing.expect(isNonOwningPointerCarrierCastArg(&cast_ok));
+    try std.testing.expect(!isNonOwningPointerCarrierCastArg(&cast_bad));
+    try std.testing.expect(!isNonOwningPointerCarrierCastArg(&ident));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

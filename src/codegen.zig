@@ -7511,7 +7511,7 @@ pub const Codegen = struct {
             switch (stmt.*) {
                 .let_stmt => |let| {
                     if (in_loop) {
-                        if (let.value.* == .call_expr and std.mem.eql(u8, let.value.call_expr.func_name, "stack_alloc")) {
+                        if (lowering_rules.isStackAllocNode(let.value)) {
                             list.append(let.name) catch return CodegenError.OutOfMemory;
                         }
                     }
@@ -7526,7 +7526,7 @@ pub const Codegen = struct {
                 },
                 .const_stmt => |c| {
                     if (in_loop) {
-                        if (c.value.* == .call_expr and std.mem.eql(u8, c.value.call_expr.func_name, "stack_alloc")) {
+                        if (lowering_rules.isStackAllocNode(c.value)) {
                             list.append(c.name) catch return CodegenError.OutOfMemory;
                         }
                     }
@@ -9653,7 +9653,7 @@ pub const Codegen = struct {
     }
 
     fn isSwitchDefaultPattern(pattern: *const ast.Node) bool {
-        return pattern.* == .identifier and std.mem.eql(u8, pattern.identifier, "default");
+        return lowering_rules.isSwitchDefaultPattern(pattern);
     }
 
     fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
@@ -9718,10 +9718,7 @@ pub const Codegen = struct {
     }
 
     fn isNonOwningPointerCarrierCastArg(arg: *const ast.Node) bool {
-        return switch (arg.*) {
-            .cast_expr => |cast| cast.expr.* == .identifier and isPointerCarrierCastType(cast.ty),
-            else => false,
-        };
+        return lowering_rules.isNonOwningPointerCarrierCastArg(arg);
     }
 
     fn exprConsumesIdentifier(expr: *const ast.Node, name: []const u8) bool {
@@ -9838,7 +9835,7 @@ pub const Codegen = struct {
     }
 
     fn isStackAllocCall(node: *const ast.Node) bool {
-        return node.* == .call_expr and std.mem.eql(u8, node.call_expr.func_name, "stack_alloc");
+        return lowering_rules.isStackAllocNode(node);
     }
 
     fn genStmt(self: *Codegen, stmt: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
@@ -14541,7 +14538,7 @@ pub const Codegen = struct {
                 }
 
                 // If it is standard stack_alloc, it might be hoisted
-                if (std.mem.eql(u8, call.func_name, "stack_alloc")) {
+                if (lowering_rules.isStackAllocCall(call)) {
                     const reg = try self.newTmp();
                     self.out.writer().print("    {s} = stack_alloc {}\n", .{ reg, self.stackAllocSize(&call) }) catch return CodegenError.CodegenError;
                     return reg;

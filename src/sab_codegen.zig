@@ -6512,7 +6512,7 @@ pub const Codegen = struct {
 
     fn genLet(self: *Codegen, let: ast.LetStmt) anyerror!void {
         _ = self.future_readiness_by_name.remove(let.name);
-        if (let.value.* == .call_expr and let.value.call_expr.associated_target == null and std.mem.eql(u8, let.value.call_expr.func_name, "stack_alloc")) {
+        if (lowering_rules.isStackAllocNode(let.value)) {
             const dst = try self.bindingReg(let.name);
             try self.emitStackAlloc(dst, try self.stackAllocSize(let.value.call_expr));
             try self.pushStackAllocLocal(let.name, dst);
@@ -8320,7 +8320,7 @@ pub const Codegen = struct {
             return try self.intern(try self.newTmp());
         }
         if (call.associated_target == null) {
-            if (std.mem.eql(u8, call.func_name, "stack_alloc")) {
+            if (lowering_rules.isStackAllocCall(call)) {
                 const dst = try self.intern(try self.newTmp());
                 try self.emitStackAlloc(dst, try self.stackAllocSize(call));
                 try self.pushStackAllocLocal(self.symbols.items[dst], dst);
@@ -9116,7 +9116,7 @@ pub const Codegen = struct {
     }
 
     fn switchCaseIsDefault(case: ast.Case) bool {
-        return case.pattern.* == .identifier and std.mem.eql(u8, case.pattern.identifier, "default");
+        return lowering_rules.isSwitchDefaultPattern(case.pattern);
     }
 
     fn emitSwitchCaseCondition(self: *Codegen, pattern: *ast.Node, val_reg: u32, val_ty: *const ast.Type, enum_decl: ?*ast.EnumDecl, cond: u32) anyerror!void {
@@ -11939,7 +11939,7 @@ pub const Codegen = struct {
             if (std.mem.eql(u8, call.func_name, "println")) {
                 return try self.genPrintlnCall(call);
             }
-            if (std.mem.eql(u8, call.func_name, "stack_alloc")) {
+            if (lowering_rules.isStackAllocCall(call)) {
                 const dst = try self.intern(try self.newTmp());
                 try self.emitStackAlloc(dst, try self.stackAllocSize(call));
                 try self.pushStackAllocLocal(self.symbols.items[dst], dst);

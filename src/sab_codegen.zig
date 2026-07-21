@@ -3906,7 +3906,7 @@ pub const Codegen = struct {
                 if (std.mem.eql(u8, arg, name)) return null;
             }
         }
-        const is_internal = std.mem.startsWith(u8, name, "tmp_") or
+        const is_internal = lowering_rules.isTemporaryRegisterName(name) or
             std.mem.startsWith(u8, name, "__") or
             std.mem.startsWith(u8, name, "L_");
         if (!is_internal) return null;
@@ -6527,7 +6527,7 @@ pub const Codegen = struct {
         }
         const src = try self.genExpr(let.value);
         if (self.lastIsTerminator()) return;
-        if (std.mem.eql(u8, let.name, "_")) {
+        if (lowering_rules.isDiscardName(let.name)) {
             // `let _ = owner` must consume by-value non-Copy locals/params so
             // branch merges and function-exit cleanup agree with SA-text.
             if (let.value.* == .identifier) {
@@ -8569,7 +8569,7 @@ pub const Codegen = struct {
     fn genMacroLet(self: *Codegen, let: ast.LetStmt, ctx: *MacroExpansionContext) anyerror!void {
         const expected_ty = if (let.ty) |ty| @as(?*const ast.Type, ty) else try self.macroExprType(let.value, ctx);
         const value = try self.genMacroExprTyped(let.value, ctx, expected_ty);
-        if (std.mem.eql(u8, let.name, "_")) {
+        if (lowering_rules.isDiscardName(let.name)) {
             if (!self.isLocalReg(value)) try self.emitRelease(value);
             return;
         }
@@ -8591,7 +8591,7 @@ pub const Codegen = struct {
         const value = try self.genMacroExpr(let.value, ctx);
         for (let.names, 0..) |name, idx| {
             const layout = tupleFieldLayout(value_ty.tuple, idx) orelse return Error.UnsupportedSabDirectFeature;
-            const discard = std.mem.eql(u8, name, "_");
+            const discard = lowering_rules.isDiscardName(name);
             const mapped = if (discard) try self.newTmp() else try self.defineMacroLocal(ctx, name, value_ty.tuple.elems[idx]);
             const dst = try self.intern(mapped);
             try self.emitLoad(dst, value, layout.offset, layout.ty);
@@ -8957,7 +8957,7 @@ pub const Codegen = struct {
         const value = try self.genExpr(let.value);
         for (let.names, 0..) |name, idx| {
             const layout = tupleFieldLayout(value_ty.tuple, idx) orelse return Error.UnsupportedSabDirectFeature;
-            const discard = std.mem.eql(u8, name, "_");
+            const discard = lowering_rules.isDiscardName(name);
             const dst = try self.intern(if (discard) try self.newTmp() else name);
             try self.emitLoad(dst, value, layout.offset, layout.ty);
             if (discard) {
@@ -8974,10 +8974,10 @@ pub const Codegen = struct {
         const arr = value_ty.array;
         if (let.names.len > arr.len) return Error.UnsupportedSabDirectFeature;
         const rest_name = let.rest_name orelse return Error.UnsupportedSabDirectFeature;
-        const rest_is_discard = std.mem.eql(u8, rest_name, "_");
+        const rest_is_discard = lowering_rules.isDiscardName(rest_name);
         if (rest_is_discard) {
             if (let.rest_alias) |alias| {
-                if (!std.mem.eql(u8, alias, "_")) return Error.UnsupportedSabDirectFeature;
+                if (!lowering_rules.isDiscardName(alias)) return Error.UnsupportedSabDirectFeature;
             }
         }
 
@@ -8988,7 +8988,7 @@ pub const Codegen = struct {
         }
 
         for (let.names, 0..) |name, idx| {
-            if (std.mem.eql(u8, name, "_")) continue;
+            if (lowering_rules.isDiscardName(name)) continue;
             const layout = arrayElementLayout(arr, idx) orelse return Error.UnsupportedSabDirectFeature;
             const dst = try self.intern(name);
             try self.emitLoad(dst, value, layout.offset, layout.ty);
@@ -9016,7 +9016,7 @@ pub const Codegen = struct {
             try self.pushStackAllocTypedLocal(rest_name, rest_reg, slice_ty);
 
             if (let.rest_alias) |alias| {
-                if (!std.mem.eql(u8, alias, "_")) {
+                if (!lowering_rules.isDiscardName(alias)) {
                     try self.pushStackAllocTypedLocal(alias, rest_reg, slice_ty);
                 }
             }

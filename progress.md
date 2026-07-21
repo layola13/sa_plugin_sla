@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Route residual discard/tmp peels through shared helpers on Y (2026-07-21):
+  Remaining SA/SAB discard and fragment tmp_ peels shared. Build 7/7; result SA,
+  thread pair SAB, borrow SAB, field_copy SA green.
+
 - Share isIdentChar for SAB call-body/target scanners on Y (2026-07-21):
   Pure identifier character fact; SAB call scanners thin. Unit 2/2; build 7/7;
   println SAB, thread pair SAB, result green.

@@ -18,6 +18,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Route residual discard/tmp peels through shared helpers on Y (2026-07-21):
+  Remaining SA/SAB `eql(_, "_")` and fragment `tmp_` internal checks use
+  isDiscardName/isTemporaryRegisterName. Build 7/7; result SA, thread pair SAB,
+  borrow SAB, field_copy SA green.
+
 - Share isIdentChar for SAB call-body/target scanners on Y (2026-07-21):
   Pure alphanumeric-or-underscore identifier character fact shared; SAB
   isCallBodyIdentChar/isCallTargetChar thin to it. Unit 2/2; build 7/7;

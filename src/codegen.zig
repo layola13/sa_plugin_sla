@@ -422,7 +422,7 @@ pub const Codegen = struct {
         for (body) |stmt| {
             switch (stmt.*) {
                 .let_stmt => |let| {
-                    if (std.mem.eql(u8, let.name, "_")) {
+                    if (lowering_rules.isDiscardName(let.name)) {
                         try self.genStmt(stmt, hoisted_allocs);
                         continue;
                     }
@@ -492,7 +492,7 @@ pub const Codegen = struct {
         }
 
         for (body[0 .. body.len - 1]) |stmt| {
-            if (stmt.* == .let_stmt and !std.mem.eql(u8, stmt.let_stmt.name, "_")) {
+            if (stmt.* == .let_stmt and !lowering_rules.isDiscardName(stmt.let_stmt.name)) {
                 const let = stmt.let_stmt;
                 const alias = try self.newInlineMacroLocal(macro_decl.name, let.name);
                 var let_copy = let;
@@ -9854,7 +9854,7 @@ pub const Codegen = struct {
                 }
 
                 const let_ty = if (let.ty) |explicit| explicit else self.resolvedTypeForExpr(let.value) orelse self.tc.expr_types.get(let.value) orelse return CodegenError.CodegenError;
-                if (std.mem.eql(u8, let.name, "_")) {
+                if (lowering_rules.isDiscardName(let.name)) {
                     const discard_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
                     // Match type-checker discard moves: `let _ = owner` must
@@ -10183,17 +10183,17 @@ pub const Codegen = struct {
                     for (let.names) |name| {
                         const reg = try self.newTmp();
                         self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, base_ptr, offset, typeString(elem_ty) }) catch return CodegenError.CodegenError;
-                        if (!std.mem.eql(u8, name, "_")) {
+                        if (!lowering_rules.isDiscardName(name)) {
                             self.out.writer().print("    {s} = {s}\n", .{ name, reg }) catch return CodegenError.CodegenError;
                         }
                         offset += elem_size;
                     }
                     if (let.rest_name) |rest_name| {
-                        if (std.mem.eql(u8, rest_name, "_")) {
+                        if (lowering_rules.isDiscardName(rest_name)) {
                             try self.emitRelease(base_ptr);
                             try self.emitRelease(len_reg);
                             if (let.rest_alias) |rest_alias| {
-                                if (!std.mem.eql(u8, rest_alias, "_")) {
+                                if (!lowering_rules.isDiscardName(rest_alias)) {
                                     self.out.writer().print("    {s} = {s}\n", .{ rest_alias, base_ptr }) catch return CodegenError.CodegenError;
                                 }
                             }
@@ -10207,7 +10207,7 @@ pub const Codegen = struct {
                         self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{rest_name}) catch return CodegenError.CodegenError;
                         self.out.writer().print("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ rest_name, rest_ptr, rest_len }) catch return CodegenError.CodegenError;
                         if (let.rest_alias) |rest_alias| {
-                            if (!std.mem.eql(u8, rest_alias, "_")) {
+                            if (!lowering_rules.isDiscardName(rest_alias)) {
                                 self.out.writer().print("    {s} = {s}\n", .{ rest_alias, rest_name }) catch return CodegenError.CodegenError;
                             }
                         }

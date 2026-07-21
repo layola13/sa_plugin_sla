@@ -3417,22 +3417,17 @@ pub const Codegen = struct {
     }
 
     fn slotCopyStructType(self: *Codegen, ty: *const ast.Type) ?*const ast.Type {
-        if (self.structDeclForType(ty) != null) return ty;
-        return switch (ty.*) {
-            .pointer => |inner| if (self.structDeclForType(inner) != null) inner else null,
-            else => null,
-        };
-    }
-
-    fn primitiveIsHashable(p: ast.Primitive) bool {
-        return switch (p) {
-            .void_type, .f32, .f64, .float => false,
-            else => true,
-        };
+        const pointed_ty: ?*const ast.Type = if (ty.* == .pointer) ty.pointer else null;
+        return lowering_rules.slotCopyStructTypeFact(
+            ty,
+            self.structDeclForType(ty) != null,
+            pointed_ty,
+            if (pointed_ty) |inner| self.structDeclForType(inner) != null else false,
+        );
     }
 
     fn typeHasHashDerive(self: *Codegen, ty: *const ast.Type) bool {
-        const primitive_ok = if (ty.* == .primitive) primitiveIsHashable(ty.primitive) else false;
+        const primitive_ok = if (ty.* == .primitive) lowering_rules.primitiveIsHashable(ty.primitive) else false;
         if (lowering_rules.typeHasNamedDeriveBase(ty, primitive_ok)) |decision| return decision;
         if (ty.* != .user_defined) return false;
         const decl = self.structDeclForType(ty) orelse return false;

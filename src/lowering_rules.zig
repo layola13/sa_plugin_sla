@@ -4471,6 +4471,30 @@ pub fn typeIsSmallPlainSlotStructDecl(decl: *const ast.StructDecl) bool {
     return true;
 }
 
+/// Shared pure Hash leaf for primitive types.
+pub fn primitiveIsHashable(p: ast.Primitive) bool {
+    return switch (p) {
+        .void_type, .f32, .f64, .float => false,
+        else => true,
+    };
+}
+
+/// Shared pure resolution of the concrete struct type used for slot-copy
+/// materialization: either the type itself or a single pointer peel.
+pub fn slotCopyStructTypeFact(
+    ty: *const ast.Type,
+    ty_has_struct_decl: bool,
+    pointed_ty: ?*const ast.Type,
+    pointed_has_struct_decl: bool,
+) ?*const ast.Type {
+    if (ty_has_struct_decl) return ty;
+    if (ty.* != .pointer) return null;
+    if (pointed_ty) |inner| {
+        if (pointed_has_struct_decl) return inner;
+    }
+    return null;
+}
+
 /// Shared pure leaf/base decisions for recursive Copy-value typing.
 /// Returns null when the emitter must recurse into aggregates or consult
 /// user-defined Copy derives.
@@ -6830,6 +6854,20 @@ test "typeHasCopyDeriveBase classifies pure leaves" {
     var opaque_decl = ast.StructDecl{ .name = "Opaque", .generics = &.{}, .fields = fields[0..], .derives = copy_derives[0..], .is_union = false, .is_opaque = true };
     try std.testing.expect(typeHasCopyDeriveStructGate(&good));
     try std.testing.expect(!typeHasCopyDeriveStructGate(&opaque_decl));
+}
+
+test "primitiveIsHashable and slotCopyStructTypeFact" {
+    try std.testing.expect(primitiveIsHashable(.i32));
+    try std.testing.expect(!primitiveIsHashable(.void_type));
+    try std.testing.expect(!primitiveIsHashable(.f64));
+
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var user_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
+    var ptr_ty = ast.Type{ .pointer = &user_ty };
+    try std.testing.expect(slotCopyStructTypeFact(&user_ty, true, null, false) == &user_ty);
+    try std.testing.expect(slotCopyStructTypeFact(&ptr_ty, false, &user_ty, true) == &user_ty);
+    try std.testing.expect(slotCopyStructTypeFact(&ptr_ty, false, &user_ty, false) == null);
+    try std.testing.expect(slotCopyStructTypeFact(&i32_ty, false, null, false) == null);
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

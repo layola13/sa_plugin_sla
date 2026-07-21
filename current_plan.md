@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share primitiveIsHashable and slotCopyStructTypeFact on Y (2026-07-21):
+  Pure Hash primitive leaf and pure slot-copy struct-type resolution (self or
+  one pointer peel) moved to lowering_rules; SA-text wrappers thin to shared
+  facts. Unit 2/2; build 7/7; field_copy SA+SAB, plain slot-return, result
+  green.
+
 - Share typeHasNamedDeriveBase/struct-gate helpers on Y (2026-07-21):
   Generalized derive base/gate for Copy/Hash/Debug; SA-text hash/debug derives
   and existing Copy path consume the shared helpers. Unit 2/2x2; build 7/7;

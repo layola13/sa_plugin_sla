@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share primitiveIsHashable and slotCopyStructTypeFact on Y (2026-07-21):
+  Pure Hash primitive leaf + pure slot-copy struct resolution on Y; SA wrappers
+  thin. Unit 2/2; build 7/7; field_copy SA+SAB, plain slot-return, result green.
+
 - Share typeHasNamedDeriveBase/struct-gate helpers on Y (2026-07-21):
   Generalized derive base/gate for Copy/Hash/Debug. Unit 2/2x2; build 7/7;
   field_copy/result SA+SAB green.

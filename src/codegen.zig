@@ -3366,8 +3366,8 @@ pub const Codegen = struct {
     }
 
     fn typeIsCopyValue(self: *Codegen, ty: *const ast.Type) bool {
+        if (lowering_rules.typeIsCopyValueBase(ty)) |decision| return decision;
         return switch (ty.*) {
-            .primitive, .fn_ptr => lowering_rules.typeIsCopyValueLeaf(ty) orelse false,
             .user_defined => self.typeHasCopyDerive(ty),
             .tuple => |tuple| blk: {
                 for (tuple.elems) |elem| {

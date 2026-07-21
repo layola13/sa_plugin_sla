@@ -18,6 +18,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share typeIsCopyValueBase leaf facts on Y (2026-07-21):
+  SA/SAB recursive Copy-value typing consume shared primitive/fnptr/else base
+  decisions; user-defined derives and aggregate recursion stay local. Unit 2/2;
+  typeIsCopyValueLeaf 2/2; build 7/7; field_copy/fn_ptr_value/result SA+SAB green.
+
 - Share shallowCopyCallArgValueBase leaf facts on Y (2026-07-21):
   SA/SAB recursive shallow-copy call-arg typing consume shared depth/leaf/
   collection base decisions; user-defined/enum/struct recursion stays local.

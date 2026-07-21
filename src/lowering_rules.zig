@@ -4444,6 +4444,17 @@ pub fn shallowCopyCallArgValueBase(ty: *const ast.Type, depth: usize) ?bool {
     };
 }
 
+/// Shared pure leaf/base decisions for recursive Copy-value typing.
+/// Returns null when the emitter must recurse into aggregates or consult
+/// user-defined Copy derives.
+pub fn typeIsCopyValueBase(ty: *const ast.Type) ?bool {
+    return switch (ty.*) {
+        .primitive, .fn_ptr => typeIsCopyValueLeaf(ty) orelse false,
+        .tuple, .array, .user_defined => null,
+        else => false,
+    };
+}
+
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
     if (input.param) |param| {
         if (callArgUsesRawPointerStringLiteralValue(arg, param)) {
@@ -6693,6 +6704,20 @@ test "shared value-arg ownership and fnptr slot plans" {
     var i32_ty = ast.Type{ .primitive = .i32 };
     try std.testing.expect(!vecElementPushTransfersOwnership(&i32_ty, true));
     try std.testing.expect(vecElementPushTransfersOwnership(&i32_ty, false));
+}
+
+test "typeIsCopyValueBase classifies pure leaves" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var void_ty = ast.Type{ .primitive = .void_type };
+    var fn_ty = ast.Type{ .fn_ptr = .{ .abi = null, .params = &.{}, .ret = &i32_ty } };
+    var gens = [_]*ast.Type{&i32_ty};
+    var tuple_ty = ast.Type{ .tuple = .{ .elems = gens[0..] } };
+    var user_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
+    try std.testing.expect(typeIsCopyValueBase(&i32_ty).?);
+    try std.testing.expect(!typeIsCopyValueBase(&void_ty).?);
+    try std.testing.expect(typeIsCopyValueBase(&fn_ty).?);
+    try std.testing.expect(typeIsCopyValueBase(&tuple_ty) == null);
+    try std.testing.expect(typeIsCopyValueBase(&user_ty) == null);
 }
 
 test "shallowCopyCallArgValueBase classifies pure leaves" {

@@ -18,6 +18,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share typecheck primitive/integer/float/pointer value classifiers on Y
+  (2026-07-21): Pure isPrimitiveType/isIntegerPrimitive/isFloatPrimitive/
+  isAnyIntegerType/isAnyFloatType/isCellValueType/isPollScalarValueType/
+  isPointerValueType shared; isNumericType/isFloatType composed from them;
+  type_checker wrappers thin including isPointerCarrierCastType. Unit 2/2;
+  build 7/7; borrow SA, field_copy SAB, println SAB, result green.
+
 - Share abiCallArgCapKind, pointerOrBorrowPointee, and typecheck borrow-like on Y
   (2026-07-21): Pure call-arg ABI cap from borrow/move flags and single-layer
   pointer/borrow pointee peel shared; type_checker isBorrowLikeType + deref/

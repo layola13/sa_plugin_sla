@@ -524,38 +524,23 @@ pub const TypeChecker = struct {
     }
 
     fn isPrimitiveType(ty: *const ast.Type, primitive: ast.Primitive) bool {
-        return switch (ty.*) {
-            .primitive => |p| p == primitive,
-            else => false,
-        };
+        return lowering_rules.isPrimitiveType(ty, primitive);
     }
 
     fn isIntegerPrimitive(primitive: ast.Primitive) bool {
-        return switch (primitive) {
-            .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize, .integer => true,
-            else => false,
-        };
+        return lowering_rules.isIntegerPrimitive(primitive);
     }
 
     fn isFloatPrimitive(primitive: ast.Primitive) bool {
-        return switch (primitive) {
-            .f32, .f64, .float => true,
-            else => false,
-        };
+        return lowering_rules.isFloatPrimitive(primitive);
     }
 
     fn isAnyIntegerType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| isIntegerPrimitive(p),
-            else => false,
-        };
+        return lowering_rules.isAnyIntegerType(ty);
     }
 
     fn isAnyFloatType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| isFloatPrimitive(p),
-            else => false,
-        };
+        return lowering_rules.isAnyFloatType(ty);
     }
 
     fn isStringType(ty: *const ast.Type) bool {
@@ -768,11 +753,11 @@ pub const TypeChecker = struct {
     }
 
     fn isCellValueType(ty: *const ast.Type) bool {
-        return isNumericType(ty) or isPrimitiveType(ty, .boolean);
+        return lowering_rules.isCellValueType(ty);
     }
 
     fn isPollScalarValueType(ty: *const ast.Type) bool {
-        return isNumericType(ty);
+        return lowering_rules.isPollScalarValueType(ty);
     }
 
     fn isRawPtrAliasType(ty: *const ast.Type) bool {
@@ -780,7 +765,7 @@ pub const TypeChecker = struct {
     }
 
     fn isPointerValueType(ty: *const ast.Type) bool {
-        return ty.* == .pointer or isRawPtrAliasType(ty);
+        return lowering_rules.isPointerValueType(ty);
     }
 
     fn valueAssignableTo(self: *TypeChecker, expected: *ast.Type, actual: *ast.Type) bool {
@@ -789,12 +774,7 @@ pub const TypeChecker = struct {
     }
 
     fn isPointerCarrierCastType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .pointer, .borrow => true,
-            .primitive => |p| p == .void_type,
-            .user_defined => |ud| std.mem.eql(u8, ud.name, "AtomicI32") or std.mem.eql(u8, ud.name, "AtomicUsize") or std.mem.eql(u8, ud.name, "RawWaker") or std.mem.eql(u8, ud.name, "Waker") or std.mem.eql(u8, ud.name, "LocalWaker") or std.mem.eql(u8, ud.name, "Wake"),
-            else => false,
-        };
+        return lowering_rules.isPointerCarrierCastType(ty);
     }
 
     fn unwrapPointerLikeType(ty: *ast.Type) *ast.Type {

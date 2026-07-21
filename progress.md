@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share typecheck primitive/integer/float/pointer value classifiers on Y
+  (2026-07-21): Pure primitive/integer/float/cell/poll/pointer classifiers
+  shared; type_checker wrappers thin. Unit 2/2; build 7/7; borrow SA,
+  field_copy SAB, println SAB, result green.
+
 - Share abiCallArgCapKind, pointerOrBorrowPointee, and typecheck borrow-like on Y
   (2026-07-21): Pure call-arg ABI cap + single-layer pointee peel; type_checker
   borrow-like/deref peels shared. Unit 2/2; build 7/7; borrow SA+SAB, explicit

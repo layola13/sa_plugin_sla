@@ -3734,14 +3734,26 @@ pub const ordering_less: i64 = -1;
 pub const ordering_equal: i64 = 0;
 pub const ordering_greater: i64 = 1;
 
-pub fn isFloatType(ty: *const ast.Type) bool {
-    return switch (ty.*) {
-        .primitive => |p| switch (p) {
-            .f32, .f64, .float => true,
-            else => false,
-        },
+pub fn isPrimitiveType(ty: *const ast.Type, primitive: ast.Primitive) bool {
+    return ty.* == .primitive and ty.primitive == primitive;
+}
+
+pub fn isIntegerPrimitive(p: ast.Primitive) bool {
+    return switch (p) {
+        .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize, .integer => true,
         else => false,
     };
+}
+
+pub fn isFloatPrimitive(p: ast.Primitive) bool {
+    return switch (p) {
+        .f32, .f64, .float => true,
+        else => false,
+    };
+}
+
+pub fn isFloatType(ty: *const ast.Type) bool {
+    return ty.* == .primitive and isFloatPrimitive(ty.primitive);
 }
 
 pub fn isUnsignedIntegerType(ty: *const ast.Type) bool {
@@ -3754,6 +3766,14 @@ pub fn isUnsignedIntegerType(ty: *const ast.Type) bool {
     };
 }
 
+pub fn isAnyIntegerType(ty: *const ast.Type) bool {
+    return ty.* == .primitive and isIntegerPrimitive(ty.primitive);
+}
+
+pub fn isAnyFloatType(ty: *const ast.Type) bool {
+    return isFloatType(ty);
+}
+
 pub fn isI32LikeType(ty: *const ast.Type) bool {
     return ty.* == .primitive and (ty.primitive == .i32 or ty.primitive == .integer);
 }
@@ -3764,13 +3784,22 @@ pub fn zeroLiteralForType(ty: *const ast.Type) []const u8 {
 }
 
 pub fn isNumericType(ty: *const ast.Type) bool {
-    return switch (ty.*) {
-        .primitive => |p| switch (p) {
-            .i8, .i16, .i32, .i64, .isize, .u8, .u16, .u32, .u64, .usize, .integer, .f32, .f64, .float => true,
-            else => false,
-        },
-        else => false,
-    };
+    return ty.* == .primitive and (isIntegerPrimitive(ty.primitive) or isFloatPrimitive(ty.primitive));
+}
+
+/// Shared pure fact: Cell payload and similar interior-mutable scalar slots.
+pub fn isCellValueType(ty: *const ast.Type) bool {
+    return isNumericType(ty) or isPrimitiveType(ty, .boolean);
+}
+
+/// Shared pure fact: Poll ready-payload scalars that need no heap materialization.
+pub fn isPollScalarValueType(ty: *const ast.Type) bool {
+    return isNumericType(ty);
+}
+
+/// Shared pure fact: raw pointer values including void-as-ptr alias.
+pub fn isPointerValueType(ty: *const ast.Type) bool {
+    return ty.* == .pointer or isRawPtrAliasType(ty);
 }
 
 pub const ScalarBinaryOp = enum {
@@ -7002,6 +7031,36 @@ test "abiCallArgCapKind and pointerOrBorrowPointee" {
     try std.testing.expect(pointerOrBorrowPointee(&ptr_ty) == &i32_ty);
     try std.testing.expect(pointerOrBorrowPointee(&borrow_ty) == &i32_ty);
     try std.testing.expect(pointerOrBorrowPointee(&i32_ty) == null);
+}
+
+test "primitive integer float and pointer value classifiers" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var f64_ty = ast.Type{ .primitive = .f64 };
+    var bool_ty = ast.Type{ .primitive = .boolean };
+    var void_ty = ast.Type{ .primitive = .void_type };
+    var ptr_ty = ast.Type{ .pointer = &i32_ty };
+
+    try std.testing.expect(isPrimitiveType(&i32_ty, .i32));
+    try std.testing.expect(!isPrimitiveType(&i32_ty, .u32));
+    try std.testing.expect(isIntegerPrimitive(.usize));
+    try std.testing.expect(!isIntegerPrimitive(.f32));
+    try std.testing.expect(isFloatPrimitive(.float));
+    try std.testing.expect(!isFloatPrimitive(.i32));
+    try std.testing.expect(isAnyIntegerType(&i32_ty));
+    try std.testing.expect(isAnyFloatType(&f64_ty));
+    try std.testing.expect(isNumericType(&i32_ty));
+    try std.testing.expect(isNumericType(&f64_ty));
+    try std.testing.expect(!isNumericType(&bool_ty));
+    try std.testing.expect(isCellValueType(&i32_ty));
+    try std.testing.expect(isCellValueType(&bool_ty));
+    try std.testing.expect(!isCellValueType(&void_ty));
+    try std.testing.expect(isPollScalarValueType(&i32_ty));
+    try std.testing.expect(!isPollScalarValueType(&bool_ty));
+    try std.testing.expect(isPointerValueType(&ptr_ty));
+    try std.testing.expect(isPointerValueType(&void_ty));
+    try std.testing.expect(!isPointerValueType(&i32_ty));
+    try std.testing.expect(isPointerCarrierCastType(&ptr_ty));
+    try std.testing.expect(isPointerCarrierCastType(&void_ty));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

@@ -40,6 +40,12 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Share join/unwrap/clone/main peels on Y (2026-07-21). Pure
+	  isJoinCall/isBareJoinUnaryCall/isUnwrapCall/isBareUnwrapUnaryCall/
+	  isCloneCall/isCloneUnaryCall/isMainName; SA/SAB/typecheck thin. Unit
+	  1/1; thread pair SA+SAB, result SA+SAB, join_handle_vec SA+SAB,
+	  println SAB green.
+
 	- [x] Share std builtin call peels on Y (2026-07-21). Pure println/hash/
 	  debug/str_eq/vec/len/push/pop peels; SA/SAB/typecheck thin. Unit 1/1;
 	  println/vec_len/vec_index SA+SAB, borrow_vec SAB green.

@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share shallowCopyCallArgFieldShouldRecurse nested-field decision on Y
+  (2026-07-21): pure nested-field recursion decision for shallow-copied call-arg
+  aggregates. Unit 2/2; build 7/7; field_copy/struct_update/fn_ptr_value/result
+  SA+SAB green.
+
 - Share typeIsCopyValueBase leaf facts on Y (2026-07-21):
   Shared primitive/fnptr base for recursive Copy-value typing. Unit 2/2; build
   7/7; field_copy/fn_ptr_value/result SA+SAB green.

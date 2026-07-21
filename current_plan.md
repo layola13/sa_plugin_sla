@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share shallowCopyCallArgFieldShouldRecurse nested-field decision on Y
+  (2026-07-21): SA/SAB genShallowCopyCallArgValue nested-field recursion uses
+  one pure helper over struct-decl presence plus std-owner/smart/collection
+  facts. Unit 2/2; base leaf 2/2; build 7/7; field_copy/struct_update/
+  fn_ptr_value/result SA+SAB green.
+
 - Share typeIsCopyValueBase leaf facts on Y (2026-07-21):
   SA/SAB recursive Copy-value typing consume shared primitive/fnptr/else base
   decisions; user-defined derives and aggregate recursion stay local. Unit 2/2;

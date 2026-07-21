@@ -3862,11 +3862,7 @@ pub const Codegen = struct {
             const layout = fieldLayout(struct_decl, field.name) orelse return CodegenError.CodegenError;
             const field_reg = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ field_reg, source_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
-            const nested_owner = vecElementType(field.ty) != null or
-                hashMapTypes(field.ty) != null or
-                btreeMapTypes(field.ty) != null or
-                lowering_rules.smartPointerType(field.ty) != null;
-            if (self.structDeclForType(field.ty) != null and !nested_owner) {
+            if (lowering_rules.shallowCopyCallArgFieldShouldRecurse(self.structDeclForType(field.ty) != null, field.ty)) {
                 const copied_field = try self.genShallowCopyCallArgValue(field_reg, field.ty);
                 self.out.writer().print("    store {s}+{}, ^{s} as {s}\n", .{ target, layout.offset, copied_field, layout.ty_str }) catch return CodegenError.CodegenError;
                 try self.emitRelease(field_reg);

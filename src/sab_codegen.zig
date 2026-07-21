@@ -14178,7 +14178,7 @@ pub const Codegen = struct {
             const layout = try self.fieldLayout(ty, field.name);
             const field_reg = try self.intern(try self.newTmp());
             try self.emitLoad(field_reg, source, layout.offset, layout.ty);
-            if (self.structDeclForType(field.ty) != null and !lowering_rules.userDefinedStdOwnerIsNonCopy(field.ty)) {
+            if (lowering_rules.shallowCopyCallArgFieldShouldRecurse(self.structDeclForType(field.ty) != null, field.ty)) {
                 const copied_field = try self.genShallowCopyCallArgValue(field_reg, field.ty);
                 try self.emitStore(dst, layout.offset, copied_field, layout.ty);
                 try self.emitConsumedMarker(copied_field);

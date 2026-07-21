@@ -4455,6 +4455,20 @@ pub fn typeIsCopyValueBase(ty: *const ast.Type) ?bool {
     };
 }
 
+/// Whether a nested struct field should be recursively shallow-copied while
+/// building a shallow-copied call-arg aggregate. Pure containers/owners stay
+/// as single field words; ordinary nested structs recurse.
+pub fn shallowCopyCallArgFieldShouldRecurse(
+    field_has_struct_decl: bool,
+    field_ty: *const ast.Type,
+) bool {
+    if (!field_has_struct_decl) return false;
+    if (userDefinedStdOwnerIsNonCopy(field_ty)) return false;
+    if (smartPointerType(field_ty) != null) return false;
+    if (isStdCollectionType(field_ty)) return false;
+    return true;
+}
+
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
     if (input.param) |param| {
         if (callArgUsesRawPointerStringLiteralValue(arg, param)) {
@@ -6704,6 +6718,20 @@ test "shared value-arg ownership and fnptr slot plans" {
     var i32_ty = ast.Type{ .primitive = .i32 };
     try std.testing.expect(!vecElementPushTransfersOwnership(&i32_ty, true));
     try std.testing.expect(vecElementPushTransfersOwnership(&i32_ty, false));
+}
+
+test "shallowCopyCallArgFieldShouldRecurse classifies nested fields" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var gens = [_]*ast.Type{&i32_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
+    var foo_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
+    var box_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = gens[0..] } };
+    try std.testing.expect(shallowCopyCallArgFieldShouldRecurse(true, &foo_ty));
+    try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(false, &foo_ty));
+    try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(true, &vec_ty));
+    try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(true, &box_ty));
+    // Callers pass field_has_struct_decl=false for primitives; pure helper trusts that fact.
+    try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(false, &i32_ty));
 }
 
 test "typeIsCopyValueBase classifies pure leaves" {

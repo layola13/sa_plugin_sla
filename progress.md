@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share generated/local fnptr call-arg classifiers on Y (2026-07-21):
+  identifierIsGeneratedFnPtr + callArgIsGenerated/LocalFnPtrValue. Unit 2/2;
+  build 7/7; fn_ptr_value SA/SAB 12/12; fn_ptr_void 1/1.
+
 - Share valueArgTransfersOwnershipFromParam packaging helper (2026-07-21):
   SA/SAB wrappers no longer package ValueArgOwnershipFacts locally. Unit 2/2x2;
   build 7/7; field_copy/dyn/result SA+SAB green.

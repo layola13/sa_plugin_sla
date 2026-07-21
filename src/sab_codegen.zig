@@ -12493,7 +12493,11 @@ pub const Codegen = struct {
     }
 
     fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
-        return arg.* == .identifier and self.tc.funcs.contains(arg.identifier) and self.exprHasFnPtrType(arg);
+        return lowering_rules.identifierIsGeneratedFnPtr(
+            arg,
+            arg.* == .identifier and self.tc.funcs.contains(arg.identifier),
+            self.exprHasFnPtrType(arg),
+        );
     }
 
     fn generatedScalarConstIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
@@ -12514,22 +12518,24 @@ pub const Codegen = struct {
     }
 
     fn isGeneratedFnPtrValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param) bool {
-        const target_param = param orelse return false;
-        if (target_param.is_borrow or target_param.is_move or target_param.ty.* != .fn_ptr) return false;
-        if (arg.* != .identifier) return false;
-        const arg_ty = self.tc.expr_types.get(arg) orelse return false;
-        if (arg_ty.* != .fn_ptr) return false;
-        return self.tc.funcs.contains(arg.identifier);
+        const arg_ty = self.tc.expr_types.get(arg);
+        return lowering_rules.callArgIsGeneratedFnPtrValue(
+            arg,
+            param,
+            if (arg_ty) |ty| ty.* == .fn_ptr else false,
+            arg.* == .identifier and self.tc.funcs.contains(arg.identifier),
+        );
     }
 
     fn isLocalFnPtrValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param) bool {
-        const target_param = param orelse return false;
-        if (target_param.is_borrow or target_param.is_move or target_param.ty.* != .fn_ptr) return false;
-        if (arg.* != .identifier or self.tc.funcs.contains(arg.identifier)) return false;
-        const arg_ty = self.tc.expr_types.get(arg) orelse return false;
-        if (arg_ty.* != .fn_ptr) return false;
-        _ = self.localReg(arg.identifier) orelse return false;
-        return true;
+        const arg_ty = self.tc.expr_types.get(arg);
+        return lowering_rules.callArgIsLocalFnPtrValue(
+            arg,
+            param,
+            if (arg_ty) |ty| ty.* == .fn_ptr else false,
+            arg.* == .identifier and self.tc.funcs.contains(arg.identifier),
+            arg.* == .identifier and self.localReg(arg.identifier) != null,
+        );
     }
 
     fn isShallowCopyValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {

@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share generated/local fnptr call-arg classifiers on Y (2026-07-21):
+  `identifierIsGeneratedFnPtr`, `callArgIsGeneratedFnPtrValue`, and
+  `callArgIsLocalFnPtrValue` shared; SA/SAB wrappers pass local symbol/local-reg
+  facts. Unit ownership/fnptr 2/2; build 7/7; SA+SAB fn_ptr_value 12/12,
+  fn_ptr_void 1/1, dyn/result green.
+
 - Share valueArgTransfersOwnershipFromParam packaging helper (2026-07-21):
   SA-text and direct-SAB `valueArgTransfersOwnership` wrappers now call shared
   `valueArgTransfersOwnershipFromParam` instead of duplicating

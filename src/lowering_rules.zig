@@ -4580,6 +4580,53 @@ pub fn planNeedsFnPtrValueArgSlot(facts: FnPtrValueArgSlotFacts) bool {
     return facts.arg_ty_is_fn_ptr;
 }
 
+/// Identifier that names a function symbol with fn-pointer type (generated fnptr value).
+pub fn identifierIsGeneratedFnPtr(
+    arg: *const ast.Node,
+    is_func_symbol: bool,
+    arg_ty_is_fn_ptr: bool,
+) bool {
+    return arg.* == .identifier and is_func_symbol and arg_ty_is_fn_ptr;
+}
+
+/// By-value fn-pointer param receiving a generated function-symbol identifier.
+pub fn callArgIsGeneratedFnPtrValue(
+    arg: *const ast.Node,
+    param: ?ast.Param,
+    arg_ty_is_fn_ptr: bool,
+    is_func_symbol: bool,
+) bool {
+    const target = param orelse return false;
+    if (!planNeedsFnPtrValueArgSlot(.{
+        .param_is_present = true,
+        .param_is_borrow = target.is_borrow,
+        .param_is_move = target.is_move,
+        .param_ty_is_fn_ptr = target.ty.* == .fn_ptr,
+        .arg_ty_is_fn_ptr = arg_ty_is_fn_ptr,
+    })) return false;
+    return identifierIsGeneratedFnPtr(arg, is_func_symbol, arg_ty_is_fn_ptr);
+}
+
+/// By-value fn-pointer param receiving a local non-function identifier.
+pub fn callArgIsLocalFnPtrValue(
+    arg: *const ast.Node,
+    param: ?ast.Param,
+    arg_ty_is_fn_ptr: bool,
+    is_func_symbol: bool,
+    has_local_binding: bool,
+) bool {
+    const target = param orelse return false;
+    if (!planNeedsFnPtrValueArgSlot(.{
+        .param_is_present = true,
+        .param_is_borrow = target.is_borrow,
+        .param_is_move = target.is_move,
+        .param_ty_is_fn_ptr = target.ty.* == .fn_ptr,
+        .arg_ty_is_fn_ptr = arg_ty_is_fn_ptr,
+    })) return false;
+    if (arg.* != .identifier or is_func_symbol) return false;
+    return has_local_binding;
+}
+
 test "shared lowering rules normalize derives and call argument prefixes" {
     const derives = [_][]const u8{ "PartialEq", "Hash" };
     const decl = ast.StructDecl{
@@ -6606,6 +6653,18 @@ test "shared value-arg ownership and fnptr slot plans" {
         .param_ty_is_fn_ptr = true,
         .arg_ty_is_fn_ptr = true,
     }));
+    var fn_ret = ast.Type{ .primitive = .i32 };
+    var fn_ty = ast.Type{ .fn_ptr = .{ .abi = null, .params = &.{}, .ret = &fn_ret } };
+    const fn_param = ast.Param{ .name = "cb", .ty = &fn_ty };
+    var fn_ident = ast.Node{ .identifier = "generated_cb" };
+    var local_ident = ast.Node{ .identifier = "local_cb" };
+    try std.testing.expect(identifierIsGeneratedFnPtr(&fn_ident, true, true));
+    try std.testing.expect(!identifierIsGeneratedFnPtr(&fn_ident, false, true));
+    try std.testing.expect(callArgIsGeneratedFnPtrValue(&fn_ident, fn_param, true, true));
+    try std.testing.expect(!callArgIsGeneratedFnPtrValue(&fn_ident, fn_param, true, false));
+    try std.testing.expect(callArgIsLocalFnPtrValue(&local_ident, fn_param, true, false, true));
+    try std.testing.expect(!callArgIsLocalFnPtrValue(&local_ident, fn_param, true, true, true));
+    try std.testing.expect(!callArgIsLocalFnPtrValue(&local_ident, fn_param, true, false, false));
 
     var i32_ty = ast.Type{ .primitive = .i32 };
     try std.testing.expect(!vecElementPushTransfersOwnership(&i32_ty, true));

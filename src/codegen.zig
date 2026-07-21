@@ -9715,10 +9715,12 @@ pub const Codegen = struct {
     }
 
     fn generatedFnPtrIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
-        if (arg.* != .identifier) return false;
-        if (!self.tc.funcs.contains(arg.identifier)) return false;
-        const arg_ty = self.tc.expr_types.get(arg) orelse return false;
-        return arg_ty.* == .fn_ptr;
+        const arg_ty = self.tc.expr_types.get(arg);
+        return lowering_rules.identifierIsGeneratedFnPtr(
+            arg,
+            arg.* == .identifier and self.tc.funcs.contains(arg.identifier),
+            if (arg_ty) |ty| ty.* == .fn_ptr else false,
+        );
     }
 
     fn generatedScalarConstIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {

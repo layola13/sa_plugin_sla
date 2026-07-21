@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share structFieldsAllNumeric/comparable and typecheck literalZero on Y
+  (2026-07-21): Pure numeric/comparable struct-field gates + literalZero shared.
+  Unit 2/2; build 7/7; derive SA, field_copy SAB, result green.
+
 - Share typecheck derive typing through named-derive base/gate on Y
   (2026-07-21): type_checker Copy/Eq/Ord/Hash/Debug consume shared named-derive
   base/gate; deriveNameMatches/structHasDerive thin. Build 7/7; derive

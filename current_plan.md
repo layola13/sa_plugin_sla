@@ -18,6 +18,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share structFieldsAllNumeric/comparable and typecheck literalZero on Y
+  (2026-07-21): Pure numeric/comparable struct-field gates shared; type_checker
+  wrappers thin including literalZero. Unit 2/2; build 7/7; derive semantics
+  SA, field_copy SAB, result green.
+
 - Share typecheck derive typing through named-derive base/gate on Y
   (2026-07-21): type_checker deriveNameMatches/structHasDerive and
   typeIsCopy/Eq/Ord/Hash/Debug consume shared named-derive base + struct-gate

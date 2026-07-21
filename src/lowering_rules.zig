@@ -3009,6 +3009,31 @@ pub fn literalZero(expr: *const ast.Node) bool {
     };
 }
 
+/// Shared pure gate: non-opaque/non-union struct whose fields are all numeric.
+pub fn structFieldsAllNumeric(decl: *const ast.StructDecl) bool {
+    if (decl.is_opaque or decl.is_union) return false;
+    for (decl.fields) |field| {
+        if (!isNumericType(field.ty)) return false;
+    }
+    return true;
+}
+
+/// Shared pure gate: non-opaque/non-union struct whose fields are all
+/// non-void primitives (Eq/Ord-style scalar aggregates).
+pub fn structFieldsAllComparable(decl: *const ast.StructDecl) bool {
+    if (decl.is_opaque or decl.is_union) return false;
+    for (decl.fields) |field| {
+        switch (field.ty.*) {
+            .primitive => |p| switch (p) {
+                .void_type => return false,
+                else => {},
+            },
+            else => return false,
+        }
+    }
+    return true;
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7061,6 +7086,27 @@ test "primitive integer float and pointer value classifiers" {
     try std.testing.expect(!isPointerValueType(&i32_ty));
     try std.testing.expect(isPointerCarrierCastType(&ptr_ty));
     try std.testing.expect(isPointerCarrierCastType(&void_ty));
+}
+
+test "structFieldsAllNumeric and comparable" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var void_ty = ast.Type{ .primitive = .void_type };
+    var fields = [_]ast.Field{ .{ .name = "x", .ty = &i32_ty }, .{ .name = "y", .ty = &i32_ty } };
+    var good = ast.StructDecl{ .name = "Good", .generics = &.{}, .fields = fields[0..], .derives = &.{}, .is_union = false, .is_opaque = false };
+    var void_fields = [_]ast.Field{.{ .name = "x", .ty = &void_ty }};
+    var with_void = ast.StructDecl{ .name = "Voidish", .generics = &.{}, .fields = void_fields[0..], .derives = &.{}, .is_union = false, .is_opaque = false };
+    var opaque_decl = ast.StructDecl{ .name = "Opaque", .generics = &.{}, .fields = fields[0..], .derives = &.{}, .is_union = false, .is_opaque = true };
+    try std.testing.expect(structFieldsAllNumeric(&good));
+    try std.testing.expect(structFieldsAllComparable(&good));
+    try std.testing.expect(!structFieldsAllNumeric(&with_void));
+    try std.testing.expect(!structFieldsAllComparable(&with_void));
+    try std.testing.expect(!structFieldsAllNumeric(&opaque_decl));
+    try std.testing.expect(!structFieldsAllComparable(&opaque_decl));
+
+    var zero = ast.Node{ .literal = .{ .int_val = 0 } };
+    var one = ast.Node{ .literal = .{ .int_val = 1 } };
+    try std.testing.expect(literalZero(&zero));
+    try std.testing.expect(!literalZero(&one));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

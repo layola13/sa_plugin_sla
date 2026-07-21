@@ -904,33 +904,15 @@ pub const TypeChecker = struct {
     }
 
     fn structFieldsAllNumeric(decl: *const ast.StructDecl) bool {
-        if (decl.is_opaque or decl.is_union) return false;
-        for (decl.fields) |field| {
-            if (!isNumericType(field.ty)) return false;
-        }
-        return true;
+        return lowering_rules.structFieldsAllNumeric(decl);
     }
 
     fn structFieldsAllComparable(decl: *const ast.StructDecl) bool {
-        if (decl.is_opaque or decl.is_union) return false;
-        for (decl.fields) |field| {
-            switch (field.ty.*) {
-                .primitive => |p| switch (p) {
-                    .void_type => return false,
-                    else => {},
-                },
-                else => return false,
-            }
-        }
-        return true;
+        return lowering_rules.structFieldsAllComparable(decl);
     }
 
     fn literalZero(expr: *const ast.Node) bool {
-        return expr.* == .literal and switch (expr.literal) {
-            .int_val => |v| v == 0,
-            .float_val => |v| v == 0.0,
-            else => false,
-        };
+        return lowering_rules.literalZero(expr);
     }
 
     fn isStringLikeType(ty: *const ast.Type) bool {

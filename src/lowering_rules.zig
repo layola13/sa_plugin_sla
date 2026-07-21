@@ -4495,6 +4495,36 @@ pub fn slotCopyStructTypeFact(
     return null;
 }
 
+/// Shared pure fact: values that act as non-owning pointer scalars for SAB
+/// register ownership (raw pointers and void-as-ptr).
+pub fn typeIsPointerScalarValue(ty: *const ast.Type) bool {
+    return switch (ty.*) {
+        .primitive => |prim| prim == .void_type,
+        .pointer => true,
+        else => false,
+    };
+}
+
+/// Shared pure fact: primitives may reuse a scalar reassign/copy slot.
+pub fn typeCanUseScalarReassignSlot(ty: *const ast.Type) bool {
+    return ty.* == .primitive;
+}
+
+/// Shared pure FORMAT_PUSH_* suffix for primitive Debug/format fields.
+/// Returns null for non-primitive or void.
+pub fn debugFormatSuffix(ty: *const ast.Type) ?[]const u8 {
+    return switch (ty.*) {
+        .primitive => |p| switch (p) {
+            .i8, .i16, .i32, .i64, .isize, .integer => "I64",
+            .u8, .u16, .u32, .u64, .usize => "U64",
+            .f32, .f64, .float => "F64",
+            .boolean => "BOOL",
+            else => null,
+        },
+        else => null,
+    };
+}
+
 /// Shared pure leaf/base decisions for recursive Copy-value typing.
 /// Returns null when the emitter must recurse into aggregates or consult
 /// user-defined Copy derives.
@@ -6868,6 +6898,32 @@ test "primitiveIsHashable and slotCopyStructTypeFact" {
     try std.testing.expect(slotCopyStructTypeFact(&ptr_ty, false, &user_ty, true) == &user_ty);
     try std.testing.expect(slotCopyStructTypeFact(&ptr_ty, false, &user_ty, false) == null);
     try std.testing.expect(slotCopyStructTypeFact(&i32_ty, false, null, false) == null);
+}
+
+test "typeIsPointerScalarValue scalar slot and debugFormatSuffix" {
+    var void_ty = ast.Type{ .primitive = .void_type };
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var u64_ty = ast.Type{ .primitive = .u64 };
+    var f64_ty = ast.Type{ .primitive = .f64 };
+    var bool_ty = ast.Type{ .primitive = .boolean };
+    var ptr_ty = ast.Type{ .pointer = &i32_ty };
+    var user_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
+
+    try std.testing.expect(typeIsPointerScalarValue(&void_ty));
+    try std.testing.expect(typeIsPointerScalarValue(&ptr_ty));
+    try std.testing.expect(!typeIsPointerScalarValue(&i32_ty));
+    try std.testing.expect(!typeIsPointerScalarValue(&user_ty));
+
+    try std.testing.expect(typeCanUseScalarReassignSlot(&i32_ty));
+    try std.testing.expect(!typeCanUseScalarReassignSlot(&ptr_ty));
+    try std.testing.expect(!typeCanUseScalarReassignSlot(&user_ty));
+
+    try std.testing.expectEqualStrings("I64", debugFormatSuffix(&i32_ty).?);
+    try std.testing.expectEqualStrings("U64", debugFormatSuffix(&u64_ty).?);
+    try std.testing.expectEqualStrings("F64", debugFormatSuffix(&f64_ty).?);
+    try std.testing.expectEqualStrings("BOOL", debugFormatSuffix(&bool_ty).?);
+    try std.testing.expect(debugFormatSuffix(&void_ty) == null);
+    try std.testing.expect(debugFormatSuffix(&user_ty) == null);
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

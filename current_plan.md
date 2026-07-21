@@ -18,6 +18,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share pointer-scalar, scalar-reassign, and debugFormatSuffix facts on Y
+  (2026-07-21): Pure non-owning pointer-scalar, primitive scalar-reassign
+  slot, and FORMAT_PUSH suffix classifiers shared; SAB wrappers thin, SA-text
+  format push selects through shared suffix. Unit 2/2; build 7/7; println
+  SA+SAB, field_copy SAB, result green. (shallow_copy_call_arg pre-existing
+  1/4 fail unchanged on clean HEAD.)
+
 - Share primitiveIsHashable and slotCopyStructTypeFact on Y (2026-07-21):
   Pure Hash primitive leaf and pure slot-copy struct-type resolution (self or
   one pointer peel) moved to lowering_rules; SA-text wrappers thin to shared

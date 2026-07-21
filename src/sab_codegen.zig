@@ -771,19 +771,12 @@ pub const Codegen = struct {
         }
     }
 
-    fn typeCanUseScalarReassignSlot(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => true,
-            else => false,
-        };
-    }
-
     fn bindingNeedsScalarReassignSlot(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {
-        return typeCanUseScalarReassignSlot(ty) and self.assigned_bindings.contains(name);
+        return lowering_rules.typeCanUseScalarReassignSlot(ty) and self.assigned_bindings.contains(name);
     }
 
     fn bindingNeedsCopyScalarReuseSlot(self: *Codegen, name: []const u8, ty: *const ast.Type) bool {
-        return typeCanUseScalarReassignSlot(ty) and self.identifierUsedLaterInCurrentBlock(name);
+        return lowering_rules.typeCanUseScalarReassignSlot(ty) and self.identifierUsedLaterInCurrentBlock(name);
     }
 
     fn intern(self: *Codegen, name: []const u8) !u32 {
@@ -2043,11 +2036,7 @@ pub const Codegen = struct {
     }
 
     fn typeIsPointerScalarValue(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |prim| prim == .void_type,
-            .pointer => true,
-            else => false,
-        };
+        return lowering_rules.typeIsPointerScalarValue(ty);
     }
 
     fn isFloatType(ty: *const ast.Type) bool {
@@ -9935,18 +9924,9 @@ pub const Codegen = struct {
     }
 
     /// FORMAT_PUSH_{suffix} selector for a primitive field type, mirroring
-    /// SA-text `formatMacroSuffix`.
+    /// SA-text format push selection.
     fn debugFormatSuffix(ty: *const ast.Type) ?[]const u8 {
-        return switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .i8, .i16, .i32, .i64, .isize, .integer => "I64",
-                .u8, .u16, .u32, .u64, .usize => "U64",
-                .f32, .f64, .float => "F64",
-                .boolean => "BOOL",
-                else => null,
-            },
-            else => null,
-        };
+        return lowering_rules.debugFormatSuffix(ty);
     }
 
     /// Push a constant byte string into the format buffer through the shared

@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share pointer-scalar, scalar-reassign, and debugFormatSuffix facts on Y
+  (2026-07-21): Pure pointer-scalar / scalar-reassign / FORMAT_PUSH suffix on
+  Y; SAB wrappers thin, SA format push uses shared suffix. Unit 2/2; build
+  7/7; println SA+SAB, field_copy SAB, result green.
+
 - Share primitiveIsHashable and slotCopyStructTypeFact on Y (2026-07-21):
   Pure Hash primitive leaf + pure slot-copy struct resolution on Y; SA wrappers
   thin. Unit 2/2; build 7/7; field_copy SA+SAB, plain slot-return, result green.

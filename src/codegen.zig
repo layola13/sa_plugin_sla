@@ -3090,29 +3090,21 @@ pub const Codegen = struct {
         }
 
         const val_reg = try self.genExpr(arg, hoisted_allocs);
-        const tag = try self.newTmp();
-        switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .u8, .u16, .u32, .u64, .usize => self.out.writer().print("    EXPAND FORMAT_PUSH_U64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError,
-                .f32, .f64, .float => self.out.writer().print("    EXPAND FORMAT_PUSH_F64 {s}, {s}, {s}, 10\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError,
-                .boolean => self.out.writer().print("    EXPAND FORMAT_PUSH_BOOL {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError,
-                else => self.out.writer().print("    EXPAND FORMAT_PUSH_I64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError,
-            },
-            else => return CodegenError.CodegenError,
-        }
+        try self.emitFormatPushValue(out_reg, val_reg, ty);
         if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
     }
 
     fn emitFormatPushValue(self: *Codegen, out_reg: []const u8, val_reg: []const u8, ty: *const ast.Type) CodegenError!void {
         const tag = try self.newTmp();
-        switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .u8, .u16, .u32, .u64, .usize => self.out.writer().print("    EXPAND FORMAT_PUSH_U64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError,
-                .f32, .f64, .float => self.out.writer().print("    EXPAND FORMAT_PUSH_F64 {s}, {s}, {s}, 10\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError,
-                .boolean => self.out.writer().print("    EXPAND FORMAT_PUSH_BOOL {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError,
-                else => self.out.writer().print("    EXPAND FORMAT_PUSH_I64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError,
-            },
-            else => return CodegenError.CodegenError,
+        const suffix = lowering_rules.debugFormatSuffix(ty) orelse return CodegenError.CodegenError;
+        if (std.mem.eql(u8, suffix, "U64")) {
+            self.out.writer().print("    EXPAND FORMAT_PUSH_U64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
+        } else if (std.mem.eql(u8, suffix, "F64")) {
+            self.out.writer().print("    EXPAND FORMAT_PUSH_F64 {s}, {s}, {s}, 10\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
+        } else if (std.mem.eql(u8, suffix, "BOOL")) {
+            self.out.writer().print("    EXPAND FORMAT_PUSH_BOOL {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
+        } else {
+            self.out.writer().print("    EXPAND FORMAT_PUSH_I64 {s}, {s}, {s}\n", .{ tag, out_reg, val_reg }) catch return CodegenError.CodegenError;
         }
     }
 

@@ -5985,11 +5985,7 @@ pub const Codegen = struct {
     fn exprNeedsPtrMacros(self: *Codegen, expr: *const ast.Node) bool {
         return switch (expr.*) {
             .call_expr => |call| blk: {
-                if (std.mem.eql(u8, call.func_name, "std__ptr__null") or std.mem.eql(u8, call.func_name, "std__ptr__read_volatile") or std.mem.eql(u8, call.func_name, "ptr__null") or std.mem.eql(u8, call.func_name, "ptr__read_volatile")) break :blk true;
-                if (call.associated_target) |target| {
-                    const is_ptr_target = std.mem.eql(u8, target, "std__ptr") or std.mem.eql(u8, target, "ptr");
-                    if (is_ptr_target and (std.mem.eql(u8, call.func_name, "null") or std.mem.eql(u8, call.func_name, "read_volatile"))) break :blk true;
-                }
+                if (lowering_rules.callNeedsPtrMacros(call)) break :blk true;
                 for (call.args) |arg| if (self.exprNeedsPtrMacros(arg)) break :blk true;
                 break :blk false;
             },
@@ -12559,7 +12555,7 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
                 }
-                if (std.mem.eql(u8, call.func_name, "std__ptr__null") or std.mem.eql(u8, call.func_name, "ptr__null")) {
+                if (lowering_rules.isPtrNullCall(call)) {
                     if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
                     const reg = try self.newTmp();
                     self.out.writer().print("    EXPAND PTR_NULL {s}\n", .{reg}) catch return CodegenError.CodegenError;

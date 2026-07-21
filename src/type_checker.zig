@@ -3499,7 +3499,7 @@ pub const TypeChecker = struct {
                     return try self.makeResultType(try self.makeInferType(), err_ty);
                 }
 
-                if (std.mem.eql(u8, call.func_name, "std__ptr__null") or std.mem.eql(u8, call.func_name, "ptr__null")) {
+                if (lowering_rules.isPtrNullCall(call)) {
                     if (call.args.len != 0) return TypeError.InvalidArgsCount;
                     if (call.generics.len != 1) return TypeError.InvalidArgsCount;
                     return try self.makePointerType(call.generics[0]);

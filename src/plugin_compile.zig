@@ -63,6 +63,7 @@ pub fn pruneTestsByFilter(allocator: std.mem.Allocator, program: *ast.Node, filt
     if (program.* != .program) return error.InvalidProgram;
 
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         if (decl.* == .test_decl and !testMatchesFilter(&decl.test_decl, filter)) continue;
         try filtered_decls.append(decl);
@@ -134,6 +135,10 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     defer worklist.deinit();
     var scanned_symbol_roots = std.StringHashMap(void).init(allocator);
     defer scanned_symbol_roots.deinit();
+    try reachable.ensureTotalCapacity(@intCast(program.program.decls.len));
+    try referenced_types.ensureTotalCapacity(@intCast(program.program.decls.len));
+    try worklist.ensureTotalCapacity(program.program.decls.len);
+    try scanned_symbol_roots.ensureTotalCapacity(@intCast(program.program.decls.len));
     var analysis = ReachabilityAnalysis.init(allocator, prune_known_branches);
     defer analysis.deinit();
 
@@ -204,6 +209,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     }
 
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         switch (decl.*) {
             .func_decl => |func_decl| {
@@ -291,6 +297,8 @@ fn pruneUnreachableFilteredTestDecls(
 
     var reachable = std.StringHashMap(void).init(allocator);
     var worklist = std.ArrayList([]const u8).init(allocator);
+    try reachable.ensureTotalCapacity(@intCast(program.program.decls.len));
+    try worklist.ensureTotalCapacity(program.program.decls.len);
 
     for (program.program.decls) |decl| {
         switch (decl.*) {
@@ -308,6 +316,7 @@ fn pruneUnreachableFilteredTestDecls(
     }
 
     var needed_trait_impls = std.StringHashMap(void).init(allocator);
+    try needed_trait_impls.ensureTotalCapacity(@intCast(program.program.decls.len));
     for (program.program.decls) |decl| {
         switch (decl.*) {
             .test_decl => |test_decl| try collectNeededTraitImplsBlock(allocator, tc, &needed_trait_impls, test_decl.body),
@@ -339,6 +348,7 @@ fn pruneUnreachableFilteredTestDecls(
     }
 
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         switch (decl.*) {
             .func_decl => |func_decl| {
@@ -433,6 +443,8 @@ fn pruneUnreachableEntryFunctionDecls(
 
     var reachable = std.StringHashMap(void).init(allocator);
     var worklist = std.ArrayList([]const u8).init(allocator);
+    try reachable.ensureTotalCapacity(@intCast(program.program.decls.len));
+    try worklist.ensureTotalCapacity(program.program.decls.len);
 
     try reachable.put(entry_name, {});
     try collectReachableBlock(tc, &reachable, &worklist, entry.body);
@@ -448,6 +460,7 @@ fn pruneUnreachableEntryFunctionDecls(
     }
 
     var needed_trait_impls = std.StringHashMap(void).init(allocator);
+    try needed_trait_impls.ensureTotalCapacity(@intCast(program.program.decls.len));
     for (program.program.decls) |decl| {
         switch (decl.*) {
             .const_stmt => |const_stmt| try collectNeededTraitImplsExpr(allocator, tc, &needed_trait_impls, const_stmt.value),
@@ -478,6 +491,7 @@ fn pruneUnreachableEntryFunctionDecls(
     }
 
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         switch (decl.*) {
             .func_decl => |func_decl| {
@@ -704,6 +718,7 @@ fn runSlaFrontend(
     // Filter specialized_prog to only include primary declarations
     stage_start = std.time.nanoTimestamp();
     var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    try filtered_decls.ensureTotalCapacity(specialized_prog.program.decls.len);
     for (specialized_prog.program.decls) |decl| {
         if (specialized_primary_decls.contains(decl)) {
             try filtered_decls.append(decl);

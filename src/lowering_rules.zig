@@ -3178,6 +3178,36 @@ pub fn isResultConstructorCall(call: ast.CallExpr) bool {
     return isResultOkCall(call) or isResultErrCall(call);
 }
 
+/// Shared pure bare `ptr__null` / `std__ptr__null` builtin name fact.
+pub fn isPtrNullBuiltinName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "std__ptr__null") or std.mem.eql(u8, name, "ptr__null");
+}
+
+/// Shared pure bare `ptr__read_volatile` / `std__ptr__read_volatile` builtin name fact.
+pub fn isPtrReadVolatileBuiltinName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "std__ptr__read_volatile") or std.mem.eql(u8, name, "ptr__read_volatile");
+}
+
+/// Shared pure recognition of bare ptr-null builtins.
+pub fn isPtrNullCall(call: ast.CallExpr) bool {
+    return isPtrNullBuiltinName(call.func_name);
+}
+
+/// Shared pure recognition of bare ptr-read-volatile builtins.
+pub fn isPtrReadVolatileCall(call: ast.CallExpr) bool {
+    return isPtrReadVolatileBuiltinName(call.func_name);
+}
+
+/// Shared pure fact: call needs std ptr macros (null / read_volatile surfaces).
+pub fn callNeedsPtrMacros(call: ast.CallExpr) bool {
+    if (isPtrNullCall(call) or isPtrReadVolatileCall(call)) return true;
+    if (call.associated_target) |target| {
+        const is_ptr_target = std.mem.eql(u8, target, "std__ptr") or std.mem.eql(u8, target, "ptr");
+        if (is_ptr_target and (std.mem.eql(u8, call.func_name, "null") or std.mem.eql(u8, call.func_name, "read_volatile"))) return true;
+    }
+    return false;
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7425,6 +7455,37 @@ test "Option and Result constructor peels" {
     try std.testing.expect(!isResultOkCall(not_ctor));
     try std.testing.expect(!isResultConstructorCall(not_ctor));
     try std.testing.expect(!isOptionSomeCall(not_ctor));
+}
+
+test "ptr null and read_volatile peels" {
+    try std.testing.expect(isPtrNullBuiltinName("ptr__null"));
+    try std.testing.expect(isPtrNullBuiltinName("std__ptr__null"));
+    try std.testing.expect(!isPtrNullBuiltinName("null"));
+    try std.testing.expect(isPtrReadVolatileBuiltinName("ptr__read_volatile"));
+    try std.testing.expect(isPtrReadVolatileBuiltinName("std__ptr__read_volatile"));
+
+    const bare_null = ast.CallExpr{
+        .func_name = "ptr__null",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(isPtrNullCall(bare_null));
+    try std.testing.expect(callNeedsPtrMacros(bare_null));
+    const associated_null = ast.CallExpr{
+        .func_name = "null",
+        .args = &.{},
+        .associated_target = "ptr",
+        .generics = &.{},
+    };
+    try std.testing.expect(callNeedsPtrMacros(associated_null));
+    const unrelated = ast.CallExpr{
+        .func_name = "println",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(!callNeedsPtrMacros(unrelated));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

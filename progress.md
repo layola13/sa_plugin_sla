@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share ptr-null peels and pre-size plugin_compile prune maps on Y (2026-07-21):
+  Pure ptr null/read_volatile peels + callNeedsPtrMacros; SA/typecheck thin;
+  plugin_compile prune/filter containers pre-sized. Unit 1/1; result SA, option
+  SAB, borrow SA, println SAB green.
+
 - Share Option/Result constructor peels on Y (2026-07-21): Pure None/Some/Ok/Err
   peels shared; SA emit/macro-need and typecheck thin. Unit 1/1; option SA+SAB,
   option methods SA, result SA+SAB, println SAB, borrow SA green.

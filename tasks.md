@@ -40,6 +40,11 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Share collection/atomic/mpsc method peels on Y (2026-07-21). Pure
+	  isGet/isInsert/isContains/isLoad/isStore/isFetchAdd/isCompareExchange/
+	  isAsPtr/isSend/isRecv; SA/typecheck thin. Unit 1/1; cell_bool SA+SAB,
+	  box_from_raw SA, result SAB, thread pair SA, option methods SA green.
+
 	- [x] Share Option/Result method peels on Y (2026-07-21). Pure
 	  isIsSome/isIsNone/isOptionQueryCall, isIsOk/isIsErr/isResultQueryCall,
 	  isUnwrapOr/Else/Default, isAndThen/isCopied/isMap; SA/typecheck thin.

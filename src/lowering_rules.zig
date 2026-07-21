@@ -3358,6 +3358,56 @@ pub fn isMapCall(call: ast.CallExpr) bool {
     return std.mem.eql(u8, call.func_name, "map");
 }
 
+/// Shared pure `get` call-name fact.
+pub fn isGetCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "get");
+}
+
+/// Shared pure `insert` call-name fact.
+pub fn isInsertCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "insert");
+}
+
+/// Shared pure `contains` call-name fact.
+pub fn isContainsCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "contains");
+}
+
+/// Shared pure `load` call-name fact.
+pub fn isLoadCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "load");
+}
+
+/// Shared pure `store` call-name fact.
+pub fn isStoreCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "store");
+}
+
+/// Shared pure `fetch_add` call-name fact.
+pub fn isFetchAddCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "fetch_add");
+}
+
+/// Shared pure `compare_exchange` call-name fact.
+pub fn isCompareExchangeCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "compare_exchange");
+}
+
+/// Shared pure `as_ptr` call-name fact.
+pub fn isAsPtrCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "as_ptr");
+}
+
+/// Shared pure `send` call-name fact.
+pub fn isSendCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "send");
+}
+
+/// Shared pure `recv` call-name fact.
+pub fn isRecvCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "recv");
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7701,6 +7751,22 @@ test "option and result method peels" {
     try std.testing.expect(isMapCall(.{ .func_name = "map", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(!isOptionQueryCall(ok));
     try std.testing.expect(!isResultQueryCall(some));
+}
+
+test "collection atomic mpsc method peels" {
+    var dummy: ast.Node = undefined;
+    var one = [_]*ast.Node{&dummy};
+    try std.testing.expect(isGetCall(.{ .func_name = "get", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isInsertCall(.{ .func_name = "insert", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isContainsCall(.{ .func_name = "contains", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isLoadCall(.{ .func_name = "load", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isStoreCall(.{ .func_name = "store", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isFetchAddCall(.{ .func_name = "fetch_add", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isCompareExchangeCall(.{ .func_name = "compare_exchange", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isAsPtrCall(.{ .func_name = "as_ptr", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isSendCall(.{ .func_name = "send", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isRecvCall(.{ .func_name = "recv", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(!isGetCall(.{ .func_name = "set", .args = one[0..], .associated_target = null, .generics = &.{} }));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

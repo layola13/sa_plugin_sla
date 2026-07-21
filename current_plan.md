@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share collection/atomic/mpsc method peels on Y (2026-07-21): Pure isGet/
+  isInsert/isContains/isLoad/isStore/isFetchAdd/isCompareExchange/isAsPtr/
+  isSend/isRecv shared; SA emit/macro-need and typecheck method peels thin to
+  them. Unit 1/1; cell_bool SA+SAB, box_from_raw SA, result SAB, thread pair
+  SA, option methods SA green.
+
 - Share Option/Result method peels on Y (2026-07-21): Pure isIsSome/isIsNone/
   isOptionQueryCall, isIsOk/isIsErr/isResultQueryCall, isUnwrapOr/Else/Default,
   isAndThen/isCopied/isMap shared; SA emit/macro-need, typecheck method peels,

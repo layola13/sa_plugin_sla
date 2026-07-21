@@ -4261,13 +4261,13 @@ pub const TypeChecker = struct {
                     }
 
                     if (isAtomicI32Type(recv_ty)) {
-                        if (std.mem.eql(u8, call.func_name, "load")) {
+                        if (lowering_rules.isLoadCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const ordering_ty = try self.checkExpr(call.args[1], scope);
                             if (!isOrderingType(ordering_ty)) return TypeError.TypeMismatch;
                             return try self.makeI32Type();
                         }
-                        if (std.mem.eql(u8, call.func_name, "store")) {
+                        if (lowering_rules.isStoreCall(call)) {
                             if (call.args.len != 3) return TypeError.InvalidArgsCount;
                             const value_ty = try self.checkExpr(call.args[1], scope);
                             const ordering_ty = try self.checkExpr(call.args[2], scope);
@@ -4276,14 +4276,14 @@ pub const TypeChecker = struct {
                             ret.* = .{ .primitive = .void_type };
                             return ret;
                         }
-                        if (std.mem.eql(u8, call.func_name, "fetch_add")) {
+                        if (lowering_rules.isFetchAddCall(call)) {
                             if (call.args.len != 3) return TypeError.InvalidArgsCount;
                             const value_ty = try self.checkExpr(call.args[1], scope);
                             const ordering_ty = try self.checkExpr(call.args[2], scope);
                             if (!isNumericType(value_ty) or !isOrderingType(ordering_ty)) return TypeError.TypeMismatch;
                             return try self.makeI32Type();
                         }
-                        if (std.mem.eql(u8, call.func_name, "compare_exchange")) {
+                        if (lowering_rules.isCompareExchangeCall(call)) {
                             if (call.args.len != 5) return TypeError.InvalidArgsCount;
                             const expected_ty = try self.checkExpr(call.args[1], scope);
                             const new_ty = try self.checkExpr(call.args[2], scope);
@@ -4296,7 +4296,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (isAtomicUsizeType(recv_ty)) {
-                        if (std.mem.eql(u8, call.func_name, "load")) {
+                        if (lowering_rules.isLoadCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const ordering_ty = try self.checkExpr(call.args[1], scope);
                             if (!isOrderingType(ordering_ty)) return TypeError.TypeMismatch;
@@ -4304,7 +4304,7 @@ pub const TypeChecker = struct {
                             ty.* = .{ .primitive = .usize };
                             return ty;
                         }
-                        if (std.mem.eql(u8, call.func_name, "store")) {
+                        if (lowering_rules.isStoreCall(call)) {
                             if (call.args.len != 3) return TypeError.InvalidArgsCount;
                             const value_ty = try self.checkExpr(call.args[1], scope);
                             const ordering_ty = try self.checkExpr(call.args[2], scope);
@@ -4313,7 +4313,7 @@ pub const TypeChecker = struct {
                             ret.* = .{ .primitive = .void_type };
                             return ret;
                         }
-                        if (std.mem.eql(u8, call.func_name, "fetch_add")) {
+                        if (lowering_rules.isFetchAddCall(call)) {
                             if (call.args.len != 3) return TypeError.InvalidArgsCount;
                             const value_ty = try self.checkExpr(call.args[1], scope);
                             const ordering_ty = try self.checkExpr(call.args[2], scope);
@@ -4325,7 +4325,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (cellInnerType(recv_ty)) |inner_ty| {
-                        if (std.mem.eql(u8, call.func_name, "get")) {
+                        if (lowering_rules.isGetCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return inner_ty;
                         }
@@ -4408,7 +4408,7 @@ pub const TypeChecker = struct {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return recv_ty;
                         }
-                        if (std.mem.eql(u8, call.func_name, "send")) {
+                        if (lowering_rules.isSendCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const value_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(inner_ty, value_ty)) return TypeError.TypeMismatch;
@@ -4419,7 +4419,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (receiverInnerType(recv_ty)) |inner_ty| {
-                        if (std.mem.eql(u8, call.func_name, "recv")) {
+                        if (lowering_rules.isRecvCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return try self.makeResultType(inner_ty, try self.makeI32Type());
                         }
@@ -4436,7 +4436,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (atomicPtrInnerType(recv_ty)) |inner_ty| {
-                        if (std.mem.eql(u8, call.func_name, "load")) {
+                        if (lowering_rules.isLoadCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const ordering_ty = try self.checkExpr(call.args[1], scope);
                             if (!isOrderingType(ordering_ty)) return TypeError.TypeMismatch;
@@ -4478,7 +4478,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (arrayType(recv_ty)) |arr| {
-                        if (std.mem.eql(u8, call.func_name, "as_ptr")) {
+                        if (lowering_rules.isAsPtrCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return try self.makePointerType(arr.elem);
                         }
@@ -4493,7 +4493,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (isStringLikeType(recv_ty)) {
-                        if (std.mem.eql(u8, call.func_name, "as_ptr")) {
+                        if (lowering_rules.isAsPtrCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return try self.makePointerType(try self.makeU8Type());
                         }
@@ -4514,7 +4514,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (sliceElementType(recv_ty)) |elem_ty| {
-                        if (std.mem.eql(u8, call.func_name, "as_ptr")) {
+                        if (lowering_rules.isAsPtrCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return try self.makePointerType(elem_ty);
                         }
@@ -4528,7 +4528,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (hashMapTypes(recv_ty)) |hm| {
-                        if (std.mem.eql(u8, call.func_name, "insert")) {
+                        if (lowering_rules.isInsertCall(call)) {
                             if (call.args.len != 3) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             const value_ty = try self.checkExpr(call.args[2], scope);
@@ -4544,7 +4544,7 @@ pub const TypeChecker = struct {
                             }
                             return try self.makeOptionType(value_ty);
                         }
-                        if (std.mem.eql(u8, call.func_name, "get")) {
+                        if (lowering_rules.isGetCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(hm.key, key_ty)) return TypeError.TypeMismatch;
@@ -4553,7 +4553,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (hashSetTypes(recv_ty)) |hs| {
-                        if (std.mem.eql(u8, call.func_name, "insert")) {
+                        if (lowering_rules.isInsertCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(hs.key, key_ty)) return TypeError.TypeMismatch;
@@ -4570,7 +4570,7 @@ pub const TypeChecker = struct {
                             ty.* = .{ .primitive = .boolean };
                             return ty;
                         }
-                        if (std.mem.eql(u8, call.func_name, "contains")) {
+                        if (lowering_rules.isContainsCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(hs.key, key_ty)) return TypeError.TypeMismatch;
@@ -4581,7 +4581,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (btreeMapTypes(recv_ty)) |bm| {
-                        if (std.mem.eql(u8, call.func_name, "insert")) {
+                        if (lowering_rules.isInsertCall(call)) {
                             if (call.args.len != 3) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             const value_ty = try self.checkExpr(call.args[2], scope);
@@ -4597,7 +4597,7 @@ pub const TypeChecker = struct {
                             }
                             return try self.makeOptionType(value_ty);
                         }
-                        if (std.mem.eql(u8, call.func_name, "get")) {
+                        if (lowering_rules.isGetCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(bm.key, key_ty)) return TypeError.TypeMismatch;
@@ -4606,7 +4606,7 @@ pub const TypeChecker = struct {
                     }
 
                     if (btreeSetTypes(recv_ty)) |bs| {
-                        if (std.mem.eql(u8, call.func_name, "insert")) {
+                        if (lowering_rules.isInsertCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(bs.key, key_ty)) return TypeError.TypeMismatch;
@@ -4623,7 +4623,7 @@ pub const TypeChecker = struct {
                             ty.* = .{ .primitive = .boolean };
                             return ty;
                         }
-                        if (std.mem.eql(u8, call.func_name, "contains")) {
+                        if (lowering_rules.isContainsCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(bs.key, key_ty)) return TypeError.TypeMismatch;

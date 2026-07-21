@@ -4898,7 +4898,7 @@ pub const Codegen = struct {
             .identifier => |name| lowering_rules.isOptionNoneName(name),
             .call_expr => |call| blk: {
                 if (lowering_rules.isOptionSomeCall(call)) break :blk true;
-                if ((lowering_rules.isOptionQueryCall(call) or lowering_rules.isMapCall(call) or lowering_rules.isAndThenCall(call) or lowering_rules.isUnwrapCall(call) or lowering_rules.isUnwrapOrCall(call) or lowering_rules.isUnwrapOrElseCall(call) or lowering_rules.isUnwrapOrDefaultCall(call) or lowering_rules.isCopiedCall(call) or std.mem.eql(u8, call.func_name, "get")) and
+                if ((lowering_rules.isOptionQueryCall(call) or lowering_rules.isMapCall(call) or lowering_rules.isAndThenCall(call) or lowering_rules.isUnwrapCall(call) or lowering_rules.isUnwrapOrCall(call) or lowering_rules.isUnwrapOrElseCall(call) or lowering_rules.isUnwrapOrDefaultCall(call) or lowering_rules.isCopiedCall(call) or lowering_rules.isGetCall(call)) and
                     call.args.len > 0)
                 {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
@@ -5110,7 +5110,7 @@ pub const Codegen = struct {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and resultOkType(recv_ty.?) != null) break :blk true;
                 }
-                if (std.mem.eql(u8, call.func_name, "compare_exchange") and call.args.len > 0) {
+                if (lowering_rules.isCompareExchangeCall(call) and call.args.len > 0) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and isAtomicI32Type(recv_ty.?)) break :blk true;
                 }
@@ -5215,7 +5215,7 @@ pub const Codegen = struct {
                 if (call.associated_target) |target| {
                     if (std.mem.eql(u8, target, "mpsc") and std.mem.eql(u8, call.func_name, "channel")) break :blk true;
                 }
-                if ((std.mem.eql(u8, call.func_name, "send") or std.mem.eql(u8, call.func_name, "recv")) and call.args.len > 0) {
+                if ((lowering_rules.isSendCall(call) or lowering_rules.isRecvCall(call)) and call.args.len > 0) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty) |ty| {
                         if (senderInnerType(ty) != null or receiverInnerType(ty) != null) break :blk true;
@@ -5523,7 +5523,7 @@ pub const Codegen = struct {
                 if (call.associated_target) |target| {
                     if (std.mem.eql(u8, target, "HashMap") and std.mem.eql(u8, call.func_name, "new")) break :blk true;
                 }
-                if (call.args.len > 0 and (std.mem.eql(u8, call.func_name, "insert") or std.mem.eql(u8, call.func_name, "get"))) {
+                if (call.args.len > 0 and (lowering_rules.isInsertCall(call) or lowering_rules.isGetCall(call))) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and hashMapTypes(recv_ty.?) != null) break :blk true;
                 }
@@ -5626,7 +5626,7 @@ pub const Codegen = struct {
                 if (call.associated_target) |target| {
                     if (std.mem.eql(u8, target, "HashSet")) break :blk true;
                 }
-                if (call.args.len > 0 and (std.mem.eql(u8, call.func_name, "insert") or std.mem.eql(u8, call.func_name, "contains"))) {
+                if (call.args.len > 0 and (lowering_rules.isInsertCall(call) or lowering_rules.isContainsCall(call))) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and hashSetTypes(recv_ty.?) != null) break :blk true;
                 }
@@ -5719,7 +5719,7 @@ pub const Codegen = struct {
                 if (call.associated_target) |target| {
                     if (std.mem.eql(u8, target, "BTreeSet")) break :blk true;
                 }
-                if (call.args.len > 0 and (std.mem.eql(u8, call.func_name, "insert") or std.mem.eql(u8, call.func_name, "contains"))) {
+                if (call.args.len > 0 and (lowering_rules.isInsertCall(call) or lowering_rules.isContainsCall(call))) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and btreeSetTypes(recv_ty.?) != null) break :blk true;
                 }
@@ -13359,7 +13359,7 @@ pub const Codegen = struct {
                                 self.mpsc_sender_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "send")) {
+                            if (lowering_rules.isSendCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = if (call.args[0].* == .identifier)
                                     self.mpsc_sender_channels.get(call.args[0].identifier) orelse try self.genExpr(call.args[0], hoisted_allocs)
@@ -13376,7 +13376,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (receiverInnerType(ty)) |_| {
-                            if (std.mem.eql(u8, call.func_name, "recv")) {
+                            if (lowering_rules.isRecvCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.newTmp();
@@ -13750,7 +13750,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (isAtomicI32Type(ty)) {
-                            if (std.mem.eql(u8, call.func_name, "load")) {
+                            if (lowering_rules.isLoadCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[1]);
@@ -13759,7 +13759,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "store")) {
+                            if (lowering_rules.isStoreCall(call)) {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
@@ -13769,7 +13769,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                                 return "return_ty_sentinel";
                             }
-                            if (std.mem.eql(u8, call.func_name, "fetch_add")) {
+                            if (lowering_rules.isFetchAddCall(call)) {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
@@ -13780,7 +13780,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "compare_exchange")) {
+                            if (lowering_rules.isCompareExchangeCall(call)) {
                                 if (call.args.len != 5) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const expected_reg = try self.genExpr(call.args[1], hoisted_allocs);
@@ -13812,7 +13812,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (isAtomicUsizeType(ty)) {
-                            if (std.mem.eql(u8, call.func_name, "load")) {
+                            if (lowering_rules.isLoadCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[1]);
@@ -13821,7 +13821,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "store")) {
+                            if (lowering_rules.isStoreCall(call)) {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
@@ -13831,7 +13831,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                                 return "return_ty_sentinel";
                             }
-                            if (std.mem.eql(u8, call.func_name, "fetch_add")) {
+                            if (lowering_rules.isFetchAddCall(call)) {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
@@ -13844,7 +13844,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (atomicPtrInnerType(ty) != null) {
-                            if (std.mem.eql(u8, call.func_name, "load")) {
+                            if (lowering_rules.isLoadCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ordering = try atomicOrderingToken(call.args[1]);
@@ -13855,7 +13855,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (cellInnerType(ty) != null) {
-                            if (std.mem.eql(u8, call.func_name, "get")) {
+                            if (lowering_rules.isGetCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
@@ -14030,7 +14030,7 @@ pub const Codegen = struct {
                             return option_reg;
                         }
                         if (arrayType(ty)) |arr| {
-                            if (std.mem.eql(u8, call.func_name, "as_ptr")) {
+                            if (lowering_rules.isAsPtrCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 if (call.args[0].* == .identifier and self.global_const_bindings.contains(call.args[0].identifier)) {
@@ -14058,7 +14058,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (isStringLikeType(ty)) {
-                            if (std.mem.eql(u8, call.func_name, "as_ptr")) {
+                            if (lowering_rules.isAsPtrCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ptr_reg = try self.newTmp();
@@ -14160,7 +14160,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (sliceElementType(ty) != null) {
-                            if (std.mem.eql(u8, call.func_name, "as_ptr")) {
+                            if (lowering_rules.isAsPtrCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const ptr_reg = try self.newTmp();
@@ -14182,7 +14182,7 @@ pub const Codegen = struct {
                             return ptr_reg;
                         }
                         if (hashMapTypes(ty) != null) {
-                            if (std.mem.eql(u8, call.func_name, "insert")) {
+                            if (lowering_rules.isInsertCall(call)) {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
@@ -14193,7 +14193,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "get")) {
+                            if (lowering_rules.isGetCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
@@ -14205,7 +14205,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (btreeMapTypes(ty) != null) {
-                            if (std.mem.eql(u8, call.func_name, "insert")) {
+                            if (lowering_rules.isInsertCall(call)) {
                                 if (call.args.len != 3) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
@@ -14217,7 +14217,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[2])) try self.emitRelease(value_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "get")) {
+                            if (lowering_rules.isGetCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
@@ -14229,7 +14229,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (hashSetTypes(ty) != null) {
-                            if (std.mem.eql(u8, call.func_name, "insert")) {
+                            if (lowering_rules.isInsertCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
@@ -14239,7 +14239,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "contains")) {
+                            if (lowering_rules.isContainsCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
@@ -14251,7 +14251,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (btreeSetTypes(ty) != null) {
-                            if (std.mem.eql(u8, call.func_name, "insert")) {
+                            if (lowering_rules.isInsertCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);
@@ -14261,7 +14261,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "contains")) {
+                            if (lowering_rules.isContainsCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const key_reg = try self.genHashMapKeyReg(call.args[1], hoisted_allocs);

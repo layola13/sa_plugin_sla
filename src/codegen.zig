@@ -2414,9 +2414,11 @@ pub const Codegen = struct {
     };
 
     fn abiCallArgPrefix(param: contract_parser.Param) AbiCallArgPrefix {
-        if (param.is_borrow) return .borrow;
-        if (param.is_move) return .move;
-        return .none;
+        return switch (lowering_rules.abiCallArgCapKind(param.is_borrow, param.is_move)) {
+            .borrow => .borrow,
+            .move => .move,
+            .none, .raw => .none,
+        };
     }
 
     fn externPtrParamAsAstParam(self: *Codegen, param: contract_parser.Param) CodegenError!?ast.Param {

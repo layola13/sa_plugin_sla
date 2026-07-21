@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share abiCallArgCapKind, pointerOrBorrowPointee, and typecheck borrow-like on Y
+  (2026-07-21): Pure call-arg ABI cap + single-layer pointee peel; type_checker
+  borrow-like/deref peels shared. Unit 2/2; build 7/7; borrow SA+SAB, explicit
+  borrow-return SA+SAB, println, result green.
+
 - Share ABI cap-kind, temporary-register, and residual ABI string wrappers on Y
   (2026-07-21): Pure AbiCapKind + isTemporaryRegisterName; SA ABI wrappers
   thin; SAB returnCap maps shared kind. Unit 2/2; build 7/7; println SA+SAB,

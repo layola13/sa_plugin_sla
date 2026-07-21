@@ -18,6 +18,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share abiCallArgCapKind, pointerOrBorrowPointee, and typecheck borrow-like on Y
+  (2026-07-21): Pure call-arg ABI cap from borrow/move flags and single-layer
+  pointer/borrow pointee peel shared; type_checker isBorrowLikeType + deref/
+  read_volatile peels consume shared helpers; SA abiCallArgPrefix maps kind.
+  Unit 2/2; build 7/7; borrow SA+SAB, explicit borrow-return SA+SAB, println,
+  result green.
+
 - Share ABI cap-kind, temporary-register, and residual ABI string wrappers on Y
   (2026-07-21): Pure AbiCapKind from type/raw strings + isTemporaryRegisterName
   shared; SA abiReturn/abiRawPayload wrappers thin to lowering_rules; SAB

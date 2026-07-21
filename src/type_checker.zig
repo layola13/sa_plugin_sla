@@ -563,11 +563,7 @@ pub const TypeChecker = struct {
     }
 
     fn isBorrowLikeType(ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .borrow => true,
-            .primitive => |p| p == .void_type,
-            else => false,
-        };
+        return lowering_rules.isBorrowLikeType(ty);
     }
 
     fn iterableElementType(ty: *ast.Type) ?*ast.Type {
@@ -3256,11 +3252,7 @@ pub const TypeChecker = struct {
                 if (mutexGuardInnerType(inner_ty)) |guard_inner| return guard_inner;
                 if (rwLockReadGuardInnerType(inner_ty)) |guard_inner| return guard_inner;
                 if (rwLockWriteGuardInnerType(inner_ty)) |guard_inner| return guard_inner;
-                switch (inner_ty.*) {
-                    .pointer => |p| return p,
-                    .borrow => |b| return b,
-                    else => return TypeError.DereferenceNonPointer,
-                }
+                return @constCast(lowering_rules.pointerOrBorrowPointee(inner_ty) orelse return TypeError.DereferenceNonPointer);
             },
             .cast_expr => |cast| {
                 const src_ty = try self.checkExpr(cast.expr, scope);
@@ -3729,11 +3721,7 @@ pub const TypeChecker = struct {
                     }
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const ptr_ty = try self.checkExpr(call.args[0], scope);
-                    return switch (ptr_ty.*) {
-                        .pointer => |inner| inner,
-                        .borrow => |inner| inner,
-                        else => TypeError.TypeMismatch,
-                    };
+                    return @constCast(lowering_rules.pointerOrBorrowPointee(ptr_ty) orelse return TypeError.TypeMismatch);
                 }
 
                 if (recv_node_ty) |rt| {
@@ -3775,11 +3763,7 @@ pub const TypeChecker = struct {
                         }
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const ptr_ty = try self.checkExpr(call.args[0], scope);
-                        return switch (ptr_ty.*) {
-                            .pointer => |inner| inner,
-                            .borrow => |inner| inner,
-                            else => TypeError.TypeMismatch,
-                        };
+                        return @constCast(lowering_rules.pointerOrBorrowPointee(ptr_ty) orelse return TypeError.TypeMismatch);
                     }
                     if (std.mem.eql(u8, target_name, "mem") and std.mem.eql(u8, call.func_name, "forget")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;

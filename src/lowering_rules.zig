@@ -1092,6 +1092,22 @@ pub fn isTemporaryRegisterName(name: []const u8) bool {
     return std.mem.startsWith(u8, name, "tmp_");
 }
 
+/// Shared pure call-arg ABI capability from borrow/move flags (extern params, etc.).
+pub fn abiCallArgCapKind(is_borrow: bool, is_move: bool) AbiCapKind {
+    if (is_borrow) return .borrow;
+    if (is_move) return .move;
+    return .none;
+}
+
+/// Shared pure single-layer pointer/borrow pointee peel (no multi-layer walk).
+pub fn pointerOrBorrowPointee(ty: *const ast.Type) ?*const ast.Type {
+    return switch (ty.*) {
+        .pointer => |p| p,
+        .borrow => |b| b,
+        else => null,
+    };
+}
+
 pub fn abiParamTypeString(is_borrow: bool, is_move: bool, ty: *const ast.Type) []const u8 {
     if (is_borrow or is_move) return "ptr";
     return abiTypeString(ty);
@@ -6973,6 +6989,19 @@ test "abiCapKind and temporary register name facts" {
     try std.testing.expectEqualStrings("i32", abiReturnTypeString(&i32_ty));
     try std.testing.expectEqualStrings("u8", abiRawPayloadTypeString("bool"));
     try std.testing.expectEqualStrings("i64", abiRawPayloadTypeString("^int"));
+}
+
+test "abiCallArgCapKind and pointerOrBorrowPointee" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var ptr_ty = ast.Type{ .pointer = &i32_ty };
+    var borrow_ty = ast.Type{ .borrow = &i32_ty };
+    try std.testing.expect(abiCallArgCapKind(true, false) == .borrow);
+    try std.testing.expect(abiCallArgCapKind(false, true) == .move);
+    try std.testing.expect(abiCallArgCapKind(false, false) == .none);
+    try std.testing.expect(abiCallArgCapKind(true, true) == .borrow);
+    try std.testing.expect(pointerOrBorrowPointee(&ptr_ty) == &i32_ty);
+    try std.testing.expect(pointerOrBorrowPointee(&borrow_ty) == &i32_ty);
+    try std.testing.expect(pointerOrBorrowPointee(&i32_ty) == null);
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

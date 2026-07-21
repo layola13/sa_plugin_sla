@@ -4444,6 +4444,20 @@ pub fn shallowCopyCallArgValueBase(ty: *const ast.Type, depth: usize) ?bool {
     };
 }
 
+/// Shared pure gate for user-defined shallow-copy call-arg values before enum/
+/// struct lookup. Returns `depth > 0` for std-owner/smart-pointer containers,
+/// null when the emitter must continue with enum/struct resolution.
+pub fn shallowCopyCallArgUserDefinedBase(ty: *const ast.Type, depth: usize) ?bool {
+    if (userDefinedStdOwnerIsNonCopy(ty) or smartPointerType(ty) != null) return depth > 0;
+    return null;
+}
+
+/// Shared pure gate after a user-defined struct decl has been resolved for
+/// shallow-copy call-arg typing. Field recursion remains emitter-local.
+pub fn shallowCopyCallArgStructGate(decl: *const ast.StructDecl) bool {
+    return !decl.is_opaque and !decl.is_union;
+}
+
 /// Shared pure leaf/base decisions for recursive Copy-value typing.
 /// Returns null when the emitter must recurse into aggregates or consult
 /// user-defined Copy derives.
@@ -6794,6 +6808,24 @@ test "typeIsCopyValueBase classifies pure leaves" {
     try std.testing.expect(typeIsCopyValueBase(&fn_ty).?);
     try std.testing.expect(typeIsCopyValueBase(&tuple_ty) == null);
     try std.testing.expect(typeIsCopyValueBase(&user_ty) == null);
+}
+
+test "shallowCopyCallArgUserDefinedBase classifies owners" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var gens = [_]*ast.Type{&i32_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
+    var box_ty = ast.Type{ .user_defined = .{ .name = "Box", .generics = gens[0..] } };
+    var foo_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
+    try std.testing.expect(!shallowCopyCallArgUserDefinedBase(&vec_ty, 0).?);
+    try std.testing.expect(shallowCopyCallArgUserDefinedBase(&vec_ty, 1).?);
+    try std.testing.expect(!shallowCopyCallArgUserDefinedBase(&box_ty, 0).?);
+    try std.testing.expect(shallowCopyCallArgUserDefinedBase(&foo_ty, 0) == null);
+
+    var fields = [_]ast.Field{.{ .name = "x", .ty = &i32_ty }};
+    var good = ast.StructDecl{ .name = "Good", .generics = &.{}, .fields = fields[0..], .derives = &.{}, .is_union = false, .is_opaque = false };
+    var opaque_decl = ast.StructDecl{ .name = "Opaque", .generics = &.{}, .fields = fields[0..], .derives = &.{}, .is_union = false, .is_opaque = true };
+    try std.testing.expect(shallowCopyCallArgStructGate(&good));
+    try std.testing.expect(!shallowCopyCallArgStructGate(&opaque_decl));
 }
 
 test "shallowCopyCallArgValueBase classifies pure leaves" {

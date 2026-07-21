@@ -3386,14 +3386,14 @@ pub const Codegen = struct {
             },
             .array => |arr| self.typeIsShallowCopyCallArgValue(arr.elem, depth + 1),
             .user_defined => |ud| blk: {
-                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty) or lowering_rules.smartPointerType(ty) != null) break :blk depth > 0;
+                if (lowering_rules.shallowCopyCallArgUserDefinedBase(ty, depth)) |decision| break :blk decision;
                 // Pure enums are POD-like at the register/ABI level even without
                 // an explicit Copy derive. Treating them as non-shallow-copy made
                 // structs such as ComponentInfo (i32 + enum) look ownership-only,
                 // so SA vec.push emitted ^value and then reusing the local failed.
                 if (self.tc.enums.contains(ud.name)) break :blk true;
                 const decl = self.structDeclForType(ty) orelse break :blk false;
-                if (decl.is_opaque or decl.is_union) break :blk false;
+                if (!lowering_rules.shallowCopyCallArgStructGate(decl)) break :blk false;
                 for (decl.fields) |field| {
                     if (!self.typeIsShallowCopyCallArgValue(field.ty, depth + 1)) break :blk false;
                 }

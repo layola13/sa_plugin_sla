@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share shallowCopyCallArgUserDefinedBase/struct-gate helpers on Y (2026-07-21):
+  SA/SAB recursive shallow-copy call-arg typing consume shared pure
+  owner/smart-pointer depth base and resolved-struct gate; enum/struct field
+  recursion stays local. Unit 2/2x2; build 7/7; field_copy/fn_ptr_value/result
+  SA+SAB green.
+
 - Share typeHasCopyDerive base/gate helpers on Y (2026-07-21):
   SA/SAB recursive Copy-derive typing consume shared pure leaf/base and
   struct-gate helpers; field recursion and SAB cache remain local. Unit 2/2x2;

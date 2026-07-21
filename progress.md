@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share std builtin call peels on Y (2026-07-21): Pure println/hash/debug/str_eq/
+  vec/len/push/pop peels; SA/SAB/typecheck thin. Unit 1/1; println SA+SAB,
+  vec_len SA+SAB, vec_index SA+SAB, borrow_vec SAB, option SAB, result SA green.
+
 - Share ptr-null peels and pre-size plugin_compile prune maps on Y (2026-07-21):
   Pure ptr null/read_volatile peels + callNeedsPtrMacros; SA/typecheck thin;
   plugin_compile prune/filter containers pre-sized. Unit 1/1; result SA, option

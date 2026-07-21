@@ -1955,14 +1955,14 @@ pub const Codegen = struct {
             .closure_literal => |lit| try self.preloadNodeStdSurfaceDeps(lit.body),
             .call_expr => |call| {
                 if (isThreadSpawnCall(call)) try self.ensureStdDeps("sa_std/thread.sa", &.{"pthread_spawn"});
-                if (std.mem.eql(u8, call.func_name, "println") and call.associated_target == null) try self.ensurePrintlnDeps();
-                if (std.mem.eql(u8, call.func_name, "debug") and call.args.len == 1) try self.ensureDebugFormatDeps();
-                if (call.associated_target == null and std.mem.eql(u8, call.func_name, "vec")) {
+                if (lowering_rules.isPrintlnCall(call) and call.associated_target == null) try self.ensurePrintlnDeps();
+                if (lowering_rules.isDebugCall(call) and call.args.len == 1) try self.ensureDebugFormatDeps();
+                if (lowering_rules.isBareVecCall(call)) {
                     if (self.tc.expr_types.get(node)) |expr_ty| {
                         if (lowering_rules.vecElementType(expr_ty) != null) try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_new", "sa_vec_push", "sa_mem_copy" });
                     }
                 }
-                if (call.associated_target == null and std.mem.eql(u8, call.func_name, "pop") and call.args.len == 1) {
+                if (lowering_rules.isBarePopUnaryCall(call)) {
                     if (self.tc.expr_types.get(call.args[0])) |receiver_ty| {
                         if (lowering_rules.vecElementType(receiver_ty) != null) try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_try_pop"});
                     }
@@ -11124,7 +11124,7 @@ pub const Codegen = struct {
     }
 
     fn genVecLiteralCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
-        if (call.associated_target != null or !std.mem.eql(u8, call.func_name, "vec")) return null;
+        if (!lowering_rules.isBareVecCall(call)) return null;
         const vec_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
         const elem_ty = lowering_rules.vecElementType(vec_ty) orelse return Error.UnsupportedSabDirectFeature;
         try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_new", "sa_vec_push", "sa_mem_copy" });
@@ -11166,7 +11166,7 @@ pub const Codegen = struct {
     }
 
     fn genVecLenCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
-        if (call.associated_target != null or !std.mem.eql(u8, call.func_name, "len") or call.args.len != 1) return null;
+        if (!lowering_rules.isBareLenUnaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         _ = lowering_rules.vecElementType(receiver_ty) orelse return null;
 
@@ -11181,7 +11181,7 @@ pub const Codegen = struct {
     }
 
     fn genVecPopCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
-        if (call.associated_target != null or !std.mem.eql(u8, call.func_name, "pop") or call.args.len != 1) return null;
+        if (!lowering_rules.isBarePopUnaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         _ = lowering_rules.vecElementType(receiver_ty) orelse return null;
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_try_pop"});
@@ -11242,7 +11242,7 @@ pub const Codegen = struct {
     }
 
     fn genVecPushCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
-        if (call.associated_target != null or !std.mem.eql(u8, call.func_name, "push") or call.args.len != 2) return null;
+        if (!lowering_rules.isBarePushBinaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         const elem_ty = lowering_rules.vecElementType(receiver_ty) orelse return null;
         if (lowering_rules.vecElementSlotSize(elem_ty) != 8) return null;
@@ -11936,7 +11936,7 @@ pub const Codegen = struct {
         if (call.associated_target == null) {
             if (try self.genStrPtrCall(call)) |reg| return reg;
             if (try self.genStrLenCall(call)) |reg| return reg;
-            if (std.mem.eql(u8, call.func_name, "println")) {
+            if (lowering_rules.isPrintlnCall(call)) {
                 return try self.genPrintlnCall(call);
             }
             if (lowering_rules.isStackAllocCall(call)) {
@@ -11945,13 +11945,13 @@ pub const Codegen = struct {
                 try self.pushStackAllocLocal(self.symbols.items[dst], dst);
                 return dst;
             }
-            if (std.mem.eql(u8, call.func_name, "str_eq") and call.args.len == 2) {
+            if (lowering_rules.isStrEqCall(call) and call.args.len == 2) {
                 return try self.genStrEqCall(call);
             }
-            if (std.mem.eql(u8, call.func_name, "hash") and call.args.len == 1) {
+            if (lowering_rules.isHashCall(call) and call.args.len == 1) {
                 return try self.genHashCall(call);
             }
-            if (std.mem.eql(u8, call.func_name, "debug") and call.args.len == 1) {
+            if (lowering_rules.isDebugCall(call) and call.args.len == 1) {
                 if (try self.genDebugCall(call)) |reg| return reg;
             }
             if (self.closure_bindings.get(call.func_name)) |closure| return try self.genClosureCall(closure, call);

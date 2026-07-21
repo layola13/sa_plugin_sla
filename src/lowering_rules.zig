@@ -3208,6 +3208,61 @@ pub fn callNeedsPtrMacros(call: ast.CallExpr) bool {
     return false;
 }
 
+/// Shared pure `println` call-name fact.
+pub fn isPrintlnCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "println");
+}
+
+/// Shared pure `hash` call-name fact.
+pub fn isHashCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "hash");
+}
+
+/// Shared pure `debug` call-name fact.
+pub fn isDebugCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "debug");
+}
+
+/// Shared pure `str_eq` call-name fact.
+pub fn isStrEqCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "str_eq");
+}
+
+/// Shared pure bare `vec(...)` constructor call recognition.
+pub fn isBareVecCall(call: ast.CallExpr) bool {
+    return call.associated_target == null and std.mem.eql(u8, call.func_name, "vec");
+}
+
+/// Shared pure `len` call-name fact.
+pub fn isLenCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "len");
+}
+
+/// Shared pure bare unary `len(x)` call recognition.
+pub fn isBareLenUnaryCall(call: ast.CallExpr) bool {
+    return call.associated_target == null and isLenCall(call) and call.args.len == 1;
+}
+
+/// Shared pure `push` call-name fact.
+pub fn isPushCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "push");
+}
+
+/// Shared pure bare binary `push(vec, value)` call recognition.
+pub fn isBarePushBinaryCall(call: ast.CallExpr) bool {
+    return call.associated_target == null and isPushCall(call) and call.args.len == 2;
+}
+
+/// Shared pure `pop` call-name fact.
+pub fn isPopCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "pop");
+}
+
+/// Shared pure bare unary `pop(vec)` call recognition.
+pub fn isBarePopUnaryCall(call: ast.CallExpr) bool {
+    return call.associated_target == null and isPopCall(call) and call.args.len == 1;
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7486,6 +7541,30 @@ test "ptr null and read_volatile peels" {
         .generics = &.{},
     };
     try std.testing.expect(!callNeedsPtrMacros(unrelated));
+}
+
+test "std builtin call peels" {
+    const println = ast.CallExpr{
+        .func_name = "println",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(isPrintlnCall(println));
+    try std.testing.expect(isHashCall(.{ .func_name = "hash", .args = &.{}, .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isDebugCall(.{ .func_name = "debug", .args = &.{}, .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isStrEqCall(.{ .func_name = "str_eq", .args = &.{}, .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isBareVecCall(.{ .func_name = "vec", .args = &.{}, .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(!isBareVecCall(.{ .func_name = "vec", .args = &.{}, .associated_target = "std", .generics = &.{} }));
+
+    var dummy: ast.Node = undefined;
+    var one = [_]*ast.Node{&dummy};
+    var two = [_]*ast.Node{ &dummy, &dummy };
+    try std.testing.expect(isBareLenUnaryCall(.{ .func_name = "len", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(!isBareLenUnaryCall(.{ .func_name = "len", .args = two[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isBarePushBinaryCall(.{ .func_name = "push", .args = two[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isBarePopUnaryCall(.{ .func_name = "pop", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(!isBarePopUnaryCall(.{ .func_name = "pop", .args = one[0..], .associated_target = "Vec", .generics = &.{} }));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

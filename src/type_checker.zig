@@ -4015,17 +4015,17 @@ pub const TypeChecker = struct {
                     return ty;
                 }
 
-                if (std.mem.eql(u8, call.func_name, "len") and call.args.len == 1) {
+                if (lowering_rules.isLenCall(call) and call.args.len == 1) {
                     _ = try self.checkExpr(call.args[0], scope);
                     const ty = try self.allocator.create(ast.Type);
                     ty.* = .{ .primitive = .usize };
                     return ty;
                 }
-                if (std.mem.eql(u8, call.func_name, "len")) {
+                if (lowering_rules.isLenCall(call)) {
                     self.setError("len call arity mismatch: {}", .{call.args.len});
                     return TypeError.InvalidArgsCount;
                 }
-                if (std.mem.eql(u8, call.func_name, "str_eq")) {
+                if (lowering_rules.isStrEqCall(call)) {
                     if (call.args.len != 2) return TypeError.InvalidArgsCount;
                     const left_ty = try self.checkExpr(call.args[0], scope);
                     const right_ty = try self.checkExpr(call.args[1], scope);
@@ -4041,19 +4041,19 @@ pub const TypeChecker = struct {
                     }
                     return try self.makeStringType();
                 }
-                if (std.mem.eql(u8, call.func_name, "hash")) {
+                if (lowering_rules.isHashCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const arg_ty = try self.checkExpr(call.args[0], scope);
                     if (!self.typeIsHash(arg_ty)) return TypeError.TypeMismatch;
                     return try self.makeU64Type();
                 }
-                if (std.mem.eql(u8, call.func_name, "debug")) {
+                if (lowering_rules.isDebugCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const arg_ty = try self.checkExpr(call.args[0], scope);
                     if (!self.typeIsDebug(arg_ty)) return TypeError.TypeMismatch;
                     return try self.makeStringType();
                 }
-                if (std.mem.eql(u8, call.func_name, "println")) {
+                if (lowering_rules.isPrintlnCall(call)) {
                     for (call.args) |arg| {
                         _ = try self.checkExpr(arg, scope);
                     }

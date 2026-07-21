@@ -1792,7 +1792,7 @@ pub const Codegen = struct {
     }
 
     fn isVoidCall(self: *Codegen, call: *const ast.CallExpr) bool {
-        if (std.mem.eql(u8, call.func_name, "println")) return true;
+        if (lowering_rules.isPrintlnCall(call.*)) return true;
         if (self.tc.macros.contains(call.func_name)) return true;
         if (call.associated_target) |target| {
             if (std.mem.eql(u8, target, "mem") and std.mem.eql(u8, call.func_name, "forget")) return true;
@@ -1826,7 +1826,7 @@ pub const Codegen = struct {
     }
 
     fn genCallStmt(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
-        if (std.mem.eql(u8, call.func_name, "println")) {
+        if (lowering_rules.isPrintlnCall(call.*)) {
             try self.emitPrintln(call, hoisted_allocs);
             return;
         }
@@ -3246,7 +3246,7 @@ pub const Codegen = struct {
             .call_expr => |call| blk: {
                 if (self.tc.funcs.get(call.func_name)) |func| break :blk func.ret_ty;
                 if (self.tc.imported_function_signatures.get(call.func_name)) |signature| break :blk signature.ret_ty;
-                if (call.associated_target == null and std.mem.eql(u8, call.func_name, "len") and call.args.len == 1) {
+                if (lowering_rules.isBareLenUnaryCall(call)) {
                     break :blk self.makePrimitiveType(.usize) catch null;
                 }
                 if (self.tc.imported_macros.get(call.func_name)) |macro| {
@@ -4785,7 +4785,7 @@ pub const Codegen = struct {
         }
         return switch (expr.*) {
             .call_expr => |call| blk: {
-                if (std.mem.eql(u8, call.func_name, "vec") or std.mem.eql(u8, call.func_name, "push")) break :blk true;
+                if (std.mem.eql(u8, call.func_name, "vec") or lowering_rules.isPushCall(call)) break :blk true;
                 for (call.args) |arg| {
                     if (self.exprNeedsVecMacros(arg)) break :blk true;
                 }
@@ -12525,10 +12525,10 @@ pub const Codegen = struct {
                 if (std.mem.eql(u8, call.func_name, "format")) {
                     return try self.genFormatCall(&call, hoisted_allocs);
                 }
-                if (std.mem.eql(u8, call.func_name, "hash")) {
+                if (lowering_rules.isHashCall(call)) {
                     return try self.genHashCall(&call, hoisted_allocs);
                 }
-                if (std.mem.eql(u8, call.func_name, "debug")) {
+                if (lowering_rules.isDebugCall(call)) {
                     return try self.genDebugCall(&call, hoisted_allocs);
                 }
                 if (lowering_rules.isOptionSomeCall(call)) {
@@ -12951,7 +12951,7 @@ pub const Codegen = struct {
                     }
                     return reg;
                 }
-                if (std.mem.eql(u8, call.func_name, "len") and call.args.len == 1) {
+                if (lowering_rules.isLenCall(call) and call.args.len == 1) {
                     const arg_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (arg_ty) |ty| {
                         if (arrayType(ty)) |arr| {
@@ -13019,7 +13019,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ reg, inner }) catch return CodegenError.CodegenError;
                     return reg;
                 }
-                if (std.mem.eql(u8, call.func_name, "str_eq") and call.args.len == 2) {
+                if (lowering_rules.isStrEqCall(call) and call.args.len == 2) {
                     const left_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
                     const right_ty = self.tc.expr_types.get(call.args[1]) orelse return CodegenError.CodegenError;
                     const left = try self.genExpr(call.args[0], hoisted_allocs);
@@ -13042,7 +13042,7 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(call.args[1])) try self.emitRelease(right);
                     return reg;
                 }
-                if (std.mem.eql(u8, call.func_name, "push") and call.args.len == 2) {
+                if (lowering_rules.isPushCall(call) and call.args.len == 2) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
                     const elem_ty = vecElementType(recv_ty) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -13058,7 +13058,7 @@ pub const Codegen = struct {
                     if (exprResultNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                     return "return_ty_sentinel";
                 }
-                if (std.mem.eql(u8, call.func_name, "pop") and call.args.len == 1) {
+                if (lowering_rules.isPopCall(call) and call.args.len == 1) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
                     _ = vecElementType(recv_ty) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);

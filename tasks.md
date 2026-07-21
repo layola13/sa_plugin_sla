@@ -40,6 +40,10 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Share typeHasCopyDerive base/gate helpers on Y (2026-07-21).
+	  Pure leaf/base + struct-gate; field recursion local. Unit 2/2x2;
+	  build 7/7; field_copy/fn_ptr_value/result SA+SAB green.
+
 	- [x] Share typeIsCopyStructFact and pre-size selective-append emitted
 	  map (2026-07-21). Copy-struct composition + emitted capacity. Unit
 	  2/2x2; module table 15/15; build 7/7; field_copy/result SA+SAB green.

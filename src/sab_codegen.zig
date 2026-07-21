@@ -1574,37 +1574,29 @@ pub const Codegen = struct {
     }
 
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| lowering_rules.primitiveIsCopyValue(p),
-            .user_defined => blk: {
-                const cache_name: ?[]const u8 = if (ty.user_defined.generics.len == 0) ty.user_defined.name else null;
-                if (cache_name) |name| {
-                    if (self.copy_value_cache.get(name)) |cached| break :blk cached;
-                }
-                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) {
-                    if (cache_name) |name| self.copy_value_cache.put(name, false) catch {};
-                    break :blk false;
-                }
-                const decl = self.structDeclForType(ty) orelse {
-                    if (cache_name) |name| self.copy_value_cache.put(name, false) catch {};
-                    break :blk false;
-                };
-                if (!lowering_rules.structHasDerive(decl, "copy") or decl.is_opaque or decl.is_union) {
-                    if (cache_name) |name| self.copy_value_cache.put(name, false) catch {};
-                    break :blk false;
-                }
-                var result = true;
-                for (decl.fields) |field| {
-                    if (!self.typeHasCopyDerive(field.ty)) {
-                        result = false;
-                        break;
-                    }
-                }
-                if (cache_name) |name| self.copy_value_cache.put(name, result) catch {};
-                break :blk result;
-            },
-            else => false,
+        if (lowering_rules.typeHasCopyDeriveBase(ty)) |decision| return decision;
+        if (ty.* != .user_defined) return false;
+        const cache_name: ?[]const u8 = if (ty.user_defined.generics.len == 0) ty.user_defined.name else null;
+        if (cache_name) |name| {
+            if (self.copy_value_cache.get(name)) |cached| return cached;
+        }
+        const decl = self.structDeclForType(ty) orelse {
+            if (cache_name) |name| self.copy_value_cache.put(name, false) catch {};
+            return false;
         };
+        if (!lowering_rules.typeHasCopyDeriveStructGate(decl)) {
+            if (cache_name) |name| self.copy_value_cache.put(name, false) catch {};
+            return false;
+        }
+        var result = true;
+        for (decl.fields) |field| {
+            if (!self.typeHasCopyDerive(field.ty)) {
+                result = false;
+                break;
+            }
+        }
+        if (cache_name) |name| self.copy_value_cache.put(name, result) catch {};
+        return result;
     }
 
     fn typeIsCopyStruct(self: *Codegen, ty: *const ast.Type) bool {

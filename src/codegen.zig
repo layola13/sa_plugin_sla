@@ -3345,20 +3345,15 @@ pub const Codegen = struct {
     }
 
     fn typeHasCopyDerive(self: *Codegen, ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| lowering_rules.primitiveIsCopyValue(p),
-            .user_defined => blk: {
-                // Match SAB: std owners are never Copy even with derives absent/present noise.
-                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
-                const decl = self.structDeclForType(ty) orelse break :blk false;
-                if (!lowering_rules.structHasDerive(decl, "copy") or decl.is_opaque or decl.is_union) break :blk false;
-                for (decl.fields) |field| {
-                    if (!self.typeHasCopyDerive(field.ty)) break :blk false;
-                }
-                break :blk true;
-            },
-            else => false,
-        };
+        if (lowering_rules.typeHasCopyDeriveBase(ty)) |decision| return decision;
+        if (ty.* != .user_defined) return false;
+        // Match SAB: std owners are never Copy even with derives absent/present noise.
+        const decl = self.structDeclForType(ty) orelse return false;
+        if (!lowering_rules.typeHasCopyDeriveStructGate(decl)) return false;
+        for (decl.fields) |field| {
+            if (!self.typeHasCopyDerive(field.ty)) return false;
+        }
+        return true;
     }
 
     fn typeIsCopyStruct(self: *Codegen, ty: *const ast.Type) bool {

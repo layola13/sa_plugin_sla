@@ -4460,6 +4460,23 @@ pub fn typeIsCopyStructFact(has_struct_decl: bool, has_copy_derive: bool) bool {
     return has_struct_decl and has_copy_derive;
 }
 
+/// Shared pure base for recursive Copy-derive typing.
+/// Returns a definitive bool for non-struct leaves, or null when the emitter
+/// must look up a user-defined decl and recurse into fields.
+pub fn typeHasCopyDeriveBase(ty: *const ast.Type) ?bool {
+    return switch (ty.*) {
+        .primitive => |p| primitiveIsCopyValue(p),
+        .user_defined => if (userDefinedStdOwnerIsNonCopy(ty)) false else null,
+        else => false,
+    };
+}
+
+/// Shared pure gate after a user-defined struct decl has been resolved.
+/// Field recursion remains emitter-local.
+pub fn typeHasCopyDeriveStructGate(decl: *const ast.StructDecl) bool {
+    return structHasDerive(decl, "copy") and !decl.is_opaque and !decl.is_union;
+}
+
 /// Whether a nested struct field should be recursively shallow-copied while
 /// building a shallow-copied call-arg aggregate. Pure containers/owners stay
 /// as single field words; ordinary nested structs recurse.
@@ -6737,6 +6754,25 @@ test "shallowCopyCallArgFieldShouldRecurse classifies nested fields" {
     try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(true, &box_ty));
     // Callers pass field_has_struct_decl=false for primitives; pure helper trusts that fact.
     try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(false, &i32_ty));
+}
+
+test "typeHasCopyDeriveBase classifies pure leaves" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var void_ty = ast.Type{ .primitive = .void_type };
+    var gens = [_]*ast.Type{&i32_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
+    var foo_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
+    try std.testing.expect(typeHasCopyDeriveBase(&i32_ty).?);
+    try std.testing.expect(!typeHasCopyDeriveBase(&void_ty).?);
+    try std.testing.expect(!typeHasCopyDeriveBase(&vec_ty).?);
+    try std.testing.expect(typeHasCopyDeriveBase(&foo_ty) == null);
+
+    var fields = [_]ast.Field{.{ .name = "x", .ty = &i32_ty }};
+    var copy_derives = [_][]const u8{"Copy"};
+    var good = ast.StructDecl{ .name = "Good", .generics = &.{}, .fields = fields[0..], .derives = copy_derives[0..], .is_union = false, .is_opaque = false };
+    var opaque_decl = ast.StructDecl{ .name = "Opaque", .generics = &.{}, .fields = fields[0..], .derives = copy_derives[0..], .is_union = false, .is_opaque = true };
+    try std.testing.expect(typeHasCopyDeriveStructGate(&good));
+    try std.testing.expect(!typeHasCopyDeriveStructGate(&opaque_decl));
 }
 
 test "typeIsCopyStructFact classifies composition" {

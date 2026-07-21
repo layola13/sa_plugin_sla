@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share typeHasCopyDerive base/gate helpers on Y (2026-07-21):
+  Pure leaf/base + struct-gate for recursive Copy-derive typing. Unit 2/2x2;
+  build 7/7; field_copy/fn_ptr_value/result SA+SAB green.
+
 - Share typeIsCopyStructFact and pre-size selective-append emitted map
   (2026-07-21): shared Copy-struct composition + emitted capacity. Unit 2/2x2;
   module table 15/15; build 7/7; field_copy/result SA+SAB green.

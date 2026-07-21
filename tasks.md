@@ -40,6 +40,12 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Share typecheck derive typing through named-derive base/gate on Y
+	  (2026-07-21). type_checker Copy/Eq/Ord/Hash/Debug consume shared
+	  named-derive base/gate; deriveNameMatches/structHasDerive thin. Build
+	  7/7; derive semantics SA+SAB 2/2, borrow SAB, field_copy SA, result
+	  green.
+
 	- [x] Share typecheck primitive/integer/float/pointer value classifiers on Y
 	  (2026-07-21). Pure primitive/integer/float/cell/poll/pointer classifiers
 	  shared; type_checker wrappers thin. Unit 2/2; build 7/7; borrow SA,

@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share typecheck derive typing through named-derive base/gate on Y
+  (2026-07-21): type_checker Copy/Eq/Ord/Hash/Debug consume shared named-derive
+  base/gate; deriveNameMatches/structHasDerive thin. Build 7/7; derive
+  semantics SA+SAB 2/2, borrow SAB, field_copy SA, result green.
+
 - Share typecheck primitive/integer/float/pointer value classifiers on Y
   (2026-07-21): Pure primitive/integer/float/cell/poll/pointer classifiers
   shared; type_checker wrappers thin. Unit 2/2; build 7/7; borrow SA,

@@ -1432,17 +1432,16 @@ pub const Codegen = struct {
     }
 
     fn structDeclForType(self: *Codegen, ty: *const ast.Type) ?*ast.StructDecl {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                else => break,
-            }
-        }
+        const curr = lowering_rules.peelBorrowPointerType(ty);
         if (curr.* != .user_defined) return null;
-        if (self.tc.structs.get(curr.user_defined.name)) |decl| return decl;
-        if (self.tc.alias_struct_cache.get(curr.user_defined.name)) |decl| return decl;
+        const name = curr.user_defined.name;
+        if (self.tc.structs.get(name)) |decl| return decl;
+        if (self.tc.alias_struct_cache.get(name)) |decl| return decl;
+
+        const local_name = lowering_rules.userDefinedLocalName(name);
+        if (std.mem.eql(u8, local_name, name)) return null;
+        if (self.tc.structs.get(local_name)) |decl| return decl;
+        if (self.tc.alias_struct_cache.get(local_name)) |decl| return decl;
         return null;
     }
 
@@ -9432,14 +9431,7 @@ pub const Codegen = struct {
             return value;
         }
 
-        var result_ty = inner_ty;
-        while (true) {
-            switch (result_ty.*) {
-                .pointer => |p| result_ty = p,
-                .borrow => |b| result_ty = b,
-                else => break,
-            }
-        }
+        const result_ty = lowering_rules.peelBorrowPointerType(inner_ty);
         if (result_ty.* != .user_defined) return Error.UnsupportedSabDirectFeature;
         const result_decl = self.tc.structs.get(result_ty.user_defined.name) orelse return Error.UnsupportedSabDirectFeature;
         const is_err_layout = lowering_rules.structFieldLayout(result_decl, "is_err") orelse return Error.UnsupportedSabDirectFeature;
@@ -12500,12 +12492,7 @@ pub const Codegen = struct {
         if (arg.* != .borrow_expr) return false;
         const target_param = param orelse return false;
         if (!target_param.is_borrow and target_param.ty.* != .borrow) return false;
-        var target_ty = target_param.ty;
-        while (true) switch (target_ty.*) {
-            .borrow => |inner| target_ty = inner,
-            .pointer => |inner| target_ty = inner,
-            else => break,
-        };
+        const target_ty = lowering_rules.peelBorrowPointerType(target_param.ty);
         if (target_ty.* != .user_defined or !std.mem.eql(u8, target_ty.user_defined.name, "Slice")) return false;
         const inner_ty = (try self.macroExprType(arg.borrow_expr.expr, ctx)) orelse return false;
         return inner_ty.* == .array;

@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Restore peel-share after accidental 8ed15b4 content mix (2026-07-20):
+  Restored codegen/sab/type_checker/lowering_rules/emit-reachability peels from
+  `9158a63` while keeping module-table fixes. Build 7/7; module table 15/15;
+  peel unit filters + focused SA/SAB fixtures green.
+
 - Fix pre-existing sla module table Zig filters (2026-07-20):
   Test-codegen parses `@test` bodies again; scan-cache count expectations match
   getOrParse publish behavior. `sla module table` 15/15; build 7/7.

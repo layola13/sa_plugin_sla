@@ -1805,20 +1805,12 @@ pub const Codegen = struct {
         if (call.args.len > 0) {
             const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
             if (recv_ty) |rt| {
-                var curr = rt;
-                while (true) {
-                    switch (curr.*) {
-                        .borrow => |b| curr = b,
-                        .pointer => |p| curr = p,
-                        .user_defined => |ud| {
-                            var method_buf: [256]u8 = undefined;
-                            const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ ud.name, call.func_name }) catch return false;
-                            if (self.tc.funcs.get(method_key)) |func| {
-                                return isVoidType(func.ret_ty);
-                            }
-                            break;
-                        },
-                        else => break,
+                const curr = lowering_rules.peelBorrowPointerType(rt);
+                if (curr.* == .user_defined) {
+                    var method_buf: [256]u8 = undefined;
+                    const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ curr.user_defined.name, call.func_name }) catch return false;
+                    if (self.tc.funcs.get(method_key)) |func| {
+                        return isVoidType(func.ret_ty);
                     }
                 }
             }
@@ -1895,52 +1887,44 @@ pub const Codegen = struct {
         if (call.args.len > 0) {
             const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
             if (recv_ty) |rt| {
-                var curr = rt;
-                while (true) {
-                    switch (curr.*) {
-                        .borrow => |b| curr = b,
-                        .pointer => |p| curr = p,
-                        .user_defined => |ud| {
-                            var method_buf: [256]u8 = undefined;
-                            const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ ud.name, call.func_name }) catch return CodegenError.CodegenError;
-                            if (self.tc.funcs.get(method_key)) |func| {
-                                var arg_regs = std.ArrayList([]const u8).init(self.allocator);
-                                defer arg_regs.deinit();
-                                var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
-                                defer arg_release_regs.deinit();
-                                var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
-                                defer arg_consume_regs.deinit();
-                                for (call.args, 0..) |arg, i| {
-                                    const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
-                                    defer self.popExprLaterNodesTo(sibling_mark);
-                                    if (i < func.params.len) {
-                                        const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
-                                            .param = func.params[i],
-                                            .arg_index = i,
-                                            .statement_receiver_auto_borrow = i == 0,
-                                        });
-                                        arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
-                                        try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
-                                        continue;
-                                    }
-                                    const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
-                                    arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
-                                    try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
-                                }
-                                const lowered_method = try self.loweredFuncSymbol(method_key);
-                                defer self.allocator.free(lowered_method);
-                                self.out.writer().print("    call @{s}(", .{lowered_method}) catch return CodegenError.CodegenError;
-                                for (arg_regs.items, 0..) |ar, i| {
-                                    if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
-                                }
-                                self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
-                                try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
-                                return;
+                const curr = lowering_rules.peelBorrowPointerType(rt);
+                if (curr.* == .user_defined) {
+                    var method_buf: [256]u8 = undefined;
+                    const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ curr.user_defined.name, call.func_name }) catch return CodegenError.CodegenError;
+                    if (self.tc.funcs.get(method_key)) |func| {
+                        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                        defer arg_regs.deinit();
+                        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                        defer arg_release_regs.deinit();
+                        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                        defer arg_consume_regs.deinit();
+                        for (call.args, 0..) |arg, i| {
+                            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+                            defer self.popExprLaterNodesTo(sibling_mark);
+                            if (i < func.params.len) {
+                                const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                                    .param = func.params[i],
+                                    .arg_index = i,
+                                    .statement_receiver_auto_borrow = i == 0,
+                                });
+                                arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
+                                try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
+                                continue;
                             }
-                            break;
-                        },
-                        else => break,
+                            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
+                            arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
+                            try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
+                        }
+                        const lowered_method = try self.loweredFuncSymbol(method_key);
+                        defer self.allocator.free(lowered_method);
+                        self.out.writer().print("    call @{s}(", .{lowered_method}) catch return CodegenError.CodegenError;
+                        for (arg_regs.items, 0..) |ar, i| {
+                            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+                            self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
+                        }
+                        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
+                        return;
                     }
                 }
             }
@@ -3159,21 +3143,14 @@ pub const Codegen = struct {
     }
 
     fn structDeclForType(self: *Codegen, ty: *const ast.Type) ?*ast.StructDecl {
-        const curr = ty;
+        const curr = lowering_rules.peelBorrowPointerType(ty);
         if (curr.* != .user_defined) return null;
         const name = curr.user_defined.name;
         if (self.tc.structs.get(name)) |decl| return decl;
         if (self.tc.alias_struct_cache.get(name)) |decl| return decl;
 
-        const dot = std.mem.lastIndexOfScalar(u8, name, '.');
-        const colon = std.mem.lastIndexOf(u8, name, "::");
-        const local_start = blk: {
-            const dot_start = if (dot) |idx| idx + 1 else 0;
-            const colon_start = if (colon) |idx| idx + 2 else 0;
-            break :blk @max(dot_start, colon_start);
-        };
-        if (local_start == 0 or local_start >= name.len) return null;
-        const local_name = name[local_start..];
+        const local_name = lowering_rules.userDefinedLocalName(name);
+        if (std.mem.eql(u8, local_name, name)) return null;
         if (self.tc.structs.get(local_name)) |decl| return decl;
         if (self.tc.alias_struct_cache.get(local_name)) |decl| return decl;
         return null;
@@ -3185,14 +3162,7 @@ pub const Codegen = struct {
     }
 
     fn fieldTypeForType(self: *Codegen, ty: *const ast.Type, name: []const u8) ?*const ast.Type {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .pointer => |p| curr = p,
-                .borrow => |b| curr = b,
-                else => break,
-            }
-        }
+        const curr = lowering_rules.peelBorrowPointerType(ty);
         if (curr.* == .tuple) {
             const index = std.fmt.parseInt(usize, name, 10) catch return null;
             if (index >= curr.tuple.elems.len) return null;
@@ -10443,15 +10413,7 @@ pub const Codegen = struct {
                     const target_ty = self.resolvedTypeForExpr(assign.target) orelse return CodegenError.CodegenError;
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
                     const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
-
-                    var curr_ty = expr_ty;
-                    while (true) {
-                        switch (curr_ty.*) {
-                            .pointer => |p| curr_ty = p,
-                            .borrow => |b| curr_ty = b,
-                            else => break,
-                        }
-                    }
+                    const curr_ty = lowering_rules.peelBorrowPointerType(expr_ty);
 
                     if (curr_ty.* == .tuple) {
                         const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
@@ -11390,14 +11352,7 @@ pub const Codegen = struct {
     }
 
     fn fieldAddressLayout(self: *Codegen, target_ty: *const ast.Type, field_name: []const u8) CodegenError!FieldLayout {
-        var curr_ty = target_ty;
-        while (true) {
-            switch (curr_ty.*) {
-                .pointer => |p| curr_ty = p,
-                .borrow => |b| curr_ty = b,
-                else => break,
-            }
-        }
+        const curr_ty = lowering_rules.peelBorrowPointerType(target_ty);
         if (curr_ty.* == .tuple) {
             const index = std.fmt.parseInt(usize, field_name, 10) catch return CodegenError.CodegenError;
             return tupleFieldLayout(curr_ty.tuple, index) orelse return CodegenError.CodegenError;
@@ -12409,14 +12364,7 @@ pub const Codegen = struct {
 
                 // Look up the struct's type to find the field offset
                 const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
-                var curr_ty = expr_ty;
-                while (true) {
-                    switch (curr_ty.*) {
-                        .pointer => |p| curr_ty = p,
-                        .borrow => |b| curr_ty = b,
-                        else => break,
-                    }
-                }
+                const curr_ty = lowering_rules.peelBorrowPointerType(expr_ty);
 
                 if (curr_ty.* == .tuple) {
                     const index = std.fmt.parseInt(usize, field.field_name, 10) catch return CodegenError.CodegenError;
@@ -14480,65 +14428,59 @@ pub const Codegen = struct {
                 if (call.args.len > 0) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty) |rt| {
-                        var curr = rt;
-                        while (true) {
-                            switch (curr.*) {
-                                .borrow => |b| curr = b,
-                                .pointer => |p| curr = p,
-                                .user_defined => |ud| {
-                                    var method_buf: [256]u8 = undefined;
-                                    const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ ud.name, call.func_name }) catch break;
-                                    if (self.tc.funcs.contains(method_key)) {
-                                        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
-                                        defer arg_regs.deinit();
-                                        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
-                                        defer arg_release_regs.deinit();
-                                        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
-                                        defer arg_consume_regs.deinit();
-                                        const method_func = self.tc.funcs.get(method_key);
-                                        for (call.args, 0..) |arg, i| {
-                                            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
-                                            defer self.popExprLaterNodesTo(sibling_mark);
-                                            if (method_func) |func| {
-                                                if (i < func.params.len and arg.* == .literal and arg.literal == .string_val and isFormatStringType(func.params[i].ty)) {
-                                                    const arg_reg = try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs);
-                                                    arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
-                                                    try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
-                                                        .reg = arg_reg,
-                                                        .release_after_call = true,
-                                                    });
-                                                    continue;
-                                                }
-                                                if (i < func.params.len) {
-                                                    const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
-                                                        .param = func.params[i],
-                                                        .arg_index = i,
-                                                        .receiver_style_auto_borrow = i == 0,
-                                                    });
-                                                    arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
-                                                    try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
-                                                    continue;
-                                                }
+                        const curr = lowering_rules.peelBorrowPointerType(rt);
+                        if (curr.* == .user_defined) {
+                            var method_buf: [256]u8 = undefined;
+                            const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ curr.user_defined.name, call.func_name }) catch null;
+                            if (method_key) |mk| {
+                                if (self.tc.funcs.contains(mk)) {
+                                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                                    defer arg_regs.deinit();
+                                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                                    defer arg_release_regs.deinit();
+                                    var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                                    defer arg_consume_regs.deinit();
+                                    const method_func = self.tc.funcs.get(mk);
+                                    for (call.args, 0..) |arg, i| {
+                                        const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+                                        defer self.popExprLaterNodesTo(sibling_mark);
+                                        if (method_func) |func| {
+                                            if (i < func.params.len and arg.* == .literal and arg.literal == .string_val and isFormatStringType(func.params[i].ty)) {
+                                                const arg_reg = try self.genOwnedStringLiteral(arg.literal.string_val, hoisted_allocs);
+                                                arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+                                                try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, .{
+                                                    .reg = arg_reg,
+                                                    .release_after_call = true,
+                                                });
+                                                continue;
                                             }
-                                            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
-                                            arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
-                                            try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
+                                            if (i < func.params.len) {
+                                                const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                                                    .param = func.params[i],
+                                                    .arg_index = i,
+                                                    .receiver_style_auto_borrow = i == 0,
+                                                });
+                                                arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
+                                                try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
+                                                continue;
+                                            }
                                         }
-                                        const reg = try self.newTmp();
-                                        const lowered_method = try self.loweredFuncSymbol(method_key);
-                                        defer self.allocator.free(lowered_method);
-                                        self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_method }) catch return CodegenError.CodegenError;
-                                        for (arg_regs.items, 0..) |ar, i| {
-                                            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-                                            self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
-                                        }
-                                        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
-                                        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
-                                        return reg;
+                                        const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{});
+                                        arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
+                                        try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
                                     }
-                                    break;
-                                },
-                                else => break,
+                                    const reg = try self.newTmp();
+                                    const lowered_method = try self.loweredFuncSymbol(mk);
+                                    defer self.allocator.free(lowered_method);
+                                    self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_method }) catch return CodegenError.CodegenError;
+                                    for (arg_regs.items, 0..) |ar, i| {
+                                        if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+                                        self.out.writer().print("{s}", .{ar}) catch return CodegenError.CodegenError;
+                                    }
+                                    self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+                                    try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
+                                    return reg;
+                                }
                             }
                         }
                     }
@@ -15170,14 +15112,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    !{s}\n", .{inner_reg}) catch return CodegenError.CodegenError;
                     return ok_val;
                 }
-                var result_ty = inner_ty;
-                while (true) {
-                    switch (result_ty.*) {
-                        .pointer => |p| result_ty = p,
-                        .borrow => |b| result_ty = b,
-                        else => break,
-                    }
-                }
+                const result_ty = lowering_rules.peelBorrowPointerType(inner_ty);
                 if (result_ty.* != .user_defined) return CodegenError.CodegenError;
                 const result_decl = self.tc.structs.get(result_ty.user_defined.name) orelse return CodegenError.CodegenError;
                 const is_err_layout = fieldLayout(result_decl, "is_err") orelse return CodegenError.CodegenError;

@@ -18,6 +18,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Restore peel-share files after accidental 8ed15b4 content mix (2026-07-20):
+  `8ed15b4` reintroduced pre-peel local borrow/pointer walks into codegen/
+  sab_codegen/type_checker/lowering_rules/emit-reachability. Restored those five
+  files from `9158a63` while keeping the module-table test-body and scan-cache
+  expectation fixes. Verified: build 7/7; `sla module table` 15/15; peel unit
+  filters 2/2x4; focused SA+SAB field/result/dyn/option fixtures green.
+
 - Fix pre-existing sla module table Zig filters (2026-07-20):
   1) Test-codegen roots now parse `@test` bodies so reachability/monomorphize see
   roots such as `leaf_identity<i32>` generic_func_ref; empty-body parse made

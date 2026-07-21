@@ -40,6 +40,10 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Restore peel-share after accidental 8ed15b4 content mix (2026-07-20).
+	  Re-applied peel files from `9158a63`; kept module-table fixes. Build 7/7;
+	  module table 15/15; peel unit + focused SA/SAB green.
+
 	- [x] Fix pre-existing sla module table Zig filters (2026-07-20).
 	  Test-codegen parses `@test` bodies; scan-cache count expectations updated.
 	  `sla module table` 15/15; build 7/7.

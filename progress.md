@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Consume CallArgMaterializationPlan predicates in SA/SAB emitters (2026-07-21):
+  planned call-arg paths use is* helpers. Build 7/7; materialization 2/2;
+  dyn/borrow/result/method SA+SAB green.
+
 - Reserve expand-path root import / ordered-module capacity + warm residual
   (2026-07-21): pre-size root_import_groups/ordered_modules/visited_modules.
   Module table 15/15; build 7/7. Warm parallel_runner check expand ~230ms;

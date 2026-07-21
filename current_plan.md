@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Consume CallArgMaterializationPlan predicates in SA/SAB emitters (2026-07-21):
+  SA-text and both direct-SAB planned call-arg paths dispatch via
+  `materialization.is*()` helpers instead of switching on `materialization.kind`.
+  Build 7/7; materialization unit 2/2; focused SA+SAB dyn/borrow/result/method
+  fixtures green.
+
 - Reserve expand-path root import / ordered-module capacity + warm residual
   (2026-07-21): pre-size `root_import_groups`, `ordered_modules`, and
   `visited_modules` during import expand resolve-roots. Module table 15/15;

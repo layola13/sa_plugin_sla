@@ -9171,8 +9171,8 @@ pub const Codegen = struct {
         materialization: lowering_rules.CallArgMaterializationPlan,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
-        return switch (materialization.kind) {
-            .raw_pointer_string_literal => blk: {
+        if (materialization.isRawPointerStringLiteral()) {
+            return blk: {
                 if (arg.* != .literal or arg.literal != .string_val) return CodegenError.CodegenError;
                 const ptr_reg = try self.genRawPointerStringLiteralArg(arg.literal.string_val);
                 if (param) |target_param| {
@@ -9182,15 +9182,18 @@ pub const Codegen = struct {
                     }
                 }
                 break :blk .{ .reg = ptr_reg, .release_after_call = materialization.release_after_call };
-            },
-            .array_to_slice_borrow => try self.genArrayBorrowToSliceArg(arg, hoisted_allocs),
-            .dyn_borrow => blk: {
+            };
+        } else if (materialization.isArrayToSliceBorrow()) {
+            return try self.genArrayBorrowToSliceArg(arg, hoisted_allocs);
+        } else if (materialization.isDynBorrow()) {
+            return blk: {
                 const trait_name = materialization.dyn_borrow_trait_name orelse return CodegenError.CodegenError;
                 const fat_reg = try self.genDynBorrowCoercionArg(arg, trait_name, hoisted_allocs);
                 const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{fat_reg}) catch return CodegenError.OutOfMemory;
                 break :blk .{ .reg = borrow_arg, .release_after_call = false, .release_reg = fat_reg };
-            },
-            .auto_borrow => blk: {
+            };
+        } else if (materialization.isAutoBorrow()) {
+            return blk: {
                 const recv_reg = try self.genExpr(arg, hoisted_allocs);
                 const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{recv_reg}) catch return CodegenError.OutOfMemory;
                 const release_recv = materialization.release_after_call or self.callArgResultTempNeedsRelease(arg, recv_reg);
@@ -9199,23 +9202,27 @@ pub const Codegen = struct {
                     .release_after_call = release_recv,
                     .release_reg = if (release_recv) recv_reg else null,
                 };
-            },
-            .copy_struct_value => blk: {
+            };
+        } else if (materialization.isCopyStructValue()) {
+            return blk: {
                 const target_param = param orelse return CodegenError.CodegenError;
                 const source_reg = try self.genExpr(arg, hoisted_allocs);
                 const copied = try self.newTmp();
                 try self.genCopyValueInto(copied, source_reg, target_param.ty);
                 break :blk .{ .reg = copied, .release_after_call = materialization.release_after_call };
-            },
-            .shallow_copy_preserved_value => blk: {
+            };
+        } else if (materialization.isShallowCopyPreservedValue()) {
+            return blk: {
                 const arg_ty = self.resolvedTypeForExpr(arg) orelse return CodegenError.CodegenError;
                 const source_reg = try self.genCallArg(arg, hoisted_allocs);
                 const copied = try self.genShallowCopyCallArgValue(source_reg, arg_ty);
                 const moved_copy = std.fmt.allocPrint(self.allocator, "^{s}", .{copied}) catch return CodegenError.OutOfMemory;
                 break :blk .{ .reg = moved_copy, .release_after_call = false };
-            },
-            .generated_fn_ptr_value_slot, .borrow_local_fn_ptr_value => return CodegenError.CodegenError,
-            .value => blk: {
+            };
+        } else if (materialization.isGeneratedFnPtrValueSlot() or materialization.isBorrowLocalFnPtrValue()) {
+            return CodegenError.CodegenError;
+        } else if (materialization.isValue()) {
+            return blk: {
                 if (lowering_rules.borrowedIdentifierName(arg)) |borrowed_name| {
                     if (self.addressable_bindings.contains(borrowed_name)) {
                         const addr_reg = try self.genExpr(arg, hoisted_allocs);
@@ -9281,8 +9288,8 @@ pub const Codegen = struct {
                     .release_after_call = release_arg,
                     .consume_reg = if (consume_arg) arg_reg else null,
                 };
-            },
-        };
+            };
+        } else unreachable;
     }
 
     fn genPlannedCallArg(

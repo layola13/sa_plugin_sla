@@ -12624,8 +12624,8 @@ pub const Codegen = struct {
             .value_arg_transfers_ownership = self.valueArgTransfersOwnership(param, arg_ty),
         });
 
-        return switch (materialization.kind) {
-            .raw_pointer_string_literal => blk: {
+        if (materialization.isRawPointerStringLiteral()) {
+            return blk: {
                 if (arg.* != .literal or arg.literal != .string_val) return Error.UnsupportedSabDirectFeature;
                 const arg_reg = try self.genRawPointerStringLiteralArg(arg.literal.string_val);
                 if (param) |target_param| {
@@ -12638,22 +12638,26 @@ pub const Codegen = struct {
                     }
                 }
                 break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
-            },
-            .array_to_slice_borrow => try self.genArrayBorrowToSliceArg(arg, materialization.release_after_call),
-            .dyn_borrow => blk: {
+            };
+        } else if (materialization.isArrayToSliceBorrow()) {
+            return try self.genArrayBorrowToSliceArg(arg, materialization.release_after_call);
+        } else if (materialization.isDynBorrow()) {
+            return blk: {
                 const trait_name = materialization.dyn_borrow_trait_name orelse return Error.UnsupportedSabDirectFeature;
                 const fat_reg = try self.genDynBorrowArg(arg, trait_name);
                 break :blk .{
                     .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[fat_reg]}),
                     .release_reg = fat_reg,
                 };
-            },
-            .copy_struct_value => blk: {
+            };
+        } else if (materialization.isCopyStructValue()) {
+            return blk: {
                 const source_reg = try self.genExpr(@constCast(arg));
                 const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
                 break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
-            },
-            .generated_fn_ptr_value_slot => blk: {
+            };
+        } else if (materialization.isGeneratedFnPtrValueSlot()) {
+            return blk: {
                 // Pass function-object pointer bits (vtable address), matching
                 // SA-text `tmp = &SLA_FNPTR_VT_...; call(f, tmp)`. Do not pass
                 // a stack-slot address: sa_vec_push stores the raw value, and a
@@ -12663,8 +12667,9 @@ pub const Codegen = struct {
                     .operand = self.symbols.items[arg_reg],
                     .release_reg = if (materialization.release_after_call) arg_reg else null,
                 };
-            },
-            .borrow_local_fn_ptr_value => blk: {
+            };
+        } else if (materialization.isBorrowLocalFnPtrValue()) {
+            return blk: {
                 // Local `let run: fn(...) = ...` already holds object-pointer
                 // bits. Pass those bits by value for the same reason as above.
                 const arg_reg = try self.genExpr(@constCast(arg));
@@ -12672,8 +12677,9 @@ pub const Codegen = struct {
                     .operand = self.symbols.items[arg_reg],
                     .release_reg = null,
                 };
-            },
-            .shallow_copy_preserved_value => blk: {
+            };
+        } else if (materialization.isShallowCopyPreservedValue()) {
+            return blk: {
                 const ty = arg_ty orelse return Error.UnsupportedSabDirectFeature;
                 const arg_reg = try self.genExpr(@constCast(arg));
                 const copied = try self.genShallowCopyCallArgValue(arg_reg, ty);
@@ -12682,15 +12688,17 @@ pub const Codegen = struct {
                     .release_reg = null,
                     .forget_reg = copied,
                 };
-            },
-            .auto_borrow => blk: {
+            };
+        } else if (materialization.isAutoBorrow()) {
+            return blk: {
                 const arg_reg = try self.genExpr(@constCast(arg));
                 break :blk .{
                     .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[arg_reg]}),
                     .release_reg = arg_reg,
                 };
-            },
-            .value => blk: {
+            };
+        } else if (materialization.isValue()) {
+            return blk: {
                 const abi_move_prefix: ?u8 = if (abi_move_auto_move and arg.* != .move_expr) '^' else null;
                 if (call_plan.argPrefix(arg) orelse abi_move_prefix) |prefix| {
                     if (try self.genPrefixedBorrowAddressCallArg(arg, prefix)) |borrowed| {
@@ -12790,8 +12798,8 @@ pub const Codegen = struct {
                     .release_reg = if (consume_source) null else release_reg,
                     .consume_reg = if (consume_source or consume_temp) arg_reg else null,
                 };
-            },
-        };
+            };
+        } else unreachable;
     }
 
     fn needsFnPtrValueArgSlot(self: *Codegen, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
@@ -12848,8 +12856,8 @@ pub const Codegen = struct {
             .value_arg_transfers_ownership = self.valueArgTransfersOwnership(param, self.tc.expr_types.get(effective_arg)),
         });
 
-        return switch (materialization.kind) {
-            .raw_pointer_string_literal => blk: {
+        if (materialization.isRawPointerStringLiteral()) {
+            return blk: {
                 if (effective_arg.* != .literal or effective_arg.literal != .string_val) return Error.UnsupportedSabDirectFeature;
                 const arg_reg = try self.genRawPointerStringLiteralArg(effective_arg.literal.string_val);
                 if (param) |target_param| {
@@ -12862,36 +12870,42 @@ pub const Codegen = struct {
                     }
                 }
                 break :blk .{ .operand = self.symbols.items[arg_reg], .release_reg = arg_reg };
-            },
-            .array_to_slice_borrow => try self.genMacroArrayBorrowToSliceArg(arg, effective_arg, ctx, materialization.release_after_call),
-            .dyn_borrow => blk: {
+            };
+        } else if (materialization.isArrayToSliceBorrow()) {
+            return try self.genMacroArrayBorrowToSliceArg(arg, effective_arg, ctx, materialization.release_after_call);
+        } else if (materialization.isDynBorrow()) {
+            return blk: {
                 const trait_name = materialization.dyn_borrow_trait_name orelse return Error.UnsupportedSabDirectFeature;
                 const fat_reg = try self.genMacroDynBorrowArg(arg, ctx, trait_name);
                 break :blk .{
                     .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[fat_reg]}),
                     .release_reg = fat_reg,
                 };
-            },
-            .copy_struct_value => blk: {
+            };
+        } else if (materialization.isCopyStructValue()) {
+            return blk: {
                 const source_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 const copied = try self.genCopyValue(source_reg, (param orelse return Error.UnsupportedSabDirectFeature).ty);
                 break :blk .{ .operand = self.symbols.items[copied], .release_reg = copied };
-            },
-            .generated_fn_ptr_value_slot => blk: {
+            };
+        } else if (materialization.isGeneratedFnPtrValueSlot()) {
+            return blk: {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 break :blk .{
                     .operand = self.symbols.items[arg_reg],
                     .release_reg = if (materialization.release_after_call) arg_reg else null,
                 };
-            },
-            .borrow_local_fn_ptr_value => blk: {
+            };
+        } else if (materialization.isBorrowLocalFnPtrValue()) {
+            return blk: {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 break :blk .{
                     .operand = self.symbols.items[arg_reg],
                     .release_reg = null,
                 };
-            },
-            .shallow_copy_preserved_value => blk: {
+            };
+        } else if (materialization.isShallowCopyPreservedValue()) {
+            return blk: {
                 const effective_ty = self.tc.expr_types.get(effective_arg) orelse return Error.UnsupportedSabDirectFeature;
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 const copied = try self.genShallowCopyCallArgValue(arg_reg, effective_ty);
@@ -12900,15 +12914,17 @@ pub const Codegen = struct {
                     .release_reg = null,
                     .forget_reg = copied,
                 };
-            },
-            .auto_borrow => blk: {
+            };
+        } else if (materialization.isAutoBorrow()) {
+            return blk: {
                 const arg_reg = try self.genMacroExpr(@constCast(arg), ctx);
                 break :blk .{
                     .operand = try std.fmt.allocPrint(self.allocator, "&{s}", .{self.symbols.items[arg_reg]}),
                     .release_reg = arg_reg,
                 };
-            },
-            .value => blk: {
+            };
+        } else if (materialization.isValue()) {
+            return blk: {
                 if (call_plan.argPrefix(effective_arg)) |prefix| {
                     if (try self.genMacroPrefixedBorrowAddressCallArg(arg, ctx, prefix)) |borrowed| {
                         var effective = borrowed;
@@ -12960,8 +12976,8 @@ pub const Codegen = struct {
                     .release_reg = if (consume_source) null else release_reg,
                     .consume_reg = if (consume_source or consume_temp) arg_reg else null,
                 };
-            },
-        };
+            };
+        } else unreachable;
     }
 
     fn restoreClosureParams(self: *Codegen, saved: []const SavedClosureParam) void {

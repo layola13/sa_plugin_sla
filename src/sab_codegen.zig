@@ -4602,7 +4602,7 @@ pub const Codegen = struct {
     }
 
     fn isCallBodyIdentChar(c: u8) bool {
-        return std.ascii.isAlphanumeric(c) or c == '_';
+        return lowering_rules.isIdentChar(c);
     }
 
     fn recordCallBodyRegs(self: *Codegen, body: []const u8) !void {
@@ -5856,7 +5856,7 @@ pub const Codegen = struct {
     }
 
     fn isCallTargetChar(ch: u8) bool {
-        return std.ascii.isAlphanumeric(ch) or ch == '_';
+        return lowering_rules.isIdentChar(ch);
     }
 
     fn callTargetName(body: []const u8) ?[]const u8 {

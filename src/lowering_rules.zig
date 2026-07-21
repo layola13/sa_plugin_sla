@@ -3081,6 +3081,11 @@ pub fn isStdMacroTemplateArgSafe(arg: []const u8) bool {
     return isStdMacroTemplateIdentArg(arg);
 }
 
+/// Shared pure identifier-character fact used by SAB call-body/target scanners.
+pub fn isIdentChar(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_';
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7199,6 +7204,16 @@ test "isStdMacroTemplate arg classifiers" {
     try std.testing.expect(isStdMacroTemplateArgSafe("foo"));
     try std.testing.expect(!isStdMacroTemplateArgSafe(""));
     try std.testing.expect(!isStdMacroTemplateArgSafe("a b"));
+}
+
+test "isIdentChar" {
+    try std.testing.expect(isIdentChar('a'));
+    try std.testing.expect(isIdentChar('Z'));
+    try std.testing.expect(isIdentChar('0'));
+    try std.testing.expect(isIdentChar('_'));
+    try std.testing.expect(!isIdentChar('-'));
+    try std.testing.expect(!isIdentChar(' '));
+    try std.testing.expect(!isIdentChar('@'));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

@@ -40,6 +40,10 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Share isIdentChar for SAB call-body/target scanners on Y (2026-07-21).
+	  Pure identifier character fact; SAB call scanners thin. Unit 2/2; build
+	  7/7; println SAB, thread pair SAB, result green.
+
 	- [x] Share std-macro template arg classifiers and residual thread-spawn
 	  peels on Y (2026-07-21). Pure template integer/ident/safe args; SAB
 	  wrappers thin; SA residual spawn sites use isThreadSpawnCall. Unit 2/2;

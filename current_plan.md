@@ -18,6 +18,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share isIdentChar for SAB call-body/target scanners on Y (2026-07-21):
+  Pure alphanumeric-or-underscore identifier character fact shared; SAB
+  isCallBodyIdentChar/isCallTargetChar thin to it. Unit 2/2; build 7/7;
+  println SAB, thread pair SAB, result green.
+
 - Share std-macro template arg classifiers and residual thread-spawn peels on Y
   (2026-07-21): Pure isStdMacroTemplateInteger/Ident/ArgSafe shared; SAB
   wrappers thin; remaining SA thread-spawn collection/emit sites use

@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Normalize CallArgMaterializationPlan shared predicates (2026-07-20):
+  Shared is* helpers on CallArgMaterializationPlan; unit test consumes them.
+  Build 7/7; materialization 2/2; SA/SAB dyn/borrow/result green.
+
 - Reserve module import-list capacity in getOrParse resolve path (2026-07-20):
   Pre-size resolve/namespace import ArrayLists. Build 7/7; module table 15/15;
   focused SA/SAB green.

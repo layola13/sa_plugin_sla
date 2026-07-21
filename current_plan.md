@@ -18,6 +18,14 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Normalize CallArgMaterializationPlan shared predicates (2026-07-20):
+  `CallArgMaterializationPlan` now exposes isRawPointerStringLiteral /
+  isArrayToSliceBorrow / isDynBorrow / isAutoBorrow / isCopyStructValue /
+  isGeneratedFnPtrValueSlot / isBorrowLocalFnPtrValue /
+  isShallowCopyPreservedValue / isValue. Shared materialization unit test
+  consumes those helpers. Build 7/7; materialization filter 2/2; focused SA+SAB
+  dyn/borrow/result fixtures green. Emitter kind switches remain for now.
+
 - Reserve module import-list capacity in getOrParse resolve path (2026-07-20):
   `resolveModuleImports` and `buildModuleImportNamespaces` pre-size their
   ArrayLists from decl/import upper bounds to cut realloc churn during

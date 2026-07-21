@@ -2183,6 +2183,34 @@ pub const CallArgMaterializationPlan = struct {
     release_after_call: bool,
     dyn_borrow_trait_name: ?[]const u8 = null,
     transfers_ownership: bool = false,
+
+    pub fn isRawPointerStringLiteral(self: CallArgMaterializationPlan) bool {
+        return self.kind == .raw_pointer_string_literal;
+    }
+    pub fn isArrayToSliceBorrow(self: CallArgMaterializationPlan) bool {
+        return self.kind == .array_to_slice_borrow;
+    }
+    pub fn isDynBorrow(self: CallArgMaterializationPlan) bool {
+        return self.kind == .dyn_borrow;
+    }
+    pub fn isAutoBorrow(self: CallArgMaterializationPlan) bool {
+        return self.kind == .auto_borrow;
+    }
+    pub fn isCopyStructValue(self: CallArgMaterializationPlan) bool {
+        return self.kind == .copy_struct_value;
+    }
+    pub fn isGeneratedFnPtrValueSlot(self: CallArgMaterializationPlan) bool {
+        return self.kind == .generated_fn_ptr_value_slot;
+    }
+    pub fn isBorrowLocalFnPtrValue(self: CallArgMaterializationPlan) bool {
+        return self.kind == .borrow_local_fn_ptr_value;
+    }
+    pub fn isShallowCopyPreservedValue(self: CallArgMaterializationPlan) bool {
+        return self.kind == .shallow_copy_preserved_value;
+    }
+    pub fn isValue(self: CallArgMaterializationPlan) bool {
+        return self.kind == .value;
+    }
 };
 
 pub const AbiFieldLayout = struct {
@@ -4837,18 +4865,18 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(!shouldAutoBorrowStatementReceiverArg(plain_param, &value, &i64_ty));
 
     const array_plan = planCallArgMaterialization(&field, .{ .array_to_slice_borrow = true });
-    try std.testing.expectEqual(CallArgMaterializationKind.array_to_slice_borrow, array_plan.kind);
+    try std.testing.expect(array_plan.isArrayToSliceBorrow());
     try std.testing.expect(array_plan.release_after_call);
 
     var raw_ptr_ty = ast.Type{ .pointer = &i64_ty };
     const raw_param = ast.Param{ .name = "raw", .ty = &raw_ptr_ty };
     var string_arg = ast.Node{ .literal = .{ .string_val = "raw" } };
     const raw_string_plan = planCallArgMaterialization(&string_arg, .{ .param = raw_param });
-    try std.testing.expectEqual(CallArgMaterializationKind.raw_pointer_string_literal, raw_string_plan.kind);
+    try std.testing.expect(raw_string_plan.isRawPointerStringLiteral());
     try std.testing.expect(raw_string_plan.release_after_call);
 
     const dyn_plan = planCallArgMaterialization(&value, .{ .dyn_borrow_trait_name = "Drawable" });
-    try std.testing.expectEqual(CallArgMaterializationKind.dyn_borrow, dyn_plan.kind);
+    try std.testing.expect(dyn_plan.isDynBorrow());
     try std.testing.expect(!dyn_plan.release_after_call);
     try std.testing.expectEqualSlices(u8, "Drawable", dyn_plan.dyn_borrow_trait_name.?);
 
@@ -4858,7 +4886,7 @@ test "shared lowering rules classify call materialization decisions" {
         .arg_index = 0,
         .auto_borrow_receiver = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.auto_borrow, auto_borrow_plan.kind);
+    try std.testing.expect(auto_borrow_plan.isAutoBorrow());
     try std.testing.expect(!auto_borrow_plan.release_after_call);
 
     const generated_auto_borrow_plan = planCallArgMaterialization(&value, .{
@@ -4868,7 +4896,7 @@ test "shared lowering rules classify call materialization decisions" {
         .auto_borrow_receiver = true,
         .generated_scalar_const_identifier = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.auto_borrow, generated_auto_borrow_plan.kind);
+    try std.testing.expect(generated_auto_borrow_plan.isAutoBorrow());
     try std.testing.expect(generated_auto_borrow_plan.release_after_call);
 
     const receiver_style_plan = planCallArgMaterialization(&value, .{
@@ -4876,14 +4904,14 @@ test "shared lowering rules classify call materialization decisions" {
         .arg_ty = &i64_ty,
         .receiver_style_auto_borrow = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.auto_borrow, receiver_style_plan.kind);
+    try std.testing.expect(receiver_style_plan.isAutoBorrow());
 
     const explicit_borrow_receiver_style_plan = planCallArgMaterialization(&borrowed_value, .{
         .param = borrow_param,
         .arg_ty = &borrow_i64_ty,
         .receiver_style_auto_borrow = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.value, explicit_borrow_receiver_style_plan.kind);
+    try std.testing.expect(explicit_borrow_receiver_style_plan.isValue());
     try std.testing.expect(explicit_borrow_receiver_style_plan.release_after_call);
 
     const statement_receiver_plan = planCallArgMaterialization(&value, .{
@@ -4891,28 +4919,28 @@ test "shared lowering rules classify call materialization decisions" {
         .arg_ty = &borrow_i64_ty,
         .statement_receiver_auto_borrow = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.value, statement_receiver_plan.kind);
+    try std.testing.expect(statement_receiver_plan.isValue());
 
     const copy_plan = planCallArgMaterialization(&value, .{ .copy_struct_value = true });
-    try std.testing.expectEqual(CallArgMaterializationKind.copy_struct_value, copy_plan.kind);
+    try std.testing.expect(copy_plan.isCopyStructValue());
     try std.testing.expect(copy_plan.release_after_call);
 
     const generated_plan = planCallArgMaterialization(&value, .{ .generated_fn_ptr_identifier = true });
-    try std.testing.expectEqual(CallArgMaterializationKind.value, generated_plan.kind);
+    try std.testing.expect(generated_plan.isValue());
     try std.testing.expect(generated_plan.release_after_call);
 
     const generated_sab_plan = planCallArgMaterialization(&value, .{
         .target = .direct_sab,
         .generated_fn_ptr_identifier = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.generated_fn_ptr_value_slot, generated_sab_plan.kind);
+    try std.testing.expect(generated_sab_plan.isGeneratedFnPtrValueSlot());
     try std.testing.expect(generated_sab_plan.release_after_call);
 
     const local_fnptr_sab_plan = planCallArgMaterialization(&value, .{
         .target = .direct_sab,
         .local_fn_ptr_identifier = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.borrow_local_fn_ptr_value, local_fnptr_sab_plan.kind);
+    try std.testing.expect(local_fnptr_sab_plan.isBorrowLocalFnPtrValue());
     try std.testing.expect(!local_fnptr_sab_plan.release_after_call);
 
     const preserved_sab_plan = planCallArgMaterialization(&value, .{
@@ -4920,14 +4948,14 @@ test "shared lowering rules classify call materialization decisions" {
         .preserve_identifier_for_later_use = true,
         .shallow_copy_value = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.shallow_copy_preserved_value, preserved_sab_plan.kind);
+    try std.testing.expect(preserved_sab_plan.isShallowCopyPreservedValue());
     try std.testing.expect(!preserved_sab_plan.release_after_call);
 
     const preserved_sa_plan = planCallArgMaterialization(&value, .{
         .preserve_identifier_for_later_use = true,
         .shallow_copy_value = true,
     });
-    try std.testing.expectEqual(CallArgMaterializationKind.shallow_copy_preserved_value, preserved_sa_plan.kind);
+    try std.testing.expect(preserved_sa_plan.isShallowCopyPreservedValue());
     try std.testing.expect(!preserved_sa_plan.release_after_call);
 }
 

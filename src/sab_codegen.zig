@@ -12501,7 +12501,10 @@ pub const Codegen = struct {
     }
 
     fn generatedScalarConstIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
-        return arg.* == .identifier and self.global_scalar_consts.contains(arg.identifier);
+        return lowering_rules.identifierIsGeneratedScalarConst(
+            arg,
+            arg.* == .identifier and self.global_scalar_consts.contains(arg.identifier),
+        );
     }
 
     fn materializeFnPtrValueArgSlot(self: *Codegen, source_reg: u32, release_source_after_call: bool) !SabLoweredCallArg {

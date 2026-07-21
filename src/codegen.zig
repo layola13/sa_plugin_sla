@@ -9724,7 +9724,10 @@ pub const Codegen = struct {
     }
 
     fn generatedScalarConstIdentifierArg(self: *Codegen, arg: *const ast.Node) bool {
-        return arg.* == .identifier and self.global_scalar_consts.contains(arg.identifier);
+        return lowering_rules.identifierIsGeneratedScalarConst(
+            arg,
+            arg.* == .identifier and self.global_scalar_consts.contains(arg.identifier),
+        );
     }
 
     fn storedIdentifierNeedsRelease(self: *Codegen, value: *const ast.Node, value_ty: *const ast.Type) bool {

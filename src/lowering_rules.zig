@@ -4589,6 +4589,14 @@ pub fn identifierIsGeneratedFnPtr(
     return arg.* == .identifier and is_func_symbol and arg_ty_is_fn_ptr;
 }
 
+/// Identifier that names a top-level scalar const folded for call-arg materialization.
+pub fn identifierIsGeneratedScalarConst(
+    arg: *const ast.Node,
+    is_global_scalar_const: bool,
+) bool {
+    return arg.* == .identifier and is_global_scalar_const;
+}
+
 /// By-value fn-pointer param receiving a generated function-symbol identifier.
 pub fn callArgIsGeneratedFnPtrValue(
     arg: *const ast.Node,
@@ -6665,6 +6673,9 @@ test "shared value-arg ownership and fnptr slot plans" {
     try std.testing.expect(callArgIsLocalFnPtrValue(&local_ident, fn_param, true, false, true));
     try std.testing.expect(!callArgIsLocalFnPtrValue(&local_ident, fn_param, true, true, true));
     try std.testing.expect(!callArgIsLocalFnPtrValue(&local_ident, fn_param, true, false, false));
+    try std.testing.expect(identifierIsGeneratedScalarConst(&fn_ident, true));
+    try std.testing.expect(!identifierIsGeneratedScalarConst(&fn_ident, false));
+    try std.testing.expect(!identifierIsGeneratedScalarConst(&local_ident, false));
 
     var i32_ty = ast.Type{ .primitive = .i32 };
     try std.testing.expect(!vecElementPushTransfersOwnership(&i32_ty, true));

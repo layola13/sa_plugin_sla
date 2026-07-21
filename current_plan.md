@@ -18,6 +18,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share identifierIsGeneratedScalarConst classifier on Y (2026-07-21):
+  Pure identifier/global-scalar-const fact shared; SA/SAB wrappers thin. Unit
+  ownership/fnptr 2/2; build 7/7; SA+SAB toplevel_const_alias 1/1, fn_ptr_value
+  12/12, result green.
+
 - Share generated/local fnptr call-arg classifiers on Y (2026-07-21):
   `identifierIsGeneratedFnPtr`, `callArgIsGeneratedFnPtrValue`, and
   `callArgIsLocalFnPtrValue` shared; SA/SAB wrappers pass local symbol/local-reg

@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share identifierIsGeneratedScalarConst classifier on Y (2026-07-21):
+  Pure scalar-const identifier fact. Unit 2/2; build 7/7; toplevel_const_alias
+  SA/SAB 1/1; fn_ptr_value 12/12.
+
 - Share generated/local fnptr call-arg classifiers on Y (2026-07-21):
   identifierIsGeneratedFnPtr + callArgIsGenerated/LocalFnPtrValue. Unit 2/2;
   build 7/7; fn_ptr_value SA/SAB 12/12; fn_ptr_void 1/1.

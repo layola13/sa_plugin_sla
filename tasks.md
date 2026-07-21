@@ -40,6 +40,10 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Share identifierIsGeneratedScalarConst classifier on Y (2026-07-21).
+	  Pure scalar-const identifier fact. Unit 2/2; build 7/7;
+	  toplevel_const_alias 1/1; fn_ptr_value 12/12 SA+SAB.
+
 	- [x] Share generated/local fnptr call-arg classifiers on Y (2026-07-21).
 	  identifierIsGeneratedFnPtr + generated/local value classifiers. Unit
 	  2/2; build 7/7; fn_ptr_value 12/12; fn_ptr_void 1/1 SA+SAB.

@@ -4458,6 +4458,19 @@ pub fn shallowCopyCallArgStructGate(decl: *const ast.StructDecl) bool {
     return !decl.is_opaque and !decl.is_union;
 }
 
+/// Shared pure classification for small plain ABI slot structs: non-opaque,
+/// non-union, <= 128 bytes, and only primitive/pointer/borrow/fnptr fields.
+pub fn typeIsSmallPlainSlotStructDecl(decl: *const ast.StructDecl) bool {
+    if (decl.is_opaque or decl.is_union or structAbiSize(decl) > 128) return false;
+    for (decl.fields) |field| {
+        switch (field.ty.*) {
+            .primitive, .pointer, .borrow, .fn_ptr => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
 /// Shared pure leaf/base decisions for recursive Copy-value typing.
 /// Returns null when the emitter must recurse into aggregates or consult
 /// user-defined Copy derives.
@@ -6787,6 +6800,20 @@ test "typeHasCopyDeriveBase classifies pure leaves" {
     var opaque_decl = ast.StructDecl{ .name = "Opaque", .generics = &.{}, .fields = fields[0..], .derives = copy_derives[0..], .is_union = false, .is_opaque = true };
     try std.testing.expect(typeHasCopyDeriveStructGate(&good));
     try std.testing.expect(!typeHasCopyDeriveStructGate(&opaque_decl));
+}
+
+test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var fields = [_]ast.Field{.{ .name = "x", .ty = &i32_ty }};
+    var good = ast.StructDecl{ .name = "Good", .generics = &.{}, .fields = fields[0..], .derives = &.{}, .is_union = false, .is_opaque = false };
+    var opaque_decl = ast.StructDecl{ .name = "Opaque", .generics = &.{}, .fields = fields[0..], .derives = &.{}, .is_union = false, .is_opaque = true };
+    var gens = [_]*ast.Type{&i32_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
+    var nested_fields = [_]ast.Field{.{ .name = "v", .ty = &vec_ty }};
+    var nested = ast.StructDecl{ .name = "Nested", .generics = &.{}, .fields = nested_fields[0..], .derives = &.{}, .is_union = false, .is_opaque = false };
+    try std.testing.expect(typeIsSmallPlainSlotStructDecl(&good));
+    try std.testing.expect(!typeIsSmallPlainSlotStructDecl(&opaque_decl));
+    try std.testing.expect(!typeIsSmallPlainSlotStructDecl(&nested));
 }
 
 test "typeIsCopyStructFact classifies composition" {

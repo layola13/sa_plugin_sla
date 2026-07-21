@@ -3413,14 +3413,7 @@ pub const Codegen = struct {
 
     fn typeIsSmallPlainSlotStruct(self: *Codegen, ty: *const ast.Type) bool {
         const decl = self.structDeclForType(ty) orelse return false;
-        if (decl.is_opaque or decl.is_union or structSize(decl) > 128) return false;
-        for (decl.fields) |field| {
-            switch (field.ty.*) {
-                .primitive, .pointer, .borrow, .fn_ptr => {},
-                else => return false,
-            }
-        }
-        return true;
+        return lowering_rules.typeIsSmallPlainSlotStructDecl(decl);
     }
 
     fn slotCopyStructType(self: *Codegen, ty: *const ast.Type) ?*const ast.Type {

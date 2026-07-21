@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share typeIsSmallPlainSlotStructDecl on Y (2026-07-21):
+  Pure small plain ABI slot-struct classification (<=128B, non-opaque/non-union,
+  only primitive/pointer/borrow/fnptr fields) moved to lowering_rules; SA-text
+  wrapper thins to decl lookup. Unit 2/2; build 7/7; field_copy/result SA+SAB
+  green.
+
 - Share shallowCopyCallArgUserDefinedBase/struct-gate helpers on Y (2026-07-21):
   SA/SAB recursive shallow-copy call-arg typing consume shared pure
   owner/smart-pointer depth base and resolved-struct gate; enum/struct field

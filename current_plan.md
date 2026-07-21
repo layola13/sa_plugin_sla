@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Reserve module import-list capacity in getOrParse resolve path (2026-07-20):
+  `resolveModuleImports` and `buildModuleImportNamespaces` pre-size their
+  ArrayLists from decl/import upper bounds to cut realloc churn during
+  resolve-roots. Build 7/7; `sla module table` 15/15; focused SA/SAB fixtures
+  green. No full suite/host install.
+
 - Share reachability recordReferencedType peel on Y (2026-07-20):
   `plugin_reachability.recordReferencedType` peels borrow/pointer through
   `lowering_rules.peelBorrowPointerType` then recurses on array/tuple/future/

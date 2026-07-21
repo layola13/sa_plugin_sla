@@ -363,6 +363,7 @@ pub const SlaModuleTable = struct {
 
     pub fn buildModuleImportNamespaces(self: *SlaModuleTable, resolved_imports: []const ResolvedImport) ![]const ResolvedModuleImport {
         var imports = std.ArrayList(ResolvedModuleImport).init(self.allocator);
+        try imports.ensureTotalCapacity(resolved_imports.len);
         for (resolved_imports) |resolved| {
             if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
             try imports.append(.{
@@ -413,6 +414,9 @@ pub const SlaModuleTable = struct {
 
     pub fn resolveModuleImports(self: *SlaModuleTable, module_path: []const u8, base_dir: []const u8, decls: []const *ast.Node) ![]const ResolvedImport {
         var imports = std.ArrayList(ResolvedImport).init(self.allocator);
+        // Most modules have few imports; pre-size for the upper bound of import_decl
+        // nodes so getOrParse resolve-roots avoids repeated ArrayList growth.
+        try imports.ensureTotalCapacity(decls.len);
         for (decls) |decl| {
             if (decl.* != .import_decl) continue;
             if (try self.cachedPlainSlaImport(base_dir, decl.import_decl.path, module_path)) |cached| {

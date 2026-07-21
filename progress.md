@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share isDiscardName and isThreadSpawnCall on Y (2026-07-21):
+  Pure discard name + thread::spawn recognition; SA/SAB wrappers thin. Unit
+  2/2; build 7/7; thread pair SA+SAB, result green.
+
 - Share structFieldsAllNumeric/comparable and typecheck literalZero on Y
   (2026-07-21): Pure numeric/comparable struct-field gates + literalZero shared.
   Unit 2/2; build 7/7; derive SA, field_copy SAB, result green.

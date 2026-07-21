@@ -3034,6 +3034,19 @@ pub fn structFieldsAllComparable(decl: *const ast.StructDecl) bool {
     return true;
 }
 
+/// Shared pure discard-binding name fact (`_`).
+pub fn isDiscardName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "_");
+}
+
+/// Shared pure recognition of `thread::spawn(closure)` style calls.
+pub fn isThreadSpawnCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        std.mem.eql(u8, call.associated_target.?, "thread") and
+        std.mem.eql(u8, call.func_name, "spawn") and
+        call.args.len == 1;
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7107,6 +7120,36 @@ test "structFieldsAllNumeric and comparable" {
     var one = ast.Node{ .literal = .{ .int_val = 1 } };
     try std.testing.expect(literalZero(&zero));
     try std.testing.expect(!literalZero(&one));
+}
+
+test "isDiscardName and isThreadSpawnCall" {
+    try std.testing.expect(isDiscardName("_"));
+    try std.testing.expect(!isDiscardName("x"));
+    try std.testing.expect(!isDiscardName("__"));
+
+    var dummy: ast.Node = undefined;
+    var args = [_]*ast.Node{&dummy};
+    const spawn = ast.CallExpr{
+        .func_name = "spawn",
+        .args = args[0..],
+        .associated_target = "thread",
+        .generics = &.{},
+    };
+    try std.testing.expect(isThreadSpawnCall(spawn));
+    const not_spawn = ast.CallExpr{
+        .func_name = "join",
+        .args = args[0..],
+        .associated_target = "thread",
+        .generics = &.{},
+    };
+    try std.testing.expect(!isThreadSpawnCall(not_spawn));
+    const bare = ast.CallExpr{
+        .func_name = "spawn",
+        .args = args[0..],
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(!isThreadSpawnCall(bare));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

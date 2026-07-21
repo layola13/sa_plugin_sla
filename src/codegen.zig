@@ -6380,7 +6380,7 @@ pub const Codegen = struct {
     fn threadSpawnHelperForExpr(self: *Codegen, expr: *const ast.Node) CodegenError!?ThreadSpawnHelper {
         if (expr.* != .call_expr) return null;
         const call = expr.call_expr;
-        if (call.associated_target == null or !std.mem.eql(u8, call.associated_target.?, "thread") or !std.mem.eql(u8, call.func_name, "spawn") or call.args.len != 1) {
+        if (!lowering_rules.isThreadSpawnCall(call)) {
             return null;
         }
         const closure = threadSpawnClosureLiteral(call.args[0]) orelse return null;
@@ -7699,7 +7699,7 @@ pub const Codegen = struct {
     }
 
     fn isDiscardName(name: []const u8) bool {
-        return std.mem.eql(u8, name, "_");
+        return lowering_rules.isDiscardName(name);
     }
 
     fn emitLoopBodyTopLevelLocalCleanups(self: *Codegen, block: []const *ast.Node) CodegenError!void {

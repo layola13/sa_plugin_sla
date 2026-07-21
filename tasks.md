@@ -40,6 +40,10 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Share isDiscardName and isThreadSpawnCall on Y (2026-07-21).
+	  Pure discard name + thread::spawn recognition; SA/SAB wrappers thin.
+	  Unit 2/2; build 7/7; thread pair SA+SAB, result green.
+
 	- [x] Share structFieldsAllNumeric/comparable and typecheck literalZero on Y
 	  (2026-07-21). Pure numeric/comparable struct-field gates + literalZero
 	  shared. Unit 2/2; build 7/7; derive SA, field_copy SAB, result green.

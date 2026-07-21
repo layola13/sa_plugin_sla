@@ -1769,10 +1769,7 @@ pub const Codegen = struct {
     }
 
     fn isThreadSpawnCall(call: ast.CallExpr) bool {
-        return call.associated_target != null and
-            std.mem.eql(u8, call.associated_target.?, "thread") and
-            std.mem.eql(u8, call.func_name, "spawn") and
-            call.args.len == 1;
+        return lowering_rules.isThreadSpawnCall(call);
     }
 
     fn isFutureTaskRuntimeCall(call: ast.CallExpr) bool {

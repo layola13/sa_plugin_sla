@@ -18,6 +18,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share isDiscardName and isThreadSpawnCall on Y (2026-07-21):
+  Pure discard-binding name and thread::spawn call recognition shared; SA
+  discard cleanup and thread-spawn helper path, SAB spawn path consume them.
+  Unit 2/2; build 7/7; thread pair SA+SAB, result green.
+
 - Share structFieldsAllNumeric/comparable and typecheck literalZero on Y
   (2026-07-21): Pure numeric/comparable struct-field gates shared; type_checker
   wrappers thin including literalZero. Unit 2/2; build 7/7; derive semantics

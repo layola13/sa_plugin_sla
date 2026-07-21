@@ -4053,7 +4053,7 @@ pub const Codegen = struct {
         if ((std.mem.eql(u8, iter_call.func_name, "iter") or std.mem.eql(u8, iter_call.func_name, "into_iter")) and iter_call.args.len == 1) {
             return iter_call.args[0];
         }
-        if (std.mem.eql(u8, iter_call.func_name, "copied") and iter_call.args.len == 1 and iter_call.args[0].* == .call_expr) {
+        if (lowering_rules.isCopiedCall(iter_call.*) and iter_call.args.len == 1 and iter_call.args[0].* == .call_expr) {
             const inner = &iter_call.args[0].call_expr;
             if ((std.mem.eql(u8, inner.func_name, "iter") or std.mem.eql(u8, inner.func_name, "into_iter")) and inner.args.len == 1) {
                 return inner.args[0];
@@ -4898,7 +4898,7 @@ pub const Codegen = struct {
             .identifier => |name| lowering_rules.isOptionNoneName(name),
             .call_expr => |call| blk: {
                 if (lowering_rules.isOptionSomeCall(call)) break :blk true;
-                if ((std.mem.eql(u8, call.func_name, "is_some") or std.mem.eql(u8, call.func_name, "is_none") or std.mem.eql(u8, call.func_name, "map") or std.mem.eql(u8, call.func_name, "and_then") or lowering_rules.isUnwrapCall(call) or std.mem.eql(u8, call.func_name, "unwrap_or") or std.mem.eql(u8, call.func_name, "unwrap_or_else") or std.mem.eql(u8, call.func_name, "unwrap_or_default") or std.mem.eql(u8, call.func_name, "copied") or std.mem.eql(u8, call.func_name, "get")) and
+                if ((lowering_rules.isOptionQueryCall(call) or lowering_rules.isMapCall(call) or lowering_rules.isAndThenCall(call) or lowering_rules.isUnwrapCall(call) or lowering_rules.isUnwrapOrCall(call) or lowering_rules.isUnwrapOrElseCall(call) or lowering_rules.isUnwrapOrDefaultCall(call) or lowering_rules.isCopiedCall(call) or std.mem.eql(u8, call.func_name, "get")) and
                     call.args.len > 0)
                 {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
@@ -5104,7 +5104,7 @@ pub const Codegen = struct {
                 if (call.associated_target) |target_name| {
                     if (std.mem.eql(u8, target_name, "panic") and std.mem.eql(u8, call.func_name, "catch_unwind")) break :blk true;
                 }
-                if ((lowering_rules.isUnwrapCall(call) or std.mem.eql(u8, call.func_name, "unwrap_or") or std.mem.eql(u8, call.func_name, "is_ok") or std.mem.eql(u8, call.func_name, "is_err")) and
+                if ((lowering_rules.isUnwrapCall(call) or lowering_rules.isUnwrapOrCall(call) or lowering_rules.isResultQueryCall(call)) and
                     call.args.len > 0)
                 {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
@@ -13112,7 +13112,7 @@ pub const Codegen = struct {
                 if ((std.mem.eql(u8, call.func_name, "iter") or std.mem.eql(u8, call.func_name, "into_iter")) and call.args.len == 1) {
                     return try self.genExpr(call.args[0], hoisted_allocs);
                 }
-                if (std.mem.eql(u8, call.func_name, "copied") and call.args.len == 1) {
+                if (lowering_rules.isCopiedCall(call) and call.args.len == 1) {
                     const target_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (target_ty != null and optionInnerType(target_ty.?) != null) {
                         const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -13150,7 +13150,7 @@ pub const Codegen = struct {
                             return try self.genVecIterSum(inner.args[0], null, hoisted_allocs);
                         }
                     }
-                    if (std.mem.eql(u8, inner.func_name, "copied") and inner.args.len == 1 and inner.args[0].* == .call_expr) {
+                    if (lowering_rules.isCopiedCall(inner.*) and inner.args.len == 1 and inner.args[0].* == .call_expr) {
                         const copied_inner = &inner.args[0].call_expr;
                         if ((std.mem.eql(u8, copied_inner.func_name, "iter") or std.mem.eql(u8, copied_inner.func_name, "into_iter")) and copied_inner.args.len == 1) {
                             const source_ty = self.tc.expr_types.get(copied_inner.args[0]) orelse return CodegenError.CodegenError;
@@ -13162,7 +13162,7 @@ pub const Codegen = struct {
                             }
                         }
                     }
-                    if (std.mem.eql(u8, inner.func_name, "map") and inner.args.len == 2 and inner.args[0].* == .call_expr) {
+                    if (lowering_rules.isMapCall(inner.*) and inner.args.len == 2 and inner.args[0].* == .call_expr) {
                         const iter_call = &inner.args[0].call_expr;
                         if ((std.mem.eql(u8, iter_call.func_name, "iter") or std.mem.eql(u8, iter_call.func_name, "into_iter")) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
                             const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return CodegenError.CodegenError;
@@ -13477,11 +13477,11 @@ pub const Codegen = struct {
                             }
                         }
                         if (optionInnerType(ty) != null) {
-                            if (std.mem.eql(u8, call.func_name, "is_some") or std.mem.eql(u8, call.func_name, "is_none")) {
+                            if (lowering_rules.isOptionQueryCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
-                                if (std.mem.eql(u8, call.func_name, "is_some")) {
+                                if (lowering_rules.isIsSomeCall(call)) {
                                     self.out.writer().print("    EXPAND OPTION_IS_SOME {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
                                 } else {
                                     self.out.writer().print("    EXPAND OPTION_IS_NONE {s}, {s}\n", .{ reg, recv_reg }) catch return CodegenError.CodegenError;
@@ -13566,7 +13566,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0]) and !isNonOwningPointerCarrierCastArg(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "unwrap_or")) {
+                            if (lowering_rules.isUnwrapOrCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const default_reg = try self.genExpr(call.args[1], hoisted_allocs);
@@ -13612,7 +13612,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "unwrap_or_default")) {
+                            if (lowering_rules.isUnwrapOrDefaultCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
@@ -13643,7 +13643,7 @@ pub const Codegen = struct {
                             }
                         }
                         if (resultOkType(ty) != null) {
-                            if (std.mem.eql(u8, call.func_name, "is_ok")) {
+                            if (lowering_rules.isIsOkCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
@@ -13651,7 +13651,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "is_err")) {
+                            if (lowering_rules.isIsErrCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const reg = try self.newTmp();
@@ -13659,7 +13659,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "map")) {
+                            if (lowering_rules.isMapCall(call)) {
                                 if (call.args.len != 2 or call.args[1].* != .closure_literal) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const is_ok = try self.newTmp();
@@ -13738,7 +13738,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "unwrap_or")) {
+                            if (lowering_rules.isUnwrapOrCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const default_reg = try self.genExpr(call.args[1], hoisted_allocs);

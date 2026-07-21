@@ -3298,6 +3298,66 @@ pub fn isMainName(name: []const u8) bool {
     return std.mem.eql(u8, name, "main");
 }
 
+/// Shared pure `is_some` call-name fact.
+pub fn isIsSomeCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "is_some");
+}
+
+/// Shared pure `is_none` call-name fact.
+pub fn isIsNoneCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "is_none");
+}
+
+/// Shared pure Option query method name fact (`is_some` / `is_none`).
+pub fn isOptionQueryCall(call: ast.CallExpr) bool {
+    return isIsSomeCall(call) or isIsNoneCall(call);
+}
+
+/// Shared pure `is_ok` call-name fact.
+pub fn isIsOkCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "is_ok");
+}
+
+/// Shared pure `is_err` call-name fact.
+pub fn isIsErrCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "is_err");
+}
+
+/// Shared pure Result query method name fact (`is_ok` / `is_err`).
+pub fn isResultQueryCall(call: ast.CallExpr) bool {
+    return isIsOkCall(call) or isIsErrCall(call);
+}
+
+/// Shared pure `unwrap_or` call-name fact.
+pub fn isUnwrapOrCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "unwrap_or");
+}
+
+/// Shared pure `unwrap_or_else` call-name fact.
+pub fn isUnwrapOrElseCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "unwrap_or_else");
+}
+
+/// Shared pure `unwrap_or_default` call-name fact.
+pub fn isUnwrapOrDefaultCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "unwrap_or_default");
+}
+
+/// Shared pure `and_then` call-name fact.
+pub fn isAndThenCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "and_then");
+}
+
+/// Shared pure `copied` call-name fact.
+pub fn isCopiedCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "copied");
+}
+
+/// Shared pure `map` call-name fact.
+pub fn isMapCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "map");
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -3903,15 +3963,15 @@ pub fn planOptionClosureCall(call: ast.CallExpr, receiver_ty: *const ast.Type) ?
     if (call.args.len != 2) return null;
     if (optionInnerType(receiver_ty) == null) return null;
     const arity = closureLiteralArity(call.args[1]) orelse return null;
-    if (std.mem.eql(u8, call.func_name, "map")) {
+    if (isMapCall(call)) {
         if (arity != 1) return null;
         return .{ .kind = .map, .closure_arity = arity };
     }
-    if (std.mem.eql(u8, call.func_name, "and_then")) {
+    if (isAndThenCall(call)) {
         if (arity != 1) return null;
         return .{ .kind = .and_then, .closure_arity = arity };
     }
-    if (std.mem.eql(u8, call.func_name, "unwrap_or_else")) {
+    if (isUnwrapOrElseCall(call)) {
         if (arity != 0) return null;
         return .{ .kind = .unwrap_or_else, .closure_arity = arity };
     }
@@ -7616,6 +7676,31 @@ test "join unwrap clone and main peels" {
     try std.testing.expect(isCloneCall(.{ .func_name = "clone", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(isCloneUnaryCall(.{ .func_name = "clone", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(!isCloneUnaryCall(.{ .func_name = "clone", .args = two[0..], .associated_target = null, .generics = &.{} }));
+}
+
+test "option and result method peels" {
+    var dummy: ast.Node = undefined;
+    var one = [_]*ast.Node{&dummy};
+    const some = ast.CallExpr{ .func_name = "is_some", .args = one[0..], .associated_target = null, .generics = &.{} };
+    const none = ast.CallExpr{ .func_name = "is_none", .args = one[0..], .associated_target = null, .generics = &.{} };
+    const ok = ast.CallExpr{ .func_name = "is_ok", .args = one[0..], .associated_target = null, .generics = &.{} };
+    const err = ast.CallExpr{ .func_name = "is_err", .args = one[0..], .associated_target = null, .generics = &.{} };
+    try std.testing.expect(isIsSomeCall(some));
+    try std.testing.expect(isIsNoneCall(none));
+    try std.testing.expect(isOptionQueryCall(some));
+    try std.testing.expect(isOptionQueryCall(none));
+    try std.testing.expect(isIsOkCall(ok));
+    try std.testing.expect(isIsErrCall(err));
+    try std.testing.expect(isResultQueryCall(ok));
+    try std.testing.expect(isResultQueryCall(err));
+    try std.testing.expect(isUnwrapOrCall(.{ .func_name = "unwrap_or", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isUnwrapOrElseCall(.{ .func_name = "unwrap_or_else", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isUnwrapOrDefaultCall(.{ .func_name = "unwrap_or_default", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isAndThenCall(.{ .func_name = "and_then", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isCopiedCall(.{ .func_name = "copied", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isMapCall(.{ .func_name = "map", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(!isOptionQueryCall(ok));
+    try std.testing.expect(!isResultQueryCall(some));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

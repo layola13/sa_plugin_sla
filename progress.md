@@ -4,6 +4,12 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share Option/Result method peels on Y (2026-07-21): Pure isIsSome/isIsNone/
+  isOptionQueryCall, isIsOk/isIsErr/isResultQueryCall, isUnwrapOr/Else/Default,
+  isAndThen/isCopied/isMap shared; SA emit/macro-need, typecheck method peels,
+  and planOptionClosureCall thin to them. Unit 1/1; option SA+SAB, option
+  methods SA 5/5, result SA+SAB green.
+
 - Share join/unwrap/clone/main peels on Y (2026-07-21): Pure isJoinCall/
   isBareJoinUnaryCall/isUnwrapCall/isBareUnwrapUnaryCall/isCloneCall/
   isCloneUnaryCall/isMainName shared; SA/SAB loweredFuncSymbol, join-handle join,

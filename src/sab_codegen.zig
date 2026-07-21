@@ -12533,13 +12533,14 @@ pub const Codegen = struct {
     }
 
     fn isShallowCopyValueArg(self: *Codegen, arg: *const ast.Node, param: ?ast.Param, arg_ty: ?*const ast.Type) bool {
-        const target_param = param orelse return false;
-        if (target_param.is_borrow or target_param.is_move) return false;
-        if (arg.* != .identifier) return false;
-        const ty = arg_ty orelse target_param.ty;
-        if (ty.* != .user_defined) return false;
-        if (self.typeIsCopyValue(ty) or lowering_rules.isBorrowLikeType(ty)) return false;
-        return self.typeIsShallowCopyCallArgValue(ty, 0);
+        const ty = arg_ty orelse if (param) |p| p.ty else null;
+        return lowering_rules.callArgIsShallowCopyValueCandidate(
+            arg,
+            param,
+            arg_ty,
+            if (ty) |t| self.typeIsCopyValue(t) else false,
+            if (ty) |t| self.typeIsShallowCopyCallArgValue(t, 0) else false,
+        );
     }
 
     fn callArgType(self: *Codegen, arg: *const ast.Node) !?*const ast.Type {

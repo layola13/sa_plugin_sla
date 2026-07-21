@@ -4412,6 +4412,25 @@ pub fn callArgIsCopyStructValue(
     return param_is_copy_struct;
 }
 
+/// Shared pure shape for by-value non-Copy identifier args that emitters may
+/// shallow-copy at the call boundary. Emitter-local copy/shallow-copy depth
+/// facts are passed in; this only classifies the shared eligibility shape.
+pub fn callArgIsShallowCopyValueCandidate(
+    arg: *const ast.Node,
+    param: ?ast.Param,
+    arg_ty: ?*const ast.Type,
+    arg_is_copy_value: bool,
+    arg_is_shallow_copy_call_arg_value: bool,
+) bool {
+    const target = param orelse return false;
+    if (target.is_borrow or target.is_move) return false;
+    if (arg.* != .identifier) return false;
+    const ty = arg_ty orelse target.ty;
+    if (ty.* != .user_defined) return false;
+    if (arg_is_copy_value or isBorrowLikeType(ty)) return false;
+    return arg_is_shallow_copy_call_arg_value;
+}
+
 pub fn planCallArgMaterialization(arg: *const ast.Node, input: CallArgMaterializationInput) CallArgMaterializationPlan {
     if (input.param) |param| {
         if (callArgUsesRawPointerStringLiteralValue(arg, param)) {
@@ -4963,6 +4982,11 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(!callArgIsCopyStructValue(&value, plain_param, false));
     try std.testing.expect(!callArgIsCopyStructValue(&value, borrow_param, true));
     try std.testing.expect(!callArgIsCopyStructValue(&borrowed_value, plain_param, true));
+    try std.testing.expect(callArgIsShallowCopyValueCandidate(&source, boxed_param, &boxed_ty, false, true));
+    try std.testing.expect(!callArgIsShallowCopyValueCandidate(&source, boxed_param, &boxed_ty, true, true));
+    try std.testing.expect(!callArgIsShallowCopyValueCandidate(&source, boxed_param, &boxed_ty, false, false));
+    try std.testing.expect(!callArgIsShallowCopyValueCandidate(&source, borrow_param, &boxed_ty, false, true));
+    try std.testing.expect(!callArgIsShallowCopyValueCandidate(&field, boxed_param, &boxed_ty, false, true));
     const copy_plan = planCallArgMaterialization(&value, .{ .copy_struct_value = true });
     try std.testing.expect(copy_plan.isCopyStructValue());
     try std.testing.expect(copy_plan.release_after_call);

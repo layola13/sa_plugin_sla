@@ -9305,16 +9305,13 @@ pub const Codegen = struct {
                 if (options.param) |param| self.typeIsCopyStruct(param.ty) else false,
             );
         const arg_ty = self.resolvedTypeForExpr(arg);
-        const shallow_copy_value = if (options.param) |param|
-            !param.is_borrow and !param.is_move and
-                arg.* == .identifier and
-                arg_ty != null and
-                arg_ty.?.* == .user_defined and
-                !self.typeIsCopyValue(arg_ty.?) and
-                !lowering_rules.isBorrowLikeType(arg_ty.?) and
-                self.typeIsShallowCopyCallArgValue(arg_ty.?, 0)
-        else
-            false;
+        const shallow_copy_value = lowering_rules.callArgIsShallowCopyValueCandidate(
+            arg,
+            options.param,
+            arg_ty,
+            if (arg_ty) |ty| self.typeIsCopyValue(ty) else false,
+            if (arg_ty) |ty| self.typeIsShallowCopyCallArgValue(ty, 0) else false,
+        );
         const materialization = lowering_rules.planCallArgMaterialization(arg, .{
             .param = options.param,
             .arg_ty = arg_ty,

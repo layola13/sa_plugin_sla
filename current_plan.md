@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share Option/Result constructor peels on Y (2026-07-21): Pure
+  isOptionNoneName/isOptionSomeCall/isResultOkCall/isResultErrCall/
+  isResultConstructorCall shared; SA emit/macro-need and typecheck constructor
+  typing thin to them. Unit 1/1; option SA+SAB, option methods SA, result SA+SAB,
+  println SAB, borrow SA green.
+
 - Share ABI type-name peels, residual internal-symbol, and panic-name facts on Y
   (2026-07-21): Pure isPointerAbiTypeName/isIntegerAbiTypeName/isPanicBuiltinName/
   isPanicBuiltinCall shared; typecheck ABI wrappers thin; SA/SAB capture/release

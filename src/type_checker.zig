@@ -3003,7 +3003,7 @@ pub const TypeChecker = struct {
                 return ty;
             },
             .identifier => |name| {
-                if (std.mem.eql(u8, name, "None")) {
+                if (lowering_rules.isOptionNoneName(name)) {
                     return try self.makeOptionType(try self.makeInferType());
                 }
                 if (isOrderingName(name)) {
@@ -3481,19 +3481,19 @@ pub const TypeChecker = struct {
             .call_expr => |call| {
                 const recv_node_ty = if (call.args.len > 0 and call.args[0].* != .move_expr) try self.checkExpr(call.args[0], scope) else null;
 
-                if (std.mem.eql(u8, call.func_name, "Some")) {
+                if (lowering_rules.isOptionSomeCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const inner_ty = try self.checkExpr(call.args[0], scope);
                     return try self.makeOptionType(inner_ty);
                 }
 
-                if (std.mem.eql(u8, call.func_name, "Ok")) {
+                if (lowering_rules.isResultOkCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const ok_ty = try self.checkExpr(call.args[0], scope);
                     return try self.makeResultType(ok_ty, try self.makeInferType());
                 }
 
-                if (std.mem.eql(u8, call.func_name, "Err")) {
+                if (lowering_rules.isResultErrCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const err_ty = try self.checkExpr(call.args[0], scope);
                     return try self.makeResultType(try self.makeInferType(), err_ty);

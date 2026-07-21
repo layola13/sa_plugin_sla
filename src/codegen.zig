@@ -4895,9 +4895,9 @@ pub const Codegen = struct {
             if (optionInnerType(ty) != null) return true;
         }
         return switch (expr.*) {
-            .identifier => |name| std.mem.eql(u8, name, "None"),
+            .identifier => |name| lowering_rules.isOptionNoneName(name),
             .call_expr => |call| blk: {
-                if (std.mem.eql(u8, call.func_name, "Some")) break :blk true;
+                if (lowering_rules.isOptionSomeCall(call)) break :blk true;
                 if ((std.mem.eql(u8, call.func_name, "is_some") or std.mem.eql(u8, call.func_name, "is_none") or std.mem.eql(u8, call.func_name, "map") or std.mem.eql(u8, call.func_name, "and_then") or std.mem.eql(u8, call.func_name, "unwrap") or std.mem.eql(u8, call.func_name, "unwrap_or") or std.mem.eql(u8, call.func_name, "unwrap_or_else") or std.mem.eql(u8, call.func_name, "unwrap_or_default") or std.mem.eql(u8, call.func_name, "copied") or std.mem.eql(u8, call.func_name, "get")) and
                     call.args.len > 0)
                 {
@@ -5099,7 +5099,7 @@ pub const Codegen = struct {
         }
         return switch (expr.*) {
             .call_expr => |call| blk: {
-                if (std.mem.eql(u8, call.func_name, "Ok") or std.mem.eql(u8, call.func_name, "Err")) break :blk true;
+                if (lowering_rules.isResultConstructorCall(call)) break :blk true;
                 if (std.mem.eql(u8, call.func_name, "std__panic__catch_unwind")) break :blk true;
                 if (call.associated_target) |target_name| {
                     if (std.mem.eql(u8, target_name, "panic") and std.mem.eql(u8, call.func_name, "catch_unwind")) break :blk true;
@@ -12006,7 +12006,7 @@ pub const Codegen = struct {
                 return try self.genLiteralValue(lit);
             },
             .identifier => |name| {
-                if (std.mem.eql(u8, name, "None")) {
+                if (lowering_rules.isOptionNoneName(name)) {
                     const reg = try self.newTmp();
                     self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     return reg;
@@ -12535,7 +12535,7 @@ pub const Codegen = struct {
                 if (std.mem.eql(u8, call.func_name, "debug")) {
                     return try self.genDebugCall(&call, hoisted_allocs);
                 }
-                if (std.mem.eql(u8, call.func_name, "Some")) {
+                if (lowering_rules.isOptionSomeCall(call)) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();
@@ -12543,7 +12543,7 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
                 }
-                if (std.mem.eql(u8, call.func_name, "Ok")) {
+                if (lowering_rules.isResultOkCall(call)) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();
@@ -12551,7 +12551,7 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
                 }
-                if (std.mem.eql(u8, call.func_name, "Err")) {
+                if (lowering_rules.isResultErrCall(call)) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const reg = try self.newTmp();

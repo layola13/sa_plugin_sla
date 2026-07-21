@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share Option/Result constructor peels on Y (2026-07-21): Pure None/Some/Ok/Err
+  peels shared; SA emit/macro-need and typecheck thin. Unit 1/1; option SA+SAB,
+  option methods SA, result SA+SAB, println SAB, borrow SA green.
+
 - Share ABI type-name peels, residual internal-symbol, and panic-name facts on Y
   (2026-07-21): Pure pointer/integer ABI names + panic name/call peels; typecheck
   ABI wrappers and SA/SAB capture/release/panic stmt sites thin. Unit 2/2; panic

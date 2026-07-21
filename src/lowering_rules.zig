@@ -3153,6 +3153,31 @@ pub fn isPanicBuiltinCall(call: ast.CallExpr) bool {
     return call.associated_target == null and isPanicBuiltinName(call.func_name);
 }
 
+/// Shared pure Option `None` identifier fact.
+pub fn isOptionNoneName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "None");
+}
+
+/// Shared pure Option `Some(...)` constructor call recognition.
+pub fn isOptionSomeCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "Some");
+}
+
+/// Shared pure Result `Ok(...)` constructor call recognition.
+pub fn isResultOkCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "Ok");
+}
+
+/// Shared pure Result `Err(...)` constructor call recognition.
+pub fn isResultErrCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "Err");
+}
+
+/// Shared pure Result constructor call recognition (`Ok` / `Err`).
+pub fn isResultConstructorCall(call: ast.CallExpr) bool {
+    return isResultOkCall(call) or isResultErrCall(call);
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7362,6 +7387,44 @@ test "isPointerAbiTypeName isIntegerAbiTypeName and isPanicBuiltinCall" {
         .generics = &.{},
     };
     try std.testing.expect(!isPanicBuiltinCall(associated));
+}
+
+test "Option and Result constructor peels" {
+    try std.testing.expect(isOptionNoneName("None"));
+    try std.testing.expect(!isOptionNoneName("Some"));
+
+    const some = ast.CallExpr{
+        .func_name = "Some",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(isOptionSomeCall(some));
+    const ok = ast.CallExpr{
+        .func_name = "Ok",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(isResultOkCall(ok));
+    try std.testing.expect(isResultConstructorCall(ok));
+    const err = ast.CallExpr{
+        .func_name = "Err",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(isResultErrCall(err));
+    try std.testing.expect(isResultConstructorCall(err));
+    const not_ctor = ast.CallExpr{
+        .func_name = "unwrap",
+        .args = &.{},
+        .associated_target = null,
+        .generics = &.{},
+    };
+    try std.testing.expect(!isResultOkCall(not_ctor));
+    try std.testing.expect(!isResultConstructorCall(not_ctor));
+    try std.testing.expect(!isOptionSomeCall(not_ctor));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

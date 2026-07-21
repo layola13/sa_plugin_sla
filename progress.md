@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share typeIsCopyStructFact and pre-size selective-append emitted map
+  (2026-07-21): shared Copy-struct composition + emitted capacity. Unit 2/2x2;
+  module table 15/15; build 7/7; field_copy/result SA+SAB green.
+
 - Share shallowCopyCallArgFieldShouldRecurse nested-field decision on Y
   (2026-07-21): pure nested-field recursion decision for shallow-copied call-arg
   aggregates. Unit 2/2; build 7/7; field_copy/struct_update/fn_ptr_value/result

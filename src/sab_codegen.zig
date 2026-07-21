@@ -1608,7 +1608,7 @@ pub const Codegen = struct {
     }
 
     fn typeIsCopyStruct(self: *Codegen, ty: *const ast.Type) bool {
-        return self.structDeclForType(ty) != null and self.typeHasCopyDerive(ty);
+        return lowering_rules.typeIsCopyStructFact(self.structDeclForType(ty) != null, self.typeHasCopyDerive(ty));
     }
 
     fn typeIsCopyValue(self: *Codegen, ty: *const ast.Type) bool {

@@ -1174,6 +1174,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
     // Avoid geometric growth while flattening imported decls.
     try decls.ensureTotalCapacity(decls.items.len + ordered_modules.items.len * 64 + program.program.decls.len);
     try primary_decls.ensureTotalCapacity(@intCast(ordered_modules.items.len * 64 + program.program.decls.len));
+    try emitted.ensureTotalCapacity(@intCast(ordered_modules.items.len + 8));
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
             const resolved_imports = resolvedImportGroupForDecl(root_import_groups.items, decl) orelse &.{};

@@ -4455,6 +4455,11 @@ pub fn typeIsCopyValueBase(ty: *const ast.Type) ?bool {
     };
 }
 
+/// Shared composition for Copy-struct classification used by both emitters.
+pub fn typeIsCopyStructFact(has_struct_decl: bool, has_copy_derive: bool) bool {
+    return has_struct_decl and has_copy_derive;
+}
+
 /// Whether a nested struct field should be recursively shallow-copied while
 /// building a shallow-copied call-arg aggregate. Pure containers/owners stay
 /// as single field words; ordinary nested structs recurse.
@@ -6732,6 +6737,13 @@ test "shallowCopyCallArgFieldShouldRecurse classifies nested fields" {
     try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(true, &box_ty));
     // Callers pass field_has_struct_decl=false for primitives; pure helper trusts that fact.
     try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(false, &i32_ty));
+}
+
+test "typeIsCopyStructFact classifies composition" {
+    try std.testing.expect(typeIsCopyStructFact(true, true));
+    try std.testing.expect(!typeIsCopyStructFact(true, false));
+    try std.testing.expect(!typeIsCopyStructFact(false, true));
+    try std.testing.expect(!typeIsCopyStructFact(false, false));
 }
 
 test "typeIsCopyValueBase classifies pure leaves" {

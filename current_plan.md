@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share typeIsCopyStructFact and pre-size selective-append emitted map
+  (2026-07-21): SA/SAB `typeIsCopyStruct` compose through shared
+  `typeIsCopyStructFact`; import expand pre-sizes the `emitted` module-path set
+  before selective append. Unit 2/2x2; module table 15/15; build 7/7;
+  field_copy/result SA+SAB green.
+
 - Share shallowCopyCallArgFieldShouldRecurse nested-field decision on Y
   (2026-07-21): SA/SAB genShallowCopyCallArgValue nested-field recursion uses
   one pure helper over struct-decl presence plus std-owner/smart/collection

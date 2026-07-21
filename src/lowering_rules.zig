@@ -4487,21 +4487,32 @@ pub fn typeIsCopyStructFact(has_struct_decl: bool, has_copy_derive: bool) bool {
     return has_struct_decl and has_copy_derive;
 }
 
-/// Shared pure base for recursive Copy-derive typing.
-/// Returns a definitive bool for non-struct leaves, or null when the emitter
+/// Shared pure base for recursive derive typing (Copy/Debug/Hash/...).
+/// `primitive_ok` classifies primitive leaves; returns null when the emitter
 /// must look up a user-defined decl and recurse into fields.
-pub fn typeHasCopyDeriveBase(ty: *const ast.Type) ?bool {
+pub fn typeHasNamedDeriveBase(ty: *const ast.Type, primitive_ok: bool) ?bool {
     return switch (ty.*) {
-        .primitive => |p| primitiveIsCopyValue(p),
+        .primitive => primitive_ok,
         .user_defined => if (userDefinedStdOwnerIsNonCopy(ty)) false else null,
         else => false,
     };
 }
 
+/// Shared pure base for recursive Copy-derive typing.
+pub fn typeHasCopyDeriveBase(ty: *const ast.Type) ?bool {
+    const primitive_ok = if (ty.* == .primitive) primitiveIsCopyValue(ty.primitive) else false;
+    return typeHasNamedDeriveBase(ty, primitive_ok);
+}
+
+/// Shared pure gate after a user-defined struct decl has been resolved for a
+/// named derive. Field recursion remains emitter-local.
+pub fn typeHasNamedDeriveStructGate(decl: *const ast.StructDecl, derive_name: []const u8) bool {
+    return structHasDerive(decl, derive_name) and !decl.is_opaque and !decl.is_union;
+}
+
 /// Shared pure gate after a user-defined struct decl has been resolved.
-/// Field recursion remains emitter-local.
 pub fn typeHasCopyDeriveStructGate(decl: *const ast.StructDecl) bool {
-    return structHasDerive(decl, "copy") and !decl.is_opaque and !decl.is_union;
+    return typeHasNamedDeriveStructGate(decl, "copy");
 }
 
 /// Whether a nested struct field should be recursively shallow-copied while
@@ -6781,6 +6792,25 @@ test "shallowCopyCallArgFieldShouldRecurse classifies nested fields" {
     try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(true, &box_ty));
     // Callers pass field_has_struct_decl=false for primitives; pure helper trusts that fact.
     try std.testing.expect(!shallowCopyCallArgFieldShouldRecurse(false, &i32_ty));
+}
+
+test "typeHasNamedDeriveBase classifies pure leaves" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var gens = [_]*ast.Type{&i32_ty};
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
+    var foo_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
+    try std.testing.expect(typeHasNamedDeriveBase(&i32_ty, true).?);
+    try std.testing.expect(!typeHasNamedDeriveBase(&i32_ty, false).?);
+    try std.testing.expect(!typeHasNamedDeriveBase(&vec_ty, true).?);
+    try std.testing.expect(typeHasNamedDeriveBase(&foo_ty, true) == null);
+
+    var fields = [_]ast.Field{.{ .name = "x", .ty = &i32_ty }};
+    var hash_derives = [_][]const u8{"Hash"};
+    var good = ast.StructDecl{ .name = "Good", .generics = &.{}, .fields = fields[0..], .derives = hash_derives[0..], .is_union = false, .is_opaque = false };
+    var opaque_decl = ast.StructDecl{ .name = "Opaque", .generics = &.{}, .fields = fields[0..], .derives = hash_derives[0..], .is_union = false, .is_opaque = true };
+    try std.testing.expect(typeHasNamedDeriveStructGate(&good, "hash"));
+    try std.testing.expect(!typeHasNamedDeriveStructGate(&opaque_decl, "hash"));
+    try std.testing.expect(!typeHasNamedDeriveStructGate(&good, "debug"));
 }
 
 test "typeHasCopyDeriveBase classifies pure leaves" {

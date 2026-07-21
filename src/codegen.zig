@@ -3424,39 +3424,35 @@ pub const Codegen = struct {
         };
     }
 
-    fn typeHasHashDerive(self: *Codegen, ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| switch (p) {
-                .void_type, .f32, .f64, .float => false,
-                else => true,
-            },
-            .user_defined => blk: {
-                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
-                const decl = self.structDeclForType(ty) orelse break :blk false;
-                if (!lowering_rules.structHasDerive(decl, "hash") or decl.is_opaque or decl.is_union) break :blk false;
-                for (decl.fields) |field| {
-                    if (!self.typeHasHashDerive(field.ty)) break :blk false;
-                }
-                break :blk true;
-            },
-            else => false,
+    fn primitiveIsHashable(p: ast.Primitive) bool {
+        return switch (p) {
+            .void_type, .f32, .f64, .float => false,
+            else => true,
         };
     }
 
+    fn typeHasHashDerive(self: *Codegen, ty: *const ast.Type) bool {
+        const primitive_ok = if (ty.* == .primitive) primitiveIsHashable(ty.primitive) else false;
+        if (lowering_rules.typeHasNamedDeriveBase(ty, primitive_ok)) |decision| return decision;
+        if (ty.* != .user_defined) return false;
+        const decl = self.structDeclForType(ty) orelse return false;
+        if (!lowering_rules.typeHasNamedDeriveStructGate(decl, "hash")) return false;
+        for (decl.fields) |field| {
+            if (!self.typeHasHashDerive(field.ty)) return false;
+        }
+        return true;
+    }
+
     fn typeHasDebugDerive(self: *Codegen, ty: *const ast.Type) bool {
-        return switch (ty.*) {
-            .primitive => |p| lowering_rules.primitiveIsCopyValue(p),
-            .user_defined => blk: {
-                if (lowering_rules.userDefinedStdOwnerIsNonCopy(ty)) break :blk false;
-                const decl = self.structDeclForType(ty) orelse break :blk false;
-                if (!lowering_rules.structHasDerive(decl, "debug") or decl.is_opaque or decl.is_union) break :blk false;
-                for (decl.fields) |field| {
-                    if (!self.typeHasDebugDerive(field.ty)) break :blk false;
-                }
-                break :blk true;
-            },
-            else => false,
-        };
+        const primitive_ok = if (ty.* == .primitive) lowering_rules.primitiveIsCopyValue(ty.primitive) else false;
+        if (lowering_rules.typeHasNamedDeriveBase(ty, primitive_ok)) |decision| return decision;
+        if (ty.* != .user_defined) return false;
+        const decl = self.structDeclForType(ty) orelse return false;
+        if (!lowering_rules.typeHasNamedDeriveStructGate(decl, "debug")) return false;
+        for (decl.fields) |field| {
+            if (!self.typeHasDebugDerive(field.ty)) return false;
+        }
+        return true;
     }
 
     fn isNumericType(ty: *const ast.Type) bool {

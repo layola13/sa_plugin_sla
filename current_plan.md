@@ -18,6 +18,11 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share typeHasNamedDeriveBase/struct-gate helpers on Y (2026-07-21):
+  Generalized derive base/gate for Copy/Hash/Debug; SA-text hash/debug derives
+  and existing Copy path consume the shared helpers. Unit 2/2x2; build 7/7;
+  field_copy/result SA+SAB green.
+
 - Share typeIsSmallPlainSlotStructDecl on Y (2026-07-21):
   Pure small plain ABI slot-struct classification (<=128B, non-opaque/non-union,
   only primitive/pointer/borrow/fnptr fields) moved to lowering_rules; SA-text

@@ -4,6 +4,10 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share SpaceshipPlan predicates and SA/SAB consumption (2026-07-20):
+  planSpaceship drives both emitters; isNumeric/isSameStruct helpers. Unit 2/2;
+  build 7/7; spaceship_cmp SA/SAB 3/3.
+
 - Normalize CallArgMaterializationPlan shared predicates (2026-07-20):
   Shared is* helpers on CallArgMaterializationPlan; unit test consumes them.
   Build 7/7; materialization 2/2; SA/SAB dyn/borrow/result green.

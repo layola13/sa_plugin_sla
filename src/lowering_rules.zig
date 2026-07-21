@@ -3842,6 +3842,14 @@ pub const SpaceshipPlan = struct {
     is_float: bool = false,
     /// For `.same_struct`: the struct declaration whose fields are compared.
     struct_decl: ?*const ast.StructDecl = null,
+
+    pub fn isNumeric(self: SpaceshipPlan) bool {
+        return self.kind == .numeric;
+    }
+
+    pub fn isSameStruct(self: SpaceshipPlan) bool {
+        return self.kind == .same_struct;
+    }
 };
 
 /// Classify a `<=>` (spaceship) expression's operands into a shared plan so
@@ -6607,6 +6615,39 @@ test "userDefinedLocalName strips qualified type names" {
     try std.testing.expectEqualStrings("Sprite", userDefinedLocalName("pkg::Sprite"));
     try std.testing.expectEqualStrings("Sprite", userDefinedLocalName("Sprite"));
     try std.testing.expectEqualStrings("Inner", userDefinedLocalName("outer.mid::Inner"));
+}
+
+test "shared spaceship plan classifies numeric and same-struct" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var u32_ty = ast.Type{ .primitive = .u32 };
+    const numeric = planSpaceship(&i32_ty, &i32_ty, null, null) orelse return error.TestExpectedEqual;
+    try std.testing.expect(numeric.isNumeric());
+    try std.testing.expect(!numeric.isSameStruct());
+    try std.testing.expect(!numeric.is_unsigned);
+    const unsigned = planSpaceship(&u32_ty, &u32_ty, null, null) orelse return error.TestExpectedEqual;
+    try std.testing.expect(unsigned.isNumeric());
+    try std.testing.expect(unsigned.is_unsigned);
+
+    var field_ty = ast.Type{ .primitive = .i32 };
+    var fields = [_]ast.Field{.{ .name = "x", .ty = &field_ty }};
+    var decl = ast.StructDecl{
+        .name = "Point",
+        .generics = &.{},
+        .fields = fields[0..],
+        .derives = &.{},
+        .is_union = false,
+        .is_opaque = false,
+    };
+    const same = planSpaceship(&i32_ty, &i32_ty, &decl, &decl) orelse return error.TestExpectedEqual;
+    // numeric operands still win when both sides are numeric even if struct decls
+    // are provided; same-struct requires non-numeric user types.
+    try std.testing.expect(same.isNumeric());
+
+    var point_ty = ast.Type{ .user_defined = .{ .name = "Point", .generics = &.{} } };
+    const struct_plan = planSpaceship(&point_ty, &point_ty, &decl, &decl) orelse return error.TestExpectedEqual;
+    try std.testing.expect(struct_plan.isSameStruct());
+    try std.testing.expect(struct_plan.struct_decl == &decl);
+    try std.testing.expect(planSpaceship(&point_ty, &point_ty, &decl, null) == null);
 }
 
 test "typeIsCopyValueLeaf classifies primitives and fnptrs" {

@@ -3781,10 +3781,16 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!?[]const u8 {
         if (bin.op != .spaceship) return null;
+        const plan = lowering_rules.planSpaceship(
+            left_ty,
+            right_ty,
+            self.structDeclForType(left_ty),
+            self.structDeclForType(right_ty),
+        ) orelse return CodegenError.CodegenError;
         const left_reg = try self.genExpr(bin.left, hoisted_allocs);
         const right_reg = try self.genExpr(bin.right, hoisted_allocs);
 
-        if (isNumericType(left_ty) and isNumericType(right_ty)) {
+        if (plan.isNumeric()) {
             const raw = try self.genNumericSpaceshipRaw(left_reg, right_reg, left_ty);
             const result = try self.genOrderingStructFromRaw(raw);
             if (callArgNeedsRelease(bin.left)) try self.emitRelease(left_reg);
@@ -3792,9 +3798,7 @@ pub const Codegen = struct {
             return result;
         }
 
-        const left_struct = self.structDeclForType(left_ty) orelse return CodegenError.CodegenError;
-        const right_struct = self.structDeclForType(right_ty) orelse return CodegenError.CodegenError;
-        if (left_struct != right_struct or left_struct.is_opaque or left_struct.is_union) return CodegenError.CodegenError;
+        const left_struct = plan.struct_decl orelse return CodegenError.CodegenError;
 
         const result = try self.newTmp();
         const done_label = try self.newLabel("L_SPACESHIP_STRUCT_DONE");

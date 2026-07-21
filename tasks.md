@@ -40,6 +40,10 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Share SpaceshipPlan predicates and SA/SAB consumption (2026-07-20).
+	  planSpaceship + isNumeric/isSameStruct. Unit 2/2; build 7/7;
+	  spaceship_cmp SA/SAB 3/3.
+
 	- [x] Normalize CallArgMaterializationPlan shared predicates (2026-07-20).
 	  is* helpers on plan; unit test consumes them. Build 7/7;
 	  materialization 2/2; SA/SAB dyn/borrow/result green.

@@ -9660,6 +9660,12 @@ pub const Codegen = struct {
     fn genSpaceship(self: *Codegen, bin: ast.BinaryExpr) anyerror!u32 {
         const left_ty = self.tc.expr_types.get(bin.left) orelse return Error.MissingType;
         const right_ty = self.tc.expr_types.get(bin.right) orelse return Error.MissingType;
+        const plan = lowering_rules.planSpaceship(
+            left_ty,
+            right_ty,
+            self.structDeclForType(left_ty),
+            self.structDeclForType(right_ty),
+        ) orelse return Error.UnsupportedSabDirectFeature;
 
         const left_reg = try self.genExpr(bin.left);
         const right_reg = try self.genExpr(bin.right);
@@ -9668,7 +9674,7 @@ pub const Codegen = struct {
         // Ordering is a struct { value: i64 } — a single 8-byte word.
         try self.emitAlloc(result, 8);
 
-        if (lowering_rules.isNumericType(left_ty) and lowering_rules.isNumericType(right_ty)) {
+        if (plan.isNumeric()) {
             const raw = try self.genSpaceshipRawNumeric(left_reg, right_reg, left_ty);
             try self.emitStore(result, 0, raw, .i64);
             try self.emitRelease(raw);
@@ -9678,9 +9684,7 @@ pub const Codegen = struct {
         }
 
         // Same-struct field-wise lexicographic comparison.
-        const left_struct = self.structDeclForType(left_ty) orelse return Error.UnsupportedSabDirectFeature;
-        const right_struct = self.structDeclForType(right_ty) orelse return Error.UnsupportedSabDirectFeature;
-        if (left_struct != right_struct or left_struct.is_opaque or left_struct.is_union) return Error.UnsupportedSabDirectFeature;
+        const left_struct = plan.struct_decl orelse return Error.UnsupportedSabDirectFeature;
 
         // Default to EQUAL; each field can overwrite and jump to done. Mirrors
         // SA-text `genSpaceshipExpr`: per field, `less` -> store LESS + done,

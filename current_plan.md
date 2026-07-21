@@ -18,6 +18,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share SpaceshipPlan predicates and SA/SAB consumption (2026-07-20):
+  `SpaceshipPlan` exposes `isNumeric()` / `isSameStruct()`; SA-text
+  `genSpaceshipExpr` and direct SAB `genSpaceship` both consume
+  `planSpaceship` instead of local numeric/struct classification. Unit filter
+  `shared spaceship plan classifies numeric and same-struct` 2/2; build 7/7;
+  `test_unit_spaceship_cmp.sla` SA+SAB 3/3; field_compare SA+SAB green.
+
 - Normalize CallArgMaterializationPlan shared predicates (2026-07-20):
   `CallArgMaterializationPlan` now exposes isRawPointerStringLiteral /
   isArrayToSliceBorrow / isDynBorrow / isAutoBorrow / isCopyStructValue /

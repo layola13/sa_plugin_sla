@@ -798,7 +798,7 @@ pub const Codegen = struct {
     }
 
     fn loweredFuncSymbol(self: *Codegen, name: []const u8) ![]const u8 {
-        if (std.mem.eql(u8, name, "main")) return name;
+        if (lowering_rules.isMainName(name)) return name;
         if (self.tc.funcs.get(name)) |func| {
             if (func.is_extern or func.no_mangle) return name;
         }
@@ -1970,7 +1970,7 @@ pub const Codegen = struct {
                 if (call.associated_target) |target_name| {
                     if (self.findStdSurfaceRule(.associated, target_name, call.func_name)) |rule| try self.ensureRuleDeps(rule);
                 } else if (call.args.len > 0) {
-                    if (std.mem.eql(u8, call.func_name, "join")) {
+                    if (lowering_rules.isJoinCall(call)) {
                         if (self.tc.expr_types.get(call.args[0])) |receiver_ty| {
                             if (joinHandleInnerType(receiver_ty) != null) {
                                 try self.ensureStdDeps("sa_std/thread.sa", &.{ "pthread_join", "pthread_drop" });
@@ -10764,7 +10764,7 @@ pub const Codegen = struct {
     }
 
     fn genJoinHandleJoin(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
-        if (call.associated_target != null or !std.mem.eql(u8, call.func_name, "join") or call.args.len != 1) return null;
+        if (!lowering_rules.isBareJoinUnaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         const inner_ty = joinHandleInnerType(receiver_ty) orelse return null;
         _ = expr;
@@ -10876,7 +10876,7 @@ pub const Codegen = struct {
     }
 
     fn genResultUnwrap(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
-        if (call.associated_target != null or !std.mem.eql(u8, call.func_name, "unwrap") or call.args.len != 1) return null;
+        if (!lowering_rules.isBareUnwrapUnaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         const ok_ty = lowering_rules.resultOkType(receiver_ty) orelse return null;
         _ = expr;
@@ -11324,7 +11324,7 @@ pub const Codegen = struct {
     }
 
     fn genSmartPointerCloneCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
-        if (!std.mem.eql(u8, call.func_name, "clone") or call.args.len != 1) return null;
+        if (!lowering_rules.isCloneUnaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         const receiver_type_name = typeBaseName(receiver_ty) orelse return null;
         const macro_name = if (lowering_rules.isRcTypeName(receiver_type_name))

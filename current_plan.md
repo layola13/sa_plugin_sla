@@ -18,6 +18,13 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share join/unwrap/clone/main peels on Y (2026-07-21): Pure isJoinCall/
+  isBareJoinUnaryCall/isUnwrapCall/isBareUnwrapUnaryCall/isCloneCall/
+  isCloneUnaryCall/isMainName shared; SA/SAB loweredFuncSymbol, join-handle join,
+  result unwrap, smart-pointer clone, string-join, option/result macro-need, and
+  typecheck method peels thin to them. Unit 1/1; thread pair SA+SAB, result
+  SA+SAB, join_handle_vec SA+SAB, println SAB green.
+
 - Share std builtin call peels on Y (2026-07-21): Pure println/hash/debug/str_eq/
   vec/len/push/pop peels shared; SA/SAB/typecheck sites thin to them. Unit 1/1;
   println SA+SAB, vec_len SA+SAB, vec_index SA+SAB, borrow_vec SAB, option SAB,

@@ -4202,7 +4202,7 @@ pub const TypeChecker = struct {
                             if (optionInnerType(closure_ty.closure.ret) == null) return TypeError.TypeMismatch;
                             return closure_ty.closure.ret;
                         }
-                        if (std.mem.eql(u8, call.func_name, "unwrap")) {
+                        if (lowering_rules.isUnwrapCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return inner_ty;
                         }
@@ -4248,7 +4248,7 @@ pub const TypeChecker = struct {
                             if (!self.typesEqual(closure_ty.closure.params[0], ok_ty)) return TypeError.TypeMismatch;
                             return try self.makeResultType(closure_ty.closure.ret, err_ty);
                         }
-                        if (std.mem.eql(u8, call.func_name, "unwrap")) {
+                        if (lowering_rules.isUnwrapCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return ok_ty;
                         }
@@ -4397,14 +4397,14 @@ pub const TypeChecker = struct {
                     }
 
                     if (joinHandleInnerType(recv_ty)) |inner_ty| {
-                        if (std.mem.eql(u8, call.func_name, "join")) {
+                        if (lowering_rules.isJoinCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return try self.makeResultType(inner_ty, try self.makeI32Type());
                         }
                     }
 
                     if (senderInnerType(recv_ty)) |inner_ty| {
-                        if (std.mem.eql(u8, call.func_name, "clone")) {
+                        if (lowering_rules.isCloneCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return recv_ty;
                         }
@@ -4425,12 +4425,12 @@ pub const TypeChecker = struct {
                         }
                     }
 
-                    if (rcInnerType(recv_ty) != null and std.mem.eql(u8, call.func_name, "clone")) {
+                    if (rcInnerType(recv_ty) != null and lowering_rules.isCloneCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         return unwrappedReceiverType(recv_ty);
                     }
 
-                    if (arcInnerType(recv_ty) != null and std.mem.eql(u8, call.func_name, "clone")) {
+                    if (arcInnerType(recv_ty) != null and lowering_rules.isCloneCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         return unwrappedReceiverType(recv_ty);
                     }
@@ -4749,7 +4749,7 @@ pub const TypeChecker = struct {
                     return try self.makeStringType();
                 }
 
-                if (std.mem.eql(u8, call.func_name, "join")) {
+                if (lowering_rules.isJoinCall(call)) {
                     if (call.args.len != 2) return TypeError.InvalidArgsCount;
                     const target_ty = try self.checkExpr(call.args[0], scope);
                     const elem_ty = iterableElementType(target_ty) orelse return TypeError.TypeMismatch;

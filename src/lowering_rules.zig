@@ -3263,6 +3263,41 @@ pub fn isBarePopUnaryCall(call: ast.CallExpr) bool {
     return call.associated_target == null and isPopCall(call) and call.args.len == 1;
 }
 
+/// Shared pure `join` call-name fact.
+pub fn isJoinCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "join");
+}
+
+/// Shared pure bare unary `join(handle)` call recognition.
+pub fn isBareJoinUnaryCall(call: ast.CallExpr) bool {
+    return call.associated_target == null and isJoinCall(call) and call.args.len == 1;
+}
+
+/// Shared pure `unwrap` call-name fact.
+pub fn isUnwrapCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "unwrap");
+}
+
+/// Shared pure bare unary `unwrap(x)` call recognition.
+pub fn isBareUnwrapUnaryCall(call: ast.CallExpr) bool {
+    return call.associated_target == null and isUnwrapCall(call) and call.args.len == 1;
+}
+
+/// Shared pure `clone` call-name fact.
+pub fn isCloneCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "clone");
+}
+
+/// Shared pure unary `clone(x)` call recognition.
+pub fn isCloneUnaryCall(call: ast.CallExpr) bool {
+    return isCloneCall(call) and call.args.len == 1;
+}
+
+/// Shared pure entrypoint name fact.
+pub fn isMainName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "main");
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7565,6 +7600,22 @@ test "std builtin call peels" {
     try std.testing.expect(isBarePushBinaryCall(.{ .func_name = "push", .args = two[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(isBarePopUnaryCall(.{ .func_name = "pop", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(!isBarePopUnaryCall(.{ .func_name = "pop", .args = one[0..], .associated_target = "Vec", .generics = &.{} }));
+}
+
+test "join unwrap clone and main peels" {
+    try std.testing.expect(isMainName("main"));
+    try std.testing.expect(!isMainName("Main"));
+    var dummy: ast.Node = undefined;
+    var one = [_]*ast.Node{&dummy};
+    var two = [_]*ast.Node{ &dummy, &dummy };
+    try std.testing.expect(isJoinCall(.{ .func_name = "join", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isBareJoinUnaryCall(.{ .func_name = "join", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(!isBareJoinUnaryCall(.{ .func_name = "join", .args = two[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isUnwrapCall(.{ .func_name = "unwrap", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isBareUnwrapUnaryCall(.{ .func_name = "unwrap", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isCloneCall(.{ .func_name = "clone", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isCloneUnaryCall(.{ .func_name = "clone", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(!isCloneUnaryCall(.{ .func_name = "clone", .args = two[0..], .associated_target = null, .generics = &.{} }));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

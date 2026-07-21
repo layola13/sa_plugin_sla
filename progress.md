@@ -4,6 +4,11 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share ABI cap-kind, temporary-register, and residual ABI string wrappers on Y
+  (2026-07-21): Pure AbiCapKind + isTemporaryRegisterName; SA ABI wrappers
+  thin; SAB returnCap maps shared kind. Unit 2/2; build 7/7; println SA+SAB,
+  field_copy SAB, result green.
+
 - Share pointer-scalar, scalar-reassign, and debugFormatSuffix facts on Y
   (2026-07-21): Pure pointer-scalar / scalar-reassign / FORMAT_PUSH suffix on
   Y; SAB wrappers thin, SA format push uses shared suffix. Unit 2/2; build

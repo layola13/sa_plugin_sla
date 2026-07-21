@@ -40,6 +40,11 @@ This document tracks the tasks and implementation progress of the Sla compiler p
   - [ ] Add aggregate and control-flow lowering plans, then remove equivalent semantic decisions from `codegen.zig` and `sab_codegen.zig`.
   - [ ] Replace the current sibling-repo `../../sci/src/plugin_bridge.zig` build import with a versioned package/installed SDK boundary; final cross-repo source import count must be 0.
 - [ ] **Current Recovery Point For Next Context**
+	- [x] Share ABI cap-kind, temporary-register, and residual ABI string wrappers
+	  on Y (2026-07-21). Pure AbiCapKind + isTemporaryRegisterName; SA ABI
+	  wrappers thin; SAB returnCap maps shared kind. Unit 2/2; build 7/7;
+	  println SA+SAB, field_copy SAB, result green.
+
 	- [x] Share pointer-scalar, scalar-reassign, and debugFormatSuffix facts on Y
 	  (2026-07-21). Pure non-owning pointer-scalar, primitive scalar-reassign
 	  slot, and FORMAT_PUSH suffix shared; SAB wrappers thin, SA format push

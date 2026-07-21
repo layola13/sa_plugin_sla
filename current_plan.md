@@ -18,6 +18,12 @@ This is the short recovery point for active `sa_plugin_sla` work. Keep `tasks.md
 
 ## Verified State
 
+- Share ABI cap-kind, temporary-register, and residual ABI string wrappers on Y
+  (2026-07-21): Pure AbiCapKind from type/raw strings + isTemporaryRegisterName
+  shared; SA abiReturn/abiRawPayload wrappers thin to lowering_rules; SAB
+  returnCap maps shared kind to CapPrefix. Unit 2/2; build 7/7; println SA+SAB,
+  field_copy SAB, result green.
+
 - Share pointer-scalar, scalar-reassign, and debugFormatSuffix facts on Y
   (2026-07-21): Pure non-owning pointer-scalar, primitive scalar-reassign
   slot, and FORMAT_PUSH suffix classifiers shared; SAB wrappers thin, SA-text

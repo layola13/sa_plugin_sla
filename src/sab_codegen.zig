@@ -5195,20 +5195,20 @@ pub const Codegen = struct {
     }
 
     fn returnCapForType(ty: *const ast.Type) ?inst.CapPrefix {
-        return switch (ty.*) {
+        return switch (lowering_rules.abiCapKindFromType(ty)) {
             .borrow => .borrow,
-            else => null,
+            .move => .move,
+            .raw => .raw,
+            .none => null,
         };
     }
 
     fn abiReturnCap(raw: []const u8) ?inst.CapPrefix {
-        const name = std.mem.trim(u8, raw, " \t\r");
-        if (name.len == 0) return null;
-        return switch (name[0]) {
-            '&' => .borrow,
-            '^' => .move,
-            '*' => .raw,
-            else => null,
+        return switch (lowering_rules.abiCapKindFromRawTypeString(raw)) {
+            .borrow => .borrow,
+            .move => .move,
+            .raw => .raw,
+            .none => null,
         };
     }
 

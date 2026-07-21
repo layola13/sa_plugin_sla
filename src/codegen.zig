@@ -1277,7 +1277,7 @@ pub const Codegen = struct {
     }
 
     fn isTemporaryRegisterName(name: []const u8) bool {
-        return std.mem.startsWith(u8, name, "tmp_");
+        return lowering_rules.isTemporaryRegisterName(name);
     }
 
     fn restoreConsumedBindings(self: *Codegen, saved: *std.StringHashMap(void)) CodegenError!void {
@@ -2400,33 +2400,11 @@ pub const Codegen = struct {
     }
 
     fn abiReturnTypeString(ty: *const ast.Type) []const u8 {
-        return switch (ty.*) {
-            .borrow => "&ptr",
-            else => typeString(ty),
-        };
+        return lowering_rules.abiReturnTypeString(ty);
     }
 
     fn abiRawPayloadTypeString(raw: []const u8) []const u8 {
-        var name = std.mem.trim(u8, raw, " \t\r");
-        if (name.len > 0 and (name[0] == '&' or name[0] == '^' or name[0] == '*')) {
-            name = std.mem.trim(u8, name[1..], " \t\r");
-        }
-        if (std.mem.endsWith(u8, name, "!")) {
-            name = std.mem.trim(u8, name[0 .. name.len - 1], " \t\r");
-        }
-        if (std.mem.eql(u8, name, "ptr")) return "ptr";
-        if (std.mem.eql(u8, name, "bool")) return "u8";
-        if (std.mem.eql(u8, name, "i8")) return "i8";
-        if (std.mem.eql(u8, name, "i16")) return "i16";
-        if (std.mem.eql(u8, name, "i32")) return "i32";
-        if (std.mem.eql(u8, name, "i64") or std.mem.eql(u8, name, "int") or std.mem.eql(u8, name, "isize")) return "i64";
-        if (std.mem.eql(u8, name, "u8")) return "u8";
-        if (std.mem.eql(u8, name, "u16")) return "u16";
-        if (std.mem.eql(u8, name, "u32")) return "u32";
-        if (std.mem.eql(u8, name, "u64") or std.mem.eql(u8, name, "usize")) return "u64";
-        if (std.mem.eql(u8, name, "f32")) return "f32";
-        if (std.mem.eql(u8, name, "f64") or std.mem.eql(u8, name, "float")) return "f64";
-        return "ptr";
+        return lowering_rules.abiRawPayloadTypeString(raw);
     }
 
     const AbiCallArgPrefix = enum {

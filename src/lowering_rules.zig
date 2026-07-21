@@ -1062,6 +1062,36 @@ pub fn abiReturnTypeString(ty: *const ast.Type) []const u8 {
     };
 }
 
+/// Shared pure ABI capability kind for returns/params (before emitter-specific CapPrefix).
+pub const AbiCapKind = enum {
+    none,
+    borrow,
+    move,
+    raw,
+};
+
+/// Shared pure return-cap fact from a typed return type.
+pub fn abiCapKindFromType(ty: *const ast.Type) AbiCapKind {
+    return if (ty.* == .borrow) .borrow else .none;
+}
+
+/// Shared pure ABI capability kind from a raw external type string prefix.
+pub fn abiCapKindFromRawTypeString(raw: []const u8) AbiCapKind {
+    const name = std.mem.trim(u8, raw, " \t\r");
+    if (name.len == 0) return .none;
+    return switch (name[0]) {
+        '&' => .borrow,
+        '^' => .move,
+        '*' => .raw,
+        else => .none,
+    };
+}
+
+/// Shared pure temporary-register name fact used by SA-text cleanup/lifecycle.
+pub fn isTemporaryRegisterName(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "tmp_");
+}
+
 pub fn abiParamTypeString(is_borrow: bool, is_move: bool, ty: *const ast.Type) []const u8 {
     if (is_borrow or is_move) return "ptr";
     return abiTypeString(ty);
@@ -6924,6 +6954,25 @@ test "typeIsPointerScalarValue scalar slot and debugFormatSuffix" {
     try std.testing.expectEqualStrings("BOOL", debugFormatSuffix(&bool_ty).?);
     try std.testing.expect(debugFormatSuffix(&void_ty) == null);
     try std.testing.expect(debugFormatSuffix(&user_ty) == null);
+}
+
+test "abiCapKind and temporary register name facts" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var borrow_ty = ast.Type{ .borrow = &i32_ty };
+    try std.testing.expect(abiCapKindFromType(&i32_ty) == .none);
+    try std.testing.expect(abiCapKindFromType(&borrow_ty) == .borrow);
+    try std.testing.expect(abiCapKindFromRawTypeString("&ptr") == .borrow);
+    try std.testing.expect(abiCapKindFromRawTypeString("^ptr") == .move);
+    try std.testing.expect(abiCapKindFromRawTypeString("*ptr") == .raw);
+    try std.testing.expect(abiCapKindFromRawTypeString("i32") == .none);
+    try std.testing.expect(isTemporaryRegisterName("tmp_0"));
+    try std.testing.expect(isTemporaryRegisterName("tmp_12"));
+    try std.testing.expect(!isTemporaryRegisterName("local"));
+    try std.testing.expect(!isTemporaryRegisterName("tm_0"));
+    try std.testing.expectEqualStrings("&ptr", abiReturnTypeString(&borrow_ty));
+    try std.testing.expectEqualStrings("i32", abiReturnTypeString(&i32_ty));
+    try std.testing.expectEqualStrings("u8", abiRawPayloadTypeString("bool"));
+    try std.testing.expectEqualStrings("i64", abiRawPayloadTypeString("^int"));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

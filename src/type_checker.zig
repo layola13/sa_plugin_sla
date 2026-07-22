@@ -1658,8 +1658,7 @@ pub const TypeChecker = struct {
         if (!self.typeImplementsTrait(val_inner, trait_name)) return null;
         if (value_expr.* != .call_expr) return null;
         const call = value_expr.call_expr;
-        const target = call.associated_target orelse return null;
-        if (!std.mem.eql(u8, target, "Rc") or !std.mem.eql(u8, call.func_name, "new")) return null;
+        if (!lowering_rules.isRcNewCall(call)) return null;
         return trait_name;
     }
 
@@ -3692,7 +3691,7 @@ pub const TypeChecker = struct {
                         const ptr_ty = try self.checkExpr(call.args[0], scope);
                         return @constCast(lowering_rules.pointerOrBorrowPointee(ptr_ty) orelse return TypeError.TypeMismatch);
                     }
-                    if (std.mem.eql(u8, target_name, "mem") and std.mem.eql(u8, call.func_name, "forget")) {
+                    if (lowering_rules.isMemForgetCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         _ = try self.checkExpr(call.args[0], scope);
                         if (rootIdentifier(call.args[0])) |name| {
@@ -3704,12 +3703,12 @@ pub const TypeChecker = struct {
                         ty.* = .{ .primitive = .void_type };
                         return ty;
                     }
-                    if (std.mem.eql(u8, target_name, "ManuallyDrop") and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isManuallyDropNewCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);
                         return try self.makeManuallyDropType(inner_ty);
                     }
-                    if (std.mem.eql(u8, target_name, "ManuallyDrop") and std.mem.eql(u8, call.func_name, "into_inner")) {
+                    if (lowering_rules.isManuallyDropIntoInnerCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const slot_ty = try self.checkExpr(call.args[0], scope);
                         const inner_ty = manuallyDropInnerType(slot_ty) orelse return TypeError.TypeMismatch;
@@ -3720,7 +3719,7 @@ pub const TypeChecker = struct {
                         }
                         return inner_ty;
                     }
-                    if (std.mem.eql(u8, target_name, "mpsc") and std.mem.eql(u8, call.func_name, "channel")) {
+                    if (lowering_rules.isMpscChannelCall(call)) {
                         if (call.args.len != 0) return TypeError.InvalidArgsCount;
                         const elem_ty = try self.makeI32Type();
                         const sender_ty = try self.makeSenderType(elem_ty);
@@ -3851,12 +3850,12 @@ pub const TypeChecker = struct {
                         _ = executorInnerType(executor_ty) orelse return TypeError.TypeMismatch;
                         return try self.makeU64Type();
                     }
-                    if (std.mem.eql(u8, target_name, "Box") and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isBoxNewCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);
                         return try self.makeBoxType(inner_ty);
                     }
-                    if (std.mem.eql(u8, target_name, "Box") and std.mem.eql(u8, call.func_name, "into_raw")) {
+                    if (lowering_rules.isBoxIntoRawCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const box_ty = try self.checkExpr(call.args[0], scope);
                         const inner_ty = boxInnerType(box_ty) orelse return TypeError.TypeMismatch;
@@ -3867,7 +3866,7 @@ pub const TypeChecker = struct {
                         }
                         return try self.makePointerType(inner_ty);
                     }
-                    if (std.mem.eql(u8, target_name, "Box") and std.mem.eql(u8, call.func_name, "from_raw")) {
+                    if (lowering_rules.isBoxFromRawCall(call)) {
                         if (self.unsafe_depth == 0) {
                             self.setError("Box::from_raw requires unsafe", .{});
                             return TypeError.CompileError;
@@ -3880,12 +3879,12 @@ pub const TypeChecker = struct {
                             else => TypeError.TypeMismatch,
                         };
                     }
-                    if (std.mem.eql(u8, target_name, "Rc") and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isRcNewCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);
                         return try self.makeRcType(inner_ty);
                     }
-                    if (std.mem.eql(u8, target_name, "Arc") and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isArcNewCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const inner_ty = try self.checkExpr(call.args[0], scope);
                         return try self.makeArcType(inner_ty);
@@ -4726,7 +4725,7 @@ pub const TypeChecker = struct {
                     }
                 }
 
-                if (std.mem.eql(u8, call.func_name, "iter") or std.mem.eql(u8, call.func_name, "into_iter")) {
+                if (lowering_rules.isIterOrIntoIterCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const target_ty = try self.checkExpr(call.args[0], scope);
                     if (arrayType(target_ty) == null and vecElementType(target_ty) == null and sliceElementType(target_ty) == null) return TypeError.TypeMismatch;

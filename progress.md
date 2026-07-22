@@ -4,6 +4,13 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Share smart-pointer/mem/mpsc/iter peels on Y (2026-07-22): Pure isNew/
+  isIntoRaw/isFromRaw/isIntoInner/isIter/isIntoIter plus associated Box/Rc/Arc,
+  ManuallyDrop, mem::forget, and mpsc::channel recognizers shared; SA emit/
+  macro-need and typecheck sites thin to them. Build 7/7; unit 1/1; Box raw
+  SA+SAB, arrays SA 3/3, mem_forget SA, ManuallyDrop SAB, channel SAB green;
+  official dev install plus MPSC/mem SA builds green.
+
 - Share collection/atomic/mpsc method peels on Y (2026-07-21): Pure isGet/
   isInsert/isContains/isLoad/isStore/isFetchAdd/isCompareExchange/isAsPtr/
   isSend/isRecv shared; SA emit/macro-need and typecheck method peels thin to

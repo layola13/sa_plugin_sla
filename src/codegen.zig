@@ -1795,7 +1795,7 @@ pub const Codegen = struct {
         if (lowering_rules.isPrintlnCall(call.*)) return true;
         if (self.tc.macros.contains(call.func_name)) return true;
         if (call.associated_target) |target| {
-            if (std.mem.eql(u8, target, "mem") and std.mem.eql(u8, call.func_name, "forget")) return true;
+            if (lowering_rules.isMemForgetCall(call.*)) return true;
             var method_buf: [256]u8 = undefined;
             const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ target, call.func_name }) catch return false;
             if (self.tc.funcs.get(method_key)) |func| {
@@ -1835,7 +1835,7 @@ pub const Codegen = struct {
             return;
         }
         if (call.associated_target) |target| {
-            if (std.mem.eql(u8, target, "mem") and std.mem.eql(u8, call.func_name, "forget")) {
+            if (lowering_rules.isMemForgetCall(call.*)) {
                 if (call.args.len != 1) return CodegenError.CodegenError;
                 const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                 self.out.writer().print("    EXPAND MEM_FORGET_U64 {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
@@ -4039,7 +4039,7 @@ pub const Codegen = struct {
         const iter_expr = call.args[0];
         if (iter_expr.* != .call_expr) return null;
         const iter_call = &iter_expr.call_expr;
-        if (!std.mem.eql(u8, iter_call.func_name, "iter") or iter_call.args.len != 1) return null;
+        if (!lowering_rules.isIterCall(iter_call.*) or iter_call.args.len != 1) return null;
         return iter_call.args[0];
     }
 
@@ -4050,12 +4050,12 @@ pub const Codegen = struct {
         const iter_expr = call.args[0];
         if (iter_expr.* != .call_expr) return null;
         const iter_call = &iter_expr.call_expr;
-        if ((std.mem.eql(u8, iter_call.func_name, "iter") or std.mem.eql(u8, iter_call.func_name, "into_iter")) and iter_call.args.len == 1) {
+        if ((lowering_rules.isIterOrIntoIterCall(iter_call.*)) and iter_call.args.len == 1) {
             return iter_call.args[0];
         }
         if (lowering_rules.isCopiedCall(iter_call.*) and iter_call.args.len == 1 and iter_call.args[0].* == .call_expr) {
             const inner = &iter_call.args[0].call_expr;
-            if ((std.mem.eql(u8, inner.func_name, "iter") or std.mem.eql(u8, inner.func_name, "into_iter")) and inner.args.len == 1) {
+            if ((lowering_rules.isIterOrIntoIterCall(inner.*)) and inner.args.len == 1) {
                 return inner.args[0];
             }
         }
@@ -4067,7 +4067,7 @@ pub const Codegen = struct {
         const iter_expr = call.args[0];
         if (iter_expr.* != .call_expr) return null;
         const iter_call = &iter_expr.call_expr;
-        if ((std.mem.eql(u8, iter_call.func_name, "iter") or std.mem.eql(u8, iter_call.func_name, "into_iter")) and iter_call.args.len == 1) {
+        if ((lowering_rules.isIterOrIntoIterCall(iter_call.*)) and iter_call.args.len == 1) {
             return iter_call.args[0];
         }
         return null;
@@ -4694,12 +4694,9 @@ pub const Codegen = struct {
     fn exprNeedsBoxMacros(expr: *const ast.Node) bool {
         return switch (expr.*) {
             .call_expr => |call| blk: {
-                if (call.associated_target) |target| {
-                    if (lowering_rules.isBoxTypeName(target) and
-                        (std.mem.eql(u8, call.func_name, "new") or
-                            std.mem.eql(u8, call.func_name, "into_raw") or
-                            std.mem.eql(u8, call.func_name, "from_raw"))) break :blk true;
-                }
+                if (lowering_rules.isBoxNewCall(call) or
+                    lowering_rules.isBoxIntoRawCall(call) or
+                    lowering_rules.isBoxFromRawCall(call)) break :blk true;
                 for (call.args) |arg| {
                     if (exprNeedsBoxMacros(arg)) break :blk true;
                 }
@@ -5212,9 +5209,7 @@ pub const Codegen = struct {
     fn exprNeedsMpscMacros(self: *Codegen, expr: *const ast.Node) bool {
         return switch (expr.*) {
             .call_expr => |call| blk: {
-                if (call.associated_target) |target| {
-                    if (std.mem.eql(u8, target, "mpsc") and std.mem.eql(u8, call.func_name, "channel")) break :blk true;
-                }
+                if (lowering_rules.isMpscChannelCall(call)) break :blk true;
                 if ((lowering_rules.isSendCall(call) or lowering_rules.isRecvCall(call)) and call.args.len > 0) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty) |ty| {
@@ -5306,9 +5301,7 @@ pub const Codegen = struct {
     fn exprNeedsRcMacros(self: *Codegen, expr: *const ast.Node) bool {
         return switch (expr.*) {
             .call_expr => |call| blk: {
-                if (call.associated_target) |target| {
-                    if (lowering_rules.isRcTypeName(target) and std.mem.eql(u8, call.func_name, "new")) break :blk true;
-                }
+                if (lowering_rules.isRcNewCall(call)) break :blk true;
                 if (lowering_rules.isCloneUnaryCall(call)) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and rcInnerType(recv_ty.?) != null) break :blk true;
@@ -9904,7 +9897,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    {s} = stack_alloc Cell_SIZE\n", .{let.name}) catch return CodegenError.CodegenError;
                     self.out.writer().print("    EXPAND CELL_SET {s}, {s}\n", .{ let.name, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
-                } else if (let.value.* == .call_expr and let.value.call_expr.associated_target != null and std.mem.eql(u8, let.value.call_expr.associated_target.?, "ManuallyDrop") and std.mem.eql(u8, let.value.call_expr.func_name, "new")) {
+                } else if (let.value.* == .call_expr and lowering_rules.isManuallyDropNewCall(let.value.call_expr)) {
                     const call = &let.value.call_expr;
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -10146,16 +10139,14 @@ pub const Codegen = struct {
             .let_destructure_stmt => |let| {
                 if (let.value.* == .call_expr) {
                     const call = &let.value.call_expr;
-                    if (call.associated_target) |target| {
-                        if (std.mem.eql(u8, target, "mpsc") and std.mem.eql(u8, call.func_name, "channel")) {
-                            if (let.names.len != 2) return CodegenError.CodegenError;
-                            self.out.writer().print("    {s} = 0\n", .{let.names[0]}) catch return CodegenError.CodegenError;
-                            self.out.writer().print("    EXPAND MPSC_NEW {s}, 1024\n", .{let.names[1]}) catch return CodegenError.CodegenError;
-                            self.mpsc_sender_bindings.put(let.names[0], {}) catch return CodegenError.OutOfMemory;
-                            self.mpsc_sender_channels.put(let.names[0], let.names[1]) catch return CodegenError.OutOfMemory;
-                            self.mpsc_receiver_bindings.put(let.names[1], {}) catch return CodegenError.OutOfMemory;
-                            return;
-                        }
+                    if (lowering_rules.isMpscChannelCall(call.*)) {
+                        if (let.names.len != 2) return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = 0\n", .{let.names[0]}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND MPSC_NEW {s}, 1024\n", .{let.names[1]}) catch return CodegenError.CodegenError;
+                        self.mpsc_sender_bindings.put(let.names[0], {}) catch return CodegenError.OutOfMemory;
+                        self.mpsc_sender_channels.put(let.names[0], let.names[1]) catch return CodegenError.OutOfMemory;
+                        self.mpsc_receiver_bindings.put(let.names[1], {}) catch return CodegenError.OutOfMemory;
+                        return;
                     }
                 }
                 const value_reg = try self.genExpr(let.value, hoisted_allocs);
@@ -10836,7 +10827,7 @@ pub const Codegen = struct {
                 }
                 if (field_ty != null and manuallyDropInnerType(field_ty.?) != null and literal_field.value.* == .call_expr) {
                     const call = &literal_field.value.call_expr;
-                    if (call.associated_target != null and std.mem.eql(u8, call.associated_target.?, "ManuallyDrop") and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isManuallyDropNewCall(call.*)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const slot_reg = try self.newTmp();
@@ -10876,7 +10867,7 @@ pub const Codegen = struct {
             const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
             if (manuallyDropInnerType(decl_field.ty) != null and value.* == .call_expr) {
                 const call = &value.call_expr;
-                if (call.associated_target != null and std.mem.eql(u8, call.associated_target.?, "ManuallyDrop") and std.mem.eql(u8, call.func_name, "new")) {
+                if (lowering_rules.isManuallyDropNewCall(call.*)) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                     const slot_reg = try self.newTmp();
@@ -12608,7 +12599,7 @@ pub const Codegen = struct {
                     if (lowering_rules.planTaskRuntimeCall(call)) |task_plan| {
                         return try self.genTaskRuntimeCall(task_plan, call, hoisted_allocs);
                     }
-                    if (std.mem.eql(u8, target, "mem") and std.mem.eql(u8, call.func_name, "forget")) {
+                    if (lowering_rules.isMemForgetCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         self.out.writer().print("    EXPAND MEM_FORGET_U64 {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
@@ -12617,7 +12608,7 @@ pub const Codegen = struct {
                         }
                         return "return_ty_sentinel";
                     }
-                    if (std.mem.eql(u8, target, "ManuallyDrop") and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isManuallyDropNewCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12627,7 +12618,7 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                         return reg;
                     }
-                    if (std.mem.eql(u8, target, "ManuallyDrop") and std.mem.eql(u8, call.func_name, "into_inner")) {
+                    if (lowering_rules.isManuallyDropIntoInnerCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const slot_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12638,7 +12629,7 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(slot_reg);
                         return reg;
                     }
-                    if (std.mem.eql(u8, target, "mpsc") and std.mem.eql(u8, call.func_name, "channel")) {
+                    if (lowering_rules.isMpscChannelCall(call)) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
                         const chan = try self.newTmp();
                         const tuple = try self.newTmp();
@@ -12676,7 +12667,7 @@ pub const Codegen = struct {
                         self.out.writer().print("    call @{s}(*{s})\n", .{ helper.spawn_name, slot }) catch return CodegenError.CodegenError;
                         return slot;
                     }
-                    if (lowering_rules.isBoxTypeName(target) and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isBoxNewCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12684,7 +12675,7 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
                         return reg;
                     }
-                    if (lowering_rules.isBoxTypeName(target) and std.mem.eql(u8, call.func_name, "into_raw")) {
+                    if (lowering_rules.isBoxIntoRawCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const box_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12692,7 +12683,7 @@ pub const Codegen = struct {
                         self.consumed_bindings.put(box_reg, {}) catch return CodegenError.OutOfMemory;
                         return reg;
                     }
-                    if (lowering_rules.isBoxTypeName(target) and std.mem.eql(u8, call.func_name, "from_raw")) {
+                    if (lowering_rules.isBoxFromRawCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const raw_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12700,7 +12691,7 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(raw_reg);
                         return reg;
                     }
-                    if (lowering_rules.isRcTypeName(target) and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isRcNewCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -12708,7 +12699,7 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(call.args[0])) try self.emitRelease(arg_reg);
                         return reg;
                     }
-                    if (lowering_rules.isArcTypeName(target) and std.mem.eql(u8, call.func_name, "new")) {
+                    if (lowering_rules.isArcNewCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const arg_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
@@ -13109,7 +13100,7 @@ pub const Codegen = struct {
                     self.out.writer().print("    {s} = {s} as {s}\n", .{ reg, raw_reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
                     return reg;
                 }
-                if ((std.mem.eql(u8, call.func_name, "iter") or std.mem.eql(u8, call.func_name, "into_iter")) and call.args.len == 1) {
+                if ((lowering_rules.isIterOrIntoIterCall(call)) and call.args.len == 1) {
                     return try self.genExpr(call.args[0], hoisted_allocs);
                 }
                 if (lowering_rules.isCopiedCall(call) and call.args.len == 1) {
@@ -13125,7 +13116,7 @@ pub const Codegen = struct {
                 }
                 if (std.mem.eql(u8, call.func_name, "fold") and call.args.len == 3 and call.args[0].* == .call_expr and call.args[2].* == .closure_literal) {
                     const iter_call = &call.args[0].call_expr;
-                    if ((std.mem.eql(u8, iter_call.func_name, "iter") or std.mem.eql(u8, iter_call.func_name, "into_iter")) and iter_call.args.len == 1) {
+                    if ((lowering_rules.isIterOrIntoIterCall(iter_call.*)) and iter_call.args.len == 1) {
                         const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return CodegenError.CodegenError;
                         if (arrayType(source_ty) != null) {
                             return try self.genArrayIterFold(iter_call.args[0], call.args[1], &call.args[2].closure_literal, hoisted_allocs);
@@ -13138,7 +13129,7 @@ pub const Codegen = struct {
                 }
                 if (std.mem.eql(u8, call.func_name, "sum") and call.args.len == 1 and call.args[0].* == .call_expr) {
                     const inner = &call.args[0].call_expr;
-                    if ((std.mem.eql(u8, inner.func_name, "iter") or std.mem.eql(u8, inner.func_name, "into_iter")) and inner.args.len == 1) {
+                    if ((lowering_rules.isIterOrIntoIterCall(inner.*)) and inner.args.len == 1) {
                         const source_ty = self.tc.expr_types.get(inner.args[0]) orelse return CodegenError.CodegenError;
                         if (arrayType(source_ty) != null) {
                             return try self.genArrayIterSum(inner.args[0], hoisted_allocs);
@@ -13152,7 +13143,7 @@ pub const Codegen = struct {
                     }
                     if (lowering_rules.isCopiedCall(inner.*) and inner.args.len == 1 and inner.args[0].* == .call_expr) {
                         const copied_inner = &inner.args[0].call_expr;
-                        if ((std.mem.eql(u8, copied_inner.func_name, "iter") or std.mem.eql(u8, copied_inner.func_name, "into_iter")) and copied_inner.args.len == 1) {
+                        if ((lowering_rules.isIterOrIntoIterCall(copied_inner.*)) and copied_inner.args.len == 1) {
                             const source_ty = self.tc.expr_types.get(copied_inner.args[0]) orelse return CodegenError.CodegenError;
                             if (arrayType(source_ty) != null) {
                                 return try self.genArrayIterSum(copied_inner.args[0], hoisted_allocs);
@@ -13164,7 +13155,7 @@ pub const Codegen = struct {
                     }
                     if (lowering_rules.isMapCall(inner.*) and inner.args.len == 2 and inner.args[0].* == .call_expr) {
                         const iter_call = &inner.args[0].call_expr;
-                        if ((std.mem.eql(u8, iter_call.func_name, "iter") or std.mem.eql(u8, iter_call.func_name, "into_iter")) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
+                        if ((lowering_rules.isIterOrIntoIterCall(iter_call.*)) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
                             const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return CodegenError.CodegenError;
                             if (arrayType(source_ty) != null) {
                                 return try self.genArrayIterMapSum(iter_call.args[0], &inner.args[1].closure_literal, hoisted_allocs);
@@ -13176,7 +13167,7 @@ pub const Codegen = struct {
                     }
                     if (std.mem.eql(u8, inner.func_name, "filter") and inner.args.len == 2 and inner.args[0].* == .call_expr) {
                         const iter_call = &inner.args[0].call_expr;
-                        if ((std.mem.eql(u8, iter_call.func_name, "iter") or std.mem.eql(u8, iter_call.func_name, "into_iter")) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
+                        if ((lowering_rules.isIterOrIntoIterCall(iter_call.*)) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
                             const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return CodegenError.CodegenError;
                             if (arrayType(source_ty) != null) {
                                 return try self.genArrayIterFilterSum(iter_call.args[0], &inner.args[1].closure_literal, hoisted_allocs);

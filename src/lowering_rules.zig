@@ -3408,6 +3408,104 @@ pub fn isRecvCall(call: ast.CallExpr) bool {
     return std.mem.eql(u8, call.func_name, "recv");
 }
 
+/// Shared pure `new` call-name fact.
+pub fn isNewCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "new");
+}
+
+/// Shared pure `into_raw` call-name fact.
+pub fn isIntoRawCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "into_raw");
+}
+
+/// Shared pure `from_raw` call-name fact.
+pub fn isFromRawCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "from_raw");
+}
+
+/// Shared pure `into_inner` call-name fact.
+pub fn isIntoInnerCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "into_inner");
+}
+
+/// Shared pure `iter` call-name fact.
+pub fn isIterCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "iter");
+}
+
+/// Shared pure `into_iter` call-name fact.
+pub fn isIntoIterCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "into_iter");
+}
+
+/// Shared pure iterator method name fact (`iter` / `into_iter`).
+pub fn isIterOrIntoIterCall(call: ast.CallExpr) bool {
+    return isIterCall(call) or isIntoIterCall(call);
+}
+
+/// Shared pure `mem::forget` associated call recognition.
+pub fn isMemForgetCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        std.mem.eql(u8, call.associated_target.?, "mem") and
+        std.mem.eql(u8, call.func_name, "forget");
+}
+
+/// Shared pure `mpsc::channel` associated call recognition.
+pub fn isMpscChannelCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        std.mem.eql(u8, call.associated_target.?, "mpsc") and
+        std.mem.eql(u8, call.func_name, "channel");
+}
+
+/// Shared pure `ManuallyDrop::new` associated call recognition.
+pub fn isManuallyDropNewCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        std.mem.eql(u8, call.associated_target.?, "ManuallyDrop") and
+        isNewCall(call);
+}
+
+/// Shared pure `ManuallyDrop::into_inner` associated call recognition.
+pub fn isManuallyDropIntoInnerCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        std.mem.eql(u8, call.associated_target.?, "ManuallyDrop") and
+        isIntoInnerCall(call);
+}
+
+/// Shared pure `Box::new` associated call recognition.
+pub fn isBoxNewCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        isBoxTypeName(call.associated_target.?) and
+        isNewCall(call);
+}
+
+/// Shared pure `Box::into_raw` associated call recognition.
+pub fn isBoxIntoRawCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        isBoxTypeName(call.associated_target.?) and
+        isIntoRawCall(call);
+}
+
+/// Shared pure `Box::from_raw` associated call recognition.
+pub fn isBoxFromRawCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        isBoxTypeName(call.associated_target.?) and
+        isFromRawCall(call);
+}
+
+/// Shared pure `Rc::new` associated call recognition.
+pub fn isRcNewCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        isRcTypeName(call.associated_target.?) and
+        isNewCall(call);
+}
+
+/// Shared pure `Arc::new` associated call recognition.
+pub fn isArcNewCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        isArcTypeName(call.associated_target.?) and
+        isNewCall(call);
+}
+
 fn userDefinedGenericInner(ty: *const ast.Type, name: []const u8) ?*ast.Type {
     const curr = peelBorrowPointerType(ty);
     if (curr.* != .user_defined) return null;
@@ -7767,6 +7865,30 @@ test "collection atomic mpsc method peels" {
     try std.testing.expect(isSendCall(.{ .func_name = "send", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(isRecvCall(.{ .func_name = "recv", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(!isGetCall(.{ .func_name = "set", .args = one[0..], .associated_target = null, .generics = &.{} }));
+}
+
+test "smart pointer mem mpsc iter peels" {
+    var dummy: ast.Node = undefined;
+    var one = [_]*ast.Node{&dummy};
+    try std.testing.expect(isNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isIntoRawCall(.{ .func_name = "into_raw", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isFromRawCall(.{ .func_name = "from_raw", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isIntoInnerCall(.{ .func_name = "into_inner", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isIterCall(.{ .func_name = "iter", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isIntoIterCall(.{ .func_name = "into_iter", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isIterOrIntoIterCall(.{ .func_name = "iter", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isIterOrIntoIterCall(.{ .func_name = "into_iter", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isMemForgetCall(.{ .func_name = "forget", .args = one[0..], .associated_target = "mem", .generics = &.{} }));
+    try std.testing.expect(!isMemForgetCall(.{ .func_name = "forget", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isMpscChannelCall(.{ .func_name = "channel", .args = &.{}, .associated_target = "mpsc", .generics = &.{} }));
+    try std.testing.expect(isManuallyDropNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = "ManuallyDrop", .generics = &.{} }));
+    try std.testing.expect(isManuallyDropIntoInnerCall(.{ .func_name = "into_inner", .args = one[0..], .associated_target = "ManuallyDrop", .generics = &.{} }));
+    try std.testing.expect(isBoxNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = "Box", .generics = &.{} }));
+    try std.testing.expect(isBoxIntoRawCall(.{ .func_name = "into_raw", .args = one[0..], .associated_target = "Box", .generics = &.{} }));
+    try std.testing.expect(isBoxFromRawCall(.{ .func_name = "from_raw", .args = one[0..], .associated_target = "Box", .generics = &.{} }));
+    try std.testing.expect(isRcNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = "Rc", .generics = &.{} }));
+    try std.testing.expect(isArcNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = "Arc", .generics = &.{} }));
+    try std.testing.expect(!isBoxNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = "Rc", .generics = &.{} }));
 }
 
 test "typeIsSmallPlainSlotStructDecl classifies small plain structs" {

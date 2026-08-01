@@ -18,7 +18,7 @@ BIN="zig-out/test/test"
 echo "==> Building batched test binary (serial) ..."
 "$ZIG" build test-batch-build -j1 || { echo "BUILD FAILED"; exit 1; }
 
-TOTAL="$(SLA_TEST_LIST=1 "$BIN" 2>/dev/null | wc -l | tr -d ' ')"
+TOTAL="$(SLA_TEST_LIST=1 "$BIN" 2>&1 | wc -l | tr -d ' ')"
 if [ -z "$TOTAL" ] || [ "$TOTAL" -eq 0 ]; then
     echo "Could not enumerate tests"; exit 1
 fi

@@ -2426,7 +2426,7 @@ pub const Codegen = struct {
         if (!std.mem.eql(u8, ty_name, "ptr")) return null;
         return .{
             .name = param.name,
-            .ty = @constCast(try self.makePrimitiveType(.void_type)),
+            .ty = @constCast(try self.makePrimitiveType(.raw_ptr)),
             .is_borrow = param.is_borrow,
             .is_move = param.is_move,
         };
@@ -3219,7 +3219,7 @@ pub const Codegen = struct {
         kind: lowering_rules.ImportedMacroExpressionResultKind,
     ) CodegenError!*const ast.Type {
         return switch (kind) {
-            .raw_pointer => try self.makePrimitiveType(.void_type),
+            .raw_pointer => try self.makePrimitiveType(.raw_ptr),
             .boolean => try self.makePrimitiveType(.boolean),
             .u8 => try self.makePrimitiveType(.u8),
             .u32 => try self.makePrimitiveType(.u32),
@@ -3240,7 +3240,7 @@ pub const Codegen = struct {
                 .int_val => self.makePrimitiveType(.i64) catch null,
                 .float_val => self.makePrimitiveType(.f64) catch null,
                 .bool_val => self.makePrimitiveType(.boolean) catch null,
-                .string_val => self.makePrimitiveType(.void_type) catch null,
+                .string_val => self.makePrimitiveType(.raw_ptr) catch null,
             },
             .identifier => |name| self.macroArgTypeForName(name) orelse self.localBindingTypeForName(name),
             .call_expr => |call| blk: {
@@ -3944,7 +3944,7 @@ pub const Codegen = struct {
 
     fn makeAbiPtrType(self: *Codegen) CodegenError!*const ast.Type {
         const ty = try self.allocator.create(ast.Type);
-        ty.* = .{ .primitive = .void_type };
+        ty.* = .{ .primitive = .raw_ptr };
         return ty;
     }
 
@@ -12806,7 +12806,7 @@ pub const Codegen = struct {
                         self.file_open_results.put(result_reg, .{}) catch return CodegenError.OutOfMemory;
                         return result_reg;
                     }
-                    if (std.mem.eql(u8, target, "path") and std.mem.eql(u8, call.func_name, "metadata")) {
+                    if (lowering_rules.isPathMetadataCall(call)) {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const path_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
                         if (!isStringLikeType(path_ty)) return CodegenError.CodegenError;
@@ -13079,7 +13079,7 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                     return option_reg;
                 }
-                if (std.mem.eql(u8, call.func_name, "remove") and call.args.len == 2) {
+                if (lowering_rules.isRemoveCall(call) and call.args.len == 2) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
                     const elem_ty = vecElementType(recv_ty) orelse return CodegenError.CodegenError;
                     const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -13854,7 +13854,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "set")) {
+                            if (lowering_rules.isSetCall(call)) {
                                 if (call.args.len != 2) return CodegenError.CodegenError;
                                 const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                                 const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
@@ -13987,7 +13987,7 @@ pub const Codegen = struct {
                             if (callArgNeedsRelease(call.args[1])) try self.emitRelease(count_reg);
                             return reg;
                         }
-                        if (vecDequeElementType(ty) != null and std.mem.eql(u8, call.func_name, "push_back")) {
+                        if (vecDequeElementType(ty) != null and lowering_rules.isPushBackCall(call)) {
                             if (call.args.len != 2) return CodegenError.CodegenError;
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const value_reg = try self.genExpr(call.args[1], hoisted_allocs);
@@ -13995,7 +13995,7 @@ pub const Codegen = struct {
                             if (callArgNeedsRelease(call.args[1])) try self.emitRelease(value_reg);
                             return "return_ty_sentinel";
                         }
-                        if (vecDequeElementType(ty) != null and std.mem.eql(u8, call.func_name, "pop_front")) {
+                        if (vecDequeElementType(ty) != null and lowering_rules.isPopFrontCall(call)) {
                             if (call.args.len != 1) return CodegenError.CodegenError;
                             const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
                             const ok_reg = try self.newTmp();
@@ -14118,7 +14118,7 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 return result_reg;
                             }
-                            if (std.mem.eql(u8, call.func_name, "metadata")) {
+                            if (lowering_rules.isMetadataCall(call)) {
                                 if (call.args.len != 1) return CodegenError.CodegenError;
                                 const path_ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
                                 if (!isStringLikeType(path_ty)) return CodegenError.CodegenError;
@@ -14589,7 +14589,7 @@ pub const Codegen = struct {
                     return reg;
                 }
 
-                if (!(call.args.len > 0 and std.mem.eql(u8, call.func_name, "metadata"))) {
+                if (!(call.args.len > 0 and lowering_rules.isMetadataCall(call))) {
                     if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
                         return try self.genImportedMacroCall(&call, plan, hoisted_allocs);
                     }

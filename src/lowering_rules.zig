@@ -1047,6 +1047,7 @@ pub fn abiTypeString(ty: *const ast.Type) []const u8 {
             .f64 => "f64",
             .integer => "i64",
             .float => "f64",
+            .raw_ptr => "ptr",
             .void_type => "ptr",
         },
         .array => "ptr",
@@ -2118,6 +2119,13 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
         std.mem.eql(u8, macro_name, "SLA_JSON_OBJECT_GET") or
         std.mem.eql(u8, macro_name, "SLA_JSON_ARRAY_GET") or
         std.mem.eql(u8, macro_name, "SLA_JSON_STRINGIFY") or
+        std.mem.eql(u8, macro_name, "PIN_GET_REF") or
+        std.mem.eql(u8, macro_name, "PIN_MUT_GET_REF") or
+        std.mem.eql(u8, macro_name, "PIN_MUT_GET_MUT") or
+        std.mem.eql(u8, macro_name, "PIN_MUT_GET_UNCHECKED_MUT") or
+        std.mem.eql(u8, macro_name, "FUTURE_READY_POLL_STATE") or
+        std.mem.eql(u8, macro_name, "FUTURE_PENDING_POLL_STATE") or
+        std.mem.eql(u8, macro_name, "POLL_VALUE_PTR") or
         std.mem.endsWith(u8, macro_name, "_PTR") or
         std.mem.endsWith(u8, macro_name, "_DATA") or
         std.mem.endsWith(u8, macro_name, "_AS_PTR") or
@@ -2126,7 +2134,14 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
     {
         return .raw_pointer;
     }
-    if (std.mem.startsWith(u8, macro_name, "JSON_IS_")) return .boolean;
+    if (std.mem.startsWith(u8, macro_name, "JSON_IS_") or
+        std.mem.eql(u8, macro_name, "POLL_IS_READY") or
+        std.mem.eql(u8, macro_name, "POLL_IS_PENDING") or
+        std.mem.eql(u8, macro_name, "PIN_PTR_EQ") or
+        std.mem.eql(u8, macro_name, "PIN_MUT_PTR_EQ"))
+    {
+        return .boolean;
+    }
     if (std.mem.eql(u8, macro_name, "SLA_BYTE_AT") or
         std.mem.eql(u8, macro_name, "JSON_AS_BOOL") or
         std.mem.eql(u8, macro_name, "SLA_JSON_AS_BOOL") or
@@ -2852,7 +2867,7 @@ pub fn abiTypeSize(ty: *const ast.Type) usize {
             .u32, .i32, .f32 => 4,
             .u64, .i64, .usize, .isize, .f64 => 8,
             .integer, .float => 8,
-            .void_type => 8,
+            .raw_ptr, .void_type => 8,
         },
         .array => 8,
         .tuple => |tuple| tupleAbiSize(tuple),
@@ -2892,7 +2907,7 @@ pub fn abiPassesAsPointer(ty: *const ast.Type) bool {
 /// such as `sa_json_parse` and `sa_json_object_get`.
 pub fn importedMacroBorrowUsesRawPointerValue(arg_ty: *const ast.Type) bool {
     return switch (arg_ty.*) {
-        .primitive => |p| p == .void_type,
+        .primitive => |p| p == .raw_ptr,
         .pointer, .borrow => true,
         else => false,
     };
@@ -2940,6 +2955,27 @@ pub fn inlineArrayStride(elem_ty: *const ast.Type) usize {
 
 pub fn inlineArraySize(arr: ast.ArrayType) usize {
     return @max(inlineArrayStride(arr.elem) * arr.len, 1);
+}
+
+/// Direct SAB stores fixed-array struct fields inline, while generated SA still
+/// stores an array pointer in the field's first word. Reserve enough bytes for
+/// both representations so they share all following field offsets without
+/// changing `abiTypeSize`, which remains the pointer-sized value ABI.
+pub fn structFieldStorageSize(ty: *const ast.Type) usize {
+    return switch (ty.*) {
+        .array => |arr| @max(inlineArraySize(arr), abiTypeSize(ty)),
+        else => abiTypeSize(ty),
+    };
+}
+
+/// Aggregate alignment follows the stored scalar (or fixed-array element)
+/// width. In particular, arrays of ptr/i64 elements must begin on an 8-byte
+/// boundary even when the preceding inline array ends at an odd offset.
+pub fn structFieldAlignmentSize(ty: *const ast.Type) usize {
+    return switch (ty.*) {
+        .array => |arr| abiTypeSize(arr.elem),
+        else => abiTypeSize(ty),
+    };
 }
 
 pub fn arrayElementLayout(arr: ast.ArrayType, index: usize) ?AbiFieldLayout {
@@ -3025,7 +3061,7 @@ pub fn structFieldsAllComparable(decl: *const ast.StructDecl) bool {
     for (decl.fields) |field| {
         switch (field.ty.*) {
             .primitive => |p| switch (p) {
-                .void_type => return false,
+                .raw_ptr, .void_type => return false,
                 else => {},
             },
             else => return false,
@@ -3406,6 +3442,38 @@ pub fn isSendCall(call: ast.CallExpr) bool {
 /// Shared pure `recv` call-name fact.
 pub fn isRecvCall(call: ast.CallExpr) bool {
     return std.mem.eql(u8, call.func_name, "recv");
+}
+
+/// Shared pure `set` call-name fact.
+pub fn isSetCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "set");
+}
+
+/// Shared pure `remove` call-name fact.
+pub fn isRemoveCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "remove");
+}
+
+/// Shared pure `push_back` call-name fact.
+pub fn isPushBackCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "push_back");
+}
+
+/// Shared pure `pop_front` call-name fact.
+pub fn isPopFrontCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "pop_front");
+}
+
+/// Shared pure `metadata` call-name fact.
+pub fn isMetadataCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "metadata");
+}
+
+/// Shared pure `path::metadata` associated call recognition.
+pub fn isPathMetadataCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        std.mem.eql(u8, call.associated_target.?, "path") and
+        isMetadataCall(call);
 }
 
 /// Shared pure `new` call-name fact.
@@ -3918,7 +3986,7 @@ pub fn borrowedPrimitiveType(ty: *const ast.Type) ?*const ast.Type {
 pub fn isStringLikeType(ty: *const ast.Type) bool {
     const curr = peelBorrowPointerType(ty);
     return switch (curr.*) {
-        .primitive => |p| p == .void_type,
+        .primitive => |p| p == .raw_ptr,
         .array => true,
         .user_defined => |ud| std.mem.eql(u8, ud.name, "String"),
         else => false,
@@ -3978,7 +4046,7 @@ pub fn smartPointerDerefLoadsPointerBackedValue(inner_ty: *const ast.Type) bool 
 
 pub fn refCellPayloadIsPointer(ty: *const ast.Type) bool {
     return switch (ty.*) {
-        .primitive => |p| p == .void_type,
+        .primitive => |p| p == .raw_ptr,
         else => true,
     };
 }
@@ -4135,8 +4203,8 @@ pub fn structAbiSize(decl: *const ast.StructDecl) usize {
     }
     var offset: usize = 0;
     for (decl.fields) |field| {
-        const size = abiTypeSize(field.ty);
-        offset = alignAggregateOffset(offset, size);
+        const size = structFieldStorageSize(field.ty);
+        offset = alignAggregateOffset(offset, structFieldAlignmentSize(field.ty));
         offset += size;
     }
     return @max(offset, 1);
@@ -4153,8 +4221,8 @@ pub fn structFieldLayout(decl: *const ast.StructDecl, name: []const u8) ?AbiFiel
     }
     var offset: usize = 0;
     for (decl.fields) |field| {
-        const size = abiTypeSize(field.ty);
-        offset = alignAggregateOffset(offset, size);
+        const size = structFieldStorageSize(field.ty);
+        offset = alignAggregateOffset(offset, structFieldAlignmentSize(field.ty));
         if (std.mem.eql(u8, field.name, name)) {
             return .{ .offset = offset, .size = size, .ty = field.ty };
         }
@@ -4757,7 +4825,7 @@ pub fn castResultMaterializesTemp(src_ty: *const ast.Type, dst_ty: *const ast.Ty
 pub fn isPointerCarrierCastType(ty: *const ast.Type) bool {
     return switch (ty.*) {
         .pointer, .borrow => true,
-        .primitive => |p| p == .void_type,
+        .primitive => |p| p == .raw_ptr,
         .user_defined => |ud| std.mem.eql(u8, ud.name, "AtomicI32") or
             std.mem.eql(u8, ud.name, "AtomicUsize") or
             std.mem.eql(u8, ud.name, "RawWaker") or
@@ -4769,7 +4837,7 @@ pub fn isPointerCarrierCastType(ty: *const ast.Type) bool {
 }
 
 pub fn isRawPtrAliasType(ty: *const ast.Type) bool {
-    return ty.* == .primitive and ty.primitive == .void_type;
+    return ty.* == .primitive and ty.primitive == .raw_ptr;
 }
 
 /// Result slots used by `if`/`match`-style expression lowering must treat
@@ -4855,7 +4923,7 @@ pub const planFunctionTailCleanup = control_flow_rules.planFunctionExitCleanup;
 pub fn isBorrowLikeType(ty: *const ast.Type) bool {
     return switch (ty.*) {
         .borrow => true,
-        .primitive => |p| p == .void_type,
+        .primitive => |p| p == .raw_ptr,
         else => false,
     };
 }
@@ -4955,7 +5023,7 @@ pub fn shouldAutoBorrowStatementReceiverArg(param: ast.Param, arg: *const ast.No
 
 fn rawPointerValueType(ty: *const ast.Type) bool {
     return switch (ty.*) {
-        .primitive => |p| p == .void_type,
+        .primitive => |p| p == .raw_ptr,
         .pointer => true,
         else => false,
     };
@@ -5046,7 +5114,7 @@ pub fn typeIsSmallPlainSlotStructDecl(decl: *const ast.StructDecl) bool {
 /// Shared pure Hash leaf for primitive types.
 pub fn primitiveIsHashable(p: ast.Primitive) bool {
     return switch (p) {
-        .void_type, .f32, .f64, .float => false,
+        .raw_ptr, .void_type, .f32, .f64, .float => false,
         else => true,
     };
 }
@@ -5071,7 +5139,7 @@ pub fn slotCopyStructTypeFact(
 /// register ownership (raw pointers and void-as-ptr).
 pub fn typeIsPointerScalarValue(ty: *const ast.Type) bool {
     return switch (ty.*) {
-        .primitive => |prim| prim == .void_type,
+        .primitive => |prim| prim == .raw_ptr,
         .pointer => true,
         else => false,
     };
@@ -5222,7 +5290,7 @@ pub fn isStdCollectionType(ty: *const ast.Type) bool {
 }
 
 pub fn primitiveIsCopyValue(p: ast.Primitive) bool {
-    return p != .void_type;
+    return p != .raw_ptr and p != .void_type;
 }
 
 /// Non-recursive copy-value facts for shapes that do not need struct tables.
@@ -5443,8 +5511,8 @@ test "shared lowering rules classify address-of shapes" {
 
 test "shared lowering rules keep string literals as raw pointers for ptr params" {
     var string_arg = ast.Node{ .literal = .{ .string_val = "types" } };
-    var ptr_ty = ast.Type{ .primitive = .void_type };
-    var borrow_ptr_ty = ast.Type{ .primitive = .void_type };
+    var ptr_ty = ast.Type{ .primitive = .raw_ptr };
+    var borrow_ptr_ty = ast.Type{ .primitive = .raw_ptr };
 
     try std.testing.expect(byValueRawPointerParam(.{
         .name = "data",
@@ -5515,6 +5583,9 @@ test "shared imported macro expression result kinds cover compiler helper macros
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.i64, importedMacroExpressionResultKind("SLA_JSON_AS_I64").?);
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.u8, importedMacroExpressionResultKind("SLA_JSON_AS_BOOL").?);
     try std.testing.expectEqual(ImportedMacroExpressionResultKind.u64, importedMacroExpressionResultKind("SLA_FS_READ_TO_STRING").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.raw_pointer, importedMacroExpressionResultKind("PIN_MUT_GET_MUT").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.raw_pointer, importedMacroExpressionResultKind("FUTURE_READY_POLL_STATE").?);
+    try std.testing.expectEqual(ImportedMacroExpressionResultKind.boolean, importedMacroExpressionResultKind("POLL_IS_READY").?);
     try std.testing.expect(importedMacroExpressionResultKind("SLA_UNKNOWN_HELPER") == null);
 }
 
@@ -5587,7 +5658,7 @@ test "shared imported macro address-expression args materialize stack slots" {
 }
 
 test "shared imported macro borrowed ptr args stay raw values" {
-    var ptr_ty = ast.Type{ .primitive = .void_type };
+    var ptr_ty = ast.Type{ .primitive = .raw_ptr };
     var ptr_ptr_ty = ast.Type{ .pointer = &ptr_ty };
     var borrow_ptr_ty = ast.Type{ .borrow = &ptr_ty };
     var int_ty = ast.Type{ .primitive = .i64 };
@@ -5912,14 +5983,23 @@ test "shared lowering rules classify result-slot value transfer" {
     try std.testing.expect(!future_plan.needs_refcell_companion);
 }
 
-test "shared ABI layout keeps fixed-array fields as pointer slots" {
+test "shared ABI layout reserves fixed-array struct field payloads" {
     var bool_ty = ast.Type{ .primitive = .boolean };
     var i32_ty = ast.Type{ .primitive = .i32 };
+    var ptr_ty = ast.Type{ .primitive = .raw_ptr };
+    var i64_ty = ast.Type{ .primitive = .i64 };
     var bool_array_ty = ast.Type{ .array = .{ .elem = &bool_ty, .len = 2 } };
     var i32_array_ty = ast.Type{ .array = .{ .elem = &i32_ty, .len = 2 } };
+    var ptr_array_ty = ast.Type{ .array = .{ .elem = &ptr_ty, .len = 2 } };
+    var flags_array_ty = ast.Type{ .array = .{ .elem = &bool_ty, .len = 3 } };
+    var i64_array_ty = ast.Type{ .array = .{ .elem = &i64_ty, .len = 2 } };
     const fields = [_]ast.Field{
         .{ .name = "active", .ty = &bool_array_ty },
         .{ .name = "values", .ty = &i32_array_ty },
+        .{ .name = "handles", .ty = &ptr_array_ty },
+        .{ .name = "flags", .ty = &flags_array_ty },
+        .{ .name = "times", .ty = &i64_array_ty },
+        .{ .name = "tail", .ty = &bool_ty },
     };
     const decl = ast.StructDecl{
         .name = "Bag",
@@ -5929,7 +6009,7 @@ test "shared ABI layout keeps fixed-array fields as pointer slots" {
 
     try std.testing.expectEqual(@as(usize, 8), abiTypeSize(&bool_array_ty));
     try std.testing.expectEqual(@as(usize, 2), inlineArraySize(bool_array_ty.array));
-    try std.testing.expectEqual(@as(usize, 16), structAbiSize(&decl));
+    try std.testing.expectEqual(@as(usize, 57), structAbiSize(&decl));
     try std.testing.expectEqual(@as(usize, 16), SliceAbi.size);
     try std.testing.expectEqual(@as(usize, 0), SliceAbi.ptr_offset);
     try std.testing.expectEqual(@as(usize, 8), SliceAbi.len_offset);
@@ -5946,6 +6026,18 @@ test "shared ABI layout keeps fixed-array fields as pointer slots" {
     const values = structFieldLayout(&decl, "values") orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(usize, 8), values.offset);
     try std.testing.expectEqual(@as(usize, 8), values.size);
+    const handles = structFieldLayout(&decl, "handles") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 16), handles.offset);
+    try std.testing.expectEqual(@as(usize, 16), handles.size);
+    const flags = structFieldLayout(&decl, "flags") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 32), flags.offset);
+    try std.testing.expectEqual(@as(usize, 8), flags.size);
+    const times = structFieldLayout(&decl, "times") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 40), times.offset);
+    try std.testing.expectEqual(@as(usize, 16), times.size);
+    const tail = structFieldLayout(&decl, "tail") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 56), tail.offset);
+    try std.testing.expectEqual(@as(usize, 1), tail.size);
 
     const elem = arrayElementLayout(bool_array_ty.array, 1) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(usize, 1), elem.offset);
@@ -6006,7 +6098,7 @@ test "shared struct literal update field plan" {
     try std.testing.expect(!structFieldIsPointerBacked(&i32_ty));
     try std.testing.expect(planStructLiteralFieldTransfer(y_plan, false).isDirect());
 
-    var raw_ptr_ty = ast.Type{ .primitive = .void_type };
+    var raw_ptr_ty = ast.Type{ .primitive = .raw_ptr };
     var pointer_ty = ast.Type{ .pointer = &i32_ty };
     var borrow_ty = ast.Type{ .borrow = &i32_ty };
     var fn_ptr_ty = ast.Type{ .fn_ptr = .{ .params = &.{}, .ret = &i32_ty } };
@@ -7473,7 +7565,7 @@ test "primitiveIsHashable and slotCopyStructTypeFact" {
 }
 
 test "typeIsPointerScalarValue scalar slot and debugFormatSuffix" {
-    var void_ty = ast.Type{ .primitive = .void_type };
+    var raw_ptr_ty = ast.Type{ .primitive = .raw_ptr };
     var i32_ty = ast.Type{ .primitive = .i32 };
     var u64_ty = ast.Type{ .primitive = .u64 };
     var f64_ty = ast.Type{ .primitive = .f64 };
@@ -7481,7 +7573,7 @@ test "typeIsPointerScalarValue scalar slot and debugFormatSuffix" {
     var ptr_ty = ast.Type{ .pointer = &i32_ty };
     var user_ty = ast.Type{ .user_defined = .{ .name = "Foo", .generics = &.{} } };
 
-    try std.testing.expect(typeIsPointerScalarValue(&void_ty));
+    try std.testing.expect(typeIsPointerScalarValue(&raw_ptr_ty));
     try std.testing.expect(typeIsPointerScalarValue(&ptr_ty));
     try std.testing.expect(!typeIsPointerScalarValue(&i32_ty));
     try std.testing.expect(!typeIsPointerScalarValue(&user_ty));
@@ -7494,7 +7586,7 @@ test "typeIsPointerScalarValue scalar slot and debugFormatSuffix" {
     try std.testing.expectEqualStrings("U64", debugFormatSuffix(&u64_ty).?);
     try std.testing.expectEqualStrings("F64", debugFormatSuffix(&f64_ty).?);
     try std.testing.expectEqualStrings("BOOL", debugFormatSuffix(&bool_ty).?);
-    try std.testing.expect(debugFormatSuffix(&void_ty) == null);
+    try std.testing.expect(debugFormatSuffix(&raw_ptr_ty) == null);
     try std.testing.expect(debugFormatSuffix(&user_ty) == null);
 }
 
@@ -7534,6 +7626,7 @@ test "primitive integer float and pointer value classifiers" {
     var i32_ty = ast.Type{ .primitive = .i32 };
     var f64_ty = ast.Type{ .primitive = .f64 };
     var bool_ty = ast.Type{ .primitive = .boolean };
+    var raw_ptr_ty = ast.Type{ .primitive = .raw_ptr };
     var void_ty = ast.Type{ .primitive = .void_type };
     var ptr_ty = ast.Type{ .pointer = &i32_ty };
 
@@ -7554,10 +7647,12 @@ test "primitive integer float and pointer value classifiers" {
     try std.testing.expect(isPollScalarValueType(&i32_ty));
     try std.testing.expect(!isPollScalarValueType(&bool_ty));
     try std.testing.expect(isPointerValueType(&ptr_ty));
-    try std.testing.expect(isPointerValueType(&void_ty));
+    try std.testing.expect(isPointerValueType(&raw_ptr_ty));
+    try std.testing.expect(!isPointerValueType(&void_ty));
     try std.testing.expect(!isPointerValueType(&i32_ty));
     try std.testing.expect(isPointerCarrierCastType(&ptr_ty));
-    try std.testing.expect(isPointerCarrierCastType(&void_ty));
+    try std.testing.expect(isPointerCarrierCastType(&raw_ptr_ty));
+    try std.testing.expect(!isPointerCarrierCastType(&void_ty));
 }
 
 test "structFieldsAllNumeric and comparable" {
@@ -7864,6 +7959,13 @@ test "collection atomic mpsc method peels" {
     try std.testing.expect(isAsPtrCall(.{ .func_name = "as_ptr", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(isSendCall(.{ .func_name = "send", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(isRecvCall(.{ .func_name = "recv", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isSetCall(.{ .func_name = "set", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isRemoveCall(.{ .func_name = "remove", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isPushBackCall(.{ .func_name = "push_back", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isPopFrontCall(.{ .func_name = "pop_front", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isMetadataCall(.{ .func_name = "metadata", .args = one[0..], .associated_target = null, .generics = &.{} }));
+    try std.testing.expect(isPathMetadataCall(.{ .func_name = "metadata", .args = one[0..], .associated_target = "path", .generics = &.{} }));
+    try std.testing.expect(!isPathMetadataCall(.{ .func_name = "metadata", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(!isGetCall(.{ .func_name = "set", .args = one[0..], .associated_target = null, .generics = &.{} }));
 }
 
@@ -7973,7 +8075,7 @@ test "userDefinedStdOwnerIsNonCopy classifies std owners" {
 
 test "collection type peelers" {
     var i32_ty = ast.Type{ .primitive = .i32 };
-    var str_ty = ast.Type{ .primitive = .void_type };
+    var str_ty = ast.Type{ .primitive = .raw_ptr };
     var gens = [_]*ast.Type{&i32_ty};
     var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = gens[0..] } };
     var deque_ty = ast.Type{ .user_defined = .{ .name = "VecDeque", .generics = gens[0..] } };

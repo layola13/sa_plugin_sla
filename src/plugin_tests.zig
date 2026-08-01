@@ -818,6 +818,90 @@ test "sla build-exe SAB codegen prunes unreachable main declarations" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla reachability plan cache separates test and executable roots" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const dependency =
+        \\fn test_value() -> i32 {
+        \\    return 1;
+        \\};
+        \\
+        \\fn executable_value() -> i32 {
+        \\    return 42;
+        \\};
+    ;
+    const source =
+        \\@import "dep.sla"
+        \\
+        \\@test "cache test root"() {
+        \\    if test_value() != 1 { panic(24048); };
+        \\};
+        \\
+        \\fn main() -> i32 {
+        \\    return executable_value();
+        \\};
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dependency });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    _ = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "main.sla",
+        ".sla-cache/sab/main-test.sab",
+        stderr_buf.writer().any(),
+        .{
+            .test_filter = "cache test root",
+            .allow_fallback = false,
+            .prune_for_test_codegen = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    const executable_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "main.sla",
+        ".sla-cache/sab/main-executable.sab",
+        stderr_buf.writer().any(),
+        .{
+            .allow_fallback = false,
+            .prune_for_entry_function = "main",
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, executable_bytes);
+    defer module.deinit(std.testing.allocator);
+    var saw_main = false;
+    var saw_executable_value = false;
+    var saw_test_value = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.eql(u8, fsig.name, "main")) saw_main = true;
+        if (std.mem.eql(u8, fsig.name, "sla__executable_value")) saw_executable_value = true;
+        if (std.mem.indexOf(u8, fsig.name, "test_value") != null) saw_test_value = true;
+    }
+    try std.testing.expect(saw_main);
+    try std.testing.expect(saw_executable_value);
+    try std.testing.expect(!saw_test_value);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla test codegen prunes unreachable functions before type checking" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();

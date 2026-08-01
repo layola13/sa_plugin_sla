@@ -3094,7 +3094,7 @@ pub const Parser = struct {
                 } else if (std.mem.eql(u8, name, "void")) {
                     return try makePrimitive(self.allocator, .void_type);
                 } else if (std.mem.eql(u8, name, "ptr")) {
-                    return try makePrimitive(self.allocator, .void_type);
+                    return try makePrimitive(self.allocator, .raw_ptr);
                 } else if (std.mem.eql(u8, name, "i8")) {
                     return try makePrimitive(self.allocator, .i8);
                 } else if (std.mem.eql(u8, name, "i16")) {

@@ -445,6 +445,7 @@ pub const Primitive = enum {
     integer,
     float,
     boolean,
+    raw_ptr,
     void_type,
 };
 

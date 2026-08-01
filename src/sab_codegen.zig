@@ -1367,6 +1367,7 @@ pub const Codegen = struct {
                 .f32 => .f32,
                 .f64, .float => .f64,
                 .boolean => .i1,
+                .raw_ptr => .ptr,
                 .void_type => .void,
             },
             else => if (lowering_rules.abiPassesAsPointer(ty)) .ptr else Error.UnsupportedSabDirectFeature,
@@ -1374,14 +1375,14 @@ pub const Codegen = struct {
     }
 
     fn paramPrimType(ty: *const ast.Type) !sig.PrimType {
-        if (ty.* == .primitive and ty.primitive == .void_type) return .ptr;
+        if (ty.* == .primitive and ty.primitive == .raw_ptr) return .ptr;
         return try primType(ty);
     }
 
     fn storagePrimType(ty: *const ast.Type) !sig.PrimType {
         // Aggregate/struct field storage matches SA ABI: bool is a byte, not i1.
         if (ty.* == .primitive and ty.primitive == .boolean) return .u8;
-        if (ty.* == .primitive and ty.primitive == .void_type) return .ptr;
+        if (ty.* == .primitive and ty.primitive == .raw_ptr) return .ptr;
         return try primType(ty);
     }
 
@@ -6306,11 +6307,8 @@ pub const Codegen = struct {
 
         const plans = try self.allocator.alloc(lowering_rules.StructLiteralFieldPlan, decl.fields.len);
         errdefer self.allocator.free(plans);
-        var offset: usize = 0;
         for (decl.fields, 0..) |field, idx| {
-            const size = lowering_rules.abiTypeSize(field.ty);
-            offset = alignOffset(offset, size);
-            const layout = lowering_rules.AbiFieldLayout{ .offset = offset, .size = size, .ty = field.ty };
+            const layout = lowering_rules.structFieldLayout(decl, field.name) orelse return Error.UnsupportedSabDirectFeature;
             const explicit_value = blk: {
                 for (lit.fields) |literal_field| {
                     if (std.mem.eql(u8, literal_field.name, field.name)) break :blk literal_field.value;
@@ -6324,7 +6322,6 @@ pub const Codegen = struct {
             } else {
                 return Error.UnsupportedSabDirectFeature;
             }
-            offset += size;
         }
         return plans;
     }
@@ -7740,7 +7737,8 @@ pub const Codegen = struct {
             .u64 => try self.makePrimitiveType(.u64),
             .f32 => try self.makePrimitiveType(.f32),
             .f64 => try self.makePrimitiveType(.f64),
-            .ptr, .void => try self.makePrimitiveType(.void_type),
+            .ptr => try self.makePrimitiveType(.raw_ptr),
+            .void => try self.makePrimitiveType(.void_type),
             else => try self.makePrimitiveType(.void_type),
         };
     }
@@ -8112,11 +8110,17 @@ pub const Codegen = struct {
             }
         }
 
-        const plans = try self.structLiteralFieldPlans(decl, &lit);
+        const plans = self.structLiteralFieldPlans(decl, &lit) catch |err| {
+            self.traceUnsupported("struct literal {s} field planning failed: {s}\n", .{ decl.name, @errorName(err) });
+            return err;
+        };
         defer self.allocator.free(plans);
         for (plans) |plan| {
             const layout = plan.layout;
-            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            const prim = storagePrimType(layout.ty) catch |err| {
+                self.traceUnsupported("struct literal {s}.{s} storage type failed: {s}\n", .{ decl.name, plan.name, @errorName(err) });
+                return err;
+            };
             const transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
             if (plan.isExplicit()) {
                 const value = plan.value orelse return Error.UnsupportedSabDirectFeature;
@@ -8886,7 +8890,10 @@ pub const Codegen = struct {
                     const old_result_escapes = self.current_expr_result_escapes;
                     self.current_expr_result_escapes = true;
                     defer self.current_expr_result_escapes = old_result_escapes;
-                    value = try self.genExpr(v);
+                    value = self.genExpr(v) catch |err| {
+                        self.traceUnsupported("return value {s} failed: {s}\n", .{ @tagName(v.*), @errorName(err) });
+                        return err;
+                    };
                 }
                 if (self.lastIsTerminator()) return;
                 if (self.current_async_return) {
@@ -8897,8 +8904,14 @@ pub const Codegen = struct {
                     }
                     value = try self.genReadyFuture(value.?);
                 }
-                try self.releaseOpenLocals(value);
-                try self.emitReturn(value);
+                self.releaseOpenLocals(value) catch |err| {
+                    self.traceUnsupported("return cleanup failed: {s}\n", .{@errorName(err)});
+                    return err;
+                };
+                self.emitReturn(value) catch |err| {
+                    self.traceUnsupported("return emission failed: {s}\n", .{@errorName(err)});
+                    return err;
+                };
             },
             .block_stmt => |blk| try self.genScopedBlock(blk.body),
             .for_stmt => |f| try self.genFor(f),
@@ -9082,23 +9095,11 @@ pub const Codegen = struct {
                 try self.markAssignmentMovedSource(assign.target, assign.value);
                 return;
             }
-            const target_reg = try self.genExpr(idx.target);
+            const target = try self.genIndexAddress(idx);
             const value = try self.genExpr(assign.value);
-            if (idx.index.* == .literal and idx.index.literal == .int_val) {
-                const raw_index = idx.index.literal.int_val;
-                if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
-                const layout = arrayElementLayout(target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
-                try self.emitStore(target_reg, layout.offset, value, layout.ty);
-            } else {
-                const index_reg = try self.genExpr(idx.index);
-                const elem_ptr = try self.genArrayElementPtr(target_ty.array, target_reg, index_reg);
-                try self.emitStore(elem_ptr.ptr, 0, value, try primType(target_ty.array.elem));
-                if (elem_ptr.offset) |offset| try self.emitRelease(offset);
-                try self.emitRelease(elem_ptr.ptr);
-                if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
-            }
+            try self.emitStore(target.reg, 0, value, try storagePrimType(target_ty.array.elem));
             if (!self.isLocalReg(value)) try self.emitRelease(value);
-            if (!self.isLocalReg(target_reg)) try self.emitRelease(target_reg);
+            try self.releaseAddressSource(target);
             try self.markAssignmentMovedSource(assign.target, assign.value);
             return;
         }
@@ -9419,7 +9420,7 @@ pub const Codegen = struct {
         // Default to raw data-pointer (SLA string literal type is often void/ptr).
         // Only build a Slice when the expected type is explicitly Slice/String.
         const expected = ty orelse return true;
-        if (expected.* == .primitive and expected.primitive == .void_type) return true;
+        if (expected.* == .primitive and expected.primitive == .raw_ptr) return true;
         if (typeBaseName(expected)) |name| {
             if (std.mem.eql(u8, name, "Slice") or std.mem.eql(u8, name, "String") or std.mem.eql(u8, name, "str")) return false;
         }
@@ -10321,13 +10322,26 @@ pub const Codegen = struct {
             try self.releaseNonLocalTemps(&.{ target_reg, index_reg });
             return .{ .reg = dst };
         }
-        const target_reg = try self.genExpr(idx.target);
+        const target_source = if (idx.target.* == .field_expr)
+            try self.genFieldAddress(idx.target.field_expr)
+        else
+            AddressSource{ .reg = try self.genExpr(idx.target) };
+        const target_reg = target_source.reg;
         if (idx.index.* == .literal and idx.index.literal == .int_val) {
             const raw_index = idx.index.literal.int_val;
             if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
             const layout = arrayElementLayout(addressable_target_ty.?.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
             var source = try self.addressWithOffset(target_reg, layout.offset);
-            if (layout.offset != 0 and !self.isLocalReg(target_reg)) source.release_regs = try self.singleReleaseReg(target_reg);
+            if (source.reg == target_reg) {
+                source.release_regs = target_source.release_regs;
+            } else {
+                var release_regs = std.ArrayList(u32).init(self.allocator);
+                defer release_regs.deinit();
+                if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
+                try release_regs.appendSlice(target_source.release_regs);
+                source.release_regs = try self.ownedReleaseRegs(release_regs.items);
+                if (target_source.release_regs.len != 0) self.allocator.free(target_source.release_regs);
+            }
             return source;
         }
 
@@ -10335,9 +10349,14 @@ pub const Codegen = struct {
         const elem_ptr = try self.genArrayElementPtr(addressable_target_ty.?.array, target_reg, index_reg);
         if (elem_ptr.offset) |offset| try self.emitRelease(offset);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+        var release_regs = std.ArrayList(u32).init(self.allocator);
+        defer release_regs.deinit();
+        if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
+        try release_regs.appendSlice(target_source.release_regs);
+        if (target_source.release_regs.len != 0) self.allocator.free(target_source.release_regs);
         return .{
             .reg = elem_ptr.ptr,
-            .release_regs = if (!self.isLocalReg(target_reg)) try self.singleReleaseReg(target_reg) else &.{},
+            .release_regs = try self.ownedReleaseRegs(release_regs.items),
         };
     }
 
@@ -13405,22 +13424,10 @@ pub const Codegen = struct {
     fn genIndex(self: *Codegen, idx: ast.IndexExpr) anyerror!u32 {
         const target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType;
         if (target_ty.* == .array) {
-            const target_reg = try self.genExpr(idx.target);
+            const source = try self.genIndexAddress(idx);
             const dst = try self.intern(try self.newTmp());
-            if (idx.index.* == .literal and idx.index.literal == .int_val) {
-                const raw_index = idx.index.literal.int_val;
-                if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
-                const layout = arrayElementLayout(target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
-                try self.emitLoad(dst, target_reg, layout.offset, layout.ty);
-            } else {
-                const index_reg = try self.genExpr(idx.index);
-                const elem_ptr = try self.genArrayElementPtr(target_ty.array, target_reg, index_reg);
-                try self.emitLoad(dst, elem_ptr.ptr, 0, try primType(target_ty.array.elem));
-                if (elem_ptr.offset) |offset| try self.emitRelease(offset);
-                try self.emitRelease(elem_ptr.ptr);
-                if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
-            }
-            if (!self.isLocalReg(target_reg)) try self.emitRelease(target_reg);
+            try self.emitLoad(dst, source.reg, 0, try storagePrimType(target_ty.array.elem));
+            try self.releaseAddressSource(source);
             return dst;
         }
 
@@ -13584,7 +13591,10 @@ pub const Codegen = struct {
         var pending_moved_fields = std.AutoHashMap(u32, void).init(self.allocator);
         defer pending_moved_fields.deinit();
 
-        const plans = try self.structLiteralFieldPlans(decl, &lit);
+        const plans = self.structLiteralFieldPlans(decl, &lit) catch |err| {
+            self.traceUnsupported("struct literal {s} field planning failed: {s}\n", .{ decl.name, @errorName(err) });
+            return err;
+        };
         defer self.allocator.free(plans);
         for (plans, 0..) |plan, field_index| {
             const layout = plan.layout;
@@ -13604,7 +13614,10 @@ pub const Codegen = struct {
                 try self.releaseStoredExprResultIfNeeded(value, value_reg, plan.field_ty);
                 continue;
             }
-            const prim = storagePrimType(layout.ty) catch return Error.UnsupportedSabDirectFeature;
+            const prim = storagePrimType(layout.ty) catch |err| {
+                self.traceUnsupported("struct literal {s}.{s} storage type failed: {s}\n", .{ decl.name, plan.name, @errorName(err) });
+                return err;
+            };
             var transfer = lowering_rules.planStructLiteralFieldTransfer(plan, self.typeIsCopyStruct(plan.field_ty));
             var copy_elided_move = false;
             if (transfer.isDeepCopy() and plan.isExplicit()) {
@@ -13623,15 +13636,27 @@ pub const Codegen = struct {
                     self.current_expr_later_nodes.items.len;
                 defer self.popExprLaterNodesTo(later_mark);
                 if (transfer.isDeepCopy()) {
-                    const source_reg = try self.genExpr(value);
-                    const copied = try self.genCopyValue(source_reg, plan.field_ty);
+                    const source_reg = self.genExpr(value) catch |err| {
+                        self.traceUnsupported("struct literal {s}.{s} deep-copy value failed: {s}\n", .{ decl.name, plan.name, @errorName(err) });
+                        return err;
+                    };
+                    const copied = self.genCopyValue(source_reg, plan.field_ty) catch |err| {
+                        self.traceUnsupported("struct literal {s}.{s} copy failed: {s}\n", .{ decl.name, plan.name, @errorName(err) });
+                        return err;
+                    };
                     try self.emitStore(dst, layout.offset, copied, prim);
                     try self.emitRelease(copied);
                 } else if (transfer.isDirect() or transfer.isMove()) {
                     const value_reg = if (transfer.isMove() and value.* == .move_expr)
-                        try self.genExpr(value.move_expr.expr)
+                        self.genExpr(value.move_expr.expr) catch |err| {
+                            self.traceUnsupported("struct literal {s}.{s} moved value failed: {s}\n", .{ decl.name, plan.name, @errorName(err) });
+                            return err;
+                        }
                     else
-                        try self.genExpr(value);
+                        self.genExpr(value) catch |err| {
+                            self.traceUnsupported("struct literal {s}.{s} value failed: {s}\n", .{ decl.name, plan.name, @errorName(err) });
+                            return err;
+                        };
                     const explicit_move = value.* == .move_expr;
                     const moved_value = if (explicit_move) value.move_expr.expr else value;
                     const moves_identifier = moved_id: {
@@ -13639,13 +13664,19 @@ pub const Codegen = struct {
                         if (lowering_rules.storedValueMovesIdentifier(moved_value, plan.field_ty, self.typeIsCopyValue(plan.field_ty)) != null) break :moved_id true;
                         break :moved_id explicit_move or copy_elided_move;
                     };
-                    if (transfer.isMove() and !explicit_move and !copy_elided_move and !moves_identifier and self.typeIsShallowCopyCallArgValue(plan.field_ty, 0)) {
-                        const copied = try self.genShallowCopyCallArgValue(value_reg, plan.field_ty);
+                    if (transfer.isMove() and !explicit_move and !copy_elided_move and !moves_identifier and self.structDeclForType(plan.field_ty) != null and self.typeIsShallowCopyCallArgValue(plan.field_ty, 0)) {
+                        const copied = self.genShallowCopyCallArgValue(value_reg, plan.field_ty) catch |err| {
+                            self.traceUnsupported("struct literal {s}.{s} shallow copy failed: {s}\n", .{ decl.name, plan.name, @errorName(err) });
+                            return err;
+                        };
                         try self.emitStore(dst, layout.offset, copied, prim);
                         try self.emitConsumedMarker(copied);
                         try self.releaseMovedShallowCopySource(value, value_reg, plan.field_ty);
                     } else {
-                        try self.emitStore(dst, layout.offset, value_reg, prim);
+                        self.emitStore(dst, layout.offset, value_reg, prim) catch |err| {
+                            self.traceUnsupported("struct literal {s}.{s} store failed: {s}\n", .{ decl.name, plan.name, @errorName(err) });
+                            return err;
+                        };
                     }
                     if (transfer.isMove()) {
                         if (moved_value.* == .identifier) {
@@ -15347,7 +15378,7 @@ test "direct sab normal sig keeps by-value ptr params raw" {
     defer cg.deinit();
 
     const ptr_ty = try allocator.create(ast.Type);
-    ptr_ty.* = .{ .primitive = .void_type };
+    ptr_ty.* = .{ .primitive = .raw_ptr };
     const int_ty = try allocator.create(ast.Type);
     int_ty.* = .{ .primitive = .i64 };
 

@@ -1103,7 +1103,7 @@ pub const TypeChecker = struct {
 
     fn makeRawPtrType(self: *TypeChecker) TypeError!*ast.Type {
         const ty = try self.allocator.create(ast.Type);
-        ty.* = .{ .primitive = .void_type };
+        ty.* = .{ .primitive = .raw_ptr };
         return ty;
     }
 
@@ -1131,6 +1131,29 @@ pub const TypeChecker = struct {
         const ty = try self.allocator.create(ast.Type);
         ty.* = .{ .user_defined = .{ .name = "Slice", .generics = generics } };
         return ty;
+    }
+
+    fn makePrimitiveType(self: *TypeChecker, primitive: ast.Primitive) TypeError!*ast.Type {
+        const ty = try self.allocator.create(ast.Type);
+        ty.* = .{ .primitive = primitive };
+        return ty;
+    }
+
+    fn makeImportedMacroExpressionResultType(
+        self: *TypeChecker,
+        kind: lowering_rules.ImportedMacroExpressionResultKind,
+    ) TypeError!*ast.Type {
+        return switch (kind) {
+            .raw_pointer => try self.makeRawPtrType(),
+            .boolean => try self.makeBoolType(),
+            .u8 => try self.makeU8Type(),
+            .u32 => try self.makePrimitiveType(.u32),
+            .u64 => try self.makeU64Type(),
+            .i32 => try self.makeI32Type(),
+            .i64 => try self.makeI64Type(),
+            .f64 => try self.makePrimitiveType(.f64),
+            .slice_u8 => try self.makeSliceType(try self.makeU8Type()),
+        };
     }
 
     fn makeStringType(self: *TypeChecker) TypeError!*ast.Type {
@@ -1952,6 +1975,8 @@ pub const TypeChecker = struct {
             ret.* = .{ .primitive = .f64 };
         } else if (std.mem.eql(u8, name, "bool")) {
             ret.* = .{ .primitive = .boolean };
+        } else if (std.mem.eql(u8, name, "ptr")) {
+            ret.* = .{ .primitive = .raw_ptr };
         } else {
             ret.* = .{ .primitive = .void_type };
         }
@@ -2482,7 +2507,7 @@ pub const TypeChecker = struct {
             if (sym.state == .active and !isInternalSymbol(sym.name)) {
                 // Block-local borrows still need lexical end cleanups so codegen can
                 // release tracked borrow handles such as RefCell shared/mut borrows.
-                if (sym.ty.* == .primitive and sym.ty.primitive == .void_type) continue;
+                if (sym.ty.* == .primitive and sym.ty.primitive == .raw_ptr) continue;
                 // issue013: if another active local has borrow_source == sym.name,
                 // the borrow handle was moved into that local; skip the source here
                 // so we do not emit a double `!name` release.
@@ -2996,7 +3021,7 @@ pub const TypeChecker = struct {
                     .bool_val => ty.* = .{ .primitive = .boolean },
                     .string_val => {
                         // In Sla, string literal evaluates to ptr (pointing to char array)
-                        ty.* = .{ .primitive = .void_type }; // map to ptr/void
+                        ty.* = .{ .primitive = .raw_ptr };
                     },
                 }
                 return ty;
@@ -4328,7 +4353,7 @@ pub const TypeChecker = struct {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             return inner_ty;
                         }
-                        if (std.mem.eql(u8, call.func_name, "set")) {
+                        if (lowering_rules.isSetCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const value_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(inner_ty, value_ty)) {
@@ -4388,7 +4413,7 @@ pub const TypeChecker = struct {
                         }
                     }
 
-                    if (std.mem.eql(u8, call.func_name, "metadata")) {
+                    if (lowering_rules.isMetadataCall(call)) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         if (isStringLikeType(recv_ty)) {
                             return try self.makeResultType(try self.makeMetadataType(), try self.makeI32Type());
@@ -4452,7 +4477,7 @@ pub const TypeChecker = struct {
                             ret.* = .{ .primitive = .void_type };
                             return ret;
                         }
-                        if (std.mem.eql(u8, call.func_name, "push_back")) {
+                        if (lowering_rules.isPushBackCall(call)) {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const value_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(elem_ty, value_ty)) return TypeError.TypeMismatch;
@@ -4469,7 +4494,7 @@ pub const TypeChecker = struct {
                             ret.* = .{ .primitive = .void_type };
                             return ret;
                         }
-                        if (std.mem.eql(u8, call.func_name, "pop_front")) {
+                        if (lowering_rules.isPopFrontCall(call)) {
                             if (call.args.len != 1) return TypeError.InvalidArgsCount;
                             if (elem_ty.* == .infer) return TypeError.TypeMismatch;
                             return try self.makeOptionType(elem_ty);
@@ -4676,7 +4701,7 @@ pub const TypeChecker = struct {
                     return try self.makeOptionType(elem_ty);
                 }
 
-                if (std.mem.eql(u8, call.func_name, "remove")) {
+                if (lowering_rules.isRemoveCall(call)) {
                     if (call.args.len != 2) return TypeError.InvalidArgsCount;
                     const recv_ty = try self.checkExpr(call.args[0], scope);
                     const elem_ty = vecElementType(recv_ty) orelse return TypeError.TypeMismatch;
@@ -4852,7 +4877,7 @@ pub const TypeChecker = struct {
                         _ = try self.checkExpr(arg, scope);
                     }
                     const ret = try self.allocator.create(ast.Type);
-                    ret.* = .{ .primitive = .void_type };
+                    ret.* = .{ .primitive = if (std.mem.eql(u8, call.func_name, "stack_alloc")) .raw_ptr else .void_type };
                     return ret;
                 }
 
@@ -4908,28 +4933,9 @@ pub const TypeChecker = struct {
                         ret.* = .{ .primitive = .void_type };
                         return ret;
                     }
-                    if (macro.leading_outputs == 1 and call.args.len + 1 == macro.arity) {
-                        if (std.mem.endsWith(u8, call.func_name, "_PTR") or
-                            std.mem.endsWith(u8, call.func_name, "_DATA") or
-                            std.mem.endsWith(u8, call.func_name, "_AS_PTR") or
-                            std.mem.endsWith(u8, call.func_name, "_ADD") or
-                            std.mem.endsWith(u8, call.func_name, "_NULL"))
-                        {
-                            return try self.makeRawPtrType();
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_LEN") or
-                            std.mem.endsWith(u8, call.func_name, "_COUNT"))
-                        {
-                            return try self.makeI64Type();
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_READ_U8")) {
-                            return try self.makeU8Type();
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_READ_U64")) {
-                            return try self.makeU64Type();
-                        }
-                        if (std.mem.endsWith(u8, call.func_name, "_READ_I32")) {
-                            return try self.makeI32Type();
+                    if (lowering_rules.importedMacroUsesExpressionOutput(macro, call.args.len)) {
+                        if (lowering_rules.importedMacroExpressionResultKind(call.func_name)) |kind| {
+                            return try self.makeImportedMacroExpressionResultType(kind);
                         }
                         return try self.makeInferType();
                     }

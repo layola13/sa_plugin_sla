@@ -857,11 +857,30 @@ fn resolvedImportGroupForDecl(groups: []const SlaResolvedImportGroup, decl: *con
     return null;
 }
 
-fn reachablePlanCachePath(allocator: std.mem.Allocator, source_file: []const u8, root_source: []const u8, ordered_modules: []const *SlaModule) ![]u8 {
+fn reachablePlanCachePath(
+    allocator: std.mem.Allocator,
+    source_file: []const u8,
+    root_source: []const u8,
+    ordered_modules: []const *SlaModule,
+    options: SlaImportExpansionOptions,
+) ![]u8 {
     var hasher = std.hash.Wyhash.init(0);
     hasher.update(source_file);
     hasher.update(&std.mem.toBytes(@as(u64, root_source.len)));
     hasher.update(root_source);
+    const option_bits: u8 =
+        (@as(u8, @intFromBool(options.prune_for_test_codegen)) << 0) |
+        (@as(u8, @intFromBool(options.imported_bodies_decl_only)) << 1) |
+        (@as(u8, @intFromBool(options.load_reachable_imported_bodies_from_registry)) << 2) |
+        (@as(u8, @intFromBool(options.lazy_transitive_sla_imports)) << 3) |
+        (@as(u8, @intFromBool(options.include_all_imported_decls)) << 4);
+    hasher.update(&.{option_bits});
+    if (options.test_filter) |filter| {
+        hasher.update(&std.mem.toBytes(@as(u64, filter.len)));
+        hasher.update(filter);
+    } else {
+        hasher.update(&std.mem.toBytes(std.math.maxInt(u64)));
+    }
     for (ordered_modules) |module| {
         hasher.update(module.path);
         hasher.update(&std.mem.toBytes(@as(u64, module.expanded_source.len)));
@@ -1042,7 +1061,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
         const root_source = std.fs.cwd().readFileAlloc(allocator, source_file, 16 * 1024 * 1024) catch null;
         if (root_source) |root_bytes| {
             defer allocator.free(root_bytes);
-            if (reachablePlanCachePath(allocator, source_file, root_bytes, ordered_modules.items)) |plan_path| {
+            if (reachablePlanCachePath(allocator, source_file, root_bytes, ordered_modules.items, effective_options)) |plan_path| {
                 defer allocator.free(plan_path);
                 if (try tryLoadReachablePlan(allocator, plan_path, &reachable, &referenced_types)) {
                     used_reachable_plan_cache = true;
@@ -1088,7 +1107,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
             const root_source2 = std.fs.cwd().readFileAlloc(allocator, source_file, 16 * 1024 * 1024) catch null;
             if (root_source2) |root_bytes| {
                 defer allocator.free(root_bytes);
-                if (reachablePlanCachePath(allocator, source_file, root_bytes, ordered_modules.items)) |plan_path| {
+                if (reachablePlanCachePath(allocator, source_file, root_bytes, ordered_modules.items, effective_options)) |plan_path| {
                     defer allocator.free(plan_path);
                     storeReachablePlan(allocator, plan_path, &reachable, &referenced_types);
                 } else |_| {}

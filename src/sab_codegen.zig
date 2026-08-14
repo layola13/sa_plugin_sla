@@ -301,6 +301,7 @@ pub const Codegen = struct {
     future_readiness: std.AutoHashMap(u32, lowering_rules.FutureReadiness),
     future_readiness_by_name: std.StringHashMap(lowering_rules.FutureReadiness),
     global_scalar_consts: std.StringHashMap(*const ast.Node),
+    global_array_consts: std.StringHashMap([]const u8),
     copy_value_cache: std.StringHashMap(bool),
     string_literal_consts: std.StringHashMap([]const u8),
     sa_std_root: ?[]const u8 = null,
@@ -379,6 +380,7 @@ pub const Codegen = struct {
             .future_readiness = std.AutoHashMap(u32, lowering_rules.FutureReadiness).init(allocator),
             .future_readiness_by_name = std.StringHashMap(lowering_rules.FutureReadiness).init(allocator),
             .global_scalar_consts = std.StringHashMap(*const ast.Node).init(allocator),
+            .global_array_consts = std.StringHashMap([]const u8).init(allocator),
             .copy_value_cache = std.StringHashMap(bool).init(allocator),
             .string_literal_consts = std.StringHashMap([]const u8).init(allocator),
             .instructions = std.ArrayList(inst.Instruction).init(allocator),
@@ -456,6 +458,7 @@ pub const Codegen = struct {
         self.future_readiness.deinit();
         self.future_readiness_by_name.deinit();
         self.global_scalar_consts.deinit();
+        self.global_array_consts.deinit();
         self.copy_value_cache.deinit();
         self.string_literal_consts.deinit();
         if (self.sa_std_root) |root| self.allocator.free(root);
@@ -477,6 +480,7 @@ pub const Codegen = struct {
         const profile = sabProfileEnabled(self.allocator);
         var stage_start = std.time.nanoTimestamp();
         try self.collectGlobalScalarConsts(program);
+        try self.collectGlobalArrayConsts(program);
         try self.collectAssignedBindings(program);
         sabProfileStage(profile, "pre-scan", stage_start);
         stage_start = std.time.nanoTimestamp();
@@ -623,6 +627,91 @@ pub const Codegen = struct {
                 if (!alias_changed) break;
             }
         }
+    }
+
+    fn collectGlobalArrayConsts(self: *Codegen, program: *const ast.Node) !void {
+        self.global_array_consts.clearRetainingCapacity();
+        if (program.* != .program) return;
+        for (program.program.decls) |decl| {
+            if (decl.* != .const_stmt) continue;
+            const c = decl.const_stmt;
+            const ty = self.tc.expr_types.get(c.value) orelse continue;
+            if (ty.* != .array) continue;
+            if (self.global_array_consts.contains(c.name)) continue;
+            try self.emitGlobalArrayConst(c.name, c.value, ty.array);
+        }
+    }
+
+    fn emitGlobalArrayConst(self: *Codegen, name: []const u8, value: *const ast.Node, arr: ast.ArrayType) !void {
+        const label = try std.fmt.allocPrint(self.allocator, "SLA_GCONST_{s}", .{name});
+        const stride = arrayStride(arr.elem);
+        var buf = std.ArrayList(u8).init(self.allocator);
+        defer buf.deinit();
+        if (value.* == .array_literal) {
+            const lit = value.array_literal;
+            for (lit.elements) |elem| {
+                const start = buf.items.len;
+                if (elem.* == .literal) {
+                    switch (elem.literal) {
+                        .int_val => |v| {
+                            const prim = try storagePrimType(arr.elem);
+                            const bits: u64 = @bitCast(v);
+                            const nbytes = @as(usize, @intCast(sig.primTypeBits(prim) / 8));
+                            var i: usize = 0;
+                            while (i < nbytes) : (i += 1) {
+                                try buf.append(@intCast((bits >> @intCast(i * 8)) & 0xFF));
+                            }
+                        },
+                        .bool_val => |v| try buf.append(if (v) 1 else 0),
+                        else => {},
+                    }
+                }
+                while (buf.items.len < start + stride) try buf.append(0);
+            }
+        } else if (value.* == .repeat_array_literal) {
+            const lit = value.repeat_array_literal;
+            for (0..lit.len) |_| {
+                const start = buf.items.len;
+                if (lit.value.* == .literal) {
+                    switch (lit.value.literal) {
+                        .int_val => |v| {
+                            const prim = try storagePrimType(arr.elem);
+                            const bits: u64 = @bitCast(v);
+                            const nbytes = @as(usize, @intCast(sig.primTypeBits(prim) / 8));
+                            var i: usize = 0;
+                            while (i < nbytes) : (i += 1) {
+                                try buf.append(@intCast((bits >> @intCast(i * 8)) & 0xFF));
+                            }
+                        },
+                        .bool_val => |v| try buf.append(if (v) 1 else 0),
+                        else => {},
+                    }
+                }
+                while (buf.items.len < start + stride) try buf.append(0);
+            }
+        } else {
+            return;
+        }
+        const bytes = try buf.toOwnedSlice();
+        var hex_text = std.ArrayList(u8).init(self.allocator);
+        defer hex_text.deinit();
+        try hex_text.appendSlice("hex:");
+        for (bytes) |b| {
+            try hex_text.writer().print("\\x{x:0>2}", .{b});
+        }
+        const literal_text = try hex_text.toOwnedSlice();
+        const raw_text = try std.fmt.allocPrint(self.allocator, "@const {s} = {s}", .{ label, literal_text });
+        try self.const_decls.append(.{
+            .source_line = 0,
+            .expanded_line = 0,
+            .upstream_loc = null,
+            .raw_text = raw_text,
+            .name = try self.allocator.dupe(u8, label),
+            .literal_text = literal_text,
+            .value = .{ .hex = .{ .kind = .hex, .bytes = bytes } },
+        });
+        _ = try self.intern(label);
+        try self.global_array_consts.put(name, label);
     }
 
     fn scalarConstantNodeFor(self: *Codegen, expr: *const ast.Node) ?*const ast.Node {
@@ -9407,6 +9496,11 @@ pub const Codegen = struct {
                 if (self.global_scalar_consts.get(name)) |literal_node| {
                     if (literal_node.* != .literal) return Error.UnsupportedSabDirectFeature;
                     break :blk try self.genLiteralTyped(literal_node.literal, self.tc.expr_types.get(expr));
+                }
+                if (self.global_array_consts.get(name)) |label| {
+                    const dst = try self.intern(try self.newTmp());
+                    try self.emitBorrowSymbol(dst, label);
+                    break :blk dst;
                 }
                 break :blk try self.intern(name);
             },

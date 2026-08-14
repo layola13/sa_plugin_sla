@@ -2145,6 +2145,9 @@ pub const TypeChecker = struct {
                 try self.ensureTopLevelNameUnused(c.name, "const");
                 const val_ty = try self.checkExpr(c.value, global_scope);
                 const declared_ty = c.ty orelse val_ty;
+                if (c.ty != null and val_ty.* == .array and declared_ty.* == .array) {
+                    self.expr_types.put(c.value, declared_ty) catch return TypeError.OutOfMemory;
+                }
                 if (!self.valueAssignableTo(declared_ty, val_ty)) {
                     self.setError("TypeMismatch in const {s}: declared tag={s}, val tag={s}", .{ c.name, @tagName(declared_ty.*), @tagName(val_ty.*) });
                     return TypeError.TypeMismatch;
@@ -2770,6 +2773,9 @@ pub const TypeChecker = struct {
             .const_stmt => |c| {
                 const val_ty = try self.checkExpr(c.value, scope);
                 const declared_ty = c.ty orelse val_ty;
+                if (c.ty != null and val_ty.* == .array and declared_ty.* == .array) {
+                    self.expr_types.put(c.value, declared_ty) catch return TypeError.OutOfMemory;
+                }
                 if (!self.valueAssignableTo(declared_ty, val_ty)) {
                     if (self.canCoerceToDynBox(declared_ty, val_ty)) |trait_name| {
                         self.dyn_box_coercions.put(c.value, trait_name) catch return TypeError.OutOfMemory;

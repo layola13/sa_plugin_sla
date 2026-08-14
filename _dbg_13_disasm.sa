@@ -1,0 +1,40 @@
+@test "rosetta 013 array sum"():
+
+
+test_decl $"rosetta 013 array sum",fn:0
+label $L_TEST_ENTRY_0,L1
+    alloc r2,32u
+    assign r3,1
+    store r2,0u,r3,ty:5
+    release r3
+    assign r4,2
+    store r2,8u,r4,ty:5
+    release r4
+    assign r5,3
+    store r2,16u,r5,ty:5
+    release r5
+    assign r6,4
+    store r2,24u,r6,ty:5
+    release r6
+    assign r7,r2
+    call r8,"@sla__iter","values"
+    call r10,"@sla__sum","tmp_5"
+    release r8
+    stack_alloc r12,4u
+    store r12,0u,r10,ty:4
+    release r10
+    load r13,r12,0u,ty:4
+    assign r14,10
+    op.ne r15,r13,r14
+    release r13
+    release r14
+    br r15,L16,L16,L17
+label $L_THEN_1,L16
+    panic "13"
+label $L_ELSE_2,L17
+    jmp $L_ELSE_EXIT_5,L19
+label $L_ELSE_EXIT_5,L19
+    jmp $L_MERGE_3,L20
+label $L_MERGE_3,L20
+    release r7
+    return_

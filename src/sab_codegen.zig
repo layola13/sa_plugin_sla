@@ -11454,6 +11454,32 @@ pub const Codegen = struct {
         return acc;
     }
 
+    fn genStructConstructorCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.associated_target != null) return null;
+        if (call.args.len == 0) return null;
+        const decl = self.tc.structs.get(call.func_name) orelse return null;
+        if (decl.generics.len != 0) return null;
+        if (decl.fields.len != call.args.len) return null;
+
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, structSize(decl));
+        for (call.args, decl.fields) |arg, field| {
+            const field_ty = self.tc.expr_types.get(arg) orelse field.ty;
+            const layout = self.fieldLayoutFromDecl(decl, field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const value = try self.genExpr(@constCast(arg));
+            try self.emitStore(dst, layout.offset, value, layout.ty);
+            try self.releaseStoredExprResultIfNeeded(arg, value, field_ty);
+        }
+        return dst;
+    }
+
+    fn fieldLayoutFromDecl(self: *Codegen, decl: *ast.StructDecl, name: []const u8) ?FieldLayout {
+        _ = self;
+        const layout = lowering_rules.structFieldLayout(decl, name) orelse return null;
+        return .{ .offset = layout.offset, .ty = storagePrimType(layout.ty) catch return null };
+    }
+
     fn genArrayFillCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (call.associated_target != null) return null;
         if (!std.mem.eql(u8, call.func_name, "fill")) return null;
@@ -11468,7 +11494,6 @@ pub const Codegen = struct {
             try self.emitStore(recv_reg, stride * i, value_reg, elem_prim);
         }
         if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
-        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
         return recv_reg;
     }
 
@@ -12322,6 +12347,7 @@ pub const Codegen = struct {
         if (try self.genVecPushCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
+        if (try self.genStructConstructorCall(expr, call)) |reg| return reg;
         if (try self.genIterSumCall(call)) |reg| return reg;
         if (try self.genArrayFillCall(call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;

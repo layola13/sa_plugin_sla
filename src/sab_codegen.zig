@@ -11312,8 +11312,22 @@ pub const Codegen = struct {
     fn genVecLenCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (!lowering_rules.isBareLenUnaryCall(call)) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
-        _ = lowering_rules.vecElementType(receiver_ty) orelse return null;
 
+        if (lowering_rules.arrayType(receiver_ty)) |arr| {
+            const dst = try self.intern(try self.newTmp());
+            try self.emitAssignImm(dst, @intCast(arr.len));
+            return dst;
+        }
+
+        if (lowering_rules.sliceElementType(receiver_ty) != null) {
+            const base_reg = try self.genExpr(@constCast(call.args[0]));
+            const dst = try self.intern(try self.newTmp());
+            try self.emitLoad(dst, base_reg, lowering_rules.SliceAbi.len_offset, .u64);
+            if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+            return dst;
+        }
+
+        _ = lowering_rules.vecElementType(receiver_ty) orelse return null;
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
         const receiver_source = try self.genVecOwnerReceiver(@constCast(call.args[0]));
         const receiver_reg = receiver_source.reg;
@@ -11322,6 +11336,140 @@ pub const Codegen = struct {
         try self.emitLoad(dst, receiver_reg, lowering_rules.VecAbi.len_offset, .u64);
         try self.releaseAddressSource(receiver_source);
         return dst;
+    }
+
+    fn arrayIterSumSource(call: ast.CallExpr) ?*ast.Node {
+        if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
+        const iter_expr = call.args[0];
+        if (iter_expr.* != .call_expr) return null;
+        const iter_call = &iter_expr.call_expr;
+        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
+        return iter_call.args[0];
+    }
+
+    fn arrayCopiedIterSumSource(call: ast.CallExpr) ?*ast.Node {
+        if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
+        const iter_expr = call.args[0];
+        if (iter_expr.* != .call_expr) return null;
+        const copied_call = &iter_expr.call_expr;
+        if (!lowering_rules.isCopiedCall(copied_call.*) or copied_call.args.len != 1) return null;
+        const inner_expr = copied_call.args[0];
+        if (inner_expr.* != .call_expr) return null;
+        const iter_call = &inner_expr.call_expr;
+        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
+        return iter_call.args[0];
+    }
+
+    fn genIterSumCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
+
+        if (arrayIterSumSource(call)) |source| {
+            const source_ty = self.tc.expr_types.get(source) orelse {
+                return null;
+            };
+            if (lowering_rules.arrayType(source_ty)) |arr| {
+                return try self.genArrayIterSum(source, arr);
+            }
+            if (lowering_rules.sliceElementType(source_ty)) |elem_ty| {
+                return try self.genSliceIterSum(source, elem_ty);
+            }
+        }
+
+        if (arrayCopiedIterSumSource(call)) |source| {
+            const source_ty = self.tc.expr_types.get(source) orelse return null;
+            if (lowering_rules.arrayType(source_ty)) |arr| {
+                return try self.genArrayIterSum(source, arr);
+            }
+            if (lowering_rules.sliceElementType(source_ty)) |elem_ty| {
+                return try self.genSliceIterSum(source, elem_ty);
+            }
+        }
+
+        return null;
+    }
+
+    fn genArrayIterSum(self: *Codegen, source: *ast.Node, arr: ast.ArrayType) anyerror!u32 {
+        if (arr.len == 0) {
+            const dst = try self.intern(try self.newTmp());
+            try self.emitAssignImm(dst, 0);
+            return dst;
+        }
+        const base_reg = try self.genExpr(@constCast(source));
+        const stride = arrayStride(arr.elem);
+        const elem_prim = try storagePrimType(arr.elem);
+        var acc = try self.intern(try self.newTmp());
+        try self.emitAssignImm(acc, 0);
+        for (0..arr.len) |i| {
+            const elem_ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(elem_ptr, base_reg, .{ .imm_u64 = @intCast(stride * i) });
+            const item = try self.intern(try self.newTmp());
+            try self.emitLoad(item, elem_ptr, 0, elem_prim);
+            const next_acc = try self.intern(try self.newTmp());
+            try self.emitOp(next_acc, .add, .{ .reg = acc }, .{ .reg = item });
+            try self.emitRelease(elem_ptr);
+            try self.emitRelease(item);
+            try self.emitRelease(acc);
+            acc = next_acc;
+        }
+        if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+        return acc;
+    }
+
+    fn genSliceIterSum(self: *Codegen, source: *ast.Node, elem_ty: *const ast.Type) anyerror!u32 {
+        const base_reg = try self.genExpr(@constCast(source));
+        const ptr_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(ptr_reg, base_reg, lowering_rules.SliceAbi.ptr_offset, .ptr);
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(len_reg, base_reg, lowering_rules.SliceAbi.len_offset, .u64);
+        if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+
+        const acc = try self.intern(try self.newTmp());
+        try self.emitAssignImm(acc, 0);
+
+        const loop_start = try self.newLabel("L_ITER_SUM_LOOP");
+        const loop_body = try self.newLabel("L_ITER_SUM_BODY");
+        const loop_end = try self.newLabel("L_ITER_SUM_END");
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_start);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .slt, .{ .reg = idx }, .{ .reg = len_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, ptr_reg, .{ .reg = idx });
+        const item = try self.intern(try self.newTmp());
+        try self.emitLoad(item, elem_ptr, 0, try storagePrimType(elem_ty));
+        try self.emitOp(acc, .add, .{ .reg = acc }, .{ .reg = item });
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_i64 = 1 });
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(item);
+        try self.emitRelease(cmp);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_end);
+        try self.emitRelease(ptr_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx);
+        return acc;
+    }
+
+    fn genArrayFillCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.associated_target != null) return null;
+        if (!std.mem.eql(u8, call.func_name, "fill")) return null;
+        if (call.args.len != 2) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const arr = lowering_rules.arrayType(receiver_ty) orelse return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const value_reg = try self.genExpr(@constCast(call.args[1]));
+        const stride = arrayStride(arr.elem);
+        const elem_prim = try storagePrimType(arr.elem);
+        for (0..arr.len) |i| {
+            try self.emitStore(recv_reg, stride * i, value_reg, elem_prim);
+        }
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        return recv_reg;
     }
 
     fn genVecPopCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
@@ -12174,6 +12322,8 @@ pub const Codegen = struct {
         if (try self.genVecPushCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
+        if (try self.genIterSumCall(call)) |reg| return reg;
+        if (try self.genArrayFillCall(call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const lowering = lowering_rules.planStaticCallLowering(self.tc, expr, call, self.tc.expr_types.get(expr)) orelse return Error.UnsupportedSabDirectFeature;
         return try self.emitPlannedStaticCall(lowering, call);

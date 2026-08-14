@@ -2672,6 +2672,9 @@ pub const TypeChecker = struct {
             .let_stmt => |let| {
                 const val_ty = try self.checkExpr(let.value, scope);
                 const declared_ty = let.ty orelse val_ty;
+                if (let.ty != null and val_ty.* == .array and declared_ty.* == .array) {
+                    self.expr_types.put(let.value, declared_ty) catch return TypeError.OutOfMemory;
+                }
                 if (!self.valueAssignableTo(declared_ty, val_ty)) {
                     if (declared_ty.* == .user_defined and std.mem.eql(u8, declared_ty.user_defined.name, "Slice") and declared_ty.user_defined.generics.len == 1 and val_ty.* == .borrow) {
                         if (arrayType(val_ty.borrow)) |arr| {

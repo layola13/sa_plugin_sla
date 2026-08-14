@@ -38,3 +38,7 @@ logs/
 # debug/work artifacts
 _testlogs/
 _work/
+
+# local std build artifact
+local_sa_std/
+

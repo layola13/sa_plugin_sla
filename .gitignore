@@ -34,3 +34,7 @@ tmp_*
 *.log
 logs/
 .claude/skills/verify/
+
+# debug/work artifacts
+_testlogs/
+_work/

@@ -691,6 +691,14 @@ pub const TypeChecker = struct {
             }
             const arg_ty = try self.checkExpr(arg, scope);
             if (!self.plainCallArgMatches(param.ty, arg, arg_ty)) return TypeError.TypeMismatch;
+            if ((arg.* == .tuple_literal or arg.* == .array_literal) and
+                self.typesEqual(arg_ty, param.ty))
+            {
+                std.debug.print("TC_PROP: arg_tag={s} arg_ty={s} param_ty={s}\n", .{@tagName(arg.*), @tagName(arg_ty.*), @tagName(param.ty.*)});
+                self.expr_types.put(arg, param.ty) catch return TypeError.OutOfMemory;
+            } else if (arg.* == .tuple_literal or arg.* == .array_literal) {
+                std.debug.print("TC_NOPROP: arg_tag={s} arg_ty={s} param_ty={s}\n", .{@tagName(arg.*), @tagName(arg_ty.*), @tagName(param.ty.*)});
+            }
         }
     }
 

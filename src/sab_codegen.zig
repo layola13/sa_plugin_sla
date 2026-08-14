@@ -8387,7 +8387,7 @@ pub const Codegen = struct {
             const layout = tupleFieldLayout(tuple_ty, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genMacroExpr(elem, ctx);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            try self.releaseStoredExprResultIfNeeded(elem, value, elem_tys[idx]);
+            try self.releaseStoredExprResultIfNeeded(elem, value, tuple_ty.elems[idx]);
         }
         return dst;
     }
@@ -9513,7 +9513,7 @@ pub const Codegen = struct {
             .field_expr => |field| try self.genField(field),
             .struct_literal => |lit| try self.genStructLiteral(lit),
             .enum_literal => |lit| try self.genEnumLiteral(lit),
-            .tuple_literal => |lit| try self.genTupleLiteral(lit),
+            .tuple_literal => |lit| try self.genTupleLiteral(expr, lit),
             .array_literal => |lit| try self.genArrayLiteral(expr, lit),
             .repeat_array_literal => |lit| try self.genRepeatArrayLiteral(expr, lit),
             .index_expr => |idx| try self.genIndex(idx),
@@ -14635,20 +14635,29 @@ pub const Codegen = struct {
         return dst;
     }
 
-    fn genTupleLiteral(self: *Codegen, lit: ast.TupleLiteral) anyerror!u32 {
+    fn genTupleLiteral(self: *Codegen, expr: *const ast.Node, lit: ast.TupleLiteral) anyerror!u32 {
         if (lit.elements.len == 0) return Error.UnsupportedSabDirectFeature;
-        const elem_tys = try self.allocator.alloc(*ast.Type, lit.elements.len);
-        for (lit.elements, 0..) |elem, idx| {
-            elem_tys[idx] = self.tc.expr_types.get(elem) orelse return Error.MissingType;
+        var tuple_ty: ast.TupleType = undefined;
+        if (self.tc.expr_types.get(expr)) |expr_ty| {
+            if (expr_ty.* == .tuple) {
+                tuple_ty = expr_ty.tuple;
+            } else {
+                return Error.UnsupportedSabDirectFeature;
+            }
+        } else {
+            const elem_tys = try self.allocator.alloc(*ast.Type, lit.elements.len);
+            for (lit.elements, 0..) |elem, idx| {
+                elem_tys[idx] = self.tc.expr_types.get(elem) orelse return Error.MissingType;
+            }
+            tuple_ty = ast.TupleType{ .elems = elem_tys };
         }
-        const tuple_ty = ast.TupleType{ .elems = elem_tys };
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, tupleSize(tuple_ty));
         for (lit.elements, 0..) |elem, idx| {
             const layout = tupleFieldLayout(tuple_ty, idx) orelse return Error.UnsupportedSabDirectFeature;
             const value = try self.genExpr(elem);
             try self.emitStore(dst, layout.offset, value, layout.ty);
-            try self.releaseStoredExprResultIfNeeded(elem, value, elem_tys[idx]);
+            try self.releaseStoredExprResultIfNeeded(elem, value, tuple_ty.elems[idx]);
         }
         return dst;
     }

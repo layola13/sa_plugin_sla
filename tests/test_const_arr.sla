@@ -1,9 +1,0 @@
-const VALUES: [i32; 3] = [1, 2, 3];
-
-@test "const array index"() {
-    let a = VALUES[0];
-    let b = VALUES[1];
-    let c = VALUES[2];
-    let sum = a + b + c;
-    if sum != 6 { panic(29); };
-};

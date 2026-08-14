@@ -1,4 +1,5 @@
 const std = @import("std");
+const host_paths = @import("host_paths.zig");
 
 pub const ResolveError = error{
     OutOfMemory,
@@ -604,7 +605,9 @@ pub fn resolveFromRootPath(allocator: std.mem.Allocator, root_path: []const u8, 
 }
 
 pub fn selectedSourcePath(allocator: std.mem.Allocator, resolved: *const PackageResolution) ResolveError![]u8 {
-    return sourcePathForRoot(allocator, resolved.member_root);
+    const raw = try sourcePathForRoot(allocator, resolved.member_root);
+    defer allocator.free(raw);
+    return host_paths.normalizePathSlashes(allocator, raw);
 }
 
 test "workspace resolver selects default member by package name" {

@@ -3,6 +3,7 @@ const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const source_expand = @import("source_expand.zig");
+const host_paths = @import("host_paths.zig");
 
 pub const ParserError = error{
     SyntaxError,
@@ -387,10 +388,11 @@ pub const Parser = struct {
             if (try self.readSlaStdPathIfExists(env_root, rel_path)) |resolved| return resolved;
         } else |_| {}
 
-        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+        if (host_paths.homeDirectory(self.allocator)) |home| {
+            defer self.allocator.free(home);
             const home_std_root = try std.fs.path.join(self.allocator, &.{ home, "projects", "sa_plugins", "sa_plugin_sla", "sla_std" });
             if (try self.readSlaStdPathIfExists(home_std_root, rel_path)) |resolved| return resolved;
-        } else |_| {}
+        }
 
         const candidate_roots = [_][]const u8{
             "sla_std",
@@ -1322,7 +1324,14 @@ pub const Parser = struct {
     }
 
     fn prescanResolvedSlaImportTypes(self: *Parser, resolved_path: []const u8) !void {
-        const canonical_path = std.fs.cwd().realpathAlloc(self.allocator, resolved_path) catch resolved_path;
+        const canonical_path = blk: {
+            const real = std.fs.cwd().realpathAlloc(self.allocator, resolved_path) catch break :blk resolved_path;
+            const normed = host_paths.normalizePathSlashes(self.allocator, real) catch {
+                break :blk real;
+            };
+            self.allocator.free(real);
+            break :blk normed;
+        };
         if (self.import_type_scan_cache.get(canonical_path)) |surface| {
             self.import_type_scan_cache_hits += 1;
             try self.mergeKnownTypeSurface(surface);

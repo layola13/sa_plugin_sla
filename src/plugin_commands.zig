@@ -10,6 +10,7 @@ const plugin_api = @import("plugin_api");
 const plugin_cli = @import("plugin_cli.zig");
 const plugin_sab_paths = @import("plugin_sab_paths.zig");
 const plugin_imports = @import("plugin_imports.zig");
+const host_paths = @import("host_paths.zig");
 const plugin_import_expand = @import("plugin_import_expand.zig");
 const plugin_module_table = @import("plugin_module_table.zig");
 const plugin_compile = @import("plugin_compile.zig");
@@ -20,6 +21,7 @@ const SlaModuleTable = plugin_module_table.SlaModuleTable;
 const SlaResolvedImportGroup = plugin_module_table.SlaResolvedImportGroup;
 const appendDefaultJobsAuto = plugin_cli.appendDefaultJobsAuto;
 const appendCompiledSaTestPassthrough = plugin_cli.appendCompiledSaTestPassthrough;
+const resolveSaExecutable = host_paths.resolveSaExecutable;
 const appendSabWorkspacePassthrough = plugin_sab_paths.appendSabWorkspacePassthrough;
 const compileSlaFileToSab = plugin_compile.compileSlaFileToSab;
 const compileSlaFileToSabWithOptions = plugin_compile.compileSlaFileToSabWithOptions;
@@ -138,7 +140,7 @@ fn runSabWorkspaceCommand(
     }
 
     var argv = std.ArrayList([]const u8).init(allocator);
-    try argv.append("sa");
+    try argv.append(resolveSaExecutable(allocator));
     try argv.append("build-exe");
     try argv.append(managed_path);
     try appendSabWorkspacePassthrough(&argv, extra_args);
@@ -333,7 +335,7 @@ pub fn runSlaCommandImpl(
         }
 
         var argv = std.ArrayList([]const u8).init(allocator);
-        try argv.append("sa");
+        try argv.append(resolveSaExecutable(allocator));
         try argv.append("build-exe");
         try argv.append(sab_out);
         for (extra_args) |a| try argv.append(a);
@@ -378,7 +380,7 @@ pub fn runSlaCommandImpl(
         }
 
         var argv = std.ArrayList([]const u8).init(allocator);
-        try argv.append("sa");
+        try argv.append(resolveSaExecutable(allocator));
         try argv.append("build-exe");
         try argv.append(sab_out);
         for (extra_args) |a| try argv.append(a);
@@ -538,7 +540,7 @@ pub fn runSlaCommandImpl(
         }
 
         var argv = std.ArrayList([]const u8).init(allocator);
-        try argv.append("sa");
+        try argv.append(resolveSaExecutable(allocator));
         try argv.append("test");
         try argv.append(test_input.path);
         appendCompiledSaTestPassthrough(&argv, extra_args) catch {

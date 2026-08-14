@@ -1,5 +1,6 @@
 const std = @import("std");
 const workspace = @import("workspace.zig");
+const host_paths = @import("host_paths.zig");
 
 pub const max_import_bytes = 16 * 1024 * 1024;
 
@@ -74,7 +75,9 @@ pub fn readImportFileIfExistsWithOutputPath(allocator: std.mem.Allocator, path: 
         if (err == error.FileNotFound or err == error.NotDir or err == error.IsDir) return null;
         return err;
     };
-    const real_path = std.fs.cwd().realpathAlloc(allocator, path) catch try allocator.dupe(u8, path);
+    const real_path_raw = std.fs.cwd().realpathAlloc(allocator, path) catch try allocator.dupe(u8, path);
+    const real_path = try host_paths.normalizePathSlashes(allocator, real_path_raw);
+    allocator.free(real_path_raw);
     return .{ .path = real_path, .output_path = try allocator.dupe(u8, output_path), .source = source };
 }
 
@@ -99,10 +102,17 @@ pub fn resolveSaStdImport(allocator: std.mem.Allocator, import_path: []const u8)
         if (try readImportFromRoot(allocator, env_root, rel_path, import_path)) |resolved| return resolved;
     } else |_| {}
 
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+    if (std.process.getEnvVarOwned(allocator, "SCI_ROOT")) |sci_root| {
+        defer allocator.free(sci_root);
+        const sci_sa_std_root = try std.fs.path.join(allocator, &.{ sci_root, "sa_std" });
+        if (try readImportFromRoot(allocator, sci_sa_std_root, rel_path, import_path)) |resolved| return resolved;
+    } else |_| {}
+
+    if (host_paths.homeDirectory(allocator)) |home| {
+        defer allocator.free(home);
         const home_std_root = try std.fs.path.join(allocator, &.{ home, "projects", "sci", "sa_std" });
         if (try readImportFromRoot(allocator, home_std_root, rel_path, import_path)) |resolved| return resolved;
-    } else |_| {}
+    }
 
     const candidate_roots = [_][]const u8{
         "sa_std",
@@ -131,10 +141,11 @@ pub fn resolveSlaStdImport(allocator: std.mem.Allocator, import_path: []const u8
         if (try readImportFromRoot(allocator, env_root, rel_path, import_path)) |resolved| return resolved;
     } else |_| {}
 
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+    if (host_paths.homeDirectory(allocator)) |home| {
+        defer allocator.free(home);
         const home_std_root = try std.fs.path.join(allocator, &.{ home, "projects", "sa_plugins", "sa_plugin_sla", "sla_std" });
         if (try readImportFromRoot(allocator, home_std_root, rel_path, import_path)) |resolved| return resolved;
-    } else |_| {}
+    }
 
     const candidate_roots = [_][]const u8{
         "sla_std",

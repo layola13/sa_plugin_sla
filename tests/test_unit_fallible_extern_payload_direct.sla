@@ -42,7 +42,7 @@ fn fallible_extern_json_free_status(node: ptr, owned: bool) -> i32 {
 }
 
 @test "fallible extern payload can feed buffer externs"() {
-    let got = fallible_extern_read_len("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/test_unit_basic.sla", 72);
+    let got = fallible_extern_read_len("E:/projects/sa_plugin_sla/tests/test_unit_basic.sla", 51);
     let ok = nonzero_status_u64(got);
     if ok == 0 {
         panic(43011);
@@ -50,7 +50,7 @@ fn fallible_extern_json_free_status(node: ptr, owned: bool) -> i32 {
 }
 
 @test "fallible i32 extern payload uses SA ABI offset"() {
-    let status = fallible_extern_metadata_free_status("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/test_unit_basic.sla", 72);
+    let status = fallible_extern_metadata_free_status("E:/projects/sa_plugin_sla/tests/test_unit_basic.sla", 51);
     if status != 0 {
         panic(43012);
     };

@@ -3,6 +3,7 @@ const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const source_expand = @import("source_expand.zig");
 const lowering_rules = @import("lowering_rules.zig");
+const host_paths = @import("host_paths.zig");
 const plugin_imports = @import("plugin_imports.zig");
 
 const ResolvedImport = plugin_imports.ResolvedImport;
@@ -400,7 +401,9 @@ pub const SlaModuleTable = struct {
             try self.allocator.dupe(u8, import_path)
         else
             try std.fs.path.join(self.allocator, &.{ base_dir, import_path });
-        const canonical_path = std.fs.cwd().realpathAlloc(self.allocator, candidate) catch return null;
+        const canonical_path_raw = std.fs.cwd().realpathAlloc(self.allocator, candidate) catch return null;
+        const canonical_path = host_paths.normalizePathSlashes(self.allocator, canonical_path_raw) catch canonical_path_raw;
+        if (!std.mem.eql(u8, canonical_path, canonical_path_raw)) self.allocator.free(canonical_path_raw);
         if (std.mem.eql(u8, canonical_path, exclude_path)) return null;
         const surface = self.import_type_scan_cache.get(canonical_path) orelse return null;
         if (!surface.complete) return null;
@@ -436,7 +439,14 @@ pub const SlaModuleTable = struct {
         const total_start = if (profile) std.time.nanoTimestamp() else 0;
         const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
         const expand_start = if (profile) std.time.nanoTimestamp() else 0;
-        const cache_lookup_path = std.fs.cwd().realpathAlloc(self.allocator, resolved.path) catch resolved.path;
+        const cache_lookup_path = blk: {
+            const raw = std.fs.cwd().realpathAlloc(self.allocator, resolved.path) catch break :blk resolved.path;
+            const normed = host_paths.normalizePathSlashes(self.allocator, raw) catch {
+                break :blk raw;
+            };
+            self.allocator.free(raw);
+            break :blk normed;
+        };
         const expanded_source = if (self.import_type_scan_cache.get(cache_lookup_path) orelse self.import_type_scan_cache.get(resolved.path)) |surface| blk: {
             if (!surface.complete) break :blk try source_expand.expandForModulePath(self.allocator, resolved.path, resolved.source);
             self.expanded_source_cache_hits += 1;
@@ -514,7 +524,14 @@ pub const SlaModuleTable = struct {
         // cache so later parsers that `@import` it (e.g. tiny table_erased_access
         // depending on huge world_table_erased) hit mergeKnownTypeSurface instead
         // of re-expanding and re-parsing the whole file during prescan.
-        const cache_path = std.fs.cwd().realpathAlloc(self.allocator, module.path) catch module.path;
+        const cache_path = blk: {
+            const raw = std.fs.cwd().realpathAlloc(self.allocator, module.path) catch break :blk module.path;
+            const normed = host_paths.normalizePathSlashes(self.allocator, raw) catch {
+                break :blk raw;
+            };
+            self.allocator.free(raw);
+            break :blk normed;
+        };
         if (self.import_type_scan_cache.get(cache_path)) |existing| {
             if (!existing.complete) {
                 try self.import_type_scan_cache.put(cache_path, .{

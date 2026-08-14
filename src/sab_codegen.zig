@@ -4,6 +4,7 @@ const contract_parser = @import("contract_parser.zig");
 const type_checker = @import("type_checker.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const sci_bridge = @import("sci_bridge");
+const host_paths = @import("host_paths.zig");
 
 const sab = sci_bridge.sab;
 const flattener = sci_bridge.flattener;
@@ -295,6 +296,7 @@ pub const Codegen = struct {
     result_slot_refcell_slots: std.AutoHashMap(u32, u32),
     borrow_address_temps: std.AutoHashMap(u32, BorrowAddressTempState),
     non_owning_regs: std.AutoHashMap(u32, void),
+    borrow_result_regs: std.AutoHashMap(u32, void),
     future_state_vtables: std.AutoHashMap(u32, []const u8),
     future_readiness: std.AutoHashMap(u32, lowering_rules.FutureReadiness),
     future_readiness_by_name: std.StringHashMap(lowering_rules.FutureReadiness),
@@ -372,6 +374,7 @@ pub const Codegen = struct {
             .result_slot_refcell_slots = std.AutoHashMap(u32, u32).init(allocator),
             .borrow_address_temps = std.AutoHashMap(u32, BorrowAddressTempState).init(allocator),
             .non_owning_regs = std.AutoHashMap(u32, void).init(allocator),
+            .borrow_result_regs = std.AutoHashMap(u32, void).init(allocator),
             .future_state_vtables = std.AutoHashMap(u32, []const u8).init(allocator),
             .future_readiness = std.AutoHashMap(u32, lowering_rules.FutureReadiness).init(allocator),
             .future_readiness_by_name = std.StringHashMap(lowering_rules.FutureReadiness).init(allocator),
@@ -448,6 +451,7 @@ pub const Codegen = struct {
         self.clearBorrowAddressTemps();
         self.borrow_address_temps.deinit();
         self.non_owning_regs.deinit();
+        self.borrow_result_regs.deinit();
         self.future_state_vtables.deinit();
         self.future_readiness.deinit();
         self.future_readiness_by_name.deinit();
@@ -837,9 +841,16 @@ pub const Codegen = struct {
         for (trait_decl.supertraits) |supertrait| {
             try self.appendTraitVTableEntries(supertrait, type_name, slots, literal);
         }
+        // Match the SA codegen rule: skip vtable slots whose target impl method is decl-only, since import
+        // expansion prunes unreachable imported trait impl methods to decl-only stubs (`is_decl_only = true`).
+        // Leaving such a slot would point the vtable at an unregistered function and trap the verifier.
         for (trait_decl.methods) |method| {
-            if (slots.items.len > 0) try literal.appendSlice(", ");
             const mangled = try self.mangleTraitMethodName(type_name, trait_name, method.name);
+            defer self.allocator.free(mangled);
+            if (self.tc.funcs.get(mangled)) |impl_method| {
+                if (impl_method.is_decl_only) continue;
+            }
+            if (slots.items.len > 0) try literal.appendSlice(", ");
             const lowered = try self.loweredFuncSymbol(mangled);
             try literal.writer().print("{s} = @{s}", .{ method.name, lowered });
             try slots.append(.{
@@ -1100,7 +1111,7 @@ pub const Codegen = struct {
             }
         } else |_| {}
 
-        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+        if (host_paths.homeDirectory(self.allocator)) |home| {
             defer self.allocator.free(home);
             const path = try std.fs.path.join(self.allocator, &.{ home, "projects", "sa_plugins", "sa_plugin_sla", "sla_std", "std_surface.sla_meta" });
             defer self.allocator.free(path);
@@ -1108,7 +1119,7 @@ pub const Codegen = struct {
                 error.FileNotFound, error.NotDir => {},
                 else => return err,
             }
-        } else |_| {}
+        }
 
         const candidates = [_][]const u8{
             "sla_std/std_surface.sla_meta",
@@ -1156,7 +1167,14 @@ pub const Codegen = struct {
             if (try self.dupeIfValidSaStdRoot(env_root)) |root| return root;
         } else |_| {}
 
-        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+        if (std.process.getEnvVarOwned(self.allocator, "SCI_ROOT")) |sci_root| {
+            defer self.allocator.free(sci_root);
+            const sci_sa_std_root = try std.fs.path.join(self.allocator, &.{ sci_root, "sa_std" });
+            defer self.allocator.free(sci_sa_std_root);
+            if (try self.dupeIfValidSaStdRoot(sci_sa_std_root)) |root| return root;
+        } else |_| {}
+
+        if (host_paths.homeDirectory(self.allocator)) |home| {
             defer self.allocator.free(home);
             const home_repo_std_root = try std.fs.path.join(self.allocator, &.{ home, "projects", "sci", "sa_std" });
             defer self.allocator.free(home_repo_std_root);
@@ -1165,7 +1183,7 @@ pub const Codegen = struct {
             const installed_std_root = try std.fs.path.join(self.allocator, &.{ home, ".sa", "std" });
             defer self.allocator.free(installed_std_root);
             if (try self.dupeIfValidSaStdRoot(installed_std_root)) |root| return root;
-        } else |_| {}
+        }
 
         const candidate_roots = [_][]const u8{
             "sa_std",
@@ -1743,6 +1761,23 @@ pub const Codegen = struct {
 
     fn emitStdSurfaceRule(self: *Codegen, rule: StdSurfaceRule, values: StdSurfaceValues) !void {
         try self.ensureRuleDeps(rule);
+        if (std.mem.eql(u8, rule.macro_name, "BTREE_SET_INSERT") or
+            std.mem.eql(u8, rule.macro_name, "BTREE_SET_CONTAINS"))
+        {
+            const out_reg = values.out orelse return Error.UnsupportedSabDirectFeature;
+            const receiver = self.symbols.items[values.receiver orelse return Error.UnsupportedSabDirectFeature];
+            const value = self.symbols.items[values.value orelse return Error.UnsupportedSabDirectFeature];
+            const callee = if (std.mem.eql(u8, rule.macro_name, "BTREE_SET_INSERT"))
+                "@sa_btree_set_insert"
+            else
+                "@sa_btree_set_contains";
+            try self.emitCallBody(out_reg, try std.fmt.allocPrint(
+                self.allocator,
+                "{s}(&{s}, &{s})",
+                .{ callee, receiver, value },
+            ));
+            return;
+        }
         var args = std.ArrayList([]const u8).init(self.allocator);
         defer args.deinit();
         var literal_args = std.ArrayList(bool).init(self.allocator);
@@ -2860,7 +2895,14 @@ pub const Codegen = struct {
         }
         if (local.ty) |ty| {
             const abi_ty = primType(ty) catch return;
-            if (abi_ty == .ptr) return;
+            if (abi_ty == .ptr) {
+                const is_copy = self.typeIsCopyValue(ty);
+                const is_borrow = lowering_rules.isBorrowLikeType(ty);
+                if (is_copy or is_borrow) return;
+                try self.emitMove(local.reg);
+                try self.released_regs.put(local.reg, {});
+                return;
+            }
         }
         if (local.stack_ty != null) return try self.releaseStackLocalValue(local);
         if (local.is_stack_alloc) {
@@ -3346,6 +3388,7 @@ pub const Codegen = struct {
     fn emitBranchReleaseWithMetadata(self: *Codegen, reg: u32, seen: *std.AutoHashMap(u32, void)) anyerror!void {
         if (seen.contains(reg)) return;
         try seen.put(reg, {});
+        if (self.released_regs.contains(reg)) return;
 
         var handles_to_release = std.ArrayList(u32).init(self.allocator);
         defer handles_to_release.deinit();
@@ -3690,8 +3733,9 @@ pub const Codegen = struct {
         if (remap.stable_reg_ids.get(old_id)) |existing| return existing;
         if (remap.reg_ids.get(old_id)) |existing| return existing;
         const old_name = try decodedModuleRegSymbolName(symbols, remap, old_id);
-        const new_id = try self.internStable(old_name);
+        const new_id = try self.newDecodedModuleLocalSymbol("r", old_id);
         try remap.reg_ids.put(old_id, new_id);
+        try remap.source_reg_symbol_ids.put(old_id, new_id);
         try remap.reg_order.append(old_id);
         const entry = try remap.reg_names.getOrPut(old_name);
         if (!entry.found_existing) entry.value_ptr.* = self.symbols.items[new_id];
@@ -3781,9 +3825,7 @@ pub const Codegen = struct {
     }
 
     fn decodedModuleOperandIdForSourceSymbol(remap: *DecodedModuleLocalRemap, source_symbol_id: u32) ?u32 {
-        _ = remap;
-        _ = source_symbol_id;
-        return null;
+        return remap.source_reg_symbol_ids.get(source_symbol_id);
     }
 
     fn decodedModuleTextTokenCanBeLocalReg(token: []const u8) bool {
@@ -3807,8 +3849,7 @@ pub const Codegen = struct {
                 if (stable.contains(tok.items)) return;
                 if (local_remap.reg_names.contains(tok.items)) return;
                 if (decodedModuleSymbolIdByName(source_symbols, tok.items)) |old_id| {
-                    const operand_id = decodedModuleOperandIdForSourceSymbol(local_remap, old_id) orelse old_id;
-                    try cg.collectDecodedModuleRegId(source_symbols, operand_id, local_remap, stable);
+                    try cg.collectDecodedModuleRegId(source_symbols, old_id, local_remap, stable);
                     return;
                 }
                 if (collect_unknown) _ = try cg.ensureDecodedModuleNamedRegId(local_remap, tok.items);
@@ -3839,6 +3880,7 @@ pub const Codegen = struct {
             if (param_idx >= fsig.params.len) break;
             const stable_id = try self.internStable(fsig.params[param_idx].name);
             try remap.stable_reg_ids.put(old_id, stable_id);
+            try remap.source_reg_symbol_ids.put(old_id, stable_id);
             try remap.reg_name_ids.put(self.symbols.items[stable_id], stable_id);
         }
         for (module.instructions[start..end]) |item| {
@@ -3862,9 +3904,50 @@ pub const Codegen = struct {
         }
     }
 
-    fn renameDecodedModuleLocalText(self: *Codegen, text: []const u8, remap: *DecodedModuleLocalRemap) ![]const u8 {
-        _ = remap;
-        return try self.allocator.dupe(u8, text);
+    fn renameDecodedModuleLocalText(
+        self: *Codegen,
+        symbols: []const []const u8,
+        text: []const u8,
+        remap: *DecodedModuleLocalRemap,
+    ) ![]const u8 {
+        var out = std.ArrayList(u8).init(self.allocator);
+        errdefer out.deinit();
+        var token = std.ArrayList(u8).init(self.allocator);
+        defer token.deinit();
+        const flush = struct {
+            fn call(cg: *Codegen, source_symbols: []const []const u8, tok: *std.ArrayList(u8), local_remap: *DecodedModuleLocalRemap, dst: *std.ArrayList(u8)) !void {
+                if (tok.items.len == 0) return;
+                defer tok.clearRetainingCapacity();
+                if (local_remap.reg_names.get(tok.items)) |mapped_name| {
+                    try dst.appendSlice(mapped_name);
+                    return;
+                }
+                if (decodedModuleSymbolIdByName(source_symbols, tok.items)) |old_id| {
+                    const mapped_id = local_remap.stable_reg_ids.get(old_id) orelse
+                        local_remap.reg_ids.get(old_id) orelse
+                        local_remap.source_reg_symbol_ids.get(old_id);
+                    if (mapped_id) |id| {
+                        if (id < cg.symbols.items.len) {
+                            try dst.appendSlice(cg.symbols.items[id]);
+                            return;
+                        }
+                    }
+                }
+                try dst.appendSlice(tok.items);
+            }
+        }.call;
+        for (text) |ch| {
+            const is_delim = ch == ',' or ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n' or
+                ch == '&' or ch == '^' or ch == '*' or ch == '(' or ch == ')';
+            if (is_delim) {
+                try flush(self, symbols, &token, remap, &out);
+                try out.append(ch);
+            } else {
+                try token.append(ch);
+            }
+        }
+        try flush(self, symbols, &token, remap, &out);
+        return try out.toOwnedSlice();
     }
 
     fn remapDecodedModuleOperand(
@@ -3884,8 +3967,8 @@ pub const Codegen = struct {
                 .{ .symbol = try self.remapModuleSymbol(symbols, old_id) },
             .label => |old_id| .{ .label = try self.ensureDecodedModuleLabelId(remap, old_id) },
             .func => |old_id| .{ .func = try self.remapModuleSymbol(symbols, old_id) },
-            .text => |text| .{ .text = try self.renameDecodedModuleLocalText(text, remap) },
-            .native_text => |text| .{ .native_text = try self.renameDecodedModuleLocalText(text, remap) },
+            .text => |text| .{ .text = try self.renameDecodedModuleLocalText(symbols, text, remap) },
+            .native_text => |text| .{ .native_text = try self.renameDecodedModuleLocalText(symbols, text, remap) },
             else => operand,
         };
     }
@@ -4480,14 +4563,14 @@ pub const Codegen = struct {
         };
     }
 
-    fn cloneDecodedModuleTextList(self: *Codegen, items: []const []const u8, remap: *DecodedModuleLocalRemap) ![]const []const u8 {
+    fn cloneDecodedModuleTextList(self: *Codegen, symbols: []const []const u8, items: []const []const u8, remap: *DecodedModuleLocalRemap) ![]const []const u8 {
         if (items.len == 0) return &.{};
         const out = try self.allocator.alloc([]const u8, items.len);
         errdefer self.allocator.free(out);
         var initialized: usize = 0;
         errdefer for (out[0..initialized]) |item| self.allocator.free(item);
         for (items, 0..) |item, idx| {
-            out[idx] = try self.renameDecodedModuleLocalText(item, remap);
+            out[idx] = try self.renameDecodedModuleLocalText(symbols, item, remap);
             initialized += 1;
         }
         return out;
@@ -4523,9 +4606,9 @@ pub const Codegen = struct {
         out.package_identity = try self.cloneOptionalText(source.package_identity);
         out.upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc);
         out.raw_text = "";
-        out.atomic_expected_text = if (source.atomic_expected_text) |text| try self.renameDecodedModuleLocalText(text, remap) else null;
-        out.atomic_new_text = if (source.atomic_new_text) |text| try self.renameDecodedModuleLocalText(text, remap) else null;
-        out.native_reg_names = try self.cloneDecodedModuleTextList(source.native_reg_names, remap);
+        out.atomic_expected_text = if (source.atomic_expected_text) |text| try self.renameDecodedModuleLocalText(symbols, text, remap) else null;
+        out.atomic_new_text = if (source.atomic_new_text) |text| try self.renameDecodedModuleLocalText(symbols, text, remap) else null;
+        out.native_reg_names = try self.cloneDecodedModuleTextList(symbols, source.native_reg_names, remap);
         for (&out.operands, 0..) |*operand, operand_idx| operand.* = try self.remapDecodedModuleOperand(symbols, operand.*, source.kind, operand_idx, remap, stable_names);
         try self.coerceDecodedInstructionOperands(&out, remap);
         if (out.kind == .panic_msg and out.operands[0] == .text) {
@@ -5102,6 +5185,7 @@ pub const Codegen = struct {
         const symbol_id = try self.intern(symbol_name);
         try self.recordReg(dst);
         try self.recordReg(symbol_id);
+        try self.borrow_result_regs.put(dst, {});
         var item = self.makeInst(.borrow);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .reg = symbol_id };
@@ -6522,7 +6606,15 @@ pub const Codegen = struct {
             try self.pushLocal(let.name, dst, false);
             return;
         }
-        const src = try self.genExpr(let.value);
+        // Match the SA backend's local string-literal lowering. An inferred
+        // string binding is a Slice value even when the type checker exposes
+        // the literal as a raw pointer in pointer-oriented contexts. Keeping
+        // it as a raw data pointer makes STR_PTR work but causes STR_LEN (and
+        // every slice macro) to read arbitrary bytes at offset 8.
+        const src = if (let.value.* == .literal and let.value.literal == .string_val and let.ty == null)
+            try self.genStringLiteral(let.value.literal.string_val)
+        else
+            try self.genExpr(let.value);
         if (self.lastIsTerminator()) return;
         if (lowering_rules.isDiscardName(let.name)) {
             // `let _ = owner` must consume by-value non-Copy locals/params so
@@ -7709,12 +7801,25 @@ pub const Codegen = struct {
     }
 
     fn genMacroIdentifier(self: *Codegen, name: []const u8, ctx: *MacroExpansionContext) anyerror!u32 {
-        if (macroIdentifierName(ctx, name)) |mapped| return try self.genIdentifierByName(mapped);
-        if (macroArgBinding(ctx, name)) |binding| {
-            if (binding.evaluated_reg) |reg| return reg;
-            if (binding.ctx) |arg_ctx| return try self.genMacroExpr(@constCast(binding.arg), arg_ctx);
-            return try self.genExpr(@constCast(binding.arg));
+        if (macroIdentifierName(ctx, name)) |mapped| {
+            std.debug.print("DBG genMacroIdentifier[{s}]: mapped local\n", .{name});
+            return try self.genIdentifierByName(mapped);
         }
+        if (macroArgBinding(ctx, name)) |binding| {
+            if (binding.evaluated_reg) |reg| {
+                std.debug.print("DBG genMacroIdentifier[{s}]: evaluated_reg\n", .{name});
+                return reg;
+            }
+            if (binding.ctx) |arg_ctx| {
+                std.debug.print("DBG genMacroIdentifier[{s}]: parent ctx\n", .{name});
+                return try self.genMacroExpr(@constCast(binding.arg), arg_ctx);
+            }
+            std.debug.print("DBG genMacroIdentifier[{s}]: genExpr arg_kind={}\n", .{name, binding.arg.*});
+            const result = try self.genExpr(@constCast(binding.arg));
+            std.debug.print("DBG genMacroIdentifier[{s}]: genExpr result={s}\n", .{name, self.symbols.items[result]});
+            return result;
+        }
+        std.debug.print("DBG genMacroIdentifier[{s}]: genIdentifierByName\n", .{name});
         return try self.genIdentifierByName(name);
     }
 
@@ -7884,9 +7989,22 @@ pub const Codegen = struct {
             const index = std.fmt.parseUnsigned(usize, field.field_name, 10) catch return Error.UnsupportedSabDirectFeature;
             break :blk tupleFieldLayout(expr_ty.tuple, index) orelse return Error.UnsupportedSabDirectFeature;
         } else try self.fieldLayout(expr_ty, field.field_name);
-        const base = try self.genMacroExpr(field.expr, ctx);
+        const base_source = if (field.expr.* == .identifier)
+            try self.genMacroIdentifierAddress(field.expr.identifier, ctx)
+        else
+            AddressSource{ .reg = try self.genMacroExpr(field.expr, ctx) };
+        const base = base_source.reg;
         var source = try self.addressWithOffset(base, layout.offset);
-        if (layout.offset != 0 and !self.isLocalReg(base)) source.release_regs = try self.singleReleaseReg(base);
+        if (source.reg == base) {
+            source.release_regs = base_source.release_regs;
+        } else {
+            var release_regs = std.ArrayList(u32).init(self.allocator);
+            defer release_regs.deinit();
+            if (!self.isLocalReg(base)) try release_regs.append(base);
+            try release_regs.appendSlice(base_source.release_regs);
+            source.release_regs = try self.ownedReleaseRegs(release_regs.items);
+            if (base_source.release_regs.len != 0) self.allocator.free(base_source.release_regs);
+        }
         return source;
     }
 
@@ -7894,13 +8012,26 @@ pub const Codegen = struct {
         const target_ty = (try self.macroExprType(idx.target, ctx)) orelse return Error.MissingType;
         const addressable_target_ty = lowering_rules.ordinaryIndexAddressTargetType(target_ty) orelse return Error.UnsupportedSabDirectFeature;
         if (addressable_target_ty.* != .array) return Error.UnsupportedSabDirectFeature;
-        const target_reg = try self.genMacroExpr(idx.target, ctx);
+        const target_source = if (idx.target.* == .field_expr)
+            try self.genMacroFieldAddress(idx.target.field_expr, ctx)
+        else
+            AddressSource{ .reg = try self.genMacroExpr(idx.target, ctx) };
+        const target_reg = target_source.reg;
         if (idx.index.* == .literal and idx.index.literal == .int_val) {
             const raw_index = idx.index.literal.int_val;
             if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
             const layout = arrayElementLayout(addressable_target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
             var source = try self.addressWithOffset(target_reg, layout.offset);
-            if (layout.offset != 0 and !self.isLocalReg(target_reg)) source.release_regs = try self.singleReleaseReg(target_reg);
+            if (source.reg == target_reg) {
+                source.release_regs = target_source.release_regs;
+            } else {
+                var release_regs = std.ArrayList(u32).init(self.allocator);
+                defer release_regs.deinit();
+                if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
+                try release_regs.appendSlice(target_source.release_regs);
+                source.release_regs = try self.ownedReleaseRegs(release_regs.items);
+                if (target_source.release_regs.len != 0) self.allocator.free(target_source.release_regs);
+            }
             return source;
         }
 
@@ -7908,9 +8039,14 @@ pub const Codegen = struct {
         const elem_ptr = try self.genArrayElementPtr(addressable_target_ty.array, target_reg, index_reg);
         if (elem_ptr.offset) |offset| try self.emitRelease(offset);
         if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+        var release_regs = std.ArrayList(u32).init(self.allocator);
+        defer release_regs.deinit();
+        if (!self.isLocalReg(target_reg)) try release_regs.append(target_reg);
+        try release_regs.appendSlice(target_source.release_regs);
+        if (target_source.release_regs.len != 0) self.allocator.free(target_source.release_regs);
         return .{
             .reg = elem_ptr.ptr,
-            .release_regs = if (!self.isLocalReg(target_reg)) try self.singleReleaseReg(target_reg) else &.{},
+            .release_regs = try self.ownedReleaseRegs(release_regs.items),
         };
     }
 
@@ -8073,22 +8209,10 @@ pub const Codegen = struct {
     fn genMacroIndex(self: *Codegen, idx: ast.IndexExpr, ctx: *MacroExpansionContext) anyerror!u32 {
         const target_ty = (try self.macroExprType(idx.target, ctx)) orelse return Error.MissingType;
         if (target_ty.* != .array) return Error.UnsupportedSabDirectFeature;
-        const target_reg = try self.genMacroExpr(idx.target, ctx);
+        const source = try self.genMacroIndexAddress(idx, ctx);
         const dst = try self.intern(try self.newTmp());
-        if (idx.index.* == .literal and idx.index.literal == .int_val) {
-            const raw_index = idx.index.literal.int_val;
-            if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
-            const layout = arrayElementLayout(target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
-            try self.emitLoad(dst, target_reg, layout.offset, layout.ty);
-        } else {
-            const index_reg = try self.genMacroExpr(idx.index, ctx);
-            const elem_ptr = try self.genArrayElementPtr(target_ty.array, target_reg, index_reg);
-            try self.emitLoad(dst, elem_ptr.ptr, 0, try primType(target_ty.array.elem));
-            if (elem_ptr.offset) |offset| try self.emitRelease(offset);
-            try self.emitRelease(elem_ptr.ptr);
-            if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
-        }
-        if (!self.isLocalReg(target_reg)) try self.emitRelease(target_reg);
+        try self.emitLoad(dst, source.reg, 0, try storagePrimType(target_ty.array.elem));
+        try self.releaseAddressSource(source);
         return dst;
     }
 
@@ -9611,7 +9735,7 @@ pub const Codegen = struct {
         const right_reg = try self.genExpr(bin.right);
 
         const result = try self.intern(try self.newTmp());
-        // Ordering is a struct { value: i64 } — a single 8-byte word.
+        // Ordering is a struct { value: i64 } 鈥?a single 8-byte word.
         try self.emitAlloc(result, 8);
 
         if (plan.isNumeric()) {
@@ -10222,6 +10346,7 @@ pub const Codegen = struct {
 
     fn emitBorrowReg(self: *Codegen, dst: u32, source: u32, mode: []const u8) !void {
         try self.recordReg(dst);
+        try self.borrow_result_regs.put(dst, {});
         var item = self.makeInst(.borrow);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .reg = source };
@@ -11563,6 +11688,13 @@ pub const Codegen = struct {
     fn genImportedMacroArg(self: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize, arg: *const ast.Node, ctx: ?*MacroExpansionContext) anyerror!SabLoweredCallArg {
         const arg_ty = (try self.importedMacroArgType(arg, ctx)) orelse return Error.MissingType;
         if (try self.genImportedMacroLeadingOutputArg(plan, call_arg_index, arg, ctx, arg_ty)) |output_arg| return output_arg;
+        if (arg.* == .literal and arg.literal == .string_val and
+            plan.callArgNeedsAddressableSlot(call_arg_index) and
+            std.mem.startsWith(u8, plan.macro_name, "BTREE_"))
+        {
+            const slice_reg = try self.genStringLiteral(arg.literal.string_val);
+            return .{ .operand = self.symbols.items[slice_reg], .release_reg = null };
+        }
         const release_value = !self.importedMacroDirectCallConsumesValueArg(plan, call_arg_index);
         if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| {
             if (action.passesValue() or action.passesRawPointerValue()) return self.genImportedMacroValueArg(arg, ctx, release_value);
@@ -11623,55 +11755,95 @@ pub const Codegen = struct {
         try self.emitRelease(tmp);
     }
 
-    fn emitDirectImportedMacroCall(self: *Codegen, macro_name: []const u8, arg_names: []const []const u8) !bool {
+    const DirectImportedMacroResult = struct { emitted: bool, consumed_dst: ?u32 };
+
+    fn emitDirectImportedMacroCall(self: *Codegen, macro_name: []const u8, arg_names: []const []const u8) !DirectImportedMacroResult {
         if (std.mem.eql(u8, macro_name, "SLA_BYTE_AT")) {
-            if (arg_names.len != 3) return false;
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const ptr = try self.directImportedMacroReg(arg_names[1]);
             const offset = try self.directImportedMacroReg(arg_names[2]);
             const addr = try self.intern(try self.newTmp());
             try self.emitPtrAdd(addr, ptr, .{ .reg = offset });
             try self.emitLoad(dst, addr, 0, .u8);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_BYTE_PUT")) {
-            if (arg_names.len != 3) return false;
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
             const ptr = try self.directImportedMacroReg(arg_names[0]);
             const offset = try self.directImportedMacroReg(arg_names[1]);
             const value = try self.directImportedMacroReg(arg_names[2]);
             const addr = try self.intern(try self.newTmp());
             try self.emitPtrAdd(addr, ptr, .{ .reg = offset });
             try self.emitStore(addr, 0, value, .u8);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_PTR_ADD")) {
-            if (arg_names.len != 3) return false;
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const base = try self.directImportedMacroReg(arg_names[1]);
             const offset = try self.directImportedMacroReg(arg_names[2]);
             try self.emitPtrAdd(dst, base, .{ .reg = offset });
-            try self.markNonOwningReg(dst);
-            return true;
+            var consumed_dst: ?u32 = null;
+            if (self.borrow_address_temps.contains(base) or self.non_owning_regs.contains(base) or self.isLocalReg(base) or self.borrow_result_regs.contains(base)) {
+                try self.markConsumed(dst);
+                consumed_dst = dst;
+            } else {
+                try self.markNonOwningReg(dst);
+            }
+            return .{ .emitted = true, .consumed_dst = consumed_dst };
+        }
+
+        if (std.mem.eql(u8, macro_name, "PTR_BYTE_ADD")) {
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
+            const dst = try self.directImportedMacroReg(arg_names[0]);
+            const base = try self.directImportedMacroReg(arg_names[1]);
+            const offset = try self.directImportedMacroReg(arg_names[2]);
+            try self.emitPtrAdd(dst, base, .{ .reg = offset });
+            var consumed_dst: ?u32 = null;
+            if (self.borrow_address_temps.contains(base) or self.non_owning_regs.contains(base) or self.isLocalReg(base) or self.borrow_result_regs.contains(base)) {
+                try self.markConsumed(dst);
+                consumed_dst = dst;
+            } else {
+                try self.markNonOwningReg(dst);
+            }
+            return .{ .emitted = true, .consumed_dst = consumed_dst };
+        }
+
+        if (std.mem.eql(u8, macro_name, "PTR_READ_U8")) {
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
+            const dst = try self.directImportedMacroReg(arg_names[0]);
+            const ptr = try self.directImportedMacroReg(arg_names[1]);
+            try self.emitLoad(dst, ptr, 0, .u8);
+            return .{ .emitted = true, .consumed_dst = null };
+        }
+
+        if (std.mem.eql(u8, macro_name, "PTR_READ_U64") or std.mem.eql(u8, macro_name, "PTR_READ")) {
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
+            const dst = try self.directImportedMacroReg(arg_names[0]);
+            const ptr = try self.directImportedMacroReg(arg_names[1]);
+            try self.emitLoad(dst, ptr, 0, .u64);
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_BUF_ALLOC")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const size = try self.directImportedMacroReg(arg_names[1]);
             try self.emitAllocOperand(dst, .{ .reg = size });
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_JSON_OBJECT_GET")) {
-            if (arg_names.len != 4) return false;
+            if (arg_names.len != 4) return .{ .emitted = false, .consumed_dst = null };
             try self.emitDirectJsonObjectGet(arg_names);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_JSON_ARRAY_GET")) {
-            if (arg_names.len != 3) return false;
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const node = try self.directImportedMacroReg(arg_names[1]);
             const index = try self.directImportedMacroReg(arg_names[2]);
@@ -11685,11 +11857,11 @@ pub const Codegen = struct {
             ));
             try self.emitLoad(dst, slot, 0, .ptr);
             try self.emitRelease(tmp);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_JSON_VALUE_COUNT")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const node = try self.directImportedMacroReg(arg_names[1]);
             const slot = try self.intern(try self.newTmp());
@@ -11698,11 +11870,11 @@ pub const Codegen = struct {
             try self.emitCallBody(tmp, try std.fmt.allocPrint(self.allocator, "@sa_json_value_count({s}, &{s})", .{ self.symbols.items[node], self.symbols.items[slot] }));
             try self.emitLoad(dst, slot, 0, .u64);
             try self.emitRelease(tmp);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_JSON_AS_I64")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const node = try self.directImportedMacroReg(arg_names[1]);
             const slot = try self.intern(try self.newTmp());
@@ -11711,11 +11883,11 @@ pub const Codegen = struct {
             try self.emitCallBody(tmp, try std.fmt.allocPrint(self.allocator, "@sa_json_as_i64({s}, &{s})", .{ self.symbols.items[node], self.symbols.items[slot] }));
             try self.emitLoad(dst, slot, 0, .i64);
             try self.emitRelease(tmp);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_JSON_AS_BOOL")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const node = try self.directImportedMacroReg(arg_names[1]);
             const slot = try self.intern(try self.newTmp());
@@ -11724,39 +11896,39 @@ pub const Codegen = struct {
             try self.emitCallBody(tmp, try std.fmt.allocPrint(self.allocator, "@sa_json_as_bool({s}, &{s})", .{ self.symbols.items[node], self.symbols.items[slot] }));
             try self.emitLoad(dst, slot, 0, .u8);
             try self.emitRelease(tmp);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_JSON_STRING_PTR")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const node = try self.directImportedMacroReg(arg_names[1]);
             try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_json_string_ptr({s})", .{self.symbols.items[node]}));
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_JSON_STRING_LEN")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const node = try self.directImportedMacroReg(arg_names[1]);
             try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_json_string_len({s})", .{self.symbols.items[node]}));
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_JSON_OBJECT_KEY_PTR")) {
-            if (arg_names.len != 3) return false;
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
             try self.emitDirectJsonObjectKeyAt(arg_names, 0, .ptr);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_JSON_OBJECT_KEY_LEN")) {
-            if (arg_names.len != 3) return false;
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
             try self.emitDirectJsonObjectKeyAt(arg_names, 8, .u64);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_OPEN_READ")) {
-            if (arg_names.len != 3) return false;
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const path = try self.directImportedMacroReg(arg_names[1]);
             const path_len = try self.directImportedMacroReg(arg_names[2]);
@@ -11766,11 +11938,11 @@ pub const Codegen = struct {
             try self.emitCallBody(tmp, try std.fmt.allocPrint(self.allocator, "@sa_std_fs_open_read(&{s}, {s}, &{s})", .{ self.symbols.items[path], self.symbols.items[path_len], self.symbols.items[slot] }));
             try self.emitLoad(dst, slot, 0, .u64);
             try self.emitRelease(tmp);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_READ_TO_STRING") or std.mem.eql(u8, macro_name, "SLA_FS_READ_FILE")) {
-            if (arg_names.len != 4) return false;
+            if (arg_names.len != 4) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const path = try self.directImportedMacroReg(arg_names[1]);
             const path_len = try self.directImportedMacroReg(arg_names[2]);
@@ -11782,43 +11954,43 @@ pub const Codegen = struct {
             try self.emitCallBody(tmp, try std.fmt.allocPrint(self.allocator, "@{s}(&{s}, {s}, {s}, &{s})", .{ callee, self.symbols.items[path], self.symbols.items[path_len], self.symbols.items[max_bytes], self.symbols.items[slot] }));
             try self.emitLoad(dst, slot, 0, .u64);
             try self.emitRelease(tmp);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_BUFFER_DATA")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const buffer = try self.directImportedMacroReg(arg_names[1]);
             try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_fs_read_buffer_data({s})", .{self.symbols.items[buffer]}));
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_BUFFER_LEN")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const buffer = try self.directImportedMacroReg(arg_names[1]);
             try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_fs_read_buffer_len({s})", .{self.symbols.items[buffer]}));
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_BUFFER_FREE")) {
-            if (arg_names.len != 1) return false;
+            if (arg_names.len != 1) return .{ .emitted = false, .consumed_dst = null };
             const buffer = try self.directImportedMacroReg(arg_names[0]);
             const tmp = try self.intern(try self.newTmp());
             try self.emitCallBody(tmp, try std.fmt.allocPrint(self.allocator, "@sa_fs_read_buffer_free(^{s})", .{self.symbols.items[buffer]}));
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_CLOSE")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const handle = try self.directImportedMacroReg(arg_names[1]);
             try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@sa_std_close({s})", .{self.symbols.items[handle]}));
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_EXISTS")) {
-            if (arg_names.len != 3) return false;
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const path = try self.directImportedMacroReg(arg_names[1]);
             const path_len = try self.directImportedMacroReg(arg_names[2]);
@@ -11828,11 +12000,11 @@ pub const Codegen = struct {
             try self.emitCallBody(tmp, try std.fmt.allocPrint(self.allocator, "@sa_std_fs_try_exists(&{s}, {s}, &{s})", .{ self.symbols.items[path], self.symbols.items[path_len], self.symbols.items[slot] }));
             try self.emitLoad(dst, slot, 0, .u8);
             try self.emitRelease(tmp);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_METADATA")) {
-            if (arg_names.len != 3) return false;
+            if (arg_names.len != 3) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const path = try self.directImportedMacroReg(arg_names[1]);
             const path_len = try self.directImportedMacroReg(arg_names[2]);
@@ -11842,28 +12014,28 @@ pub const Codegen = struct {
             try self.emitCallBody(tmp, try std.fmt.allocPrint(self.allocator, "@sa_std_fs_metadata(&{s}, {s}, &{s})", .{ self.symbols.items[path], self.symbols.items[path_len], self.symbols.items[slot] }));
             try self.emitLoad(dst, slot, 0, .u64);
             try self.emitRelease(tmp);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_IS_FILE") or std.mem.eql(u8, macro_name, "SLA_FS_IS_DIR")) {
-            if (arg_names.len != 2) return false;
+            if (arg_names.len != 2) return .{ .emitted = false, .consumed_dst = null };
             const dst = try self.directImportedMacroReg(arg_names[0]);
             const metadata = try self.directImportedMacroReg(arg_names[1]);
             const callee = if (std.mem.eql(u8, macro_name, "SLA_FS_IS_FILE")) "sa_fs_metadata_is_file" else "sa_fs_metadata_is_directory";
             try self.emitCallBody(dst, try std.fmt.allocPrint(self.allocator, "@{s}({s})", .{ callee, self.symbols.items[metadata] }));
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
         if (std.mem.eql(u8, macro_name, "SLA_FS_METADATA_FREE")) {
-            if (arg_names.len != 1) return false;
+            if (arg_names.len != 1) return .{ .emitted = false, .consumed_dst = null };
             const metadata = try self.directImportedMacroReg(arg_names[0]);
             const tmp = try self.intern(try self.newTmp());
             try self.emitCallBody(tmp, try std.fmt.allocPrint(self.allocator, "@sa_fs_metadata_free({s})", .{self.symbols.items[metadata]}));
             try self.emitRelease(tmp);
-            return true;
+            return .{ .emitted = true, .consumed_dst = null };
         }
 
-        return false;
+        return .{ .emitted = false, .consumed_dst = null };
     }
 
     fn genImportedMacroCall(self: *Codegen, call: ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, ctx: ?*MacroExpansionContext) anyerror!u32 {
@@ -11910,8 +12082,8 @@ pub const Codegen = struct {
             }
         }
 
-        const emitted_direct = try self.emitDirectImportedMacroCall(plan.macro_name, arg_names.items);
-        if (!emitted_direct) {
+        const direct_result = try self.emitDirectImportedMacroCall(plan.macro_name, arg_names.items);
+        if (!direct_result.emitted) {
             self.emitStdMacroFragment(import_path, plan.macro_name, arg_names.items) catch |err| {
                 self.traceUnsupported("imported macro {s} fragment failed: {s}\n", .{ plan.macro_name, @errorName(err) });
                 return err;
@@ -11924,13 +12096,14 @@ pub const Codegen = struct {
         for (output_rebindings.items) |binding| {
             try self.pushTypedLocal(binding.name, binding.reg, false, binding.ty);
         }
+        if (direct_result.consumed_dst) |c| {
+            try self.markConsumed(c);
+        }
         for (output_stores.items) |store| {
             try self.emitStore(store.slot, 0, store.value, store.ty);
             try self.emitRelease(store.value);
         }
-        if (!emitted_direct) {
-            try self.releaseNonLocalTemps(release_regs.items);
-        }
+        try self.releaseNonLocalTemps(release_regs.items);
         if (dst) |reg| return reg;
 
         const sentinel = try self.intern(try self.newTmp());
@@ -12009,28 +12182,33 @@ pub const Codegen = struct {
     fn genStrEqCall(self: *Codegen, call: ast.CallExpr) anyerror!u32 {
         const left_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.UnsupportedSabDirectFeature;
         const right_ty = self.tc.expr_types.get(call.args[1]) orelse return Error.UnsupportedSabDirectFeature;
-        const left = try self.genExpr(@constCast(call.args[0]));
-        const right = try self.genExpr(@constCast(call.args[1]));
-
-        const left_arg = if (lowering_rules.isFormatStringType(left_ty)) blk: {
-            const view = try self.intern(try self.newTmp());
-            try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_AS_STR", &.{ self.symbols.items[view], self.symbols.items[left] });
-            break :blk view;
-        } else left;
-        const right_arg = if (lowering_rules.isFormatStringType(right_ty)) blk: {
-            const view = try self.intern(try self.newTmp());
-            try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_AS_STR", &.{ self.symbols.items[view], self.symbols.items[right] });
-            break :blk view;
-        } else right;
+        const left = try self.genStrEqArg(call.args[0], left_ty);
+        const right = try self.genStrEqArg(call.args[1], right_ty);
 
         const reg = try self.intern(try self.newTmp());
-        try self.emitStdMacroFragment("sa_std/string.sa", "STR_EQ", &.{ self.symbols.items[reg], self.symbols.items[left_arg], self.symbols.items[right_arg] });
+        try self.emitStdMacroFragment("sa_std/string.sa", "STR_EQ", &.{ self.symbols.items[reg], self.symbols.items[left.reg], self.symbols.items[right.reg] });
 
-        if (left_arg != left) try self.emitRelease(left_arg);
-        if (right_arg != right) try self.emitRelease(right_arg);
-        if (lowering_rules.callArgNeedsRelease(call.args[0]) and !self.isLocalReg(left)) try self.emitRelease(left);
-        if (lowering_rules.callArgNeedsRelease(call.args[1]) and !self.isLocalReg(right)) try self.emitRelease(right);
+        if (left.needs_release) try self.emitRelease(left.reg);
+        if (right.needs_release) try self.emitRelease(right.reg);
+        if (lowering_rules.callArgNeedsRelease(call.args[0]) and !self.isLocalReg(left.orig_reg) and left.orig_reg != left.reg) try self.emitRelease(left.orig_reg);
+        if (lowering_rules.callArgNeedsRelease(call.args[1]) and !self.isLocalReg(right.orig_reg) and right.orig_reg != right.reg) try self.emitRelease(right.orig_reg);
         return reg;
+    }
+
+    const StrEqArg = struct { reg: u32, orig_reg: u32, needs_release: bool };
+
+    fn genStrEqArg(self: *Codegen, arg: *const ast.Node, ty: *const ast.Type) anyerror!StrEqArg {
+        if (arg.* == .literal and arg.literal == .string_val) {
+            const slice = try self.genStringLiteral(arg.literal.string_val);
+            return .{ .reg = slice, .orig_reg = 0, .needs_release = false };
+        }
+        const orig = try self.genExpr(@constCast(arg));
+        if (lowering_rules.isFormatStringType(ty)) {
+            const view = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_AS_STR", &.{ self.symbols.items[view], self.symbols.items[orig] });
+            return .{ .reg = view, .orig_reg = orig, .needs_release = true };
+        }
+        return .{ .reg = orig, .orig_reg = orig, .needs_release = false };
     }
 
     /// Emit a planned static call: `dst = call @<symbol>(args...)`, materializing
@@ -13388,7 +13566,15 @@ pub const Codegen = struct {
         }
         const rule = self.findStdSurfaceRule(.method, receiver_type_name, call.func_name) orelse return null;
         const receiver_reg = try self.genExpr(@constCast(call.args[0]));
-        const value_reg = if (call.args.len > 1) try self.genExpr(@constCast(call.args[1])) else null;
+        const value_reg = if (call.args.len > 1) blk: {
+            const value_expr = call.args[1];
+            if (value_expr.* == .literal and value_expr.literal == .string_val and
+                std.mem.startsWith(u8, rule.macro_name, "BTREE_SET"))
+            {
+                break :blk try self.genStringLiteral(value_expr.literal.string_val);
+            }
+            break :blk try self.genExpr(@constCast(value_expr));
+        } else null;
         const has_out = stdSurfaceRuleHasArg(rule, .out);
         const dst = if (has_out) try self.intern(try self.newTmp()) else null;
         if (dst) |reg| try self.recordReg(reg);
@@ -13406,7 +13592,11 @@ pub const Codegen = struct {
             if (!self.isLocalReg(reg)) {
                 const value_ty = self.tc.expr_types.get(call.args[1]) orelse return Error.MissingType;
                 if ((try primType(value_ty)) == .ptr) {
-                    try self.emitMove(reg);
+                    if (self.stack_alloc_emitted.contains(reg)) {
+                        try self.markConsumed(reg);
+                    } else {
+                        try self.emitMove(reg);
+                    }
                 } else {
                     try self.emitRelease(reg);
                 }
@@ -13714,7 +13904,10 @@ pub const Codegen = struct {
         // CleanupQuery { items: vec }). markConsumed alone only updates codegen
         // state and leaves Active registers at function exit.
         var iter = pending_moved_fields.keyIterator();
-        while (iter.next()) |reg| try self.emitMove(reg.*);
+        while (iter.next()) |reg| {
+            try self.emitMove(reg.*);
+            try self.released_regs.put(reg.*, {});
+        }
 
         return dst;
     }
@@ -14032,11 +14225,18 @@ pub const Codegen = struct {
                 self.localType(index.target.identifier) orelse return Error.UnsupportedSabDirectFeature,
             } else if (index.target.* == .field_expr and index.target.field_expr.expr.* == .identifier) blk: {
                 const field = index.target.field_expr;
+                const owner_reg = self.localReg(field.expr.identifier) orelse return Error.UnsupportedSabDirectFeature;
                 const owner_ty = self.localType(field.expr.identifier) orelse return Error.UnsupportedSabDirectFeature;
-                break :blk .{
-                    try self.genScalarMatchGuardValue(index.target, scratch, cursor),
-                    self.fieldType(owner_ty, field.field_name) orelse return Error.UnsupportedSabDirectFeature,
-                };
+                const field_layout = try self.fieldLayout(owner_ty, field.field_name);
+                const field_ty = self.fieldType(owner_ty, field.field_name) orelse return Error.UnsupportedSabDirectFeature;
+                if (field_layout.offset == 0) {
+                    break :blk .{ owner_reg, field_ty };
+                }
+                if (cursor.* >= scratch.len) return Error.UnsupportedSabDirectFeature;
+                const addr_reg = scratch[cursor.*];
+                cursor.* += 1;
+                try self.emitPtrAdd(addr_reg, owner_reg, .{ .imm_u64 = @intCast(field_layout.offset) });
+                break :blk .{ addr_reg, field_ty };
             } else return Error.UnsupportedSabDirectFeature;
             if (base_ty.* != .array) return Error.UnsupportedSabDirectFeature;
             if (index.index.* == .literal and index.index.literal == .int_val and index.index.literal.int_val >= 0) {
@@ -14997,7 +15197,7 @@ test "filtered decoded std deps emit exported helper bodies in original order" {
     instructions[1] = inst.makeInstruction(.call, 2, 2, null, "");
     instructions[1].operands[0] = .{ .text = "@normal_helper()" };
     instructions[2] = inst.makeInstruction(.return_, 3, 3, null, "");
-    // exported_helper() { ret } — declared before normal_helper in the module
+    // exported_helper() { ret } 鈥?declared before normal_helper in the module
     instructions[3] = inst.makeInstruction(.export_decl, 4, 4, null, "");
     instructions[4] = inst.makeInstruction(.op, 5, 5, null, "");
     instructions[5] = inst.makeInstruction(.return_, 6, 6, null, "");
@@ -15448,3 +15648,5 @@ test "direct sab extern borrow call operand keeps prefix" {
     try std.testing.expectEqualSlices(u8, "&tmp_3", raw);
     try std.testing.expectEqualSlices(u8, "&tmp_4", already);
 }
+
+

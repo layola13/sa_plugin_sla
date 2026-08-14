@@ -4561,7 +4561,7 @@ pub fn planStructLiteralField(decl: *const ast.StructDecl, lit: *const ast.Struc
 /// than emit an aliasing load/store.
 pub fn structFieldIsPointerBacked(field_ty: *const ast.Type) bool {
     return switch (field_ty.*) {
-        .primitive, .pointer, .borrow, .fn_ptr => false,
+        .infer, .primitive, .pointer, .borrow, .fn_ptr => false,
         .user_defined, .tuple, .array => true,
         else => true,
     };
@@ -4876,9 +4876,39 @@ pub fn macroParamRequiresLvalue(tc: *type_checker.TypeChecker, body: []const *as
     return false;
 }
 
+fn macroExprRequiresLvalue(tc: *type_checker.TypeChecker, expr: *const ast.Node, name: []const u8) bool {
+    return switch (expr.*) {
+        .borrow_expr => |borrow| if (rootIdentifier(borrow.expr)) |root| std.mem.eql(u8, root, name) else false,
+        .move_expr => |move| if (rootIdentifier(move.expr)) |root| std.mem.eql(u8, root, name) else false,
+        .call_expr => |call| blk: {
+            const target = tc.resolveFunctionAlias(call.func_name);
+            const func = tc.funcs.get(target);
+            const is_user_macro = tc.macros.contains(call.func_name);
+            const is_imported_macro = tc.imported_macros.contains(call.func_name);
+            for (call.args, 0..) |arg, index| {
+                if (rootIdentifier(arg)) |root| {
+                    if (!std.mem.eql(u8, root, name)) continue;
+                    if (is_user_macro or is_imported_macro) break :blk true;
+                    if (func) |decl| {
+                        if (index < decl.params.len and (decl.params[index].is_borrow or decl.params[index].is_move)) break :blk true;
+                    }
+                }
+            }
+            break :blk false;
+        },
+        .binary_expr => |bin| macroExprRequiresLvalue(tc, bin.left, name) or macroExprRequiresLvalue(tc, bin.right, name),
+        .field_expr => |field| macroExprRequiresLvalue(tc, field.expr, name),
+        .index_expr => |idx| macroExprRequiresLvalue(tc, idx.target, name),
+        .deref_expr => |deref| macroExprRequiresLvalue(tc, deref.expr, name),
+        .block_stmt => |block| macroParamRequiresLvalue(tc, block.body, name),
+        else => false,
+    };
+}
+
 fn macroNodeRequiresLvalue(tc: *type_checker.TypeChecker, node: *const ast.Node, name: []const u8) bool {
     return switch (node.*) {
-        .assign_stmt => |assign| if (rootIdentifier(assign.target)) |root| std.mem.eql(u8, root, name) else false,
+        .assign_stmt => |assign| (if (rootIdentifier(assign.target)) |root| std.mem.eql(u8, root, name) else false) or
+            macroExprRequiresLvalue(tc, assign.value, name),
         .release_stmt => |release| std.mem.eql(u8, release.var_name, name),
         .borrow_expr => |borrow| if (rootIdentifier(borrow.expr)) |root| std.mem.eql(u8, root, name) else false,
         .move_expr => |move| if (rootIdentifier(move.expr)) |root| std.mem.eql(u8, root, name) else false,

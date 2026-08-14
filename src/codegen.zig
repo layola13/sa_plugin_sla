@@ -684,11 +684,20 @@ pub const Codegen = struct {
         for (trait_decl.supertraits) |supertrait| {
             try self.emitTraitVTableEntries(supertrait, type_name, first);
         }
+        // Trait vtable slots reference concrete pub const functions emitted by codegen for @const vtables.
+        // Imported trait impl methods are pruned to decl-only stubs when import expansion runs and the method is
+        // not reachable (e.g. `load_reachable_imported_bodies_from_registry`). Such a method is not emitted as a function body:
+        // leaving a vtable slot pointing to its symbol forces the SAB verifier (`parseVtableSlots`) to trap with
+        // `error.UnknownRegister` because no function sig exists for it. Skip slots whose target impl method is decl-only,
+        // matching what codegen emits function bodies for. Slots for methods not registered in `tc.funcs` retain prior behavior.
         for (trait_decl.methods) |method| {
-            if (!first.*) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
-            first.* = false;
             const mangled = try self.mangleTraitMethodName(type_name, trait_name, method.name);
             defer self.allocator.free(mangled);
+            if (self.tc.funcs.get(mangled)) |impl_method| {
+                if (impl_method.is_decl_only) continue;
+            }
+            if (!first.*) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            first.* = false;
             const lowered = try self.loweredFuncSymbol(mangled);
             defer self.allocator.free(lowered);
             self.out.writer().print("{s} = @{s}", .{ method.name, lowered }) catch return CodegenError.CodegenError;

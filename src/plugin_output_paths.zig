@@ -1,4 +1,5 @@
 const std = @import("std");
+const host_paths = @import("host_paths.zig");
 const ast = @import("ast.zig");
 const plugin_imports = @import("plugin_imports.zig");
 
@@ -69,10 +70,14 @@ fn rewriteImportPathForOutput(
     if (try normalizedSaStdImportPath(allocator, resolved.path)) |std_path| return std_path;
 
     const target_path = try replaceSlaWithSa(allocator, resolved.path);
-    if (!std.fs.path.isAbsolute(target_path)) return target_path;
+    if (!std.fs.path.isAbsolute(target_path)) {
+        const normed = try host_paths.normalizePathSlashes(allocator, target_path);
+        return normed;
+    }
 
     const output_dir = try absoluteDirForOutput(allocator, output_file);
-    return try std.fs.path.relative(allocator, output_dir, target_path);
+    const relative = try std.fs.path.relative(allocator, output_dir, target_path);
+    return try host_paths.normalizePathSlashes(allocator, relative);
 }
 
 pub fn rewriteProgramImportsForOutput(

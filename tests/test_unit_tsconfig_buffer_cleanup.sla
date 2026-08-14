@@ -29,10 +29,10 @@ fn mini_buf_append(dst: ptr, off: int, src: ptr, n: int) -> int {
 }
 
 fn mini_build_fixture_path() -> MiniPathSlice {
-    let total = STR_LEN("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/") + STR_LEN("tsconfig_cleanup.json");
+    let total = STR_LEN("E:/projects/sa_plugin_sla/tests/import_fixtures/") + STR_LEN("tsconfig_cleanup.json");
     let out = SLA_BUF_ALLOC(total + 1);
     let w = 0;
-    w = mini_buf_append(out, w, STR_PTR("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/"), STR_LEN("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/"));
+    w = mini_buf_append(out, w, STR_PTR("E:/projects/sa_plugin_sla/tests/import_fixtures/"), STR_LEN("E:/projects/sa_plugin_sla/tests/import_fixtures/"));
     w = mini_buf_append(out, w, STR_PTR("tsconfig_cleanup.json"), STR_LEN("tsconfig_cleanup.json"));
     SLA_BYTE_PUT(out, total, 0);
     return MiniPathSlice { ptr: out, len: total };
@@ -46,10 +46,10 @@ fn mini_buf_clone(src: ptr, n: int) -> MiniPathSlice {
 }
 
 fn mini_build_cloned_fixture_path() -> MiniPathSlice {
-    let total = STR_LEN("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/") + STR_LEN("tsconfig_cleanup.json");
+    let total = STR_LEN("E:/projects/sa_plugin_sla/tests/import_fixtures/") + STR_LEN("tsconfig_cleanup.json");
     let base = SLA_BUF_ALLOC(total + 1);
     let w = 0;
-    w = mini_buf_append(base, w, STR_PTR("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/"), STR_LEN("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/"));
+    w = mini_buf_append(base, w, STR_PTR("E:/projects/sa_plugin_sla/tests/import_fixtures/"), STR_LEN("E:/projects/sa_plugin_sla/tests/import_fixtures/"));
     w = mini_buf_append(base, w, STR_PTR("tsconfig_cleanup.json"), STR_LEN("tsconfig_cleanup.json"));
     SLA_BYTE_PUT(base, total, 0);
     let clone = mini_buf_clone(base, total + 1);
@@ -121,7 +121,7 @@ fn mini_tsconfig_from_path_slice(path: MiniPathSlice) -> MiniTsconfigResult {
 }
 
 fn mini_read_extended_base() -> MiniTsconfigResult {
-    let child = mini_tsconfig_from_path("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/tsconfig_ext_child.json", 92);
+    let child = mini_tsconfig_from_path("E:/projects/sa_plugin_sla/tests/import_fixtures/tsconfig_ext_child.json", 71);
     if child.parse_ok != true { return child; };
 
     let child_path = mini_build_child_ext_path();
@@ -138,11 +138,11 @@ fn mini_read_extended_base() -> MiniTsconfigResult {
         if SLA_BYTE_AT(ext_ptr, 0) == 46 { if SLA_BYTE_AT(ext_ptr, 1) == 47 { estart = 2; }; };
     };
     let eff_len = ext_len - estart;
-    let dir_len = STR_LEN("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/");
+    let dir_len = STR_LEN("E:/projects/sa_plugin_sla/tests/import_fixtures/");
     let total = dir_len + eff_len;
     let base_buf = SLA_BUF_ALLOC(total + 1);
     let w = 0;
-    w = mini_buf_append(base_buf, w, STR_PTR("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/"), dir_len);
+    w = mini_buf_append(base_buf, w, STR_PTR("E:/projects/sa_plugin_sla/tests/import_fixtures/"), dir_len);
     w = mini_buf_append(base_buf, w, SLA_PTR_ADD(ext_ptr, estart), eff_len);
     SLA_BYTE_PUT(base_buf, total, 0);
     let base_probe = mini_buf_clone(base_buf, total + 1);
@@ -151,17 +151,17 @@ fn mini_read_extended_base() -> MiniTsconfigResult {
 }
 
 fn mini_build_child_ext_path() -> MiniPathSlice {
-    let total = STR_LEN("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/") + STR_LEN("tsconfig_ext_child.json");
+    let total = STR_LEN("E:/projects/sa_plugin_sla/tests/import_fixtures/") + STR_LEN("tsconfig_ext_child.json");
     let out = SLA_BUF_ALLOC(total + 1);
     let w = 0;
-    w = mini_buf_append(out, w, STR_PTR("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/"), STR_LEN("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/"));
+    w = mini_buf_append(out, w, STR_PTR("E:/projects/sa_plugin_sla/tests/import_fixtures/"), STR_LEN("E:/projects/sa_plugin_sla/tests/import_fixtures/"));
     w = mini_buf_append(out, w, STR_PTR("tsconfig_ext_child.json"), STR_LEN("tsconfig_ext_child.json"));
     SLA_BYTE_PUT(out, total, 0);
     return MiniPathSlice { ptr: out, len: total };
 }
 
 @test "tsconfig buffer data cleanup after child return"() {
-    let result = mini_tsconfig_from_path("/home/vscode/projects/sa_plugins/sa_plugin_sla/tests/import_fixtures/tsconfig_cleanup.json", 90);
+    let result = mini_tsconfig_from_path("E:/projects/sa_plugin_sla/tests/import_fixtures/tsconfig_cleanup.json", 69);
     if result.found != true { panic(41001); };
     if result.parse_ok != true { panic(41002); };
     if result.option_count != 1 { panic(41003); };

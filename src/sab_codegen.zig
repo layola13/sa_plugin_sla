@@ -11421,6 +11421,14 @@ pub const Codegen = struct {
             return dst;
         }
 
+        if (receiver_ty.* == .primitive and receiver_ty.primitive == .raw_ptr) {
+            const base_reg = try self.genExpr(@constCast(call.args[0]));
+            const dst = try self.intern(try self.newTmp());
+            try self.emitLoad(dst, base_reg, lowering_rules.SliceAbi.len_offset, .u64);
+            if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+            return dst;
+        }
+
         _ = lowering_rules.vecElementType(receiver_ty) orelse return null;
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
         const receiver_source = try self.genVecOwnerReceiver(@constCast(call.args[0]));

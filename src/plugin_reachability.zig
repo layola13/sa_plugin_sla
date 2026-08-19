@@ -908,7 +908,10 @@ pub fn pruneKnownFalseBranchesInBlock(
     var facts = try incoming_facts.clone();
     defer facts.deinit();
 
-    for (block) |stmt| {
+    for (block, 0..) |stmt, idx| {
+        // The last statement of a block can be its tail value, so an `if` there is
+        // in value position and must keep both branches (see pruneKnownFalseBranchesInExpr).
+        const is_tail = idx + 1 == block.len;
         switch (stmt.*) {
             .let_stmt => |let| {
                 try pruneKnownFalseBranchesInExpr(allocator, let.value, &facts);
@@ -934,7 +937,7 @@ pub fn pruneKnownFalseBranchesInBlock(
                 if (assign.target.* == .identifier) facts.clearName(assign.target.identifier);
             },
             .block_stmt => |blk| try pruneKnownFalseBranchesInBlock(allocator, blk.body, &facts),
-            .expr_stmt => |expr| try pruneKnownFalseBranchesInExpr(allocator, expr, &facts),
+            .expr_stmt => |expr| try pruneKnownFalseBranchesInExprPos(allocator, expr, &facts, is_tail),
             .return_stmt => |ret| if (ret.value) |value| try pruneKnownFalseBranchesInExpr(allocator, value, &facts),
             .for_stmt => |for_stmt| {
                 try pruneKnownFalseBranchesInExpr(allocator, for_stmt.start, &facts);
@@ -945,15 +948,27 @@ pub fn pruneKnownFalseBranchesInBlock(
                 try pruneKnownFalseBranchesInExpr(allocator, while_stmt.cond, &facts);
                 try pruneKnownFalseBranchesInBlock(allocator, while_stmt.body, &facts);
             },
-            else => try pruneKnownFalseBranchesInExpr(allocator, stmt, &facts),
+            else => try pruneKnownFalseBranchesInExprPos(allocator, stmt, &facts, is_tail),
         }
     }
 }
 
+/// Recurse into `expr` in value position: an `if` reached this way may be the
+/// operand of a `let`, a struct-literal field, a `return`, a block tail, ... so
+/// its branches must survive even when the condition folds to a constant.
 pub fn pruneKnownFalseBranchesInExpr(
     allocator: std.mem.Allocator,
     expr: *ast.Node,
     facts: *const SyntacticFactSet,
+) anyerror!void {
+    return pruneKnownFalseBranchesInExprPos(allocator, expr, facts, true);
+}
+
+fn pruneKnownFalseBranchesInExprPos(
+    allocator: std.mem.Allocator,
+    expr: *ast.Node,
+    facts: *const SyntacticFactSet,
+    value_position: bool,
 ) anyerror!void {
     switch (expr.*) {
         .if_expr => |*ife| {
@@ -961,7 +976,7 @@ pub fn pruneKnownFalseBranchesInExpr(
             if (ife.let_chain) |chain| {
                 for (chain) |cond| try pruneKnownFalseBranchesInExpr(allocator, cond.value, facts);
             }
-            if (evalSyntacticBool(ife.cond, facts) == false) {
+            if (!value_position and evalSyntacticBool(ife.cond, facts) == false) {
                 ife.then_block = &.{};
             } else {
                 try pruneKnownFalseBranchesInBlock(allocator, ife.then_block, facts);

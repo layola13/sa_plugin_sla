@@ -4584,6 +4584,22 @@ pub fn planStructLiteralFieldTransfer(plan: StructLiteralFieldPlan, field_is_cop
     };
 }
 
+/// Raw string literals stored in pointer fields can use the immutable string
+/// symbol directly. This avoids creating a temporary SAB borrow view that has
+/// no owner after the aggregate takes the pointer value.
+pub fn structLiteralDirectFieldUsesConstStringSymbol(value: *const ast.Node, field_ty: *const ast.Type) bool {
+    if (value.* != .literal or value.literal != .string_val) return false;
+    return typeIsPointerScalarValue(field_ty);
+}
+
+/// A string literal normally materializes a temporary slice. A scalar raw
+/// pointer struct field stores only the borrowed data pointer, so consume that
+/// temporary after the store instead of treating the pointer field as an owner.
+pub fn structLiteralDirectFieldConsumesBorrowedString(value: *const ast.Node, field_ty: *const ast.Type) bool {
+    return value.* == .literal and value.literal == .string_val and
+        field_ty.* == .primitive and field_ty.primitive == .raw_ptr;
+}
+
 pub fn mangleMethodName(allocator: std.mem.Allocator, ty_name: []const u8, method_name: []const u8) ![]u8 {
     return try std.fmt.allocPrint(allocator, "{s}_{s}", .{ ty_name, method_name });
 }
@@ -4962,6 +4978,14 @@ pub fn storedValueMovesIdentifier(value: *const ast.Node, value_ty: *const ast.T
     if (value.* != .identifier) return null;
     if (value_is_copy or isBorrowLikeType(value_ty)) return null;
     return value.identifier;
+}
+
+/// A non-Copy temporary becomes the owning storage for its `let` binding.
+/// Direct SAB must retain that register as the local instead of assigning it to
+/// an alias, because ownership of pointer-backed aggregate registers is not
+/// transferred by `assign`.
+pub fn letTemporaryValueBecomesBindingOwner(value_is_copy: bool, value_is_borrow_like: bool) bool {
+    return !value_is_copy and !value_is_borrow_like;
 }
 
 pub fn assignmentMovesIdentifier(
@@ -5797,6 +5821,9 @@ test "shared lowering rules classify call materialization decisions" {
     try std.testing.expect(assignmentMovesIdentifier(&target, &source, &primitive_ty, true) == null);
     try std.testing.expect(assignmentMovesIdentifier(&target, &source, &borrow_boxed_ty, false) == null);
     try std.testing.expect(assignmentMovesIdentifier(&target, &field, &boxed_ty, false) == null);
+    try std.testing.expect(letTemporaryValueBecomesBindingOwner(false, false));
+    try std.testing.expect(!letTemporaryValueBecomesBindingOwner(true, false));
+    try std.testing.expect(!letTemporaryValueBecomesBindingOwner(false, true));
 
     const boxed_param = ast.Param{ .name = "value", .ty = &boxed_ty };
     try std.testing.expect(planValueCallArgConsumption(&source, boxed_param, &boxed_ty, false, false, false, false, true).consumes_source);
@@ -6136,6 +6163,11 @@ test "shared struct literal update field plan" {
     try std.testing.expect(!structFieldIsPointerBacked(&pointer_ty));
     try std.testing.expect(!structFieldIsPointerBacked(&borrow_ty));
     try std.testing.expect(!structFieldIsPointerBacked(&fn_ptr_ty));
+    var string_lit = ast.Node{ .literal = .{ .string_val = "field" } };
+    var raw_ident = ast.Node{ .identifier = "raw" };
+    try std.testing.expect(structLiteralDirectFieldUsesConstStringSymbol(&string_lit, &raw_ptr_ty));
+    try std.testing.expect(!structLiteralDirectFieldUsesConstStringSymbol(&string_lit, &i32_ty));
+    try std.testing.expect(!structLiteralDirectFieldUsesConstStringSymbol(&raw_ident, &raw_ptr_ty));
 
     var nested_ty = ast.Type{ .user_defined = .{ .name = "Nested", .generics = &.{} } };
     const nested_fields = [_]ast.Field{.{ .name = "payload", .ty = &nested_ty }};

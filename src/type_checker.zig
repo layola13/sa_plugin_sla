@@ -353,6 +353,67 @@ pub const TypeChecker = struct {
         }
     }
 
+    /// True when two same-named top-level functions form a legal C-style
+    /// prototype/definition pair: exactly one is body-less, both use the extern
+    /// ABI surface, and the signatures agree. Anything else stays a redeclaration.
+    fn externPrototypePairsWith(a: *const ast.FuncDecl, b: *const ast.FuncDecl) bool {
+        if (a.is_decl_only == b.is_decl_only) return false;
+        const prototype = if (a.is_decl_only) a else b;
+        const definition = if (a.is_decl_only) b else a;
+        if (!prototype.is_extern) return false;
+        if (!definition.is_extern and !definition.no_mangle) return false;
+        if (prototype.abi != null and definition.abi != null and !std.mem.eql(u8, prototype.abi.?, definition.abi.?)) return false;
+        if (prototype.params.len != definition.params.len) return false;
+        for (prototype.params, definition.params) |p, d| {
+            if (!typesStructurallyEqual(p.ty, d.ty)) return false;
+        }
+        return typesStructurallyEqual(prototype.ret_ty, definition.ret_ty);
+    }
+
+    /// Allocation-free structural type comparison used before the checker's type
+    /// tables are populated, so it cannot resolve aliases — declarations and
+    /// definitions must spell their signature the same way.
+    fn typesStructurallyEqual(a: *const ast.Type, b: *const ast.Type) bool {
+        if (std.meta.activeTag(a.*) != std.meta.activeTag(b.*)) return false;
+        return switch (a.*) {
+            .infer => true,
+            .primitive => |p| p == b.primitive,
+            .pointer => typesStructurallyEqual(a.pointer, b.pointer),
+            .borrow => typesStructurallyEqual(a.borrow, b.borrow),
+            .future => typesStructurallyEqual(a.future, b.future),
+            .array => |arr| arr.len == b.array.len and typesStructurallyEqual(arr.elem, b.array.elem),
+            .tuple => |tup| blk: {
+                if (tup.elems.len != b.tuple.elems.len) break :blk false;
+                for (tup.elems, b.tuple.elems) |x, y| {
+                    if (!typesStructurallyEqual(x, y)) break :blk false;
+                }
+                break :blk true;
+            },
+            .closure => |c| blk: {
+                if (c.params.len != b.closure.params.len) break :blk false;
+                for (c.params, b.closure.params) |x, y| {
+                    if (!typesStructurallyEqual(x, y)) break :blk false;
+                }
+                break :blk typesStructurallyEqual(c.ret, b.closure.ret);
+            },
+            .fn_ptr => |f| blk: {
+                if (f.params.len != b.fn_ptr.params.len) break :blk false;
+                for (f.params, b.fn_ptr.params) |x, y| {
+                    if (!typesStructurallyEqual(x, y)) break :blk false;
+                }
+                break :blk typesStructurallyEqual(f.ret, b.fn_ptr.ret);
+            },
+            .user_defined => |ud| blk: {
+                if (!std.mem.eql(u8, ud.name, b.user_defined.name)) break :blk false;
+                if (ud.generics.len != b.user_defined.generics.len) break :blk false;
+                for (ud.generics, b.user_defined.generics) |x, y| {
+                    if (!typesStructurallyEqual(x, y)) break :blk false;
+                }
+                break :blk true;
+            },
+        };
+    }
+
     fn normalizeUsingPath(self: *TypeChecker, using_path: []const u8) TypeError![]const u8 {
         var buf = std.ArrayList(u8).init(self.allocator);
         var i: usize = 0;
@@ -685,7 +746,9 @@ pub const TypeChecker = struct {
                 if (arg_ty.* != .borrow or !self.typesEqual(param.ty, arg_ty.borrow)) return TypeError.TypeMismatch;
                 continue;
             }
-            if (!param.is_move and !param.is_borrow and (arg.* == .move_expr or arg.* == .borrow_expr)) {
+            if (!param.is_move and !param.is_borrow and
+                (arg.* == .move_expr or (arg.* == .borrow_expr and param.ty.* != .pointer)))
+            {
                 self.setError("Call to {s} passes capability argument to plain parameter {s}", .{ call_name, param.name });
                 return TypeError.TypeMismatch;
             }
@@ -694,10 +757,7 @@ pub const TypeChecker = struct {
             if ((arg.* == .tuple_literal or arg.* == .array_literal) and
                 self.typesEqual(arg_ty, param.ty))
             {
-                std.debug.print("TC_PROP: arg_tag={s} arg_ty={s} param_ty={s}\n", .{@tagName(arg.*), @tagName(arg_ty.*), @tagName(param.ty.*)});
                 self.expr_types.put(arg, param.ty) catch return TypeError.OutOfMemory;
-            } else if (arg.* == .tuple_literal or arg.* == .array_literal) {
-                std.debug.print("TC_NOPROP: arg_tag={s} arg_ty={s} param_ty={s}\n", .{@tagName(arg.*), @tagName(arg_ty.*), @tagName(param.ty.*)});
             }
         }
     }
@@ -2061,8 +2121,18 @@ pub const TypeChecker = struct {
         // Register functions first
         for (program.program.decls) |decl| {
             if (decl.* == .func_decl) {
-                try self.ensureTopLevelNameUnused(decl.func_decl.name, "function");
-                try self.funcs.put(decl.func_decl.name, &decl.func_decl);
+                const fd = &decl.func_decl;
+                if (self.funcs.get(fd.name)) |existing| {
+                    // C-style forward declaration: an `extern "C" { fn f(...); }` prototype
+                    // may be completed by a matching definition in the same program (and the
+                    // prototype may equally follow the definition). Keep the definition.
+                    if (externPrototypePairsWith(existing, fd)) {
+                        if (existing.is_decl_only and !fd.is_decl_only) try self.funcs.put(fd.name, fd);
+                        continue;
+                    }
+                }
+                try self.ensureTopLevelNameUnused(fd.name, "function");
+                try self.funcs.put(fd.name, fd);
             } else if (decl.* == .overload_decl) {
                 const type_name = try self.typeName(decl.overload_decl.target_ty);
                 for (decl.overload_decl.methods) |method| {
@@ -2476,7 +2546,7 @@ pub const TypeChecker = struct {
             if (last.* == .expr_stmt and !stmtTerminates(last)) {
                 const tail_ty = self.expr_types.get(last.expr_stmt) orelse return TypeError.CompileError;
                 if (!self.valueAssignableTo(func.ret_ty, tail_ty)) {
-                    self.setError("TypeMismatch in function tail expression: expected tag={s}, actual tag={s}", .{ @tagName(func.ret_ty.*), @tagName(tail_ty.*) });
+                    self.setError("TypeMismatch in function tail expression: expected {s}, actual {s}", .{ typeDesc(func.ret_ty), typeDesc(tail_ty) });
                     return TypeError.TypeMismatch;
                 }
             }
@@ -2857,7 +2927,7 @@ pub const TypeChecker = struct {
                 if (ret.value) |val| {
                     const val_ty = try self.checkExpr(val, scope);
                     if (!self.valueAssignableTo(ret_ty, val_ty)) {
-                        self.setError("TypeMismatch in return: expected tag={s}, actual tag={s}", .{ @tagName(ret_ty.*), @tagName(val_ty.*) });
+                        self.setError("TypeMismatch in return: expected {s}, actual {s}", .{ typeDesc(ret_ty), typeDesc(val_ty) });
                         return TypeError.TypeMismatch;
                     }
                 } else {
@@ -3331,7 +3401,7 @@ pub const TypeChecker = struct {
                     };
                     const value_ty = try self.checkExpr(literal_field.value, scope);
                     if (!self.typesEqual(field_ty, value_ty)) {
-                        self.setError("TypeMismatch in struct literal field {s}.{s}: expected tag={s}, actual tag={s}", .{ ud.name, literal_field.name, @tagName(field_ty.*), @tagName(value_ty.*) });
+                        self.setError("TypeMismatch in struct literal field {s}.{s}: expected {s}, actual {s}", .{ ud.name, literal_field.name, typeDesc(field_ty), typeDesc(value_ty) });
                         return TypeError.TypeMismatch;
                     }
                 }
@@ -3967,13 +4037,17 @@ pub const TypeChecker = struct {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const value_ty = try self.checkExpr(call.args[0], scope);
                         if (!isNumericType(value_ty)) return TypeError.TypeMismatch;
-                        return try self.makeMutexType(value_ty);
+                        const inner_ty = if (call.args[0].* == .literal and call.args[0].literal == .int_val) try self.makeI32Type() else value_ty;
+                        if (inner_ty != value_ty) self.expr_types.put(call.args[0], inner_ty) catch return TypeError.OutOfMemory;
+                        return try self.makeMutexType(inner_ty);
                     }
                     if (std.mem.eql(u8, target_name, "RwLock") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
                         const value_ty = try self.checkExpr(call.args[0], scope);
                         if (!isNumericType(value_ty)) return TypeError.TypeMismatch;
-                        return try self.makeRwLockType(value_ty);
+                        const inner_ty = if (call.args[0].* == .literal and call.args[0].literal == .int_val) try self.makeI32Type() else value_ty;
+                        if (inner_ty != value_ty) self.expr_types.put(call.args[0], inner_ty) catch return TypeError.OutOfMemory;
+                        return try self.makeRwLockType(inner_ty);
                     }
                     if (std.mem.eql(u8, target_name, "File") and std.mem.eql(u8, call.func_name, "open")) {
                         if (call.args.len != 1) return TypeError.InvalidArgsCount;
@@ -5618,6 +5692,24 @@ pub const TypeChecker = struct {
         return switch (ty.*) {
             .user_defined => |ud| ud.name,
             else => TypeError.CompileError,
+        };
+    }
+
+    /// Short human-readable label for diagnostics. Unlike `@tagName(ty.*)` this
+    /// distinguishes primitive widths and named types, so `expected u32, actual i32`
+    /// no longer collapses into `expected primitive, actual primitive`.
+    fn typeDesc(ty: *const ast.Type) []const u8 {
+        return switch (ty.*) {
+            .infer => "infer",
+            .primitive => |p| @tagName(p),
+            .pointer => "pointer",
+            .borrow => "borrow",
+            .array => "array",
+            .tuple => "tuple",
+            .future => "future",
+            .closure => "closure",
+            .fn_ptr => "fn_ptr",
+            .user_defined => |ud| ud.name,
         };
     }
 

@@ -800,7 +800,11 @@ pub const Codegen = struct {
             .bool_val => |v| try self.emitIntConst(reg, if (v) 1 else 0),
             .string_val => |v| {
                 const label = try self.newStringConst();
-                self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, v }) catch return CodegenError.CodegenError;
+                // Emit one trailing NUL so the constant can also be treated as a
+                // C string (raw `ptr` CSTR scans terminate at the first zero byte).
+                // Explicit-length slice users use `escapedStringByteLen(v)`, which
+                // excludes this terminator, so visible output is unchanged.
+                self.out.writer().print("    @const {s} = utf8:\"{s}\\0\"\n", .{ label, v }) catch return CodegenError.CodegenError;
                 const len_reg = try self.newTmp();
                 try self.emitIntConst(len_reg, @as(i64, @intCast(escapedStringByteLen(v))));
                 self.stack_alloc_bindings.put(reg, {}) catch return CodegenError.OutOfMemory;
@@ -3017,6 +3021,16 @@ pub const Codegen = struct {
             return;
         }
 
+        if (ty.* == .primitive and ty.primitive == .raw_ptr) {
+            const ptr_reg = try self.genExpr(arg, hoisted_allocs);
+            const len_reg = try self.newTmp();
+            self.out.writer().print("    EXPAND CSTR_LEN {s}, {s}\n", .{ len_reg, ptr_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    EXPAND FORMAT_PUSH_BYTES {s}, {s}, {s}, {s}\n", .{ tag, out_reg, ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+            try self.emitRelease(len_reg);
+            if (callArgNeedsRelease(arg)) try self.emitRelease(ptr_reg);
+            return;
+        }
+
         const slice_reg = try self.genExpr(arg, hoisted_allocs);
         self.out.writer().print("    EXPAND FORMAT_PUSH_SLICE {s}, {s}, {s}\n", .{ tag, out_reg, slice_reg }) catch return CodegenError.CodegenError;
         if (callArgNeedsRelease(arg)) try self.emitRelease(slice_reg);
@@ -4878,6 +4892,71 @@ pub const Codegen = struct {
                 .test_decl => |t| if (self.blockNeedsVecMacros(t.body)) return true,
                 else => {},
             }
+        }
+        return false;
+    }
+
+    // `format("{}", path)` with a `ptr` arg emits `EXPAND CSTR_LEN ...` (from
+    // `sa_std/ffi.sa`). Only import `ffi.sa` when such a call exists, so demos
+    // that never format a raw pointer stay free of the FFI import.
+    fn programNeedsFfiCstrMacros(self: *Codegen, program: *const ast.Node) bool {
+        for (program.program.decls) |decl| {
+            switch (decl.*) {
+                .func_decl => |f| if (self.blockNeedsFfiCstrMacros(f.body)) return true,
+                .impl_decl => |i| for (i.methods) |method| {
+                    if (method.* == .func_decl and self.blockNeedsFfiCstrMacros(method.func_decl.body)) return true;
+                },
+                .test_decl => |t| if (self.blockNeedsFfiCstrMacros(t.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn blockNeedsFfiCstrMacros(self: *Codegen, block: []const *ast.Node) bool {
+        for (block) |stmt| {
+            switch (stmt.*) {
+                .let_stmt => |let| if (self.exprNeedsFfiCstrMacros(let.value)) return true,
+                .let_destructure_stmt => |let| if (self.exprNeedsFfiCstrMacros(let.value)) return true,
+                .const_stmt => |c| if (self.exprNeedsFfiCstrMacros(c.value)) return true,
+                .assign_stmt => |assign| if (self.exprNeedsFfiCstrMacros(assign.target) or self.exprNeedsFfiCstrMacros(assign.value)) return true,
+                .expr_stmt => |expr| if (self.exprNeedsFfiCstrMacros(expr)) return true,
+                .return_stmt => |ret| if (ret.value) |v| if (self.exprNeedsFfiCstrMacros(v)) return true,
+                .for_stmt => |f| if (self.exprNeedsFfiCstrMacros(f.start) or (if (f.end) |e| self.exprNeedsFfiCstrMacros(e) else false) or self.blockNeedsFfiCstrMacros(f.body)) return true,
+                .while_stmt => |w| if (self.exprNeedsFfiCstrMacros(w.cond) or self.blockNeedsFfiCstrMacros(w.body)) return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
+    fn exprNeedsFfiCstrMacros(self: *Codegen, expr: *const ast.Node) bool {
+        switch (expr.*) {
+            .call_expr => |call| {
+                if (std.mem.eql(u8, call.func_name, "format")) {
+                    for (call.args) |arg| {
+                        if (self.tc.expr_types.get(arg)) |ty| {
+                            if (ty.* == .primitive and ty.primitive == .raw_ptr) return true;
+                        }
+                    }
+                }
+                for (call.args) |arg| if (self.exprNeedsFfiCstrMacros(arg)) return true;
+            },
+            .binary_expr => |bin| return self.exprNeedsFfiCstrMacros(bin.left) or self.exprNeedsFfiCstrMacros(bin.right),
+            .borrow_expr => |b| return self.exprNeedsFfiCstrMacros(b.expr),
+            .move_expr => |m| return self.exprNeedsFfiCstrMacros(m.expr),
+            .deref_expr => |d| return self.exprNeedsFfiCstrMacros(d.expr),
+            .field_expr => |f| return self.exprNeedsFfiCstrMacros(f.expr),
+            .index_expr => |idx| return self.exprNeedsFfiCstrMacros(idx.target) or self.exprNeedsFfiCstrMacros(idx.index),
+            .slice_expr => |slc| return self.exprNeedsFfiCstrMacros(slc.target) or self.exprNeedsFfiCstrMacros(slc.start) or self.exprNeedsFfiCstrMacros(slc.end),
+            .closure_literal => |lit| return self.exprNeedsFfiCstrMacros(lit.body),
+            .await_expr => |aw| return self.exprNeedsFfiCstrMacros(aw.expr),
+            .try_expr => |tr| return self.exprNeedsFfiCstrMacros(tr.expr),
+            .struct_literal => |lit| for (lit.fields) |field| if (self.exprNeedsFfiCstrMacros(field.value)) return true,
+            .enum_literal => |lit| for (lit.fields) |field| if (self.exprNeedsFfiCstrMacros(field.value)) return true,
+            .tuple_literal => |lit| for (lit.elements) |e| if (self.exprNeedsFfiCstrMacros(e)) return true,
+            .array_literal => |lit| for (lit.elements) |e| if (self.exprNeedsFfiCstrMacros(e)) return true,
+            else => {},
         }
         return false;
     }
@@ -6833,6 +6912,9 @@ pub const Codegen = struct {
         if (programNeedsAsyncMacros(program)) {
             self.out.writer().print("@import \"sa_std/core/future.sa\"\n", .{}) catch return CodegenError.CodegenError;
             self.out.writer().print("@import \"sa_std/core/task.sa\"\n", .{}) catch return CodegenError.CodegenError;
+        }
+        if (self.programNeedsFfiCstrMacros(program)) {
+            self.out.writer().print("@import \"sa_std/ffi.sa\"\n", .{}) catch return CodegenError.CodegenError;
         }
 
         if (self.programNeedsHashMapMacros(program)) {
@@ -9617,7 +9699,10 @@ pub const Codegen = struct {
 
     fn genRawPointerStringLiteralArg(self: *Codegen, value: []const u8) CodegenError![]const u8 {
         const label = try self.newStringConst();
-        self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
+        // Append a NUL so a `ptr` argument can also be scanned as a C string
+        // (CSTR_LEN terminates at the first zero byte); explicit-length users
+        // pass `escapedStringByteLen(value)`, which excludes this terminator.
+        self.out.writer().print("    @const {s} = utf8:\"{s}\\0\"\n", .{ label, value }) catch return CodegenError.CodegenError;
         const ptr_reg = try self.newTmp();
         self.out.writer().print("    {s} = &{s}\n", .{ ptr_reg, label }) catch return CodegenError.CodegenError;
         return ptr_reg;
@@ -12664,7 +12749,11 @@ pub const Codegen = struct {
                         }
                         for (helper.captures) |capture| {
                             const capture_name = self.resolveBindingName(capture.name);
-                            const capture_reg = if (self.mpsc_sender_channels.get(capture_name)) |chan| chan else capture_name;
+                            // Sender clones are independent values at the SLA level.
+                            // Preserve the clone register when transferring it into
+                            // a thread slot; substituting the shared channel would
+                            // move the receiver-side register more than once.
+                            const capture_reg = capture_name;
                             // Non-copy payloads transfer ownership into the thread
                             // slot (same plan as SAB planEscapedClosureCapture).
                             // Store keeps a plain value write; emitForgetMovedValue
@@ -12801,13 +12890,14 @@ pub const Codegen = struct {
                         self.out.writer().print("    br {s} -> {s}, {s}\n\n", .{ ok_reg, ok_label, err_label }) catch return CodegenError.CodegenError;
                         self.out.writer().print("{s}:\n", .{ok_label}) catch return CodegenError.CodegenError;
                         self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ result_reg, file_reg }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(status_reg);
-                        try self.emitRelease(file_reg);
+                        // These branch-local temporaries must be consumed on both
+                        // paths. Do not route through emitter cleanup tracking:
+                        // it is intentionally shared while both arms are emitted.
+                        self.out.writer().print("    !{s}\n    !{s}\n", .{ status_reg, file_reg }) catch return CodegenError.CodegenError;
                         self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
                         self.out.writer().print("{s}:\n", .{err_label}) catch return CodegenError.CodegenError;
                         self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ result_reg, status_reg }) catch return CodegenError.CodegenError;
-                        try self.emitRelease(status_reg);
-                        try self.emitRelease(file_reg);
+                        self.out.writer().print("    !{s}\n    !{s}\n", .{ status_reg, file_reg }) catch return CodegenError.CodegenError;
                         self.out.writer().print("    jmp {s}\n\n", .{end_label}) catch return CodegenError.CodegenError;
                         self.out.writer().print("{s}:\n", .{end_label}) catch return CodegenError.CodegenError;
                         try self.emitRelease(ok_reg);

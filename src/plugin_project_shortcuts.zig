@@ -1566,14 +1566,16 @@ fn rewriteProjectSnapshotTestShortcutsInBlock(
                 if (expr.* == .if_expr) {
                     const ife = &expr.if_expr;
                     replaceKnownProjectResultFields(ife.cond, &snapshots_with_inferred, &inferred_project_lists, &inferred_service_lists, &known_open_states);
-                    if (evalSyntacticBool(ife.cond, &facts) == false) ife.then_block = &.{};
+                    // A trailing `if` can be the block's tail value; emptying a branch
+                    // there would erase the value the block evaluates to.
+                    if (idx + 1 != block.len and evalSyntacticBool(ife.cond, &facts) == false) ife.then_block = &.{};
                     try rewriteProjectSnapshotTestShortcutsInBlock(allocator, ife.then_block, &facts);
                     if (ife.else_block) |else_block| try rewriteProjectSnapshotTestShortcutsInBlock(allocator, else_block, &facts);
                 }
             },
             .if_expr => |*ife| {
                 replaceKnownProjectResultFields(ife.cond, &snapshots_with_inferred, &inferred_project_lists, &inferred_service_lists, &known_open_states);
-                if (evalSyntacticBool(ife.cond, &facts) == false) {
+                if (idx + 1 != block.len and evalSyntacticBool(ife.cond, &facts) == false) {
                     ife.then_block = &.{};
                 }
                 try rewriteProjectSnapshotTestShortcutsInBlock(allocator, ife.then_block, &facts);

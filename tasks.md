@@ -6,6 +6,15 @@ This document tracks the tasks and implementation progress of the Sla compiler p
 
 ## Task List
 
+### Recovery Point — Windows Native Build + 313/313 Demos (2026-08-19)
+- [x] **Windows native build + full demo corpus passing**
+  - [x] Added `windows-x86_64` → `zig-out/bin/sla.dll` artifact mapping in `sap.json`; `SA_PLUGIN_DEV=1 sa plugin install --dev .` now installs the native Windows DLL.
+  - [x] Codegen fixes across `src/sab_codegen.zig` (+463/-42), `src/codegen.zig`, `src/type_checker.zig`, `src/lowering_rules.zig`, `src/plugin_reachability.zig`, `src/plugin_project_shortcuts.zig`: extern-decl dedup, NUL-terminated UTF-8 string constants, `raw_ptr` CSTR_LEN, slice_expr lowering, format_push string-like, let-binding ownership, direct const-string struct fields.
+  - [x] Removed five stray unconditional `std.debug.print` debug trace families from `sab_codegen.zig`; kept the env-gated `traceUnsupported()`.
+  - [x] `zig build` green; dev install green; `tools/verify_demos_test.sh` → 313/313 `ok` (0 fail / 0 buildfail / 0 hang); `sa sla check` clean on all 313.
+  - [x] Legacy `.test.sa` artifacts removed from the rosetta demo tree (~300 deletions); ~37 demo `.sla`/`.sa`/`README.md` updated.
+  - [x] Operating rule recorded in `AGENTS.md`: every `sa sla` invocation needs `SA_PLUGIN_DEV=1`.
+
 ### 0. Roadmap To 100% Y-Shared Direct SAB Completion
 - [ ] **Operating Rules Until Completion**
   - [x] Active implementation workspace is `/home/vscode/projects/sa_plugins/sa_plugin_sla`. Do not switch implementation or task planning into `/home/vscode/projects/sla_ecs`; use `sla_ecs` only as an explicit host regression target such as `lib/parallel.sla`.

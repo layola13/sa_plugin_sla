@@ -4,6 +4,23 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Windows build support + full demo pass (2026-08-19): Added `windows-x86_64`
+  artifact mapping in `sap.json` (`zig-out/bin/sla.dll`) so `sa plugin install
+  --dev .` installs the native Windows DLL. Codegen fixes in `src/sab_codegen.zig`
+  (+463/-42) and shared sites in `src/codegen.zig`, `src/type_checker.zig`,
+  `src/lowering_rules.zig`, `src/plugin_reachability.zig`,
+  `src/plugin_project_shortcuts.zig`: extern-decl dedup, NUL-terminated UTF-8
+  string constants, `raw_ptr` CSTR_LEN, slice_expr lowering, format_push
+  string-like handling, let-binding ownership, and direct const-string struct
+  fields. Removed five unconditional `std.debug.print` debug traces
+  (`[TRACE-intern]`, `[TRACE-call]`, `[PPV-MARK]`, `[PRIMFMT-MARK]`,
+  `[GENPRINTLN-MARK]`, `genMacroIdentifier` series) from `sab_codegen.zig`;
+  kept the env-gated `traceUnsupported()`. `zig build` green; dev install via
+  `SA_PLUGIN_DEV=1 sa plugin install --dev .` green; `tools/verify_demos_test.sh`
+  reports 313/313 demos `ok` (no fail/buildfail/hang); `sa sla check` clean on
+  all 313. Operating rule added to `AGENTS.md`: every `sa sla` call needs
+  `SA_PLUGIN_DEV=1`.
+
 - Share smart-pointer/mem/mpsc/iter peels on Y (2026-07-22): Pure isNew/
   isIntoRaw/isFromRaw/isIntoInner/isIter/isIntoIter plus associated Box/Rc/Arc,
   ManuallyDrop, mem::forget, and mpsc::channel recognizers shared; SA emit/

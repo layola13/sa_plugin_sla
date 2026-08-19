@@ -17,13 +17,17 @@ fn refcell_borrow_sum() -> i32 {
 
 fn main() -> i32 {
     let value = RefCell::new(7);
+    let first = 0;
     {
         let borrowed = value.borrow();
-        println("{}", *borrowed);
+        first = *borrowed;
+        println("{}", first);
     }
     *value.borrow_mut() = 9;
-    println("{}", value.borrow());
-    return 0;
+    let second_ref = value.borrow();
+    let second = *second_ref;
+    println("{}", second);
+    return first + second;
 }
 
 @test "rosetta 107 107_refcell_dynamic_borrow"() {

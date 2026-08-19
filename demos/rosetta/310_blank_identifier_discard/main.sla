@@ -11,6 +11,12 @@ fn blank_identifier_demo() -> i32 {
     return second + rest[0] + w2;
 }
 
+fn main() -> i32 {
+    let got = blank_identifier_demo();
+    println("{}", got);
+    return got;
+}
+
 @test "blank identifier discard demo"() {
     let got = blank_identifier_demo();
     if got != 57 { panic(310); };

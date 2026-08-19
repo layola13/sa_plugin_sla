@@ -7,7 +7,7 @@ struct Counter {
 }
 
 impl Counter {
-    fn inc(self) -> void {
+    fn inc(&self) -> void {
         let current = self.value.get();
         self.value.set(current + 1);
     }

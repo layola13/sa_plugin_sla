@@ -10,7 +10,7 @@ fn main() -> i32 {
     let bytes = "hey";
     let result = bytes.len();
     println("{}", result);
-    return 0;
+    return result;
 }
 
 @test "rosetta 158 158_custom_dst_alloc"() {

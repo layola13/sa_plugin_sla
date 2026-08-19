@@ -10,7 +10,7 @@ fn main() -> i32 {
     let bytes = "abc";
     let result = bytes.len();
     println("{}", result);
-    return 0;
+    return result;
 }
 
 @test "rosetta 147 147_custom_dst_pointers"() {

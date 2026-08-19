@@ -7,6 +7,17 @@ struct Request {
     path: ptr,
 }
 
+fn route_status(req: Request) -> i32 {
+    let result = 404;
+    if str_eq(req.method, "GET") {
+        result = get_route_status(req.path);
+    };
+    if str_eq(req.method, "POST") {
+        result = post_route_status(req.path);
+    };
+    return result;
+}
+
 fn get_route_status(path: ptr) -> i32 {
     if str_eq(path, "/health") {
         return 200;
@@ -17,16 +28,6 @@ fn get_route_status(path: ptr) -> i32 {
 fn post_route_status(path: ptr) -> i32 {
     if str_eq(path, "/jobs") {
         return 202;
-    };
-    return 404;
-}
-
-fn route_status(req: Request) -> i32 {
-    if str_eq(req.method, "GET") {
-        return get_route_status(req.path);
-    };
-    if str_eq(req.method, "POST") {
-        return post_route_status(req.path);
     };
     return 404;
 }

@@ -7,6 +7,6 @@ fn main() -> i32 {
     let align: usize = 4;
     let result = size + align;
     println("{}", result);
-    return 0;
+    return result;
 }
 @test "rosetta 152 152_memory_layout_struct"() { let got = memory_layout_size_plus_align(); if got != 12 { panic(152); }; }

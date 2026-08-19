@@ -21,7 +21,7 @@ fn thread_pool_total() -> i32 {
 fn main() -> i32 {
     let total = thread_pool_total();
     println("{}", total);
-    return 0;
+    return total;
 }
 
 @test "rosetta 061 61_thread_pool"() {

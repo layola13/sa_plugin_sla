@@ -14,7 +14,7 @@ fn round_trip() -> i32 {
 fn main() -> i32 {
     let value = round_trip();
     println("{}", value);
-    return 0;
+    return value;
 }
 
 @test "rosetta 062 62_channel_pingpong"() {

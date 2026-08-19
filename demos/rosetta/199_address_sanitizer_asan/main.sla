@@ -22,7 +22,7 @@ fn main() -> i32 {
     let last = buf[3] as i32;
     let result = first + last;
     println("{}", result);
-    return 0;
+    return result;
 }
 
 @test "rosetta 199 199_address_sanitizer_asan"() {

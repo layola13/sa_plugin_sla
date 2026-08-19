@@ -9,7 +9,7 @@ fn cfg_target_arch_len() -> usize {
 fn main() -> i32 {
     let arch = "x86";
     println("{}", arch);
-    return 0;
+    return arch.len();
 }
 
 @test "rosetta 194 194_cfg_conditional_compilation"() {

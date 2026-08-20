@@ -13313,7 +13313,12 @@ pub const Codegen = struct {
                             .name = "",
                             .ty = param_ty,
                             .is_borrow = param_ty.* == .borrow,
-                            .is_move = !self.typeIsCopyValue(param_ty) and !lowering_rules.isBorrowLikeType(param_ty),
+                            .is_move = !lowering_rules.byValueRawPointerParam(.{
+                                .name = "",
+                                .ty = param_ty,
+                                .is_borrow = param_ty.* == .borrow,
+                                .is_move = false,
+                            }) and !self.typeIsCopyValue(param_ty) and !lowering_rules.isBorrowLikeType(param_ty),
                         };
                         const lowered_arg = try self.genCallArgForParam(arg, param, hoisted_allocs);
                         lowered_args.append(lowered_arg) catch return CodegenError.OutOfMemory;

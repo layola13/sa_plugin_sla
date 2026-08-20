@@ -41,4 +41,19 @@ _work/
 
 # local std build artifact
 local_sa_std/
-
+# Temporary local verification artifacts
+.claude/skills/sla/
+.codex/skills/sla/
+_sla_cache_old2/
+_zig_cache_old/
+cxu.code-workspace
+tools/scan_all_test.sh
+tools/scan_demos.sh
+tools/sweep_tests.sh
+tools/verify_demos.sh
+tools/verify_demos_test.sh
+demos/workspace/members/app/src/main.sa
+demos/rosetta/01_hello_world/*.exe
+demos/rosetta/01_hello_world/*.exe.sa.bc
+demos/rosetta/01_hello_world/.claude/
+demos/rosetta/01_hello_world/.codex/

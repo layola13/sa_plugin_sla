@@ -9,8 +9,8 @@ pub fn build(b: *std.Build) void {
 
     const is_windows = target.result.os.tag == .windows;
     const sa_std_archive_rel = saStdArchivePath(target.result.os.tag);
-    const repo_root = resolveRepoRoot(b);
-    const sa_std_dir = resolveSaStdDir(b, repo_root, sa_std_dir_option, sa_std_archive_rel);
+    const repo_root = absoluteBuildPath(b, resolveRepoRoot(b));
+    const sa_std_dir = absoluteBuildPath(b, resolveSaStdDir(b, repo_root, sa_std_dir_option, sa_std_archive_rel));
     const sa_std_archive_path = b.pathJoin(&.{ sa_std_dir, sa_std_archive_rel });
 
     const plugin_api = b.createModule(.{
@@ -24,6 +24,10 @@ pub fn build(b: *std.Build) void {
     sci_build_options.addOption([]const u8, "sa_std_archive_name", sa_std_archive_rel);
     sci_build_options.addOption([]const u8, "sa_std_archive_path", b.pathFromRoot(sa_std_archive_path));
     sci_build_options.addOption([]const u8, "version", "dev");
+    const sla_build_options = b.addOptions();
+    sla_build_options.addOption([]const u8, "sa_std_dir", sa_std_dir);
+    const sa_std_source_dir = b.pathJoin(&.{ repo_root, "sa_std" });
+    sla_build_options.addOption([]const u8, "sa_std_source_dir", sa_std_source_dir);
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/plugin.zig"),
         .target = target,
@@ -31,7 +35,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     root_module.addImport("plugin_api", plugin_api);
-    root_module.addOptions("build_options", sci_build_options);
+    root_module.addOptions("sla_build_options", sla_build_options);
     const sci_bridge = b.createModule(.{
         .root_source_file = lazyPath(b, b.pathJoin(&.{ repo_root, "src/plugin_bridge.zig" })),
         .target = target,
@@ -55,8 +59,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     local_cli_module.addImport("plugin_api", plugin_api);
+    local_cli_module.addOptions("sla_build_options", sla_build_options);
     local_cli_module.addImport("sci_bridge", sci_bridge);
-    local_cli_module.addOptions("build_options", sci_build_options);
     const local_cli = b.addExecutable(.{
         .name = "sla",
         .root_module = local_cli_module,
@@ -118,8 +122,8 @@ pub fn build(b: *std.Build) void {
 
 fn saStdArchivePath(os_tag: std.Target.Os.Tag) []const u8 {
     return switch (os_tag) {
-        .windows => "artifacts/sa_std/sa_std.lib",
-        else => "artifacts/sa_std/libsa_std.a",
+        .windows => "sa_std.lib",
+        else => "libsa_std.a",
     };
 }
 
@@ -225,6 +229,10 @@ fn resolveSaStdDir(b: *std.Build, repo_root: []const u8, sa_std_dir_option: ?[]c
     return joined;
 }
 
+fn absoluteBuildPath(b: *std.Build, path: []const u8) []const u8 {
+    if (std.fs.path.isAbsolute(path)) return path;
+    return b.pathFromRoot(path);
+}
 fn dirHasFile(dir: []const u8, name: []const u8) bool {
     var d = std.fs.cwd().openDir(dir, .{}) catch return false;
     defer d.close();

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sla_build_options = @import("sla_build_options");
 const sla_workspace = @import("workspace.zig");
 const plugin_cli = @import("plugin_cli.zig");
 const host_paths = @import("host_paths.zig");
@@ -145,6 +146,9 @@ fn saStdRootLooksValid(allocator: std.mem.Allocator, root: []const u8) !bool {
 }
 
 pub fn sabSaStdRoot(allocator: std.mem.Allocator) ![]const u8 {
+    if (try saStdRootLooksValid(allocator, sla_build_options.sa_std_source_dir)) {
+        return try allocator.dupe(u8, sla_build_options.sa_std_source_dir);
+    }
     if (std.process.getEnvVarOwned(allocator, "SA_STD_DIR")) |env_root| {
         if (try saStdRootLooksValid(allocator, env_root)) return env_root;
     } else |_| {}

@@ -92,11 +92,41 @@ pub fn readImportFromRoot(allocator: std.mem.Allocator, root: []const u8, rel_pa
     return try readImportFileIfExistsWithOutputPath(allocator, candidate, output_path);
 }
 
+fn readImportFromAncestorRoots(
+    allocator: std.mem.Allocator,
+    base_dir: []const u8,
+    rel_path: []const u8,
+    output_path: []const u8,
+    roots: []const []const u8,
+) !?ResolvedImport {
+    var current = std.fs.cwd().realpathAlloc(allocator, base_dir) catch try allocator.dupe(u8, base_dir);
+    defer allocator.free(current);
+    while (true) {
+        for (roots) |root| {
+            const root_path = try std.fs.path.join(allocator, &.{ current, root });
+            defer allocator.free(root_path);
+            if (try readImportFromRoot(allocator, root_path, rel_path, output_path)) |resolved| return resolved;
+        }
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (std.mem.eql(u8, parent, current)) break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+    return null;
+}
+
 pub fn resolveSaStdImport(allocator: std.mem.Allocator, import_path: []const u8) !?ResolvedImport {
+    return resolveSaStdImportFromBase(allocator, ".", import_path);
+}
+
+fn resolveSaStdImportFromBase(allocator: std.mem.Allocator, base_dir: []const u8, import_path: []const u8) !?ResolvedImport {
     if (!isSaStdImport(import_path)) return null;
     if (std.mem.eql(u8, import_path, "sa_std")) return null;
 
     const rel_path = import_path["sa_std/".len..];
+    const ancestor_roots = [_][]const u8{ "sa_std", "sci/sa_std" };
+    if (try readImportFromAncestorRoots(allocator, base_dir, rel_path, import_path, &ancestor_roots)) |resolved| return resolved;
 
     if (std.process.getEnvVarOwned(allocator, "SA_STD_DIR")) |env_root| {
         if (try readImportFromRoot(allocator, env_root, rel_path, import_path)) |resolved| return resolved;
@@ -132,10 +162,16 @@ pub fn resolveSaStdImport(allocator: std.mem.Allocator, import_path: []const u8)
 }
 
 pub fn resolveSlaStdImport(allocator: std.mem.Allocator, import_path: []const u8) !?ResolvedImport {
+    return resolveSlaStdImportFromBase(allocator, ".", import_path);
+}
+
+fn resolveSlaStdImportFromBase(allocator: std.mem.Allocator, base_dir: []const u8, import_path: []const u8) !?ResolvedImport {
     if (!isSlaStdImport(import_path)) return null;
     if (std.mem.eql(u8, import_path, "sla_std")) return null;
 
     const rel_path = import_path["sla_std/".len..];
+    const ancestor_roots = [_][]const u8{ "sla_std", "sa_plugin_sla/sla_std", "sa_plugins/sa_plugin_sla/sla_std" };
+    if (try readImportFromAncestorRoots(allocator, base_dir, rel_path, import_path, &ancestor_roots)) |resolved| return resolved;
 
     if (std.process.getEnvVarOwned(allocator, "SLA_STD_DIR")) |env_root| {
         if (try readImportFromRoot(allocator, env_root, rel_path, import_path)) |resolved| return resolved;
@@ -223,8 +259,8 @@ pub fn resolveImportFile(
 ) !ResolvedImport {
     const import_path = raw_import_path;
 
-    if (try resolveSlaStdImport(allocator, import_path)) |resolved| return resolved;
-    if (try resolveSaStdImport(allocator, import_path)) |resolved| return resolved;
+    if (try resolveSlaStdImportFromBase(allocator, base_dir, import_path)) |resolved| return resolved;
+    if (try resolveSaStdImportFromBase(allocator, base_dir, import_path)) |resolved| return resolved;
     if (try resolveWorkspacePackageImport(allocator, base_dir, import_path)) |resolved| return resolved;
 
     const candidate = if (std.fs.path.isAbsolute(import_path))

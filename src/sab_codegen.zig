@@ -1,4 +1,5 @@
 const std = @import("std");
+const sla_build_options = @import("sla_build_options");
 const ast = @import("ast.zig");
 const contract_parser = @import("contract_parser.zig");
 const type_checker = @import("type_checker.zig");
@@ -1272,6 +1273,7 @@ pub const Codegen = struct {
     }
 
     fn resolveSaStdRoot(self: *Codegen) ![]const u8 {
+        if (try self.dupeIfValidSaStdRoot(sla_build_options.sa_std_source_dir)) |root| return root;
         if (std.process.getEnvVarOwned(self.allocator, "SA_STD_DIR")) |env_root| {
             defer self.allocator.free(env_root);
             if (try self.dupeIfValidSaStdRoot(env_root)) |root| return root;
@@ -3843,6 +3845,12 @@ pub const Codegen = struct {
         return try self.intern(name);
     }
 
+    fn newDecodedModuleRegSymbol(self: *Codegen, old_id: u32, old_name: []const u8) !u32 {
+        const name = try std.fmt.allocPrint(self.allocator, "__decoded_r_{d}_{d}_{s}", .{ self.decoded_module_rename_idx, old_id, old_name });
+        errdefer self.allocator.free(name);
+        self.decoded_module_rename_idx += 1;
+        return try self.intern(name);
+    }
     fn decodedModuleRegSymbolName(symbols: []const []const u8, remap: *DecodedModuleLocalRemap, old_id: u32) ![]const u8 {
         _ = remap;
         return try decodedModuleSymbolName(symbols, old_id);
@@ -3852,7 +3860,7 @@ pub const Codegen = struct {
         if (remap.stable_reg_ids.get(old_id)) |existing| return existing;
         if (remap.reg_ids.get(old_id)) |existing| return existing;
         const old_name = try decodedModuleRegSymbolName(symbols, remap, old_id);
-        const new_id = try self.newDecodedModuleLocalSymbol("r", old_id);
+        const new_id = try self.newDecodedModuleRegSymbol(old_id, old_name);
         try remap.reg_ids.put(old_id, new_id);
         try remap.source_reg_symbol_ids.put(old_id, new_id);
         try remap.reg_order.append(old_id);

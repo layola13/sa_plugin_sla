@@ -329,7 +329,7 @@ pub fn commandUsage(command: []const u8) []const u8 {
     if (std.mem.eql(u8, command, "sab disasm")) return "usage: sa sla sab disasm <file.sab> [--out <file.sa>]\n       sa slab disasm <file.sab> [--out <file.sa>]\n";
     if (std.mem.eql(u8, command, "check")) return "usage: sa sla check [file] [-p <package>]\n";
     if (std.mem.eql(u8, command, "test")) return "usage: sa sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]\n";
-    return "usage: sa sla <command> [options]\n";
+    return "usage: sla <command> [options]\n       sa sla <command> [options]\n";
 }
 
 pub fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {

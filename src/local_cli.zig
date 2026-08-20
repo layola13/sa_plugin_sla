@@ -28,25 +28,38 @@ pub fn main() !void {
     }
 
     // `sla` as a global binary is invoked as `sla <command> ...`; the plugin
-    // dispatcher (runSlaCommandImpl) requires argv[1] to be the literal "sla"/
-    // "slab" marker.  When the caller already passed that marker (e.g. the
-    // legacy `sla sla <cmd>` form), pass argv through verbatim.  Otherwise
-    // synthesize the marker so the new top-level `sla test x.sla`,
-    // `sla build ... `, etc. "just work" and every downstream parser offset
-    // (which all key off the marker at position 1) stays unchanged.
+    // dispatcher requires argv[1] to be the literal "sla"/"slab" marker.
+    // Normalize standalone help and top-level commands to that legacy shape,
+    // while preserving explicit `sla sla ...` and `sla slab ...` invocations.
     var synthesized: ?[][]const u8 = null;
     defer if (synthesized) |s| allocator.free(s);
 
-    const args: []const []const u8 = if (argv.len >= 2 and
-        !std.mem.eql(u8, argv[1], "sla") and
-        !std.mem.eql(u8, argv[1], "slab") and
-        isTopLevelSlaCommand(argv[1]))
-    blk: {
-        const synth = try allocator.alloc([]const u8, argv.len + 1);
+    const needs_help = blk: {
+        if (argv.len < 2) break :blk true;
+        break :blk std.mem.eql(u8, argv[1], "-h") or std.mem.eql(u8, argv[1], "--help");
+    };
+    const should_synthesize = blk: {
+        if (needs_help) break :blk true;
+        if (argv.len < 2) break :blk false;
+        if (std.mem.eql(u8, argv[1], "sla") or std.mem.eql(u8, argv[1], "slab")) break :blk false;
+        break :blk isTopLevelSlaCommand(argv[1]);
+    };
+    const args: []const []const u8 = if (should_synthesize)    blk: {
+        const synth_len = if (needs_help) (if (argv.len > 2) argv.len + 1 else 3) else argv.len + 1;
+        const synth = try allocator.alloc([]const u8, synth_len);
         synth[0] = argv[0];
         synth[1] = "sla";
-        synth[2] = argv[1]; // keep argv[1] (the command) at slot 2, where runSlaCommandImpl reads cmd
-        for (argv[2..], 0..) |a, i| synth[i + 3] = a;
+        if (needs_help) {
+            synth[2] = "help";
+            if (argv.len > 2) {
+                for (argv[2..], 0..) |a, i| synth[i + 3] = a;
+            }
+        } else {
+            synth[2] = argv[1];
+            if (argv.len > 2) {
+                for (argv[2..], 0..) |a, i| synth[i + 3] = a;
+            }
+        }
         synthesized = synth;
         break :blk synth;
     } else argv;

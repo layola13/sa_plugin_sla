@@ -235,7 +235,8 @@ pub fn runSlaCommandImpl(
     }
     const cmd = args[2];
     if (std.mem.eql(u8, cmd, "help")) {
-        try stderr.writeAll("usage: sa sla <command> [options]\n\n");
+        try stderr.writeAll("usage: sla <command> [options]\n");
+        try stderr.writeAll("       sa sla <command> [options]\n\n");
         try stderr.writeAll("Commands:\n");
         try stderr.writeAll("  init       [path]\n");
         try stderr.writeAll("  skills     [--json]\n");

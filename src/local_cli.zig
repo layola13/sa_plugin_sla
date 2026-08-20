@@ -8,8 +8,8 @@ const plugin_api = @import("plugin_api");
 /// the legacy `sla sla <cmd>` / `sla slab <cmd>` forms keep working verbatim.
 fn isTopLevelSlaCommand(token: []const u8) bool {
     const commands = [_][]const u8{
-        "init", "skills", "stability", "build",     "build-workspace",
-        "build-exe", "sab", "check", "test", "help",
+        "init",      "skills", "stability", "build", "build-workspace",
+        "build-exe", "sab",    "check",     "test",  "help",
     };
     for (commands) |cmd| {
         if (std.mem.eql(u8, token, cmd)) return true;
@@ -21,6 +21,11 @@ pub fn main() !void {
     const allocator = std.heap.page_allocator;
     const argv = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, argv);
+
+    if (argv.len >= 2 and (std.mem.eql(u8, argv[1], "--version") or std.mem.eql(u8, argv[1], "-V"))) {
+        try std.io.getStdOut().writer().print("sla 0.1.0{c}", .{10});
+        return;
+    }
 
     // `sla` as a global binary is invoked as `sla <command> ...`; the plugin
     // dispatcher (runSlaCommandImpl) requires argv[1] to be the literal "sla"/
@@ -57,4 +62,3 @@ pub fn main() !void {
     const code = maybe_code orelse 1;
     if (code != 0) std.process.exit(code);
 }
-

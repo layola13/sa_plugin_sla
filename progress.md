@@ -4,6 +4,7 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Completed the six-demo SAB verifier recovery (2026-08-20): fixed raw scalar `println` ownership, direct `Box::from_raw` lowering, `consume_value` ownership moves, and executable reachability handling for associated constructors. The previously failing `105_let_else`, `309_try_block_macro`, `121_rwlock_reader_writer`, `126_mpmc_channel`, `153_box_into_raw`, and `154_box_from_raw` cases are resolved. Focused `sa sla test` passes for the three ownership/control-flow regressions (`121`, `126`, `154`), `zig build` is green, and a complete `build-exe` sweep succeeds for all 313 `demos/rosetta/*/main.sla` (313/313, 0 failures or timeouts). The Windows-native dev plugin was reinstalled and a post-install full `sa sla test` sweep passes 313/313 with 0 failures. `build-exe` currently keeps the full typed program rather than pruning solely from `main`, because entry pruning can discard associated constructors such as `RwLock::new` and `mpsc::channel`; targeted reachability refinement remains future work.
 - Windows build support + full demo pass (2026-08-19): Added `windows-x86_64`
   artifact mapping in `sap.json` (`zig-out/bin/sla.dll`) so `sa plugin install
   --dev .` installs the native Windows DLL. Codegen fixes in `src/sab_codegen.zig`

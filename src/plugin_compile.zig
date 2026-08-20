@@ -865,12 +865,52 @@ fn encodeSaTextAsSab(
     slaProfileStage(stderr, profile, "sa flatten", stage_start);
 
     stage_start = std.time.nanoTimestamp();
-    const sab_bytes = sci_bridge.encodeSabFromFlat(allocator, &flat) catch |err| {
+    const encode_result = sci_bridge.encodeSabFromFlatDetailed(allocator, &flat) catch |err| {
         try stderr.print("SAB Error: failed to encode SAB for {s}: {}\n", .{ source_path, err });
         return null;
     };
+    const sab_bytes: []u8 = switch (encode_result) {
+        .ok => |bytes| bytes,
+        .trap => |report| {
+            try printSabVerificationTrap(stderr, source_path, report);
+            return null;
+        },
+    };
     slaProfileStage(stderr, profile, "sab encode", stage_start);
     return sab_bytes;
+}
+
+/// Render a verification TrapReport produced by encodeSabFromFlatDetailed
+/// in a human-readable form analogous to cli.zig::printTrapReport, followed
+/// by the machine-readable JSON form. This replaces the previous bare
+/// error.VerificationTrap summary that hid the underlying trap reason.
+fn printSabVerificationTrap(stderr: std.io.AnyWriter, source_path: []const u8, report: anytype) !void {
+    _ = source_path;
+    const trap_lib = sci_bridge.trap_lib;
+    try stderr.writeAll("SAB Error: verification failed while encoding SAB\n");
+    try stderr.print("error[{s}]: {s}\n", .{ trap_lib.trapName(report.trap), report.message });
+    if (report.source_line != 0) {
+        if (report.line != 0 and report.line != report.source_line) {
+            try stderr.print("  line {d} (expanded {d})\n", .{ report.source_line, report.line });
+        } else {
+            try stderr.print("  line {d}\n", .{ report.source_line });
+        }
+    }
+    if (report.source_text) |t| {
+        try stderr.print("  source: {s}\n", .{t});
+    }
+    if (report.register) |r| {
+        try stderr.print("  register: {s}\n", .{r});
+    }
+    if (report.function) |fn_name| {
+        try stderr.print("  in function: {s}\n", .{fn_name});
+    }
+    if (report.hint) |h| {
+        try stderr.print("  help: {s}\n", .{h});
+    }
+    try stderr.writeAll("  ");
+    try trap_lib.writeJson(stderr, report);
+    try stderr.writeByte('\n');
 }
 
 fn compileTypedSlaProgramToCompatibleSab(

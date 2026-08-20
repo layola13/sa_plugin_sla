@@ -14,32 +14,8 @@
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
 @import "sa_std/core/result.sa"
-@const SLA_THREAD_VT_0 = vtable { call = @sla_thread_worker_0 }
 @const SLA_THREAD_VT_1 = vtable { call = @sla_thread_worker_1 }
-
-@ffi_wrapper sla_thread_spawn_0(*slot: ptr):
-L_ENTRY:
-    worker_vt = &SLA_THREAD_VT_0
-    worker_fn = load worker_vt+0 as ptr
-    worker_raw = *worker_fn
-    worker_safe = assume_safe worker_raw
-    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
-    store slot+0, handle as i32
-    !handle
-    !worker_safe
-    !worker_raw
-    !worker_fn
-    !worker_vt
-    !slot
-    return
-
-@sla_thread_worker_0(&slot: ptr) -> i32:
-L_ENTRY:
-    tmp_0 = load slot+16 as ptr
-    tmp_1 = call @sla__read_shared(^tmp_0)
-    store slot+8, tmp_1 as i32
-    !slot
-    return tmp_1
+@const SLA_THREAD_VT_0 = vtable { call = @sla_thread_worker_0 }
 
 @ffi_wrapper sla_thread_spawn_1(*slot: ptr):
 L_ENTRY:
@@ -58,6 +34,30 @@ L_ENTRY:
     return
 
 @sla_thread_worker_1(&slot: ptr) -> i32:
+L_ENTRY:
+    tmp_0 = load slot+16 as ptr
+    tmp_1 = call @sla__read_shared(^tmp_0)
+    store slot+8, tmp_1 as i32
+    !slot
+    return tmp_1
+
+@ffi_wrapper sla_thread_spawn_0(*slot: ptr):
+L_ENTRY:
+    worker_vt = &SLA_THREAD_VT_0
+    worker_fn = load worker_vt+0 as ptr
+    worker_raw = *worker_fn
+    worker_safe = assume_safe worker_raw
+    EXPAND THREAD_SPAWN handle, *worker_safe, *slot
+    store slot+0, handle as i32
+    !handle
+    !worker_safe
+    !worker_raw
+    !worker_fn
+    !worker_vt
+    !slot
+    return
+
+@sla_thread_worker_0(&slot: ptr) -> i32:
 L_ENTRY:
     tmp_2 = load slot+16 as ptr
     tmp_3 = call @sla__read_shared(^tmp_2)

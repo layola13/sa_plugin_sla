@@ -897,6 +897,7 @@ pub const Codegen = struct {
             const close_status = try self.newTmp();
             self.out.writer().print("    EXPAND FS_CLOSE {s}, {s}\n", .{ close_status, resolved_name }) catch return CodegenError.CodegenError;
             try self.emitRelease(close_status);
+            self.out.writer().print("    !{s}\n", .{resolved_name}) catch return CodegenError.CodegenError;
             _ = self.file_bindings.remove(resolved_name);
             self.consumed_bindings.put(resolved_name, {}) catch return CodegenError.OutOfMemory;
             return;
@@ -1852,6 +1853,7 @@ pub const Codegen = struct {
                 if (call.args.len != 1) return CodegenError.CodegenError;
                 const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                 self.out.writer().print("    EXPAND MEM_FORGET_U64 {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                self.out.writer().print("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
                 if (rootIdentifier(call.args[0])) |name| {
                     self.consumed_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
                 }
@@ -12697,6 +12699,7 @@ pub const Codegen = struct {
                         if (call.args.len != 1) return CodegenError.CodegenError;
                         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         self.out.writer().print("    EXPAND MEM_FORGET_U64 {s}\n", .{value_reg}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    !{s}\n", .{value_reg}) catch return CodegenError.CodegenError;
                         if (rootIdentifier(call.args[0])) |name| {
                             self.consumed_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
                         }
@@ -12778,7 +12781,7 @@ pub const Codegen = struct {
                         const box_reg = try self.genExpr(call.args[0], hoisted_allocs);
                         const reg = try self.newTmp();
                         self.out.writer().print("    EXPAND BOX_INTO_RAW {s}, {s}\n", .{ reg, box_reg }) catch return CodegenError.CodegenError;
-                        self.consumed_bindings.put(box_reg, {}) catch return CodegenError.OutOfMemory;
+                        try self.emitRelease(box_reg);
                         return reg;
                     }
                     if (lowering_rules.isBoxFromRawCall(call)) {

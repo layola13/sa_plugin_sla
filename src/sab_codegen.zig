@@ -10476,7 +10476,18 @@ pub const Codegen = struct {
             // returns. Emitting `@sa_fmt_u64(result, 10)` makes the SA assembler
             // reject the file with error.VerificationTrap during build-exe.
             const value_reg = try self.intern(try self.newTmp());
-            try self.emitAssignReg(value_reg, raw_reg);
+            // Use a non-consuming scalar copy. The SAB verifier (sci verifier.zig)
+            // models reg<-reg `assign` as a *move* that consumes the source
+            // (consumeSourceValue), so a plain `assign value, raw` would mark
+            // `raw_reg` Consumed. When the same binding is read again after the
+            // println (e.g. `let x = ...; println("{}", x); return x;` in demo
+            // 105, or `let result = ...; println("{}", result); if result == 30`
+            // in demo 309), the verifier then fires UseAfterMove. The `.op`
+            // handler instead only `readCheck`s its source operands and sets the
+            // destination to "untracked", never consuming the source — so
+            // `op.add dst, src, imm(0)` is a genuinely non-consuming copy. This
+            // idiom is already used elsewhere here (see genHashValue and similar).
+            try self.emitOp(value_reg, .add, .{ .reg = raw_reg }, .{ .imm_i64 = 0 });
             try self.emitPrintPrimitiveValue(value_reg, format);
             try self.emitRelease(value_reg);
             try self.releaseExprResultIfNeeded(arg, raw_reg);
@@ -14102,6 +14113,28 @@ pub const Codegen = struct {
 
     fn genStdSurfaceCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         if (call.associated_target) |target_name| {
+            // Explicit `Box::from_raw` lowering, mirroring the SA-text backend
+            // (src/codegen.zig:12787). The generic `BOX_FROM_RAW` surface rule
+            // flattens `out_box = ptr_add raw, 0` into `alloc box; tmp = ptr_add
+            // raw, 0; store box+0, tmp`, leaving the intermediate `ptr_add`
+            // (`tmp`) owning/Active in the SAB stream with nothing to release it
+            // — the verifier reports `error[MemoryLeak]` for that tmp at
+            // function exit (demos/rosetta/154_box_from_raw). The box IS the
+            // reinterpreted raw pointer: emit a single `ptr_add dst, raw, 0` and
+            // move (consume) the source raw pointer into it — do NOT release the
+            // raw pointer, because the allocation now belongs to the box.
+            if (lowering_rules.isBoxFromRawCall(call)) {
+                if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+                const raw_reg = try self.genAssociatedValueArg(target_name, call.func_name, @constCast(call.args[0]));
+                const dst = try self.intern(try self.newTmp());
+                try self.recordReg(dst);
+                try self.emitPtrAdd(dst, raw_reg, .{ .imm_u64 = 0 });
+                // from_raw takes ownership of the raw pointer. Emit a real
+                // move for every source register so the SAB verifier retires
+                // the source even when it is a local binding.
+                try self.emitMove(raw_reg);
+                return dst;
+            }
             if (self.findStdSurfaceRule(.associated, target_name, call.func_name)) |rule| {
                 const value_reg = if (stdSurfaceRuleHasArg(rule, .value)) blk: {
                     if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
@@ -14120,7 +14153,22 @@ pub const Codegen = struct {
                 });
                 if (value_reg) |reg| {
                     if (rule.consume_value) {
-                        try self.markConsumed(reg);
+                        // Surface rules that `consume_value` (today only
+                        // `Box::into_raw` in sla_std/std_surface.sla_meta) move
+                        // ownership OUT of the source into the produced
+                        // register. `markConsumed` only sets a codegen-side
+                        // metadata flag (so we do not double-release here) but
+                        // emits NO SAB instruction, leaving the source register
+                        // Active in the emitted stream. The SAB verifier in sci
+                        // (encodeSabFromFlatDetailed) then reports
+                        // `error[MemoryLeak]: live registers remain at function
+                        // exit` for that source at the function's return — e.g.
+                        // demos/rosetta/153_box_into_raw leaks its Box `alloc`
+                        // register this way. Emit a real `move_` so the
+                        // verifier's consumeSourceValue (verifier.zig .move_) flips
+                        // the source to Consumed, matching the SA-text backend
+                        // which releases the source box for into_raw.
+                        try self.emitMove(reg);
                     } else if (!self.isLocalReg(reg)) {
                         try self.emitRelease(reg);
                     }

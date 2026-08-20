@@ -6,6 +6,14 @@ This document tracks the tasks and implementation progress of the Sla compiler p
 
 ## Task List
 
+### Recovery Point — Fix 6 Build-Failing Demos Surfaced by SAB Verifier (2026-08-20)
+- [x] **Fix all six demos surfaced by the SAB verifier** (`encodeSabFromFlatDetailed` in `src/plugin_compile.zig`).
+  - [x] Diagnosed and fixed `UseAfterMove` in `105_let_else` and `309_try_block_macro` by making raw scalar formatting non-consuming.
+  - [x] Diagnosed and fixed `MemoryLeak` in `121_rwlock_reader_writer` and `126_mpmc_channel` by emitting real ownership moves for consuming std-surface calls.
+  - [x] Fixed `Box::into_raw` / `Box::from_raw` ownership handling in `153_box_into_raw` and `154_box_from_raw`, including direct SAB lowering for `from_raw`.
+  - [x] `zig build` passes; the dev plugin was reinstalled with `SA_PLUGIN_DEV=1 sa plugin install --dev .`.
+  - [x] Focused tests pass for `121`, `126`, and `154`; all 313 Rosetta demos build successfully with `sa sla build-exe` (313/313, no failures or timeouts). The prior full native test sweep is also 313/313.
+  - [x] Note: executable compilation currently disables entry-only pruning so type-associated constructors remain available to direct lowerers (`RwLock::new`, `mpsc::channel`). Refine reachability instead of restoring unsafe pruning in a future task.
 ### Recovery Point — Windows Native Build + 313/313 Demos (2026-08-19)
 - [x] **Windows native build + full demo corpus passing**
   - [x] Added `windows-x86_64` → `zig-out/bin/sla.dll` artifact mapping in `sap.json`; `SA_PLUGIN_DEV=1 sa plugin install --dev .` now installs the native Windows DLL.

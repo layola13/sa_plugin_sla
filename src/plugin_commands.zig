@@ -53,8 +53,10 @@ const writeManagedSab = plugin_sab_paths.writeManagedSab;
 const writeSabFile = plugin_sab_paths.writeSabFile;
 
 fn buildExeCompileOptions() plugin_compile_options.SlaCompileOptions {
+    // Keep the full typed program for executable SAB generation. Entry-point
+    // pruning can discard associated constructors that direct lowerers resolve
+    // by type (for example `RwLock::new` and `mpsc::channel`).
     return .{
-        .prune_for_entry_function = "main",
         .load_reachable_imported_bodies_from_registry = true,
     };
 }

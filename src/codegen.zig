@@ -6608,6 +6608,20 @@ pub const Codegen = struct {
             }
             var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
             defer hoisted_allocs.deinit();
+            if (isVoidType(helper.ret_ty)) {
+                // Void closure body: generate as a statement. genExpr would
+                // emit `reg = call @void_fn()` and LLVM rejects a named void.
+                if (helper.closure.body.* == .call_expr) {
+                    try self.genCallStmt(&helper.closure.body.call_expr, &hoisted_allocs);
+                } else {
+                    _ = try self.genExpr(helper.closure.body, &hoisted_allocs);
+                }
+                for (helper.captures) |capture| {
+                    _ = self.thread_capture_regs.remove(capture.name);
+                }
+                self.out.writer().print("    !slot\n    return 0\n\n", .{}) catch return CodegenError.CodegenError;
+                continue;
+            }
             const value_reg = try self.genExpr(helper.closure.body, &hoisted_allocs);
             for (helper.captures) |capture| {
                 _ = self.thread_capture_regs.remove(capture.name);
@@ -9329,13 +9343,16 @@ pub const Codegen = struct {
                 if (options.param) |param| self.typeIsCopyStruct(param.ty) else false,
             );
         const arg_ty = self.resolvedTypeForExpr(arg);
+        // Shallow-copy materialization has struct-layout support only. Pure
+        // enums still participate in copy analysis for nested struct fields,
+        // but a top-level enum argument must use ordinary value transfer.
         const shallow_copy_value = lowering_rules.callArgIsShallowCopyValueCandidate(
             arg,
             options.param,
             arg_ty,
             if (arg_ty) |ty| self.typeIsCopyValue(ty) else false,
             if (arg_ty) |ty| self.typeIsShallowCopyCallArgValue(ty, 0) else false,
-        );
+        ) and (if (arg_ty) |ty| self.structDeclForType(ty) != null else false);
         const materialization = lowering_rules.planCallArgMaterialization(arg, .{
             .param = options.param,
             .arg_ty = arg_ty,
@@ -9548,6 +9565,29 @@ pub const Codegen = struct {
             self.closure_param_regs.get(name) == null;
     }
 
+    // Imported macros that receive callbacks (RawWakerVTable, poll fns) expect a
+    // 16-byte fn object {data=0, vtable}; a bare &SLA_FNPTR_VT_* word would be
+    // dereferenced at +8 by the macro body. Materialize the object form here.
+    fn genImportedMacroFnObjectArg(
+        self: *Codegen,
+        arg: *ast.Node,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!?LoweredCallArg {
+        _ = hoisted_allocs;
+        if (arg.* != .identifier) return null;
+        if (!self.tc.funcs.contains(arg.identifier)) return null;
+        const arg_ty = self.resolvedTypeForExpr(arg) orelse return null;
+        if (arg_ty.* != .fn_ptr) return null;
+
+        const obj = try self.newTmp();
+        const vt_name = try self.fnPtrVTableName(arg.identifier);
+        defer self.allocator.free(vt_name);
+        self.out.writer().print("    {s} = alloc 16\n", .{obj}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+0, 0 as ptr\n", .{obj}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    store {s}+8, &{s} as ptr\n", .{ obj, vt_name }) catch return CodegenError.CodegenError;
+        return .{ .reg = obj, .release_after_call = false };
+    }
+
     fn genImportedMacroArg(
         self: *Codegen,
         plan: lowering_rules.ImportedMacroCallPlan,
@@ -9555,6 +9595,7 @@ pub const Codegen = struct {
         arg: *ast.Node,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
+        if (try self.genImportedMacroFnObjectArg(arg, hoisted_allocs)) |fn_obj| return fn_obj;
         const arg_ty = try self.importedMacroArgType(arg);
         if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| {
             if (action.passesValue() or action.passesRawPointerValue()) {
@@ -10009,14 +10050,14 @@ pub const Codegen = struct {
                         const val_reg = try self.genExpr(let.value, hoisted_allocs);
                         self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
-                } else if (self.bindingNeedsAddressableStorage(let.name, let_ty)) {
+                } else if (self.bindingNeedsAddressableStorage(let.name, let_ty) and !isStackAllocCall(let.value)) {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
                     self.out.writer().print("    {s} = stack_alloc {}\n", .{ let.name, typeSize(let_ty) }) catch return CodegenError.CodegenError;
                     self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ let.name, val_reg, typeString(let_ty) }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
-                } else if (self.bindingNeedsAssignedValueSlot(let.name, let_ty)) {
+                } else if (self.bindingNeedsAssignedValueSlot(let.name, let_ty) and !isStackAllocCall(let.value)) {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
                     self.stack_alloc_bindings.put(let.name, {}) catch return CodegenError.OutOfMemory;
@@ -10237,11 +10278,19 @@ pub const Codegen = struct {
                     const call = &let.value.call_expr;
                     if (lowering_rules.isMpscChannelCall(call.*)) {
                         if (let.names.len != 2) return CodegenError.CodegenError;
+                        // The channel object must not live under the receiver's
+                        // name: the receiver is routinely moved into a worker
+                        // thread, and tx.send() expands to &<channel reg>.
+                        // Emit into a dedicated temp and alias both ends to it.
+                        const chan_reg = try self.newTmp();
                         self.out.writer().print("    {s} = 0\n", .{let.names[0]}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    EXPAND MPSC_NEW {s}, 1024\n", .{let.names[1]}) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND MPSC_NEW {s}, 1024\n", .{chan_reg}) catch return CodegenError.CodegenError;
                         self.mpsc_sender_bindings.put(let.names[0], {}) catch return CodegenError.OutOfMemory;
-                        self.mpsc_sender_channels.put(let.names[0], let.names[1]) catch return CodegenError.OutOfMemory;
-                        self.mpsc_receiver_bindings.put(let.names[1], {}) catch return CodegenError.OutOfMemory;
+                        self.mpsc_sender_channels.put(let.names[0], chan_reg) catch return CodegenError.OutOfMemory;
+                        self.mpsc_sender_channels.put(let.names[1], chan_reg) catch return CodegenError.OutOfMemory;
+                        self.mpsc_receiver_bindings.put(chan_reg, {}) catch return CodegenError.OutOfMemory;
+                        const rx_alias = try self.pushBindingAlias(let.names[1]);
+                        self.out.writer().print("    {s} = add {s}, 0\n", .{ rx_alias, chan_reg }) catch return CodegenError.CodegenError;
                         return;
                     }
                 }

@@ -2125,6 +2125,16 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
         std.mem.eql(u8, macro_name, "PIN_MUT_GET_UNCHECKED_MUT") or
         std.mem.eql(u8, macro_name, "FUTURE_READY_POLL_STATE") or
         std.mem.eql(u8, macro_name, "FUTURE_PENDING_POLL_STATE") or
+        std.mem.eql(u8, macro_name, "RAW_WAKER_NEW") or
+        std.mem.eql(u8, macro_name, "RAW_WAKER_CLONE") or
+        std.mem.eql(u8, macro_name, "RAW_WAKER_VTABLE_NEW") or
+        std.mem.eql(u8, macro_name, "FUTURE_POLL_FN_STATE_NEW") or
+        std.mem.eql(u8, macro_name, "FUTURE_POLL_FN_STATE_POLL") or
+        std.mem.eql(u8, macro_name, "PTR_READ_U64") or
+        std.mem.eql(u8, macro_name, "WAKER_FROM_RAW") or
+        std.mem.eql(u8, macro_name, "CONTEXT_FROM_WAKER") or
+        std.mem.eql(u8, macro_name, "ONCE_NEW") or
+        std.mem.eql(u8, macro_name, "LAZY_LOCK_NEW") or
         std.mem.eql(u8, macro_name, "POLL_VALUE_PTR") or
         std.mem.endsWith(u8, macro_name, "_PTR") or
         std.mem.endsWith(u8, macro_name, "_DATA") or

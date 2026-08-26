@@ -1857,6 +1857,87 @@ test "sla typechecker cleans borrow locals on loop jumps" {
     try std.testing.expect(saw_continue_cleanup);
 }
 
+test "sla typechecker accepts else if chains" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source =
+        \\fn classify(x: i64) -> i64 {
+        \\    if x < 0 {
+        \\        return 0;
+        \\    } else if x == 0 {
+        \\        return 1;
+        \\    } else {
+        \\        return 2;
+        \\    };
+        \\}
+        \\
+        \\fn pick(x: i64) -> i64 {
+        \\    let v = if x < 0 { 0 } else if x == 0 { 1 } else { 2 };
+        \\    return v;
+        \\}
+    ;
+
+    var parser = parser_mod.Parser.initWithDir(allocator, source, ".");
+    const prog = try parser.parseProgram();
+
+    // `else if` normalizes to an explicit else block whose single statement is
+    // the nested if wrapped in expr_stmt, matching `else { if ...; }`.
+    const classify_if = prog.program.decls[0].func_decl.body[0].expr_stmt.if_expr;
+    const else_block = classify_if.else_block orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), else_block.len);
+    try std.testing.expect(else_block[0].* == .expr_stmt);
+    try std.testing.expect(else_block[0].expr_stmt.* == .if_expr);
+
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+}
+
+test "sla sa codegen lowers else if chains" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const source =
+        \\fn classify(x: i64) -> i64 {
+        \\    if x < 0 {
+        \\        return 0;
+        \\    } else if x == 0 {
+        \\        return 1;
+        \\    } else {
+        \\        return 2;
+        \\    };
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaString(
+        arena.allocator(),
+        "main.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    // A three-way chain is two chained ifs: one conditional branch each, and
+    // every branch label must be defined exactly once.
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, sa_code, "\n    br "));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, sa_code, "\nL_ELSE_"));
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sa loop backedges require live body fallthrough" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -8430,4 +8511,162 @@ test "sla build selects workspace package with -p when file omitted" {
     try std.testing.expectEqual(@as(?u8, 0), code);
     try tmp.dir.access("members/tool/src/main.sa", .{});
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "members/tool/src/main.sla"));
+}
+
+test "sla sab backend releases by-value scalar params of functions declared after main" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    // The SA-text emitter consumes by-value params through the type checker's
+    // tail cleanups (`!v` right before `return`); the direct SAB emitter must
+    // keep the same shape, otherwise the register stays `Active` at function
+    // exit and the verifier's exit-leak scan traps MemoryLeak(1012) for any
+    // parameter-taking function emitted last (i.e. declared after `@main`).
+    const sa_code = (try compileSlaToSaString(
+        arena.allocator(),
+        "tests/test_unit_param_cleanup_after_main_direct.sla",
+        "main.test.sa",
+        stderr_buf.writer().any(),
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "\n    !v\n") != null);
+
+    stderr_buf.clearRetainingCapacity();
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_param_cleanup_after_main_direct.sla",
+        ".sla-cache/sab/param_cleanup_after_main_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    const addone_index = for (module.function_sigs, 0..) |fsig, idx| {
+        if (std.mem.eql(u8, fsig.name, "sla__addone")) break idx;
+    } else return error.TestUnexpectedResult;
+    const addone_sig = module.function_sigs[addone_index];
+    try std.testing.expect(addone_sig.param_ids.len >= 1);
+    const body_end = if (addone_index + 1 < module.function_sigs.len)
+        module.function_sigs[addone_index + 1].entry_inst_idx
+    else
+        module.instructions.len;
+
+    var saw_param_release = false;
+    for (module.instructions[addone_sig.entry_inst_idx..body_end]) |item| {
+        if (item.kind == .release and item.operands[0] == .reg and item.operands[0].reg == addone_sig.param_ids[0]) {
+            saw_param_release = true;
+        }
+    }
+    try std.testing.expect(saw_param_release);
+
+    // End-to-end ownership check: the whole module must pass the verifier's
+    // exit-leak scan without a MemoryLeak(1012) trap.
+    var verify_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer verify_arena.deinit();
+    const verified = try sci_bridge.verifier.verifyWithOptions(
+        verify_arena.allocator(),
+        module.instructions,
+        module.const_decls,
+        .{
+            .predecoded_symbol_names = module.symbols,
+            .predecoded_function_sigs = module.function_sigs,
+        },
+    );
+    switch (verified) {
+        .ok => {},
+        .trap => |report| {
+            std.debug.print("unexpected SAB verify trap: {s} register={s}\n", .{ report.message, report.register orelse "-" });
+            return error.TestUnexpectedResult;
+        },
+    }
+}
+
+test "sla sab backend releases str_eq loaded string data-pointer temps" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_streq_stack_local_arg_direct.sla",
+        ".sla-cache/sab/streq_stack_local_arg_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    const main_index = for (module.function_sigs, 0..) |fsig, idx| {
+        if (std.mem.eql(u8, fsig.name, "main")) break idx;
+    } else return error.TestUnexpectedResult;
+    const main_sig = module.function_sigs[main_index];
+    const body_end = if (main_index + 1 < module.function_sigs.len)
+        module.function_sigs[main_index + 1].entry_inst_idx
+    else
+        module.instructions.len;
+
+    // `str_eq(a, a)` on a stack-backed string local materializes each argument
+    // as an 8-byte view slot holding the slice's data pointer, then `load`s the
+    // pointer into a fresh temporary. Those loaded temps are owned by the call
+    // and must be released; skipping them leaks them at function exit.
+    const ptr_ty_id = @intFromEnum(sci_bridge.sab.signature.PrimType.ptr);
+    var view_slots = std.AutoHashMap(u32, void).init(std.testing.allocator);
+    defer view_slots.deinit();
+    var released_regs = std.AutoHashMap(u32, void).init(std.testing.allocator);
+    defer released_regs.deinit();
+    var loaded_ptr_temps = std.ArrayList(u32).init(std.testing.allocator);
+    defer loaded_ptr_temps.deinit();
+
+    for (module.instructions[main_sig.entry_inst_idx..body_end]) |item| {
+        if (item.kind == .stack_alloc and item.operands[0] == .reg and item.operands[1] == .imm_u64 and item.operands[1].imm_u64 == 8) {
+            try view_slots.put(item.operands[0].reg, {});
+            continue;
+        }
+        if (item.kind == .load and item.operands[0] == .reg and item.operands[1] == .reg and item.operands[3] == .ty and item.operands[3].ty == ptr_ty_id) {
+            if (view_slots.contains(item.operands[1].reg)) try loaded_ptr_temps.append(item.operands[0].reg);
+            continue;
+        }
+        if (item.kind == .release and item.operands[0] == .reg) {
+            try released_regs.put(item.operands[0].reg, {});
+        }
+    }
+
+    // One materialized data-pointer temp per `str_eq` argument.
+    try std.testing.expect(loaded_ptr_temps.items.len >= 2);
+    for (loaded_ptr_temps.items) |reg| {
+        try std.testing.expect(released_regs.contains(reg));
+    }
+
+    var verify_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer verify_arena.deinit();
+    const verified = try sci_bridge.verifier.verifyWithOptions(
+        verify_arena.allocator(),
+        module.instructions,
+        module.const_decls,
+        .{
+            .predecoded_symbol_names = module.symbols,
+            .predecoded_function_sigs = module.function_sigs,
+        },
+    );
+    switch (verified) {
+        .ok => {},
+        .trap => |report| {
+            std.debug.print("unexpected SAB verify trap: {s} register={s}\n", .{ report.message, report.register orelse "-" });
+            return error.TestUnexpectedResult;
+        },
+    }
 }

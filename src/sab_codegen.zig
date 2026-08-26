@@ -12803,12 +12803,14 @@ pub const Codegen = struct {
 
         if (left.needs_release) try self.emitRelease(left.reg);
         if (right.needs_release) try self.emitRelease(right.reg);
-        // Field projections are materialized into their own temporary, so their
-        // original register can equal the string-comparison operand. Release it
-        // after STR_EQ either way; format-buffer views have a distinct original
-        // register and remain covered by the same path.
-        if (lowering_rules.callArgNeedsRelease(call.args[0]) and !self.isLocalReg(left.orig_reg)) try self.emitRelease(left.orig_reg);
-        if (lowering_rules.callArgNeedsRelease(call.args[1]) and !self.isLocalReg(right.orig_reg)) try self.emitRelease(right.orig_reg);
+        // Release each argument's original register through the shared policy,
+        // mirroring `emitFormatPushStringLike`. A stack-local string variable is
+        // materialized as a fresh `load` of its data-pointer field, so the
+        // loaded temporary must be released even though `callArgNeedsRelease`
+        // reports `false` for identifiers (the plain-variable register itself
+        // stays owned by its binding).
+        try self.releaseExprResultIfNeeded(call.args[0], left.orig_reg);
+        try self.releaseExprResultIfNeeded(call.args[1], right.orig_reg);
         return reg;
     }
 
@@ -15766,6 +15768,48 @@ test "direct sab instruction reg scan records call body refs" {
     try std.testing.expect(!cg.current_reg_seen.contains(leaked_dst));
     try std.testing.expect(!cg.current_reg_seen.contains(tmp));
     try std.testing.expect(cg.current_reg_seen.contains(callee));
+}
+
+test "direct sab lowers else if chains" {
+    const source =
+        \\fn classify(x: i64) -> i64 {
+        \\    if x < 0 {
+        \\        return 0;
+        \\    } else if x == 0 {
+        \\        return 1;
+        \\    } else {
+        \\        return 2;
+        \\    };
+        \\}
+        \\
+        \\fn pick(x: i64) -> i64 {
+        \\    let v = if x < 0 { 0 } else if x == 0 { 1 } else { 2 };
+        \\    return v;
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = @import("parser.zig").Parser.initWithDir(allocator, source, ".");
+    const prog = try p.parseProgram();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(prog);
+
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+    const bytes = try cg.generate(prog);
+    defer allocator.free(bytes);
+
+    // A three-way chain is two chained ifs: one conditional branch each, for
+    // both the statement form and the value form.
+    var branch_count: usize = 0;
+    for (cg.instructions.items) |item| {
+        if (item.kind == .br) branch_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), branch_count);
 }
 
 test "filtered decoded std deps include same-module direct-call closure" {

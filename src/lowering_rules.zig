@@ -84,7 +84,14 @@ pub fn planParamCleanup(facts: ParamCleanupFacts) ParamCleanupAction {
     }
     if (!facts.has_type) return .skip;
     if (facts.capability == .by_value and facts.abi_is_ptr) return .consume;
-    if (facts.capability == .by_value and facts.is_copy_value) return .skip;
+    // By-value copy parameters must still be released in the epilogue. The
+    // SA-text emitter always emits `!param` for these (the type checker's tail
+    // cleanups include by-value params), so skipping them here left the SAB
+    // register `Active` at function exit and tripped the verifier's exit-leak
+    // scan (MemoryLeak 1012) for any parameter-taking function declared after
+    // `@main`. Releasing a scalar nobody can free is harmless and keeps both
+    // emitters' instruction shapes identical.
+    if (facts.capability == .by_value and facts.is_copy_value) return .release;
     if (facts.is_fn_ptr) return .consume;
     if (facts.is_copy_value) return .consume;
     if (facts.abi_is_ptr) return .consume;
@@ -8272,4 +8279,44 @@ test "typeIsCopyValueLeaf classifies primitives and fnptrs" {
     try std.testing.expect(typeIsCopyValueLeaf(&i32_ty).?);
     try std.testing.expect(!typeIsCopyValueLeaf(&void_ty).?);
     try std.testing.expect(typeIsCopyValueLeaf(&fn_ty).?);
+}
+
+test "planParamCleanup releases by-value copy scalar params" {
+    // By-value scalar params must be released in the epilogue: the SA-text
+    // emitter always emits `!param` for them, and skipping the release left
+    // SAB registers Active at exit (verifier MemoryLeak 1012) whenever a
+    // parameter-taking function was emitted last.
+    const by_value_copy = ParamCleanupFacts{
+        .is_param = true,
+        .capability = .by_value,
+        .has_type = true,
+        .abi_is_ptr = false,
+        .is_copy_value = true,
+    };
+    try std.testing.expectEqual(ParamCleanupAction.release, planParamCleanup(by_value_copy));
+
+    // By-value pointer-ABI params are still consumed (moved into their slot).
+    const by_value_ptr = ParamCleanupFacts{
+        .is_param = true,
+        .capability = .by_value,
+        .has_type = true,
+        .abi_is_ptr = true,
+        .is_copy_value = true,
+    };
+    try std.testing.expectEqual(ParamCleanupAction.consume, planParamCleanup(by_value_ptr));
+
+    // Borrowed and raw/unknown-capability params keep their previous plans.
+    const borrow_cap = ParamCleanupFacts{
+        .is_param = true,
+        .capability = .borrow,
+        .has_type = true,
+    };
+    try std.testing.expectEqual(ParamCleanupAction.release, planParamCleanup(borrow_cap));
+    const raw_cap = ParamCleanupFacts{
+        .is_param = true,
+        .capability = .raw,
+        .has_type = true,
+        .is_copy_value = true,
+    };
+    try std.testing.expectEqual(ParamCleanupAction.skip, planParamCleanup(raw_cap));
 }

@@ -3020,8 +3020,15 @@ pub const Parser = struct {
         if (self.match(.keyword_else)) {
             if (self.peek() == .keyword_if) {
                 const nested_if = try self.parseIfExpr();
+                // Normalize `else if` to the same AST shape as an explicit
+                // `else { if ...; }` block: a block of statements whose tail is
+                // an expr_stmt-wrapped expression. A bare nested if_expr
+                // statement is not understood by the statement-level walkers
+                // in the type checker or either emitter.
+                const nested_stmt = try self.allocator.create(ast.Node);
+                nested_stmt.* = .{ .expr_stmt = nested_if };
                 const slice = try self.allocator.alloc(*ast.Node, 1);
-                slice[0] = nested_if;
+                slice[0] = nested_stmt;
                 else_block = slice;
             } else {
                 else_block = try self.parseBlock();

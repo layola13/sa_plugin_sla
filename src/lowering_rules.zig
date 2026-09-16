@@ -163,6 +163,15 @@ pub fn ordinaryIndexAddressable(ty: *const ast.Type) bool {
     return ordinaryIndexAddressTargetType(ty) != null;
 }
 
+/// Element type for indexing a fixed-size array through an optional
+/// borrow/pointer peel. Returns null for Slice (fat-pointer) targets and
+/// non-indexable types; those keep their dedicated lowering paths.
+pub fn indexFixedArrayElementType(ty: *const ast.Type) ?*const ast.Type {
+    const target = ordinaryIndexAddressTargetType(ty) orelse return null;
+    if (target.* != .array) return null;
+    return target.array.elem;
+}
+
 pub const AsyncReturnPlan = struct {
     abi_ret_ty: *const ast.Type,
     wrap_ready_future: bool,
@@ -3630,6 +3639,61 @@ pub fn hashSetElementType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "HashSet");
 }
 
+/// Shared plan for `map[key]` reads in both emitters. HashMap returns a
+/// nullable value-slot pointer (`MAP_GET`); BTreeMap reports a found flag
+/// plus a raw payload (`BTREE_MAP_TRY_GET`). Miss in either case is a
+/// `panic(404)`, mirroring the SA-text emitter.
+pub const MapIndexPlan = struct {
+    import_path: []const u8,
+    macro_name: []const u8,
+    dep_symbol: []const u8,
+    /// try_get_ptr: ok flag + value-slot pointer (HashMap MAP_TRY_GET).
+    /// try_get_value: ok flag + raw u64 payload (BTreeMap BTREE_MAP_TRY_GET).
+    shape: enum { try_get_ptr, try_get_value },
+};
+
+/// Shared plan for `map.insert(key, value)` in both emitters. HashMap takes
+/// an 8-byte value slot (`MAP_INSERT`); BTreeMap takes the u64 payload
+/// directly (`BTREE_MAP_INSERT_OLD`). Both report replaced + old value.
+pub const MapInsertPlan = struct {
+    import_path: []const u8,
+    macro_name: []const u8,
+    dep_symbol: []const u8,
+    value_by_slot: bool,
+};
+
+pub fn mapInsertPlan(ty: *const ast.Type) ?MapInsertPlan {
+    if (hashMapTypes(ty) != null) return .{
+        .import_path = "sa_std/hashmap.sa",
+        .macro_name = "MAP_INSERT",
+        .dep_symbol = "sa_map_insert",
+        .value_by_slot = true,
+    };
+    if (btreeMapTypes(ty) != null) return .{
+        .import_path = "sa_std/btree_map.sa",
+        .macro_name = "BTREE_MAP_INSERT_OLD",
+        .dep_symbol = "sa_btree_map_insert_old",
+        .value_by_slot = false,
+    };
+    return null;
+}
+
+pub fn mapIndexPlan(ty: *const ast.Type) ?MapIndexPlan {
+    if (hashMapTypes(ty) != null) return .{
+        .import_path = "sa_std/hashmap.sa",
+        .macro_name = "MAP_TRY_GET",
+        .dep_symbol = "sa_map_try_get",
+        .shape = .try_get_ptr,
+    };
+    if (btreeMapTypes(ty) != null) return .{
+        .import_path = "sa_std/btree_map.sa",
+        .macro_name = "BTREE_MAP_TRY_GET",
+        .dep_symbol = "sa_btree_map_try_get",
+        .shape = .try_get_value,
+    };
+    return null;
+}
+
 pub fn btreeSetElementType(ty: *const ast.Type) ?*ast.Type {
     return userDefinedGenericInner(ty, "BTreeSet");
 }
@@ -5578,6 +5642,30 @@ test "shared lowering rules classify address-of shapes" {
     try std.testing.expectEqual(&array_i32_ty, ordinaryIndexAddressTargetType(&pointer_array_i32_ty).?);
     try std.testing.expectEqual(&slice_i32_ty, ordinaryIndexAddressTargetType(&borrow_slice_i32_ty).?);
     try std.testing.expect(ordinaryIndexAddressTargetType(&vec_i32_ty) == null);
+
+    try std.testing.expectEqual(&i32_ty, indexFixedArrayElementType(&array_i32_ty).?);
+    try std.testing.expectEqual(&i32_ty, indexFixedArrayElementType(&borrow_array_i32_ty).?);
+    try std.testing.expectEqual(&i32_ty, indexFixedArrayElementType(&pointer_array_i32_ty).?);
+    try std.testing.expect(indexFixedArrayElementType(&borrow_slice_i32_ty) == null);
+    try std.testing.expect(indexFixedArrayElementType(&vec_i32_ty) == null);
+}
+
+test "shared lowering rules plan map index reads" {
+    var str_ty = ast.Type{ .user_defined = .{ .name = "str", .generics = &.{} } };
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    const hm_generics = [_]*ast.Type{ &str_ty, &i32_ty };
+    var hm_ty = ast.Type{ .user_defined = .{ .name = "HashMap", .generics = hm_generics[0..] } };
+    const bm_generics = [_]*ast.Type{ &str_ty, &i32_ty };
+    var bm_ty = ast.Type{ .user_defined = .{ .name = "BTreeMap", .generics = bm_generics[0..] } };
+    var vec_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = hm_generics[0..1] } };
+
+    const hm_plan = mapIndexPlan(&hm_ty) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("MAP_TRY_GET", hm_plan.macro_name);
+    try std.testing.expect(hm_plan.shape == .try_get_ptr);
+    const bm_plan = mapIndexPlan(&bm_ty) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("BTREE_MAP_TRY_GET", bm_plan.macro_name);
+    try std.testing.expect(bm_plan.shape == .try_get_value);
+    try std.testing.expect(mapIndexPlan(&vec_ty) == null);
 }
 
 test "shared lowering rules keep string literals as raw pointers for ptr params" {

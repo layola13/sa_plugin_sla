@@ -313,6 +313,7 @@ pub const Codegen = struct {
     global_array_consts: std.StringHashMap([]const u8),
     copy_value_cache: std.StringHashMap(bool),
     string_literal_consts: std.StringHashMap([]const u8),
+    hashmap_key_slots: std.StringHashMap(u32),
     sa_std_root: ?[]const u8 = null,
     instructions: std.ArrayList(inst.Instruction),
     function_sigs: std.ArrayList(sig.FunctionSig),
@@ -393,6 +394,7 @@ pub const Codegen = struct {
             .global_array_consts = std.StringHashMap([]const u8).init(allocator),
             .copy_value_cache = std.StringHashMap(bool).init(allocator),
             .string_literal_consts = std.StringHashMap([]const u8).init(allocator),
+            .hashmap_key_slots = std.StringHashMap(u32).init(allocator),
             .instructions = std.ArrayList(inst.Instruction).init(allocator),
             .function_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
             .test_sigs = std.ArrayList(sig.FunctionSig).init(allocator),
@@ -472,6 +474,7 @@ pub const Codegen = struct {
         self.global_array_consts.deinit();
         self.copy_value_cache.deinit();
         self.string_literal_consts.deinit();
+        self.hashmap_key_slots.deinit();
         if (self.sa_std_root) |root| self.allocator.free(root);
         self.instructions.deinit();
         self.function_sigs.deinit();
@@ -2362,6 +2365,7 @@ pub const Codegen = struct {
         self.result_slot_refcell_slots.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
         self.non_owning_regs.clearRetainingCapacity();
+        self.hashmap_key_slots.clearRetainingCapacity();
         self.future_state_vtables.clearRetainingCapacity();
         self.future_readiness.clearRetainingCapacity();
         self.future_readiness_by_name.clearRetainingCapacity();
@@ -8105,8 +8109,7 @@ pub const Codegen = struct {
                     if (ty.* != .infer) break :blk ty;
                 }
                 const target_ty = (try self.macroExprType(idx.target, ctx)) orelse break :blk null;
-                if (target_ty.* != .array) break :blk null;
-                break :blk target_ty.array.elem;
+                break :blk lowering_rules.indexFixedArrayElementType(target_ty) orelse break :blk null;
             },
             .struct_literal => |lit| lit.ty,
             .tuple_literal => |lit| blk: {
@@ -8381,10 +8384,10 @@ pub const Codegen = struct {
 
     fn genMacroIndex(self: *Codegen, idx: ast.IndexExpr, ctx: *MacroExpansionContext) anyerror!u32 {
         const target_ty = (try self.macroExprType(idx.target, ctx)) orelse return Error.MissingType;
-        if (target_ty.* != .array) return Error.UnsupportedSabDirectFeature;
+        const elem_ty = lowering_rules.indexFixedArrayElementType(target_ty) orelse return Error.UnsupportedSabDirectFeature;
         const source = try self.genMacroIndexAddress(idx, ctx);
         const dst = try self.intern(try self.newTmp());
-        try self.emitLoad(dst, source.reg, 0, try storagePrimType(target_ty.array.elem));
+        try self.emitLoad(dst, source.reg, 0, try storagePrimType(elem_ty));
         try self.releaseAddressSource(source);
         return dst;
     }
@@ -8844,18 +8847,19 @@ pub const Codegen = struct {
         if (assign.target.* == .index_expr) {
             const idx = assign.target.index_expr;
             const target_ty = (try self.macroExprType(idx.target, ctx)) orelse return Error.MissingType;
-            if (target_ty.* != .array) return Error.UnsupportedSabDirectFeature;
+            const array_ty = lowering_rules.ordinaryIndexAddressTargetType(target_ty) orelse return Error.UnsupportedSabDirectFeature;
+            if (array_ty.* != .array) return Error.UnsupportedSabDirectFeature;
             const target_reg = try self.genMacroExpr(idx.target, ctx);
             const value = try self.genMacroExpr(assign.value, ctx);
             if (idx.index.* == .literal and idx.index.literal == .int_val) {
                 const raw_index = idx.index.literal.int_val;
                 if (raw_index < 0) return Error.UnsupportedSabDirectFeature;
-                const layout = arrayElementLayout(target_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
+                const layout = arrayElementLayout(array_ty.array, @intCast(raw_index)) orelse return Error.UnsupportedSabDirectFeature;
                 try self.emitStore(target_reg, layout.offset, value, layout.ty);
             } else {
                 const index_reg = try self.genMacroExpr(idx.index, ctx);
-                const elem_ptr = try self.genArrayElementPtr(target_ty.array, target_reg, index_reg);
-                try self.emitStore(elem_ptr.ptr, 0, value, try primType(target_ty.array.elem));
+                const elem_ptr = try self.genArrayElementPtr(array_ty.array, target_reg, index_reg);
+                try self.emitStore(elem_ptr.ptr, 0, value, try primType(array_ty.array.elem));
                 if (elem_ptr.offset) |offset| try self.emitRelease(offset);
                 try self.emitRelease(elem_ptr.ptr);
                 if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
@@ -12835,6 +12839,7 @@ pub const Codegen = struct {
         if (try self.genVecLiteralCall(expr, call)) |reg| return reg;
         if (try self.genVecPopCall(call)) |reg| return reg;
         if (try self.genVecPushCall(call)) |reg| return reg;
+        if (try self.genMapInsertCall(expr, call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genMutexLockCall(expr, call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
@@ -14420,12 +14425,16 @@ pub const Codegen = struct {
 
     fn genIndex(self: *Codegen, idx: ast.IndexExpr) anyerror!u32 {
         const target_ty = self.tc.expr_types.get(idx.target) orelse return Error.MissingType;
-        if (target_ty.* == .array) {
+        if (lowering_rules.indexFixedArrayElementType(target_ty)) |elem_ty| {
             const source = try self.genIndexAddress(idx);
             const dst = try self.intern(try self.newTmp());
-            try self.emitLoad(dst, source.reg, 0, try storagePrimType(target_ty.array.elem));
+            try self.emitLoad(dst, source.reg, 0, try storagePrimType(elem_ty));
             try self.releaseAddressSource(source);
             return dst;
+        }
+
+        if (lowering_rules.mapIndexPlan(target_ty)) |plan| {
+            return try self.genMapIndex(idx, target_ty, plan);
         }
 
         if (try self.genVecDirectIndex(idx, target_ty)) |dst| return dst;
@@ -14445,6 +14454,179 @@ pub const Codegen = struct {
         });
         try self.releaseNonLocalTemps(&.{ target_reg, index_reg });
         return dst;
+    }
+
+    /// Branch-release for regs that own their value. Stack slots and
+    /// non-owning views must never see an explicit release: the SAB verifier
+    /// traps those with StackEscape. Plain `emitRelease` already no-ops them,
+    /// but `emitBranchRelease` does not.
+    fn branchReleaseIfOwned(self: *Codegen, reg: u32) !void {
+        if (self.isLocalReg(reg)) return;
+        if (self.stack_alloc_emitted.contains(reg)) return;
+        if (self.non_owning_regs.contains(reg)) return;
+        try self.emitBranchRelease(reg);
+    }
+
+    /// Direct-SAB `map[key]` reads, mirroring the SA-text emitter: `MAP_GET`
+    /// (nullable slot pointer) for HashMap, `BTREE_MAP_TRY_GET` (found flag +
+    /// raw payload) for BTreeMap. A miss panics 404 in both, matching SA.
+    fn genMapIndex(self: *Codegen, idx: ast.IndexExpr, target_ty: *const ast.Type, plan: lowering_rules.MapIndexPlan) anyerror!u32 {
+        const value_ty = if (lowering_rules.hashMapTypes(target_ty)) |hm| hm.value else (lowering_rules.btreeMapTypes(target_ty) orelse return Error.UnsupportedSabDirectFeature).value;
+        const load_ty = try storagePrimType(value_ty);
+        const map_reg = try self.genExpr(idx.target);
+        const key_reg = try self.genMapKeyReg(idx.index);
+        try self.ensureStdDeps(plan.import_path, &.{plan.dep_symbol});
+        const hit_label = try self.newLabel("L_MAP_INDEX_HIT");
+        const miss_label = try self.newLabel("L_MAP_INDEX_MISS");
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        const ok_reg = try self.intern(try self.newTmp());
+        const payload_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment(plan.import_path, plan.macro_name, &.{
+            self.symbols.items[ok_reg],
+            self.symbols.items[payload_reg],
+            self.symbols.items[map_reg],
+            self.symbols.items[key_reg],
+        });
+        try self.emitBranch(ok_reg, hit_label, miss_label);
+        try self.emitLabel(miss_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitBranchRelease(payload_reg);
+        try self.branchReleaseIfOwned(map_reg);
+        try self.branchReleaseIfOwned(key_reg);
+        try self.emitPanicCode(404);
+        try self.emitLabel(hit_label);
+        try self.emitBranchRelease(ok_reg);
+        switch (plan.shape) {
+            .try_get_value => {
+                try self.emitOp(dst, try opKindForCast(.u64, load_ty), .{ .reg = payload_reg }, .{ .ty = @intFromEnum(load_ty) });
+                try self.emitBranchRelease(payload_reg);
+            },
+            .try_get_ptr => {
+                try self.emitLoad(dst, payload_reg, 0, load_ty);
+                try self.emitBranchRelease(payload_reg);
+            },
+        }
+        try self.releaseNonLocalTemps(&.{map_reg});
+        try self.releaseExprResultIfNeeded(idx.index, key_reg);
+        return dst;
+    }
+
+    /// Map key register shared by insert and index: string literals reuse one
+    /// cached slice slot per function, mirroring the SA-text emitter's
+    /// `hashmap_key_slots`. The std map probe compares keys by pointer, so a
+    /// fresh slot per call would never hit keys stored by an earlier call.
+    fn genMapKeyReg(self: *Codegen, arg: *const ast.Node) anyerror!u32 {
+        if (arg.* == .literal and arg.literal == .string_val) {
+            if (self.hashmap_key_slots.get(arg.literal.string_val)) |reg| return reg;
+            const reg = try self.genStringLiteral(arg.literal.string_val);
+            try self.hashmap_key_slots.put(arg.literal.string_val, reg);
+            return reg;
+        }
+        return try self.genExpr(@constCast(arg));
+    }
+
+    /// Direct-SAB `map.insert(key, value)`, mirroring the SA-text emitter's
+    /// `SLA_MAP_INSERT_OPTION_U64` / `SLA_BTREE_MAP_INSERT_OPTION_U64`
+    /// wrappers: run the insert, then fold replaced/old into an Option via
+    /// `OPTION_NEW_SOME` / `OPTION_NEW_NONE` with the vec-pop branch merge.
+    fn genMapInsertCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 3) return null;
+        if (!lowering_rules.isInsertCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const plan = lowering_rules.mapInsertPlan(receiver_ty) orelse return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const key_arg = call.args[1];
+        const key_reg = try self.genMapKeyReg(key_arg);
+        const value_reg = try self.genExpr(@constCast(call.args[2]));
+        const value_arg_ty = self.tc.expr_types.get(call.args[2]);
+        const value_u64 = try self.intern(try self.newTmp());
+        if (value_arg_ty) |vty| {
+            const vprim = try primType(vty);
+            if (vprim != .u64) {
+                try self.emitOp(value_u64, try opKindForCast(vprim, .u64), .{ .reg = value_reg }, .{ .ty = @intFromEnum(sig.PrimType.u64) });
+            } else {
+                try self.emitOp(value_u64, .bitcast, .{ .reg = value_reg }, .{ .ty = @intFromEnum(sig.PrimType.u64) });
+            }
+        } else {
+            try self.emitOp(value_u64, .bitcast, .{ .reg = value_reg }, .{ .ty = @intFromEnum(sig.PrimType.u64) });
+        }
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        const value_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(value_slot, 8);
+        try self.markNonOwningReg(value_slot);
+        try self.emitStore(value_slot, 0, value_u64, .u64);
+        try self.ensureStdDeps(plan.import_path, &.{plan.dep_symbol});
+        const replaced = try self.intern(try self.newTmp());
+        const old_val = try self.intern(try self.newTmp());
+        const option_reg = try self.intern(try self.newTmp());
+        try self.recordReg(option_reg);
+        if (plan.value_by_slot) {
+            try self.emitStdMacroFragment(plan.import_path, plan.macro_name, &.{
+                self.symbols.items[replaced],
+                self.symbols.items[old_val],
+                self.symbols.items[recv_reg],
+                self.symbols.items[key_reg],
+                self.symbols.items[value_slot],
+            });
+        } else {
+            try self.emitStdMacroFragment(plan.import_path, plan.macro_name, &.{
+                self.symbols.items[replaced],
+                self.symbols.items[old_val],
+                self.symbols.items[recv_reg],
+                self.symbols.items[key_reg],
+                self.symbols.items[value_u64],
+            });
+        }
+        try self.emitRelease(value_u64);
+        try self.emitRelease(value_slot);
+        const some_label = try self.newLabel("L_MAP_INSERT_SOME");
+        const none_label = try self.newLabel("L_MAP_INSERT_NONE");
+        const end_label = try self.newLabel("L_MAP_INSERT_END");
+        try self.emitBranch(replaced, some_label, none_label);
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(replaced);
+        if (plan.value_by_slot) {
+            const old_loaded = try self.intern(try self.newTmp());
+            try self.emitLoad(old_loaded, old_val, 0, .u64);
+            try self.emitBranchRelease(old_val);
+            try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+                self.symbols.items[option_reg],
+                self.symbols.items[old_loaded],
+            });
+            try self.emitRelease(old_loaded);
+        } else {
+            try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+                self.symbols.items[option_reg],
+                self.symbols.items[old_val],
+            });
+            try self.emitBranchRelease(old_val);
+        }
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(replaced);
+        try self.emitBranchRelease(old_val);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+            self.symbols.items[option_reg],
+        });
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        return option_reg;
     }
 
     fn genVecDirectIndex(self: *Codegen, idx: ast.IndexExpr, target_ty: *const ast.Type) anyerror!?u32 {

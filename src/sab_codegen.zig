@@ -2325,6 +2325,10 @@ pub const Codegen = struct {
     fn pushParamLocal(self: *Codegen, name: []const u8, reg: u32, ty: *const ast.Type, cap: inst.CapPrefix) !void {
         try self.recordReg(reg);
         try self.locals.append(.{ .name = name, .reg = reg, .is_param = true, .ty = ty, .param_cap = cap });
+        // `Sender` handles are shared ring-buffer aliases (like sender locals
+        // and clones): retire via `move_`, never free. Matches the SA-text
+        // backend skipping sender bindings at cleanup.
+        if (lowering_rules.senderInnerType(ty) != null) try self.markNonOwningReg(reg);
     }
 
     fn pushRawParamLocal(self: *Codegen, name: []const u8, reg: u32, cap: inst.CapPrefix) !void {
@@ -9279,6 +9283,9 @@ pub const Codegen = struct {
     }
 
     fn genLetDestructure(self: *Codegen, let: ast.LetDestructureStmt) anyerror!void {
+        if (let.value.* == .call_expr and lowering_rules.isMpscChannelCall(let.value.call_expr)) {
+            return try self.genMpscChannelDestructure(let);
+        }
         const value_ty = self.tc.expr_types.get(let.value) orelse return Error.MissingType;
         if (let.is_slice) {
             try self.genArrayLetDestructure(let, value_ty);
@@ -11382,7 +11389,11 @@ pub const Codegen = struct {
         try self.emitLabel(ok_label);
         try self.emitBranchRelease(is_ok);
         try self.emitLoad(dst, receiver_reg, 8, ok_prim);
-        if (ok_prim == .ptr) {
+        // Loading a move-only payload out of the `Result` shell consumes it;
+        // zero the source slot so the post-merge shell release below stays
+        // safe. (File handles are move-only u64 words, unlike the Copy ints
+        // all earlier unwrap call sites carried.)
+        if (ok_prim == .ptr or !self.typeIsCopyValue(ok_ty)) {
             const zero = try self.intern(try self.newTmp());
             try self.emitAssignImm(zero, 0);
             try self.emitStore(receiver_reg, 8, zero, ok_prim);
@@ -12155,6 +12166,390 @@ pub const Codegen = struct {
             self.symbols.items[recv_reg],
         });
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        return dst;
+    }
+
+    /// Direct-SAB `mem::forget(value)`, mirroring the SA-text backend
+    /// (`EXPAND MEM_FORGET_U64` + consume): the value is intentionally leaked,
+    /// so the source is retired codegen-side with no release emitted.
+    fn genMemForgetCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isMemForgetCall(call) or call.args.len != 1) return null;
+        const value_reg = try self.genExpr(@constCast(call.args[0]));
+        try self.emitStdMacroFragment("sa_std/mem.sa", "MEM_FORGET_U64", &.{
+            self.symbols.items[value_reg],
+        });
+        try self.markConsumed(value_reg);
+        const sentinel = try self.intern(try self.newTmp());
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
+    }
+
+    /// Direct-SAB `VecDeque::from([a, b, ...])`, mirroring the SA-text backend
+    /// (`VEC_DEQUE_NEW` + one `VEC_DEQUE_PUSH_BACK` per element).
+    fn genVecDequeFromCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isVecDequeFromCall(call)) return null;
+        if (call.args[0].* != .array_literal) return Error.UnsupportedSabDirectFeature;
+        try self.ensureStdDeps("sa_std/vec_deque.sa", &.{
+            "sa_vec_deque_new",
+            "sa_vec_deque_push_back",
+        });
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/vec_deque.sa", "VEC_DEQUE_NEW", &.{
+            self.symbols.items[dst],
+        });
+        for (call.args[0].array_literal.elements) |elem| {
+            const elem_reg = try self.genExpr(@constCast(elem));
+            try self.emitStdMacroFragment("sa_std/vec_deque.sa", "VEC_DEQUE_PUSH_BACK", &.{
+                self.symbols.items[dst],
+                self.symbols.items[elem_reg],
+            });
+            if (!self.isLocalReg(elem_reg)) try self.emitRelease(elem_reg);
+        }
+        return dst;
+    }
+
+    /// Direct-SAB `deque.rotate_left(n)` / `deque.rotate_right(n)`, mirroring
+    /// the SA-text backend inline loop (`try_pop_front` + `push_back`, or the
+    /// `try_pop_back` + `push_front` mirror). The `sa_vec_deque_rotate_*`
+    /// helpers only advance the ring head, which is wrong for non-full
+    /// buffers, so they are deliberately not used here.
+    fn genVecDequeRotateCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isVecDequeRotateCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.vecDequeElementType(receiver_ty) == null) return null;
+        const left = std.mem.eql(u8, call.func_name, "rotate_left");
+        const deque_reg = try self.genExpr(@constCast(call.args[0]));
+        const count_reg = try self.genExpr(@constCast(call.args[1]));
+        if (left) {
+            try self.ensureStdDeps("sa_std/vec_deque.sa", &.{
+                "sa_vec_deque_len",
+                "sa_vec_deque_try_pop_front",
+                "sa_vec_deque_push_back",
+            });
+        } else {
+            try self.ensureStdDeps("sa_std/vec_deque.sa", &.{
+                "sa_vec_deque_len",
+                "sa_vec_deque_try_pop_back",
+                "sa_vec_deque_push_front",
+            });
+        }
+        const len_reg = try self.intern(try self.newTmp());
+        try self.recordReg(len_reg);
+        const empty_reg = try self.intern(try self.newTmp());
+        try self.recordReg(empty_reg);
+        const shift_reg = try self.intern(try self.newTmp());
+        try self.recordReg(shift_reg);
+        const nomove_reg = try self.intern(try self.newTmp());
+        try self.recordReg(nomove_reg);
+        const idx_slot = try self.intern(try self.newTmp());
+        try self.recordReg(idx_slot);
+        const zero_reg = try self.intern(try self.newTmp());
+        try self.recordReg(zero_reg);
+        const idx_reg = try self.intern(try self.newTmp());
+        try self.recordReg(idx_reg);
+        const done_reg = try self.intern(try self.newTmp());
+        try self.recordReg(done_reg);
+        const pop_slot = try self.intern(try self.newTmp());
+        try self.recordReg(pop_slot);
+        const ok_reg = try self.intern(try self.newTmp());
+        try self.recordReg(ok_reg);
+        const val_reg = try self.intern(try self.newTmp());
+        try self.recordReg(val_reg);
+        const next_reg = try self.intern(try self.newTmp());
+        try self.recordReg(next_reg);
+        const empty_label = try self.newLabel("L_VEC_DEQUE_ROTATE_EMPTY");
+        const run_label = try self.newLabel("L_VEC_DEQUE_ROTATE_RUN");
+        const nomove_label = try self.newLabel("L_VEC_DEQUE_ROTATE_NO_MOVE");
+        const init_label = try self.newLabel("L_VEC_DEQUE_ROTATE_INIT");
+        const head_label = try self.newLabel("L_VEC_DEQUE_ROTATE_HEAD");
+        const body_label = try self.newLabel("L_VEC_DEQUE_ROTATE_BODY");
+        const done_label = try self.newLabel("L_VEC_DEQUE_ROTATE_DONE");
+        const end_label = try self.newLabel("L_VEC_DEQUE_ROTATE_END");
+        try self.emitStdMacroFragment("sa_std/vec_deque.sa", "VEC_DEQUE_LEN", &.{
+            self.symbols.items[len_reg],
+            self.symbols.items[deque_reg],
+        });
+        try self.emitOp(empty_reg, .eq, .{ .reg = len_reg }, .{ .imm_i64 = 0 });
+        try self.emitAssignImm(zero_reg, 0);
+        try self.emitStackAlloc(idx_slot, 8);
+        try self.emitStackAlloc(pop_slot, 8);
+        try self.emitBranch(empty_reg, empty_label, run_label);
+        try self.emitLabel(empty_label);
+        try self.emitBranchRelease(empty_reg);
+        try self.emitJmp(end_label);
+        try self.emitLabel(run_label);
+        try self.emitBranchRelease(empty_reg);
+        try self.emitOp(shift_reg, .urem, .{ .reg = count_reg }, .{ .reg = len_reg });
+        try self.emitOp(nomove_reg, .eq, .{ .reg = shift_reg }, .{ .imm_i64 = 0 });
+        try self.emitBranch(nomove_reg, nomove_label, init_label);
+        try self.emitLabel(nomove_label);
+        try self.emitBranchRelease(nomove_reg);
+        try self.emitBranchRelease(shift_reg);
+        try self.emitJmp(end_label);
+        try self.emitLabel(init_label);
+        try self.emitBranchRelease(nomove_reg);
+        try self.emitStore(idx_slot, 0, zero_reg, .u64);
+        try self.emitJmp(head_label);
+        try self.emitLabel(head_label);
+        try self.emitLoad(idx_reg, idx_slot, 0, .u64);
+        try self.emitOp(done_reg, .eq, .{ .reg = idx_reg }, .{ .reg = shift_reg });
+        try self.emitBranch(done_reg, done_label, body_label);
+        try self.emitLabel(body_label);
+        try self.emitBranchRelease(done_reg);
+        // NOTE: intentionally not via `VEC_DEQUE_TRY_POP_FRONT/BACK`: those
+        // macros name hygiene temps after the out params
+        // (`__vec_deque_value_slot_%out_ok`), which the cached template
+        // rename mangles into an undeclared register (UnknownRegister at
+        // verify time). Emit the equivalent slot + call + load directly.
+        try self.emitCallBody(ok_reg, try std.fmt.allocPrint(self.allocator, "@{s}(&{s}, &{s})", .{
+            if (left) "sa_vec_deque_try_pop_front" else "sa_vec_deque_try_pop_back",
+            self.symbols.items[deque_reg],
+            self.symbols.items[pop_slot],
+        }));
+        try self.emitLoad(val_reg, pop_slot, 0, .u64);
+        try self.emitStdMacroFragment("sa_std/vec_deque.sa", if (left) "VEC_DEQUE_PUSH_BACK" else "VEC_DEQUE_PUSH_FRONT", &.{
+            self.symbols.items[deque_reg],
+            self.symbols.items[val_reg],
+        });
+        try self.emitOp(next_reg, .add, .{ .reg = idx_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(idx_slot, 0, next_reg, .u64);
+        // Loop-region discipline (mirrors genWhile): iteration-assigned regs
+        // retire before the back-edge; the exit path only sees pre-loop regs.
+        try self.emitBranchRelease(ok_reg);
+        try self.emitBranchRelease(val_reg);
+        try self.emitBranchRelease(next_reg);
+        try self.emitBranchRelease(idx_reg);
+        try self.emitJmp(head_label);
+        try self.emitLabel(done_label);
+        try self.emitBranchRelease(done_reg);
+        try self.emitBranchRelease(shift_reg);
+        try self.emitBranchRelease(idx_reg);
+        try self.emitJmp(end_label);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(deque_reg)) try self.emitRelease(deque_reg);
+        if (!self.isLocalReg(count_reg)) try self.emitRelease(count_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(zero_reg);
+        try self.emitRelease(idx_slot);
+        try self.emitRelease(pop_slot);
+        const sentinel = try self.intern(try self.newTmp());
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
+    }
+
+    /// Direct-SAB `File::open(path)`, mirroring the SA-text backend
+    /// (`EXPAND FS_OPEN_READ` + ok/err branch wrapping the handle in
+    /// `RESULT_NEW_OK` / `RESULT_NEW_ERR`). The opened handle is tracked for
+    /// scope-exit `FS_CLOSE`, matching the SA backend `file_bindings` RAII.
+    fn genFileOpenCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        const target = call.associated_target orelse return null;
+        if (!std.mem.eql(u8, target, "File") or !std.mem.eql(u8, call.func_name, "open")) return null;
+        if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+        const path_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
+        if (!lowering_rules.isStringLikeType(path_ty)) return Error.UnsupportedSabDirectFeature;
+        const path_reg = try self.genExpr(@constCast(call.args[0]));
+        const path_ptr = try self.intern(try self.newTmp());
+        try self.recordReg(path_ptr);
+        const path_len = try self.intern(try self.newTmp());
+        try self.recordReg(path_len);
+        try self.emitLoad(path_ptr, path_reg, lowering_rules.SliceAbi.ptr_offset, .ptr);
+        try self.emitLoad(path_len, path_reg, lowering_rules.SliceAbi.len_offset, .u64);
+        if (!self.isLocalReg(path_reg)) try self.emitRelease(path_reg);
+        try self.ensureStdDeps("sa_std/fs.sai", &.{
+            "sa_std_fs_open_read",
+            "sa_std_close",
+        });
+        const status_reg = try self.intern(try self.newTmp());
+        try self.recordReg(status_reg);
+        const file_reg = try self.intern(try self.newTmp());
+        try self.recordReg(file_reg);
+        const result_reg = try self.intern(try self.newTmp());
+        try self.recordReg(result_reg);
+        const ok_reg = try self.intern(try self.newTmp());
+        try self.recordReg(ok_reg);
+        try self.emitStdMacroFragment("sa_std/fs.sa", "FS_OPEN_READ", &.{
+            self.symbols.items[status_reg],
+            self.symbols.items[file_reg],
+            self.symbols.items[path_ptr],
+            self.symbols.items[path_len],
+        });
+        // `SA_FS_OK` is 0: compare the status word directly instead of
+        // materializing the layout constant as a register.
+        try self.emitOp(ok_reg, .eq, .{ .reg = status_reg }, .{ .imm_i64 = 0 });
+        const ok_label = try self.newLabel("L_FILE_OPEN_OK");
+        const err_label = try self.newLabel("L_FILE_OPEN_ERR");
+        const end_label = try self.newLabel("L_FILE_OPEN_END");
+        try self.emitBranch(ok_reg, ok_label, err_label);
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        try self.emitLabel(ok_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[file_reg],
+        });
+        // The `store` inside `RESULT_NEW_OK` moves the move-only handle into
+        // the `Result` allocation (ownership now lives in `result_reg`), so
+        // retire it codegen-side instead of releasing it after the merge.
+        try self.markConsumed(file_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.emitLabel(err_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[status_reg],
+        });
+        // No handle was produced on the error path; the out-handle slot was
+        // never meaningfully written, so nothing owns `file_reg` here.
+        try self.markConsumed(file_reg);
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(status_reg)) try self.emitRelease(status_reg);
+        try self.emitRelease(ok_reg);
+        if (!self.isLocalReg(path_ptr)) try self.emitRelease(path_ptr);
+        if (!self.isLocalReg(path_len)) try self.emitRelease(path_len);
+        return result_reg;
+    }
+
+    /// Direct-SAB `file.as_raw_fd()`: the File value already is the fd word,
+    /// so copy and narrow to i32, mirroring the SA-text backend.
+    fn genFileAsRawFdCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.associated_target != null) return null;
+        if (!std.mem.eql(u8, call.func_name, "as_raw_fd") or call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (!lowering_rules.isFileType(receiver_ty)) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const copied = try self.intern(try self.newTmp());
+        try self.emitOp(copied, .add, .{ .reg = recv_reg }, .{ .imm_i64 = 0 });
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitOp(dst, .trunc, .{ .reg = copied }, .{ .ty = @intFromEnum(sig.PrimType.i32) });
+        if (!self.isLocalReg(copied)) try self.emitRelease(copied);
+        return dst;
+    }
+
+    /// Direct-SAB `let (tx, rx) = mpsc::channel()`, mirroring the SA-text
+    /// backend (`src/codegen.zig` `MPSC_NEW` expansion): one ring-buffer
+    /// allocation shared by both ends. The receiver binding adopts the
+    /// channel register (sole owner, freed once at scope exit); the sender
+    /// binding is a non-owning alias retired via `move_` (senders are never
+    /// freed, matching the SA backend skipping `mpsc_sender_bindings` at
+    /// cleanup). No intermediate tuple is built.
+    fn genMpscChannelDestructure(self: *Codegen, let: ast.LetDestructureStmt) anyerror!void {
+        const call = let.value.call_expr;
+        if (call.args.len != 0) return Error.UnsupportedSabDirectFeature;
+        if (let.is_slice or let.rest_name != null or let.rest_alias != null) return Error.UnsupportedSabDirectFeature;
+        if (let.names.len != 2) return Error.UnsupportedSabDirectFeature;
+        const value_ty = self.tc.expr_types.get(let.value) orelse return Error.MissingType;
+        if (value_ty.* != .tuple or value_ty.tuple.elems.len != 2) return Error.UnsupportedSabDirectFeature;
+        if (lowering_rules.senderInnerType(value_ty.tuple.elems[0]) == null) return Error.UnsupportedSabDirectFeature;
+        if (lowering_rules.receiverInnerType(value_ty.tuple.elems[1]) == null) return Error.UnsupportedSabDirectFeature;
+        const chan = try self.intern(try self.newTmp());
+        try self.recordReg(chan);
+        try self.ensureStdDeps("sa_std/core/mem.sa", &.{"sa_mem_set"});
+        try self.emitStdMacroFragmentWithLiteralArgs("sa_std/sync/mpsc.sa", "MPSC_NEW", &.{
+            self.symbols.items[chan],
+            "1024",
+        }, &.{ false, true });
+        const rx_discarded = lowering_rules.isDiscardName(let.names[1]);
+        const tx_discarded = lowering_rules.isDiscardName(let.names[0]);
+        if (rx_discarded) {
+            // A discarded receiver can only retire the channel when the
+            // sender end is discarded too; otherwise the live sender would
+            // dangle. No failing program needs the mixed shape.
+            if (!tx_discarded) return Error.UnsupportedSabDirectFeature;
+            try self.emitRelease(chan);
+            return;
+        }
+        try self.pushTypedLocal(let.names[1], chan, false, value_ty.tuple.elems[1]);
+        if (tx_discarded) return;
+        const tx = try self.intern(let.names[0]);
+        try self.emitPtrAdd(tx, chan, .{ .imm_u64 = 0 });
+        try self.pushTypedLocal(let.names[0], tx, false, value_ty.tuple.elems[0]);
+        try self.markNonOwningReg(tx);
+    }
+
+    /// Direct-SAB `tx.send(value)`, mirroring the SA-text backend
+    /// (`EXPAND MPSC_SEND` + `RESULT_NEW_OK(result, 0)`). The macro consumes
+    /// the value register internally (`!%value`), so the source is retired
+    /// codegen-side via `markConsumed` without a second release.
+    fn genMpscSendCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isSendCall(call) or call.args.len != 2) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.senderInnerType(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const value_reg = try self.genExpr(@constCast(call.args[1]));
+        try self.ensureStdDeps("sa_std/sync/mpsc.sa", &.{"__mpsc_try_send"});
+        try self.ensureStdDeps("sa_std/time.sai", &.{"sa_time_sleep_ns"});
+        try self.emitStdMacroFragment("sa_std/sync/mpsc.sa", "MPSC_SEND", &.{
+            self.symbols.items[recv_reg],
+            self.symbols.items[value_reg],
+        });
+        try self.markConsumed(value_reg);
+        const result = try self.intern(try self.newTmp());
+        try self.recordReg(result);
+        try self.emitStdMacroFragmentWithLiteralArgs("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[result],
+            "0",
+        }, &.{ false, true });
+        return result;
+    }
+
+    /// Direct-SAB `rx.recv()`, mirroring the SA-text backend
+    /// (`EXPAND MPSC_RECV` + `RESULT_NEW_OK`).
+    fn genMpscRecvCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isRecvCall(call) or call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.receiverInnerType(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const value_reg = try self.intern(try self.newTmp());
+        try self.recordReg(value_reg);
+        try self.ensureStdDeps("sa_std/sync/mpsc.sa", &.{"__mpsc_try_recv"});
+        try self.ensureStdDeps("sa_std/time.sai", &.{"sa_time_sleep_ns"});
+        try self.emitStdMacroFragment("sa_std/sync/mpsc.sa", "MPSC_RECV", &.{
+            self.symbols.items[value_reg],
+            self.symbols.items[recv_reg],
+        });
+        const result = try self.intern(try self.newTmp());
+        try self.recordReg(result);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[result],
+            self.symbols.items[value_reg],
+        });
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        return result;
+    }
+
+    /// Direct-SAB `tx.clone()` for `Sender`: aliases the same ring buffer
+    /// without allocating. The clone is non-owning (never freed), matching
+    /// the SA-text backend treating sender clones as independent values.
+    fn genSenderCloneCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isCloneUnaryCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.senderInnerType(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitPtrAdd(dst, recv_reg, .{ .imm_u64 = 0 });
+        try self.markNonOwningReg(dst);
         return dst;
     }
 
@@ -13042,6 +13437,14 @@ pub const Codegen = struct {
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genMutexLockCall(expr, call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
+        if (try self.genSenderCloneCall(expr, call)) |reg| return reg;
+        if (try self.genMpscSendCall(expr, call)) |reg| return reg;
+        if (try self.genMpscRecvCall(expr, call)) |reg| return reg;
+        if (try self.genMemForgetCall(expr, call)) |reg| return reg;
+        if (try self.genVecDequeFromCall(expr, call)) |reg| return reg;
+        if (try self.genVecDequeRotateCall(expr, call)) |reg| return reg;
+        if (try self.genFileOpenCall(expr, call)) |reg| return reg;
+        if (try self.genFileAsRawFdCall(expr, call)) |reg| return reg;
         if (try self.genStructConstructorCall(expr, call)) |reg| return reg;
         if (try self.genIterSumCall(call)) |reg| return reg;
         if (try self.genArrayFillCall(call)) |reg| return reg;
@@ -14640,6 +15043,21 @@ pub const Codegen = struct {
         }
 
         if (try self.genVecDirectIndex(idx, target_ty)) |dst| return dst;
+
+        if (lowering_rules.vecDequeElementType(target_ty) != null) {
+            const deque_reg = try self.genExpr(idx.target);
+            const index_reg = try self.genExpr(idx.index);
+            const dst = try self.intern(try self.newTmp());
+            try self.recordReg(dst);
+            try self.ensureStdDeps("sa_std/vec_deque.sa", &.{"sa_vec_deque_get"});
+            try self.emitStdMacroFragment("sa_std/vec_deque.sa", "VEC_DEQUE_GET", &.{
+                self.symbols.items[dst],
+                self.symbols.items[deque_reg],
+                self.symbols.items[index_reg],
+            });
+            if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+            return dst;
+        }
 
         const target_type_name = typeBaseName(target_ty) orelse return Error.UnsupportedSabDirectFeature;
         const rule = self.findStdSurfaceRule(.index, target_type_name, null) orelse return Error.UnsupportedSabDirectFeature;

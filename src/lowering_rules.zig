@@ -3578,6 +3578,22 @@ pub fn atomicIntMacroPrefix(receiver_ty: *const ast.Type) ?[]const u8 {
     return null;
 }
 
+/// Shared pure `VecDeque::from` associated call recognition (array-literal
+/// source, mirroring the SA-text backend `src/codegen.zig` handling).
+pub fn isVecDequeFromCall(call: ast.CallExpr) bool {
+    return call.associated_target != null and
+        std.mem.eql(u8, call.associated_target.?, "VecDeque") and
+        std.mem.eql(u8, call.func_name, "from") and
+        call.args.len == 1;
+}
+
+/// Shared pure `VecDeque::rotate_left` / `rotate_right` method recognition.
+pub fn isVecDequeRotateCall(call: ast.CallExpr) bool {
+    if (call.associated_target != null) return false;
+    if (call.args.len != 2) return false;
+    return std.mem.eql(u8, call.func_name, "rotate_left") or std.mem.eql(u8, call.func_name, "rotate_right");
+}
+
 /// Shared pure `ManuallyDrop::new` associated call recognition.
 pub fn isManuallyDropNewCall(call: ast.CallExpr) bool {
     return call.associated_target != null and

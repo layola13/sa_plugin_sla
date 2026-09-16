@@ -3551,6 +3551,33 @@ pub fn isMpscChannelCall(call: ast.CallExpr) bool {
         std.mem.eql(u8, call.func_name, "channel");
 }
 
+/// Shared pure atomic `new` plan: stack-slot size plus the
+/// `sa_std/sync/atomic.sa` `*_INIT` macro that stores the initial value.
+/// Mirrors the SA-text backend (`src/codegen.zig` `ATOMIC_*_INIT` expansions):
+/// the slot must be stack-allocated first, the macro only stores.
+pub const AtomicNewPlan = struct {
+    size: usize,
+    macro_name: []const u8,
+};
+
+pub fn planAtomicNewCall(call: ast.CallExpr) ?AtomicNewPlan {
+    if (call.associated_target == null or !isNewCall(call) or call.args.len != 1) return null;
+    const target = call.associated_target.?;
+    if (std.mem.eql(u8, target, "AtomicI32")) return .{ .size = 4, .macro_name = "ATOMIC_I32_INIT" };
+    if (std.mem.eql(u8, target, "AtomicUsize")) return .{ .size = 8, .macro_name = "ATOMIC_USIZE_INIT" };
+    if (std.mem.eql(u8, target, "AtomicPtr")) return .{ .size = 8, .macro_name = "ATOMIC_PTR_INIT" };
+    return null;
+}
+
+/// Shared pure atomic integer kind for method-call macro prefixes
+/// (`ATOMIC_I32_*` / `ATOMIC_USIZE_*`). Pointer atomics only share the
+/// `load` shape; other methods stay on the fallback path.
+pub fn atomicIntMacroPrefix(receiver_ty: *const ast.Type) ?[]const u8 {
+    if (isAtomicI32Type(receiver_ty)) return "ATOMIC_I32";
+    if (isAtomicUsizeType(receiver_ty)) return "ATOMIC_USIZE";
+    return null;
+}
+
 /// Shared pure `ManuallyDrop::new` associated call recognition.
 pub fn isManuallyDropNewCall(call: ast.CallExpr) bool {
     return call.associated_target != null and
@@ -8111,6 +8138,25 @@ test "option and result method peels" {
     try std.testing.expect(isMapCall(.{ .func_name = "map", .args = one[0..], .associated_target = null, .generics = &.{} }));
     try std.testing.expect(!isOptionQueryCall(ok));
     try std.testing.expect(!isResultQueryCall(some));
+}
+
+test "atomic new plan" {
+    var dummy: ast.Node = undefined;
+    var one = [_]*ast.Node{&dummy};
+    const i32_plan = planAtomicNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = "AtomicI32", .generics = &.{}, }) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 4), i32_plan.size);
+    try std.testing.expectEqualStrings("ATOMIC_I32_INIT", i32_plan.macro_name);
+    const usize_plan = planAtomicNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = "AtomicUsize", .generics = &.{}, }) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 8), usize_plan.size);
+    try std.testing.expectEqualStrings("ATOMIC_USIZE_INIT", usize_plan.macro_name);
+    const ptr_plan = planAtomicNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = "AtomicPtr", .generics = &.{}, }) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 8), ptr_plan.size);
+    try std.testing.expectEqualStrings("ATOMIC_PTR_INIT", ptr_plan.macro_name);
+    try std.testing.expect(planAtomicNewCall(.{ .func_name = "new", .args = one[0..], .associated_target = "Mutex", .generics = &.{}, }) == null);
+    try std.testing.expect(planAtomicNewCall(.{ .func_name = "new", .args = &.{}, .associated_target = "AtomicI32", .generics = &.{}, }) == null);
+    try std.testing.expect(atomicIntMacroPrefix(&ast.Type{ .user_defined = .{ .name = "AtomicI32", .generics = &.{} } }) != null);
+    try std.testing.expect(atomicIntMacroPrefix(&ast.Type{ .user_defined = .{ .name = "AtomicUsize", .generics = &.{} } }) != null);
+    try std.testing.expect(atomicIntMacroPrefix(&ast.Type{ .primitive = .i32 }) == null);
 }
 
 test "collection atomic mpsc method peels" {

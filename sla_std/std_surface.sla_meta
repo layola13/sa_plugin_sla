@@ -16,9 +16,6 @@ associated Arc new sa_std/core/arc.sa ARC_NEW out,value
 associated Arc clone sa_std/core/arc.sa ARC_CLONE_OUT out,value
 associated RefCell new sa_std/core/refcell.sa REFCELL_U64_NEW out,value
 associated Cell new sa_std/core/cell.sa CELL_NEW_VALUE out,value
-associated AtomicI32 new sa_std/sync/atomic.sa ATOMIC_I32_NEW out,value
-associated AtomicUsize new sa_std/sync/atomic.sa ATOMIC_USIZE_NEW out,value
-associated AtomicPtr new sa_std/sync/atomic.sa ATOMIC_PTR_NEW out,value
 associated HashMap new sa_std/hashmap.sa MAP_NEW out deps=sa_map_new
 associated BTreeMap new sa_std/btree_map.sa BTREE_MAP_NEW out deps=sa_btree_map_new
 associated VecDeque new sa_std/vec_deque.sa VEC_DEQUE_NEW out deps=sa_vec_deque_new

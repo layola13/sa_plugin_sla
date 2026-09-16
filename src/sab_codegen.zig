@@ -6696,6 +6696,15 @@ pub const Codegen = struct {
             return;
         }
         const let_ty = if (explicit_ty) |ty| ty else (try self.exprTypeOrFallback(value_expr)) orelse return Error.MissingType;
+        if (self.stack_alloc_emitted.contains(src)) {
+            // Expression emitters that home their value in a stack slot (today
+            // `AtomicI32/AtomicUsize/AtomicPtr::new`) hand the slot itself to
+            // the binding: adopting avoids aliasing the slot through a second
+            // register, which would double-release at scope exit. Mirrors the
+            // SA-text backend keeping such bindings in `stack_alloc_bindings`.
+            try self.pushStackAllocTypedLocal(name, src, let_ty);
+            return;
+        }
         const refcell_transfer_plan = lowering_rules.planRefCellValueStateTransfer(
             self.refcell_borrow_values.contains(src),
             self.borrow_address_temps.contains(src),
@@ -11965,6 +11974,196 @@ pub const Codegen = struct {
         return dst;
     }
 
+    /// Direct-SAB `AtomicI32/AtomicUsize/AtomicPtr::new(value)`, mirroring the
+    /// SA-text backend (`src/codegen.zig` `ATOMIC_*_INIT` expansions): stack
+    /// allocate the value slot, then store the initial value through the
+    /// shared `*_INIT` macro. The returned register is a stack slot; `let`
+    /// adoption goes through `pushStackAllocTypedLocal` (see genLetFromValue).
+    fn genAtomicNewCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        const plan = lowering_rules.planAtomicNewCall(call) orelse return null;
+        const target = call.associated_target orelse return Error.UnsupportedSabDirectFeature;
+        const value_reg = try self.genAssociatedValueArg(target, call.func_name, @constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(dst, plan.size);
+        try self.emitStdMacroFragment("sa_std/sync/atomic.sa", plan.macro_name, &.{
+            self.symbols.items[dst],
+            self.symbols.items[value_reg],
+        });
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        return dst;
+    }
+
+    /// Direct-SAB atomic integer methods (`load` / `store` / `fetch_add` /
+    /// `compare_exchange` on `AtomicI32` / `AtomicUsize`, plus `load` on
+    /// `AtomicPtr`), mirroring the SA-text backend expansions of the
+    /// `ATOMIC_*` macros. Ordering arguments are `Ordering::X` identifiers
+    /// lowered through the shared `atomicOrderingToken` table and passed as
+    /// macro literal operands.
+    fn genAtomicMethodCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.associated_target != null) return null;
+        if (call.args.len == 0) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const prefix = lowering_rules.atomicIntMacroPrefix(receiver_ty) orelse blk: {
+            if (lowering_rules.atomicPtrInnerType(receiver_ty) == null) return null;
+            if (!std.mem.eql(u8, call.func_name, "load")) return null;
+            break :blk "ATOMIC_PTR";
+        };
+        if (std.mem.eql(u8, call.func_name, "load")) {
+            if (call.args.len != 2) return Error.UnsupportedSabDirectFeature;
+            const ordering = try self.atomicOrderingArgToken(call.args[1]);
+            const recv_reg = try self.genExpr(@constCast(call.args[0]));
+            const dst = try self.intern(try self.newTmp());
+            try self.recordReg(dst);
+            const macro_name = try std.fmt.allocPrint(self.allocator, "{s}_LOAD", .{prefix});
+            defer self.allocator.free(macro_name);
+            try self.emitStdMacroFragmentWithLiteralArgs("sa_std/sync/atomic.sa", macro_name, &.{
+                self.symbols.items[dst],
+                self.symbols.items[recv_reg],
+                ordering,
+            }, &.{ false, false, true });
+            if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+            return dst;
+        }
+        if (std.mem.eql(u8, call.func_name, "store")) {
+            if (call.args.len != 3) return Error.UnsupportedSabDirectFeature;
+            const ordering = try self.atomicOrderingArgToken(call.args[2]);
+            const recv_reg = try self.genExpr(@constCast(call.args[0]));
+            const value_reg = try self.genExpr(@constCast(call.args[1]));
+            const macro_name = try std.fmt.allocPrint(self.allocator, "{s}_STORE", .{prefix});
+            defer self.allocator.free(macro_name);
+            try self.emitStdMacroFragmentWithLiteralArgs("sa_std/sync/atomic.sa", macro_name, &.{
+                self.symbols.items[recv_reg],
+                self.symbols.items[value_reg],
+                ordering,
+            }, &.{ false, false, true });
+            if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+            const sentinel = try self.intern(try self.newTmp());
+            try self.emitAssignImm(sentinel, 0);
+            return sentinel;
+        }
+        if (std.mem.eql(u8, call.func_name, "fetch_add")) {
+            if (call.args.len != 3) return Error.UnsupportedSabDirectFeature;
+            const ordering = try self.atomicOrderingArgToken(call.args[2]);
+            const recv_reg = try self.genExpr(@constCast(call.args[0]));
+            const value_reg = try self.genExpr(@constCast(call.args[1]));
+            const dst = try self.intern(try self.newTmp());
+            try self.recordReg(dst);
+            const macro_name = try std.fmt.allocPrint(self.allocator, "{s}_FETCH_ADD", .{prefix});
+            defer self.allocator.free(macro_name);
+            try self.emitStdMacroFragmentWithLiteralArgs("sa_std/sync/atomic.sa", macro_name, &.{
+                self.symbols.items[dst],
+                self.symbols.items[recv_reg],
+                self.symbols.items[value_reg],
+                ordering,
+            }, &.{ false, false, false, true });
+            if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+            return dst;
+        }
+        if (std.mem.eql(u8, call.func_name, "compare_exchange")) {
+            if (call.args.len != 5) return Error.UnsupportedSabDirectFeature;
+            const success_ordering = try self.atomicOrderingArgToken(call.args[3]);
+            const failure_ordering = try self.atomicOrderingArgToken(call.args[4]);
+            const recv_reg = try self.genExpr(@constCast(call.args[0]));
+            const expected_reg = try self.genExpr(@constCast(call.args[1]));
+            const new_reg = try self.genExpr(@constCast(call.args[2]));
+            const old_reg = try self.intern(try self.newTmp());
+            try self.recordReg(old_reg);
+            const ok_reg = try self.intern(try self.newTmp());
+            try self.recordReg(ok_reg);
+            const result_reg = try self.intern(try self.newTmp());
+            try self.recordReg(result_reg);
+            const macro_name = try std.fmt.allocPrint(self.allocator, "{s}_COMPARE_EXCHANGE", .{prefix});
+            defer self.allocator.free(macro_name);
+            try self.emitStdMacroFragmentWithLiteralArgs("sa_std/sync/atomic.sa", macro_name, &.{
+                self.symbols.items[old_reg],
+                self.symbols.items[ok_reg],
+                self.symbols.items[recv_reg],
+                self.symbols.items[expected_reg],
+                self.symbols.items[new_reg],
+                success_ordering,
+                failure_ordering,
+            }, &.{ false, false, false, false, false, true, true });
+            const ok_label = try self.newLabel("L_ATOMIC_CMPXCHG_OK");
+            const err_label = try self.newLabel("L_ATOMIC_CMPXCHG_ERR");
+            const end_label = try self.newLabel("L_ATOMIC_CMPXCHG_END");
+            try self.emitBranch(ok_reg, ok_label, err_label);
+            const branch_locals_len = self.locals.items.len;
+            var pre_released = try self.released_regs.clone();
+            defer pre_released.deinit();
+            try self.emitLabel(ok_label);
+            try self.emitBranchRelease(ok_reg);
+            try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+                self.symbols.items[result_reg],
+                self.symbols.items[old_reg],
+            });
+            try self.emitJmp(end_label);
+            var then_released = try self.released_regs.clone();
+            defer then_released.deinit();
+            self.popLocalsTo(branch_locals_len);
+            try self.restoreReleased(&pre_released);
+            try self.emitLabel(err_label);
+            try self.emitBranchRelease(ok_reg);
+            try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{
+                self.symbols.items[result_reg],
+                self.symbols.items[old_reg],
+            });
+            try self.emitJmp(end_label);
+            var else_released = try self.released_regs.clone();
+            defer else_released.deinit();
+            self.popLocalsTo(branch_locals_len);
+            try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+            try self.emitLabel(end_label);
+            if (!self.isLocalReg(old_reg)) try self.emitRelease(old_reg);
+            if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+            if (!self.isLocalReg(expected_reg)) try self.emitRelease(expected_reg);
+            if (!self.isLocalReg(new_reg)) try self.emitRelease(new_reg);
+            return result_reg;
+        }
+        return null;
+    }
+
+    /// Direct-SAB `is_ok` / `is_err` (Result) and `is_some` / `is_none`
+    /// (Option) query methods, mirroring the SA-text backend
+    /// (`src/codegen.zig` `RESULT_IS_OK` / `RESULT_IS_ERR` expansions). These
+    /// must be recognized before the planned static-call path: a bare
+    /// `is_err` name would otherwise resolve as a static call to the
+    /// undeclared `@sla__is_err` symbol and trap at runtime.
+    fn genResultOptionQueryCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.associated_target != null or call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        var import_path: []const u8 = undefined;
+        var macro_name: []const u8 = undefined;
+        if (lowering_rules.isResultQueryCall(call)) {
+            if (lowering_rules.resultOkType(receiver_ty) == null) return null;
+            import_path = "sa_std/core/result.sa";
+            macro_name = if (lowering_rules.isIsOkCall(call)) "RESULT_IS_OK" else "RESULT_IS_ERR";
+        } else if (lowering_rules.isOptionQueryCall(call)) {
+            if (lowering_rules.optionInnerType(receiver_ty) == null) return null;
+            import_path = "sa_std/core/option.sa";
+            macro_name = if (lowering_rules.isIsSomeCall(call)) "OPTION_IS_SOME" else "OPTION_IS_NONE";
+        } else return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment(import_path, macro_name, &.{
+            self.symbols.items[dst],
+            self.symbols.items[recv_reg],
+        });
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        return dst;
+    }
+
+    fn atomicOrderingArgToken(self: *Codegen, arg: *const ast.Node) anyerror![]const u8 {
+        _ = self;
+        if (arg.* != .identifier) return Error.UnsupportedSabDirectFeature;
+        return lowering_rules.atomicOrderingToken(arg.identifier) orelse Error.UnsupportedSabDirectFeature;
+    }
+
     /// Direct-SAB `mutex.lock()`, mirroring the SA-text backend: spin on the
     /// lock word, derive the data-pointer guard (`ptr_add mutex, 8`), wrap it
     /// in `Result::Ok`, and track guard -> mutex so releasing the guard emits
@@ -12849,6 +13048,9 @@ pub const Codegen = struct {
         if (try self.genPtrBuiltinCall(expr, call)) |reg| return reg;
         if (try self.genPointerMethodCall(call)) |reg| return reg;
         if (try self.genMutexNewCall(expr, call)) |reg| return reg;
+        if (try self.genAtomicNewCall(expr, call)) |reg| return reg;
+        if (try self.genAtomicMethodCall(expr, call)) |reg| return reg;
+        if (try self.genResultOptionQueryCall(expr, call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const lowering = lowering_rules.planStaticCallLowering(self.tc, expr, call, self.tc.expr_types.get(expr)) orelse {
             self.traceUnsupported("static call {s} has no lowering plan\n", .{call.func_name});

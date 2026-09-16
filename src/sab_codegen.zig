@@ -71,6 +71,13 @@ const RefCellBorrowValue = struct {
     release_regs: []const u32 = &.{},
 };
 
+/// Tracks a live `MutexGuard` data-pointer register back to the mutex
+/// allocation it locks. Releasing the guard register emits `MUTEX_UNLOCK`,
+/// mirroring the SA-text backend (`src/codegen.zig` mutex guard handles).
+const MutexGuardValue = struct {
+    mutex_reg: u32,
+};
+
 const BorrowAddressTempState = struct {
     release_regs: []const u32 = &.{},
     restore_slot: ?u32 = null,
@@ -293,6 +300,7 @@ pub const Codegen = struct {
     std_macro_template_ids: std.StringHashMap(usize),
     escaped_closure_entries: std.AutoHashMap(*const ast.Node, EscapedClosureEntry),
     refcell_borrow_values: std.AutoHashMap(u32, RefCellBorrowValue),
+    mutex_guard_values: std.AutoHashMap(u32, MutexGuardValue),
     result_slot_refcell_handles: std.AutoHashMap(u32, ResultSlotRefCellHandle),
     result_slot_refcell_slots: std.AutoHashMap(u32, u32),
     borrow_address_temps: std.AutoHashMap(u32, BorrowAddressTempState),
@@ -372,6 +380,7 @@ pub const Codegen = struct {
             .std_macro_template_ids = std.StringHashMap(usize).init(allocator),
             .escaped_closure_entries = std.AutoHashMap(*const ast.Node, EscapedClosureEntry).init(allocator),
             .refcell_borrow_values = std.AutoHashMap(u32, RefCellBorrowValue).init(allocator),
+            .mutex_guard_values = std.AutoHashMap(u32, MutexGuardValue).init(allocator),
             .result_slot_refcell_handles = std.AutoHashMap(u32, ResultSlotRefCellHandle).init(allocator),
             .result_slot_refcell_slots = std.AutoHashMap(u32, u32).init(allocator),
             .borrow_address_temps = std.AutoHashMap(u32, BorrowAddressTempState).init(allocator),
@@ -449,6 +458,7 @@ pub const Codegen = struct {
         self.escaped_closure_entries.deinit();
         self.clearRefCellBorrowValues();
         self.refcell_borrow_values.deinit();
+        self.mutex_guard_values.deinit();
         self.result_slot_refcell_handles.deinit();
         self.result_slot_refcell_slots.deinit();
         self.clearBorrowAddressTemps();
@@ -2347,6 +2357,7 @@ pub const Codegen = struct {
         self.closure_param_regs.clearRetainingCapacity();
         self.borrowed_bindings.clearRetainingCapacity();
         self.clearRefCellBorrowValues();
+        self.mutex_guard_values.clearRetainingCapacity();
         self.result_slot_refcell_handles.clearRetainingCapacity();
         self.result_slot_refcell_slots.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
@@ -2711,6 +2722,10 @@ pub const Codegen = struct {
                 _ = self.refcell_borrow_values.remove(dst);
                 try self.refcell_borrow_values.put(dst, entry.value);
             }
+        }
+        if (self.mutex_guard_values.fetchRemove(src)) |entry| {
+            _ = self.mutex_guard_values.remove(dst);
+            try self.mutex_guard_values.put(dst, entry.value);
         }
         if (refcell_transfer_plan.borrow_address_temps.movesBorrowAddressTemps()) {
             if (self.borrow_address_temps.fetchRemove(src)) |entry| {
@@ -3540,6 +3555,9 @@ pub const Codegen = struct {
         try self.emitRefCellBorrowReleasesForCell(reg);
         if (self.refcell_borrow_values.fetchRemove(reg)) |entry| {
             try self.emitRefCellBorrowRelease(entry.value);
+        }
+        if (self.mutex_guard_values.fetchRemove(reg)) |entry| {
+            try self.emitMutexGuardRelease(entry.value);
         }
         if (self.stack_alloc_emitted.contains(reg)) {
             _ = self.non_owning_regs.remove(reg);
@@ -5627,6 +5645,31 @@ pub const Codegen = struct {
         try self.finishFunctionBody(select_sig_idx);
     }
 
+    /// Payload word type for possibly-`void` thread/join results. `void`
+    /// has no LLVM value form (`assign imm` infers void, and `store`/`load`
+    /// /`return` of void segfault the LLVM backend), so materialize void
+    /// payloads as `i32` zero. The word is never read for void results:
+    /// workers report status through the i32 return.
+    fn threadResultPayloadPrim(self: *Codegen, prim: sig.PrimType) sig.PrimType {
+        _ = self;
+        return if (prim == .void) .i32 else prim;
+    }
+
+    /// Typed `i32` zero for contexts (like thread worker returns) that need
+    /// a real LLVM value where only an untyped immediate exists.
+    fn emitI32Zero(self: *Codegen, zero: u32) !u32 {
+        const zero32 = try self.intern(try self.newTmp());
+        try self.recordReg(zero32);
+        var conv = self.makeInst(.op);
+        conv.op_kind = .trunc;
+        conv.operands[0] = .{ .reg = zero32 };
+        conv.operands[1] = .{ .reg = zero };
+        conv.operands[2] = .{ .ty = @intFromEnum(sig.PrimType.i32) };
+        try self.appendInst(conv);
+        if (!self.isLocalReg(zero)) try self.emitRelease(zero);
+        return zero32;
+    }
+
     fn emitEscapedWorker(self: *Codegen, entry: EscapedClosureEntry) !void {
         const old_locals = self.locals.items.len;
         defer self.popLocalsTo(old_locals);
@@ -5655,7 +5698,7 @@ pub const Codegen = struct {
         }
 
         const value = try self.genExpr(@constCast(entry.closure.body));
-        try self.emitStore(param.id, 8, value, try primType(entry.ret_ty));
+        try self.emitStore(param.id, 8, value, self.threadResultPayloadPrim(try primType(entry.ret_ty)));
         for (capture_regs.items) |capture| {
             if (capture.reg == value or self.released_regs.contains(capture.reg)) continue;
             if (self.typeIsCopyValue(capture.ty) or lowering_rules.isBorrowLikeType(capture.ty)) {
@@ -5672,7 +5715,7 @@ pub const Codegen = struct {
             try self.emitMove(param.id);
             const zero = try self.intern(try self.newTmp());
             try self.emitAssignImm(zero, 0);
-            try self.emitReturn(zero);
+            try self.emitReturn(try self.emitI32Zero(zero));
         }
 
         try self.finishFunctionBody(sig_idx);
@@ -9305,6 +9348,13 @@ pub const Codegen = struct {
         if (assign.target.* == .deref_expr) {
             const source_expr = assign.target.deref_expr.expr;
             const source_ty = self.tc.expr_types.get(source_expr) orelse return Error.MissingType;
+            if (lowering_rules.mutexGuardInnerType(source_ty)) |guard_inner| {
+                const target = try self.genExpr(source_expr);
+                const value = try self.genExpr(assign.value);
+                try self.emitStore(target, 0, value, try storagePrimType(guard_inner));
+                if (!self.isLocalReg(value)) try self.emitRelease(value);
+                return;
+            }
             const inner_ty = switch (source_ty.*) {
                 .borrow => |inner| inner,
                 .pointer => |inner| inner,
@@ -11134,12 +11184,12 @@ pub const Codegen = struct {
         const zero = try self.intern(try self.newTmp());
         try self.emitAssignImm(zero, 0);
         try self.emitStore(slot, 0, zero, .i32);
-        try self.emitStore(slot, 8, zero, try primType(entry.ret_ty));
+        try self.emitStore(slot, 8, zero, self.threadResultPayloadPrim(try primType(entry.ret_ty)));
         try self.emitRelease(zero);
 
         if (entry.inline_join) {
             const value = try self.genExpr(@constCast(entry.closure.body));
-            try self.emitStore(slot, 8, value, try primType(entry.ret_ty));
+            try self.emitStore(slot, 8, value, self.threadResultPayloadPrim(try primType(entry.ret_ty)));
             if (!self.isLocalReg(value) and !self.released_regs.contains(value)) try self.emitMove(value);
 
             const sentinel = try self.intern(try self.newTmp());
@@ -11194,7 +11244,7 @@ pub const Codegen = struct {
         const recv_reg = try self.genExpr(@constCast(call.args[0]));
         const handle = try self.intern(try self.newTmp());
         const result_reg = try self.intern(try self.newTmp());
-        const inner_prim = try storagePrimType(inner_ty);
+        const inner_prim = self.threadResultPayloadPrim(try storagePrimType(inner_ty));
         try self.emitLoad(handle, recv_reg, 0, .i32);
 
         const is_inline = try self.intern(try self.newTmp());
@@ -11307,7 +11357,7 @@ pub const Codegen = struct {
         const tag = try self.intern(try self.newTmp());
         const is_ok = try self.intern(try self.newTmp());
         const dst = try self.intern(try self.newTmp());
-        const ok_prim = try storagePrimType(ok_ty);
+        const ok_prim = self.threadResultPayloadPrim(try storagePrimType(ok_ty));
         try self.emitLoad(tag, receiver_reg, 0, .u64);
         try self.emitOp(is_ok, .eq, .{ .reg = tag }, .{ .imm_i64 = 0 });
 
@@ -11336,6 +11386,10 @@ pub const Codegen = struct {
         try self.emitJmp(end_label);
 
         try self.emitLabel(end_label);
+        if (self.mutex_guard_values.fetchRemove(receiver_reg)) |entry| {
+            _ = self.mutex_guard_values.remove(dst);
+            try self.mutex_guard_values.put(dst, entry.value);
+        }
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
         return dst;
     }
@@ -11878,6 +11932,63 @@ pub const Codegen = struct {
         try self.recordReg(sentinel);
         try self.emitAssignImm(sentinel, 0);
         return sentinel;
+    }
+
+    fn emitMutexGuardRelease(self: *Codegen, handle: MutexGuardValue) !void {
+        try self.emitStdMacroFragment("sa_std/sync/mutex.sa", "MUTEX_UNLOCK", &.{
+            self.symbols.items[handle.mutex_reg],
+        });
+    }
+
+    /// Direct-SAB `Mutex::new(value)` for `i32`-like values, mirroring the
+    /// SA-text backend (`src/codegen.zig` `EXPAND MUTEX_NEW_I32`). Other inner
+    /// types stay on the SA-text fallback path.
+    fn genMutexNewCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        const target = call.associated_target orelse return null;
+        if (!std.mem.eql(u8, target, "Mutex") or !std.mem.eql(u8, call.func_name, "new")) return null;
+        if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+        const arg_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
+        if (!lowering_rules.isI32LikeType(arg_ty)) return Error.UnsupportedSabDirectFeature;
+        const value_reg = try self.genAssociatedValueArg(target, call.func_name, @constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/sync/mutex.sa", "MUTEX_NEW_I32", &.{
+            self.symbols.items[dst],
+            self.symbols.items[value_reg],
+        });
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        return dst;
+    }
+
+    /// Direct-SAB `mutex.lock()`, mirroring the SA-text backend: spin on the
+    /// lock word, derive the data-pointer guard (`ptr_add mutex, 8`), wrap it
+    /// in `Result::Ok`, and track guard -> mutex so releasing the guard emits
+    /// `MUTEX_UNLOCK`. The receiver is already the mutex allocation pointer:
+    /// `genDeref` resolves `(*arc)` through `ARC_GET` before we run.
+    fn genMutexLockCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.associated_target != null) return null;
+        if (!std.mem.eql(u8, call.func_name, "lock")) return null;
+        if (call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.mutexInnerType(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        try self.ensureStdDeps("sa_std/sync/mutex.sa", &.{"__mutex_lock_spin"});
+        try self.emitStdMacroFragment("sa_std/sync/mutex.sa", "MUTEX_LOCK", &.{
+            self.symbols.items[recv_reg],
+        });
+        const guard_reg = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(guard_reg, recv_reg, .{ .imm_u64 = 8 });
+        const result_reg = try self.intern(try self.newTmp());
+        try self.recordReg(result_reg);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[guard_reg],
+        });
+        try self.mutex_guard_values.put(result_reg, .{ .mutex_reg = recv_reg });
+        try self.emitRelease(guard_reg);
+        return result_reg;
     }
 
     fn genRefCellBorrowCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
@@ -12725,12 +12836,14 @@ pub const Codegen = struct {
         if (try self.genVecPopCall(call)) |reg| return reg;
         if (try self.genVecPushCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
+        if (try self.genMutexLockCall(expr, call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
         if (try self.genStructConstructorCall(expr, call)) |reg| return reg;
         if (try self.genIterSumCall(call)) |reg| return reg;
         if (try self.genArrayFillCall(call)) |reg| return reg;
         if (try self.genPtrBuiltinCall(expr, call)) |reg| return reg;
         if (try self.genPointerMethodCall(call)) |reg| return reg;
+        if (try self.genMutexNewCall(expr, call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const lowering = lowering_rules.planStaticCallLowering(self.tc, expr, call, self.tc.expr_types.get(expr)) orelse {
             self.traceUnsupported("static call {s} has no lowering plan\n", .{call.func_name});

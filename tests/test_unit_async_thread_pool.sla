@@ -100,6 +100,38 @@ fn pool_two_threads_total() -> i32 {
     return pool_get(c1) + pool_get(c2) + local;
 }
 
+// Four async tasks on four threads concurrently; main drives its own too.
+fn pool_four_threads_total() -> i32 {
+    let c1: Arc<Mutex<i32> > = Arc::new(Mutex::new(0));
+    let c2: Arc<Mutex<i32> > = Arc::new(Mutex::new(0));
+    let c3: Arc<Mutex<i32> > = Arc::new(Mutex::new(0));
+    let c4: Arc<Mutex<i32> > = Arc::new(Mutex::new(0));
+
+    let fa = pool_job(1);
+    let fb = pool_job(2);
+    let fc = pool_job(4);
+    let fd = pool_job(5);
+
+    let w_c1 = c1.clone();
+    let h1 = thread::spawn(^|| pool_worker(fa, w_c1));
+    let w_c2 = c2.clone();
+    let h2 = thread::spawn(^|| pool_worker(fb, w_c2));
+    let w_c3 = c3.clone();
+    let h3 = thread::spawn(^|| pool_worker(fc, w_c3));
+    let w_c4 = c4.clone();
+    let h4 = thread::spawn(^|| pool_worker(fd, w_c4));
+
+    // main participates: drive an inline future on this thread
+    let local = pool_block_on(pool_job(3));
+
+    h1.join().unwrap();
+    h2.join().unwrap();
+    h3.join().unwrap();
+    h4.join().unwrap();
+
+    return pool_get(c1) + pool_get(c2) + pool_get(c3) + pool_get(c4) + local;
+}
+
 @test "async future moves across thread and resumes"() {
     if pool_single_thread_result() != 30 {
         panic(9610);
@@ -109,5 +141,11 @@ fn pool_two_threads_total() -> i32 {
 @test "async task pool two threads plus main"() {
     if pool_two_threads_total() != 10 + 20 + 30 {
         panic(9611);
+    };
+}
+
+@test "async task pool four threads plus main"() {
+    if pool_four_threads_total() != 10 + 20 + 40 + 50 + 30 {
+        panic(9612);
     };
 }

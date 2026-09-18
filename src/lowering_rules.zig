@@ -2207,6 +2207,15 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
     return null;
 }
 
+// Result kind of a single-output imported macro used as an expression.
+// Prefers the kind derived from the macro body at index time
+// (ImportedMacro.expression_result_kind); the hardcoded name table above is
+// only a fallback for macros whose body gave no usable `%out` assignment.
+pub fn importedMacroExpressionResultKindForMacro(macro: type_checker.ImportedMacro, macro_name: []const u8) ?ImportedMacroExpressionResultKind {
+    if (macro.expression_result_kind) |kind| return kind;
+    return importedMacroExpressionResultKind(macro_name);
+}
+
 pub fn planImportedMacroCall(tc: *type_checker.TypeChecker, call: ast.CallExpr) ?ImportedMacroCallPlan {
     if (call.associated_target != null) return null;
     const macro = tc.imported_macros.get(call.func_name) orelse return null;

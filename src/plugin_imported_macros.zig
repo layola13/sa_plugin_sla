@@ -1,5 +1,6 @@
 const std = @import("std");
 const type_checker_mod = @import("type_checker.zig");
+const lowering_rules = @import("lowering_rules.zig");
 const source_expand = @import("source_expand.zig");
 
 pub fn expandedSourceMayContainImportedMacros(expanded_source: []const u8) bool {
@@ -119,11 +120,69 @@ pub fn appendExpandedImportedMacroDirectCallees(
     for (expanded.direct_callees) |callee| try appendUniqueDirectCallee(callees, callee);
 }
 
+// --- Bug 2 fix: derive a single-output imported macro's expression result
+// type from its body ---
+//
+// When a user-defined single-output imported macro (e.g. J_GET) is used as an
+// expression, the type checker needs a result type. Instead of growing the
+// hardcoded name table in lowering_rules.importedMacroExpressionResultKind,
+// we derive it here at index time from the macro body's `%out` assignment:
+//   %out_node = load __slot_%out_node+0 as ptr   -> .raw_pointer
+//   %out_n    = load __slot_%out_n+0 as u64      -> .u64
+//   %out_p    = stack_alloc 8                    -> .raw_pointer
+
+fn saTextCastTypeNameToExpressionResultKind(type_name: []const u8) ?lowering_rules.ImportedMacroExpressionResultKind {
+    if (std.mem.eql(u8, type_name, "ptr")) return .raw_pointer;
+    if (std.mem.eql(u8, type_name, "bool")) return .boolean;
+    if (std.mem.eql(u8, type_name, "u8")) return .u8;
+    if (std.mem.eql(u8, type_name, "u32")) return .u32;
+    if (std.mem.eql(u8, type_name, "u64")) return .u64;
+    if (std.mem.eql(u8, type_name, "i32")) return .i32;
+    if (std.mem.eql(u8, type_name, "i64")) return .i64;
+    if (std.mem.eql(u8, type_name, "f64")) return .f64;
+    return null;
+}
+
+fn parseImportedMacroExpressionResultKind(s: []const u8) ?lowering_rules.ImportedMacroExpressionResultKind {
+    inline for (@typeInfo(lowering_rules.ImportedMacroExpressionResultKind).@"enum".fields) |field| {
+        if (std.mem.eql(u8, s, field.name)) return @field(lowering_rules.ImportedMacroExpressionResultKind, field.name);
+    }
+    return null;
+}
+
+fn stripSaTextLineComment(line: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, line, "//")) |idx| return std.mem.trimRight(u8, line[0..idx], " \t");
+    return line;
+}
+
+fn deriveImportedMacroExpressionResultKind(
+    out_param_name: []const u8,
+    body_line: []const u8,
+) ?lowering_rules.ImportedMacroExpressionResultKind {
+    // Expect a plain assignment to the single `%out` param: "%<name> = <rhs>".
+    const line = std.mem.trim(u8, stripSaTextLineComment(body_line), " \t\r");
+    if (line.len < out_param_name.len + 2 or line[0] != '%') return null;
+    if (!std.mem.eql(u8, line[1 .. 1 + out_param_name.len], out_param_name)) return null;
+    var rest = std.mem.trimLeft(u8, line[1 + out_param_name.len ..], " \t");
+    if (rest.len < 2 or rest[0] != '=' or rest[1] == '=') return null;
+    rest = std.mem.trimLeft(u8, rest[1..], " \t");
+    if (rest.len == 0) return null;
+    if (std.mem.startsWith(u8, rest, "stack_alloc")) return .raw_pointer;
+    // A trailing `as <ty>` cast on the RHS pins the result type.
+    if (std.mem.lastIndexOf(u8, rest, " as ")) |idx| {
+        const type_name = std.mem.trim(u8, rest[idx + " as ".len ..], " \t\r");
+        return saTextCastTypeNameToExpressionResultKind(type_name);
+    }
+    return null;
+}
+
 fn macroIndexCachePath(allocator: std.mem.Allocator, import_path: []const u8, expanded_source: []const u8) ![]u8 {
     var hasher = std.hash.Wyhash.init(0);
     hasher.update(import_path);
     hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
     hasher.update(expanded_source);
+    // Cache format v2: records carry the derived expression result kind.
+    hasher.update("idx-format-v2");
     const digest = hasher.final();
     const stem = std.fs.path.basename(import_path);
     return try std.fmt.allocPrint(allocator, ".sla-cache/macros/{s}-{x}.idx", .{ stem, digest });
@@ -147,10 +206,12 @@ fn tryLoadImportedMacrosFromCache(
         const borrow_s = parts.next() orelse continue;
         const address_s = parts.next() orelse continue;
         const callees_s = parts.next() orelse "";
+        const kind_s = parts.next() orelse "";
         const arity = std.fmt.parseInt(usize, arity_s, 10) catch continue;
         const leading = std.fmt.parseInt(usize, leading_s, 10) catch continue;
         const borrowed = std.fmt.parseInt(u64, borrow_s, 10) catch continue;
         const address = std.fmt.parseInt(u64, address_s, 10) catch continue;
+        const expression_result_kind = parseImportedMacroExpressionResultKind(kind_s);
         var callee_list = std.ArrayList([]const u8).init(allocator);
         defer callee_list.deinit();
         if (callees_s.len != 0) {
@@ -161,7 +222,7 @@ fn tryLoadImportedMacrosFromCache(
             }
         }
         const owned_import = if (import_path) |path| try allocator.dupe(u8, path) else null;
-        try tc.registerImportedMacro(try allocator.dupe(u8, name), arity, leading, owned_import, borrowed, address, try callee_list.toOwnedSlice());
+        try tc.registerImportedMacro(try allocator.dupe(u8, name), arity, leading, owned_import, borrowed, address, try callee_list.toOwnedSlice(), expression_result_kind);
     }
     return true;
 }
@@ -226,6 +287,10 @@ pub fn loadImportedMacrosFromExpandedSource(
         var address_slot_arg_mask: u64 = 0;
         var direct_callees = std.ArrayList([]const u8).init(allocator);
         defer direct_callees.deinit();
+        // Bug 2 fix: for a single leading-output macro, derive the expression
+        // result type from the `%out` param's assignment in the body.
+        const single_out_param: ?[]const u8 = if (leading_outputs == 1 and param_names.items.len > 0) param_names.items[0] else null;
+        var expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind = null;
         while (lines.next()) |body_raw_line| {
             const body_line = std.mem.trim(u8, body_raw_line, " \t\r");
             if (std.mem.startsWith(u8, body_line, "[END_MACRO]")) break;
@@ -234,20 +299,26 @@ pub fn loadImportedMacrosFromExpandedSource(
             markExpandedImportedMacroParamMasks(tc, &borrowed_arg_mask, &address_slot_arg_mask, param_names.items, body_line);
             try collectDirectSlaMacroCallees(allocator, &direct_callees, body_line);
             try appendExpandedImportedMacroDirectCallees(tc, &direct_callees, body_line);
+            if (single_out_param) |out_name| {
+                if (expression_result_kind == null) {
+                    expression_result_kind = deriveImportedMacroExpressionResultKind(out_name, body_line);
+                }
+            }
         }
 
         const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
         const owned_callees = try direct_callees.toOwnedSlice();
-        // Cache line: name|arity|leading|borrow|address|callee1,callee2
+        // Cache line: name|arity|leading|borrow|address|callee1,callee2|result_kind
         var callee_joined = std.ArrayList(u8).init(allocator);
         defer callee_joined.deinit();
         for (owned_callees, 0..) |callee, idx| {
             if (idx != 0) try callee_joined.append(',');
             try callee_joined.appendSlice(callee);
         }
-        const record = try std.fmt.allocPrint(allocator, "{s}|{d}|{d}|{d}|{d}|{s}", .{ name, arity, leading_outputs, borrowed_arg_mask, address_slot_arg_mask, callee_joined.items });
+        const kind_name = if (expression_result_kind) |kind| @tagName(kind) else "";
+        const record = try std.fmt.allocPrint(allocator, "{s}|{d}|{d}|{d}|{d}|{s}|{s}", .{ name, arity, leading_outputs, borrowed_arg_mask, address_slot_arg_mask, callee_joined.items, kind_name });
         try cache_records.append(record);
-        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, owned_callees);
+        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, owned_callees, expression_result_kind);
     }
     if (import_path) |path| {
         const cache_path = macroIndexCachePath(allocator, path, expanded_source) catch null;

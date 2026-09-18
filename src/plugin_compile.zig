@@ -595,7 +595,7 @@ pub fn compileSlaToSaString(
 /// keep them alive across its tail codegen, which reads back from them). On any
 /// front-end failure the diagnostic is printed and `null` is returned. On success
 /// the type-checked, primary-decl-filtered program is returned.
-fn runSlaFrontend(
+pub fn runSlaFrontend(
     allocator: std.mem.Allocator,
     file: []const u8,
     mono: *monomorphizer_mod.Monomorphizer,

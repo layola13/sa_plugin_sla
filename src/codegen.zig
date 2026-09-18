@@ -2980,11 +2980,27 @@ pub const Codegen = struct {
     fn escapedStringByteLen(value: []const u8) usize {
         var len: usize = 0;
         var i: usize = 0;
-        while (i < value.len) : (i += 1) {
-            if (value[i] == '\\' and i + 1 < value.len) {
+        while (i < value.len) {
+            if (value[i] != '\\') {
+                len += 1;
                 i += 1;
+                continue;
             }
+            if (i + 1 >= value.len) {
+                // Trailing backslash: nothing to decode; count it literally.
+                len += 1;
+                i += 1;
+                continue;
+            }
+            if (value[i + 1] == 'x' and i + 3 < value.len) {
+                // \xHH: 4 source chars decode to 1 byte.
+                len += 1;
+                i += 4;
+                continue;
+            }
+            // Any other 2-char escape (\\, \", \n, \r, \t, \0): 1 byte.
             len += 1;
+            i += 2;
         }
         return len;
     }
@@ -3276,7 +3292,7 @@ pub const Codegen = struct {
                 }
                 if (self.tc.imported_macros.get(call.func_name)) |macro| {
                     if (macro.leading_outputs == 1 and call.args.len + 1 == macro.arity) {
-                        if (lowering_rules.importedMacroExpressionResultKind(call.func_name)) |kind| {
+                        if (lowering_rules.importedMacroExpressionResultKindForMacro(macro, call.func_name)) |kind| {
                             break :blk self.makeImportedMacroExpressionResultType(kind) catch null;
                         }
                     }
@@ -9596,7 +9612,14 @@ pub const Codegen = struct {
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!LoweredCallArg {
         if (try self.genImportedMacroFnObjectArg(arg, hoisted_allocs)) |fn_obj| return fn_obj;
-        const arg_ty = try self.importedMacroArgType(arg);
+        // Backstop diagnostic (Bug 2): a bare CodegenError here used to be the
+        // only signal when an imported macro argument's type could not be
+        // resolved. Name the macro and the argument position so the failure
+        // is actionable.
+        const arg_ty = self.importedMacroArgType(arg) catch |err| {
+            std.debug.print("sla: cannot resolve type of argument {d} to imported macro `{s}`\n", .{ call_arg_index, plan.macro_name });
+            return err;
+        };
         if (plan.planArgValueBypassAction(call_arg_index, arg, arg_ty)) |action| {
             if (action.passesValue() or action.passesRawPointerValue()) {
                 const reg = try self.genExpr(arg, hoisted_allocs);
@@ -15454,4 +15477,19 @@ test "set code generation" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND BTREE_SET_CONTAINS") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND SET_LEN") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND BTREE_SET_LEN") != null);
+}
+
+test "escapedStringByteLen counts hex escapes as one byte" {
+    // \xHH is 4 source chars decoding to 1 byte (Bug 1 regression).
+    try std.testing.expectEqual(@as(usize, 3), Codegen.escapedStringByteLen("A\\x41B"));
+    try std.testing.expectEqual(@as(usize, 3), Codegen.escapedStringByteLen("\\x41\\x42\\x43"));
+    try std.testing.expectEqual(@as(usize, 6), Codegen.escapedStringByteLen("ab\\x41\\x42cd"));
+    // Other 2-char escapes stay 1 byte each.
+    try std.testing.expectEqual(@as(usize, 3), Codegen.escapedStringByteLen("a\\nb"));
+    try std.testing.expectEqual(@as(usize, 3), Codegen.escapedStringByteLen("a\\\\b"));
+    try std.testing.expectEqual(@as(usize, 3), Codegen.escapedStringByteLen("a\\tb"));
+    try std.testing.expectEqual(@as(usize, 3), Codegen.escapedStringByteLen("\\x41\\nB"));
+    // Long literals from the original investigation report.
+    try std.testing.expectEqual(@as(usize, 210), Codegen.escapedStringByteLen("#def MAX_ROWS = 1024\\n#def COL_ID_STRIDE = 8 // u64\\n#def COL_CREATED_MS_STRIDE = 8 // u64\\n#def COL_UPDATED_MS_STRIDE = 8 // u64\\n#def COL_MSG_COUNT_STRIDE = 8 // u64\\n#def COL_TITLE_BLOB_STRIDE = 8 // blob_handle\\n"));
+    try std.testing.expectEqual(@as(usize, 168), Codegen.escapedStringByteLen("#def MAX_ROWS = 65536\\n#def COL_SESSION_ID_STRIDE = 8 // u64\\n#def COL_SEQ_STRIDE = 8 // u64\\n#def COL_ROLE_STRIDE = 8 // u64\\n#def COL_BODY_BLOB_STRIDE = 8 // blob_handle\\n"));
 }

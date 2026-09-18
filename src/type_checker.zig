@@ -29,6 +29,11 @@ pub const ImportedMacro = struct {
     borrowed_arg_mask: u64 = 0,
     address_slot_arg_mask: u64 = 0,
     direct_callees: []const []const u8 = &.{},
+    // Result type of the single leading `%out` param when the macro is used as
+    // an expression, derived from the macro body (`%out_x = ... as <ty>`) at
+    // index time. Null when it could not be derived; callers fall back to the
+    // hardcoded name table in lowering_rules.
+    expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind = null,
 };
 
 const MacroConsumptionKey = struct {
@@ -2064,7 +2069,7 @@ pub const TypeChecker = struct {
         }
     }
 
-    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, direct_callees: []const []const u8) !void {
+    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, direct_callees: []const []const u8, expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind) !void {
         try self.imported_macros.put(name, .{
             .arity = arity,
             .leading_outputs = leading_outputs,
@@ -2072,6 +2077,7 @@ pub const TypeChecker = struct {
             .borrowed_arg_mask = borrowed_arg_mask,
             .address_slot_arg_mask = address_slot_arg_mask,
             .direct_callees = direct_callees,
+            .expression_result_kind = expression_result_kind,
         });
     }
 
@@ -5025,7 +5031,7 @@ pub const TypeChecker = struct {
                         return ret;
                     }
                     if (lowering_rules.importedMacroUsesExpressionOutput(macro, call.args.len)) {
-                        if (lowering_rules.importedMacroExpressionResultKind(call.func_name)) |kind| {
+                        if (lowering_rules.importedMacroExpressionResultKindForMacro(macro, call.func_name)) |kind| {
                             return try self.makeImportedMacroExpressionResultType(kind);
                         }
                         return try self.makeInferType();

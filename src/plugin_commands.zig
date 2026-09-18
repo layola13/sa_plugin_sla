@@ -414,96 +414,14 @@ pub fn runSlaCommandImpl(
 
         const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
         const profile = plugin_compile_options.slaProfileEnabled(allocator);
-        var stage_start = std.time.nanoTimestamp();
 
-        const content = std.fs.cwd().readFileAlloc(allocator, file, 10 * 1024 * 1024) catch |err| {
-            try stderr.print("Error: failed to read file {s}: {}\n", .{ file, err });
-            return 1;
-        };
-        plugin_compile_options.slaProfileStage(stderr, profile, "check read source", stage_start);
-
-        stage_start = std.time.nanoTimestamp();
-        const expanded_content = source_expand.expandForModulePath(allocator, file, content) catch |err| {
-            try stderr.print("Macro Expansion Error: failed to expand tuple templates in {s}: {}\n", .{ file, err });
-            return 1;
-        };
-        plugin_compile_options.slaProfileStage(stderr, profile, "check source expand", stage_start);
-
-        stage_start = std.time.nanoTimestamp();
-        const sla_base_dir = std.fs.path.dirname(file) orelse ".";
-        var p = parser_mod.Parser.initWithDirAndOptions(allocator, expanded_content, sla_base_dir, .{
-            .parse_test_bodies = false,
-        });
-        const prog = p.parseProgram() catch |err| {
-            try p.printDiagnostic(stderr, file, err);
-            return 1;
-        };
-        plugin_compile_options.slaProfileStage(stderr, profile, "check parse", stage_start);
-
-        stage_start = std.time.nanoTimestamp();
-        var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-        var import_modules = SlaModuleTable.initWithParserOptions(allocator, .{
-            .parse_function_bodies = false,
-            .parse_test_bodies = false,
-            .prescan_sla_import_types = false,
-        });
-        // Check include_all never materializes imported bodies; skip span capture.
-        import_modules.capture_body_spans = false;
-        defer import_modules.deinit();
-        var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
-        defer root_import_groups.deinit();
-        var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
-        defer contract_imports.deinit();
-        const expanded_prog = expandSlaImportsWithModuleTable(allocator, prog, file, &primary_decls, .{
-            .imported_bodies_decl_only = true,
-            .include_all_imported_decls = true,
-        }, &import_modules, &root_import_groups, &contract_imports) catch |err| {
-            try stderr.print("Import Error: failed to expand @import SLA sources: {}\n", .{err});
-            return 1;
-        };
-        plugin_compile_options.slaProfileStage(stderr, profile, "check import expand", stage_start);
-
-        stage_start = std.time.nanoTimestamp();
         var mono = monomorphizer_mod.Monomorphizer.init(allocator);
         defer mono.deinit();
-        var specialized_primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-        const specialized_prog = mono.monomorphize(expanded_prog, &primary_decls, &specialized_primary_decls) catch |err| {
-            if (err == error.TemplateNotFound) {
-                if (mono.missingTemplateName()) |name| {
-                    try stderr.print("Monomorphization Error: failed to specialize generics: {}: {s}\n", .{ err, name });
-                } else {
-                    try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
-                }
-            } else {
-                try stderr.print("Monomorphization Error: failed to specialize generics: {}\n", .{err});
-            }
-            return 1;
-        };
-        plugin_compile_options.slaProfileStage(stderr, profile, "check monomorphize", stage_start);
-
-        stage_start = std.time.nanoTimestamp();
         var tc = type_checker_mod.TypeChecker.init(allocator);
         defer tc.deinit();
-
-        loadImportedContractsFromResolvedImports(&tc, allocator, contract_imports.items) catch |err| {
-            try stderr.print("Import Error: failed to load @import contracts: {}\n", .{err});
-            return 1;
-        };
-        plugin_compile_options.slaProfileStage(stderr, profile, "check load contracts", stage_start);
-
-        stage_start = std.time.nanoTimestamp();
-        registerImportedFunctionAliasesFromResolvedImports(&tc, allocator, root_import_groups.items, &import_modules) catch |err| {
-            try stderr.print("Import Error: failed to register @import function aliases: {}\n", .{err});
-            return 1;
-        };
-        plugin_compile_options.slaProfileStage(stderr, profile, "check import aliases", stage_start);
-
-        stage_start = std.time.nanoTimestamp();
-        tc.checkProgram(specialized_prog) catch |err| {
-            try stderr.print("Type Check Error: failed to verify types: {s} ({})\n", .{ tc.last_error, err });
-            return 1;
-        };
-        plugin_compile_options.slaProfileStage(stderr, profile, "check type check", stage_start);
+        // Shared front-end: check verifies exactly what build-exe verifies up to
+        // codegen. Check intentionally stops here and never runs the codegen tail.
+        _ = (try plugin_compile.runSlaFrontend(allocator, file, &mono, &tc, buildExeCompileOptions(), stderr, profile)) orelse return 1;
 
         try stdout.print("Sla Compiler: Successfully parsed and verified syntax and types of {s}.\n", .{file});
         return 0;

@@ -400,7 +400,7 @@ test "sla check reports redeclared symbol names" {
     try expectSlaCheckSyntaxDiagnostic("tests/test_error_bare_overload.sla", "found 'overload'");
 }
 
-test "sla check uses imported signatures without checking imported function bodies" {
+test "sla check uses imported signatures now checks imported function bodies" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -433,13 +433,13 @@ test "sla check uses imported signatures without checking imported function bodi
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
     const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
 
-    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
-    try std.testing.expectEqual(@as(?u8, 0), code);
-    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
-    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+    // New contract (Bug 3 fix): check runs the same front-end as build-exe,
+    // so a reachable bad imported body must fail check too.
+    try std.testing.expect(code != @as(?u8, 0));
+    try std.testing.expect(stderr_buf.items.len > 0);
 }
 
-test "sla check skips parsing imported function bodies" {
+test "sla check now parses imported function bodies" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -472,13 +472,13 @@ test "sla check skips parsing imported function bodies" {
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
     const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
 
-    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
-    try std.testing.expectEqual(@as(?u8, 0), code);
-    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
-    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+    // New contract (Bug 3 fix): check runs the same front-end as build-exe,
+    // so a reachable bad imported body must fail check too.
+    try std.testing.expect(code != @as(?u8, 0));
+    try std.testing.expect(stderr_buf.items.len > 0);
 }
 
-test "sla check uses imported method signatures without checking imported method bodies" {
+test "sla check uses imported method signatures now checks imported method bodies" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -518,13 +518,13 @@ test "sla check uses imported method signatures without checking imported method
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
     const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
 
-    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
-    try std.testing.expectEqual(@as(?u8, 0), code);
-    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
-    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+    // New contract (Bug 3 fix): check runs the same front-end as build-exe,
+    // so a reachable bad imported body must fail check too.
+    try std.testing.expect(code != @as(?u8, 0));
+    try std.testing.expect(stderr_buf.items.len > 0);
 }
 
-test "sla check uses imported trait method signatures without checking imported trait bodies" {
+test "sla check uses imported trait method signatures now checks imported trait bodies" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -568,13 +568,13 @@ test "sla check uses imported trait method signatures without checking imported 
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
     const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
 
-    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
-    try std.testing.expectEqual(@as(?u8, 0), code);
-    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
-    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+    // New contract (Bug 3 fix): check runs the same front-end as build-exe,
+    // so a reachable bad imported body must fail check too.
+    try std.testing.expect(code != @as(?u8, 0));
+    try std.testing.expect(stderr_buf.items.len > 0);
 }
 
-test "sla check uses imported trait associated signatures without checking imported trait bodies" {
+test "sla check uses imported trait associated signatures now checks imported trait bodies" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -618,10 +618,10 @@ test "sla check uses imported trait associated signatures without checking impor
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
     const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
 
-    if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
-    try std.testing.expectEqual(@as(?u8, 0), code);
-    try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
-    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+    // New contract (Bug 3 fix): check runs the same front-end as build-exe,
+    // so a reachable bad imported body must fail check too.
+    try std.testing.expect(code != @as(?u8, 0));
+    try std.testing.expect(stderr_buf.items.len > 0);
 }
 
 test "sla build rewrites sla imports relative to final output path" {

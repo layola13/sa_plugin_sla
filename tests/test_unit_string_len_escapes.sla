@@ -1,0 +1,79 @@
+// Regression tests for escapedStringByteLen (src/codegen.zig, SA-text path).
+// \xHH hex escapes must count as 1 decoded byte, not 3.
+// Run with: sa sla test tests/test_unit_string_len_escapes.sla
+
+@import "sa_std/string.sa"
+
+// ─── Bug 1: \xHH counted as 3 bytes instead of 1 ─────────────────────
+
+@test "STR_LEN hex escape counts as one byte"() {
+    let got = STR_LEN("A\x41B");
+    let ok = got == 3;
+    if ok { } else { panic(1); };
+}
+
+@test "STR_LEN multiple hex escapes"() {
+    let got = STR_LEN("\x41\x42\x43");
+    let ok = got == 3;
+    if ok { } else { panic(1); };
+}
+
+@test "STR_LEN hex escape mixed with plain text"() {
+    let got = STR_LEN("ab\x41\x42cd");
+    let ok = got == 6;
+    if ok { } else { panic(1); };
+}
+
+@test "STR_LEN hex escape stored in variable"() {
+    let s = "A\x41B";
+    let got = STR_LEN(s);
+    let ok = got == 3;
+    if ok { } else { panic(1); };
+}
+
+// ─── Other 2-char escapes must stay 1 byte ────────────────────────────
+
+@test "STR_LEN newline escape is one byte"() {
+    let got = STR_LEN("a\nb");
+    let ok = got == 3;
+    if ok { } else { panic(1); };
+}
+
+@test "STR_LEN backslash escape is one byte"() {
+    let got = STR_LEN("a\\b");
+    let ok = got == 3;
+    if ok { } else { panic(1); };
+}
+
+@test "STR_LEN tab escape is one byte"() {
+    let got = STR_LEN("a\tb");
+    let ok = got == 3;
+    if ok { } else { panic(1); };
+}
+
+@test "STR_LEN hex escape plus newline escape"() {
+    let got = STR_LEN("\x41\nB");
+    let ok = got == 3;
+    if ok { } else { panic(1); };
+}
+
+// ─── Long literals with \n escapes (investigation report 210/168) ─────
+
+@test "STR_LEN long literal with newline escapes is 210"() {
+    let got = STR_LEN("#def MAX_ROWS = 1024\n#def COL_ID_STRIDE = 8 // u64\n#def COL_CREATED_MS_STRIDE = 8 // u64\n#def COL_UPDATED_MS_STRIDE = 8 // u64\n#def COL_MSG_COUNT_STRIDE = 8 // u64\n#def COL_TITLE_BLOB_STRIDE = 8 // blob_handle\n");
+    let ok = got == 210;
+    if ok { } else { panic(1); };
+}
+
+@test "STR_LEN long literal with newline escapes is 168"() {
+    let got = STR_LEN("#def MAX_ROWS = 65536\n#def COL_SESSION_ID_STRIDE = 8 // u64\n#def COL_SEQ_STRIDE = 8 // u64\n#def COL_ROLE_STRIDE = 8 // u64\n#def COL_BODY_BLOB_STRIDE = 8 // blob_handle\n");
+    let ok = got == 168;
+    if ok { } else { panic(1); };
+}
+
+@test "STR_LEN long literal stored in variable is 210"() {
+    let s = "#def MAX_ROWS = 1024\n#def COL_ID_STRIDE = 8 // u64\n#def COL_CREATED_MS_STRIDE = 8 // u64\n#def COL_UPDATED_MS_STRIDE = 8 // u64\n#def COL_MSG_COUNT_STRIDE = 8 // u64\n#def COL_TITLE_BLOB_STRIDE = 8 // blob_handle\n";
+    let got = STR_LEN(s);
+    let ok = got == 210;
+    if ok { } else { panic(1); };
+}

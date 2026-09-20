@@ -10496,6 +10496,34 @@ pub const Codegen = struct {
             return result;
         }
 
+        // Scalar sub: scalar - struct (unary negation pattern: 0 - struct).
+        // result.field[i] = scalar - struct.field[i].
+        if (bin.op == .sub) {
+            const struct_is_left = left_struct != null;
+            // Only handle scalar - struct (not struct - scalar, which is different).
+            if (!struct_is_left) {
+                const scalar_ty = left_ty;
+                const struct_ty = right_ty;
+                if (!isNumericType(scalar_ty)) return Error.UnsupportedSabDirectFeature;
+                const result = try self.intern(try self.newTmp());
+                try self.emitAlloc(result, structSize(struct_decl));
+                const struct_reg = try self.genExpr(bin.right);
+                const scalar_reg = try self.genExpr(bin.left);
+                for (struct_decl.fields) |field| {
+                    if (!isNumericType(field.ty)) return Error.UnsupportedSabDirectFeature;
+                    const layout = try self.fieldLayout(struct_ty, field.name);
+                    const fld = try self.intern(try self.newTmp());
+                    const value = try self.intern(try self.newTmp());
+                    try self.emitLoad(fld, struct_reg, layout.offset, layout.ty);
+                    try self.emitOp(value, .sub, .{ .reg = scalar_reg }, .{ .reg = fld });
+                    try self.emitStore(result, layout.offset, value, layout.ty);
+                    try self.releaseNonLocalTemps(&.{ fld, value });
+                }
+                try self.releaseNonLocalTemps(&.{ struct_reg, scalar_reg });
+                return result;
+            }
+        }
+
         return Error.UnsupportedSabDirectFeature;
     }
 

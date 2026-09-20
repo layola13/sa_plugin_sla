@@ -15269,8 +15269,12 @@ pub const Codegen = struct {
     fn genFor(self: *Codegen, f: ast.ForStmt) anyerror!void {
         // `for item in <iterable>` (no numeric range end) lowers through the
         // iterable protocol (`iter_len`/`iter_at`), mirroring SA-text `genFor`.
+        // Arrays use a direct index fast path (no protocol methods needed).
         const end_expr = f.end orelse {
             const iterable_ty = self.tc.expr_types.get(f.start) orelse return Error.MissingType;
+            if (lowering_rules.arrayType(iterable_ty)) |arr| {
+                return try self.genForOverArray(f, arr);
+            }
             return try self.genForOverProtocol(f, iterable_ty);
         };
         const old_locals = self.locals.items.len;
@@ -15353,6 +15357,110 @@ pub const Codegen = struct {
 
         try self.emitLabel(exit_label);
         if (!self.isLocalReg(end_reg)) try self.emitRelease(end_reg);
+    }
+
+    /// `for item in <array>` fast path: direct index into the array storage,
+    /// mirroring SA-text `genFor` array handling. No `iter_len`/`iter_at`
+    /// protocol methods required. The loop is a counted index from 0 to
+    /// arr.len; each iteration computes `byte_offset = index * elem_size`,
+    /// then `item = load (ptr_add arr_ptr, byte_offset)`.
+    fn genForOverArray(self: *Codegen, f: ast.ForStmt, arr: ast.ArrayType) anyerror!void {
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
+        const loop_control = lowering_rules.planLoopControl(f.body);
+
+        // Array value (pointer to first element).
+        const arr_reg = try self.genExpr(f.start);
+        const elem_ty = arr.elem;
+        const elem_size = lowering_rules.abiTypeSize(elem_ty);
+        const elem_prim = try storagePrimType(elem_ty);
+
+        const counter_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(counter_slot, 8);
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(counter_slot, 0, zero, .i64);
+        try self.emitRelease(zero);
+
+        const head_label = try self.newLabel("L_FORA_HEAD");
+        const body_label = try self.newLabel("L_FORA_BODY");
+        const cont_label = try self.newLabel("L_FORA_CONTINUE");
+        const cond_false_label = try self.newLabel("L_FORA_COND_FALSE");
+        const break_cleanup_label = try self.newLabel("L_FORA_BREAK_CLEANUP");
+        const exit_label = try self.newLabel("L_FORA_EXIT");
+
+        try self.emitJmp(head_label);
+        try self.emitLabel(head_label);
+        const index_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(index_reg, counter_slot, 0, .i64);
+        const cond = try self.intern(try self.newTmp());
+        try self.emitOp(cond, .slt, .{ .reg = index_reg }, .{ .imm_i64 = @intCast(arr.len) });
+
+        var br = self.makeInst(.br);
+        br.operands[0] = .{ .reg = cond };
+        br.operands[1] = .{ .label = try self.intern(body_label) };
+        br.operands[2] = .{ .label = try self.intern(body_label) };
+        br.operands[3] = .{ .label = try self.intern(cond_false_label) };
+        try self.appendInst(br);
+
+        const body_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        var pre_refcell_values = try self.cloneRefCellBorrowValues();
+        defer self.deinitRefCellBorrowValueSnapshot(&pre_refcell_values);
+        var pre_refcell_temps = try self.cloneBorrowAddressTemps();
+        defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
+
+        try self.emitLabel(body_label);
+        try self.emitBranchRelease(cond);
+        // byte_offset = index * elem_size; elem_ptr = ptr_add arr, byte_offset; item = load elem_ptr
+        const offset_reg = try self.intern(try self.newTmp());
+        if (elem_size == 1) {
+            try self.emitOp(offset_reg, .add, .{ .reg = index_reg }, .{ .imm_i64 = 0 });
+        } else {
+            try self.emitOp(offset_reg, .mul, .{ .reg = index_reg }, .{ .imm_i64 = @intCast(elem_size) });
+        }
+        const elem_ptr_reg = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr_reg, arr_reg, .{ .reg = offset_reg });
+        const item_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(item_reg, elem_ptr_reg, 0, elem_prim);
+        try self.emitRelease(offset_reg);
+        try self.emitRelease(elem_ptr_reg);
+        try self.pushTypedLocal(f.var_name, item_reg, false, elem_ty);
+        try self.loop_continue_labels.append(cont_label);
+        try self.loop_break_labels.append(if (loop_control.has_break) break_cleanup_label else exit_label);
+        try self.genBlock(f.body);
+        _ = self.loop_continue_labels.pop();
+        _ = self.loop_break_labels.pop();
+        if (!self.lastIsTerminator()) {
+            try self.releaseLocalsFrom(body_locals_len, null);
+            try self.emitJmp(cont_label);
+        }
+
+        self.popLocalsTo(body_locals_len);
+        try self.restoreReleased(&pre_released);
+        if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
+
+        try self.emitLabel(cont_label);
+        const next = try self.intern(try self.newTmp());
+        try self.emitOp(next, .add, .{ .reg = index_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(counter_slot, 0, next, .i64);
+        try self.emitRelease(next);
+        try self.emitBranchRelease(index_reg);
+        try self.emitJmp(head_label);
+
+        if (loop_control.has_break) {
+            try self.emitLabel(break_cleanup_label);
+            try self.emitBranchRelease(index_reg);
+            try self.emitJmp(exit_label);
+        }
+
+        try self.emitLabel(cond_false_label);
+        try self.emitBranchRelease(cond);
+        try self.emitBranchRelease(index_reg);
+        try self.emitLabel(exit_label);
+        // Release the array register if not local.
+        if (!self.isLocalReg(arr_reg)) try self.emitRelease(arr_reg);
     }
 
     /// `for item in <iterable>` over a user type implementing the iterable

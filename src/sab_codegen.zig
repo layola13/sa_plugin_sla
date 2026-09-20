@@ -7099,7 +7099,34 @@ pub const Codegen = struct {
         decl: *const ast.StructDecl,
         lit: *const ast.StructLiteral,
     ) ![]lowering_rules.StructLiteralFieldPlan {
-        if (decl.is_union) return Error.UnsupportedSabDirectFeature;
+        // Unions: only the explicitly provided field(s) need plans; all fields
+        // are at offset 0 (structFieldLayout handles this).
+        if (decl.is_union) {
+            for (lit.fields) |literal_field| {
+                var found = false;
+                for (decl.fields) |decl_field| {
+                    if (std.mem.eql(u8, decl_field.name, literal_field.name)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return Error.UnsupportedSabDirectFeature;
+            }
+            const plans = try self.allocator.alloc(lowering_rules.StructLiteralFieldPlan, lit.fields.len);
+            errdefer self.allocator.free(plans);
+            for (lit.fields, 0..) |literal_field, idx| {
+                var field_ty: ?*ast.Type = null;
+                for (decl.fields) |decl_field| {
+                    if (std.mem.eql(u8, decl_field.name, literal_field.name)) {
+                        field_ty = decl_field.ty;
+                        break;
+                    }
+                }
+                const layout = lowering_rules.structFieldLayout(decl, literal_field.name) orelse return Error.UnsupportedSabDirectFeature;
+                plans[idx] = .{ .source = .explicit, .name = literal_field.name, .value = literal_field.value, .layout = layout, .field_ty = field_ty orelse return Error.UnsupportedSabDirectFeature, .release_loaded = false };
+            }
+            return plans;
+        }
         for (lit.fields) |literal_field| {
             var found = false;
             for (decl.fields) |decl_field| {
@@ -15960,7 +15987,9 @@ pub const Codegen = struct {
 
     fn genStructLiteral(self: *Codegen, lit: ast.StructLiteral) anyerror!u32 {
         const decl = self.structDeclForType(lit.ty) orelse return Error.UnsupportedSabDirectFeature;
-        if (decl.is_opaque or decl.is_union) return Error.UnsupportedSabDirectFeature;
+        if (decl.is_opaque) return Error.UnsupportedSabDirectFeature;
+        // Unions are supported: structAbiSize returns max field size and
+        // structFieldLayout returns offset 0 for all union fields.
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));

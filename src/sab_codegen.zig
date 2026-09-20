@@ -4648,12 +4648,18 @@ pub const Codegen = struct {
     fn cloneModuleParamSpecs(self: *Codegen, params: []const sig.ParamSpec) ![]const sig.ParamSpec {
         if (params.len == 0) return &.{};
         const out = try self.allocator.alloc(sig.ParamSpec, params.len);
+        var out_init: usize = 0;
+        errdefer {
+            for (out[0..out_init]) |p| self.allocator.free(p.name);
+            self.allocator.free(out);
+        }
         for (params, 0..) |param, idx| {
             out[idx] = .{
                 .name = try self.allocator.dupe(u8, param.name),
                 .ty = param.ty,
                 .cap = param.cap,
             };
+            out_init = idx + 1;
         }
         return out;
     }
@@ -4719,6 +4725,26 @@ pub const Codegen = struct {
         return out;
     }
 
+    fn freeClonedConstValue(self: *Codegen, value: const_decl.ConstValue) void {
+        switch (value) {
+            .hex, .utf8, .repeat => |literal| self.allocator.free(literal.bytes),
+            .struct_ => |literal| {
+                for (literal.fields) |f| {
+                    self.allocator.free(f.name);
+                    self.freeClonedConstValue(f.value);
+                }
+                self.allocator.free(literal.fields);
+            },
+            .vtable => |literal| {
+                for (literal.slots) |s| {
+                    self.allocator.free(s.name);
+                    self.allocator.free(s.func_name);
+                }
+                self.allocator.free(literal.slots);
+            },
+        }
+    }
+
     fn cloneConstValue(self: *Codegen, value: const_decl.ConstValue) !const_decl.ConstValue {
         return switch (value) {
             .hex => |literal| .{ .hex = .{
@@ -4741,22 +4767,41 @@ pub const Codegen = struct {
             } },
             .struct_ => |literal| blk: {
                 const fields = try self.allocator.alloc(const_decl.StructField, literal.fields.len);
+                var fields_init: usize = 0;
+                errdefer {
+                    for (fields[0..fields_init]) |f| {
+                        self.allocator.free(f.name);
+                        self.freeClonedConstValue(f.value);
+                    }
+                    self.allocator.free(fields);
+                }
                 for (literal.fields, 0..) |field, idx| {
-                    fields[idx] = .{
-                        .name = try self.allocator.dupe(u8, field.name),
-                        .size = field.size,
-                        .value = try self.cloneConstValue(field.value),
-                    };
+                    const fname = try self.allocator.dupe(u8, field.name);
+                    errdefer self.allocator.free(fname);
+                    const fvalue = try self.cloneConstValue(field.value);
+                    errdefer self.freeClonedConstValue(fvalue);
+                    fields[idx] = .{ .name = fname, .size = field.size, .value = fvalue };
+                    fields_init = idx + 1;
                 }
                 break :blk .{ .struct_ = .{ .fields = fields } };
             },
             .vtable => |literal| blk: {
                 const slots = try self.allocator.alloc(const_decl.VTableSlot, literal.slots.len);
+                var slots_init: usize = 0;
+                errdefer {
+                    for (slots[0..slots_init]) |s| {
+                        self.allocator.free(s.name);
+                        self.allocator.free(s.func_name);
+                    }
+                    self.allocator.free(slots);
+                }
                 for (literal.slots, 0..) |slot, idx| {
-                    slots[idx] = .{
-                        .name = try self.allocator.dupe(u8, slot.name),
-                        .func_name = try self.allocator.dupe(u8, slot.func_name),
-                    };
+                    const sname = try self.allocator.dupe(u8, slot.name);
+                    errdefer self.allocator.free(sname);
+                    const fname = try self.allocator.dupe(u8, slot.func_name);
+                    errdefer self.allocator.free(fname);
+                    slots[idx] = .{ .name = sname, .func_name = fname };
+                    slots_init = idx + 1;
                 }
                 break :blk .{ .vtable = .{ .slots = slots } };
             },
@@ -4764,33 +4809,58 @@ pub const Codegen = struct {
     }
 
     fn cloneModuleConstDecl(self: *Codegen, source: const_decl.ConstDecl) !const_decl.ConstDecl {
+        const upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc);
+        const raw_text = try self.allocator.dupe(u8, source.raw_text);
+        errdefer self.allocator.free(raw_text);
+        const name = try self.allocator.dupe(u8, source.name);
+        errdefer self.allocator.free(name);
+        const literal_text = try self.allocator.dupe(u8, source.literal_text);
+        errdefer self.allocator.free(literal_text);
+        const value = try self.cloneConstValue(source.value);
+        errdefer self.freeClonedConstValue(value);
         return .{
             .source_line = source.source_line,
             .expanded_line = source.expanded_line,
-            .upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc),
-            .raw_text = try self.allocator.dupe(u8, source.raw_text),
-            .name = try self.allocator.dupe(u8, source.name),
-            .literal_text = try self.allocator.dupe(u8, source.literal_text),
-            .value = try self.cloneConstValue(source.value),
+            .upstream_loc = upstream_loc,
+            .raw_text = raw_text,
+            .name = name,
+            .literal_text = literal_text,
+            .value = value,
         };
     }
 
     fn cloneModuleFunctionSig(self: *Codegen, symbols: []const []const u8, source: sig.FunctionSig, entry_inst_idx: usize) !sig.FunctionSig {
+        const name = try self.allocator.dupe(u8, source.name);
+        errdefer self.allocator.free(name);
+        const params = try self.cloneModuleParamSpecs(source.params);
+        errdefer {
+            for (params) |p| self.allocator.free(p.name);
+            self.allocator.free(params);
+        }
+        const upstream_file = try self.cloneOptionalText(source.upstream_file);
+        errdefer if (upstream_file) |f| self.allocator.free(f);
+        const upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc);
+        const param_ids = try self.remapModuleIds(symbols, source.param_ids);
+        errdefer self.allocator.free(param_ids);
+        const reg_ids = try self.remapModuleIds(symbols, source.reg_ids);
+        errdefer self.allocator.free(reg_ids);
+        const llvm_name = try self.cloneOptionalText(source.llvm_name);
+        errdefer if (llvm_name) |n| self.allocator.free(n);
         return .{
             .id = @intCast(self.function_sigs.items.len),
-            .name = try self.allocator.dupe(u8, source.name),
-            .params = try self.cloneModuleParamSpecs(source.params),
+            .name = name,
+            .params = params,
             .kind = source.kind,
             .return_cap = source.return_cap,
             .return_ty = source.return_ty,
             .return_fallible = source.return_fallible,
             .entry_inst_idx = @intCast(entry_inst_idx),
             .is_ffi_wrapper = source.is_ffi_wrapper,
-            .upstream_file = try self.cloneOptionalText(source.upstream_file),
-            .upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc),
-            .param_ids = try self.remapModuleIds(symbols, source.param_ids),
-            .reg_ids = try self.remapModuleIds(symbols, source.reg_ids),
-            .llvm_name = try self.cloneOptionalText(source.llvm_name),
+            .upstream_file = upstream_file,
+            .upstream_loc = upstream_loc,
+            .param_ids = param_ids,
+            .reg_ids = reg_ids,
+            .llvm_name = llvm_name,
             .ignored = source.ignored,
             .should_panic = source.should_panic,
         };
@@ -4805,27 +4875,42 @@ pub const Codegen = struct {
         stable_names: *const std.StringHashMap(void),
     ) !sig.FunctionSig {
         const param_ids = try self.remapDecodedModuleIds(symbols, source.param_ids, remap, stable_names);
+        errdefer self.allocator.free(param_ids);
         const source_reg_ids = try self.remapDecodedModuleIds(symbols, source.reg_ids, remap, stable_names);
         defer if (source_reg_ids.len != 0) self.allocator.free(source_reg_ids);
         var required_reg_ids = std.ArrayList(u32).init(self.allocator);
         defer required_reg_ids.deinit();
         try required_reg_ids.appendSlice(param_ids);
         try required_reg_ids.appendSlice(source_reg_ids);
+        const name = try self.allocator.dupe(u8, source.name);
+        errdefer self.allocator.free(name);
+        const params = try self.cloneModuleParamSpecs(source.params);
+        errdefer {
+            for (params) |p| self.allocator.free(p.name);
+            self.allocator.free(params);
+        }
+        const upstream_file = try self.cloneOptionalText(source.upstream_file);
+        errdefer if (upstream_file) |f| self.allocator.free(f);
+        const upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc);
+        const reg_ids = try self.cloneDecodedModuleRegIds(required_reg_ids.items, remap);
+        errdefer self.allocator.free(reg_ids);
+        const llvm_name = try self.cloneOptionalText(source.llvm_name);
+        errdefer if (llvm_name) |n| self.allocator.free(n);
         return .{
             .id = @intCast(self.function_sigs.items.len),
-            .name = try self.allocator.dupe(u8, source.name),
-            .params = try self.cloneModuleParamSpecs(source.params),
+            .name = name,
+            .params = params,
             .kind = source.kind,
             .return_cap = source.return_cap,
             .return_ty = source.return_ty,
             .return_fallible = source.return_fallible,
             .entry_inst_idx = @intCast(entry_inst_idx),
             .is_ffi_wrapper = source.is_ffi_wrapper,
-            .upstream_file = try self.cloneOptionalText(source.upstream_file),
-            .upstream_loc = try self.cloneUpstreamLoc(source.upstream_loc),
+            .upstream_file = upstream_file,
+            .upstream_loc = upstream_loc,
             .param_ids = param_ids,
-            .reg_ids = try self.cloneDecodedModuleRegIds(required_reg_ids.items, remap),
-            .llvm_name = try self.cloneOptionalText(source.llvm_name),
+            .reg_ids = reg_ids,
+            .llvm_name = llvm_name,
             .ignored = source.ignored,
             .should_panic = source.should_panic,
         };
@@ -5200,6 +5285,9 @@ pub const Codegen = struct {
         const param_ids = try self.allocator.dupe(u32, fsig.param_ids);
         errdefer self.allocator.free(param_ids);
         const upstream_file = if (fsig.upstream_file) |f| try self.allocator.dupe(u8, f) else null;
+        errdefer if (upstream_file) |f| self.allocator.free(f);
+        const llvm_name = if (fsig.llvm_name) |n| try self.allocator.dupe(u8, n) else null;
+        errdefer if (llvm_name) |n| self.allocator.free(n);
         return .{
             .id = @intCast(self.function_sigs.items.len),
             .name = name,
@@ -5214,7 +5302,7 @@ pub const Codegen = struct {
             .upstream_loc = null,
             .param_ids = param_ids,
             .reg_ids = &.{},
-            .llvm_name = if (fsig.llvm_name) |n| try self.allocator.dupe(u8, n) else null,
+            .llvm_name = llvm_name,
             .ignored = fsig.ignored,
             .should_panic = fsig.should_panic,
         };

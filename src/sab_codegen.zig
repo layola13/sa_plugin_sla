@@ -3599,9 +3599,12 @@ pub const Codegen = struct {
             return;
         }
         if (self.non_owning_regs.fetchRemove(reg)) |_| {
-            var item = self.makeInst(.move_);
-            item.operands[0] = .{ .reg = reg };
-            try self.appendInst(item);
+            // Non-owning registers (raw pointers, borrows) carry no ownership.
+            // Emit NOTHING: the SA-text backend emits nothing for non-owning
+            // values, and a move_ would be misread by the verifier as a real
+            // ownership transfer, producing a false PhiStateConflict at merge
+            // points (e.g. match scrutinee at L_MATCH_MERGE). Just mark as
+            // released internally to prevent a later double-release.
             try self.released_regs.put(reg, {});
             return;
         }
@@ -16214,7 +16217,11 @@ pub const Codegen = struct {
         }
         for (mat.cases) |case| {
             const cond = try self.intern(try self.newTmp());
-            try self.emitAssignImm(cond, 0);
+            // Do NOT pre-assign cond = 0. The SA-text backend creates the cond
+            // fresh inside each check block (tmp = eq ...). Pre-assigning makes
+            // it an ephemeral scalar; on paths where a later case is skipped,
+            // the ephemeral stays Active while other paths Consume it, causing
+            // a false PhiStateConflict at the match merge.
             try case_cond_regs.append(cond);
             const guard_count = if (case.guard) |guard| lowering_rules.scalarMatchGuardTempCount(guard) orelse return Error.UnsupportedSabDirectFeature else 0;
             const guard_regs = try self.allocator.alloc(u32, guard_count);
@@ -16257,7 +16264,9 @@ pub const Codegen = struct {
                 if (case.pattern.bindings.len != enum_variant.fields.len) return Error.UnsupportedSabDirectFeature;
             } else if (case.pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
             const cond = case_cond_regs.items[i];
-            try self.emitBranchRelease(cond);
+            // No emitBranchRelease(cond) here: cond is assigned fresh by
+            // emitLetPatternCheck below (like SA-text's tmp = eq ...).
+            // Releasing a pre-assigned value is gone with the pre-assignment.
             try self.emitLetPatternCheck(case.pattern, val_reg, decl, plan, cond);
 
             const body_label = try self.newLabel("L_MATCH_CASE");
@@ -16319,7 +16328,11 @@ pub const Codegen = struct {
                 try self.emitJmp(next_label);
                 try self.emitLabel(guard_body_label);
             }
-            for (case_cond_regs.items[i..]) |remaining_cond| try self.emitBranchRelease(remaining_cond);
+            // Release only the CURRENT case's cond (assigned in the check block
+            // above). Do NOT release future conds (i+1..) — they haven't been
+            // assigned yet. (Previously, with pre-assigned conds, all were
+            // released; without pre-assignment, future conds are undefined.)
+            try self.emitBranchRelease(case_cond_regs.items[i]);
 
             const terminated = if (value_match)
                 try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty)

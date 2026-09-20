@@ -5085,6 +5085,11 @@ pub const TypeChecker = struct {
                         if (idx < macro.leading_outputs and arg.* == .identifier) {
                             if (scope.lookup(arg.identifier)) |sym| {
                                 if (sym.state == .uninitialized) sym.state = .active;
+                                // This identifier is a macro output (a write, not
+                                // a read). Record its declared type so that
+                                // downstream lowering (e.g. SAB-direct) finds it
+                                // in expr_types, mirroring assignment targets.
+                                self.expr_types.put(arg, sym.ty) catch return TypeError.OutOfMemory;
                             }
                             continue;
                         }

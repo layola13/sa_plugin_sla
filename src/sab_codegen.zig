@@ -12480,12 +12480,23 @@ pub const Codegen = struct {
         try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_push", "sa_mem_copy" });
         const receiver_reg = try self.genExpr(@constCast(call.args[0]));
         const value_reg = try self.genExpr(@constCast(call.args[1]));
-        try self.emitCallBody(receiver_reg, try std.fmt.allocPrint(self.allocator, "@sa_vec_push(^{s}, {s}, 8)", .{
+        // ROOT FIX for SAB/SA-text parity: SA-text generates `EXPAND VEC_PUSH vec, value, 8`
+        // via the VEC_PUSH macro. The verifier sees the EXPAND directive, never the
+        // expanded `%vec_reg = call @sa_vec_push(^%vec_reg, ...)` with its
+        // "update via mutable borrow" pattern. SAB must use the identical macro path,
+        // not a hand-emitted `call` that bypasses the macro mechanism and triggers
+        // a false RegisterRedefinition in the verifier.
+        // The elem_size (8) is a literal, matching the existing VEC_PUSH usage.
+        try self.emitStdMacroFragmentWithLiteralArgs("sa_std/vec.sa", "VEC_PUSH", &.{
             self.symbols.items[receiver_reg],
             self.symbols.items[value_reg],
-        }));
+            "8",
+        }, &.{ false, false, true });
 
-        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        // The value is moved into the Vec (Vec takes ownership), so release it.
+        // The Vec itself is borrowed via ^ in the macro expansion, not consumed —
+        // do NOT release receiver_reg. Releasing it would cause PhiStateConflict
+        // at merge points where other paths don't release it.
         const copy_like = self.typeIsCopyValue(elem_ty) or self.typeIsShallowCopyCallArgValue(elem_ty, 0);
         if (lowering_rules.vecElementPushTransfersOwnership(elem_ty, copy_like)) {
             if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);

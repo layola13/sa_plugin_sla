@@ -12,7 +12,7 @@ fail_list=()
 
 sweep_one() {
   local f="$1"
-  if sla sab build "$f" --out /tmp/_sweep_out.sab >/tmp/_sweep_err.txt 2>&1; then
+  if sa sla sab build "$f" --out /tmp/_sweep_out.sab >/tmp/_sweep_err.txt 2>&1; then
     pass=$((pass+1))
   else
     fail=$((fail+1))
@@ -34,4 +34,6 @@ echo "STRICT SWEEP ($mode): pass=$pass fail=$fail total=$((pass+fail))"
 if [ "${#fail_list[@]}" -gt 0 ]; then
   echo "---- FAILURES ----"
   for f in "${fail_list[@]}"; do echo "$f"; done
+  exit 1
 fi
+exit 0

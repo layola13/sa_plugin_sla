@@ -1,0 +1,6 @@
+[MACRO] X_GET_VAL %out_ptr, %in_ptr
+    __xosp_s_%out_ptr = stack_alloc 8
+    __xosp_l_%out_ptr = stack_alloc 8
+    __xosp_st_%out_ptr = call @my_get_val(%in_ptr, &__xosp_s_%out_ptr, &__xosp_l_%out_ptr)
+    %out_ptr = load __xosp_s_%out_ptr+0 as ptr
+[END_MACRO]

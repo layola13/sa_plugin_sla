@@ -1,0 +1,27 @@
+@import "test_unit_cmdptr_fragment_macros.sa"
+@import "sa_std/ptr.sa"
+
+fn my_get_val(in_ptr: ptr, out_s: ptr, out_l: ptr) -> i32 {
+    return 0;
+}
+
+fn get_one(p: ptr) -> ptr {
+    let result: ptr = PTR_NULL();
+    X_GET_VAL(result, p);
+    return result;
+}
+
+fn get_two(p: ptr) -> ptr {
+    let result: ptr = PTR_NULL();
+    X_GET_VAL(result, p);
+    return result;
+}
+
+@test "cmdptr fragment inlines per call site"() {
+    let p: ptr = PTR_NULL();
+    let a: ptr = get_one(p);
+    let b: ptr = get_two(p);
+    if a != b {
+        panic(19021);
+    };
+}

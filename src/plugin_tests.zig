@@ -8872,3 +8872,71 @@ test "module table collectVisibleTypeNames merges transitive imports and tolerat
     _ = mod_a;
     _ = mod_cyc_b;
 }
+
+test "sla sab backend inlines cmdptr macro fragments per call site" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_cmdptr_fragment.sla",
+        ".sla-cache/sab/cmdptr_fragment_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    // Both call sites must survive as separate functions.
+    var saw_get_one = false;
+    var saw_get_two = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.eql(u8, fsig.name, "sla__get_one")) saw_get_one = true;
+        if (std.mem.eql(u8, fsig.name, "sla__get_two")) saw_get_two = true;
+    }
+    try std.testing.expect(saw_get_one);
+    try std.testing.expect(saw_get_two);
+
+    // Per-site hygiene: each expansion gets its own __frag<N>_ prefix so the
+    // two inlined __xosp_* temporaries can never collide.
+    var frag_prefixes = std.StringHashMap(void).init(std.testing.allocator);
+    defer frag_prefixes.deinit();
+    var st_symbols = std.ArrayList(u32).init(std.testing.allocator);
+    defer st_symbols.deinit();
+    for (module.symbols, 0..) |name, idx| {
+        if (std.mem.startsWith(u8, name, "__frag")) {
+            const rest = name["__frag".len..];
+            if (std.mem.indexOf(u8, rest, "_")) |us| {
+                try frag_prefixes.put(name[0 .. "__frag".len + us + 1], {});
+            }
+            if (std.mem.indexOf(u8, name, "__xosp_st_") != null) {
+                try st_symbols.append(@intCast(idx));
+            }
+        }
+    }
+    try std.testing.expect(frag_prefixes.count() >= 2);
+    try std.testing.expect(st_symbols.items.len >= 2);
+
+    // Every dead __xosp_st_* call status temp is released exactly once.
+    var released_st = std.AutoHashMap(u32, usize).init(std.testing.allocator);
+    defer released_st.deinit();
+    for (module.instructions) |item| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .release and item.operands[0] == .reg) {
+            const entry = try released_st.getOrPut(item.operands[0].reg);
+            if (!entry.found_existing) entry.value_ptr.* = 0;
+            entry.value_ptr.* += 1;
+        }
+    }
+    for (st_symbols.items) |st| {
+        const count = released_st.get(st) orelse 0;
+        try std.testing.expectEqual(@as(usize, 1), count);
+    }
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}

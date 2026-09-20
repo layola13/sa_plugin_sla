@@ -1,0 +1,43 @@
+@import "sa_std/vec.sa"
+
+// Regression for the `p = f(p)` ownership-transfer fix (1e136cb) and its
+// follow-up (2026-09-20): the rebind shortcut in
+// identifierMustStayLiveForLaterUse must not skip the sibling-argument
+// check, otherwise `p = f(p, p)` double-moves the same register.
+//
+// Run with --test-backend sa and --test-backend sab (SLA_SAB_NO_FALLBACK=1).
+
+fn bump(v: Vec<u64>) -> Vec<u64> {
+    v.push(10);
+    return v;
+}
+
+// Callee-side aliasing probe: if the compiler double-moves the same Vec
+// into both params, the push through `a` is visible through `b`.
+fn probe_alias(a: Vec<u64>, b: Vec<u64>) -> Vec<u64> {
+    a.push(77);
+    return b;
+}
+
+@test "p = f(p) moves old value, later uses see new binding"() {
+    let p: Vec<u64> = Vec::new();
+    p.push(1);
+    // Used to emit RegisterRedefinition (cloned instead of moved because
+    // the later syntactic use of `p` was mistaken for a use of the OLD p).
+    let p2: Vec<u64> = bump(p);
+    if len(p2) != 2 { panic(39201); };
+    // Chained rebinding: each old value is moved exactly once.
+    let p3: Vec<u64> = bump(p2);
+    if len(p3) != 3 { panic(39202); };
+}
+
+@test "p = f(p, p) does not double-move the same vec"() {
+    let p: Vec<u64> = Vec::new();
+    p.push(1);
+    // Rebinds the SAME name: before the sibling-arg fix this compiled to
+    //   call @probe_alias(^p, ^p)
+    // (same register moved twice -> double free / aliasing). Correct code
+    // clones both args, so the callee-side push is invisible in the result.
+    p = probe_alias(p, p);
+    if len(p) != 1 { panic(39203); };
+}

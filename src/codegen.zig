@@ -9135,6 +9135,11 @@ pub const Codegen = struct {
     }
 
     fn identifierMustStayLiveForLaterUse(self: *Codegen, name: []const u8) bool {
+        // Sibling arguments in the same call expression always keep the
+        // source live, even when the enclosing statement rebinds the name:
+        // `p = f(p, p)` must clone (not double-move) the earlier `p`s. The
+        // rebind only kills uses *after* the statement, never fellow args.
+        if (self.identifierUsedLaterInCurrentExpr(name)) return true;
         // If the current statement rebinds the name (e.g. `p = f(p)`), the
         // OLD value is dead after this statement. Later syntactic uses of
         // the name refer to the NEW binding, not the old value being passed

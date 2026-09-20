@@ -1,0 +1,59 @@
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+@import "tests/import_fixtures/pkgjson/ptr_helpers.sa"
+
+// Regression for PhiStateConflict(tmp_2558) on direct SAB builds.
+// A `load` whose type is .ptr must be flagged as a raw pointer; the flag
+// propagates through `assign`, survives branch-merge phis, and an
+// already-live raw-pointer register may be overwritten. All of this must
+// behave identically on the SA-text and SAB paths (SAB/SA-text parity).
+//
+// Note: raw pointers carry no ownership, so ptr temps are exempt from the
+// MemoryLeak check on both backends (like ephemeral scalar temps); there is
+// no need to sink every ptr through a call.
+
+struct PtrCarrier {
+    data: ptr,
+}
+
+fn ptr_carrier_new() -> PtrCarrier {
+    return PtrCarrier { data: STR_PTR("keyword") };
+}
+
+fn ptr_sink(p: ptr) -> u8 {
+    return SLA_BYTE_AT(p, 0);
+}
+
+@test "sab ptr assign and branch merge stays live"() {
+    let carrier = ptr_carrier_new();
+    // load ty:ptr -> raw-pointer flagged register
+    var data: ptr;
+    data = carrier.data;
+    // assign propagates the raw-pointer flag to the new local
+    let aliased: ptr = data;
+    // branch merge: the phi over raw-pointer registers must not conflict
+    var picked: ptr;
+    if aliased != PTR_NULL() {
+        picked = data;
+    } else {
+        picked = aliased;
+    };
+    let b0 = ptr_sink(data);
+    let b1 = ptr_sink(aliased);
+    let b2 = ptr_sink(picked);
+    // overwriting an already-live raw-pointer register is legal
+    data = picked;
+    let b3 = ptr_sink(data);
+    if b0 != 107 {
+        panic(56001);
+    };
+    if b1 != 107 {
+        panic(56002);
+    };
+    if b2 != 107 {
+        panic(56003);
+    };
+    if b3 != 107 {
+        panic(56004);
+    };
+}

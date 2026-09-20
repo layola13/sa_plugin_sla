@@ -1,0 +1,64 @@
+@import "sa_std/vec.sa"
+
+// Regression for RegisterRedefinition(tmp_6422) on direct SAB builds.
+// The stdlib VEC_PUSH macro expands to:
+//   %vec_reg = call @sa_vec_push(^%vec_reg, %value, %elem_size)
+// i.e. "update via move": the vec register (raw-pointer marked) is moved
+// into the call with the ^ (.move) prefix and reassigned from the result.
+// SA-text verifies the EXPAND directive; SAB carries the expanded call, so
+// the SAB verifier must accept the same pattern (SAB/SA-text parity).
+
+struct MergeLog {
+    entries: Vec<u64>,
+}
+
+fn merge_log_new() -> MergeLog {
+    let entries: Vec<u64> = Vec::new();
+    return MergeLog { entries: entries };
+}
+
+fn merge_log_len(log: &MergeLog) -> u64 {
+    return len(log.entries);
+}
+
+@test "sab vec push on struct field survives branch merge"() {
+    let log = merge_log_new();
+    // Receiver is a struct-field load; each push is update-via-move.
+    log.entries.push(10);
+    if merge_log_len(&log) == 1 {
+        log.entries.push(20);
+    } else {
+        log.entries.push(30);
+    };
+    // Merge point: the vec register must still be Active here.
+    log.entries.push(40);
+    if len(log.entries) != 3 {
+        panic(55001);
+    };
+    if log.entries[0] != 10 {
+        panic(55002);
+    };
+    if log.entries[2] != 40 {
+        panic(55003);
+    };
+}
+
+@test "sab vec push on local across branch merge"() {
+    let items: Vec<u64> = Vec::new();
+    items.push(1);
+    if len(items) == 1 {
+        items.push(2);
+    } else {
+        items.push(3);
+    };
+    items.push(4);
+    if len(items) != 3 {
+        panic(55011);
+    };
+    if items[0] != 1 {
+        panic(55012);
+    };
+    if items[2] != 4 {
+        panic(55013);
+    };
+}

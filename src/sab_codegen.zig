@@ -17818,3 +17818,274 @@ test "direct sab extern borrow call operand keeps prefix" {
     try std.testing.expectEqualSlices(u8, "&tmp_3", raw);
     try std.testing.expectEqualSlices(u8, "&tmp_4", already);
 }
+
+fn testFragmentCallDestSetup(allocator: std.mem.Allocator) !struct {
+    tc: type_checker.TypeChecker,
+    cg: Codegen,
+} {
+    var tc = type_checker.TypeChecker.init(allocator);
+    errdefer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    errdefer cg.deinit();
+    return .{ .tc = tc, .cg = cg };
+}
+
+fn testAppendCallDest(cg: *Codegen, dest_name: []const u8, body: []const u8) !u32 {
+    const dest = try cg.internStable(dest_name);
+    var item = inst.makeInstruction(.call, 1, 1, null, "");
+    item.operands[0] = .{ .reg = dest };
+    item.operands[1] = .{ .text = body };
+    try cg.instructions.append(item);
+    return dest;
+}
+
+fn testSawRelease(cg: *Codegen, reg: u32) bool {
+    for (cg.instructions.items) |item| {
+        if (item.kind == .release and item.operands[0] == .reg and item.operands[0].reg == reg) return true;
+    }
+    return false;
+}
+
+test "releaseDeadFragmentCallDests releases unused xosp status temp" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var setup = try testFragmentCallDestSetup(allocator);
+    defer setup.tc.deinit();
+    defer setup.cg.deinit();
+    var cg = &setup.cg;
+
+    // Mirrors the X_GET_VAL fragment shape: two stack slots, an ignored call
+    // status temp, and a load that only reads one slot.
+    const s_slot = try cg.internStable("__frag0___xosp_s_out");
+    var alloc_item = inst.makeInstruction(.stack_alloc, 1, 1, null, "");
+    alloc_item.operands[0] = .{ .reg = s_slot };
+    alloc_item.operands[1] = .{ .imm_u64 = 8 };
+    try cg.instructions.append(alloc_item);
+
+    const st = try testAppendCallDest(cg, "__frag0___xosp_st_out", "@my_func()");
+
+    const loaded = try cg.internStable("caller_tmp");
+    var load_item = inst.makeInstruction(.load, 2, 2, null, "");
+    load_item.operands[0] = .{ .reg = loaded };
+    load_item.operands[1] = .{ .reg = s_slot };
+    load_item.operands[2] = .{ .imm_u64 = 0 };
+    try cg.instructions.append(load_item);
+
+    try cg.releaseDeadFragmentCallDests(0);
+
+    try std.testing.expect(cg.released_regs.contains(st));
+    try std.testing.expect(testSawRelease(cg, st));
+    // The referenced slot is untouched.
+    try std.testing.expect(!cg.released_regs.contains(s_slot));
+    try std.testing.expect(!testSawRelease(cg, s_slot));
+}
+
+test "releaseDeadFragmentCallDests keeps referenced call dest" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var setup = try testFragmentCallDestSetup(allocator);
+    defer setup.tc.deinit();
+    defer setup.cg.deinit();
+    var cg = &setup.cg;
+
+    const dest = try testAppendCallDest(cg, "__frag1___xosp_st_out", "@my_func()");
+
+    // A later instruction reads the dest as a structured operand.
+    const user = try cg.internStable("user_tmp");
+    var add_item = inst.makeInstruction(.op, 2, 2, null, "");
+    add_item.operands[0] = .{ .reg = user };
+    add_item.operands[1] = .{ .reg = dest };
+    try cg.instructions.append(add_item);
+
+    try cg.releaseDeadFragmentCallDests(0);
+
+    try std.testing.expect(!cg.released_regs.contains(dest));
+    try std.testing.expect(!testSawRelease(cg, dest));
+}
+
+test "releaseDeadFragmentCallDests ignores caller-owned dest names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var setup = try testFragmentCallDestSetup(allocator);
+    defer setup.tc.deinit();
+    defer setup.cg.deinit();
+    var cg = &setup.cg;
+
+    // Caller args pass through unrenamed; they are never fragment-internal.
+    const dest = try testAppendCallDest(cg, "result", "@my_func()");
+
+    try cg.releaseDeadFragmentCallDests(0);
+
+    try std.testing.expect(!cg.released_regs.contains(dest));
+    try std.testing.expect(!testSawRelease(cg, dest));
+}
+
+test "releaseDeadFragmentCallDests skips void calls without reg dest" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var setup = try testFragmentCallDestSetup(allocator);
+    defer setup.tc.deinit();
+    defer setup.cg.deinit();
+    var cg = &setup.cg;
+
+    // Void call: operands[0] is the text body, not a register destination.
+    var item = inst.makeInstruction(.call, 1, 1, null, "");
+    item.operands[0] = .{ .text = "@my_func()" };
+    try cg.instructions.append(item);
+    const before = cg.instructions.items.len;
+
+    try cg.releaseDeadFragmentCallDests(0);
+
+    try std.testing.expectEqual(before, cg.instructions.items.len);
+}
+
+test "releaseDeadFragmentCallDests skips fragments with control flow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var setup = try testFragmentCallDestSetup(allocator);
+    defer setup.tc.deinit();
+    defer setup.cg.deinit();
+    var cg = &setup.cg;
+
+    const dest = try testAppendCallDest(cg, "__frag2___xosp_st_out", "@my_func()");
+    var label_item = inst.makeInstruction(.label, 2, 2, null, "");
+    label_item.operands[0] = .{ .symbol = try cg.internStable("L_SOME") };
+    try cg.instructions.append(label_item);
+    const before = cg.instructions.items.len;
+
+    try cg.releaseDeadFragmentCallDests(0);
+
+    // Conservative: a def inside a branch may not dominate the release point.
+    try std.testing.expect(!cg.released_regs.contains(dest));
+    try std.testing.expectEqual(before, cg.instructions.items.len);
+}
+
+test "releaseDeadFragmentCallDests treats text-body references as live" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var setup = try testFragmentCallDestSetup(allocator);
+    defer setup.tc.deinit();
+    defer setup.cg.deinit();
+    var cg = &setup.cg;
+
+    const dest = try testAppendCallDest(cg, "__frag3___xosp_st_out", "@my_func()");
+    // A later call body mentions the dest by name inside its text operand.
+    var item = inst.makeInstruction(.call, 2, 2, null, "");
+    item.operands[0] = .{ .text = "@other(__frag3___xosp_st_out)" };
+    try cg.instructions.append(item);
+
+    try cg.releaseDeadFragmentCallDests(0);
+
+    try std.testing.expect(!cg.released_regs.contains(dest));
+    try std.testing.expect(!testSawRelease(cg, dest));
+}
+
+test "releaseDeadFragmentCallDests handles call_indirect dest" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var setup = try testFragmentCallDestSetup(allocator);
+    defer setup.tc.deinit();
+    defer setup.cg.deinit();
+    var cg = &setup.cg;
+
+    const dest = try cg.internStable("__frag4___xosp_st_out");
+    var item = inst.makeInstruction(.call_indirect, 1, 1, null, "");
+    item.operands[0] = .{ .reg = dest };
+    item.operands[1] = .{ .text = "@table[0]()" };
+    try cg.instructions.append(item);
+
+    try cg.releaseDeadFragmentCallDests(0);
+
+    try std.testing.expect(cg.released_regs.contains(dest));
+    try std.testing.expect(testSawRelease(cg, dest));
+}
+
+test "releaseDeadFragmentCallDests does not double-release" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var setup = try testFragmentCallDestSetup(allocator);
+    defer setup.tc.deinit();
+    defer setup.cg.deinit();
+    var cg = &setup.cg;
+
+    const dest = try testAppendCallDest(cg, "__frag5___xosp_st_out", "@my_func()");
+    try cg.emitRelease(dest);
+    const after_first = cg.instructions.items.len;
+
+    try cg.releaseDeadFragmentCallDests(0);
+
+    try std.testing.expectEqual(after_first, cg.instructions.items.len);
+}
+
+fn testMacroTemplateModule(allocator: std.mem.Allocator, with_call: bool) !sab.Module {
+    const function_sigs = try allocator.alloc(sig.FunctionSig, 1);
+    function_sigs[0] = try sig.parseFunctionSig(allocator, "@__sla_macro_fragment_0() -> void:", 0, 0);
+
+    const instructions = try allocator.alloc(inst.Instruction, 3);
+    instructions[0] = inst.makeInstruction(.func_decl, 1, 1, null, "");
+    instructions[0].operands[0] = .{ .symbol = 0 };
+    instructions[0].operands[1] = .{ .func = 0 };
+    if (with_call) {
+        instructions[1] = inst.makeInstruction(.call, 2, 2, null, "");
+        instructions[1].operands[0] = .{ .text = "@my_func()" };
+    } else {
+        instructions[1] = inst.makeInstruction(.op, 2, 2, null, "");
+        instructions[1].operands[0] = .{ .text = "add" };
+    }
+    instructions[2] = inst.makeInstruction(.return_, 3, 3, null, "");
+
+    return sab.Module{
+        .symbols = &.{"__sla_macro_fragment_0"},
+        .function_sigs = function_sigs,
+        .const_decls = &.{},
+        .instructions = instructions,
+        .owned_text = &.{},
+    };
+}
+
+test "macro template cache guard rejects call-containing templates" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const with_call = try testMacroTemplateModule(allocator, true);
+    const tmpl_call = StdMacroTemplate{
+        .key = "k",
+        .func_name = "__sla_macro_fragment_0",
+        .arg_count = 1,
+        .module = with_call,
+    };
+    // Call-containing templates bypass the cache: the per-site rename does
+    // not keep call-body text operands in sync with structured operands.
+    try std.testing.expect(!try cg.stdMacroTemplateSupportsArgs(&tmpl_call, &.{"some_reg"}));
+
+    const without_call = try testMacroTemplateModule(allocator, false);
+    const tmpl_plain = StdMacroTemplate{
+        .key = "k",
+        .func_name = "__sla_macro_fragment_0",
+        .arg_count = 1,
+        .module = without_call,
+    };
+    try std.testing.expect(try cg.stdMacroTemplateSupportsArgs(&tmpl_plain, &.{"some_reg"}));
+}

@@ -4272,6 +4272,10 @@ pub const Codegen = struct {
                 else => {},
             }
         }
+        // Collect first, emit after: emitRelease may reallocate
+        // self.instructions, which would invalidate the `items` slice.
+        var to_release = std.ArrayList(u32).init(self.allocator);
+        defer to_release.deinit();
         for (items, 0..) |item, i| {
             if (item.kind != .call and item.kind != .call_indirect) continue;
             if (item.operands[0] != .reg) continue;
@@ -4297,8 +4301,9 @@ pub const Codegen = struct {
                 }
                 if (referenced) break;
             }
-            if (!referenced) try self.emitRelease(dest);
+            if (!referenced) try to_release.append(dest);
         }
+        for (to_release.items) |dest| try self.emitRelease(dest);
     }
 
     fn cloneOptionalText(self: *Codegen, text: ?[]const u8) !?[]const u8 {

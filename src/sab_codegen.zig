@@ -12282,6 +12282,23 @@ pub const Codegen = struct {
         return iter_call.args[0];
     }
 
+    /// Detect `array.into_iter().map(|x| ...).sum()` pattern.
+    /// Returns (source_array_expr, closure) if matched.
+    fn arrayIterMapSumSource(call: ast.CallExpr) ?struct { source: *ast.Node, closure: *const ast.ClosureLiteral } {
+        if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
+        const map_expr = call.args[0];
+        if (map_expr.* != .call_expr) return null;
+        const map_call = &map_expr.call_expr;
+        if (!lowering_rules.isMapCall(map_call.*) or map_call.args.len != 2) return null;
+        const iter_expr = map_call.args[0];
+        if (iter_expr.* != .call_expr) return null;
+        const iter_call = &iter_expr.call_expr;
+        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
+        const closure_expr = map_call.args[1];
+        if (closure_expr.* != .closure_literal) return null;
+        return .{ .source = iter_call.args[0], .closure = &closure_expr.closure_literal };
+    }
+
     fn arrayCopiedIterSumSource(call: ast.CallExpr) ?*ast.Node {
         if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
         const iter_expr = call.args[0];
@@ -12297,6 +12314,14 @@ pub const Codegen = struct {
 
     fn genIterSumCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
+
+        // `array.into_iter().map(|x| ...).sum()` — inline the map closure.
+        if (arrayIterMapSumSource(call)) |map_src| {
+            const source_ty = self.tc.expr_types.get(map_src.source) orelse return null;
+            if (lowering_rules.arrayType(source_ty)) |arr| {
+                return try self.genArrayIterMapSum(map_src.source, arr, map_src.closure);
+            }
+        }
 
         if (arrayIterSumSource(call)) |source| {
             const source_ty = self.tc.expr_types.get(source) orelse {
@@ -12343,6 +12368,47 @@ pub const Codegen = struct {
             try self.emitOp(next_acc, .add, .{ .reg = acc }, .{ .reg = item });
             try self.emitRelease(elem_ptr);
             try self.emitRelease(item);
+            try self.emitRelease(acc);
+            acc = next_acc;
+        }
+        if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+        return acc;
+    }
+
+    /// `array.into_iter().map(|x| body).sum()`: unrolled loop that inlines the
+    /// map closure body for each element. Mirrors SA-text genArrayIterMapSum.
+    fn genArrayIterMapSum(self: *Codegen, source: *ast.Node, arr: ast.ArrayType, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        if (closure.params.len != 1) return Error.UnsupportedSabDirectFeature;
+        if (arr.len == 0) {
+            const dst = try self.intern(try self.newTmp());
+            try self.emitAssignImm(dst, 0);
+            return dst;
+        }
+        const base_reg = try self.genExpr(@constCast(source));
+        const stride = arrayStride(arr.elem);
+        const elem_prim = try storagePrimType(arr.elem);
+        var acc = try self.intern(try self.newTmp());
+        try self.emitAssignImm(acc, 0);
+        const param_name = closure.params[0].name;
+        for (0..arr.len) |i| {
+            const elem_ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(elem_ptr, base_reg, .{ .imm_u64 = @intCast(stride * i) });
+            const item = try self.intern(try self.newTmp());
+            try self.emitLoad(item, elem_ptr, 0, elem_prim);
+            // Inline closure: bind param name to item reg, gen body.
+            const saved = self.closure_param_regs.get(param_name);
+            try self.closure_param_regs.put(param_name, item);
+            const mapped = try self.genExpr(@constCast(closure.body));
+            if (saved) |old| {
+                try self.closure_param_regs.put(param_name, old);
+            } else {
+                _ = self.closure_param_regs.remove(param_name);
+            }
+            const next_acc = try self.intern(try self.newTmp());
+            try self.emitOp(next_acc, .add, .{ .reg = acc }, .{ .reg = mapped });
+            try self.emitRelease(elem_ptr);
+            try self.emitRelease(item);
+            if (mapped != item) try self.emitRelease(mapped);
             try self.emitRelease(acc);
             acc = next_acc;
         }

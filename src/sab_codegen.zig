@@ -5059,8 +5059,57 @@ pub const Codegen = struct {
             try self.function_sigs.append(cloned);
             if (cloned.kind == .test_func) try self.test_sigs.append(cloned);
 
+            const debug_on = std.posix.getenv("SLA_DEBUG_DECODED") != null;
+            if (debug_on) {
+                const ew = std.io.getStdErr().writer();
+                ew.print("[decoded-clone] fn {s} src_range=[{d},{d})\n", .{ fsig.name, start, end }) catch {};
+                ew.print("  src param_ids:", .{}) catch {};
+                for (fsig.param_ids) |id| {
+                    const nm: []const u8 = if (id < module.symbols.len) module.symbols[id] else "?";
+                    ew.print(" {d}:{s}", .{ id, nm }) catch {};
+                }
+                ew.print("\n  src reg_ids:", .{}) catch {};
+                for (fsig.reg_ids) |id| {
+                    const nm: []const u8 = if (id < module.symbols.len) module.symbols[id] else "?";
+                    ew.print(" {d}:{s}", .{ id, nm }) catch {};
+                }
+                ew.print("\n  cloned param_ids:", .{}) catch {};
+                for (cloned.param_ids) |id| {
+                    const nm: []const u8 = if (id < self.symbols.items.len) self.symbols.items[id] else "?";
+                    ew.print(" {d}:{s}", .{ id, nm }) catch {};
+                }
+                ew.print("\n  cloned reg_ids:", .{}) catch {};
+                for (cloned.reg_ids) |id| {
+                    const nm: []const u8 = if (id < self.symbols.items.len) self.symbols.items[id] else "?";
+                    ew.print(" {d}:{s}", .{ id, nm }) catch {};
+                }
+                ew.print("\n", .{}) catch {};
+            }
+
             for (module.instructions[start..end]) |item| {
-                try self.instructions.append(try self.cloneDecodedModuleInstruction(module.symbols, item, &local_remap, &function_stable_names));
+                const cloned_item = try self.cloneDecodedModuleInstruction(module.symbols, item, &local_remap, &function_stable_names);
+                if (debug_on) {
+                    const ew = std.io.getStdErr().writer();
+                    ew.print("  inst kind={s} src_kind={s} ops:", .{ @tagName(cloned_item.kind), @tagName(item.kind) }) catch {};
+                    for (cloned_item.operands) |op| {
+                        switch (op) {
+                            .reg => |id| {
+                                const nm: []const u8 = if (id < self.symbols.items.len) self.symbols.items[id] else "?";
+                                ew.print(" reg({d}:{s})", .{ id, nm }) catch {};
+                            },
+                            .text => |t| ew.print(" text({s})", .{t}) catch {},
+                            .native_text => |t| ew.print(" ntext({s})", .{t}) catch {},
+                            .symbol => |id| ew.print(" sym({d})", .{id}) catch {},
+                            .label => |id| ew.print(" label({d})", .{id}) catch {},
+                            .func => |id| ew.print(" func({d})", .{id}) catch {},
+                            .imm_i64 => |v| ew.print(" i64({d})", .{v}) catch {},
+                            .imm_u64 => |v| ew.print(" u64({d})", .{v}) catch {},
+                            else => ew.print(" ?", .{}) catch {},
+                        }
+                    }
+                    ew.print(" raw=[{s}]\n", .{item.raw_text}) catch {};
+                }
+                try self.instructions.append(cloned_item);
             }
         }
     }
@@ -6422,12 +6471,20 @@ pub const Codegen = struct {
         var extern_insts = std.ArrayList(inst.Instruction).init(self.allocator);
         defer extern_insts.deinit();
         for (sorted.items) |name| {
-            // If we already have a sig (e.g. from a fragment template), it is
-            // already declared in place; do NOT create a duplicate decl. The
-            // verifier pairs decl instructions with sigs by position (sig_index++),
-            // so a duplicate decl would desync the pairing and cause spurious
-            // verification failures. Only truly new externs get a prepended decl.
-            if (self.findFuncSig(name, .external) != null) continue;
+            // If we already have a sig for this name — whether an extern
+            // forward declaration (e.g. from a fragment template) or a real
+            // definition with a body (e.g. cloned from a decoded std module
+            // via appendDecodedModuleFiltered) — it is already declared in
+            // place; do NOT create a duplicate extern decl. The verifier
+            // pairs decl instructions with sigs by position (sig_index++),
+            // so a duplicate decl would desync the pairing and cause
+            // spurious verification failures. Worse, the name-based dedup
+            // below deletes the pre-existing sig, so emitting an extern here
+            // would discard a real definition's reg_ids while keeping its
+            // body instructions, producing UnknownRegister at verify time
+            // (e.g. __decoded_r_* regs of sa_vec_new). Only truly new
+            // externs get a prepended decl.
+            if (self.hasFuncSig(name)) continue;
             const new_idx = extern_sigs.items.len;
             var fsig: sig.FunctionSig = if (self.tc.extern_funcs.contains(name))
                 try self.makeContractExternSig(name, new_idx)

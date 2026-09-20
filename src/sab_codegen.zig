@@ -358,6 +358,11 @@ pub const Codegen = struct {
     fragment_rename_args: ?[]const []const u8 = null,
     fragment_rename_idx: usize = 0,
     decoded_module_rename_idx: usize = 0,
+    // Tracks sa_* extern names for which we already attempted to load the
+    // real signature from sa_std .sai files (to avoid repeated filesystem
+    // scans). If the name is in tc.extern_funcs, the real signature is
+    // available; otherwise we fall back to the generic sig.
+    sa_extern_load_attempted: std.StringHashMap(void),
 
     pub fn init(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker) Codegen {
         return .{
@@ -406,6 +411,7 @@ pub const Codegen = struct {
             .released_regs = std.AutoHashMap(u32, void).init(allocator),
             .stack_alloc_emitted = std.AutoHashMap(u32, void).init(allocator),
             .current_expr_later_nodes = std.ArrayList(*const ast.Node).init(allocator),
+            .sa_extern_load_attempted = std.StringHashMap(void).init(allocator),
         };
     }
 
@@ -419,6 +425,7 @@ pub const Codegen = struct {
         self.borrowed_bindings.deinit();
         self.assigned_bindings.deinit();
         self.multi_let_bindings.deinit();
+        self.sa_extern_load_attempted.deinit();
         for (self.std_surface_rules.items) |rule| {
             self.allocator.free(rule.type_name);
             if (rule.member_name) |name| self.allocator.free(name);
@@ -6350,6 +6357,70 @@ pub const Codegen = struct {
         };
     }
 
+    /// Try to load the real signature for a sa_* runtime extern from the
+    /// sa_std .sai files. Returns true if the signature is now available in
+    /// tc.extern_funcs (either it was already there, or we just loaded it).
+    /// This ensures the generated extern sig has the real param types,
+    /// capabilities, and return type, not just a generic ptr/u64 shape.
+    fn ensureSaExternFromStd(self: *Codegen, name: []const u8) !bool {
+        if (self.tc.extern_funcs.contains(name)) return true;
+        if (self.sa_extern_load_attempted.contains(name)) return false;
+        try self.sa_extern_load_attempted.put(try self.allocator.dupe(u8, name), {});
+
+        const std_root = self.resolveSaStdRoot() catch return false;
+        defer self.allocator.free(std_root);
+
+        // Scan .sai files recursively for `@extern <name>(`.
+        var dir = std.fs.cwd().openDir(std_root, .{ .iterate = true }) catch return false;
+        defer dir.close();
+        var walker = try dir.walk(self.allocator);
+        defer walker.deinit();
+        const prefix = try std.fmt.allocPrint(self.allocator, "@extern {s}(", .{name});
+        defer self.allocator.free(prefix);
+
+        while (try walker.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.path, ".sai")) continue;
+            const full_path = try std.fs.path.join(self.allocator, &.{ std_root, entry.path });
+            defer self.allocator.free(full_path);
+            const content = std.fs.cwd().readFileAlloc(self.allocator, full_path, 1024 * 1024) catch continue;
+            defer self.allocator.free(content);
+            if (std.mem.indexOf(u8, content, prefix) == null) continue;
+            // Found a candidate .sai; parse it and load the extern.
+            var parser = contract_parser.ContractParser.init(self.allocator);
+            const funcs = parser.parseSai(content) catch continue;
+            defer {
+                for (funcs) |f| self.allocator.free(f.params);
+                self.allocator.free(funcs);
+            }
+            for (funcs) |f| {
+                if (std.mem.eql(u8, f.name, name)) {
+                    // Clone into tc.extern_funcs (which owns the data).
+                    const params = try self.tc.allocator.alloc(contract_parser.Param, f.params.len);
+                    for (f.params, 0..) |p, i| {
+                        params[i] = .{
+                            .name = try self.tc.allocator.dupe(u8, p.name),
+                            .ty = try self.tc.allocator.dupe(u8, p.ty),
+                            .is_borrow = p.is_borrow,
+                            .is_move = p.is_move,
+                        };
+                    }
+                    try self.tc.extern_funcs.put(
+                        try self.tc.allocator.dupe(u8, f.name),
+                        .{
+                            .name = try self.tc.allocator.dupe(u8, f.name),
+                            .params = params,
+                            .ret_ty = try self.tc.allocator.dupe(u8, f.ret_ty),
+                            .return_fallible = f.return_fallible,
+                        },
+                    );
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // Generic extern sig for SA runtime functions (sa_* prefix) referenced from
     // macro bodies. The exact param types are not critical for the verifier's
     // "callee is not declared" check; we use ptr for all params and u64 return.
@@ -6511,14 +6582,19 @@ pub const Codegen = struct {
             // externs get a prepended decl.
             if (self.hasFuncSig(name)) continue;
             const new_idx = extern_sigs.items.len;
+            // Try to load the real sa_* signature from sa_std .sai files first.
+            // Only if that fails do we fall back to the generic shape.
+            if (!self.tc.extern_funcs.contains(name)) {
+                _ = try self.ensureSaExternFromStd(name);
+            }
             var fsig: sig.FunctionSig = if (self.tc.extern_funcs.contains(name))
                 try self.makeContractExternSig(name, new_idx)
             else
-                // SA runtime extern (e.g. @sa_json_object_get_string). Not in
-                // tc.extern_funcs; generate a generic sig. The verifier only
-                // needs the name declared; arg types are not strictly checked
-                // at this stage. We use ptr params and u64 return as a safe
-                // generic shape (most sa_* externs are ptr-heavy).
+                // SA runtime extern (e.g. @sa_json_object_get_string) with no
+                // .sai declaration found; generate a generic sig. The verifier
+                // only needs the name declared; arg types are not strictly
+                // checked at this stage. We use ptr params and u64 return as
+                // a safe generic shape (most sa_* externs are ptr-heavy).
                 try self.makeGenericSaExternSig(name, new_idx);
             fsig.id = @intCast(new_idx);
             try extern_insts.append(try self.declInstForSig(fsig, new_idx));

@@ -7465,13 +7465,19 @@ pub const Codegen = struct {
                 const raw_ptr = try self.newTmp();
                 const raw_len = try self.newTmp();
                 self.out.writer().print("    {s} = add {s}, 0\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
-                self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                // Home the slice into a FRESH register. Redefining the param
+                // register (even after `!`) trips the verifier's
+                // RegisterRedefinition ("register is already live"), so the
+                // home slot gets its own temp and the binding alias reroutes
+                // every downstream use of the param name to it.
+                const slice_slot = try self.pushBindingAlias(p.name);
+                self.stack_alloc_bindings.put(slice_slot, {}) catch return CodegenError.OutOfMemory;
                 self.out.writer().print("    !{s}\n", .{p.name}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{p.name}) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{slice_slot}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ raw_ptr, raw_param }) catch return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = load {s}+8 as u64\n", .{ raw_len, raw_param }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ p.name, raw_ptr }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+8, {s} as u64\n", .{ p.name, raw_len }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+0, {s} as ptr\n", .{ slice_slot, raw_ptr }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+8, {s} as u64\n", .{ slice_slot, raw_len }) catch return CodegenError.CodegenError;
                 try self.emitRelease(raw_ptr);
                 try self.emitRelease(raw_len);
                 try self.emitRelease(raw_param);
@@ -7479,22 +7485,28 @@ pub const Codegen = struct {
             if (!p.is_borrow and !p.is_move and self.bindingNeedsAddressableStorage(p.name, p.ty)) {
                 const raw_param = try self.newTmp();
                 self.out.writer().print("    {s} = add {s}, 0\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
-                self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
-                // Release the parameter register before reusing its name for the
-                // stack slot. The value is saved in raw_param, so the old
-                // register is dead and redefinition is legal.
+                // Home the param into a FRESH register (see slice branch above):
+                // reusing the param name for the stack slot is a redefinition
+                // the verifier rejects, even after `!`. The alias reroutes all
+                // downstream uses to the home slot.
+                const home_slot = try self.pushBindingAlias(p.name);
+                self.stack_alloc_bindings.put(home_slot, {}) catch return CodegenError.OutOfMemory;
                 self.out.writer().print("    !{s}\n", .{p.name}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = stack_alloc {}\n", .{ home_slot, typeSize(p.ty) }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ home_slot, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
                 try self.emitRelease(raw_param);
             } else if (!p.is_borrow and !p.is_move and self.bindingNeedsAssignedValueSlot(p.name, p.ty)) {
                 const raw_param = try self.newTmp();
                 self.out.writer().print("    {s} = add {s}, 0\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
-                self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
-                self.assigned_value_slots.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                // Same fresh-slot homing as above; assigned_value_slots is
+                // keyed by resolved name (genExpr loads `slot+0`), so the slot
+                // itself must be registered, not the param name.
+                const value_slot = try self.pushBindingAlias(p.name);
+                self.stack_alloc_bindings.put(value_slot, {}) catch return CodegenError.OutOfMemory;
+                self.assigned_value_slots.put(value_slot, {}) catch return CodegenError.OutOfMemory;
                 self.out.writer().print("    !{s}\n", .{p.name}) catch return CodegenError.CodegenError;
-                self.out.writer().print("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
-                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = stack_alloc {}\n", .{ value_slot, typeSize(p.ty) }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ value_slot, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
             }
         }
 

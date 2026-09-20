@@ -1,0 +1,36 @@
+@import "sa_std/ptr.sa"
+
+// Regression: SA-text backend param homing reused the param's own register
+// for the stack slot:
+//
+//   tmp_N = add p, 0
+//   !p
+//   p = stack_alloc 8        <- RegisterRedefinition ("register is already live")
+//
+// The verifier rejects redefinition of a live param register even after `!`.
+// The backend must home params into a FRESH slot register and reroute uses
+// via the binding alias:
+//
+//   tmp_N = add p, 0
+//   !p
+//   tmp_M = stack_alloc 8
+//   store tmp_M+0, tmp_N as ptr
+//
+// Covers addressable-storage homing (&p taken). Both backends must accept
+// this program: run with --test-backend sa and --test-backend sab
+// (SLA_SAB_NO_FALLBACK=1).
+
+fn homing_use_borrow(b: &ptr) -> u64 {
+    return 1;
+}
+
+fn homing_ptr_param(p: ptr) -> u64 {
+    // Taking &p forces the backend to home p to a stack slot.
+    return homing_use_borrow(&p);
+}
+
+@test "param homing uses fresh slot register"() {
+    if homing_ptr_param(PTR_NULL()) != 1 {
+        panic(9101);
+    };
+}

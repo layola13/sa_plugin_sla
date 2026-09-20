@@ -12340,6 +12340,80 @@ pub const Codegen = struct {
         return .{ .source = iter_call.args[0], .init = call.args[1], .closure = &closure_expr.closure_literal };
     }
 
+    /// `result.map(|x| ...)` for Result types: branch on is_ok, inline closure
+    /// on Ok value, propagate Err. Mirrors SA-text Result::map.
+    fn genResultMapCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!lowering_rules.isMapCall(call)) return null;
+        if (call.args.len != 2 or call.args[1].* != .closure_literal) return null;
+        const recv_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        // Only handle Result types (not iterators).
+        const is_result = switch (recv_ty.*) {
+            .user_defined => |ud| std.mem.eql(u8, ud.name, "Result"),
+            else => false,
+        };
+        if (!is_result) return null;
+        const closure = &call.args[1].closure_literal;
+        if (closure.params.len != 1) return Error.UnsupportedSabDirectFeature;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const is_ok = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_IS_OK", &.{
+            self.symbols.items[is_ok],
+            self.symbols.items[recv_reg],
+        });
+        const ok_label = try self.newLabel("L_RESULT_MAP_OK");
+        const err_label = try self.newLabel("L_RESULT_MAP_ERR");
+        const end_label = try self.newLabel("L_RESULT_MAP_END");
+        const result_reg = try self.intern(try self.newTmp());
+        var br = self.makeInst(.br);
+        br.operands[0] = .{ .reg = is_ok };
+        br.operands[1] = .{ .label = try self.intern(ok_label) };
+        br.operands[2] = .{ .label = try self.intern(ok_label) };
+        br.operands[3] = .{ .label = try self.intern(err_label) };
+        try self.appendInst(br);
+        // Ok branch: inline closure on the value.
+        try self.emitLabel(ok_label);
+        if (!self.isLocalReg(is_ok)) try self.emitBranchRelease(is_ok);
+        const value_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_OK", &.{
+            self.symbols.items[value_reg],
+            self.symbols.items[recv_reg],
+        });
+        const param_name = closure.params[0].name;
+        const saved = self.closure_param_regs.get(param_name);
+        try self.closure_param_regs.put(param_name, value_reg);
+        const mapped = try self.genExpr(@constCast(closure.body));
+        if (saved) |old| {
+            try self.closure_param_regs.put(param_name, old);
+        } else {
+            _ = self.closure_param_regs.remove(param_name);
+        }
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[mapped],
+        });
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        if (mapped != value_reg and !self.isLocalReg(mapped)) try self.emitRelease(mapped);
+        try self.emitJmp(end_label);
+        // Err branch: propagate error.
+        try self.emitLabel(err_label);
+        if (!self.isLocalReg(is_ok)) try self.emitBranchRelease(is_ok);
+        const err_val = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_GET_ERR", &.{
+            self.symbols.items[err_val],
+            self.symbols.items[recv_reg],
+        });
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[err_val],
+        });
+        if (!self.isLocalReg(err_val)) try self.emitRelease(err_val);
+        try self.emitJmp(end_label);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(recv_reg) and lowering_rules.callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+        try self.recordReg(result_reg);
+        return result_reg;
+    }
+
     fn genFoldCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (arrayIterFoldSource(call)) |fold_src| {
             const source_ty = self.tc.expr_types.get(fold_src.source) orelse return null;
@@ -14332,6 +14406,7 @@ pub const Codegen = struct {
         if (try self.genStructConstructorCall(expr, call)) |reg| return reg;
         if (try self.genIterSumCall(call)) |reg| return reg;
         if (try self.genFoldCall(call)) |reg| return reg;
+        if (try self.genResultMapCall(call)) |reg| return reg;
         if (try self.genArrayFillCall(call)) |reg| return reg;
         if (try self.genPtrBuiltinCall(expr, call)) |reg| return reg;
         if (try self.genPointerMethodCall(call)) |reg| return reg;

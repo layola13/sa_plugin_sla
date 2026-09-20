@@ -1,0 +1,18 @@
+@import "test_unit_homing_macros.sa"
+@import "sa_std/vec.sa"
+
+fn fill_homed(v: Vec<u64>, ch: u64) -> void {
+    let h: u64 = ch;
+    h = h + 1; // force homing via reassignment
+    X_VEC_SET_U64L(v, 0, h);
+}
+
+@test "vec set nested expand homed value"() {
+    let values: Vec<u64> = Vec::new();
+    values.push(0);
+    fill_homed(values, 41);
+    let got: u64 = values[0];
+    if got != 42 {
+        panic(19028);
+    };
+}

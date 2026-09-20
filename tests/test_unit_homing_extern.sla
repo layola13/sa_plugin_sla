@@ -1,0 +1,21 @@
+@import "test_unit_homing_extern.sai"
+
+fn read_byte(handle: ptr, timeout_ms: u32) -> (u32, u32, u32) {
+    let kind: u32 = 0;
+    let code: u32 = 0;
+    let st = fake_read_event(handle, timeout_ms, &kind, &code);
+    return (st, kind, code);
+}
+
+@test "extern out param"() {
+    let (st, kind, code) = read_byte(0 as ptr, 10);
+    if st != 0 {
+        panic(19025);
+    };
+    if kind != 0 {
+        panic(19026);
+    };
+    if code != 0 {
+        panic(19027);
+    };
+}

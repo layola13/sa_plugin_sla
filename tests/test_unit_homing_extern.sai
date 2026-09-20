@@ -1,0 +1,1 @@
+@extern fake_read_event(handle: ptr, timeout: u32, &out_kind: ptr, &out_code: ptr) -> u32

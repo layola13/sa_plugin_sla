@@ -8940,3 +8940,195 @@ test "sla sab backend inlines cmdptr macro fragments per call site" {
     }
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
+
+
+
+test "sla sab backend loads homed value for imported macro value arg" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_homing_value.sla",
+        ".sla-cache/sab/homing_value_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    // Locate sla__store_homed and the stack_alloc homes for ch and slot.
+    const function_idx = for (module.function_sigs, 0..) |fsig, idx| {
+        if (std.mem.eql(u8, fsig.name, "sla__store_homed")) break idx;
+    } else return error.TestUnexpectedResult;
+    const function_start: usize = @intCast(module.function_sigs[function_idx].entry_inst_idx);
+    const function_end: usize = if (function_idx + 1 < module.function_sigs.len)
+        @intCast(module.function_sigs[function_idx + 1].entry_inst_idx)
+    else
+        module.instructions.len;
+
+    var ch_home: ?u32 = null;
+    var slot_home: ?u32 = null;
+    for (module.instructions[function_start..function_end]) |item| {
+        if (item.kind == .stack_alloc and item.operands[0] == .reg) {
+            const name = module.symbols[item.operands[0].reg];
+            if (std.mem.eql(u8, name, "ch")) ch_home = item.operands[0].reg;
+            if (std.mem.eql(u8, name, "slot")) slot_home = item.operands[0].reg;
+        }
+    }
+    const ch = ch_home orelse return error.TestUnexpectedResult;
+    const slot = slot_home orelse return error.TestUnexpectedResult;
+
+    // The macro's `store %slot+0, %value` must store the LOADED value, never
+    // the homed slot register (which holds the stack address, not the u64).
+    // (The `let slot` init store also targets `slot`; it must not store the
+    // ch slot register either.)
+    var saw_macro_store = false;
+    for (module.instructions[function_start..function_end]) |item| {
+        if (item.kind != .store) continue;
+        if (item.operands[0] != .reg or item.operands[0].reg != slot) continue;
+        if (item.operands[2] != .reg) continue;
+        const value_reg = item.operands[2].reg;
+        try std.testing.expect(value_reg != ch);
+        // The macro store's value must be produced by a load from the ch home.
+        var loaded_from_ch = false;
+        for (module.instructions[function_start..function_end]) |producer| {
+            if (producer.kind == .load and producer.operands[0] == .reg and
+                producer.operands[0].reg == value_reg and
+                producer.operands[1] == .reg and producer.operands[1].reg == ch)
+            {
+                loaded_from_ch = true;
+            }
+        }
+        if (loaded_from_ch) saw_macro_store = true;
+    }
+    try std.testing.expect(saw_macro_store);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend loads homed value through nested macro expand" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_homing_nested.sla",
+        ".sla-cache/sab/homing_nested_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    const function_idx = for (module.function_sigs, 0..) |fsig, idx| {
+        if (std.mem.eql(u8, fsig.name, "sla__fill_homed")) break idx;
+    } else return error.TestUnexpectedResult;
+    const function_start: usize = @intCast(module.function_sigs[function_idx].entry_inst_idx);
+    const function_end: usize = if (function_idx + 1 < module.function_sigs.len)
+        @intCast(module.function_sigs[function_idx + 1].entry_inst_idx)
+    else
+        module.instructions.len;
+
+    var h_home: ?u32 = null;
+    for (module.instructions[function_start..function_end]) |item| {
+        if (item.kind == .stack_alloc and item.operands[0] == .reg and
+            std.mem.eql(u8, module.symbols[item.operands[0].reg], "h"))
+        {
+            h_home = item.operands[0].reg;
+        }
+    }
+    const h = h_home orelse return error.TestUnexpectedResult;
+
+    // VEC_SET_TYPED's `store %item+0, %value` (reached via EXPAND through
+    // X_VEC_SET_U64L) must store the loaded value, not the homed slot.
+    var saw_vec_store = false;
+    for (module.instructions[function_start..function_end]) |item| {
+        if (item.kind != .store) continue;
+        if (item.operands[0] != .reg or item.operands[2] != .reg) continue;
+        const addr_name = module.symbols[item.operands[0].reg];
+        if (std.mem.indexOf(u8, addr_name, "__vec_set_item_") == null) continue;
+        const value_reg = item.operands[2].reg;
+        try std.testing.expect(value_reg != h);
+        var loaded_from_h = false;
+        for (module.instructions[function_start..function_end]) |producer| {
+            if (producer.kind == .load and producer.operands[0] == .reg and
+                producer.operands[0].reg == value_reg and
+                producer.operands[1] == .reg and producer.operands[1].reg == h)
+            {
+                loaded_from_h = true;
+            }
+        }
+        if (loaded_from_h) saw_vec_store = true;
+    }
+    try std.testing.expect(saw_vec_store);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sab backend passes homed stack slot to extern out param" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_homing_extern.sla",
+        ".sla-cache/sab/homing_extern_direct.sab",
+        stderr_buf.writer().any(),
+        .{ .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    const function_idx = for (module.function_sigs, 0..) |fsig, idx| {
+        if (std.mem.eql(u8, fsig.name, "sla__read_byte")) break idx;
+    } else return error.TestUnexpectedResult;
+    const function_start: usize = @intCast(module.function_sigs[function_idx].entry_inst_idx);
+    const function_end: usize = if (function_idx + 1 < module.function_sigs.len)
+        @intCast(module.function_sigs[function_idx + 1].entry_inst_idx)
+    else
+        module.instructions.len;
+
+    // `let kind` / `let code` are borrowed by the extern call, so they home
+    // to stack slots; the call must pass the slot addresses (&kind, &code).
+    var saw_kind_slot = false;
+    var saw_code_slot = false;
+    var saw_call_with_slots = false;
+    for (module.instructions[function_start..function_end]) |item| {
+        if (item.kind == .stack_alloc and item.operands[0] == .reg) {
+            const name = module.symbols[item.operands[0].reg];
+            if (std.mem.eql(u8, name, "kind")) saw_kind_slot = true;
+            if (std.mem.eql(u8, name, "code")) saw_code_slot = true;
+        }
+        if (item.kind == .call and item.operands[1] == .text) {
+            const body = item.operands[1].text;
+            if (std.mem.indexOf(u8, body, "@fake_read_event") != null and
+                std.mem.indexOf(u8, body, "&kind") != null and
+                std.mem.indexOf(u8, body, "&code") != null)
+            {
+                saw_call_with_slots = true;
+            }
+        }
+    }
+    try std.testing.expect(saw_kind_slot);
+    try std.testing.expect(saw_code_slot);
+    try std.testing.expect(saw_call_with_slots);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+

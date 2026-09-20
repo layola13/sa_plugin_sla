@@ -1,0 +1,15 @@
+@import "test_unit_homing_macros.sa"
+
+fn store_homed(v: u64) -> u64 {
+    let ch: u64 = v;
+    let slot: u64 = 0;
+    X_STORE_U64(slot, ch);
+    return slot;
+}
+
+@test "homing value arg is loaded"() {
+    let got: u64 = store_homed(99);
+    if got != 99 {
+        panic(19022);
+    };
+}

@@ -1,0 +1,8 @@
+@import "sa_std/vec.sa"
+[MACRO] X_STORE_U64 %slot, %value
+    store %slot+0, %value as u64
+[END_MACRO]
+
+[MACRO] X_VEC_SET_U64L %vec_reg, %index, %value
+    EXPAND VEC_SET_TYPED %vec_reg, %index, %value, 8, u64
+[END_MACRO]

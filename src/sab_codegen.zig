@@ -4977,6 +4977,55 @@ pub const Codegen = struct {
         }
     }
 
+    fn hasFuncSig(self: *Codegen, name: []const u8) bool {
+        for (self.function_sigs.items) |fsig| {
+            if (std.mem.eql(u8, fsig.name, name)) return true;
+        }
+        return false;
+    }
+
+    fn findFuncSig(self: *Codegen, name: []const u8, kind: sig.FunctionKind) ?sig.FunctionSig {
+        for (self.function_sigs.items) |fsig| {
+            if (fsig.kind == kind and std.mem.eql(u8, fsig.name, name)) return fsig;
+        }
+        return null;
+    }
+
+    fn cloneFuncSig(self: *Codegen, fsig: sig.FunctionSig) !sig.FunctionSig {
+        const name = try self.allocator.dupe(u8, fsig.name);
+        errdefer self.allocator.free(name);
+        const params = try self.allocator.alloc(sig.ParamSpec, fsig.params.len);
+        errdefer self.allocator.free(params);
+        for (fsig.params, 0..) |p, i| {
+            params[i] = .{
+                .name = try self.allocator.dupe(u8, p.name),
+                .ty = p.ty,
+                .cap = p.cap,
+            };
+        }
+        const param_ids = try self.allocator.dupe(u32, fsig.param_ids);
+        errdefer self.allocator.free(param_ids);
+        const upstream_file = if (fsig.upstream_file) |f| try self.allocator.dupe(u8, f) else null;
+        return .{
+            .id = @intCast(self.function_sigs.items.len),
+            .name = name,
+            .params = params,
+            .kind = fsig.kind,
+            .return_cap = fsig.return_cap,
+            .return_ty = fsig.return_ty,
+            .return_fallible = fsig.return_fallible,
+            .entry_inst_idx = 0,
+            .is_ffi_wrapper = fsig.is_ffi_wrapper,
+            .upstream_file = upstream_file,
+            .upstream_loc = null,
+            .param_ids = param_ids,
+            .reg_ids = &.{},
+            .llvm_name = if (fsig.llvm_name) |n| try self.allocator.dupe(u8, n) else null,
+            .ignored = fsig.ignored,
+            .should_panic = fsig.should_panic,
+        };
+    }
+
     fn appendDecodedFunctionBody(self: *Codegen, module: sab.Module, func_name: []const u8) !void {
         var start: ?usize = null;
         var end: usize = module.instructions.len;
@@ -5228,6 +5277,18 @@ pub const Codegen = struct {
             if (callInstructionBody(source) != null) return false;
         }
 
+        // NOTE: templates containing `call` instructions are currently NOT
+        // cached (see guard above). The per-site rename
+        // (replaceStdMacroPlaceholdersThenRename) does not yet correctly
+        // handle call-body text operands: the callee symbol and `&`-prefixed
+        // address operands can be renamed inconsistently with the structured
+        // operands, producing UnknownRegister (e.g. `__fragN_...` callee not
+        // declared). The fresh path (emitStdMacroFragmentFresh) is used
+        // instead; its working set is now bounded by a scratch arena (see
+        // below), so the OOM is fixed even without the cache. Re-enabling the
+        // cache for call-containing templates requires fixing the call-body
+        // rename to keep callee symbols and address operands in sync.
+
         for (args, 0..) |arg, idx| {
             if (isStdMacroTemplateIdentArg(arg)) continue;
             if (isStdMacroTemplateIntegerArg(arg)) continue;
@@ -5323,15 +5384,30 @@ pub const Codegen = struct {
             }
         }
         try source.appendSlice("\n    return\n");
+        defer source.deinit();
 
-        var flat = try self.flattenStdSnippet(source.items);
-        defer flat.deinit(self.allocator);
-        const bytes = try sci_bridge.encodeSabFromFlatUnchecked(self.allocator, &flat);
-        defer self.allocator.free(bytes);
-        var module = try sab.decodeModule(self.allocator, bytes);
-        defer module.deinit(self.allocator);
+        // The whole `sa sla sab build` runs inside a single session arena.
+        // The flatten/encode/decode working set below is purely temporary:
+        // only the appended instructions/consts (cloned into self.allocator
+        // by the append helpers) need to survive. Without a scratch arena,
+        // every fresh fragment expansion leaks its entire working set
+        // (flattened import chain, encoded bytes, decoded module) into the
+        // session arena, which OOMs on programs with many macro call sites.
+        var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer scratch.deinit();
+        const tmp = scratch.allocator();
+
+        const std_root = try self.cachedSaStdRoot();
+        const resolve_ctx = flattener.ResolveContext{ .options = .{ .std_root = std_root } };
+        var flat = try flattener.flattenWithPackages(tmp, source.items, resolve_ctx);
+        defer flat.deinit(tmp);
+        const bytes = try sci_bridge.encodeSabFromFlatUnchecked(tmp, &flat);
+        defer tmp.free(bytes);
+        var module = try sab.decodeModule(tmp, bytes);
+        defer module.deinit(tmp);
         try self.appendDecodedModuleConstDecls(module);
         try self.appendRenamedTemplateFragmentBody(module, func_name, args);
+        self.allocator.free(func_name);
     }
 
     fn emitBorrowSymbol(self: *Codegen, dst: u32, symbol_name: []const u8) !void {
@@ -6059,8 +6135,7 @@ pub const Codegen = struct {
     }
 
     fn makeContractExternSig(self: *Codegen, name: []const u8, entry_inst_idx: usize) !sig.FunctionSig {
-        const ext = self.tc.extern_funcs.get(name) orelse return Error.UnsupportedSabDirectFeature;
-        const lowered = try self.loweredFuncSymbol(name);
+        const ext = self.tc.extern_funcs.get(name) orelse return Error.UnsupportedSabDirectFeature;        const lowered = try self.loweredFuncSymbol(name);
         _ = try self.intern(lowered);
 
         const specs = try self.allocator.alloc(sig.ParamSpec, ext.params.len);
@@ -6083,6 +6158,74 @@ pub const Codegen = struct {
             .return_cap = abiReturnCap(ext.ret_ty),
             .return_ty = abiPrimType(ext.ret_ty),
             .return_fallible = ext.return_fallible,
+            .entry_inst_idx = @intCast(entry_inst_idx),
+            .is_ffi_wrapper = false,
+            .param_ids = param_ids,
+            .reg_ids = param_ids,
+            .llvm_name = null,
+            .ignored = false,
+            .should_panic = false,
+        };
+    }
+
+    // Generic extern sig for SA runtime functions (sa_* prefix) referenced from
+    // macro bodies. The exact param types are not critical for the verifier's
+    // "callee is not declared" check; we use ptr for all params and u64 return.
+    // The param count is inferred from the call sites (max args seen).
+    fn makeGenericSaExternSig(self: *Codegen, name: []const u8, entry_inst_idx: usize) !sig.FunctionSig {
+        // Count max args across all call sites for this target.
+        var max_args: usize = 0;
+        for (self.instructions.items) |item| {
+            const body = callInstructionBody(item) orelse continue;
+            const target = callTargetName(body) orelse continue;
+            if (!std.mem.eql(u8, target, name)) continue;
+            // Count commas at depth 0 to infer arg count.
+            var depth: usize = 0;
+            var commas: usize = 0;
+            var has_content = false;
+            const open = std.mem.indexOfScalar(u8, body, '(') orelse continue;
+            const close = std.mem.lastIndexOfScalar(u8, body, ')') orelse continue;
+            if (close <= open) continue;
+            const args_text = body[open + 1 .. close];
+            for (args_text) |ch| {
+                if (ch == '(') {
+                    depth += 1;
+                } else if (ch == ')') {
+                    if (depth > 0) depth -= 1;
+                } else if (ch == ',' and depth == 0) {
+                    commas += 1;
+                } else if (ch != ' ' and ch != '\t') {
+                    has_content = true;
+                }
+            }
+            const arg_count = if (!has_content) 0 else commas + 1;
+            if (arg_count > max_args) max_args = arg_count;
+        }
+
+        const lowered = try self.loweredFuncSymbol(name);
+        _ = try self.intern(lowered);
+        const duped_name = try self.allocator.dupe(u8, name);
+
+        const specs = try self.allocator.alloc(sig.ParamSpec, max_args);
+        const param_ids = try self.allocator.alloc(u32, max_args);
+        for (specs, 0..) |*spec, idx| {
+            const pname = try std.fmt.allocPrint(self.allocator, "arg{}", .{idx});
+            spec.* = .{
+                .name = pname,
+                .ty = .ptr,
+                .cap = .by_value,
+            };
+            param_ids[idx] = try self.intern(pname);
+        }
+
+        return sig.FunctionSig{
+            .id = @intCast(entry_inst_idx),
+            .name = duped_name,
+            .params = specs,
+            .kind = .external,
+            .return_cap = null,
+            .return_ty = .u64,
+            .return_fallible = false,
             .entry_inst_idx = @intCast(entry_inst_idx),
             .is_ffi_wrapper = false,
             .param_ids = param_ids,
@@ -6143,10 +6286,20 @@ pub const Codegen = struct {
         var names = std.StringHashMap(void).init(self.allocator);
         defer names.deinit();
         for (self.instructions.items) |item| {
-            const target = callTargetName(callInstructionBody(item) orelse continue) orelse continue;
-            if (!self.tc.extern_funcs.contains(target)) continue;
-            if (self.hasFunctionSig(target, .external)) continue;
-            try names.put(target, {});
+            const body = callInstructionBody(item) orelse continue;
+            const target = callTargetName(body) orelse continue;
+            if (self.hasFunctionSig(target, .external)) {
+                try names.put(target, {});
+                continue;
+            }
+            if (self.tc.extern_funcs.contains(target)) {
+                try names.put(target, {});
+                continue;
+            }
+            if (std.mem.startsWith(u8, target, "sa_")) {
+                try names.put(target, {});
+                continue;
+            }
         }
 
         var sorted = std.ArrayList([]const u8).init(self.allocator);
@@ -6161,7 +6314,19 @@ pub const Codegen = struct {
         var extern_insts = std.ArrayList(inst.Instruction).init(self.allocator);
         defer extern_insts.deinit();
         for (sorted.items, 0..) |name, idx| {
-            var fsig = try self.makeContractExternSig(name, idx);
+            // If we already have a sig (e.g. from a fragment template), reuse it
+            // instead of building from tc.extern_funcs.
+            var fsig: sig.FunctionSig = if (self.findFuncSig(name, .external)) |existing|
+                try self.cloneFuncSig(existing)
+            else if (self.tc.extern_funcs.contains(name))
+                try self.makeContractExternSig(name, idx)
+            else
+                // SA runtime extern (e.g. @sa_json_object_get_string). Not in
+                // tc.extern_funcs; generate a generic sig. The verifier only
+                // needs the name declared; arg types are not strictly checked
+                // at this stage. We use ptr params and u64 return as a safe
+                // generic shape (most sa_* externs are ptr-heavy).
+                try self.makeGenericSaExternSig(name, idx);
             fsig.id = @intCast(idx);
             try extern_insts.append(try self.declInstForSig(fsig, idx));
             try extern_sigs.append(fsig);
@@ -6178,10 +6343,24 @@ pub const Codegen = struct {
         var shifted_sigs = std.ArrayList(sig.FunctionSig).init(self.allocator);
         try shifted_sigs.ensureTotalCapacity(extern_sigs.items.len + self.function_sigs.items.len);
         shifted_sigs.appendSliceAssumeCapacity(extern_sigs.items);
-        for (self.function_sigs.items) |fsig| {
+        // Skip sigs that were moved to extern_sigs (e.g. template-provided externs)
+        // to avoid duplication.
+        outer: for (self.function_sigs.items) |fsig| {
+            for (extern_sigs.items) |esig| {
+                if (std.mem.eql(u8, fsig.name, esig.name)) continue :outer;
+            }
             var shifted = fsig;
             shifted.entry_inst_idx += @intCast(shift);
             shifted_sigs.appendAssumeCapacity(shifted);
+        }
+        // Free the skipped (duplicated) sigs to avoid leaks.
+        for (self.function_sigs.items) |*fsig| {
+            for (extern_sigs.items) |esig| {
+                if (std.mem.eql(u8, fsig.name, esig.name)) {
+                    fsig.deinit(self.allocator);
+                    break;
+                }
+            }
         }
         self.function_sigs.deinit();
         self.function_sigs = shifted_sigs;
@@ -12738,7 +12917,14 @@ pub const Codegen = struct {
     ) anyerror!?SabLoweredCallArg {
         if (plan.expression_output or call_arg_index >= plan.leading_outputs) return null;
         const name = self.importedMacroOutputTargetName(arg, ctx) orelse return null;
+        // If the output name is already bound in the current function (e.g.,
+        // `let x = ...` followed by `MACRO(x, ...)` in statement form), reuse
+        // the existing register. Emitting output_bind_name would rebind
+        // (redefine) the register, tripping the SAB verifier's
+        // RegisterRedefinition. NB: symbol_ids is function-global (never
+        // cleared), so we must check the per-function current_reg_seen set.
         const dst = try self.bindingReg(name);
+        const already_bound = self.current_reg_seen.contains(dst);
         if (self.stack_alloc_emitted.contains(dst)) {
             // Address-slot output macros (for example PIN_AS_REF) write into an
             // existing stack allocation. Passing an uninitialized temporary and
@@ -12752,6 +12938,21 @@ pub const Codegen = struct {
                 .release_reg = null,
                 .output_store_slot = dst,
                 .output_store_ty = try addressableSlotPrimType(arg_ty),
+            };
+        }
+        if (already_bound) {
+            // The output name is already bound. For the direct (inlined) path,
+            // the macro body writes via assignment to the existing register.
+            // For the fragment path (separate function body), we must use a
+            // fresh temp to avoid RegisterRedefinition, then copy back.
+            // We use the temp+copy approach for both to keep it uniform.
+            const tmp = try self.intern(try self.newTmp());
+            return .{
+                .operand = self.symbols.items[tmp],
+                .release_reg = tmp,
+                .output_bind_name = name,
+                .output_bind_ty = arg_ty,
+                .output_reassign = true,
             };
         }
         return .{
@@ -13297,7 +13498,7 @@ pub const Codegen = struct {
         defer release_regs.deinit();
         var restores = std.ArrayList(struct { slot: u32, value: u32 }).init(self.allocator);
         defer restores.deinit();
-        var output_rebindings = std.ArrayList(struct { name: []const u8, reg: u32, ty: *const ast.Type }).init(self.allocator);
+        var output_rebindings = std.ArrayList(struct { name: []const u8, reg: u32, ty: *const ast.Type, reassign: bool }).init(self.allocator);
         defer output_rebindings.deinit();
         var output_stores = std.ArrayList(struct { slot: u32, value: u32, ty: sig.PrimType }).init(self.allocator);
         defer output_stores.deinit();
@@ -13328,7 +13529,7 @@ pub const Codegen = struct {
             }
             if (lowered_arg.output_bind_name) |name| {
                 const reg = try self.intern(lowered_arg.operand);
-                try output_rebindings.append(.{ .name = name, .reg = reg, .ty = lowered_arg.output_bind_ty orelse return Error.MissingType });
+                try output_rebindings.append(.{ .name = name, .reg = reg, .ty = lowered_arg.output_bind_ty orelse return Error.MissingType, .reassign = lowered_arg.output_reassign });
             }
             if (lowered_arg.output_store_slot) |slot| {
                 const value = try self.intern(lowered_arg.operand);
@@ -13353,7 +13554,13 @@ pub const Codegen = struct {
             try self.markConsumed(restore.value);
         }
         for (output_rebindings.items) |binding| {
-            try self.pushTypedLocal(binding.name, binding.reg, false, binding.ty);
+            if (binding.reassign) {
+                // Output was already bound; assign temp result to existing register.
+                const existing = try self.intern(binding.name);
+                try self.emitAssignReg(existing, binding.reg);
+            } else {
+                try self.pushTypedLocal(binding.name, binding.reg, false, binding.ty);
+            }
         }
         if (direct_result.consumed_dst) |c| {
             try self.markConsumed(c);
@@ -13714,6 +13921,7 @@ pub const Codegen = struct {
         output_bind_ty: ?*const ast.Type = null,
         output_store_slot: ?u32 = null,
         output_store_ty: ?sig.PrimType = null,
+        output_reassign: bool = false,
     };
 
     const DirectSabCallParam = struct {

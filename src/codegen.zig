@@ -1848,6 +1848,15 @@ pub const Codegen = struct {
             try self.genUserMacroCallInline(macro_decl, call, hoisted_allocs);
             return;
         }
+        // Extern callees must apply the same ABI capability markers (&/^) as the
+        // expression form (genExternPayloadCall). The generic fallthrough below
+        // drops them, producing CapabilityMismatch at verify time. Only void
+        // externs reach here (isVoidCall gates on ret_ty == "void"), so the
+        // fallible payload path is not needed.
+        if (self.tc.extern_funcs.get(call.func_name)) |ext| {
+            try self.genExternStmtCall(call, ext, hoisted_allocs);
+            return;
+        }
         if (call.associated_target) |target| {
             if (lowering_rules.isMemForgetCall(call.*)) {
                 if (call.args.len != 1) return CodegenError.CodegenError;
@@ -2087,6 +2096,56 @@ pub const Codegen = struct {
         self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
         try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
         return reg;
+    }
+
+    /// Statement-form extern call (callee returns void). Applies the same ABI
+    /// capability markers as genExternPayloadCall so the statement form and the
+    /// expression form stay in parity (and match the SAB backend).
+    fn genExternStmtCall(
+        self: *Codegen,
+        call: *const ast.CallExpr,
+        ext: contract_parser.ExternalFunction,
+        hoisted_allocs: *const std.ArrayList([]const u8),
+    ) CodegenError!void {
+        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        defer arg_regs.deinit();
+        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        defer arg_release_regs.deinit();
+        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+        defer arg_consume_regs.deinit();
+
+        for (call.args, 0..) |arg, i| {
+            const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
+            defer self.popExprLaterNodesTo(sibling_mark);
+            const planned_param = if (i < ext.params.len) try self.externPtrParamAsAstParam(ext.params[i]) else null;
+            const lowered_arg = try self.genPlannedCallArg(arg, hoisted_allocs, .{
+                .param = planned_param,
+                .arg_index = i,
+            });
+            const arg_reg = if (i < ext.params.len) switch (abiCallArgPrefix(ext.params[i])) {
+                .borrow => try self.abiPrefixedArg('&', lowered_arg.reg),
+                .move => try self.abiPrefixedArg('^', lowered_arg.reg),
+                .none => lowered_arg.reg,
+            } else lowered_arg.reg;
+            arg_regs.append(arg_reg) catch return CodegenError.OutOfMemory;
+            try self.appendExternLoweredCallArgCleanups(
+                &arg_release_regs,
+                &arg_consume_regs,
+                lowered_arg,
+                if (i < ext.params.len) ext.params[i] else null,
+                arg_reg,
+            );
+        }
+
+        const lowered_call = try self.loweredFuncSymbol(call.func_name);
+        defer self.allocator.free(lowered_call);
+        self.out.writer().print("    call @{s}(", .{lowered_call}) catch return CodegenError.CodegenError;
+        for (arg_regs.items, 0..) |arg_reg, i| {
+            if (i > 0) self.out.writer().print(", ", .{}) catch return CodegenError.CodegenError;
+            self.out.writer().print("{s}", .{arg_reg}) catch return CodegenError.CodegenError;
+        }
+        self.out.writer().print(")\n", .{}) catch return CodegenError.CodegenError;
+        try self.emitLoweredCallArgCleanups(arg_release_regs.items, arg_consume_regs.items, call.func_name);
     }
 
     fn emitPrintln(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
@@ -8925,8 +8984,29 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
+            // Assignment `p = ...` rebinds the name: the old value is dead
+            // after this statement. This matters for `p = f(p)`: the RHS `p`
+            // (old value) must be moved, not cloned, because later syntactic
+            // uses of `p` refer to the NEW binding.
+            .assign_stmt => |assign| blk: {
+                if (assign.target.* == .identifier) {
+                    break :blk std.mem.eql(u8, assign.target.identifier, name);
+                }
+                break :blk false;
+            },
             else => false,
         };
+    }
+
+    /// Block-level identifier-use scan shared by nodeUsesIdentifier's
+    /// block-bearing statement forms. Mirrors the direct SAB backend's
+    /// blockUsesIdentifier (sab_codegen.zig).
+    fn blockStmtsUseIdentifier(body: []const *ast.Node, name: []const u8) bool {
+        for (body) |stmt| {
+            if (nodeUsesIdentifier(stmt, name)) return true;
+            if (nodeBindsIdentifier(stmt, name)) return false;
+        }
+        return false;
     }
 
     fn nodeUsesIdentifier(node: *const ast.Node, name: []const u8) bool {
@@ -8995,13 +9075,7 @@ pub const Codegen = struct {
                 }
                 break :blk false;
             },
-            .while_stmt => |w| blk: {
-                if (nodeUsesIdentifier(w.cond, name)) break :blk true;
-                for (w.body) |stmt| {
-                    if (nodeUsesIdentifier(stmt, name)) break :blk true;
-                }
-                break :blk false;
-            },
+            .while_stmt => |w| nodeUsesIdentifier(w.cond, name) or blockStmtsUseIdentifier(w.body, name),
             .for_stmt => |f| blk: {
                 if (nodeUsesIdentifier(f.start, name)) break :blk true;
                 if (f.end) |end_expr| {
@@ -9016,6 +9090,16 @@ pub const Codegen = struct {
             .expr_stmt => |e| nodeUsesIdentifier(e, name),
             .return_stmt => |r| if (r.value) |v| nodeUsesIdentifier(v, name) else false,
             .let_stmt => |let| nodeUsesIdentifier(let.value, name),
+            // NOTE: keep in parity with the direct SAB backend's
+            // nodeUsesIdentifier (sab_codegen.zig). Missing statement forms
+            // here make identifierMustStayLiveForLaterUse miss later uses,
+            // which used to skip the Vec-clone before a ^ move call and
+            // produced a false UseAfterMove (e.g. `let (a, b) = f(entries)`
+            // after an earlier `f(entries)` call).
+            .let_else_stmt => |let| nodeUsesIdentifier(let.value, name) or blockStmtsUseIdentifier(let.else_block, name),
+            .let_destructure_stmt => |let| nodeUsesIdentifier(let.value, name),
+            .const_stmt => |constant| nodeUsesIdentifier(constant.value, name),
+            .block_stmt => |block| blockStmtsUseIdentifier(block.body, name),
             .assign_stmt => |a| nodeUsesIdentifier(a.target, name) or nodeUsesIdentifier(a.value, name),
             .switch_expr => |switch_expr| nodeUsesIdentifier(switch_expr.val, name),
             .match_expr => |match_expr| nodeUsesIdentifier(match_expr.val, name),
@@ -9051,6 +9135,17 @@ pub const Codegen = struct {
     }
 
     fn identifierMustStayLiveForLaterUse(self: *Codegen, name: []const u8) bool {
+        // If the current statement rebinds the name (e.g. `p = f(p)`), the
+        // OLD value is dead after this statement. Later syntactic uses of
+        // the name refer to the NEW binding, not the old value being passed
+        // as an argument right now. Do not clone; move the old value.
+        if (self.current_block) |block| {
+            if (self.current_stmt_index < block.len) {
+                if (nodeBindsIdentifier(block[self.current_stmt_index], name)) {
+                    return false;
+                }
+            }
+        }
         if (self.identifierUsedLaterInCurrentExpr(name) or self.identifierUsedLaterInCurrentBlock(name)) return true;
         // Loop back-edge: outer/param bindings that the body reads must remain
         // Active across iterations even when the current statement is the only

@@ -1,0 +1,72 @@
+@import "sa_std/io.sai"
+@import "sa_std/string.sa"
+@import "sa_std/vec.sa"
+
+// Regression: statement-form extern calls used to drop the ABI capability
+// marker on borrow/move ptr params. `sa_print_bytes(&msg: ptr, len: u64)`
+// called in statement position with a struct-field ptr emitted
+//   call @sa_print_bytes(tmp_924, tmp_927)
+// (missing the `&`), and verification failed with CapabilityMismatch.
+// The expression form (genExternPayloadCall) and the direct SAB backend
+// always emitted the marker. Both backends must accept this program:
+// run with --test-backend sa and --test-backend sab (SLA_SAB_NO_FALLBACK=1).
+
+struct PrintField {
+    name_ptr: ptr,
+    name_len: u64,
+}
+
+fn print_field_name(f: &PrintField) {
+    // Statement form: the callee is a void extern, so this goes through
+    // genCallStmt, not genExpr.
+    sa_print_bytes(f.name_ptr, f.name_len);
+}
+
+@test "statement extern borrow ptr keeps & marker"() {
+    let src = STR_PTR("ok");
+    let f = PrintField { name_ptr: src, name_len: 2 };
+    print_field_name(&f);
+}
+
+@test "statement extern borrow ptr on local keeps & marker"() {
+    let src = STR_PTR("ok");
+    // Direct local (no struct field): same statement-form path.
+    sa_print_bytes(src, 2);
+}
+
+struct TomlEntry {
+    key_ptr: ptr,
+    val_ptr: ptr,
+}
+
+fn make_test_entries() -> Vec<TomlEntry> {
+    let v: Vec<TomlEntry> = Vec::new();
+    return v;
+}
+
+fn test_layer_get_str(entries: Vec<TomlEntry>, key: u64) -> (u64, u64, bool) {
+    return (len(entries) + key, 0, true);
+}
+
+@test "vec arg to move param cloned when later use is a destructure"() {
+    // Regression: SA-text nodeUsesIdentifier missed .let_destructure_stmt
+    // (and .let_else_stmt/.const_stmt/.block_stmt/.while_stmt), so
+    // identifierMustStayLiveForLaterUse returned false, the Vec was moved
+    // (^entries) instead of cloned, and the second call failed with a
+    // false UseAfterMove. The direct SAB backend always handled these.
+    let entries = make_test_entries();
+    let (a, x, ok1) = test_layer_get_str(entries, 1);
+    let (b, y, ok2) = test_layer_get_str(entries, 2);
+    if a != 1 {
+        panic(61001);
+    };
+    if b != 2 {
+        panic(61002);
+    };
+    if ok1 != true {
+        panic(61003);
+    };
+    if ok2 != true {
+        panic(61004);
+    };
+}

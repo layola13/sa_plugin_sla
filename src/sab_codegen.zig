@@ -5184,13 +5184,18 @@ pub const Codegen = struct {
         const name = try self.allocator.dupe(u8, fsig.name);
         errdefer self.allocator.free(name);
         const params = try self.allocator.alloc(sig.ParamSpec, fsig.params.len);
-        errdefer self.allocator.free(params);
+        var params_init: usize = 0;
+        errdefer {
+            for (params[0..params_init]) |p| self.allocator.free(p.name);
+            self.allocator.free(params);
+        }
         for (fsig.params, 0..) |p, i| {
             params[i] = .{
                 .name = try self.allocator.dupe(u8, p.name),
                 .ty = p.ty,
                 .cap = p.cap,
             };
+            params_init = i + 1;
         }
         const param_ids = try self.allocator.dupe(u32, fsig.param_ids);
         errdefer self.allocator.free(param_ids);

@@ -50,8 +50,29 @@ pub fn markDirectAddressSlotMacroParams(allocator: std.mem.Allocator, mask: *u64
     for (param_names) |param| {
         const needle = try std.fmt.allocPrint(allocator, "%{s}+", .{param});
         defer allocator.free(needle);
-        if (std.mem.indexOf(u8, line, needle) != null) markBorrowedParam(mask, param_names, param);
+        // The `%param+` reference must be a standalone token: a `%` preceded
+        // by an identifier character is a hygiene suffix embedded in another
+        // variable (e.g. `__xosp_s_%out_ptr+0` embeds `%out_ptr` but is not
+        // address arithmetic on `%out_ptr` itself). Without the boundary
+        // check, such macros are misclassified as direct-address-slot
+        // writers and the caller's slot register gets redefined by the
+        // macro body's `%out = load ...` assignment.
+        var search_from: usize = 0;
+        while (search_from < line.len) {
+            const rel = std.mem.indexOf(u8, line[search_from..], needle) orelse break;
+            const abs = search_from + rel;
+            const boundary_ok = abs == 0 or !isMacroIdentChar(line[abs - 1]);
+            if (boundary_ok) {
+                markBorrowedParam(mask, param_names, param);
+                break;
+            }
+            search_from = abs + 1;
+        }
     }
+}
+
+fn isMacroIdentChar(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
 }
 
 pub fn markExpandedImportedMacroParamMasks(
@@ -216,8 +237,10 @@ fn macroIndexCachePath(allocator: std.mem.Allocator, import_path: []const u8, ex
     hasher.update(import_path);
     hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
     hasher.update(expanded_source);
-    // Cache format v5: has_direct_out_assignment recorded to gate EXPAND recursion.
-    hasher.update("idx-format-v5");
+    // Cache format v6: has_direct_out_assignment recorded to gate EXPAND recursion;
+    // address-slot classification requires a token boundary before `%param+`
+    // (hygiene-suffix false positives like `__xosp_s_%out_ptr+0` fixed).
+    hasher.update("idx-format-v6");
     const digest = hasher.final();
     const stem = std.fs.path.basename(import_path);
     return try std.fmt.allocPrint(allocator, ".sla-cache/macros/{s}-{x}.idx", .{ stem, digest });

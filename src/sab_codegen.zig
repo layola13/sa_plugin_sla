@@ -835,7 +835,24 @@ pub const Codegen = struct {
                 try self.collectAssignedBindingsInNode(bin.left);
                 try self.collectAssignedBindingsInNode(bin.right);
             },
-            .call_expr => |call| for (call.args) |arg| try self.collectAssignedBindingsInNode(arg),
+            .call_expr => |call| {
+                // Imported macro statement invocations write their leading-output
+                // args (e.g. `X_OBJ_STR_PTR(out, ...)` assigns `out`). Record
+                // those identifier args as assigned so `let` bindings home to a
+                // scalar-reassign stack slot — the same treatment plain
+                // `x = ...` assignments get. Without this, a `let` binding used
+                // as a macro output lowers to a plain SSA register and the
+                // macro's write-back trips the verifier's RegisterRedefinition.
+                if (lowering_rules.planImportedMacroCall(self.tc, call)) |plan| {
+                    if (!plan.expression_output) {
+                        const leading = @min(plan.leading_outputs, call.args.len);
+                        for (call.args[0..leading]) |arg| {
+                            if (lowering_rules.rootIdentifier(arg)) |name| try self.assigned_bindings.put(name, {});
+                        }
+                    }
+                }
+                for (call.args) |arg| try self.collectAssignedBindingsInNode(arg);
+            },
             .field_expr => |field| try self.collectAssignedBindingsInNode(field.expr),
             .struct_literal => |lit| {
                 for (lit.fields) |field| try self.collectAssignedBindingsInNode(field.value);
@@ -4195,7 +4212,82 @@ pub const Codegen = struct {
             self.fragment_rename = prev_rename;
             self.fragment_rename_args = prev_args;
         }
+        const body_start = self.instructions.items.len;
         try self.appendDecodedFragmentTemplateFunctionBody(module, func_name, args);
+        try self.releaseDeadFragmentCallDests(body_start);
+    }
+
+    /// A register is fragment-internal when its symbol carries the inliner's
+    /// hygiene prefix (`__frag<N>_`). Caller args pass through unrenamed, so
+    /// this distinguishes inliner-owned temps from caller-owned outputs.
+    fn isFragmentInternalRegName(name: []const u8) bool {
+        const prefix = "__frag";
+        if (!std.mem.startsWith(u8, name, prefix)) return false;
+        var idx: usize = prefix.len;
+        const digits_start = idx;
+        while (idx < name.len and std.ascii.isDigit(name[idx])) : (idx += 1) {}
+        if (idx == digits_start or idx >= name.len or name[idx] != '_') return false;
+        return true;
+    }
+
+    fn fragmentTextReferencesSymbol(text: []const u8, name: []const u8) bool {
+        var i: usize = 0;
+        while (i < text.len) {
+            const rel = std.mem.indexOf(u8, text[i..], name) orelse return false;
+            const abs = i + rel;
+            const before_ok = abs == 0 or !lowering_rules.isIdentChar(text[abs - 1]);
+            const after_idx = abs + name.len;
+            const after_ok = after_idx >= text.len or !lowering_rules.isIdentChar(text[after_idx]);
+            if (before_ok and after_ok) return true;
+            i = abs + 1;
+        }
+        return false;
+    }
+
+    /// Release fragment-internal call destinations that the inlined body
+    /// never reads. Macro bodies routinely ignore call status temps (for
+    /// example `__xosp_st_%out = call @sa_json_object_get_string(...)`);
+    /// because the inliner hygiene-uniquifies these names, no later
+    /// instruction can reference them, so leaving them live trips the
+    /// verifier's function-exit MemoryLeak. Caller-owned outputs (unrenamed
+    /// args) are never touched. Conservative: fragments with control flow
+    /// are skipped, since a def inside a branch may not dominate the
+    /// release point.
+    fn releaseDeadFragmentCallDests(self: *Codegen, body_start: usize) !void {
+        const items = self.instructions.items[body_start..];
+        for (items) |item| {
+            switch (item.kind) {
+                .label, .jmp, .br, .br_null => return,
+                else => {},
+            }
+        }
+        for (items, 0..) |item, i| {
+            if (item.kind != .call and item.kind != .call_indirect) continue;
+            if (item.operands[0] != .reg) continue;
+            const dest = item.operands[0].reg;
+            if (!isFragmentInternalRegName(self.symbols.items[dest])) continue;
+            if (self.released_regs.contains(dest)) continue;
+            const name = self.symbols.items[dest];
+            var referenced = false;
+            for (items, 0..) |other, j| {
+                for (other.operands, 0..) |operand, k| {
+                    if (j == i and k == 0) continue; // the def itself
+                    switch (operand) {
+                        .reg => |r| if (r == dest) {
+                            referenced = true;
+                            break;
+                        },
+                        .text => |text| if (fragmentTextReferencesSymbol(text, name)) {
+                            referenced = true;
+                            break;
+                        },
+                        else => {},
+                    }
+                }
+                if (referenced) break;
+            }
+            if (!referenced) try self.emitRelease(dest);
+        }
     }
 
     fn cloneOptionalText(self: *Codegen, text: ?[]const u8) !?[]const u8 {
@@ -6313,22 +6405,25 @@ pub const Codegen = struct {
         defer extern_sigs.deinit();
         var extern_insts = std.ArrayList(inst.Instruction).init(self.allocator);
         defer extern_insts.deinit();
-        for (sorted.items, 0..) |name, idx| {
-            // If we already have a sig (e.g. from a fragment template), reuse it
-            // instead of building from tc.extern_funcs.
-            var fsig: sig.FunctionSig = if (self.findFuncSig(name, .external)) |existing|
-                try self.cloneFuncSig(existing)
-            else if (self.tc.extern_funcs.contains(name))
-                try self.makeContractExternSig(name, idx)
+        for (sorted.items) |name| {
+            // If we already have a sig (e.g. from a fragment template), it is
+            // already declared in place; do NOT create a duplicate decl. The
+            // verifier pairs decl instructions with sigs by position (sig_index++),
+            // so a duplicate decl would desync the pairing and cause spurious
+            // verification failures. Only truly new externs get a prepended decl.
+            if (self.findFuncSig(name, .external) != null) continue;
+            const new_idx = extern_sigs.items.len;
+            var fsig: sig.FunctionSig = if (self.tc.extern_funcs.contains(name))
+                try self.makeContractExternSig(name, new_idx)
             else
                 // SA runtime extern (e.g. @sa_json_object_get_string). Not in
                 // tc.extern_funcs; generate a generic sig. The verifier only
                 // needs the name declared; arg types are not strictly checked
                 // at this stage. We use ptr params and u64 return as a safe
                 // generic shape (most sa_* externs are ptr-heavy).
-                try self.makeGenericSaExternSig(name, idx);
-            fsig.id = @intCast(idx);
-            try extern_insts.append(try self.declInstForSig(fsig, idx));
+                try self.makeGenericSaExternSig(name, new_idx);
+            fsig.id = @intCast(new_idx);
+            try extern_insts.append(try self.declInstForSig(fsig, new_idx));
             try extern_sigs.append(fsig);
         }
 
@@ -13555,9 +13650,14 @@ pub const Codegen = struct {
         }
         for (output_rebindings.items) |binding| {
             if (binding.reassign) {
-                // Output was already bound; assign temp result to existing register.
-                const existing = try self.intern(binding.name);
-                try self.emitAssignReg(existing, binding.reg);
+                // Output was already bound: this is an assignment to the
+                // existing binding. Route through assignToIdentifier so a
+                // homed binding gets a store to its stack slot and a plain
+                // register binding gets release+assign — exactly the same
+                // semantics as `name = value` in SLA source. A raw
+                // emitAssignReg here would trip the verifier's
+                // RegisterRedefinition on the already-live register.
+                try self.assignToIdentifier(binding.name, binding.reg);
             } else {
                 try self.pushTypedLocal(binding.name, binding.reg, false, binding.ty);
             }

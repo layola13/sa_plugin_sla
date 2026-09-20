@@ -12328,6 +12328,82 @@ pub const Codegen = struct {
         return iter_call.args[0];
     }
 
+    /// Detect `array.into_iter().fold(init, |acc, x| ...)` pattern.
+    fn arrayIterFoldSource(call: ast.CallExpr) ?struct { source: *ast.Node, init: *ast.Node, closure: *const ast.ClosureLiteral } {
+        if (!std.mem.eql(u8, call.func_name, "fold") or call.args.len != 3) return null;
+        const iter_expr = call.args[0];
+        if (iter_expr.* != .call_expr) return null;
+        const iter_call = &iter_expr.call_expr;
+        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
+        const closure_expr = call.args[2];
+        if (closure_expr.* != .closure_literal) return null;
+        return .{ .source = iter_call.args[0], .init = call.args[1], .closure = &closure_expr.closure_literal };
+    }
+
+    fn genFoldCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (arrayIterFoldSource(call)) |fold_src| {
+            const source_ty = self.tc.expr_types.get(fold_src.source) orelse return null;
+            if (lowering_rules.arrayType(source_ty)) |arr| {
+                return try self.genArrayIterFold(fold_src.source, arr, fold_src.init, fold_src.closure);
+            }
+        }
+        return null;
+    }
+
+    /// `array.into_iter().fold(init, |acc, x| body)`: unrolled loop that
+    /// inlines the binary fold closure. Mirrors SA-text genArrayIterFold.
+    fn genArrayIterFold(self: *Codegen, source: *ast.Node, arr: ast.ArrayType, init_expr: *ast.Node, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        if (closure.params.len != 2) return Error.UnsupportedSabDirectFeature;
+        const acc_ty = closure.params[0].ty;
+        const acc_size = lowering_rules.abiTypeSize(acc_ty);
+        const acc_prim = try storagePrimType(acc_ty);
+        const base_reg = try self.genExpr(@constCast(source));
+        const stride = arrayStride(arr.elem);
+        const elem_prim = try storagePrimType(arr.elem);
+        const init_reg = try self.genExpr(@constCast(init_expr));
+        // acc in stack slot.
+        const acc_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(acc_slot, acc_size);
+        try self.emitStore(acc_slot, 0, init_reg, acc_prim);
+        if (!self.isLocalReg(init_reg) and lowering_rules.callArgNeedsRelease(init_expr)) try self.emitRelease(init_reg);
+        const acc_param_name = closure.params[0].name;
+        const item_param_name = closure.params[1].name;
+        for (0..arr.len) |i| {
+            const elem_ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(elem_ptr, base_reg, .{ .imm_u64 = @intCast(stride * i) });
+            const item = try self.intern(try self.newTmp());
+            try self.emitLoad(item, elem_ptr, 0, elem_prim);
+            const acc_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(acc_reg, acc_slot, 0, acc_prim);
+            // Inline binary closure: bind acc and item params.
+            const saved_acc = self.closure_param_regs.get(acc_param_name);
+            const saved_item = self.closure_param_regs.get(item_param_name);
+            try self.closure_param_regs.put(acc_param_name, acc_reg);
+            try self.closure_param_regs.put(item_param_name, item);
+            const next_acc = try self.genExpr(@constCast(closure.body));
+            if (saved_acc) |old| {
+                try self.closure_param_regs.put(acc_param_name, old);
+            } else {
+                _ = self.closure_param_regs.remove(acc_param_name);
+            }
+            if (saved_item) |old| {
+                try self.closure_param_regs.put(item_param_name, old);
+            } else {
+                _ = self.closure_param_regs.remove(item_param_name);
+            }
+            try self.emitStore(acc_slot, 0, next_acc, acc_prim);
+            try self.emitRelease(elem_ptr);
+            try self.emitRelease(item);
+            try self.emitRelease(acc_reg);
+            if (next_acc != acc_reg and next_acc != item) try self.emitRelease(next_acc);
+        }
+        if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+        const result = try self.intern(try self.newTmp());
+        try self.emitLoad(result, acc_slot, 0, acc_prim);
+        try self.emitRelease(acc_slot);
+        return result;
+    }
+
     fn genIterSumCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
         if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
 
@@ -12926,6 +13002,37 @@ pub const Codegen = struct {
         const sentinel = try self.intern(try self.newTmp());
         try self.emitAssignImm(sentinel, 0);
         return sentinel;
+    }
+
+    /// `ManuallyDrop::new(value)` and `ManuallyDrop::into_inner(slot)`,
+    /// mirroring SA-text (MANUALLY_DROP_U64_NEW / MANUALLY_DROP_U64_INTO_INNER).
+    fn genManuallyDropCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (lowering_rules.isManuallyDropNewCall(call)) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const value_reg = try self.genExpr(@constCast(call.args[0]));
+            const dst = try self.intern(try self.newTmp());
+            try self.emitStackAlloc(dst, 8); // ManuallyDropU64_SIZE
+            try self.emitStdMacroFragment("sa_std/mem.sa", "MANUALLY_DROP_U64_NEW", &.{
+                self.symbols.items[dst],
+                self.symbols.items[value_reg],
+            });
+            if (!self.isLocalReg(value_reg) and lowering_rules.callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+            try self.recordReg(dst);
+            return dst;
+        }
+        if (lowering_rules.isManuallyDropIntoInnerCall(call)) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const slot_reg = try self.genExpr(@constCast(call.args[0]));
+            const dst = try self.intern(try self.newTmp());
+            try self.emitStdMacroFragment("sa_std/mem.sa", "MANUALLY_DROP_U64_INTO_INNER", &.{
+                self.symbols.items[dst],
+                self.symbols.items[slot_reg],
+            });
+            if (!self.isLocalReg(slot_reg)) try self.emitRelease(slot_reg);
+            try self.recordReg(dst);
+            return dst;
+        }
+        return null;
     }
 
     /// Direct-SAB `VecDeque::from([a, b, ...])`, mirroring the SA-text backend
@@ -14217,12 +14324,14 @@ pub const Codegen = struct {
         if (try self.genMpscSendCall(expr, call)) |reg| return reg;
         if (try self.genMpscRecvCall(expr, call)) |reg| return reg;
         if (try self.genMemForgetCall(expr, call)) |reg| return reg;
+        if (try self.genManuallyDropCall(call)) |reg| return reg;
         if (try self.genVecDequeFromCall(expr, call)) |reg| return reg;
         if (try self.genVecDequeRotateCall(expr, call)) |reg| return reg;
         if (try self.genFileOpenCall(expr, call)) |reg| return reg;
         if (try self.genFileAsRawFdCall(expr, call)) |reg| return reg;
         if (try self.genStructConstructorCall(expr, call)) |reg| return reg;
         if (try self.genIterSumCall(call)) |reg| return reg;
+        if (try self.genFoldCall(call)) |reg| return reg;
         if (try self.genArrayFillCall(call)) |reg| return reg;
         if (try self.genPtrBuiltinCall(expr, call)) |reg| return reg;
         if (try self.genPointerMethodCall(call)) |reg| return reg;

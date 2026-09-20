@@ -10720,9 +10720,36 @@ pub const Codegen = struct {
                         _ = self.consumed_bindings.remove(target_name);
                         return;
                     }
+                    const target_name = self.resolveBindingName(assign.target.identifier);
+                    // Check if this is the simple register case where we can use dest hint.
+                    const is_simple_case = self.bindingStorageAddress(target_name) == null and
+                        !self.assigned_value_slots.contains(target_name) and
+                        !self.addressable_bindings.contains(target_name) and
+                        !self.stack_alloc_bindings.contains(target_name);
+                    const can_adopt_assign = is_simple_case and lowering_rules.letTemporaryValueBecomesBindingOwner(
+                        target_ty.* == .primitive or target_ty.* == .fn_ptr or self.typeIsCopyStruct(target_ty),
+                        lowering_rules.isBorrowLikeType(target_ty),
+                    );
+                    if (can_adopt_assign) {
+                        // Release old value first, then emit RHS directly into target.
+                        try self.emitRelease(assign.target.identifier);
+                        self.let_dest_hint = target_name;
+                        // genExpr will increment depth by 1; hint must match that.
+                        self.let_dest_depth = self.expr_depth + 1;
+                        const val_reg_hint = try self.genExpr(assign.value, hoisted_allocs);
+                        self.let_dest_hint = null;
+                        if (std.mem.eql(u8, val_reg_hint, target_name)) {
+                            _ = self.consumed_bindings.remove(target_name);
+                            return;
+                        }
+                        // Hint not used; fall back to copy.
+                        const stored_val_reg_hint = if (assign.value.* == .move_expr and std.mem.startsWith(u8, val_reg_hint, "^")) val_reg_hint[1..] else val_reg_hint;
+                        self.out.writer().print("    {s} = add {s}, 0\n", .{ target_name, stored_val_reg_hint }) catch return CodegenError.CodegenError;
+                        _ = self.consumed_bindings.remove(target_name);
+                        return;
+                    }
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
                     const stored_val_reg = if (assign.value.* == .move_expr and std.mem.startsWith(u8, val_reg, "^")) val_reg[1..] else val_reg;
-                    const target_name = self.resolveBindingName(assign.target.identifier);
                     if (self.bindingStorageAddress(target_name)) |address| {
                         self.out.writer().print("    store {s}, {s} as {s}\n", .{ address, stored_val_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
                         try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);

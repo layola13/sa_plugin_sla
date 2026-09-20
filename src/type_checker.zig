@@ -3606,6 +3606,38 @@ pub const TypeChecker = struct {
                 return ty;
             },
             .call_expr => |call| {
+                // Macro calls: leading output params are writes, not reads.
+                // Mark uninitialized variables as assigned BEFORE the receiver
+                // and method checks below, which would otherwise report
+                // UseBeforeInit for `var x; MACRO(x, ...)` statement form.
+                // (Types are still computed normally; only the init-state is
+                // pre-marked so the later macro branches see active vars.)
+                if (self.macros.get(call.func_name)) |mac| {
+                    var leading_outputs: usize = 0;
+                    for (mac.params) |param| {
+                        const pname = if (std.mem.startsWith(u8, param, "%")) param[1..] else param;
+                        if (std.mem.startsWith(u8, pname, "out")) {
+                            leading_outputs += 1;
+                        } else break;
+                    }
+                    for (call.args, 0..) |arg, idx| {
+                        if (idx >= leading_outputs) break;
+                        if (arg.* == .identifier) {
+                            if (scope.lookup(arg.identifier)) |sym| {
+                                if (sym.state == .uninitialized) sym.state = .active;
+                            }
+                        }
+                    }
+                } else if (self.imported_macros.get(call.func_name)) |macro| {
+                    for (call.args, 0..) |arg, idx| {
+                        if (idx >= macro.leading_outputs) break;
+                        if (arg.* == .identifier) {
+                            if (scope.lookup(arg.identifier)) |sym| {
+                                if (sym.state == .uninitialized) sym.state = .active;
+                            }
+                        }
+                    }
+                }
                 const recv_node_ty = if (call.args.len > 0 and call.args[0].* != .move_expr) try self.checkExpr(call.args[0], scope) else null;
 
                 if (lowering_rules.isOptionSomeCall(call)) {

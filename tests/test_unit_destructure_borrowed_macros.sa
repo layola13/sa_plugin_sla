@@ -1,0 +1,11 @@
+// Fixture for test_unit_destructure_addressable.sla.
+// X_LOAD_U8 reads through its pointer argument (`%ptr+0`), so the
+// borrowed-macro-arg pre-pass marks any identifier passed as %ptr
+// "addressable". A destructured binding must therefore be materialized
+// into a stack slot like a `let` binding; otherwise the use site emits
+// `load name+0` against a value register (double deref -> SIGSEGV).
+// This mirrors the real-world shape (scodex-mini sandbox_activate read
+// SCODEX_SANDBOX through a tuple-destructured (ptr, u64)).
+[MACRO] X_LOAD_U8 %out, %ptr
+    %out = load %ptr+0 as u8
+[END_MACRO]

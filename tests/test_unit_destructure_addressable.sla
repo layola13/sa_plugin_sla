@@ -1,0 +1,62 @@
+@import "sa_std/string.sa"
+@import "test_unit_destructure_borrowed_macros.sa"
+
+// Regression (2026-09-20): tuple/slice-destructured bindings passed to a
+// borrowed macro argument must be materialized into a stack slot, exactly
+// like a `let` binding.
+//
+// Root cause: the borrowed-macro-arg pre-pass
+// (collectAddressableBindingsInExpr -> collectBorrowedIdentifiers) marks an
+// identifier "addressable" when it flows into a macro parameter whose body
+// does `%param+0` / `&%param`. genExpr then emits `load name+0` for such a
+// name, which is only valid if the binding was materialized into a stack
+// slot. `let`/`const`/params do the materialization, but the
+// `.let_destructure_stmt` lowering emitted `{name} = load tuple+off` (a
+// value register), so the later `load name+0` dereferenced the string's
+// first 8 bytes as an address -> SIGSEGV. Real-world instance: scodex-mini
+// `sandbox_activate` read SCODEX_SANDBOX through
+// `let (sflag_ptr, sflag_len) = mini_config_env_or(...)` and crashed with
+// exit 139 on --help/--list before main logic ran.
+//
+// The direct SAB backend always emitted a single deref here; these tests
+// pin SA-text == SAB semantics. Run with --test-backend sa and
+// --test-backend sab (SLA_SAB_NO_FALLBACK=1).
+
+fn get_pair() -> (ptr, u64) {
+    let p = STR_PTR("AB");
+    return (p, 2);
+}
+
+@test "tuple destructure ptr into borrowed macro arg reads one deref"() {
+    let (p2, l2) = get_pair();
+    if l2 != 2 { panic(39101); };
+    // Before the fix this emitted `tmp = load p2+0 as ptr` (p2 already the
+    // value) and the native binary crashed with SIGSEGV.
+    let b = X_LOAD_U8(p2);
+    if b != 65 { panic(39102); };
+}
+
+@test "tuple destructure second element stays a plain value"() {
+    let (p2, l2) = get_pair();
+    // l2 is never passed to a borrowed macro arg: no stack slot, no
+    // behavior change.
+    if l2 != 2 { panic(39103); };
+    let b = X_LOAD_U8(p2);
+    if b != 65 { panic(39104); };
+}
+
+@test "slice destructure ptr into borrowed macro arg reads one deref"() {
+    let arr = [STR_PTR("AB"), STR_PTR("CD")];
+    let [p0, ..rest] = arr;
+    let b = X_LOAD_U8(p0);
+    if b != 65 { panic(39105); };
+}
+
+@test "destructured slot reused across two borrowed macro calls"() {
+    let (p2, l2) = get_pair();
+    let b1 = X_LOAD_U8(p2);
+    let b2 = X_LOAD_U8(p2);
+    if b1 != 65 { panic(39106); };
+    if b2 != 65 { panic(39107); };
+    if l2 != 2 { panic(39108); };
+}

@@ -10431,7 +10431,19 @@ pub const Codegen = struct {
                         const reg = try self.newTmp();
                         self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ reg, base_ptr, offset, typeString(elem_ty) }) catch return CodegenError.CodegenError;
                         if (!lowering_rules.isDiscardName(name)) {
-                            self.out.writer().print("    {s} = {s}\n", .{ name, reg }) catch return CodegenError.CodegenError;
+                            // Root fix: a destructured name marked addressable
+                            // by the borrowed-macro-arg pre-pass must be
+                            // materialized into a stack slot, exactly like a
+                            // `let` binding. Otherwise genExpr's
+                            // addressable_bindings branch emits `load name+0`
+                            // against a value register (double deref).
+                            if (self.bindingNeedsAddressableStorage(name, elem_ty)) {
+                                self.stack_alloc_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+                                self.out.writer().print("    {s} = stack_alloc {}\n", .{ name, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ name, reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
+                            } else {
+                                self.out.writer().print("    {s} = {s}\n", .{ name, reg }) catch return CodegenError.CodegenError;
+                            }
                         }
                         offset += elem_size;
                     }
@@ -10467,7 +10479,21 @@ pub const Codegen = struct {
                     if (value_ty.* != .tuple) return CodegenError.CodegenError;
                     for (let.names, 0..) |name, i| {
                         const layout = tupleFieldLayout(value_ty.tuple, i) orelse return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ name, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                        // Root fix: same as the slice branch above — an
+                        // addressable destructured name must live in a stack
+                        // slot, otherwise later uses emit `load name+0`
+                        // against the value register (double deref ->
+                        // segfault; observed in scodex-mini sandbox_activate).
+                        const elem_ty = (lowering_rules.tupleFieldLayout(value_ty.tuple, i) orelse return CodegenError.CodegenError).ty;
+                        if (!lowering_rules.isDiscardName(name) and self.bindingNeedsAddressableStorage(name, elem_ty)) {
+                            const val_reg = try self.newTmp();
+                            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ val_reg, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                            self.stack_alloc_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
+                            self.out.writer().print("    {s} = stack_alloc {}\n", .{ name, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ name, val_reg, layout.ty_str }) catch return CodegenError.CodegenError;
+                        } else {
+                            self.out.writer().print("    {s} = load {s}+{} as {s}\n", .{ name, value_reg, layout.offset, layout.ty_str }) catch return CodegenError.CodegenError;
+                        }
                     }
                 }
                 if (!let.is_slice) {

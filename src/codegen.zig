@@ -158,6 +158,15 @@ pub const Codegen = struct {
     async_pending_return_emitted: bool,
     thread_helper_idx: usize,
     use_plain_time_sleep_ms_abi: bool,
+    /// Tracks genExpr recursion depth so a let-destination hint is consumed
+    /// only by the outermost value expression (not by nested call args).
+    expr_depth: usize,
+    /// When a `let x = <expr>` can adopt the value temp directly (owning
+    /// value), this holds `x` so the temp-producing codegen emits directly
+    /// into `x` instead of a fresh temp. Consumed only when
+    /// expr_depth == let_dest_depth.
+    let_dest_hint: ?[]const u8,
+    let_dest_depth: usize,
 
     pub fn init(allocator: std.mem.Allocator, tc: *type_checker.TypeChecker) Codegen {
         return initWithOptions(allocator, tc, .{});
@@ -234,6 +243,9 @@ pub const Codegen = struct {
             .async_pending_return_emitted = false,
             .thread_helper_idx = 0,
             .use_plain_time_sleep_ms_abi = false,
+            .expr_depth = 0,
+            .let_dest_hint = null,
+            .let_dest_depth = 0,
         };
     }
 
@@ -359,6 +371,21 @@ pub const Codegen = struct {
         const name = std.fmt.allocPrint(self.allocator, "tmp_{}", .{self.tmp_idx}) catch return CodegenError.OutOfMemory;
         self.tmp_idx += 1;
         return name;
+    }
+
+    /// Returns the let-destination hint if one is active and this is the
+    /// outermost value expression (expr_depth == let_dest_depth); otherwise
+    /// allocates a fresh temp. Lets `let x = f()` emit `x = call @f()`
+    /// directly, so the binding owns the call result instead of aliasing a
+    /// leaked temp via `x = add tmp, 0`.
+    fn newTmpOrLetDest(self: *Codegen) CodegenError![]const u8 {
+        if (self.let_dest_hint) |hint| {
+            if (self.expr_depth == self.let_dest_depth) {
+                self.let_dest_hint = null;
+                return hint;
+            }
+        }
+        return try self.newTmp();
     }
 
     fn newLabel(self: *Codegen, prefix: []const u8) CodegenError![]const u8 {
@@ -9543,7 +9570,7 @@ pub const Codegen = struct {
             try self.appendLoweredCallArgCleanups(&release_regs, &consume_regs, lowered_arg);
         }
 
-        const reg = if (lowering.result.returns_void) "return_ty_sentinel" else try self.newTmp();
+        const reg = if (lowering.result.returns_void) "return_ty_sentinel" else try self.newTmpOrLetDest();
         const lowered_symbol = try self.loweredFuncSymbol(symbol);
         defer self.allocator.free(lowered_symbol);
         if (lowering.result.returns_void) {
@@ -10233,8 +10260,30 @@ pub const Codegen = struct {
                     const val_reg = try self.genDynCoercionExpr(let.value, plan, hoisted_allocs);
                     self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
+                    // ROOT FIX (2026-09-21): if the value materializes as a
+                    // fresh temp holding an owning (non-copy, non-borrow)
+                    // value, the binding adopts the temp directly: the
+                    // temp-producing codegen emits into `let.name` instead
+                    // of a temp, so there is no `let.name = add tmp, 0`
+                    // alias that splits the value from its ownership (the
+                    // temp would leak: verifier MemoryLeak + real heap leak;
+                    // emitting `!tmp` would be wrong too). Mirrors SAB
+                    // genLetFromValue's letTemporaryValueBecomesBindingOwner.
+                    const can_adopt = lowering_rules.letTemporaryValueBecomesBindingOwner(
+                        let_ty.* == .primitive or let_ty.* == .fn_ptr or self.typeIsCopyStruct(let_ty),
+                        lowering_rules.isBorrowLikeType(let_ty),
+                    );
+                    if (can_adopt) {
+                        self.let_dest_hint = let.name;
+                        self.let_dest_depth = self.expr_depth + 1;
+                    }
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
+                    self.let_dest_hint = null;
                     if (self.async_pending_return_emitted) return;
+                    if (can_adopt and std.mem.eql(u8, val_reg, let.name)) {
+                        // Value emitted directly into the binding; nothing
+                        // to copy or release.
+                    } else {
                     if (self.task_future_objects.get(val_reg)) |future_obj| {
                         self.task_future_objects.put(let.name, future_obj) catch return CodegenError.OutOfMemory;
                         _ = self.task_future_objects.remove(val_reg);
@@ -10332,6 +10381,7 @@ pub const Codegen = struct {
                         if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
                     } else {
                         self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                    }
                     }
                 }
             },
@@ -12290,7 +12340,9 @@ pub const Codegen = struct {
     }
 
     fn genExpr(self: *Codegen, expr: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
-        @setEvalBranchQuota(10000);
+        @setEvalBranchQuota(20000);
+        self.expr_depth += 1;
+        defer self.expr_depth -= 1;
         switch (expr.*) {
             .literal => |lit| {
                 return try self.genLiteralValue(lit);
@@ -14762,7 +14814,7 @@ pub const Codegen = struct {
                         arg_regs.append(lowered_arg.reg) catch return CodegenError.OutOfMemory;
                         try self.appendLoweredCallArgCleanups(&arg_release_regs, &arg_consume_regs, lowered_arg);
                     }
-                    const reg = try self.newTmp();
+                    const reg = try self.newTmpOrLetDest();
                     const lowered_call = try self.loweredFuncSymbol(call.func_name);
                     defer self.allocator.free(lowered_call);
                     self.out.writer().print("    {s} = call @{s}(", .{ reg, lowered_call }) catch return CodegenError.CodegenError;

@@ -7794,7 +7794,7 @@ test "sla sab backend stores imported scalar macro outputs into stack slots" {
         "tests/test_unit_checked_add_macro_output_direct.sla",
         ".sla-cache/sab/checked_add_macro_output_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct sab checked add macro writes scalar slot outputs", .allow_fallback = false },
+        .{ .allow_fallback = false },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8632,7 +8632,9 @@ test "sla sab backend releases str_eq loaded string data-pointer temps" {
     defer loaded_ptr_temps.deinit();
 
     for (module.instructions[main_sig.entry_inst_idx..body_end]) |item| {
-        if (item.kind == .stack_alloc and item.operands[0] == .reg and item.operands[1] == .imm_u64 and item.operands[1].imm_u64 == 8) {
+        // Slice fat pointers are 16 bytes (ptr + len); the data pointer is
+        // loaded from offset 0 of the slice slot.
+        if (item.kind == .stack_alloc and item.operands[0] == .reg and item.operands[1] == .imm_u64 and (item.operands[1].imm_u64 == 8 or item.operands[1].imm_u64 == 16)) {
             try view_slots.put(item.operands[0].reg, {});
             continue;
         }

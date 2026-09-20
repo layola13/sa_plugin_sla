@@ -3961,6 +3961,17 @@ pub const Codegen = struct {
             try seen.put(new_id, {});
             try out.append(new_id);
         }
+        // Safety net: include any renamed registers that were created via
+        // ensureDecodedModuleRegId but missed by the reg_order collection
+        // (e.g. due to incomplete text scanning). Without this, the verifier
+        // rejects the module with UnknownRegister.
+        var reg_id_it = remap.reg_ids.iterator();
+        while (reg_id_it.next()) |entry| {
+            const new_id = entry.value_ptr.*;
+            if (seen.contains(new_id)) continue;
+            try seen.put(new_id, {});
+            try out.append(new_id);
+        }
         for (remap.extra_reg_ids.items) |new_id| {
             if (seen.contains(new_id)) continue;
             try seen.put(new_id, {});

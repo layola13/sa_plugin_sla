@@ -2196,7 +2196,7 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
     if (std.mem.endsWith(u8, macro_name, "_LEN") or
         std.mem.endsWith(u8, macro_name, "_COUNT"))
     {
-        return .i64;
+        return .u64;
     }
     if (std.mem.endsWith(u8, macro_name, "_FROM_PARTS") or
         std.mem.endsWith(u8, macro_name, "_AS_BYTES") or
@@ -2209,11 +2209,60 @@ pub fn importedMacroExpressionResultKind(macro_name: []const u8) ?ImportedMacroE
 
 // Result kind of a single-output imported macro used as an expression.
 // Prefers the kind derived from the macro body at index time
-// (ImportedMacro.expression_result_kind); the hardcoded name table above is
-// only a fallback for macros whose body gave no usable `%out` assignment.
-pub fn importedMacroExpressionResultKindForMacro(macro: type_checker.ImportedMacro, macro_name: []const u8) ?ImportedMacroExpressionResultKind {
+// (ImportedMacro.expression_result_kind). When the body is a direct
+// `%out = call @extern_fn(...)` passthrough (recorded at index time in
+// ImportedMacro.direct_extern_passthrough), resolves the extern's declared
+// return type from the .sai contract (available here because all contracts
+// load before codegen). When the body EXPANDs another macro, recurses into
+// that macro's kind. The hardcoded name table below is the last resort.
+pub fn importedMacroExpressionResultKindForMacro(tc: *type_checker.TypeChecker, macro: type_checker.ImportedMacro, macro_name: []const u8) ?ImportedMacroExpressionResultKind {
+    return importedMacroExpressionResultKindForMacroInner(tc, macro, macro_name, 0);
+}
+
+fn importedMacroExpressionResultKindForMacroInner(
+    tc: *type_checker.TypeChecker,
+    macro: type_checker.ImportedMacro,
+    macro_name: []const u8,
+    depth: u8,
+) ?ImportedMacroExpressionResultKind {
     if (macro.expression_result_kind) |kind| return kind;
+    // Direct extern passthrough: `%out = call @ext(...)` with no transformation.
+    // This is sound because index time verified the direct assignment.
+    if (macro.direct_extern_passthrough) |ext_name| {
+        if (tc.extern_funcs.get(ext_name)) |ext| {
+            if (externRetTyToExpressionResultKind(ext.ret_ty)) |kind| return kind;
+        }
+    }
+    if (depth >= 8) return importedMacroExpressionResultKind(macro_name);
+    // Only recurse into EXPANDed macros when the outer macro does NOT directly
+    // assign to `%out`. If it does (e.g. `%out_ptr = __buf`), the EXPANDs are
+    // helpers, not the output source — recursing would pick up the helper's
+    // type (e.g. X_COPY_BYTES -> slice_u8) instead of the outer's.
+    if (!macro.has_direct_out_assignment) {
+        for (macro.direct_callees) |callee| {
+            // Macro-to-macro expansion (e.g. STR_LEN -> SLICE_GET_LEN): recurse.
+            // Note: we do NOT resolve externs from direct_callees here — that would
+            // be unsound for macros like X_OBJ_HAS that transform the extern result
+            // (e.g. `%out = eq (call @ext(...)), 0`).
+            if (tc.imported_macros.get(callee)) |inner| {
+                if (importedMacroExpressionResultKindForMacroInner(tc, inner, callee, depth + 1)) |kind| return kind;
+            }
+        }
+    }
     return importedMacroExpressionResultKind(macro_name);
+}
+
+fn externRetTyToExpressionResultKind(ret_ty: []const u8) ?ImportedMacroExpressionResultKind {
+    const t = std.mem.trim(u8, ret_ty, " \t");
+    if (std.mem.eql(u8, t, "ptr") or std.mem.eql(u8, t, "&ptr")) return .raw_pointer;
+    if (std.mem.eql(u8, t, "bool")) return .boolean;
+    if (std.mem.eql(u8, t, "u8")) return .u8;
+    if (std.mem.eql(u8, t, "u32")) return .u32;
+    if (std.mem.eql(u8, t, "u64")) return .u64;
+    if (std.mem.eql(u8, t, "i32")) return .i32;
+    if (std.mem.eql(u8, t, "i64")) return .i64;
+    if (std.mem.eql(u8, t, "f64")) return .f64;
+    return null;
 }
 
 pub fn planImportedMacroCall(tc: *type_checker.TypeChecker, call: ast.CallExpr) ?ImportedMacroCallPlan {

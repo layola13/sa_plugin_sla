@@ -3292,7 +3292,7 @@ pub const Codegen = struct {
                 }
                 if (self.tc.imported_macros.get(call.func_name)) |macro| {
                     if (macro.leading_outputs == 1 and call.args.len + 1 == macro.arity) {
-                        if (lowering_rules.importedMacroExpressionResultKindForMacro(macro, call.func_name)) |kind| {
+                        if (lowering_rules.importedMacroExpressionResultKindForMacro(self.tc, macro, call.func_name)) |kind| {
                             break :blk self.makeImportedMacroExpressionResultType(kind) catch null;
                         }
                     }

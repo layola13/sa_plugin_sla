@@ -34,6 +34,14 @@ pub const ImportedMacro = struct {
     // index time. Null when it could not be derived; callers fall back to the
     // hardcoded name table in lowering_rules.
     expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind = null,
+    // Name of the extern directly assigned to `%out` (i.e. `%out = call @ext(...)`
+    // with no transformation). Used at runtime to resolve the extern's return
+    // type from the .sai contract. Null if `%out` is not a direct extern call.
+    direct_extern_passthrough: ?[]const u8 = null,
+    // True if the macro body directly assigns to the single `%out` param
+    // (e.g. `%out = ...`). When true, EXPANDed macros are helpers, not the
+    // output source, so kind resolution must NOT recurse into them.
+    has_direct_out_assignment: bool = false,
 };
 
 const MacroConsumptionKey = struct {
@@ -2069,7 +2077,7 @@ pub const TypeChecker = struct {
         }
     }
 
-    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, direct_callees: []const []const u8, expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind) !void {
+    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, direct_callees: []const []const u8, expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind, direct_extern_passthrough: ?[]const u8, has_direct_out_assignment: bool) !void {
         try self.imported_macros.put(name, .{
             .arity = arity,
             .leading_outputs = leading_outputs,
@@ -2078,6 +2086,8 @@ pub const TypeChecker = struct {
             .address_slot_arg_mask = address_slot_arg_mask,
             .direct_callees = direct_callees,
             .expression_result_kind = expression_result_kind,
+            .direct_extern_passthrough = direct_extern_passthrough,
+            .has_direct_out_assignment = has_direct_out_assignment,
         });
     }
 
@@ -4980,7 +4990,22 @@ pub const TypeChecker = struct {
 
                 // 4. Check user-defined macro calls
                 if (self.macros.get(call.func_name)) |mac| {
-                    for (call.args) |arg| {
+                    // Leading output params (named out*) are writes, not reads.
+                    // Mark them as assigned instead of checking for UseBeforeInit.
+                    var leading_outputs: usize = 0;
+                    for (mac.params) |param| {
+                        const pname = if (std.mem.startsWith(u8, param, "%")) param[1..] else param;
+                        if (std.mem.startsWith(u8, pname, "out")) {
+                            leading_outputs += 1;
+                        } else break;
+                    }
+                    for (call.args, 0..) |arg, idx| {
+                        if (idx < leading_outputs and arg.* == .identifier) {
+                            if (scope.lookup(arg.identifier)) |sym| {
+                                if (sym.state == .uninitialized) sym.state = .active;
+                            }
+                            continue;
+                        }
                         _ = try self.checkExpr(arg, scope);
                     }
                     var propagated_args = std.StringHashMap(void).init(self.allocator);
@@ -5022,7 +5047,15 @@ pub const TypeChecker = struct {
                 }
 
                 if (self.imported_macros.get(call.func_name)) |macro| {
-                    for (call.args) |arg| {
+                    // Leading output params are writes, not reads. Mark them as
+                    // assigned instead of checking for UseBeforeInit.
+                    for (call.args, 0..) |arg, idx| {
+                        if (idx < macro.leading_outputs and arg.* == .identifier) {
+                            if (scope.lookup(arg.identifier)) |sym| {
+                                if (sym.state == .uninitialized) sym.state = .active;
+                            }
+                            continue;
+                        }
                         _ = try self.checkExpr(arg, scope);
                     }
                     if (call.args.len == macro.arity) {
@@ -5031,7 +5064,7 @@ pub const TypeChecker = struct {
                         return ret;
                     }
                     if (lowering_rules.importedMacroUsesExpressionOutput(macro, call.args.len)) {
-                        if (lowering_rules.importedMacroExpressionResultKindForMacro(macro, call.func_name)) |kind| {
+                        if (lowering_rules.importedMacroExpressionResultKindForMacro(self, macro, call.func_name)) |kind| {
                             return try self.makeImportedMacroExpressionResultType(kind);
                         }
                         return try self.makeInferType();

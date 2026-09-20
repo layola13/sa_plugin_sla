@@ -117,6 +117,9 @@ pub fn appendExpandedImportedMacroDirectCallees(
     var parts = std.mem.tokenizeAny(u8, line["EXPAND".len..], " \t,");
     const expanded_name = parts.next() orelse return;
     const expanded = tc.imported_macros.get(expanded_name) orelse return;
+    // Record the expanded macro itself so result-kind resolution can recurse
+    // into it (e.g. STR_LEN -> SLICE_GET_LEN -> u64).
+    try appendUniqueDirectCallee(callees, expanded_name);
     for (expanded.direct_callees) |callee| try appendUniqueDirectCallee(callees, callee);
 }
 
@@ -176,13 +179,45 @@ fn deriveImportedMacroExpressionResultKind(
     return null;
 }
 
+/// Detects `%out = call @extern_name(...)` — a direct passthrough where the
+/// macro's output IS the extern's return value (no transformation).
+/// Returns the extern name, or null if not a direct call.
+fn deriveDirectExternPassthrough(out_param_name: []const u8, body_line: []const u8) ?[]const u8 {
+    const line = std.mem.trim(u8, body_line, " \t\r");
+    if (line.len < out_param_name.len + 2 or line[0] != '%') return null;
+    if (!std.mem.eql(u8, line[1 .. 1 + out_param_name.len], out_param_name)) return null;
+    var rest = std.mem.trimLeft(u8, line[1 + out_param_name.len ..], " \t");
+    if (rest.len < 2 or rest[0] != '=' or rest[1] == '=') return null;
+    rest = std.mem.trimLeft(u8, rest[1..], " \t");
+    // Must be exactly `call @name(...)` — no `as` cast, no other ops.
+    if (!std.mem.startsWith(u8, rest, "call @")) return null;
+    rest = rest["call @".len..];
+    // Extract extern name up to '(' or whitespace.
+    var end: usize = 0;
+    while (end < rest.len and rest[end] != '(' and rest[end] != ' ' and rest[end] != '\t') : (end += 1) {}
+    if (end == 0) return null;
+    return rest[0..end];
+}
+
+/// Returns true if the body line directly assigns to `%out_param` (i.e.
+/// `%<out_param> = ...`). Used to distinguish output-source EXPANDs from
+/// helper EXPANDs.
+fn isDirectOutAssignment(out_param_name: []const u8, body_line: []const u8) bool {
+    const line = std.mem.trim(u8, body_line, " \t\r");
+    if (line.len < out_param_name.len + 2 or line[0] != '%') return false;
+    if (!std.mem.eql(u8, line[1 .. 1 + out_param_name.len], out_param_name)) return false;
+    const rest = std.mem.trimLeft(u8, line[1 + out_param_name.len ..], " \t");
+    if (rest.len < 2 or rest[0] != '=' or rest[1] == '=') return false;
+    return true;
+}
+
 fn macroIndexCachePath(allocator: std.mem.Allocator, import_path: []const u8, expanded_source: []const u8) ![]u8 {
     var hasher = std.hash.Wyhash.init(0);
     hasher.update(import_path);
     hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
     hasher.update(expanded_source);
-    // Cache format v2: records carry the derived expression result kind.
-    hasher.update("idx-format-v2");
+    // Cache format v5: has_direct_out_assignment recorded to gate EXPAND recursion.
+    hasher.update("idx-format-v5");
     const digest = hasher.final();
     const stem = std.fs.path.basename(import_path);
     return try std.fmt.allocPrint(allocator, ".sla-cache/macros/{s}-{x}.idx", .{ stem, digest });
@@ -207,6 +242,8 @@ fn tryLoadImportedMacrosFromCache(
         const address_s = parts.next() orelse continue;
         const callees_s = parts.next() orelse "";
         const kind_s = parts.next() orelse "";
+        const passthrough_s = parts.next() orelse "";
+        const has_assign_s = parts.next() orelse "0";
         const arity = std.fmt.parseInt(usize, arity_s, 10) catch continue;
         const leading = std.fmt.parseInt(usize, leading_s, 10) catch continue;
         const borrowed = std.fmt.parseInt(u64, borrow_s, 10) catch continue;
@@ -222,7 +259,9 @@ fn tryLoadImportedMacrosFromCache(
             }
         }
         const owned_import = if (import_path) |path| try allocator.dupe(u8, path) else null;
-        try tc.registerImportedMacro(try allocator.dupe(u8, name), arity, leading, owned_import, borrowed, address, try callee_list.toOwnedSlice(), expression_result_kind);
+        const owned_passthrough = if (passthrough_s.len > 0) try allocator.dupe(u8, passthrough_s) else null;
+        const has_direct_out_assignment = std.mem.eql(u8, has_assign_s, "1");
+        try tc.registerImportedMacro(try allocator.dupe(u8, name), arity, leading, owned_import, borrowed, address, try callee_list.toOwnedSlice(), expression_result_kind, owned_passthrough, has_direct_out_assignment);
     }
     return true;
 }
@@ -291,6 +330,8 @@ pub fn loadImportedMacrosFromExpandedSource(
         // result type from the `%out` param's assignment in the body.
         const single_out_param: ?[]const u8 = if (leading_outputs == 1 and param_names.items.len > 0) param_names.items[0] else null;
         var expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind = null;
+        var direct_extern_passthrough: ?[]const u8 = null;
+        var has_direct_out_assignment: bool = false;
         while (lines.next()) |body_raw_line| {
             const body_line = std.mem.trim(u8, body_raw_line, " \t\r");
             if (std.mem.startsWith(u8, body_line, "[END_MACRO]")) break;
@@ -303,12 +344,20 @@ pub fn loadImportedMacrosFromExpandedSource(
                 if (expression_result_kind == null) {
                     expression_result_kind = deriveImportedMacroExpressionResultKind(out_name, body_line);
                 }
+                if (direct_extern_passthrough == null) {
+                    if (deriveDirectExternPassthrough(out_name, body_line)) |ext_name| {
+                        direct_extern_passthrough = ext_name;
+                    }
+                }
+                if (!has_direct_out_assignment and isDirectOutAssignment(out_name, body_line)) {
+                    has_direct_out_assignment = true;
+                }
             }
         }
 
         const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
         const owned_callees = try direct_callees.toOwnedSlice();
-        // Cache line: name|arity|leading|borrow|address|callee1,callee2|result_kind
+        // Cache line: name|arity|leading|borrow|address|callee1,callee2|result_kind|passthrough_extern|has_out_assign
         var callee_joined = std.ArrayList(u8).init(allocator);
         defer callee_joined.deinit();
         for (owned_callees, 0..) |callee, idx| {
@@ -316,9 +365,12 @@ pub fn loadImportedMacrosFromExpandedSource(
             try callee_joined.appendSlice(callee);
         }
         const kind_name = if (expression_result_kind) |kind| @tagName(kind) else "";
-        const record = try std.fmt.allocPrint(allocator, "{s}|{d}|{d}|{d}|{d}|{s}|{s}", .{ name, arity, leading_outputs, borrowed_arg_mask, address_slot_arg_mask, callee_joined.items, kind_name });
+        const passthrough_name = direct_extern_passthrough orelse "";
+        const has_assign_s = if (has_direct_out_assignment) "1" else "0";
+        const record = try std.fmt.allocPrint(allocator, "{s}|{d}|{d}|{d}|{d}|{s}|{s}|{s}|{s}", .{ name, arity, leading_outputs, borrowed_arg_mask, address_slot_arg_mask, callee_joined.items, kind_name, passthrough_name, has_assign_s });
         try cache_records.append(record);
-        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, owned_callees, expression_result_kind);
+        const owned_passthrough = if (direct_extern_passthrough) |pn| try allocator.dupe(u8, pn) else null;
+        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, owned_callees, expression_result_kind, owned_passthrough, has_direct_out_assignment);
     }
     if (import_path) |path| {
         const cache_path = macroIndexCachePath(allocator, path, expanded_source) catch null;

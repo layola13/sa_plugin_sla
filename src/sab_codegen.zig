@@ -12282,6 +12282,22 @@ pub const Codegen = struct {
         return iter_call.args[0];
     }
 
+    /// Detect `array.into_iter().filter(|x| ...).sum()` pattern.
+    fn arrayIterFilterSumSource(call: ast.CallExpr) ?struct { source: *ast.Node, closure: *const ast.ClosureLiteral } {
+        if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
+        const filter_expr = call.args[0];
+        if (filter_expr.* != .call_expr) return null;
+        const filter_call = &filter_expr.call_expr;
+        if (!std.mem.eql(u8, filter_call.func_name, "filter") or filter_call.args.len != 2) return null;
+        const iter_expr = filter_call.args[0];
+        if (iter_expr.* != .call_expr) return null;
+        const iter_call = &iter_expr.call_expr;
+        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
+        const closure_expr = filter_call.args[1];
+        if (closure_expr.* != .closure_literal) return null;
+        return .{ .source = iter_call.args[0], .closure = &closure_expr.closure_literal };
+    }
+
     /// Detect `array.into_iter().map(|x| ...).sum()` pattern.
     /// Returns (source_array_expr, closure) if matched.
     fn arrayIterMapSumSource(call: ast.CallExpr) ?struct { source: *ast.Node, closure: *const ast.ClosureLiteral } {
@@ -12320,6 +12336,14 @@ pub const Codegen = struct {
             const source_ty = self.tc.expr_types.get(map_src.source) orelse return null;
             if (lowering_rules.arrayType(source_ty)) |arr| {
                 return try self.genArrayIterMapSum(map_src.source, arr, map_src.closure);
+            }
+        }
+
+        // `array.into_iter().filter(|x| ...).sum()` — inline the filter closure.
+        if (arrayIterFilterSumSource(call)) |filter_src| {
+            const source_ty = self.tc.expr_types.get(filter_src.source) orelse return null;
+            if (lowering_rules.arrayType(source_ty)) |arr| {
+                return try self.genArrayIterFilterSum(filter_src.source, arr, filter_src.closure);
             }
         }
 
@@ -12373,6 +12397,77 @@ pub const Codegen = struct {
         }
         if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
         return acc;
+    }
+
+    /// `array.into_iter().filter(|x| pred).sum()`: unrolled loop that inlines
+    /// the filter predicate; only elements passing the predicate are added.
+    /// Mirrors SA-text genArrayIterFilterSum.
+    fn genArrayIterFilterSum(self: *Codegen, source: *ast.Node, arr: ast.ArrayType, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        if (closure.params.len != 1) return Error.UnsupportedSabDirectFeature;
+        if (arr.len == 0) {
+            const dst = try self.intern(try self.newTmp());
+            try self.emitAssignImm(dst, 0);
+            return dst;
+        }
+        const base_reg = try self.genExpr(@constCast(source));
+        const stride = arrayStride(arr.elem);
+        const elem_prim = try storagePrimType(arr.elem);
+        // acc in a stack slot (needed across branches).
+        const acc_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(acc_slot, 8);
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(acc_slot, 0, zero, .i64);
+        try self.emitRelease(zero);
+        const param_name = closure.params[0].name;
+        for (0..arr.len) |i| {
+            const elem_ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(elem_ptr, base_reg, .{ .imm_u64 = @intCast(stride * i) });
+            const item = try self.intern(try self.newTmp());
+            try self.emitLoad(item, elem_ptr, 0, elem_prim);
+            // Inline predicate: bind param, gen body.
+            const saved = self.closure_param_regs.get(param_name);
+            try self.closure_param_regs.put(param_name, item);
+            const keep = try self.genExpr(@constCast(closure.body));
+            if (saved) |old| {
+                try self.closure_param_regs.put(param_name, old);
+            } else {
+                _ = self.closure_param_regs.remove(param_name);
+            }
+            const then_label = try self.newLabel("L_FILTER_KEEP");
+            const else_label = try self.newLabel("L_FILTER_SKIP");
+            const merge_label = try self.newLabel("L_FILTER_MERGE");
+            var br = self.makeInst(.br);
+            br.operands[0] = .{ .reg = keep };
+            br.operands[1] = .{ .label = try self.intern(then_label) };
+            br.operands[2] = .{ .label = try self.intern(then_label) };
+            br.operands[3] = .{ .label = try self.intern(else_label) };
+            try self.appendInst(br);
+            try self.emitLabel(then_label);
+            if (!self.isLocalReg(keep)) try self.emitBranchRelease(keep);
+            const acc_reg = try self.intern(try self.newTmp());
+            try self.emitLoad(acc_reg, acc_slot, 0, .i64);
+            const next_acc = try self.intern(try self.newTmp());
+            try self.emitOp(next_acc, .add, .{ .reg = acc_reg }, .{ .reg = item });
+            try self.emitStore(acc_slot, 0, next_acc, .i64);
+            try self.emitRelease(acc_reg);
+            try self.emitRelease(next_acc);
+            try self.emitJmp(merge_label);
+            try self.emitLabel(else_label);
+            if (!self.isLocalReg(keep)) try self.emitBranchRelease(keep);
+            try self.emitJmp(merge_label);
+            try self.emitLabel(merge_label);
+            try self.emitRelease(elem_ptr);
+            try self.emitRelease(item);
+            // keep was already released in the branches (unless it's a local);
+            // only release here if keep is a distinct non-local temp not yet released.
+            // (Branch targets each release keep once; no release needed here.)
+        }
+        if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+        const result = try self.intern(try self.newTmp());
+        try self.emitLoad(result, acc_slot, 0, .i64);
+        try self.emitRelease(acc_slot);
+        return result;
     }
 
     /// `array.into_iter().map(|x| body).sum()`: unrolled loop that inlines the

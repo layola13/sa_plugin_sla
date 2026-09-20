@@ -14069,6 +14069,7 @@ pub const Codegen = struct {
         if (try self.genAtomicNewCall(expr, call)) |reg| return reg;
         if (try self.genAtomicMethodCall(expr, call)) |reg| return reg;
         if (try self.genResultOptionQueryCall(expr, call)) |reg| return reg;
+        if (try self.genCatchUnwindCall(call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         const lowering = lowering_rules.planStaticCallLowering(self.tc, expr, call, self.tc.expr_types.get(expr)) orelse {
             self.traceUnsupported("static call {s} has no lowering plan\n", .{call.func_name});
@@ -14083,6 +14084,36 @@ pub const Codegen = struct {
     /// `ptr::null::<T>()` / `ptr::read_volatile(&x)` lower to std `sa_std/ptr.sa`
     /// macros, matching the SA text emitter. Without this the generic static-call
     /// path would emit a call to a `@sla__ptr__null` symbol that is never defined.
+    /// `std::panic::catch_unwind(|| ...)` pattern: if the closure body is a
+    /// `panic()` call, directly generate `RESULT_NEW_ERR`; otherwise evaluate
+    /// the body and wrap in `RESULT_NEW_OK`. Mirrors SA-text codegen.
+    fn genCatchUnwindCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        const is_catch_unwind = std.mem.eql(u8, call.func_name, "std__panic__catch_unwind") or
+            (call.associated_target != null and std.mem.eql(u8, call.associated_target.?, "panic") and std.mem.eql(u8, call.func_name, "catch_unwind"));
+        if (!is_catch_unwind) return null;
+        if (call.args.len != 1 or call.args[0].* != .closure_literal) return Error.UnsupportedSabDirectFeature;
+        const closure = &call.args[0].closure_literal;
+        if (closure.params.len != 0) return Error.UnsupportedSabDirectFeature;
+        const dst = try self.intern(try self.newTmp());
+        const body = closure.body;
+        const panics = switch (body.*) {
+            .call_expr => |body_call| lowering_rules.isPanicBuiltinName(body_call.func_name),
+            else => false,
+        };
+        if (panics) {
+            const err_reg = try self.intern(try self.newTmp());
+            try self.emitAssignImm(err_reg, 1);
+            try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{ self.symbols.items[dst], self.symbols.items[err_reg] });
+            try self.emitRelease(err_reg);
+        } else {
+            const ok_reg = try self.genExpr(@constCast(body));
+            try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{ self.symbols.items[dst], self.symbols.items[ok_reg] });
+            if (!self.isLocalReg(ok_reg) and lowering_rules.callArgNeedsRelease(body)) try self.emitRelease(ok_reg);
+        }
+        try self.recordReg(dst);
+        return dst;
+    }
+
     fn genPtrBuiltinCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         if (!lowering_rules.callNeedsPtrMacros(call)) return null;
         const is_null = lowering_rules.isPtrNullCall(call) or

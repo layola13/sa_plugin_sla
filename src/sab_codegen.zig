@@ -4837,6 +4837,29 @@ pub const Codegen = struct {
         return out;
     }
 
+    /// A .sa macro may call a .sla-defined function by its source name
+    /// (e.g. `call @my_get_val(...)`). The .sla codegen mangles such names
+    /// to `sla__my_get_val`, so the inliner must apply the same mangling
+    /// to the callee text operand. Only mangle names that are actually
+    /// .sla-defined (in tc.funcs); .sa-defined functions, runtime externs
+    /// (sa_*), and builtins keep their names.
+    fn mangleFragmentCallee(self: *Codegen, item: *inst.Instruction) !void {
+        if (item.kind != .call and item.kind != .call_indirect) return;
+        const callee_idx: usize = if (item.operands[1] == .text) 1 else 0;
+        if (item.operands[callee_idx] != .text) return;
+        const text = item.operands[callee_idx].text;
+        if (text.len <= 1 or text[0] != '@') return;
+        // The callee text operand holds the full call body
+        // `@name(arg1, arg2, ...)`; only the `@name` prefix is rewritten.
+        const paren = std.mem.indexOfScalar(u8, text, '(') orelse text.len;
+        if (paren <= 1) return;
+        const name = text[1..paren];
+        const func = self.tc.funcs.get(name) orelse return;
+        if (func.is_extern or func.no_mangle or lowering_rules.isMainName(name)) return;
+        const mangled = try std.fmt.allocPrint(self.allocator, "@sla__{s}{s}", .{ name, text[paren..] });
+        item.operands[callee_idx] = .{ .text = mangled };
+    }
+
     fn cloneModuleInstruction(self: *Codegen, symbols: []const []const u8, source: inst.Instruction) !inst.Instruction {
         var out = source;
         out.package_identity = try self.cloneOptionalText(source.package_identity);
@@ -4846,6 +4869,7 @@ pub const Codegen = struct {
         out.atomic_new_text = try self.cloneOptionalText(source.atomic_new_text);
         out.native_reg_names = try self.cloneTextList(source.native_reg_names);
         for (&out.operands) |*operand| operand.* = try self.remapModuleOperand(symbols, operand.*);
+        try self.mangleFragmentCallee(&out);
         if (out.kind == .panic_msg and out.operands[0] == .text) {
             if (try self.structuredPanicMsgOperands(out.operands[0].text)) |ops| {
                 out.operands[0] = ops[0];
@@ -4912,6 +4936,7 @@ pub const Codegen = struct {
         out.native_reg_names = try self.cloneFragmentTemplateTextList(source.native_reg_names, args);
         for (&out.operands) |*operand| operand.* = try self.remapFragmentTemplateOperand(symbols, operand.*, args);
         try self.coerceTemplateInstructionOperands(&out);
+        try self.mangleFragmentCallee(&out);
         if (out.kind == .panic_msg and out.operands[0] == .text) {
             if (try self.structuredPanicMsgOperands(out.operands[0].text)) |ops| {
                 out.operands[0] = ops[0];

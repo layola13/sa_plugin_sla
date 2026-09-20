@@ -1632,6 +1632,22 @@ pub const Codegen = struct {
         };
     }
 
+    fn exprReferencesIdentifier(expr: *const ast.Node, name: []const u8) bool {
+        switch (expr.*) {
+            .identifier => |id| return std.mem.eql(u8, id, name),
+            .call_expr => |call| {
+                for (call.args) |arg| {
+                    if (exprReferencesIdentifier(arg, name)) return true;
+                }
+                return false;
+            },
+            .move_expr => |mv| return exprReferencesIdentifier(mv.expr, name),
+            .field_expr => |field| return exprReferencesIdentifier(field.expr, name),
+            .index_expr => |idx| return exprReferencesIdentifier(idx.target, name) or exprReferencesIdentifier(idx.index, name),
+            else => return false,
+        }
+    }
+
     fn threadSpawnClosureLiteral(expr: *const ast.Node) ?*const ast.ClosureLiteral {
         return switch (expr.*) {
             .closure_literal => |*lit| lit,
@@ -10731,8 +10747,15 @@ pub const Codegen = struct {
                         lowering_rules.isBorrowLikeType(target_ty),
                     );
                     if (can_adopt_assign) {
-                        // Release old value first, then emit RHS directly into target.
-                        try self.emitRelease(assign.target.identifier);
+                        // Set hint, genExpr, then handle old value.
+                        // If RHS consumed target (e.g., p=f(p)), don't release.
+                        // If not, release old before (but we already overwrote...).
+                        // Actually: we must release BEFORE overwriting, but only if not consumed.
+                        // Check if RHS references target.
+                        const rhs_uses_target = exprReferencesIdentifier(assign.value, assign.target.identifier);
+                        if (!rhs_uses_target) {
+                            try self.emitRelease(assign.target.identifier);
+                        }
                         self.let_dest_hint = target_name;
                         // genExpr will increment depth by 1; hint must match that.
                         self.let_dest_depth = self.expr_depth + 1;

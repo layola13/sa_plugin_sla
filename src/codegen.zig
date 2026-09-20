@@ -520,7 +520,10 @@ pub const Codegen = struct {
         if (value_expr.* == .identifier and value_ty.* == .primitive) {
             try self.emitPrimitiveCopy(result, value_reg, value_ty);
         } else {
-            self.out.writer().print("    {s} = {s}\n", .{ result, value_reg }) catch return CodegenError.CodegenError;
+            // Use `add ..., 0` as the copy idiom. Bare `{s} = {s}` is not valid
+            // SA syntax (parsed as an invalid call). This mirrors the integer
+            // case in emitPrimitiveCopy and works for pointers.
+            self.out.writer().print("    {s} = add {s}, 0\n", .{ result, value_reg }) catch return CodegenError.CodegenError;
         }
         if (self.tc.cleanups.get(last)) |list| {
             for (list.items) |name| try self.emitRelease(name);
@@ -2222,7 +2225,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const print_ptr = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(print_ptr);
@@ -2236,7 +2239,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const print_ptr = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(print_ptr);
@@ -2250,7 +2253,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const print_ptr = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(print_ptr);
@@ -2280,7 +2283,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const ptr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(ptr_reg);
@@ -2294,7 +2297,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const ptr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(ptr_reg);
@@ -2308,7 +2311,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     const ptr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(ptr_reg);
@@ -2335,7 +2338,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
@@ -2351,7 +2354,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
@@ -2367,7 +2370,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
@@ -2377,21 +2380,21 @@ pub const Codegen = struct {
                             else => {
                                 const val_reg = try self.genExpr(arg, hoisted_allocs);
                                 const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
                             },
                         },
                         else => {
                             const val_reg = try self.genExpr(arg, hoisted_allocs);
                             const ptr_reg = try self.newTmp();
-                            self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
                             self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
                         },
                     }
                 } else {
                     const val_reg = try self.genExpr(arg, hoisted_allocs);
                     const ptr_reg = try self.newTmp();
-                    self.out.writer().print("    {s} = {s}\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, val_reg }) catch return CodegenError.CodegenError;
                     self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{ptr_reg}) catch return CodegenError.CodegenError;
                 }
             }
@@ -7219,7 +7222,7 @@ pub const Codegen = struct {
             .let_stmt => |let| {
                 const mangled = try self.newMacroLocal(m.name, let.name);
                 const val_reg = try self.genMacroExpr(let.value, m);
-                self.out.writer().print("    {s} = {s}\n", .{ mangled, val_reg }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = add {s}, 0\n", .{ mangled, val_reg }) catch return CodegenError.CodegenError;
             },
             .assign_stmt => |assign| {
                 const val_reg = try self.genMacroExpr(assign.value, m);
@@ -7234,12 +7237,12 @@ pub const Codegen = struct {
                     }
                     if (self.macro_locals.get(target_name)) |mangled| {
                         self.out.writer().print("    !{s}\n", .{mangled}) catch return CodegenError.CodegenError;
-                        self.out.writer().print("    {s} = {s}\n", .{ mangled, val_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = add {s}, 0\n", .{ mangled, val_reg }) catch return CodegenError.CodegenError;
                         return;
                     }
                 }
                 const target_reg = try self.genMacroExpr(assign.target, m);
-                self.out.writer().print("    {s} = {s}\n", .{ target_reg, val_reg }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = add {s}, 0\n", .{ target_reg, val_reg }) catch return CodegenError.CodegenError;
             },
             .release_stmt => |rel| {
                 var is_param = false;
@@ -7418,8 +7421,9 @@ pub const Codegen = struct {
                 const raw_param = try self.newTmp();
                 const raw_ptr = try self.newTmp();
                 const raw_len = try self.newTmp();
-                self.out.writer().print("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = add {s}, 0\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
                 self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    !{s}\n", .{p.name}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = stack_alloc Slice_SIZE\n", .{p.name}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = load {s}+0 as ptr\n", .{ raw_ptr, raw_param }) catch return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = load {s}+8 as u64\n", .{ raw_len, raw_param }) catch return CodegenError.CodegenError;
@@ -7431,16 +7435,21 @@ pub const Codegen = struct {
             }
             if (!p.is_borrow and !p.is_move and self.bindingNeedsAddressableStorage(p.name, p.ty)) {
                 const raw_param = try self.newTmp();
-                self.out.writer().print("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = add {s}, 0\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
                 self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                // Release the parameter register before reusing its name for the
+                // stack slot. The value is saved in raw_param, so the old
+                // register is dead and redefinition is legal.
+                self.out.writer().print("    !{s}\n", .{p.name}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
                 try self.emitRelease(raw_param);
             } else if (!p.is_borrow and !p.is_move and self.bindingNeedsAssignedValueSlot(p.name, p.ty)) {
                 const raw_param = try self.newTmp();
-                self.out.writer().print("    {s} = {s}\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
+                self.out.writer().print("    {s} = add {s}, 0\n", .{ raw_param, p.name }) catch return CodegenError.CodegenError;
                 self.stack_alloc_bindings.put(p.name, {}) catch return CodegenError.OutOfMemory;
                 self.assigned_value_slots.put(p.name, {}) catch return CodegenError.OutOfMemory;
+                self.out.writer().print("    !{s}\n", .{p.name}) catch return CodegenError.CodegenError;
                 self.out.writer().print("    {s} = stack_alloc {}\n", .{ p.name, typeSize(p.ty) }) catch return CodegenError.CodegenError;
                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ p.name, raw_param, typeString(p.ty) }) catch return CodegenError.CodegenError;
             }
@@ -7936,7 +7945,7 @@ pub const Codegen = struct {
                 else => self.out.writer().print("    {s} = add {s}, 0\n", .{ target, value_reg }) catch return CodegenError.CodegenError,
             }
         } else {
-            self.out.writer().print("    {s} = {s}\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
+            self.out.writer().print("    {s} = add {s}, 0\n", .{ target, value_reg }) catch return CodegenError.CodegenError;
         }
 
         if (!stmtTerminates(last)) {
@@ -10171,7 +10180,7 @@ pub const Codegen = struct {
                         _ = try self.genArrayBorrowToSliceInto(let.name, let.value, hoisted_allocs);
                     } else {
                         const val_reg = try self.genExpr(let.value, hoisted_allocs);
-                        self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
                 } else if (self.bindingNeedsAddressableStorage(let.name, let_ty) and !isStackAllocCall(let.value)) {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
@@ -10222,7 +10231,7 @@ pub const Codegen = struct {
                     try self.genCopyValueInto(let.name, source_reg, let_ty);
                 } else if (lowering_rules.planDynCoercion(self.tc, let.value)) |plan| {
                     const val_reg = try self.genDynCoercionExpr(let.value, plan, hoisted_allocs);
-                    self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(let.value, hoisted_allocs);
                     if (self.async_pending_return_emitted) return;
@@ -10322,7 +10331,7 @@ pub const Codegen = struct {
                         try self.emitPrimitiveCopy(let.name, val_reg, let_ty);
                         if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
                     } else {
-                        self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     }
                 }
             },
@@ -10447,7 +10456,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    {s} = stack_alloc {}\n", .{ name, typeSize(elem_ty) }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ name, reg, typeString(elem_ty) }) catch return CodegenError.CodegenError;
                             } else {
-                                self.out.writer().print("    {s} = {s}\n", .{ name, reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = add {s}, 0\n", .{ name, reg }) catch return CodegenError.CodegenError;
                             }
                         }
                         offset += elem_size;
@@ -10458,7 +10467,7 @@ pub const Codegen = struct {
                             try self.emitRelease(len_reg);
                             if (let.rest_alias) |rest_alias| {
                                 if (!lowering_rules.isDiscardName(rest_alias)) {
-                                    self.out.writer().print("    {s} = {s}\n", .{ rest_alias, base_ptr }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ rest_alias, base_ptr }) catch return CodegenError.CodegenError;
                                 }
                             }
                             return;
@@ -10472,7 +10481,7 @@ pub const Codegen = struct {
                         self.out.writer().print("    EXPAND SLICE_NEW {s}, {s}, {s}\n", .{ rest_name, rest_ptr, rest_len }) catch return CodegenError.CodegenError;
                         if (let.rest_alias) |rest_alias| {
                             if (!lowering_rules.isDiscardName(rest_alias)) {
-                                self.out.writer().print("    {s} = {s}\n", .{ rest_alias, rest_name }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    {s} = add {s}, 0\n", .{ rest_alias, rest_name }) catch return CodegenError.CodegenError;
                             }
                         }
                         try self.emitRelease(rest_ptr);
@@ -10537,7 +10546,7 @@ pub const Codegen = struct {
                     try self.genCopyValueInto(c.name, source_reg, const_ty);
                 } else if (lowering_rules.planDynCoercion(self.tc, c.value)) |plan| {
                     const val_reg = try self.genDynCoercionExpr(c.value, plan, hoisted_allocs);
-                    self.out.writer().print("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = add {s}, 0\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
                 } else {
                     const val_reg = try self.genExpr(c.value, hoisted_allocs);
                     if (self.task_future_objects.get(val_reg)) |future_obj| {
@@ -10565,7 +10574,7 @@ pub const Codegen = struct {
                         _ = self.mpsc_sender_channels.remove(val_reg);
                         self.consumed_bindings.put(val_reg, {}) catch return CodegenError.OutOfMemory;
                     }
-                    self.out.writer().print("    {s} = {s}\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = add {s}, 0\n", .{ c.name, val_reg }) catch return CodegenError.CodegenError;
                 }
             },
             .assign_stmt => |assign| {
@@ -10692,7 +10701,7 @@ pub const Codegen = struct {
                                 else => self.out.writer().print("    {s} = add {s}, 0\n", .{ target_name, val_reg }) catch return CodegenError.CodegenError,
                             }
                         } else {
-                            self.out.writer().print("    {s} = {s}\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = add {s}, 0\n", .{ target_name, stored_val_reg }) catch return CodegenError.CodegenError;
                         }
                         if (self.refcell_borrow_handles.contains(stored_val_reg)) {
                             try self.transferResultSlotValueState(target_name, stored_val_reg, true);
@@ -10706,7 +10715,7 @@ pub const Codegen = struct {
                 } else {
                     const target_reg = try self.genExpr(assign.target, hoisted_allocs);
                     const val_reg = try self.genExpr(assign.value, hoisted_allocs);
-                    self.out.writer().print("    {s} = {s}\n", .{ target_reg, val_reg }) catch return CodegenError.CodegenError;
+                    self.out.writer().print("    {s} = add {s}, 0\n", .{ target_reg, val_reg }) catch return CodegenError.CodegenError;
                 }
             },
             .return_stmt => |ret| {
@@ -10815,7 +10824,7 @@ pub const Codegen = struct {
                         const elem_size = typeSize(arr.elem);
                         const byte_offset = try self.newTmp();
                         if (elem_size == 1) {
-                            self.out.writer().print("    {s} = {s}\n", .{ byte_offset, index_reg }) catch return CodegenError.CodegenError;
+                            self.out.writer().print("    {s} = add {s}, 0\n", .{ byte_offset, index_reg }) catch return CodegenError.CodegenError;
                         } else {
                             self.out.writer().print("    {s} = mul {s}, {}\n", .{ byte_offset, index_reg, elem_size }) catch return CodegenError.CodegenError;
                         }

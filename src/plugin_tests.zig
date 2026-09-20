@@ -8670,3 +8670,203 @@ test "sla sab backend releases str_eq loaded string data-pointer temps" {
         },
     }
 }
+
+test "sla build import expansion materializes bodies with transitively imported struct literals" {
+    // Regression test: `sa sla build` expands @imports with
+    // load_reachable_imported_bodies_from_registry, parsing imported modules
+    // decl-only with prescan_sla_import_types=false. Materializing a function
+    // body containing a struct literal of a transitively imported type
+    // (e.g. `Shape { ... }` where Shape comes from shape_a.sla via shape_b.sla)
+    // used to fail with a bare error.SyntaxError, because the imported type
+    // name was missing from known_types and the parser's isKnownTypeName check
+    // rejected the struct literal.
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const shape_a_source =
+        \\struct Shape { w: u64, h: u64 }
+    ;
+    const shape_b_source =
+        \\@import "shape_a.sla"
+        \\
+        \\fn make_shape() -> Shape {
+        \\    return Shape { w: 3, h: 4 };
+        \\}
+        \\
+        \\fn area(s: Shape) -> u64 {
+        \\    return s.w * s.h;
+        \\}
+        \\
+        \\fn make_shapes() -> Vec<Shape> {
+        \\    let v: Vec<Shape> = Vec::new();
+        \\    v.push(Shape { w: 1, h: 2 });
+        \\    return v;
+        \\}
+    ;
+    const main_source =
+        \\@import "shape_b.sla"
+        \\
+        \\pub fn main() -> u64 {
+        \\    let s: Shape = make_shape();
+        \\    let many: Vec<Shape> = make_shapes();
+        \\    return area(s) + area(many[0]);
+        \\}
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "shape_a.sla", .data = shape_a_source });
+    try tmp.dir.writeFile(.{ .sub_path = "shape_b.sla", .data = shape_b_source });
+    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const expanded_content = try source_expand.expand(allocator, main_source);
+    var parser = parser_mod.Parser.initWithDir(allocator, expanded_content, ".");
+    const prog = try parser.parseProgram();
+
+    // Mirror the `sa sla build` module-table options exactly.
+    var import_modules = SlaModuleTable.initWithParserOptions(allocator, .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+        .prescan_sla_import_types = false,
+    });
+    defer import_modules.deinit();
+    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    defer root_import_groups.deinit();
+    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    defer contract_imports.deinit();
+    var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
+    defer primary_decls.deinit();
+
+    const expanded_prog = try expandSlaImportsWithModuleTableUsingContractTypeChecker(
+        allocator,
+        prog,
+        "main.sla",
+        &primary_decls,
+        .{
+            .imported_bodies_decl_only = true,
+            .load_reachable_imported_bodies_from_registry = true,
+        },
+        &import_modules,
+        &root_import_groups,
+        &contract_imports,
+        null,
+    );
+
+    // The imported bodies must actually be materialized, not left decl-only.
+    var saw_make_shape_body = false;
+    var saw_make_shapes_body = false;
+    for (expanded_prog.program.decls) |decl| {
+        if (decl.* != .func_decl) continue;
+        if (std.mem.eql(u8, decl.func_decl.name, "make_shape")) {
+            try std.testing.expect(decl.func_decl.body.len > 0);
+            saw_make_shape_body = true;
+        }
+        if (std.mem.eql(u8, decl.func_decl.name, "make_shapes")) {
+            try std.testing.expect(decl.func_decl.body.len > 0);
+            saw_make_shapes_body = true;
+        }
+    }
+    try std.testing.expect(saw_make_shape_body);
+    try std.testing.expect(saw_make_shapes_body);
+
+    // The expanded program must type-check: a misparsed struct literal would
+    // fail here even if expansion had not errored first.
+    var tc = type_checker_mod.TypeChecker.init(allocator);
+    defer tc.deinit();
+    try tc.checkProgram(expanded_prog);
+}
+
+test "module table collectVisibleTypeNames merges transitive imports and tolerates cycles" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    const a_source =
+        \\struct Alpha { x: u64 }
+    ;
+    const b_source =
+        \\@import "vis_a.sla"
+        \\
+        \\struct Beta { y: u64 }
+    ;
+    // Cyclic pair: collection must terminate via the visited set.
+    const cyc_a_source =
+        \\@import "cyc_b.sla"
+        \\
+        \\struct CycA { x: u64 }
+    ;
+    const cyc_b_source =
+        \\@import "cyc_a.sla"
+        \\
+        \\struct CycB { y: u64 }
+    ;
+    try tmp.dir.writeFile(.{ .sub_path = "vis_a.sla", .data = a_source });
+    try tmp.dir.writeFile(.{ .sub_path = "vis_b.sla", .data = b_source });
+    try tmp.dir.writeFile(.{ .sub_path = "cyc_a.sla", .data = cyc_a_source });
+    try tmp.dir.writeFile(.{ .sub_path = "cyc_b.sla", .data = cyc_b_source });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var modules = SlaModuleTable.init(allocator);
+    defer modules.deinit();
+
+    const a_resolved = (try readImportFileIfExists(allocator, "vis_a.sla")).?;
+    const b_resolved = (try readImportFileIfExists(allocator, "vis_b.sla")).?;
+    const cyc_a_resolved = (try readImportFileIfExists(allocator, "cyc_a.sla")).?;
+    const cyc_b_resolved = (try readImportFileIfExists(allocator, "cyc_b.sla")).?;
+    const mod_a = try modules.getOrParse(a_resolved);
+    const mod_b = try modules.getOrParse(b_resolved);
+    const mod_cyc_a = try modules.getOrParse(cyc_a_resolved);
+    const mod_cyc_b = try modules.getOrParse(cyc_b_resolved);
+
+    // Sanity: decl-only parse with prescan disabled leaves imported types out
+    // of the module's own known_types (the precondition the fix addresses).
+    try std.testing.expectEqual(@as(usize, 1), mod_b.known_types.len);
+
+    var types = std.ArrayList([]const u8).init(allocator);
+    defer types.deinit();
+    var enums = std.ArrayList([]const u8).init(allocator);
+    defer enums.deinit();
+    try modules.collectVisibleTypeNames(mod_b, &types, &enums);
+
+    var saw_alpha = false;
+    var saw_beta = false;
+    for (types.items) |name| {
+        if (std.mem.eql(u8, name, "Alpha")) saw_alpha = true;
+        if (std.mem.eql(u8, name, "Beta")) saw_beta = true;
+    }
+    try std.testing.expect(saw_alpha);
+    try std.testing.expect(saw_beta);
+    // No duplicates.
+    try std.testing.expectEqual(@as(usize, 2), types.items.len);
+
+    // Cyclic imports: must terminate and surface both sides' types.
+    var cyc_types = std.ArrayList([]const u8).init(allocator);
+    defer cyc_types.deinit();
+    var cyc_enums = std.ArrayList([]const u8).init(allocator);
+    defer cyc_enums.deinit();
+    try modules.collectVisibleTypeNames(mod_cyc_a, &cyc_types, &cyc_enums);
+    var saw_cyc_a = false;
+    var saw_cyc_b = false;
+    for (cyc_types.items) |name| {
+        if (std.mem.eql(u8, name, "CycA")) saw_cyc_a = true;
+        if (std.mem.eql(u8, name, "CycB")) saw_cyc_b = true;
+    }
+    try std.testing.expect(saw_cyc_a);
+    try std.testing.expect(saw_cyc_b);
+    _ = mod_a;
+    _ = mod_cyc_b;
+}

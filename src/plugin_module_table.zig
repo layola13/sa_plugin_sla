@@ -456,7 +456,10 @@ pub const SlaModuleTable = struct {
         const parse_start = if (profile) std.time.nanoTimestamp() else 0;
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, base_dir, self.parse_options);
         parser.seedImportTypeScanCache(self.import_type_scan_cache);
-        const parsed = try parser.parseProgram();
+        const parsed = parser.parseProgram() catch |err| {
+            printModuleParseError(resolved.path, "parse", err);
+            return err;
+        };
         self.import_type_scan_cache = parser.importTypeScanCache();
         self.import_type_scan_cache_hits += parser.importTypeScanCacheHitCount();
         if (parsed.* != .program) return error.InvalidProgram;
@@ -591,8 +594,19 @@ pub const SlaModuleTable = struct {
             .parse_test_bodies = self.parse_options.parse_test_bodies,
             .prescan_sla_import_types = false,
         });
-        try parser.seedKnownTypeNames(module.known_types, module.known_enums);
-        const parsed = try parser.parseProgram();
+        // Seed the reparse with the full visible type surface (own types plus
+        // transitive imports); otherwise struct literals of imported types
+        // fail the parser's isKnownTypeName check with a bare SyntaxError.
+        var visible_types = std.ArrayList([]const u8).init(self.allocator);
+        var visible_enums = std.ArrayList([]const u8).init(self.allocator);
+        defer visible_types.deinit();
+        defer visible_enums.deinit();
+        try self.collectVisibleTypeNames(module, &visible_types, &visible_enums);
+        try parser.seedKnownTypeNames(visible_types.items, visible_enums.items);
+        const parsed = parser.parseProgram() catch |err| {
+            printModuleParseError(module.path, "re-parse during body materialization of", err);
+            return err;
+        };
         if (parsed.* != .program) return error.InvalidProgram;
         const parse_ns = std.time.nanoTimestamp() - parse_start;
 
@@ -647,6 +661,45 @@ pub const SlaModuleTable = struct {
         };
     }
 
+    /// Names of types/enums visible to `module`: its own declarations plus the
+    /// (transitive) type surfaces of the modules it `@import`s.
+    ///
+    /// Body materialization re-parses with `prescan_sla_import_types = false`,
+    /// so imported type names never land in `module.known_types`. Without this
+    /// merge, a struct literal like `ImportedType { ... }` fails the parser's
+    /// `isKnownTypeName` check (parser.zig) and degrades into a bare identifier
+    /// followed by an unconsumed `{ ... }`, surfacing as a context-free
+    /// `error.SyntaxError` during `@import` expansion.
+    pub fn collectVisibleTypeNames(
+        self: *SlaModuleTable,
+        module: *SlaModule,
+        types_out: *std.ArrayList([]const u8),
+        enums_out: *std.ArrayList([]const u8),
+    ) !void {
+        var visited = std.StringHashMap(void).init(self.allocator);
+        defer visited.deinit();
+        try self.collectVisibleTypeNamesInto(module, &visited, types_out, enums_out);
+    }
+
+    fn collectVisibleTypeNamesInto(
+        self: *SlaModuleTable,
+        module: *SlaModule,
+        visited: *std.StringHashMap(void),
+        types_out: *std.ArrayList([]const u8),
+        enums_out: *std.ArrayList([]const u8),
+    ) !void {
+        if (visited.contains(module.path)) return;
+        try visited.put(module.path, {});
+        for (module.known_types) |name| try appendUniqueName(types_out, name);
+        for (module.known_enums) |name| try appendUniqueName(enums_out, name);
+        // Only already-parsed modules contribute; materialization runs after
+        // module discovery, so every reachable import should be present.
+        for (module.resolved_imports) |ri| {
+            const imported = self.modules.get(ri.path) orelse continue;
+            try self.collectVisibleTypeNamesInto(imported, visited, types_out, enums_out);
+        }
+    }
+
     fn tryMaterializeSelectedFunctionBodiesInPlace(
         self: *SlaModuleTable,
         module: *SlaModule,
@@ -683,18 +736,29 @@ pub const SlaModuleTable = struct {
         }
 
         const parse_start = std.time.nanoTimestamp();
+        // Seed body-span parsing with the full visible type surface (own types
+        // plus transitive imports); otherwise struct literals of imported types
+        // fail the parser's isKnownTypeName check with a bare SyntaxError.
+        var visible_types = std.ArrayList([]const u8).init(self.allocator);
+        var visible_enums = std.ArrayList([]const u8).init(self.allocator);
+        defer visible_types.deinit();
+        defer visible_enums.deinit();
+        try self.collectVisibleTypeNames(module, &visible_types, &visible_enums);
         selected_iter = selected_functions.keyIterator();
         while (selected_iter.next()) |name_ptr| {
             if (module.parsed_function_bodies.contains(name_ptr.*)) continue;
             const span = module.function_body_spans.get(name_ptr.*) orelse return null;
             const func_decl = moduleFunctionDeclBySymbol(module, name_ptr.*) orelse return null;
             if (func_decl.body.len != 0 and !func_decl.is_decl_only) continue;
-            const body = try parser_mod.Parser.parseFunctionBodySpan(
+            const body = parser_mod.Parser.parseFunctionBodySpan(
                 self.allocator,
                 span,
-                module.known_types,
-                module.known_enums,
-            );
+                visible_types.items,
+                visible_enums.items,
+            ) catch |err| {
+                printBodySpanParseError(module, name_ptr.*, span);
+                return err;
+            };
             func_decl.body = body;
             func_decl.is_decl_only = false;
         }
@@ -818,6 +882,51 @@ fn stringSetContainsAll(haystack: *const std.StringHashMap(void), needles: *cons
         if (!haystack.contains(name_ptr.*)) return false;
     }
     return true;
+}
+
+fn appendUniqueName(list: *std.ArrayList([]const u8), name: []const u8) !void {
+    for (list.items) |existing| {
+        if (std.mem.eql(u8, existing, name)) return;
+    }
+    try list.append(name);
+}
+
+/// Diagnostic for a failed lazy body-span parse: names the module and function
+/// and locates the body span's start (line/col) within the module's expanded
+/// source, so a SyntaxError during @import body materialization never surfaces
+/// as a context-free `error.SyntaxError`.
+fn printBodySpanParseError(module: *SlaModule, func_name: []const u8, span: []const u8) void {
+    const err_writer = std.io.getStdErr().writer();
+    var line: usize = 1;
+    var col: usize = 1;
+    var located = false;
+    const exp = module.expanded_source;
+    if (span.len <= exp.len and exp.len > 0) {
+        const span_addr = @intFromPtr(span.ptr);
+        const exp_addr = @intFromPtr(exp.ptr);
+        if (span_addr >= exp_addr and span_addr + span.len <= exp_addr + exp.len) {
+            const offset = span_addr - exp_addr;
+            for (exp[0..offset]) |c| {
+                if (c == '\n') {
+                    line += 1;
+                    col = 1;
+                } else {
+                    col += 1;
+                }
+            }
+            located = true;
+        }
+    }
+    if (located) {
+        err_writer.print("Import Error: failed to parse body of function '{s}' in module '{s}' (body starts at line {d}, column {d})\n", .{ func_name, module.path, line, col }) catch {};
+    } else {
+        err_writer.print("Import Error: failed to parse body of function '{s}' in module '{s}'\n", .{ func_name, module.path }) catch {};
+    }
+}
+
+fn printModuleParseError(module_path: []const u8, context: []const u8, err: anyerror) void {
+    const err_writer = std.io.getStdErr().writer();
+    err_writer.print("Import Error: failed to {s} module '{s}': {}\n", .{ context, module_path, err }) catch {};
 }
 
 fn stringSetsEqual(a: *const std.StringHashMap(void), b: *const std.StringHashMap(void)) bool {

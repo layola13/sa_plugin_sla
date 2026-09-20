@@ -13241,7 +13241,7 @@ pub const Codegen = struct {
                     }
                     if (std.mem.eql(u8, target, "Vec") and std.mem.eql(u8, call.func_name, "new")) {
                         if (call.args.len != 0) return CodegenError.CodegenError;
-                        const reg = try self.newTmp();
+                        const reg = try self.newTmpOrLetDest();
                         self.out.writer().print("    EXPAND VEC_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                         return reg;
                     }
@@ -13288,7 +13288,7 @@ pub const Codegen = struct {
                     }
                 }
                 if (std.mem.eql(u8, call.func_name, "vec")) {
-                    const reg = try self.newTmp();
+                    const reg = try self.newTmpOrLetDest();
                     self.out.writer().print("    EXPAND VEC_NEW {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     const vec_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
                     const elem_ty = vecElementType(vec_ty) orelse return CodegenError.CodegenError;

@@ -12411,7 +12411,7 @@ pub const Codegen = struct {
             },
             .identifier => |name| {
                 if (lowering_rules.isOptionNoneName(name)) {
-                    const reg = try self.newTmp();
+                    const reg = try self.newTmpOrLetDest();
                     self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
                     return reg;
                 }
@@ -12942,7 +12942,7 @@ pub const Codegen = struct {
                 if (lowering_rules.isOptionSomeCall(call)) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                    const reg = try self.newTmp();
+                    const reg = try self.newTmpOrLetDest();
                     self.out.writer().print("    EXPAND OPTION_NEW_SOME {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
@@ -12950,7 +12950,7 @@ pub const Codegen = struct {
                 if (lowering_rules.isResultOkCall(call)) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                    const reg = try self.newTmp();
+                    const reg = try self.newTmpOrLetDest();
                     self.out.writer().print("    EXPAND RESULT_NEW_OK {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
@@ -12958,7 +12958,7 @@ pub const Codegen = struct {
                 if (lowering_rules.isResultErrCall(call)) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
-                    const reg = try self.newTmp();
+                    const reg = try self.newTmpOrLetDest();
                     self.out.writer().print("    EXPAND RESULT_NEW_ERR {s}, {s}\n", .{ reg, value_reg }) catch return CodegenError.CodegenError;
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;

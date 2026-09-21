@@ -78,6 +78,15 @@ const MutexGuardValue = struct {
     mutex_reg: u32,
 };
 
+/// Tracks a live `RwLock` guard data-pointer register back to the lock
+/// allocation it holds. Releasing the guard register emits
+/// `RWLOCK_RELEASE_WRITE` or `RWLOCK_RELEASE_READ`, mirroring the SA-text
+/// backend (`src/codegen.zig` rwlock guard handles, rosetta 121).
+const RwLockGuardValue = struct {
+    lock_reg: u32,
+    is_write: bool,
+};
+
 const BorrowAddressTempState = struct {
     release_regs: []const u32 = &.{},
     restore_slot: ?u32 = null,
@@ -301,6 +310,7 @@ pub const Codegen = struct {
     escaped_closure_entries: std.AutoHashMap(*const ast.Node, EscapedClosureEntry),
     refcell_borrow_values: std.AutoHashMap(u32, RefCellBorrowValue),
     mutex_guard_values: std.AutoHashMap(u32, MutexGuardValue),
+    rwlock_guard_values: std.AutoHashMap(u32, RwLockGuardValue),
     result_slot_refcell_handles: std.AutoHashMap(u32, ResultSlotRefCellHandle),
     result_slot_refcell_slots: std.AutoHashMap(u32, u32),
     borrow_address_temps: std.AutoHashMap(u32, BorrowAddressTempState),
@@ -387,6 +397,7 @@ pub const Codegen = struct {
             .escaped_closure_entries = std.AutoHashMap(*const ast.Node, EscapedClosureEntry).init(allocator),
             .refcell_borrow_values = std.AutoHashMap(u32, RefCellBorrowValue).init(allocator),
             .mutex_guard_values = std.AutoHashMap(u32, MutexGuardValue).init(allocator),
+            .rwlock_guard_values = std.AutoHashMap(u32, RwLockGuardValue).init(allocator),
             .result_slot_refcell_handles = std.AutoHashMap(u32, ResultSlotRefCellHandle).init(allocator),
             .result_slot_refcell_slots = std.AutoHashMap(u32, u32).init(allocator),
             .borrow_address_temps = std.AutoHashMap(u32, BorrowAddressTempState).init(allocator),
@@ -468,6 +479,7 @@ pub const Codegen = struct {
         self.clearRefCellBorrowValues();
         self.refcell_borrow_values.deinit();
         self.mutex_guard_values.deinit();
+        self.rwlock_guard_values.deinit();
         self.result_slot_refcell_handles.deinit();
         self.result_slot_refcell_slots.deinit();
         self.clearBorrowAddressTemps();
@@ -2389,6 +2401,7 @@ pub const Codegen = struct {
         self.borrowed_bindings.clearRetainingCapacity();
         self.clearRefCellBorrowValues();
         self.mutex_guard_values.clearRetainingCapacity();
+        self.rwlock_guard_values.clearRetainingCapacity();
         self.result_slot_refcell_handles.clearRetainingCapacity();
         self.result_slot_refcell_slots.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
@@ -3590,6 +3603,9 @@ pub const Codegen = struct {
         }
         if (self.mutex_guard_values.fetchRemove(reg)) |entry| {
             try self.emitMutexGuardRelease(entry.value);
+        }
+        if (self.rwlock_guard_values.fetchRemove(reg)) |entry| {
+            try self.emitRwLockGuardRelease(entry.value);
         }
         if (self.stack_alloc_emitted.contains(reg)) {
             _ = self.non_owning_regs.remove(reg);
@@ -5612,6 +5628,9 @@ pub const Codegen = struct {
         // re-expands hygiene per call and stays consistent, so bypass the cache
         // for this module.
         if (std.mem.eql(u8, import_path, "sa_std/string_format.sa")) return false;
+        // RWLOCK_* macros use `%out_ok` hygiene suffix in label names
+        // (e.g. L_RWLOCK_READ_NOERR_OK_%out_ok). Same caching issue as above.
+        if (std.mem.eql(u8, import_path, "sa_std/sync/rwlock.sa")) return false;
         const template = try self.cachedStdMacroTemplate(import_path, macro_name, args.len);
         if (template.arg_count != args.len) return Error.UnsupportedSabDirectFeature;
         if (!try self.stdMacroTemplateSupportsArgs(template, args)) return false;
@@ -9946,6 +9965,22 @@ pub const Codegen = struct {
                 if (!self.isLocalReg(value)) try self.emitRelease(value);
                 return;
             }
+            // RwLock guards (rosetta 121): `*writer = updated` stores through
+            // the guard data pointer, mirroring the MutexGuard path above.
+            if (lowering_rules.rwLockReadGuardInnerType(source_ty)) |guard_inner| {
+                const target = try self.genExpr(source_expr);
+                const value = try self.genExpr(assign.value);
+                try self.emitStore(target, 0, value, try storagePrimType(guard_inner));
+                if (!self.isLocalReg(value)) try self.emitRelease(value);
+                return;
+            }
+            if (lowering_rules.rwLockWriteGuardInnerType(source_ty)) |guard_inner| {
+                const target = try self.genExpr(source_expr);
+                const value = try self.genExpr(assign.value);
+                try self.emitStore(target, 0, value, try storagePrimType(guard_inner));
+                if (!self.isLocalReg(value)) try self.emitRelease(value);
+                return;
+            }
             const inner_ty = switch (source_ty.*) {
                 .borrow => |inner| inner,
                 .pointer => |inner| inner,
@@ -12002,6 +12037,10 @@ pub const Codegen = struct {
             _ = self.mutex_guard_values.remove(dst);
             try self.mutex_guard_values.put(dst, entry.value);
         }
+        if (self.rwlock_guard_values.fetchRemove(receiver_reg)) |entry| {
+            _ = self.rwlock_guard_values.remove(dst);
+            try self.rwlock_guard_values.put(dst, entry.value);
+        }
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
         return dst;
     }
@@ -12940,6 +12979,51 @@ pub const Codegen = struct {
         });
     }
 
+    fn emitRwLockGuardRelease(self: *Codegen, handle: RwLockGuardValue) !void {
+        if (handle.is_write) {
+            // RWLOCK_RELEASE_WRITE is inline (atomic_store), safe to use macro.
+            try self.emitStdMacroFragment("sa_std/sync/rwlock.sa", "RWLOCK_RELEASE_WRITE", &.{
+                self.symbols.items[handle.lock_reg],
+            });
+        } else {
+            // RWLOCK_RELEASE_READ macro contains `call @__rwlock_release_read`
+            // which is not included in the SAB module by emitStdMacroFragment.
+            // Inline the atomic_rmw_sub directly (root fix: avoid undeclared call).
+            // RwLock_readers offset is +0 (see sa_std/sync/rwlock.sal).
+            const tmp = try self.intern(try self.newTmp());
+            try self.recordReg(tmp);
+            const lock_sym = self.symbols.items[handle.lock_reg];
+            const tmp_sym = self.symbols.items[tmp];
+            // Use the fresh fragment path with placeholder args.
+            const ph0 = try self.stdMacroPlaceholder(0);
+            defer self.allocator.free(ph0);
+            const ph1 = try self.stdMacroPlaceholder(1);
+            defer self.allocator.free(ph1);
+            const func_name = try std.fmt.allocPrint(self.allocator, "__sla_rwlock_release_{}", .{self.macro_fragment_idx});
+            self.macro_fragment_idx += 1;
+            defer self.allocator.free(func_name);
+            var source = std.ArrayList(u8).init(self.allocator);
+            defer source.deinit();
+            try source.writer().print(
+                "@{s}() -> void:\nL_ENTRY:\n    {s} = atomic_rmw_sub {s}+0, 1 as i32 acq_rel\n    !{s}\n    return\n",
+                .{ func_name, ph1, ph0, ph1 },
+            );
+            var scratch = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer scratch.deinit();
+            const tmp_alloc = scratch.allocator();
+            const std_root = try self.cachedSaStdRoot();
+            const resolve_ctx = flattener.ResolveContext{ .options = .{ .std_root = std_root } };
+            var flat = try flattener.flattenWithPackages(tmp_alloc, source.items, resolve_ctx);
+            defer flat.deinit(tmp_alloc);
+            const bytes = try sci_bridge.encodeSabFromFlatUnchecked(tmp_alloc, &flat);
+            defer tmp_alloc.free(bytes);
+            var module = try sab.decodeModule(tmp_alloc, bytes);
+            defer module.deinit(tmp_alloc);
+            try self.appendDecodedModuleConstDecls(module);
+            try self.appendRenamedTemplateFragmentBody(module, func_name, &.{ lock_sym, tmp_sym });
+        }
+    }
+
     /// Direct-SAB `Mutex::new(value)` for `i32`-like values, mirroring the
     /// SA-text backend (`src/codegen.zig` `EXPAND MUTEX_NEW_I32`). Other inner
     /// types stay on the SA-text fallback path.
@@ -13579,7 +13663,7 @@ pub const Codegen = struct {
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         if (lowering_rules.mutexInnerType(receiver_ty) == null) return null;
         const recv_reg = try self.genExpr(@constCast(call.args[0]));
-        try self.ensureStdDeps("sa_std/sync/mutex.sa", &.{"__mutex_lock_spin"});
+        try self.ensureStdDeps("sa_std/sync/mutex.sa", &.{ "__mutex_lock_spin" });
         try self.emitStdMacroFragment("sa_std/sync/mutex.sa", "MUTEX_LOCK", &.{
             self.symbols.items[recv_reg],
         });
@@ -13593,6 +13677,81 @@ pub const Codegen = struct {
         });
         try self.mutex_guard_values.put(result_reg, .{ .mutex_reg = recv_reg });
         try self.emitRelease(guard_reg);
+        return result_reg;
+    }
+
+    /// Direct-SAB `RwLock::read()` / `RwLock::write()`, mirroring the SA-text
+    /// backend (`src/codegen.zig` `rwLockInnerType` handling, rosetta 121).
+    /// Emits `RWLOCK_TRY_READ_NOERR` / `RWLOCK_TRY_WRITE_NOERR` and builds a
+    /// `Result` holding the data pointer. The guard is tracked so releasing it
+    /// emits the inline atomic release (see `emitRwLockGuardRelease`).
+    fn genRwLockReadWriteCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.associated_target != null) return null;
+        const is_write = std.mem.eql(u8, call.func_name, "write");
+        const is_read = std.mem.eql(u8, call.func_name, "read");
+        if (!is_write and !is_read) return null;
+        if (call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.rwLockInnerType(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const ok_reg = try self.intern(try self.newTmp());
+        try self.recordReg(ok_reg);
+        const lock_guard_reg = try self.intern(try self.newTmp());
+        try self.recordReg(lock_guard_reg);
+        const macro_name = if (is_write) "RWLOCK_TRY_WRITE_NOERR" else "RWLOCK_TRY_READ_NOERR";
+        try self.emitStdMacroFragment("sa_std/sync/rwlock.sa", macro_name, &.{
+            self.symbols.items[ok_reg],
+            self.symbols.items[lock_guard_reg],
+            self.symbols.items[recv_reg],
+        });
+        // The Result is a heap-allocated pointer. Use a stack slot to hold the
+        // pointer across the branch (SAB branch scoping requires it).
+        const result_slot = try self.intern(try self.newTmp());
+        try self.emitAlloc(result_slot, 8);
+        const err_label = try self.newLabel("L_RWLOCK_RESULT_ERR");
+        const ok_label = try self.newLabel("L_RWLOCK_RESULT_OK");
+        const end_label = try self.newLabel("L_RWLOCK_RESULT_END");
+        try self.emitBranch(ok_reg, ok_label, err_label);
+        try self.emitLabel(err_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitBranchRelease(lock_guard_reg);
+        const err_result = try self.intern(try self.newTmp());
+        try self.recordReg(err_result);
+        const err_code = try self.intern(try self.newTmp());
+        try self.recordReg(err_code);
+        try self.emitAssignImm(err_code, 1);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{
+            self.symbols.items[err_result],
+            self.symbols.items[err_code],
+        });
+        try self.emitStore(result_slot, 0, err_result, .ptr);
+        try self.emitBranchRelease(err_result);
+        try self.emitBranchRelease(err_code);
+        try self.emitJmp(end_label);
+        try self.emitLabel(ok_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitBranchRelease(lock_guard_reg);
+        const guard_reg = try self.intern(try self.newTmp());
+        try self.recordReg(guard_reg);
+        // guard = lock_ptr + RwLock_data offset (+8, see sa_std/sync/rwlock.sal).
+        // Mirrors SA-text `ptr_add guard_reg, recv_reg, RwLock_data`.
+        try self.emitPtrAdd(guard_reg, recv_reg, .{ .imm_u64 = 8 });
+        const ok_result = try self.intern(try self.newTmp());
+        try self.recordReg(ok_result);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[ok_result],
+            self.symbols.items[guard_reg],
+        });
+        try self.emitStore(result_slot, 0, ok_result, .ptr);
+        try self.emitBranchRelease(ok_result);
+        try self.emitBranchRelease(guard_reg);
+        try self.emitJmp(end_label);
+        try self.emitLabel(end_label);
+        const result_reg = try self.intern(try self.newTmp());
+        try self.recordReg(result_reg);
+        try self.emitLoad(result_reg, result_slot, 0, .ptr);
+        try self.rwlock_guard_values.put(result_reg, .{ .lock_reg = recv_reg, .is_write = is_write });
         return result_reg;
     }
 
@@ -14476,6 +14635,7 @@ pub const Codegen = struct {
         if (try self.genMapInsertCall(expr, call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genMutexLockCall(expr, call)) |reg| return reg;
+        if (try self.genRwLockReadWriteCall(expr, call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
         if (try self.genSenderCloneCall(expr, call)) |reg| return reg;
         if (try self.genMpscSendCall(expr, call)) |reg| return reg;

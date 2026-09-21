@@ -10191,6 +10191,17 @@ pub const Codegen = struct {
         return switch (expr.*) {
             .literal => |lit| try self.genLiteralTyped(lit, self.tc.expr_types.get(expr)),
             .identifier => |name| blk: {
+                // Mirrors the SA-text backend: bare `None` constructs
+                // Option::None (OPTION_NEW_NONE). Checked first, exactly
+                // like codegen.zig's identifier arm.
+                if (lowering_rules.isOptionNoneName(name)) {
+                    const dst = try self.intern(try self.newTmp());
+                    try self.recordReg(dst);
+                    try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+                        self.symbols.items[dst],
+                    });
+                    break :blk dst;
+                }
                 if (self.closure_param_regs.get(name)) |mapped| break :blk mapped;
                 if (self.stackLocal(name)) |slot| {
                     const ty = slot.stack_ty orelse return Error.UnsupportedSabDirectFeature;
@@ -13296,6 +13307,60 @@ pub const Codegen = struct {
         return null;
     }
 
+    /// Direct-SAB `Option::Some(v)`, mirroring the SA-text backend
+    /// (`EXPAND OPTION_NEW_SOME`). The match side already exists
+    /// (OPTION_IS_SOME / OPTION_GET fragments in genMatch); only the
+    /// constructor was missing, failing strict builds with
+    /// "static call Some has no lowering plan".
+    fn genOptionSomeCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isOptionSomeCall(call)) return null;
+        if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+        const value_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+            self.symbols.items[dst],
+            self.symbols.items[value_reg],
+        });
+        if (!self.isLocalReg(value_reg) and lowering_rules.callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+        return dst;
+    }
+
+    /// Direct-SAB `Result::Ok(v)`, mirroring the SA-text backend
+    /// (`EXPAND RESULT_NEW_OK`).
+    fn genResultOkCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isResultOkCall(call)) return null;
+        if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+        const value_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[dst],
+            self.symbols.items[value_reg],
+        });
+        if (!self.isLocalReg(value_reg) and lowering_rules.callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+        return dst;
+    }
+
+    /// Direct-SAB `Result::Err(e)`, mirroring the SA-text backend
+    /// (`EXPAND RESULT_NEW_ERR`).
+    fn genResultErrCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isResultErrCall(call)) return null;
+        if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+        const value_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{
+            self.symbols.items[dst],
+            self.symbols.items[value_reg],
+        });
+        if (!self.isLocalReg(value_reg) and lowering_rules.callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
+        return dst;
+    }
+
     /// Direct-SAB `VecDeque::from([a, b, ...])`, mirroring the SA-text backend
     /// (`VEC_DEQUE_NEW` + one `VEC_DEQUE_PUSH_BACK` per element).
     fn genVecDequeFromCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
@@ -14680,6 +14745,9 @@ pub const Codegen = struct {
         if (try self.genResultOptionQueryCall(expr, call)) |reg| return reg;
         if (try self.genCatchUnwindCall(call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
+        if (try self.genOptionSomeCall(expr, call)) |reg| return reg;
+        if (try self.genResultOkCall(expr, call)) |reg| return reg;
+        if (try self.genResultErrCall(expr, call)) |reg| return reg;
         const lowering = lowering_rules.planStaticCallLowering(self.tc, expr, call, self.tc.expr_types.get(expr)) orelse {
             self.traceUnsupported("static call {s} has no lowering plan\n", .{call.func_name});
             return Error.UnsupportedSabDirectFeature;
@@ -16967,6 +17035,23 @@ pub const Codegen = struct {
         return try self.genMatchWithExpected(expr, mat, null);
     }
 
+    /// Resolve an `infer` match-result type from the case bodies. The type
+    /// checker records the first arm's tail type as the match type, so when
+    /// the first arm returns an infer-typed pattern binding the recorded type
+    /// stays `infer` even though a later arm pins it to a concrete type
+    /// (typesEqual treats infer as unifying with anything). Scan the arms
+    /// for the first concrete tail type; the arms were already checked for
+    /// mutual consistency, so any concrete one agrees with the rest.
+    fn resolveInferredMatchType(self: *Codegen, expr_ty: *const ast.Type, mat: *const ast.MatchExpr) *const ast.Type {
+        if (expr_ty.* != .infer) return expr_ty;
+        for (mat.cases) |case| {
+            const tail = blockTailExpr(case.body) orelse continue;
+            const tail_ty = self.tc.expr_types.get(tail) orelse continue;
+            if (tail_ty.* != .infer) return tail_ty;
+        }
+        return expr_ty;
+    }
+
     fn genMatchWithExpected(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, expected_ty: ?*const ast.Type) anyerror!u32 {
         if (mat.cases.len == 0) return Error.UnsupportedSabDirectFeature;
         const val_ty = if (mat.val.* == .identifier)
@@ -16978,15 +17063,23 @@ pub const Codegen = struct {
             return Error.UnsupportedSabDirectFeature;
 
         const expr_ty = expected_ty orelse self.tc.expr_types.get(expr) orelse return Error.MissingType;
-        const value_match = !isVoidType(expr_ty);
+        // The type checker records the first arm's tail type as the match
+        // result type. When the first arm returns an infer-typed pattern
+        // binding (e.g. `Ok(n) => n` over `Result<infer, i64>`), the recorded
+        // match type stays `infer` even though a later arm pins it to a
+        // concrete type. SAB needs a concrete type for the result slot
+        // (primType rejects infer), so resolve it from the arms. SA-text
+        // never consults the type here, which is why only direct-SAB hit this.
+        const match_ty = self.resolveInferredMatchType(expr_ty, mat);
+        const value_match = !isVoidType(match_ty);
 
         const val_reg = try self.genExpr(mat.val);
         const val_is_local = self.isLocalReg(val_reg);
 
         const result_slot = if (value_match) blk: {
             const slot = try self.intern(try self.newTmp());
-            try self.emitAlloc(slot, typeSize(expr_ty));
-            try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
+            try self.emitAlloc(slot, typeSize(match_ty));
+            try self.prepareResultSlotRefCellCompanion(slot, match_ty);
             break :blk slot;
         } else null;
 
@@ -17131,7 +17224,7 @@ pub const Codegen = struct {
             try self.emitBranchRelease(case_cond_regs.items[i]);
 
             const terminated = if (value_match)
-                try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty)
+                try self.genBlockTailValueStore(case.body, result_slot.?, match_ty)
             else blk: {
                 try self.genBlock(case.body);
                 break :blk self.lastIsTerminator();
@@ -17164,8 +17257,8 @@ pub const Codegen = struct {
             if (!val_is_local) try self.emitRelease(val_reg);
             if (result_slot) |slot| {
                 const result = try self.intern(try self.newTmp());
-                try self.emitLoad(result, slot, 0, try primType(expr_ty));
-                try self.loadResultSlotTransferredValue(result, slot, expr_ty);
+                try self.emitLoad(result, slot, 0, try primType(match_ty));
+                try self.loadResultSlotTransferredValue(result, slot, match_ty);
                 try self.emitRelease(slot);
                 return result;
             }

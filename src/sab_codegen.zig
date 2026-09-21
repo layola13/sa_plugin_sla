@@ -11278,7 +11278,16 @@ pub const Codegen = struct {
 
     fn genUnsafeExpr(self: *Codegen, expr: *const ast.Node, unsafe_expr: ast.UnsafeExpr) anyerror!u32 {
         const result_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
-        if (isVoidType(result_ty)) return Error.UnsupportedSabDirectFeature;
+        // Void-typed unsafe (used as a statement): no result slot needed.
+        // Mirrors genIfStatement vs genIfValue distinction.
+        if (isVoidType(result_ty)) {
+            const block_locals_len = self.locals.items.len;
+            _ = try self.genBlock(unsafe_expr.body);
+            try self.releaseLocalsFrom(block_locals_len, null);
+            const result = try self.intern(try self.newTmp());
+            try self.recordReg(result);
+            return result;
+        }
 
         const block_locals_len = self.locals.items.len;
         const result_slot = try self.intern(try self.newTmp());
@@ -14653,6 +14662,7 @@ pub const Codegen = struct {
         if (try self.genArrayFillCall(call)) |reg| return reg;
         if (try self.genPtrBuiltinCall(expr, call)) |reg| return reg;
         if (try self.genPointerMethodCall(call)) |reg| return reg;
+        if (try self.genStrAsPtrMethodCall(call)) |reg| return reg;
         if (try self.genMutexNewCall(expr, call)) |reg| return reg;
         if (try self.genAtomicNewCall(expr, call)) |reg| return reg;
         if (try self.genAtomicMethodCall(expr, call)) |reg| return reg;
@@ -14719,6 +14729,25 @@ pub const Codegen = struct {
         const dst = try self.intern(try self.newTmp());
         try self.emitStdMacroFragment("sa_std/ptr.sa", macro_name, &.{ self.symbols.items[dst], self.symbols.items[ptr_reg] });
         if (!self.isLocalReg(ptr_reg) and lowering_rules.callArgNeedsRelease(call.args[0])) try self.emitRelease(ptr_reg);
+        return dst;
+    }
+
+    /// String `.as_ptr()` method, mirroring SA-text `STR_AS_PTR` macro (rosetta 185).
+    /// The receiver is a string Slice; returns the raw data pointer.
+    fn genStrAsPtrMethodCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len != 1) return null;
+        if (!std.mem.eql(u8, call.func_name, "as_ptr")) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (!lowering_rules.isStringLikeType(receiver_ty)) return null;
+        const receiver = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        // STR_AS_PTR expands to STR_PTR which extracts the data pointer from the Slice.
+        try self.emitStdMacroFragment("sa_std/string.sa", "STR_AS_PTR", &.{
+            self.symbols.items[dst],
+            self.symbols.items[receiver],
+        });
+        if (!self.isLocalReg(receiver)) try self.emitRelease(receiver);
         return dst;
     }
 

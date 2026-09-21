@@ -10248,6 +10248,16 @@ pub const Codegen = struct {
             .if_expr => |ife| try self.genIf(expr, ife),
             .cast_expr => |cast| try self.genCast(cast),
             .unsafe_expr => |unsafe_expr| try self.genUnsafeExpr(expr, unsafe_expr),
+            .inline_asm_expr => {
+                // SA-text treats asm! as a no-op (see codegen.zig:12811). Mirror it here.
+                // The inout operands are already validated by the type checker; the asm
+                // template itself is not emitted. Assign a dummy value so the register
+                // is defined (required for release tracking).
+                const result = try self.intern(try self.newTmp());
+                try self.recordReg(result);
+                try self.emitAssignImm(result, 0);
+                return result;
+            },
             .try_expr => |try_expr| try self.genTry(expr, try_expr),
             .await_expr => |aw| try self.genAwait(expr, aw),
             .borrow_expr => |borrow| try self.genBorrow(borrow),
@@ -11286,6 +11296,7 @@ pub const Codegen = struct {
             try self.releaseLocalsFrom(block_locals_len, null);
             const result = try self.intern(try self.newTmp());
             try self.recordReg(result);
+            try self.emitAssignImm(result, 0);
             return result;
         }
 

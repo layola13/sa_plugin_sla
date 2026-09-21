@@ -10311,30 +10311,19 @@ pub const Codegen = struct {
             .float_val => |v| try self.emitAssignFloat(reg, v),
             .bool_val => |v| try self.emitAssignImm(reg, if (v) 1 else 0),
             .string_val => |v| {
-                // SLA string literals are `ptr` (void_type) in many call/array/struct
-                // contexts such as `values: [ptr; N] = ["", ...]`. Emit a raw
-                // data-pointer there; only build a Slice when the expected type
-                // is explicitly string/slice-like.
-                if (self.stringLiteralShouldBeRawPointer(ty)) {
-                    return try self.genRawPointerStringLiteralArg(v);
-                }
+                // Root-fix (rosetta 35): mirror SA-text genLiteralValue — a
+                // string literal expression ALWAYS materializes a
+                // stack-allocated slice and the register holds the slice
+                // address. The old `stringLiteralShouldBeRawPointer` special
+                // case emitted a raw data pointer for `ptr`-typed contexts
+                // (e.g. `["sa","asm"]` array elements), which diverged from
+                // SA-text and made `item.len()` (`load item+8`) read garbage.
+                // Raw data pointers for extern/raw ABI calls are produced by
+                // the call-arg materialization path, not here.
                 return try self.genStringLiteral(v);
             },
         }
         return reg;
-    }
-
-    fn stringLiteralShouldBeRawPointer(self: *Codegen, ty: ?*const ast.Type) bool {
-        // fixed-array-ptr-string-literal-raw-2026-07-19
-        _ = self;
-        // Default to raw data-pointer (SLA string literal type is often void/ptr).
-        // Only build a Slice when the expected type is explicitly Slice/String.
-        const expected = ty orelse return true;
-        if (expected.* == .primitive and expected.primitive == .raw_ptr) return true;
-        if (typeBaseName(expected)) |name| {
-            if (std.mem.eql(u8, name, "Slice") or std.mem.eql(u8, name, "String") or std.mem.eql(u8, name, "str")) return false;
-        }
-        return true;
     }
 
     fn genLiteral(self: *Codegen, lit: ast.Literal) anyerror!u32 {
@@ -12515,6 +12504,11 @@ pub const Codegen = struct {
             if (lowering_rules.arrayType(source_ty)) |arr| {
                 return try self.genArrayIterMapSum(map_src.source, arr, map_src.closure);
             }
+            // `vec.iter().map(|x| ...).sum()` — inline the map closure over the
+            // Vec backing buffer. Mirrors SA-text genVecIterSum.
+            if (lowering_rules.vecElementType(source_ty)) |elem_ty| {
+                return try self.genVecIterMapSum(map_src.source, elem_ty, map_src.closure);
+            }
         }
 
         // `array.into_iter().filter(|x| ...).sum()` — inline the filter closure.
@@ -12686,6 +12680,67 @@ pub const Codegen = struct {
             acc = next_acc;
         }
         if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+        return acc;
+    }
+
+    /// `vec.iter().map(|x| ...).sum()` — inline the map closure over the
+    /// Vec's backing buffer. Mirrors SA-text genVecIterSum.
+    fn genVecIterMapSum(self: *Codegen, source: *ast.Node, elem_ty: *const ast.Type, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        if (closure.params.len != 1) return Error.UnsupportedSabDirectFeature;
+        try self.ensureStdDeps("sa_std/vec.sa", &.{ "sa_vec_len", "sa_vec_as_ptr" });
+        const vec_reg = try self.genExpr(@constCast(source));
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(len_reg, vec_reg, lowering_rules.VecAbi.len_offset, .u64);
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(data_reg, vec_reg, lowering_rules.VecAbi.ptr_offset, .ptr);
+        const stride = lowering_rules.vecElementSlotSize(elem_ty);
+        const elem_prim = try storagePrimType(elem_ty);
+
+        const acc = try self.intern(try self.newTmp());
+        try self.emitAssignImm(acc, 0);
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        const loop_head = try self.newLabel("L_VEC_MAP_SUM_HEAD");
+        const loop_body = try self.newLabel("L_VEC_MAP_SUM_BODY");
+        const loop_end = try self.newLabel("L_VEC_MAP_SUM_END");
+        try self.emitJmp(loop_head);
+        try self.emitLabel(loop_head);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .ult, .{ .reg = idx }, .{ .reg = len_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const byte_offset = try self.intern(try self.newTmp());
+        try self.emitOp(byte_offset, .mul, .{ .reg = idx }, .{ .imm_u64 = @intCast(stride) });
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, data_reg, .{ .reg = byte_offset });
+        const item = try self.intern(try self.newTmp());
+        try self.emitLoad(item, elem_ptr, 0, elem_prim);
+        // Inline closure: bind param name to item reg, gen body.
+        const param_name = closure.params[0].name;
+        const saved = self.closure_param_regs.get(param_name);
+        try self.closure_param_regs.put(param_name, item);
+        const mapped = try self.genExpr(@constCast(closure.body));
+        if (saved) |old| {
+            try self.closure_param_regs.put(param_name, old);
+        } else {
+            _ = self.closure_param_regs.remove(param_name);
+        }
+        // Accumulate in place: acc = acc + mapped.
+        try self.emitOp(acc, .add, .{ .reg = acc }, .{ .reg = mapped });
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(item);
+        if (mapped != item) try self.emitRelease(mapped);
+        try self.emitRelease(cmp);
+        // Update idx in place for the next iteration (mirrors genSliceIterSum).
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_u64 = 1 });
+        try self.emitJmp(loop_head);
+        try self.emitLabel(loop_end);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(data_reg);
+        try self.emitRelease(idx);
+        try self.emitRelease(cmp);
+        if (!self.isLocalReg(vec_reg)) try self.emitRelease(vec_reg);
         return acc;
     }
 
@@ -17169,10 +17224,14 @@ pub const Codegen = struct {
             try self.emitStore(dst, layout.offset, value, layout.ty);
             if (self.typeIsCopyValue(arr_ty.array.elem)) {
                 try self.releaseStoredExprResultIfNeeded(elem, value, arr_ty.array.elem);
-            } else {
+            } else if (!self.non_owning_regs.contains(value)) {
                 // The inline array owns non-Copy elements after the store. A
                 // release would leave dangling element pointers; transfer the
                 // temporary so SAB verification sees the ownership handoff.
+                // Non-owning values (e.g. stack-allocated string-literal
+                // slices) are excluded: the store only copies pointer bits,
+                // mirroring SA-text which emits a bare `store ... as ptr`
+                // with no move. Moving a stack slot is a StackEscape.
                 try self.emitMove(value);
             }
         }

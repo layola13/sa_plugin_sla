@@ -2845,6 +2845,9 @@ pub const Codegen = struct {
                         if (temps.value.restore_slot) |restore_slot| {
                             const restore_value = temps.value.restore_value orelse return Error.UnsupportedSabDirectFeature;
                             try self.emitStore(restore_slot, 0, restore_value, .ptr);
+                            // Write-back does not consume the take temp for
+                            // the verifier; release non-locals explicitly.
+                            if (!self.isLocalReg(restore_value)) try self.emitRelease(restore_value);
                             try self.markConsumed(restore_value);
                         }
                         try self.releaseNonLocalTemps(temps.value.release_regs);
@@ -3586,6 +3589,10 @@ pub const Codegen = struct {
                 if (state.restore_slot) |restore_slot| {
                     const restore_value = state.restore_value orelse return Error.UnsupportedSabDirectFeature;
                     try self.emitStore(restore_slot, 0, restore_value, .ptr);
+                    // The write-back leaves the take temp live; release it
+                    // through the branch-aware path (deduped via `seen`) so
+                    // merges do not trap MemoryLeak 1012.
+                    try self.emitBranchReleaseWithMetadata(restore_value, seen);
                 }
                 for (state.release_regs) |temp| {
                     if (state.restore_value != null and temp == state.restore_value.?) continue;
@@ -3636,6 +3643,11 @@ pub const Codegen = struct {
                 if (entry.value.restore_slot) |restore_slot| {
                     const restore_value = entry.value.restore_value orelse return Error.UnsupportedSabDirectFeature;
                     try self.emitStore(restore_slot, 0, restore_value, .ptr);
+                    // The write-back copies the pointer; the take temp stays
+                    // live for the verifier until released. Locals keep their
+                    // scope-end releases; markConsumed alone only updates
+                    // compiler bookkeeping and would leak (MemoryLeak 1012).
+                    if (!self.isLocalReg(restore_value)) try self.emitRelease(restore_value);
                     try self.markConsumed(restore_value);
                 }
                 for (entry.value.release_regs) |temp| try self.emitRelease(temp);
@@ -9303,6 +9315,11 @@ pub const Codegen = struct {
         const dst = try self.emitPlannedCallBody(lowering_rules.planStaticCallResult(self.tc, call_plan, self.tc.expr_types.get(expr)), try text.toOwnedSlice());
         for (restores.items) |restore| {
             try self.emitStore(restore.slot, 0, restore.value, .ptr);
+            // The write-back copies the pointer; the take temp stays live
+            // for the verifier until released. Locals keep their scope-end
+            // releases; markConsumed alone only updates compiler bookkeeping
+            // and would leak (MemoryLeak 1012).
+            if (!self.isLocalReg(restore.value)) try self.emitRelease(restore.value);
             try self.markConsumed(restore.value);
         }
         try self.releaseNonLocalTemps(release_regs.items);
@@ -14638,6 +14655,11 @@ pub const Codegen = struct {
         }
         for (restores.items) |restore| {
             try self.emitStore(restore.slot, 0, restore.value, .ptr);
+            // The write-back copies the pointer; the take temp stays live
+            // for the verifier until released. Locals keep their scope-end
+            // releases; markConsumed alone only updates compiler bookkeeping
+            // and would leak (MemoryLeak 1012).
+            if (!self.isLocalReg(restore.value)) try self.emitRelease(restore.value);
             try self.markConsumed(restore.value);
         }
         for (output_rebindings.items) |binding| {
@@ -15013,6 +15035,11 @@ pub const Codegen = struct {
         } else try self.emitPlannedCallBody(lowering.result, body);
         for (restores.items) |restore| {
             try self.emitStore(restore.slot, 0, restore.value, .ptr);
+            // The write-back copies the pointer; the take temp stays live
+            // for the verifier until released. Locals keep their scope-end
+            // releases; markConsumed alone only updates compiler bookkeeping
+            // and would leak (MemoryLeak 1012).
+            if (!self.isLocalReg(restore.value)) try self.emitRelease(restore.value);
             try self.markConsumed(restore.value);
         }
         try self.releaseNonLocalTemps(release_regs.items);
@@ -15218,7 +15245,9 @@ pub const Codegen = struct {
         const has_later_nodes = self.current_expr_later_nodes.items.len != 0;
         if (prefix == '&' and source.restore_slot != null and has_later_nodes) {
             try self.emitStore(source.restore_slot.?, 0, source.reg, .ptr);
-            try self.markNonOwningReg(source.reg);
+            // The take temp owns the copied payload: it must stay releasable
+            // so the post-call release actually emits. Marking it non-owning
+            // here would suppress the release and trap MemoryLeak 1012.
             return .{
                 .operand = try self.prefixedBorrowAddressOperand(source.reg, prefix),
                 .release_reg = source.reg,
@@ -15263,7 +15292,9 @@ pub const Codegen = struct {
         const has_later_nodes = self.current_expr_later_nodes.items.len != 0;
         if (prefix == '&' and source.restore_slot != null and has_later_nodes) {
             try self.emitStore(source.restore_slot.?, 0, source.reg, .ptr);
-            try self.markNonOwningReg(source.reg);
+            // The take temp owns the copied payload: it must stay releasable
+            // so the post-call release actually emits. Marking it non-owning
+            // here would suppress the release and trap MemoryLeak 1012.
             return .{
                 .operand = try self.prefixedBorrowAddressOperand(source.reg, prefix),
                 .release_reg = source.reg,

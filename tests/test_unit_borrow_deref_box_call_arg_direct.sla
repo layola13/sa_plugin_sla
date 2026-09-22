@@ -1,0 +1,18 @@
+@import "sa_std/core/box.sa"
+
+struct BorrowDerefBoxPayload {
+    value: int,
+}
+
+struct BorrowDerefBoxSlot {
+    item: Box<BorrowDerefBoxPayload>,
+}
+
+fn borrow_deref_box_read(x: &BorrowDerefBoxPayload) -> int {
+    return x.value;
+}
+
+@test "deref borrow box field as call arg releases take temp"() {
+    let holder = BorrowDerefBoxSlot { item: Box::new(BorrowDerefBoxPayload { value: 5 }) };
+    if borrow_deref_box_read(&*holder.item) != 5 { panic(30950); };
+};

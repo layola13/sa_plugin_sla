@@ -46,6 +46,34 @@ pub fn markDirectBorrowedMacroParams(allocator: std.mem.Allocator, mask: *u64, p
     }
 }
 
+/// Mark params the macro body moves with an explicit `^` prefix (e.g.
+/// `call @ext(^%buf)`). Unlike `&`, infix `^` is XOR, so a `^%param`
+/// occurrence only counts when the `^` opens an operand: the previous
+/// non-space character must be a delimiter (`(`, `,`, `=`, `[`, `{`) or the
+/// start of the line. `a ^ %b` (XOR) and `%x^%y` are not moves.
+pub fn markDirectMovedMacroParams(allocator: std.mem.Allocator, mask: *u64, param_names: []const []const u8, line: []const u8) !void {
+    for (param_names) |param| {
+        const needle = try std.fmt.allocPrint(allocator, "^%{s}", .{param});
+        defer allocator.free(needle);
+        var search_from: usize = 0;
+        while (search_from < line.len) {
+            const rel = std.mem.indexOf(u8, line[search_from..], needle) orelse break;
+            const abs = search_from + rel;
+            var back = abs;
+            while (back > 0 and (line[back - 1] == ' ' or line[back - 1] == '\t')) back -= 1;
+            const opens_operand = back == 0 or switch (line[back - 1]) {
+                '(', ',', '=', '[', '{' => true,
+                else => false,
+            };
+            if (opens_operand) {
+                markBorrowedParam(mask, param_names, param);
+                break;
+            }
+            search_from = abs + 1;
+        }
+    }
+}
+
 pub fn markDirectAddressSlotMacroParams(allocator: std.mem.Allocator, mask: *u64, param_names: []const []const u8, line: []const u8) !void {
     for (param_names) |param| {
         const needle = try std.fmt.allocPrint(allocator, "%{s}+", .{param});
@@ -237,10 +265,11 @@ fn macroIndexCachePath(allocator: std.mem.Allocator, import_path: []const u8, ex
     hasher.update(import_path);
     hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
     hasher.update(expanded_source);
-    // Cache format v6: has_direct_out_assignment recorded to gate EXPAND recursion;
-    // address-slot classification requires a token boundary before `%param+`
-    // (hygiene-suffix false positives like `__xosp_s_%out_ptr+0` fixed).
-    hasher.update("idx-format-v6");
+    // Cache format v7: moved_arg_mask recorded (params the macro body moves
+    // with an explicit `^` prefix); address-slot classification requires a
+    // token boundary before `%param+` (hygiene-suffix false positives like
+    // `__xosp_s_%out_ptr+0` fixed).
+    hasher.update("idx-format-v7");
     const digest = hasher.final();
     const stem = std.fs.path.basename(import_path);
     return try std.fmt.allocPrint(allocator, ".sla-cache/macros/{s}-{x}.idx", .{ stem, digest });
@@ -263,6 +292,7 @@ fn tryLoadImportedMacrosFromCache(
         const leading_s = parts.next() orelse continue;
         const borrow_s = parts.next() orelse continue;
         const address_s = parts.next() orelse continue;
+        const moved_s = parts.next() orelse "0";
         const callees_s = parts.next() orelse "";
         const kind_s = parts.next() orelse "";
         const passthrough_s = parts.next() orelse "";
@@ -271,6 +301,7 @@ fn tryLoadImportedMacrosFromCache(
         const leading = std.fmt.parseInt(usize, leading_s, 10) catch continue;
         const borrowed = std.fmt.parseInt(u64, borrow_s, 10) catch continue;
         const address = std.fmt.parseInt(u64, address_s, 10) catch continue;
+        const moved = std.fmt.parseInt(u64, moved_s, 10) catch 0;
         const expression_result_kind = parseImportedMacroExpressionResultKind(kind_s);
         var callee_list = std.ArrayList([]const u8).init(allocator);
         defer callee_list.deinit();
@@ -284,7 +315,7 @@ fn tryLoadImportedMacrosFromCache(
         const owned_import = if (import_path) |path| try allocator.dupe(u8, path) else null;
         const owned_passthrough = if (passthrough_s.len > 0) try allocator.dupe(u8, passthrough_s) else null;
         const has_direct_out_assignment = std.mem.eql(u8, has_assign_s, "1");
-        try tc.registerImportedMacro(try allocator.dupe(u8, name), arity, leading, owned_import, borrowed, address, try callee_list.toOwnedSlice(), expression_result_kind, owned_passthrough, has_direct_out_assignment);
+        try tc.registerImportedMacro(try allocator.dupe(u8, name), arity, leading, owned_import, borrowed, address, moved, try callee_list.toOwnedSlice(), expression_result_kind, owned_passthrough, has_direct_out_assignment);
     }
     return true;
 }
@@ -347,6 +378,7 @@ pub fn loadImportedMacrosFromExpandedSource(
 
         var borrowed_arg_mask: u64 = 0;
         var address_slot_arg_mask: u64 = 0;
+        var moved_arg_mask: u64 = 0;
         var direct_callees = std.ArrayList([]const u8).init(allocator);
         defer direct_callees.deinit();
         // Bug 2 fix: for a single leading-output macro, derive the expression
@@ -360,6 +392,7 @@ pub fn loadImportedMacrosFromExpandedSource(
             if (std.mem.startsWith(u8, body_line, "[END_MACRO]")) break;
             try markDirectBorrowedMacroParams(allocator, &borrowed_arg_mask, param_names.items, body_line);
             try markDirectAddressSlotMacroParams(allocator, &address_slot_arg_mask, param_names.items, body_line);
+            try markDirectMovedMacroParams(allocator, &moved_arg_mask, param_names.items, body_line);
             markExpandedImportedMacroParamMasks(tc, &borrowed_arg_mask, &address_slot_arg_mask, param_names.items, body_line);
             try collectDirectSlaMacroCallees(allocator, &direct_callees, body_line);
             try appendExpandedImportedMacroDirectCallees(tc, &direct_callees, body_line);
@@ -380,7 +413,7 @@ pub fn loadImportedMacrosFromExpandedSource(
 
         const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
         const owned_callees = try direct_callees.toOwnedSlice();
-        // Cache line: name|arity|leading|borrow|address|callee1,callee2|result_kind|passthrough_extern|has_out_assign
+        // Cache line: name|arity|leading|borrow|address|moved|callee1,callee2|result_kind|passthrough_extern|has_out_assign
         var callee_joined = std.ArrayList(u8).init(allocator);
         defer callee_joined.deinit();
         for (owned_callees, 0..) |callee, idx| {
@@ -390,10 +423,10 @@ pub fn loadImportedMacrosFromExpandedSource(
         const kind_name = if (expression_result_kind) |kind| @tagName(kind) else "";
         const passthrough_name = direct_extern_passthrough orelse "";
         const has_assign_s = if (has_direct_out_assignment) "1" else "0";
-        const record = try std.fmt.allocPrint(allocator, "{s}|{d}|{d}|{d}|{d}|{s}|{s}|{s}|{s}", .{ name, arity, leading_outputs, borrowed_arg_mask, address_slot_arg_mask, callee_joined.items, kind_name, passthrough_name, has_assign_s });
+        const record = try std.fmt.allocPrint(allocator, "{s}|{d}|{d}|{d}|{d}|{d}|{s}|{s}|{s}|{s}", .{ name, arity, leading_outputs, borrowed_arg_mask, address_slot_arg_mask, moved_arg_mask, callee_joined.items, kind_name, passthrough_name, has_assign_s });
         try cache_records.append(record);
         const owned_passthrough = if (direct_extern_passthrough) |pn| try allocator.dupe(u8, pn) else null;
-        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, owned_callees, expression_result_kind, owned_passthrough, has_direct_out_assignment);
+        try tc.registerImportedMacro(name, arity, leading_outputs, owned_import_path, borrowed_arg_mask, address_slot_arg_mask, moved_arg_mask, owned_callees, expression_result_kind, owned_passthrough, has_direct_out_assignment);
     }
     if (import_path) |path| {
         const cache_path = macroIndexCachePath(allocator, path, expanded_source) catch null;

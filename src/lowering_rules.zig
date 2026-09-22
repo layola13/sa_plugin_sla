@@ -537,10 +537,21 @@ pub const ImportedMacroCallPlan = struct {
     leading_outputs: usize,
     borrowed_arg_mask: u64,
     address_slot_arg_mask: u64,
+    moved_arg_mask: u64,
     expression_output: bool,
 
     pub fn macroParamIndexForCallArg(self: ImportedMacroCallPlan, call_arg_index: usize) usize {
         return if (self.expression_output) call_arg_index + self.leading_outputs else call_arg_index;
+    }
+
+    /// True when the macro body moves the given call argument with an
+    /// explicit `^` prefix (e.g. `call @ext(^%buf)`). The caller must treat
+    /// the source binding as consumed so scope-end cleanup does not release
+    /// it a second time (UseAfterMove).
+    pub fn callArgIsMovedByMacroBody(self: ImportedMacroCallPlan, call_arg_index: usize) bool {
+        const macro_idx = self.macroParamIndexForCallArg(call_arg_index);
+        if (macro_idx >= 64) return false;
+        return (self.moved_arg_mask & (@as(u64, 1) << @intCast(macro_idx))) != 0;
     }
 
     pub fn callArgNeedsAddressableSlot(self: ImportedMacroCallPlan, call_arg_index: usize) bool {
@@ -2277,6 +2288,7 @@ pub fn planImportedMacroCall(tc: *type_checker.TypeChecker, call: ast.CallExpr) 
         .leading_outputs = macro.leading_outputs,
         .borrowed_arg_mask = macro.borrowed_arg_mask,
         .address_slot_arg_mask = macro.address_slot_arg_mask,
+        .moved_arg_mask = macro.moved_arg_mask,
         .expression_output = expression_output,
     };
 }
@@ -5816,6 +5828,7 @@ test "shared imported macro call plan classifies addressable arg actions" {
         .leading_outputs = 0,
         .borrowed_arg_mask = @as(u64, 1) << 1,
         .address_slot_arg_mask = 0,
+        .moved_arg_mask = 0,
         .expression_output = false,
     };
 
@@ -5838,6 +5851,7 @@ test "shared imported macro call plan classifies addressable arg actions" {
         .leading_outputs = 1,
         .borrowed_arg_mask = @as(u64, 1) << 1,
         .address_slot_arg_mask = 0,
+        .moved_arg_mask = 0,
         .expression_output = true,
     };
 
@@ -5883,6 +5897,7 @@ test "shared imported macro address-expression args materialize stack slots" {
         .leading_outputs = 0,
         .borrowed_arg_mask = @as(u64, 1) << 1,
         .address_slot_arg_mask = 0,
+        .moved_arg_mask = 0,
         .expression_output = false,
     };
 
@@ -5916,6 +5931,7 @@ test "shared imported macro address-expression args materialize stack slots" {
         .leading_outputs = 0,
         .borrowed_arg_mask = 0,
         .address_slot_arg_mask = @as(u64, 1) << 1,
+        .moved_arg_mask = 0,
         .expression_output = false,
     };
     try std.testing.expect(address_slot_plan.callArgNeedsAddressableSlot(1));
@@ -5962,6 +5978,7 @@ test "shared imported macro borrowed ptr args stay raw values" {
         .leading_outputs = 0,
         .borrowed_arg_mask = 1,
         .address_slot_arg_mask = 0,
+        .moved_arg_mask = 0,
         .expression_output = false,
     };
     try std.testing.expectEqual(ImportedMacroArgLoweringAction.pass_raw_pointer_value, borrowed_arg_plan.planArgValueBypassAction(0, &ptr_call, &int_ty).?);

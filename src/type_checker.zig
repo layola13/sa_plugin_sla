@@ -28,6 +28,11 @@ pub const ImportedMacro = struct {
     import_path: ?[]const u8 = null,
     borrowed_arg_mask: u64 = 0,
     address_slot_arg_mask: u64 = 0,
+    // Params the macro body moves with an explicit `^` prefix
+    // (e.g. `call @ext(^%buf)`). Callers must treat matching identifier
+    // arguments as consumed so scope-end cleanup does not release them
+    // a second time (UseAfterMove).
+    moved_arg_mask: u64 = 0,
     direct_callees: []const []const u8 = &.{},
     // Result type of the single leading `%out` param when the macro is used as
     // an expression, derived from the macro body (`%out_x = ... as <ty>`) at
@@ -2077,13 +2082,14 @@ pub const TypeChecker = struct {
         }
     }
 
-    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, direct_callees: []const []const u8, expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind, direct_extern_passthrough: ?[]const u8, has_direct_out_assignment: bool) !void {
+    pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, moved_arg_mask: u64, direct_callees: []const []const u8, expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind, direct_extern_passthrough: ?[]const u8, has_direct_out_assignment: bool) !void {
         try self.imported_macros.put(name, .{
             .arity = arity,
             .leading_outputs = leading_outputs,
             .import_path = import_path,
             .borrowed_arg_mask = borrowed_arg_mask,
             .address_slot_arg_mask = address_slot_arg_mask,
+            .moved_arg_mask = moved_arg_mask,
             .direct_callees = direct_callees,
             .expression_result_kind = expression_result_kind,
             .direct_extern_passthrough = direct_extern_passthrough,

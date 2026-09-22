@@ -9886,6 +9886,20 @@ pub const Codegen = struct {
         for (release_regs.items) |release_reg| {
             if (release_reg) |arg_reg| try self.emitRelease(arg_reg);
         }
+        // Args the macro body moves with `^` are already consumed inside the
+        // expansion (no extra `^` statement here: that would consume twice).
+        // Mark matching identifier bindings consumed so scope-end cleanup
+        // does not release them a second time (UseAfterMove). Only when the
+        // binding itself flows into the macro; materialized temps have no
+        // scope-end release of their own (a consumed temp is simply dead).
+        for (call.args, 0..) |arg, i| {
+            if (!plan.callArgIsMovedByMacroBody(i)) continue;
+            if (lowering_rules.rootIdentifier(arg)) |name| {
+                if (i < arg_regs.items.len and std.mem.eql(u8, arg_regs.items[i], name)) {
+                    try self.markConsumedBinding(name);
+                }
+            }
+        }
 
         return reg;
     }

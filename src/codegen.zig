@@ -8044,6 +8044,16 @@ pub const Codegen = struct {
             self.out.writer().print("    store {s}+0, {s} as {s}\n", .{ target_ptr, value_reg, typeString(target_ty) }) catch return CodegenError.CodegenError;
         }
         try self.storeResultSlotTransferredValueState(target_ptr, value_reg, target_ty, callArgNeedsRelease(value_expr));
+        // Mirror the SAB backend: a branch-constructed heap temp stored to a
+        // result slot needs an explicit release for the verifier (the slot
+        // store marks ptr sources interior, so this is a runtime no-op).
+        // Homed bindings (non-tmp_ names) keep their scope-end releases.
+        if (lowering_rules.abiPassesAsPointer(target_ty) and
+            !std.mem.eql(u8, target_ptr, value_reg) and
+            std.mem.startsWith(u8, value_reg, "tmp_"))
+        {
+            try self.emitRelease(value_reg);
+        }
 
         if (!stmtTerminates(last)) {
             if (self.tc.cleanups.get(last)) |list| {

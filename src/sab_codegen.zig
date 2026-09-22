@@ -17612,6 +17612,18 @@ pub const Codegen = struct {
         const value = try self.genExpr(tail);
         try self.emitStore(target, 0, value, try primType(target_ty));
         try self.storeResultSlotTransferredValue(target, value, target_ty);
+        // Balance the verifier for branch-constructed heap values (if/match
+        // arms): the slot store transfers ownership, so the source temp has
+        // no scope-end release, but the verifier still needs an explicit one.
+        // The runtime marks ptr sources interior on slot store, making this
+        // release a no-op; scope-managed locals and stack slots keep theirs.
+        if (target != value and !self.isLocalReg(value) and
+            !self.stack_alloc_emitted.contains(value) and
+            lowering_rules.abiPassesAsPointer(target_ty))
+        {
+            _ = self.released_regs.remove(value);
+            try self.emitRelease(value);
+        }
         return false;
     }
 

@@ -1,0 +1,146 @@
+// match/ownership three-way regression matrix (SA-text + strict SAB + native).
+// Covers: Result/Option multi-case, assign body, if-else new value, loop
+// back-edge with outer binding, None spellings, custom-enum multi-case,
+// nested match-in-arm, if-else-after-match, empty arm body, nested expr arm.
+@import "sa_std/core/option.sa"
+@import "sa_std/core/result.sa"
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn color_code(c: Color) -> i32 {
+    let v: i32 = match c {
+        Color::Red => { 1 },
+        Color::Green => { 2 },
+        Color::Blue => { 3 },
+    };
+    return v;
+}
+
+fn calc(a: i32, b: i32) -> i32 {
+    return a * b + 1;
+}
+
+@test "matrix 1"() {
+    let r_T0: Result<i32, i32> = Result::Ok(100);
+    let v_T0: i32 = match r_T0 {
+        Result::Ok(x_T0) => { x_T0 },
+        Result::Err(e_T0) => { e_T0 },
+    };
+    if v_T0 != 100 { panic(101); };
+    let r2_T0: Result<i32, i32> = Result::Err(7);
+    let v2_T0: i32 = match r2_T0 {
+        Result::Ok(x_T0) => { x_T0 },
+        Result::Err(e_T0) => { e_T0 },
+    };
+    if v2_T0 != 7 { panic(102); };
+};
+
+@test "matrix 2"() {
+    let r_T1: Result<i32, i32> = Result::Ok(5);
+    let v_T1: i32 = 0;
+    match r_T1 {
+        Result::Ok(x_T1) => { v_T1 = x_T1 + 1; },
+        Result::Err(e_T1) => { v_T1 = e_T1; },
+    };
+    if v_T1 != 6 { panic(103); };
+};
+
+@test "matrix 3"() {
+    let flag_T2: bool = true;
+    let r_T2: Result<i32, i32> = if flag_T2 { Result::Ok(3) } else { Result::Err(4) };
+    let v_T2: i32 = match r_T2 {
+        Result::Ok(x_T2) => { x_T2 },
+        Result::Err(e_T2) => { e_T2 },
+    };
+    if v_T2 != 3 { panic(104); };
+};
+
+@test "matrix 4"() {
+    let total_T3: i32 = 0;
+    let i: i32 = 0;
+    while i < 3 {
+        let o_T3: Option<i32> = Option::Some(i);
+        let v_T3: i32 = match o_T3 {
+            Option::Some(n_T3) => { n_T3 },
+            Option::None => { -1 },
+        };
+        total_T3 = total_T3 + v_T3;
+        i = i + 1;
+    }
+    if total_T3 != 3 { panic(105); };
+};
+
+@test "matrix 5"() {
+    let y_T4: Option<i32> = Option::None;
+    let w_T4: i32 = match y_T4 {
+        Option::Some(n_T4) => { n_T4 },
+        Option::None => { -1 },
+    };
+    if w_T4 != -1 { panic(106); };
+    let z_T4: Option<i32> = None();
+    let u_T4: i32 = match z_T4 {
+        Some(n_T4) => { n_T4 },
+        None => { -2 },
+    };
+    if u_T4 != -2 { panic(107); };
+};
+
+@test "matrix 6"() {
+    if color_code(Color::Red) != 1 { panic(401); };
+    if color_code(Color::Green) != 2 { panic(402); };
+    if color_code(Color::Blue) != 3 { panic(403); };
+};
+
+@test "matrix 7"() {
+    let o_T6: Option<Result<i32, i32>> = Option::Some(Result::Ok(8));
+    let v_T6: i32 = match o_T6 {
+        Option::Some(r_T6) => {
+            let inner_T6: i32 = match r_T6 {
+                Result::Ok(x_T6) => { x_T6 },
+                Result::Err(e_T6) => { e_T6 },
+            };
+            inner_T6 + 1
+        },
+        Option::None => { -1 },
+    };
+    if v_T6 != 9 { panic(404); };
+};
+
+@test "matrix 8"() {
+    let o_T7: Option<i32> = Option::Some(4);
+    let base_T7: i32 = match o_T7 {
+        Option::Some(n_T7) => { n_T7 },
+        Option::None => { 0 },
+    };
+    let doubled_T7: i32 = if base_T7 > 2 { base_T7 * 2 } else { base_T7 };
+    if doubled_T7 != 8 { panic(405); };
+};
+
+@test "matrix 9"() {
+    let o_T8: Option<i32> = Option::None;
+    let hit_T8: i32 = 0;
+    match o_T8 {
+        Option::Some(n_T8) => { hit_T8 = n_T8; },
+        Option::None => { },
+    };
+    if hit_T8 != 0 { panic(501); };
+    let o2_T8: Option<i32> = Option::Some(6);
+    match o2_T8 {
+        Option::Some(n_T8) => { hit_T8 = n_T8; },
+        Option::None => { },
+    };
+    if hit_T8 != 6 { panic(502); };
+};
+
+@test "matrix 10"() {
+    let r_T9: Result<i32, i32> = Result::Ok(3);
+    let v_T9: i32 = match r_T9 {
+        Result::Ok(x_T9) => { calc(x_T9 + 1, 2) + calc(1, 1) },
+        Result::Err(e_T9) => { e_T9 - 1 },
+    };
+    if v_T9 != 11 { panic(503); };
+};

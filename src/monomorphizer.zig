@@ -659,6 +659,7 @@ pub const Monomorphizer = struct {
                 return res;
             },
             .enum_literal => |lit| {
+                if (try self.normalizeStdUnitVariantLiteral(lit)) |call_node| return call_node;
                 var new_fields = std.ArrayList(ast.EnumLiteralField).init(self.allocator);
                 for (lit.fields) |field| {
                     try new_fields.append(.{ .name = field.name, .value = try self.specializeNode(field.value) });
@@ -1120,6 +1121,32 @@ pub const Monomorphizer = struct {
         }
     }
 
+    /// Normalize a bare qualified stdlib unit-variant literal
+    /// (`Option::None`, no fields) into the equivalent zero-arg static call
+    /// (`Option::None()`). Bare unit variants parse as enum literals, which
+    /// need a registered enum decl the stdlib-import pipeline never
+    /// materializes; the call form flows through the existing
+    /// check + SA-text/SAB direct lowering for `None()`. Scoped strictly to
+    /// the known stdlib spelling so user enums keep decl-based checking.
+    fn normalizeStdUnitVariantLiteral(
+        self: *Monomorphizer,
+        lit: ast.EnumLiteral,
+    ) MonomorphizeError!?*ast.Node {
+        if (lit.fields.len != 0) return null;
+        if (!std.mem.eql(u8, lit.enum_name, "Option")) return null;
+        if (!std.mem.eql(u8, lit.variant_name, "None")) return null;
+        const res = try self.allocator.create(ast.Node);
+        res.* = .{
+            .call_expr = .{
+                .func_name = "None",
+                .associated_target = lit.enum_name,
+                .generics = &.{},
+                .args = &.{},
+            },
+        };
+        return res;
+    }
+
     fn specializeEnumLiteralForType(
         self: *Monomorphizer,
         value: *ast.Node,
@@ -1129,6 +1156,7 @@ pub const Monomorphizer = struct {
         if (value.* != .enum_literal) {
             return try self.specializeNode(value);
         }
+        if (try self.normalizeStdUnitVariantLiteral(value.enum_literal)) |call_node| return call_node;
         if (declared_ty.* != .user_defined or specialized_ty.* != .user_defined) {
             return try self.specializeNode(value);
         }

@@ -12947,6 +12947,11 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
                 }
+                if (lowering_rules.isOptionNoneCall(call)) {
+                    const reg = try self.newTmpOrLetDest();
+                    self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                    return reg;
+                }
                 if (lowering_rules.isResultOkCall(call)) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);

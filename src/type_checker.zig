@@ -3646,6 +3646,10 @@ pub const TypeChecker = struct {
                     return try self.makeOptionType(inner_ty);
                 }
 
+                if (lowering_rules.isOptionNoneCall(call)) {
+                    return try self.makeOptionType(try self.makeInferType());
+                }
+
                 if (lowering_rules.isResultOkCall(call)) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const ok_ty = try self.checkExpr(call.args[0], scope);

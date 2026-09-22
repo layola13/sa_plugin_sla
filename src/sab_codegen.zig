@@ -13327,6 +13327,21 @@ pub const Codegen = struct {
         return dst;
     }
 
+    /// Direct-SAB `Option::None()` / `None()`, mirroring the SA-text backend
+    /// (`EXPAND OPTION_NEW_NONE`). Bare `Option::None` (no parens) parses as
+    /// an enum literal and is normalized to this call form by the
+    /// monomorphizer, so the qualified unit-variant spelling shares this path.
+    fn genOptionNoneCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!lowering_rules.isOptionNoneCall(call)) return null;
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+            self.symbols.items[dst],
+        });
+        return dst;
+    }
+
     /// Direct-SAB `Result::Ok(v)`, mirroring the SA-text backend
     /// (`EXPAND RESULT_NEW_OK`).
     fn genResultOkCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
@@ -14746,6 +14761,7 @@ pub const Codegen = struct {
         if (try self.genCatchUnwindCall(call)) |reg| return reg;
         if (try self.genStdSurfaceCall(expr, call)) |reg| return reg;
         if (try self.genOptionSomeCall(expr, call)) |reg| return reg;
+        if (try self.genOptionNoneCall(expr, call)) |reg| return reg;
         if (try self.genResultOkCall(expr, call)) |reg| return reg;
         if (try self.genResultErrCall(expr, call)) |reg| return reg;
         const lowering = lowering_rules.planStaticCallLowering(self.tc, expr, call, self.tc.expr_types.get(expr)) orelse {

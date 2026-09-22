@@ -3283,6 +3283,19 @@ pub fn isOptionSomeCall(call: ast.CallExpr) bool {
     return std.mem.eql(u8, call.func_name, "Some");
 }
 
+/// Shared pure Option `None()` constructor call recognition
+/// (`None()` / `Option::None()`, zero args). Bare `None` without parens
+/// parses as an enum literal and is normalized to this call form by the
+/// monomorphizer so all three spellings share one lowering path.
+pub fn isOptionNoneCall(call: ast.CallExpr) bool {
+    if (!std.mem.eql(u8, call.func_name, "None")) return false;
+    if (call.args.len != 0) return false;
+    if (call.associated_target) |target| {
+        return std.mem.eql(u8, target, "Option");
+    }
+    return true;
+}
+
 /// Shared pure Result `Ok(...)` constructor call recognition.
 pub fn isResultOkCall(call: ast.CallExpr) bool {
     return std.mem.eql(u8, call.func_name, "Ok");

@@ -10431,16 +10431,16 @@ pub const Codegen = struct {
                     if (let_ty.* == .primitive) {
                         try self.emitPrimitiveCopy(let.name, val_reg, let_ty);
                         if (callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
-                    } else if (lowering_rules.isBorrowLikeType(let_ty) and
+                    } else if ((lowering_rules.isBorrowLikeType(let_ty) or let_ty.* == .pointer) and
                         !std.mem.eql(u8, val_reg, let.name) and
                         std.mem.startsWith(u8, val_reg, "tmp_"))
                     {
-                        // A borrow binding takes ownership of a compiler temp
-                        // by transfer (`assign`), mirroring SAB
-                        // genLetFromValue. The `add` copy idiom would leave the
-                        // temp live (verifier MemoryLeak 1012); user locals
-                        // keep the copy shape with their own scope-end
-                        // releases.
+                        // A borrow or owned-pointer binding takes ownership
+                        // of a compiler temp by transfer (`assign`), mirroring
+                        // SAB genLetFromValue. The `add` copy idiom would
+                        // leave the temp live (verifier MemoryLeak 1012);
+                        // user locals keep the copy shape with their own
+                        // scope-end releases.
                         self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     } else {
                         self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;

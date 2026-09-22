@@ -1,0 +1,19 @@
+@import "sa_std/encoding/json.sai"
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+@import "sa_std/core/panic.sa"
+
+fn json_root_value_len(root: ptr) -> i64 {
+    return 0;
+}
+
+@test "owned pointer call result transfers into let binding"() {
+    let root = sa_json_parse(STR_PTR("[{}]"), STR_LEN("[{}]") as u64);
+    if PTR_IS_NONNULL(root) == false {
+        panic(30951);
+    };
+    let root_status = sa_json_free(root);
+    if root_status != 0 {
+        panic(30952);
+    };
+};

@@ -2267,13 +2267,10 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    const print_ptr = try self.newTmp();
-                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ data_reg, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
-                                    try self.emitRelease(print_ptr);
-                                    try self.emitRelease(len_reg);
                                     try self.emitRelease(data_reg);
+                                    try self.emitRelease(len_reg);
                                 },
                                 .f32, .f64, .float => {
                                     const fmt_buf = try self.newTmp();
@@ -2282,13 +2279,10 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_f64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    const print_ptr = try self.newTmp();
-                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ data_reg, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
-                                    try self.emitRelease(print_ptr);
-                                    try self.emitRelease(len_reg);
                                     try self.emitRelease(data_reg);
+                                    try self.emitRelease(len_reg);
                                 },
                                 .boolean => {
                                     const fmt_buf = try self.newTmp();
@@ -2297,13 +2291,10 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_bool({s})\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    const print_ptr = try self.newTmp();
-                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ print_ptr, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ print_ptr, len_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ data_reg, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
-                                    try self.emitRelease(print_ptr);
-                                    try self.emitRelease(len_reg);
                                     try self.emitRelease(data_reg);
+                                    try self.emitRelease(len_reg);
                                 },
                                 else => return CodegenError.CodegenError,
                             },
@@ -2328,13 +2319,10 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    const ptr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ data_reg, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
-                                    try self.emitRelease(ptr_reg);
-                                    try self.emitRelease(len_reg);
                                     try self.emitRelease(data_reg);
+                                    try self.emitRelease(len_reg);
                                 },
                                 .f32, .f64, .float => {
                                     const fmt_buf = try self.newTmp();
@@ -2343,13 +2331,10 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_f64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    const ptr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ data_reg, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
-                                    try self.emitRelease(ptr_reg);
-                                    try self.emitRelease(len_reg);
                                     try self.emitRelease(data_reg);
+                                    try self.emitRelease(len_reg);
                                 },
                                 .boolean => {
                                     const fmt_buf = try self.newTmp();
@@ -2358,13 +2343,10 @@ pub const Codegen = struct {
                                     self.out.writer().print("    {s} = call @sa_fmt_bool({s})\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                    const ptr_reg = try self.newTmp();
-                                    self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                    self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ data_reg, len_reg }) catch return CodegenError.CodegenError;
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
-                                    try self.emitRelease(ptr_reg);
-                                    try self.emitRelease(len_reg);
                                     try self.emitRelease(data_reg);
+                                    try self.emitRelease(len_reg);
                                 },
                                 else => return CodegenError.CodegenError,
                             },
@@ -2386,13 +2368,10 @@ pub const Codegen = struct {
                                 self.out.writer().print("    {s} = call @sa_fmt_u64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ data_reg, len_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
-                                try self.emitRelease(ptr_reg);
-                                try self.emitRelease(len_reg);
                                 try self.emitRelease(data_reg);
+                                try self.emitRelease(len_reg);
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
                             },
                             .f32, .f64, .float => {
@@ -2403,13 +2382,10 @@ pub const Codegen = struct {
                                 self.out.writer().print("    {s} = call @sa_fmt_f64({s}, 10)\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ data_reg, len_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
-                                try self.emitRelease(ptr_reg);
-                                try self.emitRelease(len_reg);
                                 try self.emitRelease(data_reg);
+                                try self.emitRelease(len_reg);
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
                             },
                             .boolean => {
@@ -2420,13 +2396,10 @@ pub const Codegen = struct {
                                 self.out.writer().print("    {s} = call @sa_fmt_bool({s})\n", .{ fmt_buf, val_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_data({s})\n", .{ data_reg, fmt_buf }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    {s} = call @sa_fmt_buffer_len({s})\n", .{ len_reg, fmt_buf }) catch return CodegenError.CodegenError;
-                                const ptr_reg = try self.newTmp();
-                                self.out.writer().print("    {s} = add {s}, 0\n", .{ ptr_reg, data_reg }) catch return CodegenError.CodegenError;
-                                self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                                self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ data_reg, len_reg }) catch return CodegenError.CodegenError;
                                 self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
-                                try self.emitRelease(ptr_reg);
-                                try self.emitRelease(len_reg);
                                 try self.emitRelease(data_reg);
+                                try self.emitRelease(len_reg);
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
                             },
                             else => {
@@ -10824,6 +10797,9 @@ pub const Codegen = struct {
                         // Hint not used; fall back to copy.
                         const stored_val_reg_hint = if (assign.value.* == .move_expr and std.mem.startsWith(u8, val_reg_hint, "^")) val_reg_hint[1..] else val_reg_hint;
                         self.out.writer().print("    {s} = add {s}, 0\n", .{ target_name, stored_val_reg_hint }) catch return CodegenError.CodegenError;
+                        // 拷贝后源临时量仍活着 (如 call 结果 tmp): 按槽存一致规则释放,
+                        // 否则 verifier 报 MemoryLeak (与 SAB 的消费语义对齐)。
+                        try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg_hint);
                         _ = self.consumed_bindings.remove(target_name);
                         return;
                     }
@@ -10865,6 +10841,10 @@ pub const Codegen = struct {
                         } else if (self.storedIdentifierNeedsRelease(assign.value, target_ty)) {
                             try self.transferResultSlotValueState(target_name, stored_val_reg, true);
                             try self.markConsumedBinding(stored_val_reg);
+                        } else {
+                            // 拷贝后源临时量 (如 call 结果) 按槽存一致规则释放,
+                            // 否则 verifier 报 MemoryLeak (与 SAB 消费语义对齐)。
+                            try self.finishStoredValueAfterSlotStore(assign.value, target_ty, stored_val_reg);
                         }
                         _ = self.consumed_bindings.remove(target_name);
                     }

@@ -10783,25 +10783,38 @@ pub const Codegen = struct {
                         lowering_rules.isBorrowLikeType(target_ty),
                     );
                     if (can_adopt_assign) {
-                        // Set hint, genExpr, then handle old value.
-                        // If RHS consumed target (e.g., p=f(p)), don't release.
-                        // If not, release old before (but we already overwrote...).
-                        // Actually: we must release BEFORE overwriting, but only if not consumed.
-                        // Check if RHS references target.
+                        // RHS 仅引用 (clone 满足) 而不消费目标时, 旧值在求值
+                        // 后仍活着: 强制走临时量 (不用 dest hint), 求值后释旧、
+                        // transfer 接管, 否则直写目标触发 RegisterRedefinition。
+                        // 真 move 已消费旧值时沿用 hint 直写 (行为不变)。
                         const rhs_uses_target = exprReferencesIdentifier(assign.value, assign.target.identifier);
+                        const rhs_consumes_target = exprConsumesIdentifier(assign.value, assign.target.identifier);
+                        const rebind_needs_temp = rhs_uses_target and !rhs_consumes_target;
                         if (!rhs_uses_target) {
                             try self.emitRelease(assign.target.identifier);
                         }
-                        self.let_dest_hint = target_name;
-                        // genExpr will increment depth by 1; hint must match that.
-                        self.let_dest_depth = self.expr_depth + 1;
+                        if (!rebind_needs_temp) {
+                            self.let_dest_hint = target_name;
+                            // genExpr will increment depth by 1; hint must match that.
+                            self.let_dest_depth = self.expr_depth + 1;
+                        }
                         const val_reg_hint = try self.genExpr(assign.value, hoisted_allocs);
                         self.let_dest_hint = null;
-                        if (std.mem.eql(u8, val_reg_hint, target_name)) {
+                        if (!rebind_needs_temp and std.mem.eql(u8, val_reg_hint, target_name)) {
                             _ = self.consumed_bindings.remove(target_name);
                             return;
                         }
-                        // Hint not used; fall back to copy.
+                        if (rebind_needs_temp) {
+                            if (std.mem.eql(u8, val_reg_hint, target_name)) {
+                                _ = self.consumed_bindings.remove(target_name);
+                                return;
+                            }
+                            const transfer_src = if (assign.value.* == .move_expr and std.mem.startsWith(u8, val_reg_hint, "^")) val_reg_hint[1..] else val_reg_hint;
+                            try self.emitRelease(assign.target.identifier);
+                            self.out.writer().print("    {s} = {s}\n", .{ target_name, transfer_src }) catch return CodegenError.CodegenError;
+                            _ = self.consumed_bindings.remove(target_name);
+                            return;
+                        }
                         const stored_val_reg_hint = if (assign.value.* == .move_expr and std.mem.startsWith(u8, val_reg_hint, "^")) val_reg_hint[1..] else val_reg_hint;
                         self.out.writer().print("    {s} = add {s}, 0\n", .{ target_name, stored_val_reg_hint }) catch return CodegenError.CodegenError;
                         // 拷贝后源临时量仍活着 (如 call 结果 tmp): 按槽存一致规则释放,

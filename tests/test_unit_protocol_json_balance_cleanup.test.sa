@@ -1,0 +1,97 @@
+@import "sa_std/ptr.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string.sa"
+@import "sa_std/string_format.sa"
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/core/panic.sa"
+
+[MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
+    call @sa_mem_set(&%array_ptr, %value, %length)
+[END_MACRO]
+@const SLA_FNPTR_VT_protocol_json_test_first_byte = vtable { call = @sla__protocol_json_test_first_byte }
+@const SLA_FNPTR_VT_protocol_json_test_first_byte_value = vtable { call = @sla__protocol_json_test_first_byte_value }
+@sla__protocol_json_test_first_byte(&data_ref: ptr) -> u8:
+L_ENTRY:
+    tmp_1 = load data_ref+0 as ptr
+    EXPAND PTR_READ_U8 tmp_0, tmp_1
+    !tmp_1
+    !data_ref
+    return tmp_0
+
+@sla__protocol_json_test_first_byte_value(data: ptr) -> u8:
+L_ENTRY:
+    tmp_2 = add data, 0
+    !data
+    tmp_3 = stack_alloc 8
+    store tmp_3+0, tmp_2 as ptr
+    !tmp_2
+    EXPAND PTR_READ_U8 tmp_4, tmp_3
+    return tmp_4
+
+@test "protocol json ptr value reads non owning macro result"():
+L_TEST_ENTRY_0:
+    @const SLA_STR_0 = utf8:"{}\0"
+    tmp_6 = 2
+    tmp_5 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_5, &SLA_STR_0, tmp_6
+    !tmp_6
+    json = stack_alloc 8
+    store json+0, tmp_5 as ptr
+    tmp_8 = load json+0 as ptr
+    EXPAND STR_PTR tmp_7, tmp_8
+    !tmp_8
+    tmp_9 = call @sla__protocol_json_test_first_byte_value(tmp_7)
+    !tmp_7
+    tmp_10 = 123
+    tmp_11 = ne tmp_9, tmp_10
+    !tmp_9
+    !tmp_10
+    br tmp_11 -> L_THEN_1, L_ELSE_2
+
+L_THEN_1:
+    !tmp_11
+    panic(19049)
+
+L_ELSE_2:
+    !tmp_11
+    jmp L_MERGE_3
+
+L_MERGE_3:
+    return
+
+@test "protocol json ptr local stores non owning macro result"():
+L_TEST_ENTRY_4:
+    @const SLA_STR_1 = utf8:"{}\0"
+    tmp_15 = 2
+    tmp_14 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_14, &SLA_STR_1, tmp_15
+    !tmp_15
+    json = stack_alloc 8
+    store json+0, tmp_14 as ptr
+    tmp_17 = load json+0 as ptr
+    EXPAND STR_PTR tmp_16, tmp_17
+    !tmp_17
+    json_ptr = stack_alloc 8
+    store json_ptr+0, tmp_16 as ptr
+    !tmp_16
+    tmp_18 = ptr_add json_ptr, 0
+    tmp_19 = call @sla__protocol_json_test_first_byte(&tmp_18)
+    !tmp_18
+    tmp_20 = 123
+    tmp_21 = ne tmp_19, tmp_20
+    !tmp_19
+    !tmp_20
+    br tmp_21 -> L_THEN_5, L_ELSE_6
+
+L_THEN_5:
+    !tmp_21
+    panic(19050)
+
+L_ELSE_6:
+    !tmp_21
+    jmp L_MERGE_7
+
+L_MERGE_7:
+    return
+

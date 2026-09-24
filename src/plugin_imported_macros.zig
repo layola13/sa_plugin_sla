@@ -90,7 +90,20 @@ pub fn markDirectAddressSlotMacroParams(allocator: std.mem.Allocator, mask: *u64
             const rel = std.mem.indexOf(u8, line[search_from..], needle) orelse break;
             const abs = search_from + rel;
             const boundary_ok = abs == 0 or !isMacroIdentChar(line[abs - 1]);
+            if (std.mem.eql(u8, param, "ptr_reg")) std.debug.print("DBG markline param={s} abs={d} line={s}\n", .{ param, abs, line });
             if (boundary_ok) {
+                // 纯数字位移 (`load %p+0 as u8`) 是经由地址的穿透读写,
+                // 需要地址本身的值, 而非给值安家; 只有命名位移
+                // (`load %s+Slice_ptr`) 才是结构体字段投影, 需要槽位。
+                // 否则调用方会被误标 addressable, 家化后宏读到槽内
+                // 存的值字节 (如指针地址低字节) 而非穿透目标。
+                var off_end = abs + needle.len;
+                while (off_end < line.len and std.ascii.isDigit(line[off_end])) : (off_end += 1) {}
+                const off_len = off_end - (abs + needle.len);
+                if (off_len > 0 and (off_end >= line.len or !isMacroIdentChar(line[off_end]))) {
+                    search_from = off_end;
+                    continue;
+                }
                 markBorrowedParam(mask, param_names, param);
                 break;
             }

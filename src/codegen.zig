@@ -10426,6 +10426,9 @@ pub const Codegen = struct {
                         self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     } else {
                         self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                        // 拷贝后源临时量仍活着 (如 Struct::new() 的 call 结果):
+                        // 非绑定自引用时按形状释放, 与 primitive 分支及 SAB 消费语义对齐。
+                        if (!std.mem.eql(u8, val_reg, let.name) and callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
                     }
                     }
                 }

@@ -2083,7 +2083,6 @@ pub const TypeChecker = struct {
     }
 
     pub fn registerImportedMacro(self: *TypeChecker, name: []const u8, arity: usize, leading_outputs: usize, import_path: ?[]const u8, borrowed_arg_mask: u64, address_slot_arg_mask: u64, moved_arg_mask: u64, direct_callees: []const []const u8, expression_result_kind: ?lowering_rules.ImportedMacroExpressionResultKind, direct_extern_passthrough: ?[]const u8, has_direct_out_assignment: bool) !void {
-        if (std.mem.eql(u8, name, "PTR_READ_U8")) std.debug.print("DBG regmacro {s} borrowed={b} addrslot={b} moved={b}\n", .{ name, borrowed_arg_mask, address_slot_arg_mask, moved_arg_mask });
         try self.imported_macros.put(name, .{
             .arity = arity,
             .leading_outputs = leading_outputs,

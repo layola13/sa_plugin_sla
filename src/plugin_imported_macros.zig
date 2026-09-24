@@ -90,7 +90,6 @@ pub fn markDirectAddressSlotMacroParams(allocator: std.mem.Allocator, mask: *u64
             const rel = std.mem.indexOf(u8, line[search_from..], needle) orelse break;
             const abs = search_from + rel;
             const boundary_ok = abs == 0 or !isMacroIdentChar(line[abs - 1]);
-            if (std.mem.eql(u8, param, "ptr_reg")) std.debug.print("DBG markline param={s} abs={d} line={s}\n", .{ param, abs, line });
             if (boundary_ok) {
                 // 纯数字位移 (`load %p+0 as u8`) 是经由地址的穿透读写,
                 // 需要地址本身的值, 而非给值安家; 只有命名位移
@@ -278,11 +277,13 @@ fn macroIndexCachePath(allocator: std.mem.Allocator, import_path: []const u8, ex
     hasher.update(import_path);
     hasher.update(&std.mem.toBytes(@as(u64, expanded_source.len)));
     hasher.update(expanded_source);
-    // Cache format v7: moved_arg_mask recorded (params the macro body moves
+    // Cache format v8: moved_arg_mask recorded (params the macro body moves
     // with an explicit `^` prefix); address-slot classification requires a
     // token boundary before `%param+` (hygiene-suffix false positives like
-    // `__xosp_s_%out_ptr+0` fixed).
-    hasher.update("idx-format-v7");
+    // `__xosp_s_%out_ptr+0` fixed) and excludes pure-numeric displacements
+    // (`load %p+0 as u8` is a penetrating read through the address value,
+    // not a struct-field projection needing a home slot).
+    hasher.update("idx-format-v8");
     const digest = hasher.final();
     const stem = std.fs.path.basename(import_path);
     return try std.fmt.allocPrint(allocator, ".sla-cache/macros/{s}-{x}.idx", .{ stem, digest });

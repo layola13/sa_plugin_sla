@@ -9636,7 +9636,6 @@ pub const Codegen = struct {
     fn genImportedMacroMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
         const value_reg = try self.genExpr(arg, hoisted_allocs);
         const arg_ty = try self.importedMacroArgType(arg);
-        std.debug.print("DBG matslot ty={s} arg={s}\n", .{ @tagName(arg_ty.*), @tagName(arg.*) });
         // 标量/指针实参没有可投影的字段: 物化进槽再 load slot+off
         // 读到的是值自身的字节 (如指针地址的低字节), 而非穿透读。
         // 此类直接透传值 (与 SAB 直接 lowering 一致)。

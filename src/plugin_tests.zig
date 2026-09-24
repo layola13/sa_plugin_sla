@@ -7161,6 +7161,19 @@ test "sla sab backend lowers plain structs directly" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab fallback to sa-text is prohibited" {
+    // 禁回退门禁恒关: 无论选项与 SLA_SAB_NO_FALLBACK 环境变量取值,
+    // direct lowering 失败必须显式报错, 禁止静默回退 SA-text 兼容路径。
+    const allocator = std.testing.allocator;
+    try std.testing.expect(!slaSabFallbackAllowed(allocator, .{}));
+    try std.testing.expect(!slaSabFallbackAllowed(allocator, .{ .allow_fallback = true }));
+    try std.testing.expect(!slaSabFallbackAllowed(allocator, .{ .allow_fallback = false }));
+    try std.testing.expect(!slaSabFallbackAllowed(allocator, .{
+        .test_filter = "sab struct fallback",
+        .allow_fallback = true,
+    }));
+}
+
 test "sla sab backend lowers function pointers directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

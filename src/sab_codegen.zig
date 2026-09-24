@@ -1261,6 +1261,13 @@ pub const Codegen = struct {
     }
 
     fn readStdSurfaceFile(self: *Codegen) !?[]const u8 {
+        // 构建期烘焙的本仓 sla_std 绝对路径: 与 CWD 无关, 优先命中。
+        const baked_meta = try std.fs.path.join(self.allocator, &.{ sla_build_options.sla_std_meta_dir, "std_surface.sla_meta" });
+        defer self.allocator.free(baked_meta);
+        if (std.fs.cwd().readFileAlloc(self.allocator, baked_meta, 1024 * 1024)) |source| return source else |err| switch (err) {
+            error.FileNotFound, error.NotDir => {},
+            else => return err,
+        }
         if (std.process.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |root| {
             defer self.allocator.free(root);
             const path = try std.fs.path.join(self.allocator, &.{ root, "std_surface.sla_meta" });

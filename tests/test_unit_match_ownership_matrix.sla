@@ -144,3 +144,24 @@ fn calc(a: i32, b: i32) -> i32 {
     };
     if v_T9 != 11 { panic(503); };
 };
+
+@test "matrix 11"() {
+    // 直接构造体 scrutinee: 构造临时量无 homed 绑定, match 必须在 merge/no-match
+    // 处释放 (SA-text 曾报 MemoryLeak tmp_1 exit 1, 见 sala 07_sab_parity 追记)。
+    let v_T10: i32 = match Result::Ok(100) {
+        Result::Ok(x_T10) => { x_T10 },
+        Result::Err(e_T10) => { e_T10 },
+    };
+    if v_T10 != 100 { panic(601); };
+    let w_T10: i32 = match Option::Some(7) {
+        Option::Some(n_T10) => { n_T10 },
+        Option::None => { 0 },
+    };
+    if w_T10 != 7 { panic(602); };
+    let hit_T10: i32 = 0;
+    match Result::Err(9) {
+        Result::Ok(x_T10) => { hit_T10 = x_T10; },
+        Result::Err(e_T10) => { hit_T10 = e_T10; },
+    };
+    if hit_T10 != 9 { panic(603); };
+};

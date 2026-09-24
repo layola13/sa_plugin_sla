@@ -2273,6 +2273,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(print_ptr);
                                     try self.emitRelease(len_reg);
+                                    try self.emitRelease(data_reg);
                                 },
                                 .f32, .f64, .float => {
                                     const fmt_buf = try self.newTmp();
@@ -2287,6 +2288,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(print_ptr);
                                     try self.emitRelease(len_reg);
+                                    try self.emitRelease(data_reg);
                                 },
                                 .boolean => {
                                     const fmt_buf = try self.newTmp();
@@ -2301,6 +2303,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(print_ptr);
                                     try self.emitRelease(len_reg);
+                                    try self.emitRelease(data_reg);
                                 },
                                 else => return CodegenError.CodegenError,
                             },
@@ -2331,6 +2334,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(ptr_reg);
                                     try self.emitRelease(len_reg);
+                                    try self.emitRelease(data_reg);
                                 },
                                 .f32, .f64, .float => {
                                     const fmt_buf = try self.newTmp();
@@ -2345,6 +2349,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(ptr_reg);
                                     try self.emitRelease(len_reg);
+                                    try self.emitRelease(data_reg);
                                 },
                                 .boolean => {
                                     const fmt_buf = try self.newTmp();
@@ -2359,6 +2364,7 @@ pub const Codegen = struct {
                                     self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                     try self.emitRelease(ptr_reg);
                                     try self.emitRelease(len_reg);
+                                    try self.emitRelease(data_reg);
                                 },
                                 else => return CodegenError.CodegenError,
                             },
@@ -2386,6 +2392,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
                                 try self.emitRelease(len_reg);
+                                try self.emitRelease(data_reg);
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
                             },
                             .f32, .f64, .float => {
@@ -2402,6 +2409,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
                                 try self.emitRelease(len_reg);
+                                try self.emitRelease(data_reg);
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
                             },
                             .boolean => {
@@ -2418,6 +2426,7 @@ pub const Codegen = struct {
                                 self.out.writer().print("    call @sa_fmt_buffer_free(^{s})\n", .{fmt_buf}) catch return CodegenError.CodegenError;
                                 try self.emitRelease(ptr_reg);
                                 try self.emitRelease(len_reg);
+                                try self.emitRelease(data_reg);
                                 if (callArgNeedsRelease(arg)) try self.emitRelease(val_reg);
                             },
                             else => {
@@ -11540,11 +11549,16 @@ pub const Codegen = struct {
         if (cond_regs.items.len > 0) {
             self.out.writer().print("    !{s}\n", .{cond_regs.items[cond_regs.items.len - 1]}) catch return CodegenError.CodegenError;
         }
+        // 非 homed 的 scrutinee 临时量 (如 match Result::Ok(..) 直接量):
+        // 无匹配 panic 前释放, 与 SAB genMatch 的 val_is_local 语义对齐。
+        if (isTemporaryRegisterName(val_reg)) try self.emitRelease(val_reg);
         self.out.writer().print("    panic(1)\n\n", .{}) catch return CodegenError.CodegenError;
         if (has_fallthrough_case) {
             self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
         }
         if (result_slot) |slot| {
+            // 各臂已把载荷取出并写入结果槽, 此处先释放 scrutinee 临时量再读槽。
+            if (isTemporaryRegisterName(val_reg)) try self.emitRelease(val_reg);
             const reg = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
             try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);
@@ -11656,11 +11670,16 @@ pub const Codegen = struct {
         if (cond_regs.items.len > 0) {
             self.out.writer().print("    !{s}\n", .{cond_regs.items[cond_regs.items.len - 1]}) catch return CodegenError.CodegenError;
         }
+        // 非 homed 的 scrutinee 临时量 (如 match Result::Ok(..) 直接量):
+        // 无匹配 panic 前释放, 与 SAB genMatch 的 val_is_local 语义对齐。
+        if (isTemporaryRegisterName(val_reg)) try self.emitRelease(val_reg);
         self.out.writer().print("    panic(1)\n\n", .{}) catch return CodegenError.CodegenError;
         if (has_fallthrough_case) {
             self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
         }
         if (result_slot) |slot| {
+            // 各臂已把载荷取出并写入结果槽, 此处先释放 scrutinee 临时量再读槽。
+            if (isTemporaryRegisterName(val_reg)) try self.emitRelease(val_reg);
             const reg = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, slot, typeString(expr_ty) }) catch return CodegenError.CodegenError;
             try self.loadResultSlotTransferredValueState(reg, slot, expr_ty);

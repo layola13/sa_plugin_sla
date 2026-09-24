@@ -28,6 +28,10 @@ pub fn build(b: *std.Build) void {
     sla_build_options.addOption([]const u8, "sa_std_dir", sa_std_dir);
     const sa_std_source_dir = b.pathJoin(&.{ repo_root, "sa_std" });
     sla_build_options.addOption([]const u8, "sa_std_source_dir", sa_std_source_dir);
+    // 本仓库自带的 SLA 标准表面元数据 (std_surface.sla_meta): 烘焙绝对路径,
+    // 使 direct codegen 不再依赖 CWD 或家目录碰运气查找该文件。
+    const sla_std_meta_dir = b.pathFromRoot("sla_std");
+    sla_build_options.addOption([]const u8, "sla_std_meta_dir", sla_std_meta_dir);
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/plugin.zig"),
         .target = target,

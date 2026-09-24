@@ -10426,9 +10426,13 @@ pub const Codegen = struct {
                         self.out.writer().print("    {s} = {s}\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
                     } else {
                         self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
-                        // 拷贝后源临时量仍活着 (如 Struct::new() 的 call 结果):
-                        // 非绑定自引用时按形状释放, 与 primitive 分支及 SAB 消费语义对齐。
-                        if (!std.mem.eql(u8, val_reg, let.name) and callArgNeedsRelease(let.value)) try self.emitRelease(val_reg);
+                        // 拷贝后源临时量仍活着 (如 Struct::new() 的 call 结果、
+                        // fn-item 的 &VTABLE 地址): 非绑定自引用时释放。
+                        // 形状判定(callArgNeedsRelease)不够时以临时量名为准:
+                        // 编译器临时量按定义归属,homed 由作用域末释放。
+                        // emitRelease 对已消费名幂等 (consumed 直接返回)。
+                        if (!std.mem.eql(u8, val_reg, let.name) and
+                            (callArgNeedsRelease(let.value) or isTemporaryRegisterName(val_reg))) try self.emitRelease(val_reg);
                     }
                     }
                 }
@@ -13657,12 +13661,14 @@ pub const Codegen = struct {
                     return try self.genClosureCall(closure, &call, hoisted_allocs);
                 }
 
-                if (self.tc.fn_ptr_calls.contains(expr)) {
+                if (self.tc.fn_ptr_calls.get(expr)) |checked_ty| {
                     const fn_reg = if (self.thread_capture_regs.get(call.func_name)) |capture_reg|
                         capture_reg
                     else
                         self.resolveBindingName(call.func_name);
-                    const fn_ptr_ty = self.localBindingTypeForName(call.func_name) orelse return CodegenError.CodegenError;
+                    // worker 体等独立作用域下本地类型表已被清空, 回退用
+                    // 类型检查期记录的 callee 型 (与 SAB 的 tc 驱动一致)。
+                    const fn_ptr_ty = self.localBindingTypeForName(call.func_name) orelse checked_ty;
                     if (fn_ptr_ty.* != .fn_ptr or fn_ptr_ty.fn_ptr.params.len != call.args.len) return CodegenError.CodegenError;
 
                     var lowered_args = std.ArrayList(LoweredCallArg).init(self.allocator);

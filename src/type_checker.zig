@@ -186,7 +186,7 @@ pub const TypeChecker = struct {
     dyn_borrow_args: std.AutoHashMap(*const ast.Node, []const u8),
     dyn_box_coercions: std.AutoHashMap(*const ast.Node, []const u8),
     dyn_rc_coercions: std.AutoHashMap(*const ast.Node, []const u8),
-    fn_ptr_calls: std.AutoHashMap(*const ast.Node, void),
+    fn_ptr_calls: std.AutoHashMap(*const ast.Node, *const ast.Type),
     array_to_slice_borrow_args: std.AutoHashMap(*const ast.Node, void),
     resolved_call_symbols: std.AutoHashMap(*const ast.Node, []const u8),
     resolved_call_alias_metadata: std.AutoHashMap(*const ast.Node, FunctionAliasMetadata),
@@ -233,7 +233,7 @@ pub const TypeChecker = struct {
             .dyn_borrow_args = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .dyn_box_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .dyn_rc_coercions = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
-            .fn_ptr_calls = std.AutoHashMap(*const ast.Node, void).init(allocator),
+            .fn_ptr_calls = std.AutoHashMap(*const ast.Node, *const ast.Type).init(allocator),
             .array_to_slice_borrow_args = std.AutoHashMap(*const ast.Node, void).init(allocator),
             .resolved_call_symbols = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .resolved_call_alias_metadata = std.AutoHashMap(*const ast.Node, FunctionAliasMetadata).init(allocator),
@@ -4281,7 +4281,7 @@ pub const TypeChecker = struct {
                             const arg_ty = try self.checkExpr(arg, scope);
                             if (!self.plainCallArgMatches(param_ty, arg, arg_ty)) return TypeError.TypeMismatch;
                         }
-                        self.fn_ptr_calls.put(expr, {}) catch return TypeError.OutOfMemory;
+                        self.fn_ptr_calls.put(expr, sym.ty) catch return TypeError.OutOfMemory;
                         return fn_ptr.ret;
                     }
                 }

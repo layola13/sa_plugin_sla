@@ -10293,6 +10293,8 @@ pub const Codegen = struct {
                 } else if (lowering_rules.planDynCoercion(self.tc, let.value)) |plan| {
                     const val_reg = try self.genDynCoercionExpr(let.value, plan, hoisted_allocs);
                     self.out.writer().print("    {s} = add {s}, 0\n", .{ let.name, val_reg }) catch return CodegenError.CodegenError;
+                    if (!std.mem.eql(u8, val_reg, let.name) and
+                        (callArgNeedsRelease(let.value) or isTemporaryRegisterName(val_reg))) try self.emitRelease(val_reg);
                 } else {
                     // ROOT FIX (2026-09-21): if the value materializes as a
                     // fresh temp holding an owning (non-copy, non-borrow)

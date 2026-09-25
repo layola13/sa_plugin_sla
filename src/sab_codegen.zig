@@ -8099,7 +8099,11 @@ pub const Codegen = struct {
             .let_destructure_stmt => |let| try self.genLetDestructure(let),
             .assign_stmt => |assign| try self.genAssign(assign),
             .expr_stmt => |expr| {
-                if (expr.* == .if_expr) {
+                // SA-text parity (codegen.zig genStmt): if/switch/match as
+                // statements discard the produced register without release.
+                // Releasing it would trap UnknownRegister: value/void matches
+                // return a fresh bookkeeping tmp with no defining assignment.
+                if (expr.* == .if_expr or expr.* == .switch_expr or expr.* == .match_expr) {
                     _ = try self.genExpr(expr);
                 } else if (expr.* == .call_expr and std.mem.eql(u8, expr.call_expr.func_name, "panic")) {
                     _ = try self.genExpr(expr);
@@ -12135,6 +12139,10 @@ pub const Codegen = struct {
         if (mat.cases.len == 0) return Error.UnsupportedSabDirectFeature;
         const val_ty = self.tc.expr_types.get(mat.val) orelse return Error.MissingType;
         if (val_ty.* != .user_defined) return Error.UnsupportedSabDirectFeature;
+        // Synthetic Option/Result have no declared enum: dedicated lowering below.
+        if (std.mem.eql(u8, val_ty.user_defined.name, "Option") or std.mem.eql(u8, val_ty.user_defined.name, "Result")) {
+            return try self.genOptionMatch(expr, mat, val_ty);
+        }
         const decl = self.tc.enums.get(val_ty.user_defined.name) orelse return Error.UnsupportedSabDirectFeature;
 
         const expr_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
@@ -12168,8 +12176,13 @@ pub const Codegen = struct {
 
         try self.emitJmp(check_labels.items[0]);
 
+        // The previous arm's branch flag must be released on the not-taken
+        // path too (codegen.zig does !cond at the next check label); otherwise
+        // multi-fallthrough matches diverge at merge (PhiStateConflict).
+        var prev_flag: ?u32 = null;
         for (mat.cases, 0..) |case, i| {
             try self.emitLabel(check_labels.items[i]);
+            if (prev_flag) |pf| try self.emitBranchRelease(pf);
             const tag = lowering_rules.enumVariantIndex(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
             const variant = lowering_rules.enumVariant(decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
             if (case.guard != null) return Error.UnsupportedSabDirectFeature;
@@ -12180,6 +12193,7 @@ pub const Codegen = struct {
             const cond = try self.intern(try self.newTmp());
             try self.emitOp(cond, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = @intCast(tag) });
             try self.emitRelease(tag_reg);
+            prev_flag = cond;
 
             const body_label = try self.newLabel("L_MATCH_CASE");
             const next_label = if (i + 1 < mat.cases.len) check_labels.items[i + 1] else panic_label;
@@ -12219,6 +12233,7 @@ pub const Codegen = struct {
 
         // Exhausted the ladder without a match: release the scrutinee and panic.
         try self.emitLabel(panic_label);
+        if (prev_flag) |pf| try self.emitBranchRelease(pf);
         if (!val_is_local) try self.emitBranchRelease(val_reg);
         try self.emitPanicCode(1);
 
@@ -12235,6 +12250,137 @@ pub const Codegen = struct {
         } else if (!val_is_local) {
             // No fallthrough path exists (every case terminates); the scrutinee
             // is released on the panic path already, so nothing to do here.
+        }
+
+        const result = try self.intern(try self.newTmp());
+        try self.recordReg(result);
+        return result;
+    }
+
+    /// Direct SAB lowering for `match` over synthetic Option/Result values.
+    /// Mirrors codegen.zig genOptionMatchExpr tag logic (Some/Ok take the true
+    /// edge, None/Err take the false edge) while reusing genMatch merge
+    /// accounting plus the shared let-pattern helpers (emitLetPatternCheck /
+    /// bindLetPatternPayload). Guards supported. Anything else stays
+    /// UnsupportedSabDirectFeature so strict mode keeps failing loudly.
+    fn genOptionMatch(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, val_ty: *const ast.Type) anyerror!u32 {
+        if (mat.cases.len == 0) return Error.UnsupportedSabDirectFeature;
+        const ud_name = val_ty.user_defined.name;
+        const is_option = std.mem.eql(u8, ud_name, "Option");
+        const is_result = std.mem.eql(u8, ud_name, "Result");
+        if (!is_option and !is_result) return Error.UnsupportedSabDirectFeature;
+
+        const expr_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
+        const value_match = !isVoidType(expr_ty);
+
+        const val_reg = try self.genExpr(mat.val);
+        const val_is_local = self.isLocalReg(val_reg);
+
+        const result_slot = if (value_match) blk: {
+            const slot = try self.intern(try self.newTmp());
+            try self.emitAlloc(slot, typeSize(expr_ty));
+            try self.prepareResultSlotRefCellCompanion(slot, expr_ty);
+            break :blk slot;
+        } else null;
+
+        const merge_label = try self.newLabel("L_OPTION_MATCH_MERGE");
+        const panic_label = try self.newLabel("L_OPTION_MATCH_NO_MATCH");
+
+        var check_labels = std.ArrayList([]const u8).init(self.allocator);
+        defer check_labels.deinit();
+        for (mat.cases) |_| {
+            try check_labels.append(try self.newLabel("L_OPTION_MATCH_CHECK"));
+        }
+
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
+        var any_fallthrough = false;
+
+        try self.emitJmp(check_labels.items[0]);
+
+        // Same previous-flag discipline as genMatch: release on the not-taken path.
+        var prev_flag: ?u32 = null;
+        for (mat.cases, 0..) |case, i| {
+            try self.emitLabel(check_labels.items[i]);
+            if (prev_flag) |pf| try self.emitBranchRelease(pf);
+            const plan = lowering_rules.planLetPattern(case.pattern, false) orelse return Error.UnsupportedSabDirectFeature;
+            const plan_is_option = plan.kind == .option_some or plan.kind == .option_none;
+            const plan_is_result = plan.kind == .result_ok or plan.kind == .result_err;
+            if ((is_option and !plan_is_option) or (is_result and !plan_is_result)) return Error.UnsupportedSabDirectFeature;
+
+            const branch_flag = try self.intern(try self.newTmp());
+            try self.emitLetPatternCheck(case.pattern, val_reg, null, plan, branch_flag);
+            prev_flag = branch_flag;
+
+            const next_label = if (i + 1 < mat.cases.len) check_labels.items[i + 1] else panic_label;
+            const body_label = try self.newLabel("L_OPTION_MATCH_CASE");
+            if (plan.kind == .option_some or plan.kind == .result_ok) {
+                try self.emitBranch(branch_flag, body_label, next_label);
+            } else {
+                try self.emitBranch(branch_flag, next_label, body_label);
+            }
+
+            try self.emitLabel(body_label);
+            try self.bindLetPatternPayload(case.pattern, val_reg, val_ty, null, plan);
+
+            if (case.guard) |guard| {
+                const guard_body = try self.newLabel("L_OPTION_MATCH_GUARD_BODY");
+                const guard_fail = try self.newLabel("L_OPTION_MATCH_GUARD_FAIL");
+                const guard_reg = try self.genExpr(guard);
+                try self.emitBranch(guard_reg, guard_body, guard_fail);
+
+                try self.emitLabel(guard_fail);
+                try self.emitRelease(guard_reg);
+                for (case.pattern.bindings) |binding| {
+                    if (self.localReg(binding)) |binding_reg| try self.emitRelease(binding_reg);
+                }
+                try self.emitJmp(next_label);
+
+                try self.emitLabel(guard_body);
+                try self.emitRelease(guard_reg);
+                try self.emitBranchRelease(branch_flag);
+            } else {
+                try self.emitBranchRelease(branch_flag);
+            }
+
+            if (value_match) {
+                const terminated = try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty);
+                if (!terminated) {
+                    try self.releaseLocalsFrom(branch_locals_len, null);
+                    try self.emitJmp(merge_label);
+                    any_fallthrough = true;
+                }
+            } else {
+                try self.genBlock(case.body);
+                if (!self.lastIsTerminator()) {
+                    try self.releaseLocalsFrom(branch_locals_len, null);
+                    try self.emitJmp(merge_label);
+                    any_fallthrough = true;
+                }
+            }
+
+            self.popLocalsTo(branch_locals_len);
+            try self.restoreReleased(&pre_released);
+        }
+
+        try self.emitLabel(panic_label);
+        if (prev_flag) |pf| try self.emitBranchRelease(pf);
+        if (!val_is_local) try self.emitBranchRelease(val_reg);
+        try self.emitPanicCode(1);
+
+        if (any_fallthrough) {
+            try self.emitLabel(merge_label);
+            if (!val_is_local) try self.emitRelease(val_reg);
+            if (result_slot) |slot| {
+                const result = try self.intern(try self.newTmp());
+                try self.emitLoad(result, slot, 0, try primType(expr_ty));
+                try self.loadResultSlotTransferredValue(result, slot, expr_ty);
+                try self.emitRelease(slot);
+                return result;
+            }
+        } else if (!val_is_local) {
         }
 
         const result = try self.intern(try self.newTmp());

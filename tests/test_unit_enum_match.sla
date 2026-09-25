@@ -31,3 +31,29 @@ fn process_msg(^msg: Message) -> int {
         panic(2);
     };
 }
+
+enum Pick {
+    Have { x: i32 },
+    Lack,
+}
+
+fn pick_value(^e: Pick) -> i32 {
+    match e {
+        Pick::Have { x } => { 7 },
+        Pick::Lack => { -1 },
+    };
+}
+
+// Locks the genMatch previous-flag fix: multi-fallthrough converging arms
+// diverged at merge (PhiStateConflict) before flags were released on the
+// not-taken path. Green on both backends.
+@test "enum converging match strict sab parity"() {
+    let a = Pick::Have { x: 7 };
+    if pick_value(^a) != 7 {
+        panic(3);
+    };
+    let b = Pick::Lack;
+    if pick_value(^b) != -1 {
+        panic(4);
+    };
+}

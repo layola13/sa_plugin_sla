@@ -4746,6 +4746,19 @@ fn markReachableCallTarget(
         for (macro.direct_callees) |callee| try markReachableFunc(tc, reachable, worklist, callee);
         return;
     }
+    if (tc.macros.get(call.func_name)) |macro_decl| {
+        // Local macro invoked: walk its body so plain functions referenced
+        // only from macro expansions stay reachable. SA-text parity: the SA
+        // path never prunes, so SAB test pruning must not drop them either
+        // (else the verifier traps UnknownRegister: callee is not declared).
+        // reachable doubles as the macro-cycle guard; the worklist driver
+        // skips non-func names via its tc.funcs lookup.
+        if (reachable.contains(call.func_name)) return;
+        try reachable.put(call.func_name, {});
+        try worklist.append(call.func_name);
+        try collectReachableBlock(tc, reachable, worklist, macro_decl.body);
+        return;
+    }
     try markReachableFunc(tc, reachable, worklist, call.func_name);
 }
 

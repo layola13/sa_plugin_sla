@@ -2283,6 +2283,12 @@ fn reachabilityNodeUsesIdentifier(node: *const ast.Node, name: []const u8) bool 
         .await_expr => |await_expr| reachabilityNodeUsesIdentifier(await_expr.expr, name),
         .binary_expr => |bin| reachabilityNodeUsesIdentifier(bin.left, name) or reachabilityNodeUsesIdentifier(bin.right, name),
         .call_expr => |call| blk: {
+            // 被调函数名/关联目标本身即对该标识符的使用（函数值、Target::func 形态），
+            // 漏判会导致 prune 把尚有调用的 let/const 剪掉。
+            if (std.mem.eql(u8, call.func_name, name)) break :blk true;
+            if (call.associated_target) |target| {
+                if (std.mem.eql(u8, target, name)) break :blk true;
+            }
             for (call.args) |arg| {
                 if (reachabilityNodeUsesIdentifier(arg, name)) break :blk true;
             }
@@ -2325,6 +2331,15 @@ fn reachabilityNodeUsesIdentifier(node: *const ast.Node, name: []const u8) bool 
         .index_expr => |idx| reachabilityNodeUsesIdentifier(idx.target, name) or reachabilityNodeUsesIdentifier(idx.index, name),
         .slice_expr => |slice| reachabilityNodeUsesIdentifier(slice.target, name) or reachabilityNodeUsesIdentifier(slice.start, name) or reachabilityNodeUsesIdentifier(slice.end, name),
         .try_expr => |try_expr| reachabilityNodeUsesIdentifier(try_expr.expr, name),
+        // release(!x) 提及该绑定即视为使用：剪掉 let 却留下 release 会悬空。
+        .release_stmt => |rel| std.mem.eql(u8, rel.var_name, name),
+        // asm! 操作数 var_name 同理计为使用。
+        .inline_asm_expr => |asm_expr| blk: {
+            for (asm_expr.operands) |op| {
+                if (std.mem.eql(u8, op.var_name, name)) break :blk true;
+            }
+            break :blk false;
+        },
         else => false,
     };
 }
@@ -2362,6 +2377,61 @@ fn pruneDeadZeroImportScanLetsInBlock(
         if (keep) try out.append(stmt);
     }
     return try out.toOwnedSlice();
+}
+
+test "reachability treats call callee and associated target as uses" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\fn main() -> i32 {
+        \\    let f = get_handler();
+        \\    let t = make_target();
+        \\    let a = f(1);
+        \\    let b = t::run(2);
+        \\    return a;
+        \\}
+    ;
+    var p = parser_mod.Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+    const body = blk: {
+        for (prog.program.decls) |decl| {
+            if (decl.* == .func_decl and std.mem.eql(u8, decl.func_decl.name, "main")) break :blk decl.func_decl.body;
+        }
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expectEqual(@as(usize, 5), body.len);
+    // f 只出现在被调位置：旧逻辑只看 args 会误判未使用，进而剪掉尚有调用的 let。
+    try std.testing.expect(reachabilityBlockUsesIdentifier(body[1..], "f"));
+    // t 只出现在关联目标位置。
+    try std.testing.expect(reachabilityBlockUsesIdentifier(body[2..], "t"));
+    // 尾部 return 之后不再出现。
+    try std.testing.expect(!reachabilityBlockUsesIdentifier(body[4..], "f"));
+    try std.testing.expect(!reachabilityBlockUsesIdentifier(body[4..], "t"));
+}
+
+test "reachability treats release of a binding as a use" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\fn main() -> i32 {
+        \\    let v = make();
+        \\    !v;
+        \\    return 0;
+        \\}
+    ;
+    var p = parser_mod.Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+    const body = blk: {
+        for (prog.program.decls) |decl| {
+            if (decl.* == .func_decl and std.mem.eql(u8, decl.func_decl.name, "main")) break :blk decl.func_decl.body;
+        }
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expectEqual(@as(usize, 3), body.len);
+    // !v 提及该绑定即视为使用：剪掉 let 却留下 release 会悬空。
+    try std.testing.expect(reachabilityBlockUsesIdentifier(body[1..], "v"));
 }
 
 fn makeIdentifierNode(allocator: std.mem.Allocator, name: []const u8) !*ast.Node {

@@ -1755,6 +1755,39 @@ const ReachabilityAnalysis = struct {
         return removed.items.len != 0;
     }
 
+    /// Intersect known-value facts: a value fact survives only if every call
+    /// site agrees on it. Without this, the first call site's constants win
+    /// and pruneKnownFalseBranches deletes live branches of the shared callee
+    /// for all other call sites (e.g. reason=4 from one test emptied the
+    /// `return false` arm of should_warm for a reason=1 test).
+    fn retainOnlyEqualInt(self: *ReachabilityAnalysis, set: *std.StringHashMap(i64), incoming: *const std.StringHashMap(i64)) !bool {
+        var removed = std.ArrayList([]const u8).init(self.allocator);
+        defer removed.deinit();
+        var iter = set.iterator();
+        while (iter.next()) |entry| {
+            const got = incoming.get(entry.key_ptr.*);
+            if (got == null or got.? != entry.value_ptr.*) try removed.append(entry.key_ptr.*);
+        }
+        for (removed.items) |key| {
+            if (set.fetchRemove(key)) |entry| self.allocator.free(entry.key);
+        }
+        return removed.items.len != 0;
+    }
+
+    fn retainOnlyEqualBool(self: *ReachabilityAnalysis, set: *std.StringHashMap(bool), incoming: *const std.StringHashMap(bool)) !bool {
+        var removed = std.ArrayList([]const u8).init(self.allocator);
+        defer removed.deinit();
+        var iter = set.iterator();
+        while (iter.next()) |entry| {
+            const got = incoming.get(entry.key_ptr.*);
+            if (got == null or got.? != entry.value_ptr.*) try removed.append(entry.key_ptr.*);
+        }
+        for (removed.items) |key| {
+            if (set.fetchRemove(key)) |entry| self.allocator.free(entry.key);
+        }
+        return removed.items.len != 0;
+    }
+
     fn mergeFunctionFacts(self: *ReachabilityAnalysis, function_name: []const u8, incoming_opt: ?*const SyntacticFactSet) !bool {
         var empty = SyntacticFactSet.init(self.allocator);
         defer empty.deinit();
@@ -1774,6 +1807,8 @@ const ReachabilityAnalysis = struct {
         var changed = false;
         changed = (try self.retainOnly(&entry.value_ptr.facts.no_import_sources, &incoming.no_import_sources)) or changed;
         changed = (try self.retainOnly(&entry.value_ptr.facts.zero_import_scans, &incoming.zero_import_scans)) or changed;
+        changed = (try self.retainOnlyEqualInt(&entry.value_ptr.facts.known_int_fields, &incoming.known_int_fields)) or changed;
+        changed = (try self.retainOnlyEqualBool(&entry.value_ptr.facts.known_bool_fields, &incoming.known_bool_fields)) or changed;
         return changed;
     }
 };
@@ -2432,6 +2467,46 @@ test "reachability treats release of a binding as a use" {
     try std.testing.expectEqual(@as(usize, 3), body.len);
     // !v 提及该绑定即视为使用：剪掉 let 却留下 release 会悬空。
     try std.testing.expect(reachabilityBlockUsesIdentifier(body[1..], "v"));
+}
+
+test "mergeFunctionFacts intersects known value fields across call sites" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var a = ReachabilityAnalysis.init(allocator, false);
+    defer a.deinit();
+
+    // 首调用点：change.reason=4，对应 true 分支测试。
+    var first = SyntacticFactSet.init(allocator);
+    defer first.deinit();
+    try first.putKnownIntField("change", "reason", 4);
+    try first.putKnownBoolField("change", "flag", true);
+    _ = try a.mergeFunctionFacts("mini_change_should_warm", &first);
+    {
+        const entry = a.function_facts.get("mini_change_should_warm") orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(@as(?i64, 4), entry.facts.getKnownIntField("change", "reason"));
+        try std.testing.expectEqual(@as(?bool, true), entry.facts.getKnownBoolField("change", "flag"));
+    }
+
+    // 第二调用点一致：保留，无变化则不返 changed。
+    var agree = SyntacticFactSet.init(allocator);
+    defer agree.deinit();
+    try agree.putKnownIntField("change", "reason", 4);
+    try agree.putKnownBoolField("change", "flag", true);
+    try std.testing.expect(!try a.mergeFunctionFacts("mini_change_should_warm", &agree));
+
+    // 第二调用点分歧（reason=1）：必须丢弃该事实，否则 prune 会把共享
+    // callee 的 `return false` 分支清空，影响所有其他调用点。
+    var second = SyntacticFactSet.init(allocator);
+    defer second.deinit();
+    try second.putKnownIntField("change", "reason", 1);
+    try second.putKnownBoolField("change", "flag", true);
+    try std.testing.expect(try a.mergeFunctionFacts("mini_change_should_warm", &second));
+    {
+        const entry = a.function_facts.get("mini_change_should_warm") orelse return error.TestUnexpectedResult;
+        try std.testing.expect(entry.facts.getKnownIntField("change", "reason") == null);
+        try std.testing.expectEqual(@as(?bool, true), entry.facts.getKnownBoolField("change", "flag"));
+    }
 }
 
 fn makeIdentifierNode(allocator: std.mem.Allocator, name: []const u8) !*ast.Node {

@@ -22,7 +22,7 @@ fn is_primary(c: Color) -> bool {
 }
 
 fn primary_score() -> i32 {
-    let mut count = 0;
+    let count = 0;
     if is_primary(Color::Red) { count = count + 1; };
     if is_primary(Color::Yellow) { count = count + 1; };
     if is_primary(Color::Blue) { count = count + 1; };

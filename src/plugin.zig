@@ -889,6 +889,40 @@ const SlaModuleTable = struct {
     ) !void {
         if (module.has_function_bodies and module.has_macro_bodies) return;
 
+        var selected_function_names = std.StringHashMap(void).init(self.allocator);
+        defer {
+            var function_iter = selected_function_names.keyIterator();
+            while (function_iter.next()) |key_ptr| self.allocator.free(key_ptr.*);
+            selected_function_names.deinit();
+        }
+        if (selected_function_bodies) |selected| {
+            var selected_iter = selected.keyIterator();
+            while (selected_iter.next()) |key_ptr| {
+                const owned_name = try self.allocator.dupe(u8, key_ptr.*);
+                selected_function_names.put(owned_name, {}) catch |err| {
+                    self.allocator.free(owned_name);
+                    return err;
+                };
+            }
+        }
+
+        var selected_macro_names = std.StringHashMap(void).init(self.allocator);
+        defer {
+            var macro_iter = selected_macro_names.keyIterator();
+            while (macro_iter.next()) |key_ptr| self.allocator.free(key_ptr.*);
+            selected_macro_names.deinit();
+        }
+        if (selected_macro_bodies) |selected| {
+            var selected_iter = selected.keyIterator();
+            while (selected_iter.next()) |key_ptr| {
+                const owned_name = try self.allocator.dupe(u8, key_ptr.*);
+                selected_macro_names.put(owned_name, {}) catch |err| {
+                    self.allocator.free(owned_name);
+                    return err;
+                };
+            }
+        }
+
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, module.expanded_source, module.base_dir, .{
             .parse_function_bodies = true,
             .function_body_names = selected_function_bodies,
@@ -908,14 +942,22 @@ const SlaModuleTable = struct {
         module.has_function_bodies = selected_function_bodies == null;
         module.has_macro_bodies = selected_macro_bodies == null;
         module.parsed_function_bodies.clearRetainingCapacity();
-        if (selected_function_bodies) |selected| {
-            var selected_iter = selected.keyIterator();
-            while (selected_iter.next()) |name_ptr| try module.parsed_function_bodies.put(name_ptr.*, {});
+        if (selected_function_bodies != null) {
+            var function_iter = module.exports.function_decls.keyIterator();
+            while (function_iter.next()) |name_ptr| {
+                if (selected_function_names.contains(name_ptr.*)) try module.parsed_function_bodies.put(name_ptr.*, {});
+            }
+            var associated_iter = module.exports.associated_function_decls.keyIterator();
+            while (associated_iter.next()) |name_ptr| {
+                if (selected_function_names.contains(name_ptr.*)) try module.parsed_function_bodies.put(name_ptr.*, {});
+            }
         }
         module.parsed_macro_bodies.clearRetainingCapacity();
-        if (selected_macro_bodies) |selected| {
-            var selected_iter = selected.keyIterator();
-            while (selected_iter.next()) |name_ptr| try module.parsed_macro_bodies.put(name_ptr.*, {});
+        if (selected_macro_bodies != null) {
+            var macro_iter = module.exports.macro_decls.keyIterator();
+            while (macro_iter.next()) |name_ptr| {
+                if (selected_macro_names.contains(name_ptr.*)) try module.parsed_macro_bodies.put(name_ptr.*, {});
+            }
         }
     }
 
@@ -4568,6 +4610,16 @@ fn slaSabFallbackAllowed(allocator: std.mem.Allocator, options: SlaCompileOption
     return value.len == 0 or std.mem.eql(u8, value, "0") or std.mem.eql(u8, value, "false");
 }
 
+fn slaTestBackendAllowsFallback(backend: TestBackend) bool {
+    return backend != .sab;
+}
+
+test "sla sab test backend disables fallback" {
+    try std.testing.expect(slaTestBackendAllowsFallback(.auto));
+    try std.testing.expect(!slaTestBackendAllowsFallback(.sab));
+    try std.testing.expect(slaTestBackendAllowsFallback(.sa));
+}
+
 fn slaProfileStage(stderr: std.io.AnyWriter, enabled: bool, label: []const u8, start_ns: i128) void {
     if (!enabled) return;
     const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - start_ns, std.time.ns_per_ms);
@@ -6058,6 +6110,7 @@ fn compileSlaSabTestInput(
     file: []const u8,
     stderr: std.io.AnyWriter,
     extra_args: []const []const u8,
+    backend: TestBackend,
     emit_sab_file: bool,
 ) !?CompiledTestInput {
     const sab_out = try managedSabTestPath(allocator, file, extra_args);
@@ -6065,6 +6118,7 @@ fn compileSlaSabTestInput(
         .test_filter = saTestFilterFromArgs(extra_args),
         .prune_for_test_codegen = true,
         .load_reachable_imported_bodies_from_registry = true,
+        .allow_fallback = slaTestBackendAllowsFallback(backend),
     })) orelse return null;
     if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return null;
     if (emit_sab_file) {
@@ -6556,7 +6610,7 @@ pub fn runSlaCommandImpl(
         }
 
         const test_input = switch (backend) {
-            .auto, .sab => (try compileSlaSabTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
+            .auto, .sab => (try compileSlaSabTestInput(allocator, file, stderr, extra_args, backend, options.emit_sab_file)) orelse return 1,
             .sa => (try compileSlaSaTestInput(allocator, file, stderr, extra_args, options.emit_sab_file)) orelse return 1,
         };
         defer {
@@ -7450,7 +7504,7 @@ test "sla test codegen uses registry loaded imported bodies" {
 
     var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
-    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, false);
+    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, .sab, false);
     if (sab_compiled) |compiled| {
         defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
         const sab_bytes = try std.fs.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
@@ -8379,7 +8433,7 @@ test "sla module namespace call resolves through imported function alias" {
 
     var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
-    const sab_compiled = try compileSlaSabTestInput(arena.allocator(), "main.sla", sab_stderr.writer().any(), &.{}, false);
+    const sab_compiled = try compileSlaSabTestInput(arena.allocator(), "main.sla", sab_stderr.writer().any(), &.{}, .sab, false);
     if (sab_compiled) |compiled| {
         defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
         const sab_bytes = try std.fs.cwd().readFileAlloc(arena.allocator(), compiled.path, 10 * 1024 * 1024);
@@ -8600,7 +8654,7 @@ test "sla module namespace aliases isolate same named imported functions" {
 
     var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
-    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, false);
+    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, .sab, false);
     if (sab_compiled) |compiled| {
         defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
         const sab_bytes = try std.fs.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);

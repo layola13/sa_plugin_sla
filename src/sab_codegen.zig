@@ -48,6 +48,7 @@ fn sabProfileDecl(enabled: bool, kind: []const u8, name: []const u8, start_ns: i
 
 pub const Error = error{
     UnsupportedSabDirectFeature,
+    ConflictingConstDecl,
     MissingType,
     OutOfMemory,
     InvalidStringLiteral,
@@ -3280,13 +3281,6 @@ pub const Codegen = struct {
         return try self.ensureDecodedModuleRegId(symbols, remap, old_id);
     }
 
-    fn isConstDeclName(self: *Codegen, name: []const u8) bool {
-        for (self.const_decls.items) |decl| {
-            if (std.mem.eql(u8, decl.name, name)) return true;
-        }
-        return false;
-    }
-
     fn remapDecodedModuleIds(self: *Codegen, symbols: []const []const u8, ids: []const u32, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void)) ![]const u32 {
         if (ids.len == 0) return &.{};
         const out = try self.allocator.alloc(u32, ids.len);
@@ -3332,16 +3326,10 @@ pub const Codegen = struct {
         };
     }
 
-    fn collectDecodedModuleRegId(self: *Codegen, symbols: []const []const u8, old_id: u32, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void)) !void {
+    fn collectDecodedModuleRegId(self: *Codegen, symbols: []const []const u8, old_id: u32, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void), const_names: *const std.StringHashMap(void)) !void {
         const name = try decodedModuleSymbolName(symbols, old_id);
         if (stable_names.contains(name)) {
-            // Const symbols are referenced as registers (e.g. borrow of
-            // &HASHSET_SENTINEL from decoded std deps) yet never assigned:
-            // they still must occupy sig.reg_ids or verify traps
-            // UnknownRegister. Route them through ensure so they land in
-            // reg_order. Func/param names keep skipping (renames handled
-            // elsewhere; recording them would perturb leak accounting).
-            if (self.isConstDeclName(name)) {
+            if (const_names.contains(name)) {
                 _ = try self.ensureDecodedModuleRegId(symbols, remap, old_id);
             }
             return;
@@ -3372,19 +3360,19 @@ pub const Codegen = struct {
         return true;
     }
 
-    fn collectDecodedModuleTextRegs(self: *Codegen, symbols: []const []const u8, text: []const u8, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void), allow_unknown: bool) !void {
+    fn collectDecodedModuleTextRegs(self: *Codegen, symbols: []const []const u8, text: []const u8, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void), const_names: *const std.StringHashMap(void), allow_unknown: bool) !void {
         var token = std.ArrayList(u8).init(self.allocator);
         defer token.deinit();
         const flush = struct {
-            fn call(cg: *Codegen, source_symbols: []const []const u8, tok: *std.ArrayList(u8), local_remap: *DecodedModuleLocalRemap, stable: *const std.StringHashMap(void), collect_unknown: bool) !void {
+            fn call(cg: *Codegen, source_symbols: []const []const u8, tok: *std.ArrayList(u8), local_remap: *DecodedModuleLocalRemap, stable: *const std.StringHashMap(void), consts: *const std.StringHashMap(void), collect_unknown: bool) !void {
                 if (tok.items.len == 0) return;
                 defer tok.clearRetainingCapacity();
                 if (!decodedModuleTextTokenCanBeLocalReg(tok.items)) return;
-                if (stable.contains(tok.items)) return;
+                if (stable.contains(tok.items) and !consts.contains(tok.items)) return;
                 if (local_remap.reg_names.contains(tok.items)) return;
                 if (decodedModuleSymbolIdByName(source_symbols, tok.items)) |old_id| {
                     const operand_id = decodedModuleOperandIdForSourceSymbol(local_remap, old_id) orelse old_id;
-                    try cg.collectDecodedModuleRegId(source_symbols, operand_id, local_remap, stable);
+                    try cg.collectDecodedModuleRegId(source_symbols, operand_id, local_remap, stable, consts);
                     return;
                 }
                 if (collect_unknown) _ = try cg.ensureDecodedModuleNamedRegId(local_remap, tok.items);
@@ -3394,12 +3382,12 @@ pub const Codegen = struct {
             const is_delim = ch == ',' or ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n' or
                 ch == '&' or ch == '^' or ch == '*' or ch == '(' or ch == ')';
             if (is_delim) {
-                try flush(self, symbols, &token, remap, stable_names, allow_unknown);
+                try flush(self, symbols, &token, remap, stable_names, const_names, allow_unknown);
             } else {
                 try token.append(ch);
             }
         }
-        try flush(self, symbols, &token, remap, stable_names, allow_unknown);
+        try flush(self, symbols, &token, remap, stable_names, const_names, allow_unknown);
     }
 
     fn collectDecodedModuleLocalRemap(
@@ -3410,6 +3398,7 @@ pub const Codegen = struct {
         end: usize,
         remap: *DecodedModuleLocalRemap,
         stable_names: *const std.StringHashMap(void),
+        const_names: *const std.StringHashMap(void),
     ) !void {
         for (fsig.param_ids, 0..) |old_id, param_idx| {
             if (param_idx >= fsig.params.len) break;
@@ -3420,21 +3409,21 @@ pub const Codegen = struct {
         for (module.instructions[start..end]) |item| {
             for (item.operands, 0..) |operand, operand_idx| {
                 switch (operand) {
-                    .reg => |old_id| try self.collectDecodedModuleRegId(module.symbols, old_id, remap, stable_names),
+                    .reg => |old_id| try self.collectDecodedModuleRegId(module.symbols, old_id, remap, stable_names, const_names),
                     .label => |old_id| _ = try self.ensureDecodedModuleLabelId(remap, old_id),
                     .symbol => |old_id| {
                         if (decodedModuleSymbolOperandIsLabel(item.kind, operand_idx)) {
                             _ = try self.ensureDecodedModuleLabelId(remap, old_id);
                         }
                     },
-                    .text => |text| try self.collectDecodedModuleTextRegs(module.symbols, text, remap, stable_names, true),
-                    .native_text => |text| try self.collectDecodedModuleTextRegs(module.symbols, text, remap, stable_names, false),
+                    .text => |text| try self.collectDecodedModuleTextRegs(module.symbols, text, remap, stable_names, const_names, true),
+                    .native_text => |text| try self.collectDecodedModuleTextRegs(module.symbols, text, remap, stable_names, const_names, false),
                     else => {},
                 }
             }
-            if (item.atomic_expected_text) |text| try self.collectDecodedModuleTextRegs(module.symbols, text, remap, stable_names, true);
-            if (item.atomic_new_text) |text| try self.collectDecodedModuleTextRegs(module.symbols, text, remap, stable_names, true);
-            for (item.native_reg_names) |name| try self.collectDecodedModuleTextRegs(module.symbols, name, remap, stable_names, false);
+            if (item.atomic_expected_text) |text| try self.collectDecodedModuleTextRegs(module.symbols, text, remap, stable_names, const_names, true);
+            if (item.atomic_new_text) |text| try self.collectDecodedModuleTextRegs(module.symbols, text, remap, stable_names, const_names, true);
+            for (item.native_reg_names) |name| try self.collectDecodedModuleTextRegs(module.symbols, name, remap, stable_names, const_names, false);
         }
     }
 
@@ -4204,10 +4193,17 @@ pub const Codegen = struct {
         var stable_names = std.StringHashMap(void).init(self.allocator);
         defer stable_names.deinit();
         for (module.function_sigs) |fsig| try stable_names.put(fsig.name, {});
-        for (module.const_decls) |decl| try stable_names.put(decl.name, {});
+        var const_names = std.StringHashMap(void).init(self.allocator);
+        defer const_names.deinit();
+        for (module.const_decls) |decl| {
+            try stable_names.put(decl.name, {});
+            try const_names.put(decl.name, {});
+        }
 
         for (module.const_decls) |decl| {
             _ = try self.internStable(decl.name);
+            try self.ensureConstDeclCompatible(decl);
+            if (self.hasConstDecl(decl.name)) continue;
             try self.const_decls.append(try self.cloneModuleConstDecl(decl));
         }
 
@@ -4239,7 +4235,7 @@ pub const Codegen = struct {
 
             var local_remap = DecodedModuleLocalRemap.init(self.allocator);
             defer local_remap.deinit();
-            try self.collectDecodedModuleLocalRemap(module, fsig, start, end, &local_remap, &function_stable_names);
+            try self.collectDecodedModuleLocalRemap(module, fsig, start, end, &local_remap, &function_stable_names, &const_names);
 
             const cloned = try self.cloneDecodedModuleFunctionSig(module.symbols, fsig, entry_idx, &local_remap, &function_stable_names);
             try self.function_sigs.append(cloned);
@@ -4258,11 +4254,20 @@ pub const Codegen = struct {
         return false;
     }
 
+    fn ensureConstDeclCompatible(self: *Codegen, decl: const_decl.ConstDecl) !void {
+        for (self.const_decls.items) |existing| {
+            if (!std.mem.eql(u8, existing.name, decl.name)) continue;
+            if (std.mem.eql(u8, existing.raw_text, decl.raw_text) and std.mem.eql(u8, existing.literal_text, decl.literal_text)) return;
+            return Error.ConflictingConstDecl;
+        }
+    }
+
     fn appendDecodedModuleConstDecls(self: *Codegen, module: sab.Module) !void {
         for (module.symbols) |name| _ = try self.internStable(name);
         for (module.const_decls) |decl| {
             const const_id = try self.internStable(decl.name);
             try self.recordReg(const_id);
+            try self.ensureConstDeclCompatible(decl);
             if (self.hasConstDecl(decl.name)) continue;
             var cloned = try self.cloneModuleConstDecl(decl);
             cloned.source_line = 0;
@@ -13238,7 +13243,11 @@ test "filtered decoded std deps keep text-only helper regs in scope" {
     const copy_id: u32 = 0;
     const slot_id: u32 = 1;
     const count_source_id: u32 = 2;
-    const symbols = &.{ "copy", "slot", "count" };
+    const sentinel_source_id: u32 = 3;
+    const symbols = &.{ "copy", "slot", "count", "SENTINEL" };
+
+    const const_decls = try allocator.alloc(const_decl.ConstDecl, 1);
+    const_decls[0] = try const_decl.parseConstDecl(allocator, "@const SENTINEL = utf8:\"sentinel\"", 0, 0, null);
 
     const function_sigs = try allocator.alloc(sig.FunctionSig, 1);
     function_sigs[0] = try sig.parseFunctionSig(allocator, "@copy(count: u64) -> void:", 0, 0);
@@ -13246,7 +13255,7 @@ test "filtered decoded std deps keep text-only helper regs in scope" {
     function_sigs[0].param_ids = try allocator.dupe(u32, &.{count_source_id});
     function_sigs[0].reg_ids = try allocator.dupe(u32, &.{count_source_id});
 
-    const instructions = try allocator.alloc(inst.Instruction, 4);
+    const instructions = try allocator.alloc(inst.Instruction, 7);
     instructions[0] = inst.makeInstruction(.export_decl, 1, 1, null, "");
     instructions[0].operands[0] = .{ .symbol = copy_id };
     instructions[0].operands[1] = .{ .func = copy_id };
@@ -13258,12 +13267,20 @@ test "filtered decoded std deps keep text-only helper regs in scope" {
     instructions[2].operands[1] = .{ .imm_u64 = 0 };
     instructions[2].operands[2] = .{ .text = "count" };
     instructions[2].operands[3] = .{ .ty = @intFromEnum(sig.PrimType.u64) };
-    instructions[3] = inst.makeInstruction(.return_, 4, 4, null, "");
+    instructions[3] = inst.makeInstruction(.store, 4, 4, null, "");
+    instructions[3].operands[0] = .{ .reg = sentinel_source_id };
+    instructions[3].operands[1] = .{ .text = "SENTINEL" };
+    instructions[4] = inst.makeInstruction(.atomic_rmw, 5, 5, null, "");
+    instructions[4].atomic_expected_text = "SENTINEL";
+    instructions[4].atomic_new_text = "SENTINEL";
+    instructions[5] = inst.makeInstruction(.op, 6, 6, null, "");
+    instructions[5].native_reg_names = &.{"SENTINEL"};
+    instructions[6] = inst.makeInstruction(.return_, 7, 7, null, "");
 
     const module = sab.Module{
         .symbols = symbols,
         .function_sigs = function_sigs,
-        .const_decls = &.{},
+        .const_decls = const_decls,
         .instructions = instructions,
         .owned_text = &.{},
     };
@@ -13278,7 +13295,59 @@ test "filtered decoded std deps keep text-only helper regs in scope" {
         if (reg_id == count_id) saw_count = true;
     }
     try std.testing.expect(saw_count);
+    const sentinel_id = cg.symbol_ids.get("SENTINEL") orelse return error.TestUnexpectedResult;
+    var saw_sentinel = false;
+    for (cg.function_sigs.items[0].reg_ids) |reg_id| {
+        if (reg_id == sentinel_id) saw_sentinel = true;
+    }
+    try std.testing.expect(saw_sentinel);
     try std.testing.expectEqualStrings("count", cg.instructions.items[2].operands[2].text);
+}
+
+test "filtered decoded std deps reject conflicting constants" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tc = type_checker.TypeChecker.init(allocator);
+    defer tc.deinit();
+    var cg = Codegen.init(allocator, &tc);
+    defer cg.deinit();
+
+    const first_decls = try allocator.alloc(const_decl.ConstDecl, 1);
+    first_decls[0] = try const_decl.parseConstDecl(allocator, "@const VALUE = utf8:\"first\"", 0, 0, null);
+    const first_module = sab.Module{
+        .symbols = &.{"VALUE"},
+        .function_sigs = &.{},
+        .const_decls = first_decls,
+        .instructions = &.{},
+        .owned_text = &.{},
+    };
+    try cg.appendDecodedModuleFiltered(first_module, &.{});
+    try std.testing.expectEqual(@as(usize, 1), cg.const_decls.items.len);
+
+    const duplicate_decls = try allocator.alloc(const_decl.ConstDecl, 1);
+    duplicate_decls[0] = try const_decl.parseConstDecl(allocator, "@const VALUE = utf8:\"first\"", 0, 0, null);
+    const duplicate_module = sab.Module{
+        .symbols = &.{"VALUE"},
+        .function_sigs = &.{},
+        .const_decls = duplicate_decls,
+        .instructions = &.{},
+        .owned_text = &.{},
+    };
+    try cg.appendDecodedModuleFiltered(duplicate_module, &.{});
+    try std.testing.expectEqual(@as(usize, 1), cg.const_decls.items.len);
+
+    const conflicting_decls = try allocator.alloc(const_decl.ConstDecl, 1);
+    conflicting_decls[0] = try const_decl.parseConstDecl(allocator, "@const VALUE = utf8:\"second\"", 0, 0, null);
+    const conflicting_module = sab.Module{
+        .symbols = &.{"VALUE"},
+        .function_sigs = &.{},
+        .const_decls = conflicting_decls,
+        .instructions = &.{},
+        .owned_text = &.{},
+    };
+    try std.testing.expectError(Error.ConflictingConstDecl, cg.appendDecodedModuleFiltered(conflicting_module, &.{}));
 }
 
 test "std macro template preserves hygiened placeholder output args" {

@@ -1463,7 +1463,7 @@ pub const Parser = struct {
 
     fn parseLetStmt(self: *Parser) ParserError!*ast.Node {
         try self.expect(.keyword_let);
-        _ = self.match(.keyword_mut);
+        if (self.peek() == .keyword_mut) return ParserError.UnexpectedToken;
 
         if (self.peek() == .identifier) {
             const first_name = self.lexeme(self.tok.loc);
@@ -3247,4 +3247,17 @@ test "syntax diagnostic includes location token and context" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "4 | }") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "^ found '}', expected function, struct") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "unexpected closing brace at top level") != null);
+}
+
+test "parser rejects legacy let mut" {
+    const source =
+        \\fn main() {
+        \\    let mut value = 1;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var p = Parser.init(arena.allocator(), source);
+    try std.testing.expectError(ParserError.UnexpectedToken, p.parseProgram());
 }

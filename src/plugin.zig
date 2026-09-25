@@ -4856,7 +4856,20 @@ fn collectReachableBlock(
             .return_stmt => |ret| if (ret.value) |value| try collectReachableExpr(tc, reachable, worklist, value),
             .for_stmt => |for_stmt| {
                 try collectReachableExpr(tc, reachable, worklist, for_stmt.start);
-                if (for_stmt.end) |end_expr| try collectReachableExpr(tc, reachable, worklist, end_expr);
+                if (for_stmt.end) |end_expr| try collectReachableExpr(tc, reachable, worklist, end_expr)
+                else if (tc.expr_types.get(for_stmt.start)) |start_ty| {
+                    // Protocol form: keep Type_iter_len/Type_iter_at (same gap
+                    // as the syntactic walker above). Null-safe: skipped when
+                    // types are not populated yet. Map-owned key slices are
+                    // used so no stack memory escapes into reachable sets.
+                    if (dynConcreteTypeName(start_ty)) |type_name| {
+                        var method_buf: [256]u8 = undefined;
+                        for ([_][]const u8{ "iter_len", "iter_at" }) |method_name| {
+                            const key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ type_name, method_name }) catch continue;
+                            if (tc.funcs.getKey(key)) |stable| try markReachableFunc(tc, reachable, worklist, stable);
+                        }
+                    }
+                }
                 try collectReachableBlock(tc, reachable, worklist, for_stmt.body);
             },
             .while_stmt => |while_stmt| {
@@ -5406,7 +5419,17 @@ fn collectSyntacticReachableBlock(
             .return_stmt => |ret| if (ret.value) |value| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, value),
             .for_stmt => |for_stmt| {
                 try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, for_stmt.start);
-                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, end_expr);
+                if (for_stmt.end) |end_expr| try collectSyntacticReachableExpr(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, end_expr)
+                else {
+                    // Protocol form (no end): for-in desugars to iter_len/iter_at
+                    // calls. Mark them reachable so impl-method pruning keeps
+                    // them (else typecheck later fails with "must be array or
+                    // implement Iterable"). Unknown type falls back to all
+                    // candidates (conservative; keeping extra is always safe).
+                    const recv_ty = syntacticReceiverExprTypeName(for_stmt.start, if (analysis) |a| a.current_facts else null);
+                    try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, "iter_len", recv_ty);
+                    try markSyntacticAssociatedCallCandidates(funcs, modules, analysis, null, caller_name, reachable, referenced_types, worklist, "iter_at", recv_ty);
+                }
                 try collectSyntacticReachableBlock(funcs, modules, imported_macros, analysis, caller_name, reachable, referenced_types, worklist, for_stmt.body);
             },
             .while_stmt => |while_stmt| {

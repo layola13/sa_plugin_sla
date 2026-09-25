@@ -1444,8 +1444,20 @@ fn discoverContributingChildSlaModules(
         if (!try isModuleContributing(allocator, module, reachable, referenced_types)) continue;
         for (module.resolved_imports) |child_resolved| {
             if (!std.mem.endsWith(u8, child_resolved.path, ".sla")) continue;
-            if (!try resolvedSlaImportNamespaceIsReferenced(allocator, child_resolved, reachable, referenced_types)) continue;
-            const child_module = try modules.getOrParse(child_resolved);
+            if (try resolvedSlaImportNamespaceIsReferenced(allocator, child_resolved, reachable, referenced_types)) {
+                const child_module = try modules.getOrParse(child_resolved);
+                changed = (try appendSlaModuleIfNew(child_module, visited, ordered)) or changed;
+                continue;
+            }
+            // Fallback for unqualified calls: SLA flattens imports, so a call
+            // inside a contributing module may target any transitively
+            // imported module (e.g. wrapper.sla calling compiler.sla's
+            // program_new_single_file). Parse tolerantly and skip broken
+            // files silently: an unparseable child that nothing references
+            // must not break the build, while a valid child gets discovered
+            // so the next reachability pass can resolve it precisely.
+            // Discovery only; emission stays reachability-filtered.
+            const child_module = modules.getOrParse(child_resolved) catch continue;
             changed = (try appendSlaModuleIfNew(child_module, visited, ordered)) or changed;
         }
     }

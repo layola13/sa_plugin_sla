@@ -36,3 +36,23 @@ fn merge_direct_spawn_or_call(use_threads: bool) -> i64 {
     if merge_direct_spawn_or_call(false) != 2 { panic(51380); };
     if merge_direct_spawn_or_call(true) != 2 { panic(51381); };
 }
+
+fn loop_capture_sum() -> i32 {
+    let acc: i32 = 0;
+    let i: i32 = 3;
+    while i <= 4 {
+        let value = i;
+        let h = thread::spawn(^|| value % 2 == 0);
+        if h.join().unwrap() { acc = acc + 10; } else { acc = acc + 1; };
+        i = i + 1;
+    }
+    return acc;
+}
+
+// Locks the loop-local capture fix: loop-body lets lower to stack slots,
+// whose register holds an address. Captures must load value bits through it
+// (worker reads value bits, same convention as SA-text); storing the address
+// made workers compute on garbage (strict SAB failed, SA passed).
+@test "loop-local closure capture carries value bits"() {
+    if loop_capture_sum() != 11 { panic(51382); };
+}

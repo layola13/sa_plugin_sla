@@ -2846,6 +2846,21 @@ pub const Codegen = struct {
         return null;
     }
 
+    /// True when the named local's register holds an ADDRESS (stack slot)
+    /// rather than value bits. Thread-spawn captures must load through it:
+    /// the worker reads capture slots as value bits (same convention as
+    /// SA-text, which stores `value as ptr`), so storing a stack address
+    /// would make the worker compute on garbage.
+    fn localRegIsAddress(self: *Codegen, name: []const u8) bool {
+        var i = self.locals.items.len;
+        while (i > 0) {
+            i -= 1;
+            const local = self.locals.items[i];
+            if (std.mem.eql(u8, local.name, name)) return local.is_stack_alloc or local.stack_ty != null;
+        }
+        return false;
+    }
+
     fn localType(self: *Codegen, name: []const u8) ?*const ast.Type {
         var i = self.locals.items.len;
         while (i > 0) {
@@ -9662,6 +9677,14 @@ pub const Codegen = struct {
                 try self.emitLoad(target, capture_reg, 0, .ptr);
                 try self.emitStore(slot, capture.offset, target, .ptr);
                 try self.emitMove(target);
+            } else if (self.localRegIsAddress(capture.name)) {
+                // Loop-body lets lower to stack slots: the register holds an
+                // address, but the worker reads value bits. Load through it.
+                // Non-primitive captures cannot be bit-copied: fail loudly.
+                const value_reg = try self.intern(try self.newTmp());
+                try self.emitLoad(value_reg, capture_reg, 0, try storagePrimType(capture.ty));
+                try self.emitStore(slot, capture.offset, value_reg, try storagePrimType(capture.ty));
+                try self.emitRelease(value_reg);
             } else {
                 try self.emitStore(slot, capture.offset, capture_reg, try storagePrimType(capture.ty));
             }

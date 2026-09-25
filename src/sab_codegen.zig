@@ -3280,6 +3280,13 @@ pub const Codegen = struct {
         return try self.ensureDecodedModuleRegId(symbols, remap, old_id);
     }
 
+    fn isConstDeclName(self: *Codegen, name: []const u8) bool {
+        for (self.const_decls.items) |decl| {
+            if (std.mem.eql(u8, decl.name, name)) return true;
+        }
+        return false;
+    }
+
     fn remapDecodedModuleIds(self: *Codegen, symbols: []const []const u8, ids: []const u32, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void)) ![]const u32 {
         if (ids.len == 0) return &.{};
         const out = try self.allocator.alloc(u32, ids.len);
@@ -3327,7 +3334,18 @@ pub const Codegen = struct {
 
     fn collectDecodedModuleRegId(self: *Codegen, symbols: []const []const u8, old_id: u32, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void)) !void {
         const name = try decodedModuleSymbolName(symbols, old_id);
-        if (stable_names.contains(name)) return;
+        if (stable_names.contains(name)) {
+            // Const symbols are referenced as registers (e.g. borrow of
+            // &HASHSET_SENTINEL from decoded std deps) yet never assigned:
+            // they still must occupy sig.reg_ids or verify traps
+            // UnknownRegister. Route them through ensure so they land in
+            // reg_order. Func/param names keep skipping (renames handled
+            // elsewhere; recording them would perturb leak accounting).
+            if (self.isConstDeclName(name)) {
+                _ = try self.ensureDecodedModuleRegId(symbols, remap, old_id);
+            }
+            return;
+        }
         _ = try self.ensureDecodedModuleRegId(symbols, remap, old_id);
     }
 

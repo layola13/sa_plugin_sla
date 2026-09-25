@@ -3599,6 +3599,11 @@ pub const TypeChecker = struct {
                     return try self.makeOptionType(inner_ty);
                 }
 
+                if (std.mem.eql(u8, call.func_name, "None") and call.associated_target == null) {
+                    if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                    return try self.makeOptionType(try self.makeInferType());
+                }
+
                 if (std.mem.eql(u8, call.func_name, "Ok")) {
                     if (call.args.len != 1) return TypeError.InvalidArgsCount;
                     const ok_ty = try self.checkExpr(call.args[0], scope);
@@ -4108,6 +4113,11 @@ pub const TypeChecker = struct {
                         self.resolved_call_symbols.put(expr, method_key) catch return TypeError.OutOfMemory;
                         if (func.is_async) return try self.makeFutureType(func.ret_ty);
                         return func.ret_ty;
+                    }
+                    // Option::None() unit constructor: mirrors bare None value.
+                    if (std.mem.eql(u8, target_name, "Option") and std.mem.eql(u8, call.func_name, "None")) {
+                        if (call.args.len != 0) return TypeError.InvalidArgsCount;
+                        return try self.makeOptionType(try self.makeInferType());
                     }
                     if (try self.resolveTraitMethodSymbolForType(target_name, null, call.func_name, call.args.len)) |symbol| {
                         const func = self.funcs.get(symbol) orelse return TypeError.UndefinedVariable;

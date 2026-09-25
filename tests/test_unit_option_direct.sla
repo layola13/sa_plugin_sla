@@ -23,3 +23,13 @@
     if !c.is_none() { panic(31213); };
     if b.unwrap_or(5) != 5 { panic(31214); };
 };
+
+@test "none call forms strict sab parity"() {
+    let a: Option<i32> = None();
+    let b: Option<i32> = Option::None();
+
+    if !a.is_none() { panic(31221); };
+    if !b.is_none() { panic(31222); };
+    if a.unwrap_or(3) != 3 { panic(31223); };
+    if b.unwrap_or(4) != 4 { panic(31224); };
+};

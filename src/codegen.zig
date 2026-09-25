@@ -10907,6 +10907,12 @@ pub const Codegen = struct {
                     if (callArgNeedsRelease(call.args[0])) try self.emitRelease(value_reg);
                     return reg;
                 }
+                if (std.mem.eql(u8, call.func_name, "None") and call.associated_target == null) {
+                    if (call.args.len != 0) return CodegenError.CodegenError;
+                    const reg = try self.newTmp();
+                    self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                    return reg;
+                }
                 if (std.mem.eql(u8, call.func_name, "Ok")) {
                     if (call.args.len != 1) return CodegenError.CodegenError;
                     const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -11004,6 +11010,12 @@ pub const Codegen = struct {
                 }
                 if (call.associated_target) |target| {
                     const is_ptr_target = std.mem.eql(u8, target, "std__ptr") or std.mem.eql(u8, target, "ptr");
+                    if (std.mem.eql(u8, target, "Option") and std.mem.eql(u8, call.func_name, "None")) {
+                        if (call.args.len != 0) return CodegenError.CodegenError;
+                        const reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{reg}) catch return CodegenError.CodegenError;
+                        return reg;
+                    }
                     if (is_ptr_target and std.mem.eql(u8, call.func_name, "null")) {
                         if (call.args.len != 0 or call.generics.len != 1) return CodegenError.CodegenError;
                         const reg = try self.newTmp();

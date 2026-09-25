@@ -9427,6 +9427,13 @@ pub const Codegen = struct {
         lit: *const ast.EnumLiteral,
         hoisted_allocs: *const std.ArrayList([]const u8),
     ) CodegenError!void {
+        // Synthetic Option has no declared enum: Option::None lowers to the
+        // std None constructor, exactly like bare None (see OPTION_NEW_NONE
+        // emission below). Keeps SA-text/SAB parity for the same acceptance.
+        if (std.mem.eql(u8, lit.enum_name, "Option") and std.mem.eql(u8, lit.variant_name, "None") and lit.fields.len == 0) {
+            self.out.writer().print("    EXPAND OPTION_NEW_NONE {s}\n", .{target}) catch return CodegenError.CodegenError;
+            return;
+        }
         const decl = self.tc.enums.get(lit.enum_name) orelse return CodegenError.CodegenError;
         const tag = enumVariantIndex(decl, lit.variant_name) orelse return CodegenError.CodegenError;
         const variant = enumVariant(decl, lit.variant_name) orelse return CodegenError.CodegenError;

@@ -3415,6 +3415,12 @@ pub const TypeChecker = struct {
                 return lit.ty;
             },
             .enum_literal => |lit| {
+                // SA-text parity: Option is synthetic (no declared enum), but
+                // Option::None is a valid unit constructor. Accept exactly this
+                // shape; sab_codegen emits OPTION_NEW_NONE for it directly.
+                if (std.mem.eql(u8, lit.enum_name, "Option") and std.mem.eql(u8, lit.variant_name, "None") and lit.fields.len == 0) {
+                    return try self.makeOptionType(try self.makeInferType());
+                }
                 const decl = self.enums.get(lit.enum_name) orelse return TypeError.NotAStruct;
                 const variant = findEnumVariant(decl, lit.variant_name) orelse return TypeError.FieldNotFound;
 

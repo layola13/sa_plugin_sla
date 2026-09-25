@@ -11664,6 +11664,21 @@ pub const Codegen = struct {
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
     }
 
+    fn isEnumCtorShorthand(target_name: []const u8, func_name: []const u8) bool {
+        if (std.mem.eql(u8, target_name, "Option")) {
+            return std.mem.eql(u8, func_name, "Some") or std.mem.eql(u8, func_name, "None");
+        }
+        if (std.mem.eql(u8, target_name, "Result")) {
+            return std.mem.eql(u8, func_name, "Ok") or std.mem.eql(u8, func_name, "Err");
+        }
+        return false;
+    }
+
+    fn ctorShorthandArity(func_name: []const u8) usize {
+        if (std.mem.eql(u8, func_name, "None")) return 0;
+        return 1;
+    }
+
     fn genStdSurfaceCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         if (call.associated_target) |target_name| {
             if (self.findStdSurfaceRule(.associated, target_name, call.func_name)) |rule| {
@@ -11690,6 +11705,29 @@ pub const Codegen = struct {
                     }
                 }
                 return dst;
+            }
+            // SA-text parity: Option::Some/None, Result::Ok/Err lower exactly
+            // like their bare forms (codegen.zig matches bare Some/Ok/Err and
+            // ignores the target). Route them through the existing constructor
+            // surface rules instead of failing the direct path.
+            if (isEnumCtorShorthand(target_name, call.func_name)) {
+                if (self.tc.expr_types.get(expr)) |expr_ty| {
+                    if (typeBaseName(expr_ty)) |type_name| {
+                        if (self.findStdSurfaceRule(.constructor, type_name, call.func_name)) |ctor_rule| {
+                            if (call.args.len != ctorShorthandArity(call.func_name)) return Error.UnsupportedSabDirectFeature;
+                            const ctor_value = if (call.args.len > 0) try self.genExpr(@constCast(call.args[0])) else null;
+                            const ctor_dst = try self.intern(try self.newTmp());
+                            try self.recordReg(ctor_dst);
+                            try self.emitStdSurfaceRule(ctor_rule, .{
+                                .out = ctor_dst,
+                                .value = ctor_value,
+                                .elem_size = self.elementSlotSize(expr_ty),
+                            });
+                            if (ctor_value) |reg| if (!self.isLocalReg(reg)) try self.emitRelease(reg);
+                            return ctor_dst;
+                        }
+                    }
+                }
             }
             return null;
         }
@@ -12049,6 +12087,17 @@ pub const Codegen = struct {
     /// word (`i64` at offset 0) and payload fields follow at the shared
     /// per-variant offsets. Mirrors SA-text `genEnumLiteralInto`.
     fn genEnumLiteral(self: *Codegen, lit: ast.EnumLiteral) anyerror!u32 {
+        // SA-text parity: Option::None has no declared enum (synthetic Option),
+        // so it cannot go through the generic enum path below. The typechecker
+        // accepts exactly this shape; emit the std None constructor directly.
+        if (std.mem.eql(u8, lit.enum_name, "Option") and std.mem.eql(u8, lit.variant_name, "None") and lit.fields.len == 0) {
+            const dst = try self.intern(try self.newTmp());
+            try self.recordReg(dst);
+            try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+                self.symbols.items[dst],
+            });
+            return dst;
+        }
         const decl = self.tc.enums.get(lit.enum_name) orelse return Error.UnsupportedSabDirectFeature;
         const tag = lowering_rules.enumVariantIndex(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
         const variant = lowering_rules.enumVariant(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;

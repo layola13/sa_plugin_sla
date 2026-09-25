@@ -277,6 +277,12 @@ pub const Codegen = struct {
     result_slot_refcell_slots: std.AutoHashMap(u32, u32),
     borrow_address_temps: std.AutoHashMap(u32, []const u32),
     non_owning_regs: std.AutoHashMap(u32, void),
+    // Anonymous stack_alloc temporaries (string/slice materialization etc).
+    // Stack slots must never be explicitly released or moved (sci contract,
+    // else verifier traps StackEscape); SA-text tracks the same set as
+    // stack_alloc_bindings. Checked in emitRelease before the non-owning
+    // move_ branch so stack slots die with their scope silently.
+    stack_alloc_regs: std.AutoHashMap(u32, void),
     future_state_vtables: std.AutoHashMap(u32, []const u8),
     future_readiness: std.AutoHashMap(u32, lowering_rules.FutureReadiness),
     future_readiness_by_name: std.StringHashMap(lowering_rules.FutureReadiness),
@@ -344,6 +350,7 @@ pub const Codegen = struct {
             .result_slot_refcell_slots = std.AutoHashMap(u32, u32).init(allocator),
             .borrow_address_temps = std.AutoHashMap(u32, []const u32).init(allocator),
             .non_owning_regs = std.AutoHashMap(u32, void).init(allocator),
+            .stack_alloc_regs = std.AutoHashMap(u32, void).init(allocator),
             .future_state_vtables = std.AutoHashMap(u32, []const u8).init(allocator),
             .future_readiness = std.AutoHashMap(u32, lowering_rules.FutureReadiness).init(allocator),
             .future_readiness_by_name = std.StringHashMap(lowering_rules.FutureReadiness).init(allocator),
@@ -418,6 +425,7 @@ pub const Codegen = struct {
         self.clearBorrowAddressTemps();
         self.borrow_address_temps.deinit();
         self.non_owning_regs.deinit();
+        self.stack_alloc_regs.deinit();
         self.future_state_vtables.deinit();
         self.future_readiness.deinit();
         self.future_readiness_by_name.deinit();
@@ -2102,6 +2110,7 @@ pub const Codegen = struct {
         self.result_slot_refcell_slots.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
         self.non_owning_regs.clearRetainingCapacity();
+        self.stack_alloc_regs.clearRetainingCapacity();
         self.future_state_vtables.clearRetainingCapacity();
         self.future_readiness.clearRetainingCapacity();
         self.future_readiness_by_name.clearRetainingCapacity();
@@ -2998,6 +3007,15 @@ pub const Codegen = struct {
         if (self.refcell_borrow_values.fetchRemove(reg)) |entry| {
             try self.emitRefCellBorrowRelease(entry.value);
         }
+        if (self.stack_alloc_regs.contains(reg)) {
+            // Stack slots die with their scope: emitting release or move_
+            // on them traps StackEscape in the verifier. Mark released so
+            // scope-end accounting stays silent, matching SA-text which
+            // never emits cleanup for stack_alloc_bindings.
+            _ = self.non_owning_regs.fetchRemove(reg);
+            try self.released_regs.put(reg, {});
+            return;
+        }
         if (self.non_owning_regs.fetchRemove(reg)) |_| {
             var item = self.makeInst(.move_);
             item.operands[0] = .{ .reg = reg };
@@ -3161,6 +3179,7 @@ pub const Codegen = struct {
 
     fn emitStackAlloc(self: *Codegen, dst: u32, size: usize) !void {
         try self.recordReg(dst);
+        try self.stack_alloc_regs.put(dst, {});
         var item = self.makeInst(.stack_alloc);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .imm_u64 = @intCast(size) };
@@ -11035,7 +11054,11 @@ pub const Codegen = struct {
 
         return .{
             .operand = self.symbols.items[slice_reg],
-            .release_reg = if (release_after_call) slice_reg else null,
+            // SA-text parity (codegen.genArrayBorrowToSliceArg hardcodes
+            // release_after_call=false): slice_reg is a stack_alloc slot and
+            // stack slots must never be explicitly released (sci stack_alloc
+            // contract, else verifier traps StackEscape on the call path).
+            .release_reg = null,
             .release_regs = try self.ownedReleaseRegs(extra_releases.items),
         };
     }

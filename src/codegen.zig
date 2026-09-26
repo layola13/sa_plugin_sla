@@ -7297,6 +7297,12 @@ pub const Codegen = struct {
         if (lowering_rules.planAsyncTwoAwaitContinuation(f)) |plan| {
             return try self.genAsyncTwoAwaitFuncDeclNamed(name, f, plan);
         }
+        if (lowering_rules.planAsyncLinearAwaitContinuation(f)) |plan| {
+            return try self.genAsyncLinearAwaitFuncDeclNamed(name, f, plan);
+        }
+        if (lowering_rules.planAsyncLinearAwaitContinuation(f)) |plan| {
+            return try self.genAsyncLinearAwaitFuncDeclNamed(name, f, plan);
+        }
         if (lowering_rules.planAsyncSingleAwaitContinuation(f)) |plan| {
             return try self.genAsyncSingleAwaitFuncDeclNamed(name, f, plan);
         }
@@ -8128,6 +8134,14 @@ pub const Codegen = struct {
         return std.fmt.allocPrint(self.allocator, "sla_async_{s}_two_await_poll", .{name}) catch return CodegenError.OutOfMemory;
     }
 
+    fn asyncLinearAwaitVTableName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_LINEAR_AWAIT_VT", .{name}) catch return CodegenError.OutOfMemory;
+    }
+
+    fn asyncLinearAwaitPollName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "sla_async_{s}_linear_await_poll", .{name}) catch return CodegenError.OutOfMemory;
+    }
+
     fn asyncJoin2AwaitVTableName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
         return std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_JOIN2_AWAIT_VT", .{name}) catch return CodegenError.OutOfMemory;
     }
@@ -8469,6 +8483,128 @@ pub const Codegen = struct {
         , .{ plan.second_binding_name, plan.first_binding_name }) catch return CodegenError.CodegenError;
     }
 
+    fn emitAsyncLinearAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncLinearAwaitContinuationPlan) CodegenError!void {
+        const vt_name = try self.asyncLinearAwaitVTableName(name);
+        defer self.allocator.free(vt_name);
+        const poll_name = try self.asyncLinearAwaitPollName(name);
+        defer self.allocator.free(poll_name);
+        const w = self.out.writer();
+        w.print(
+            \\@const {s} = vtable {{ poll = @{s} }}
+            \\@{s}(&data_slot: ptr, &ctx_slot: ptr, &out_poll_slot: ptr):
+            \\L_ENTRY:
+            \\    async_stage = load data_slot+0 as u64
+            \\    async_done = eq async_stage, {d}
+            \\    br async_done -> L_ASYNC_LINEAR_AWAIT_EMPTY, L_ASYNC_LINEAR_AWAIT_DISPATCH
+            \\L_ASYNC_LINEAR_AWAIT_DISPATCH:
+            \\
+        , .{ vt_name, poll_name, poll_name, plan.count }) catch return CodegenError.CodegenError;
+        for (0..plan.count) |s| {
+            w.print(
+                \\    async_linear_is_{d} = eq async_stage, {d}
+                \\    br async_linear_is_{d} -> L_ASYNC_LINEAR_AWAIT_STAGE_{d}, L_ASYNC_LINEAR_AWAIT_NEXT_{d}
+                \\L_ASYNC_LINEAR_AWAIT_NEXT_{d}:
+                \\
+            , .{ s, s, s, s, s, s }) catch return CodegenError.CodegenError;
+        }
+        w.print(
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    jmp L_ASYNC_LINEAR_AWAIT_DONE
+            \\L_ASYNC_LINEAR_AWAIT_EMPTY:
+            \\    EXPAND POLL_SET_PENDING out_poll_slot
+            \\    jmp L_ASYNC_LINEAR_AWAIT_DONE
+            \\
+        , .{}) catch return CodegenError.CodegenError;
+        for (0..plan.count) |s| {
+            const sub_off = plan.subStateOffset(s);
+            const val_off = plan.valueOffset(s);
+            const bind_name = plan.binding_names[s];
+            w.print(
+                \\L_ASYNC_LINEAR_AWAIT_STAGE_{d}:
+                \\    async_linear_sub_{d} = load data_slot+{d} as ptr
+                \\    async_linear_st_{d} = load async_linear_sub_{d}+0 as u64
+                \\    async_linear_init_{d} = eq async_linear_st_{d}, 0
+                \\    br async_linear_init_{d} -> L_ASYNC_LINEAR_AWAIT_PENDING_{d}, L_ASYNC_LINEAR_AWAIT_CHECK_{d}
+                \\L_ASYNC_LINEAR_AWAIT_PENDING_{d}:
+                \\    store async_linear_sub_{d}+0, 1 as u64
+                \\    EXPAND POLL_SET_PENDING out_poll_slot
+                \\    jmp L_ASYNC_LINEAR_AWAIT_CLEAN_{d}
+                \\L_ASYNC_LINEAR_AWAIT_CHECK_{d}:
+                \\    async_linear_ready_{d} = eq async_linear_st_{d}, 1
+                \\    br async_linear_ready_{d} -> L_ASYNC_LINEAR_AWAIT_READY_{d}, L_ASYNC_LINEAR_AWAIT_SUBEMPTY_{d}
+                \\L_ASYNC_LINEAR_AWAIT_SUBEMPTY_{d}:
+                \\    EXPAND POLL_SET_PENDING out_poll_slot
+                \\    !async_linear_ready_{d}
+                \\    jmp L_ASYNC_LINEAR_AWAIT_CLEAN_{d}
+                \\
+            , .{ s, s, sub_off, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s }) catch return CodegenError.CodegenError;
+            w.print(
+                \\L_ASYNC_LINEAR_AWAIT_READY_{d}:
+                \\    {s} = load async_linear_sub_{d}+8 as u64
+                \\    store data_slot+{d}, {s} as u64
+                \\    store async_linear_sub_{d}+0, 2 as u64
+                \\    store data_slot+0, {d} as u64
+                \\    !{s}
+                \\    !async_linear_ready_{d}
+                \\    !async_linear_init_{d}
+                \\    !async_linear_st_{d}
+                \\    !async_linear_sub_{d}
+                \\
+            , .{ s, bind_name, s, val_off, bind_name, s, s + 1, bind_name, s, s, s, s }) catch return CodegenError.CodegenError;
+            if (s + 1 < plan.count) {
+                w.print("    jmp L_ASYNC_LINEAR_AWAIT_STAGE_{d}\n", .{s + 1}) catch return CodegenError.CodegenError;
+            } else {
+                try self.emitAsyncLinearAwaitScalarReady(plan);
+            }
+            w.print(
+                \\L_ASYNC_LINEAR_AWAIT_CLEAN_{d}:
+                \\    !async_linear_init_{d}
+                \\    !async_linear_st_{d}
+                \\    !async_linear_sub_{d}
+                \\    jmp L_ASYNC_LINEAR_AWAIT_DONE
+                \\
+            , .{ s, s, s, s }) catch return CodegenError.CodegenError;
+        }
+        w.print("L_ASYNC_LINEAR_AWAIT_DONE:\n", .{}) catch return CodegenError.CodegenError;
+        for (0..plan.count) |s| {
+            w.print("    !async_linear_is_{d}\n", .{s}) catch return CodegenError.CodegenError;
+        }
+        w.print("    !async_done\n    !async_stage\n    return\n", .{}) catch return CodegenError.CodegenError;
+    }
+
+    fn emitAsyncLinearAwaitScalarReady(self: *Codegen, plan: lowering_rules.AsyncLinearAwaitContinuationPlan) CodegenError!void {
+        const w = self.out.writer();
+        const acc0 = try self.newTmp();
+        w.print("    {s} = {d}\n", .{ acc0, plan.scalar.immediate }) catch return CodegenError.CodegenError;
+        var acc: []const u8 = acc0;
+        for (plan.scalar.coeffs[0..plan.count], 0..) |coeff, i| {
+            if (coeff == 0) continue;
+            const val_name = try self.newTmp();
+            w.print("    {s} = load data_slot+{d} as u64\n", .{ val_name, plan.valueOffset(i) }) catch return CodegenError.CodegenError;
+            const next_acc = try self.newTmp();
+            if (coeff == 1) {
+                w.print("    {s} = add {s}, {s}\n", .{ next_acc, acc, val_name }) catch return CodegenError.CodegenError;
+            } else if (coeff == -1) {
+                w.print("    {s} = sub {s}, {s}\n", .{ next_acc, acc, val_name }) catch return CodegenError.CodegenError;
+            } else {
+                const abs_coeff: i64 = if (coeff < 0) -coeff else coeff;
+                const scaled = try self.newTmp();
+                w.print("    {s} = mul {s}, {d}\n", .{ scaled, val_name, abs_coeff }) catch return CodegenError.CodegenError;
+                if (coeff < 0) {
+                    w.print("    {s} = sub {s}, {s}\n", .{ next_acc, acc, scaled }) catch return CodegenError.CodegenError;
+                } else {
+                    w.print("    {s} = add {s}, {s}\n", .{ next_acc, acc, scaled }) catch return CodegenError.CodegenError;
+                }
+                w.print("    !{s}\n", .{scaled}) catch return CodegenError.CodegenError;
+            }
+            w.print("    !{s}\n", .{val_name}) catch return CodegenError.CodegenError;
+            w.print("    !{s}\n", .{acc}) catch return CodegenError.CodegenError;
+            acc = next_acc;
+        }
+        w.print("    EXPAND POLL_SET_READY out_poll_slot, {s}\n", .{acc}) catch return CodegenError.CodegenError;
+        w.print("    !{s}\n", .{acc}) catch return CodegenError.CodegenError;
+    }
+
     fn emitAsyncJoin2AwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncJoin2AwaitContinuationPlan) CodegenError!void {
         const vt_name = try self.asyncJoin2AwaitVTableName(name);
         const poll_name = try self.asyncJoin2AwaitPollName(name);
@@ -8586,6 +8722,48 @@ pub const Codegen = struct {
         try self.future_state_vtables.put(async_state, try self.asyncSingleAwaitVTableName(name));
         try self.recordFutureReadiness(async_state, .unknown);
         self.out.writer().print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
+    }
+
+    fn genAsyncLinearAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncLinearAwaitContinuationPlan) CodegenError!void {
+        try self.emitAsyncLinearAwaitPollHelper(name, plan);
+
+        const lowered_name = try self.loweredFuncSymbol(name);
+        defer self.allocator.free(lowered_name);
+        const w = self.out.writer();
+        w.print("@{s}(", .{lowered_name}) catch return CodegenError.CodegenError;
+        for (f.params, 0..) |p, i| {
+            if (i > 0) w.print(", ", .{}) catch return CodegenError.CodegenError;
+            const prefix: []const u8 = self.abiParamPrefix(p);
+            w.print("{s}{s}: {s}", .{ prefix, p.name, abiParamTypeString(p) }) catch return CodegenError.CodegenError;
+        }
+        const async_return_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makeAbiPtrType());
+        const ret_type_str = abiReturnTypeString(async_return_plan.abi_ret_ty);
+        w.print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
+        w.print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
+
+        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        defer hoisted_allocs.deinit();
+        try self.collectHoistedAllocs(f.body, &hoisted_allocs);
+        var sub_states: [lowering_rules.AsyncLinearAwaitMax][]const u8 = undefined;
+        for (plan.await_exprs[0..plan.count], 0..) |await_expr, i| {
+            sub_states[i] = try self.genExpr(@constCast(await_expr), &hoisted_allocs);
+        }
+        const async_state = try self.newTmp();
+        w.print("    {s} = alloc {d}\n", .{ async_state, plan.asyncStateSize() }) catch return CodegenError.CodegenError;
+        w.print("    store {s}+0, 0 as u64\n", .{async_state}) catch return CodegenError.CodegenError;
+        for (sub_states[0..plan.count], 0..) |sub_state, i| {
+            w.print("    store {s}+{d}, {s} as ptr\n", .{ async_state, plan.subStateOffset(i), sub_state }) catch return CodegenError.CodegenError;
+            w.print("    store {s}+{d}, 0 as u64\n", .{ async_state, plan.valueOffset(i) }) catch return CodegenError.CodegenError;
+        }
+        var i: usize = plan.count;
+        while (i > 0) {
+            i -= 1;
+            try self.emitRelease(sub_states[i]);
+        }
+        for (f.params) |param| try self.emitRelease(param.name);
+        try self.future_state_vtables.put(async_state, try self.asyncLinearAwaitVTableName(name));
+        try self.recordFutureReadiness(async_state, .unknown);
+        w.print("    return {s}\n\n", .{async_state}) catch return CodegenError.CodegenError;
     }
 
     fn genAsyncTwoAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncTwoAwaitContinuationPlan) CodegenError!void {
@@ -14639,6 +14817,9 @@ pub const Codegen = struct {
                             try self.recordFutureReadiness(reg, .unknown);
                         } else if (lowering_rules.planAsyncTwoAwaitContinuation(func) != null) {
                             try self.future_state_vtables.put(reg, try self.asyncTwoAwaitVTableName(call.func_name));
+                            try self.recordFutureReadiness(reg, .unknown);
+                        } else if (lowering_rules.planAsyncLinearAwaitContinuation(func) != null) {
+                            try self.future_state_vtables.put(reg, try self.asyncLinearAwaitVTableName(call.func_name));
                             try self.recordFutureReadiness(reg, .unknown);
                         } else if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {
                             try self.future_state_vtables.put(reg, try self.asyncSingleAwaitVTableName(call.func_name));

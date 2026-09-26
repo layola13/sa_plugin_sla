@@ -5035,7 +5035,11 @@ pub const Codegen = struct {
         for (module.const_decls) |decl| {
             const const_id = try self.internStable(decl.name);
             try self.recordReg(const_id);
-            try self.ensureConstDeclCompatible(decl);
+            // NOTE: no ensureConstDeclCompatible here (unlike Filtered):
+            // per-fragment template expansion re-appends the same std consts
+            // repeatedly; first-wins via hasConstDecl skip matches the
+            // windows branch and the SA-text backend. Compatibility is
+            // enforced on the module-deps path in appendDecodedModuleFiltered.
             if (self.hasConstDecl(decl.name)) continue;
             var cloned = try self.cloneModuleConstDecl(decl);
             cloned.source_line = 0;

@@ -3998,7 +3998,19 @@ pub const Codegen = struct {
         const name = try decodedModuleSymbolName(symbols, old_id);
         if (stable_names.contains(name)) {
             if (const_names.contains(name)) {
-                _ = try self.ensureDecodedModuleRegId(symbols, remap, old_id);
+                // Global constants alias their stable symbol id so constant
+                // references stay comparable by id across decoded modules
+                // (08f8d70). Non-const stables are skipped below; all other
+                // names get hygienic fresh ids via ensureDecodedModuleRegId.
+                if (remap.stable_reg_ids.get(old_id)) |_| return;
+                if (remap.reg_ids.get(old_id)) |_| return;
+                const stable_id = try self.internStable(name);
+                try remap.reg_ids.put(old_id, stable_id);
+                try remap.reg_order.append(old_id);
+                const entry = try remap.reg_names.getOrPut(name);
+                if (!entry.found_existing) entry.value_ptr.* = self.symbols.items[stable_id];
+                const id_entry = try remap.reg_name_ids.getOrPut(name);
+                if (!id_entry.found_existing) id_entry.value_ptr.* = stable_id;
             }
             return;
         }
@@ -4495,7 +4507,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn coerceDecodedValueOperand(self: *Codegen, operand: *inst.Operand, remap: *DecodedModuleLocalRemap) !void {
+    fn coerceDecodedValueOperand(self: *Codegen, operand: *inst.Operand, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void)) !void {
         _ = self;
         if (operand.* != .text) return;
         const text = std.mem.trim(u8, operand.text, " \t\r\n");
@@ -4503,24 +4515,27 @@ pub const Codegen = struct {
             operand.* = try stdMacroTemplateIntegerOperand(text);
             return;
         }
+        // Stable names (params, consts, globals) resolve by name downstream;
+        // only remapped locals need canonicalization to .reg form.
+        if (stable_names.contains(text)) return;
         const reg = remap.reg_name_ids.get(text) orelse return;
         operand.* = .{ .reg = reg };
     }
 
-    fn coerceDecodedInstructionOperands(self: *Codegen, item: *inst.Instruction, remap: *DecodedModuleLocalRemap) !void {
+    fn coerceDecodedInstructionOperands(self: *Codegen, item: *inst.Instruction, remap: *DecodedModuleLocalRemap, stable_names: *const std.StringHashMap(void)) !void {
         switch (item.kind) {
-            .store => try self.coerceDecodedValueOperand(&item.operands[2], remap),
-            .assign => try self.coerceDecodedValueOperand(&item.operands[1], remap),
+            .store => try self.coerceDecodedValueOperand(&item.operands[2], remap, stable_names),
+            .assign => try self.coerceDecodedValueOperand(&item.operands[1], remap, stable_names),
             .op => {
-                try self.coerceDecodedValueOperand(&item.operands[1], remap);
-                try self.coerceDecodedValueOperand(&item.operands[2], remap);
+                try self.coerceDecodedValueOperand(&item.operands[1], remap, stable_names);
+                try self.coerceDecodedValueOperand(&item.operands[2], remap, stable_names);
             },
             .ptr_add => {
-                try self.coerceDecodedValueOperand(&item.operands[1], remap);
-                try self.coerceDecodedValueOperand(&item.operands[2], remap);
+                try self.coerceDecodedValueOperand(&item.operands[1], remap, stable_names);
+                try self.coerceDecodedValueOperand(&item.operands[2], remap, stable_names);
             },
-            .borrow => try self.coerceDecodedValueOperand(&item.operands[1], remap),
-            .release => try self.coerceDecodedValueOperand(&item.operands[0], remap),
+            .borrow => try self.coerceDecodedValueOperand(&item.operands[1], remap, stable_names),
+            .release => try self.coerceDecodedValueOperand(&item.operands[0], remap, stable_names),
             else => {},
         }
     }
@@ -4800,7 +4815,7 @@ pub const Codegen = struct {
         out.atomic_new_text = if (source.atomic_new_text) |text| try self.renameDecodedModuleLocalText(symbols, text, remap) else null;
         out.native_reg_names = try self.cloneDecodedModuleTextList(symbols, source.native_reg_names, remap);
         for (&out.operands, 0..) |*operand, operand_idx| operand.* = try self.remapDecodedModuleOperand(symbols, operand.*, source.kind, operand_idx, remap, stable_names);
-        try self.coerceDecodedInstructionOperands(&out, remap);
+        try self.coerceDecodedInstructionOperands(&out, remap, stable_names);
         if (out.kind == .panic_msg and out.operands[0] == .text) {
             if (try self.structuredPanicMsgOperands(out.operands[0].text)) |ops| {
                 out.operands[0] = ops[0];
@@ -4950,10 +4965,14 @@ pub const Codegen = struct {
         }
 
         for (module.const_decls) |decl| {
-            _ = try self.internStable(decl.name);
+            const const_id = try self.internStable(decl.name);
+            try self.recordReg(const_id);
             try self.ensureConstDeclCompatible(decl);
             if (self.hasConstDecl(decl.name)) continue;
-            try self.const_decls.append(try self.cloneModuleConstDecl(decl));
+            var cloned = try self.cloneModuleConstDecl(decl);
+            cloned.source_line = 0;
+            cloned.expanded_line = 0;
+            try self.const_decls.append(cloned);
         }
 
         var selected = std.StringHashMap(void).init(self.allocator);
@@ -6015,6 +6034,9 @@ pub const Codegen = struct {
         }
         if (lowering_rules.planAsyncTwoAwaitContinuation(f)) |plan| {
             return try self.genAsyncTwoAwaitFuncDeclNamed(name, f, plan);
+        }
+        if (lowering_rules.planAsyncLinearAwaitContinuation(f)) |plan| {
+            return try self.genAsyncLinearAwaitFuncDeclNamed(name, f, plan);
         }
         if (lowering_rules.planAsyncSingleAwaitContinuation(f)) |plan| {
             return try self.genAsyncSingleAwaitFuncDeclNamed(name, f, plan);
@@ -7490,6 +7512,237 @@ pub const Codegen = struct {
         try self.emitReturn(null);
 
         try self.finishFunctionBody(sig_idx);
+    }
+
+    fn asyncLinearAwaitVTableName(self: *Codegen, name: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.allocator, "SLA_ASYNC_{s}_LINEAR_AWAIT_VT", .{name});
+    }
+
+    fn asyncLinearAwaitPollName(self: *Codegen, name: []const u8) ![]const u8 {
+        return try std.fmt.allocPrint(self.allocator, "sla_async_{s}_linear_await_poll", .{name});
+    }
+
+    fn genAsyncLinearAwaitFuncDeclNamed(self: *Codegen, name: []const u8, f: *const ast.FuncDecl, plan: lowering_rules.AsyncLinearAwaitContinuationPlan) !void {
+        try self.emitAsyncLinearAwaitPollHelper(name, plan);
+
+        self.beginFunction();
+        try self.prepareMultiLetBindings(f.body);
+        try self.collectBorrowedBindingsInBlock(f.body);
+        const async_plan = lowering_rules.planAsyncFunctionReturn(f.*, try self.makePointerType());
+        const fsig = try self.genFuncSig(name, .normal, f.params, @constCast(async_plan.abi_ret_ty), f.is_async, false, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
+        try self.appendDeclInst(fsig);
+        try self.emitLabel("L_ENTRY");
+        try self.materializeBorrowedParams(f.params);
+
+        var sub_states: [lowering_rules.AsyncLinearAwaitMax]u32 = undefined;
+        for (plan.await_exprs[0..plan.count], 0..) |await_expr, i| {
+            sub_states[i] = try self.genExpr(@constCast(await_expr));
+        }
+        const async_state = try self.intern(try self.newTmp());
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAlloc(async_state, plan.asyncStateSize());
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(async_state, 0, zero, .u64);
+        for (sub_states[0..plan.count], 0..) |sub_state, i| {
+            try self.emitStore(async_state, plan.subStateOffset(i), sub_state, .ptr);
+            try self.emitStore(async_state, plan.valueOffset(i), zero, .u64);
+        }
+        try self.emitRelease(zero);
+        var i: usize = plan.count;
+        while (i > 0) {
+            i -= 1;
+            try self.emitRelease(sub_states[i]);
+        }
+        try self.future_state_vtables.put(async_state, try self.asyncLinearAwaitVTableName(name));
+        try self.recordFutureReadiness(async_state, .unknown);
+        try self.releaseOpenLocals(async_state);
+        try self.emitReturn(async_state);
+
+        try self.finishFunctionBody(sig_idx);
+    }
+
+    /// N-stage linear poll helper: outer stage s polls await s; when await s
+    /// turns ready its value is latched and the outer stage advances, falling
+    /// through to await s+1 in the same poll. After the last await the scalar
+    /// combination is reported Ready. Mirrors the two-await helper stage
+    /// protocol (sub-state 0 initial / 1 polled-pending / 2 done).
+    fn emitAsyncLinearAwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncLinearAwaitContinuationPlan) !void {
+        const vt_name = try self.asyncLinearAwaitVTableName(name);
+        const poll_name = try self.asyncLinearAwaitPollName(name);
+        try self.appendVTableConst(vt_name, poll_name);
+
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
+        self.beginFunction();
+
+        const names = [_][]const u8{ "data_slot", "ctx_slot", "out_poll_slot" };
+        const specs = try self.allocator.alloc(sig.ParamSpec, names.len);
+        const ids = try self.allocator.alloc(u32, names.len);
+        for (names, 0..) |param_name, idx| {
+            ids[idx] = try self.intern(param_name);
+            specs[idx] = .{ .name = param_name, .ty = .ptr, .cap = .borrow };
+            try self.pushRawParamLocal(param_name, ids[idx], .borrow);
+        }
+
+        const fsig = try self.appendGeneratedFuncSig(poll_name, .normal, specs, ids, .void, false);
+        const sig_idx = self.function_sigs.items.len;
+        try self.function_sigs.append(fsig);
+        try self.appendDeclInst(fsig);
+        try self.emitLabel("L_ENTRY");
+
+        const stage = try self.intern(try self.newTmp());
+        const done = try self.intern(try self.newTmp());
+        const empty_label = try self.newLabel("L_ASYNC_LINEAR_AWAIT_EMPTY");
+        const dispatch_label = try self.newLabel("L_ASYNC_LINEAR_AWAIT_DISPATCH");
+        const done_label = try self.newLabel("L_ASYNC_LINEAR_AWAIT_DONE");
+        try self.emitLoad(stage, ids[0], 0, .u64);
+        try self.emitOp(done, .eq, .{ .reg = stage }, .{ .imm_i64 = @intCast(plan.count) });
+        try self.emitBranch(done, empty_label, dispatch_label);
+
+        // Dispatch chain: stage s jumps to its stage label; stages are
+        // checked in order so fall-through from a just-completed await lands
+        // on the next stage label directly.
+        var stage_labels: [lowering_rules.AsyncLinearAwaitMax][]const u8 = undefined;
+        for (0..plan.count) |s| {
+            stage_labels[s] = try self.newLabel("L_ASYNC_LINEAR_AWAIT_STAGE");
+        }
+        try self.emitLabel(dispatch_label);
+
+        // Stage dispatch: compare stage against each index in order.
+        // NOTE: nothing may be emitted between br and the next label (it
+        // would start an unterminated block and trip FallthroughForbidden),
+        // so the compare temp is reused across stages and left for
+        // function-end cleanup, mirroring the two-await helper.
+        const is_stage = try self.intern(try self.newTmp());
+        for (0..plan.count) |s| {
+            try self.emitOp(is_stage, .eq, .{ .reg = stage }, .{ .imm_i64 = @intCast(s) });
+            const next_dispatch = try self.newLabel("L_ASYNC_LINEAR_AWAIT_NEXT");
+            try self.emitBranch(is_stage, stage_labels[s], next_dispatch);
+            try self.emitLabel(next_dispatch);
+        }
+        // Unreachable in practice (stage is always < count here), but keep
+        // the verifier happy with a pending report.
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitJmp(done_label);
+
+        try self.emitLabel(empty_label);
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+        try self.emitJmp(done_label);
+
+        for (0..plan.count) |s| {
+            try self.emitLabel(stage_labels[s]);
+            const sub_state = try self.intern(try self.newTmp());
+            const sub_stage = try self.intern(try self.newTmp());
+            const is_initial = try self.intern(try self.newTmp());
+            const pending_label = try self.newLabel("L_ASYNC_LINEAR_AWAIT_PENDING");
+            const check_label = try self.newLabel("L_ASYNC_LINEAR_AWAIT_CHECK");
+            const ready_label = try self.newLabel("L_ASYNC_LINEAR_AWAIT_READY");
+            const empty_sub_label = try self.newLabel("L_ASYNC_LINEAR_AWAIT_SUB_EMPTY");
+            const clean_label = try self.newLabel("L_ASYNC_LINEAR_AWAIT_CLEAN");
+            try self.emitLoad(sub_state, ids[0], plan.subStateOffset(s), .ptr);
+            try self.emitLoad(sub_stage, sub_state, 0, .u64);
+            try self.emitOp(is_initial, .eq, .{ .reg = sub_stage }, .{ .imm_i64 = 0 });
+            try self.emitBranch(is_initial, pending_label, check_label);
+
+            try self.emitLabel(pending_label);
+            const stage_one = try self.intern(try self.newTmp());
+            try self.emitAssignImm(stage_one, 1);
+            try self.emitStore(sub_state, 0, stage_one, .u64);
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+            try self.emitRelease(stage_one);
+            try self.emitJmp(clean_label);
+
+            try self.emitLabel(check_label);
+            const is_ready = try self.intern(try self.newTmp());
+            try self.emitOp(is_ready, .eq, .{ .reg = sub_stage }, .{ .imm_i64 = 1 });
+            try self.emitBranch(is_ready, ready_label, empty_sub_label);
+
+            try self.emitLabel(empty_sub_label);
+            try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_PENDING", &.{self.symbols.items[ids[2]]});
+            try self.emitRelease(is_ready);
+            try self.emitJmp(clean_label);
+
+            try self.emitLabel(ready_label);
+            const value = try self.intern(try self.newTmp());
+            const sub_done = try self.intern(try self.newTmp());
+            const outer_next = try self.intern(try self.newTmp());
+            try self.emitLoad(value, sub_state, 8, .u64);
+            try self.emitStore(ids[0], plan.valueOffset(s), value, .u64);
+            try self.emitAssignImm(sub_done, 2);
+            try self.emitStore(sub_state, 0, sub_done, .u64);
+            try self.emitAssignImm(outer_next, @intCast(s + 1));
+            try self.emitStore(ids[0], 0, outer_next, .u64);
+            try self.emitRelease(outer_next);
+            try self.emitRelease(sub_done);
+            if (s + 1 < plan.count) {
+                try self.emitRelease(value);
+                try self.emitRelease(is_ready);
+                try self.emitRelease(is_initial);
+                try self.emitRelease(sub_stage);
+                try self.emitRelease(sub_state);
+                try self.emitJmp(stage_labels[s + 1]);
+            } else {
+                try self.emitLinearAwaitResult(ids[0], ids[2], plan, value);
+                try self.emitRelease(value);
+                try self.emitRelease(is_ready);
+                try self.emitRelease(is_initial);
+                try self.emitRelease(sub_stage);
+                try self.emitRelease(sub_state);
+            }
+
+            try self.emitLabel(clean_label);
+            try self.emitRelease(is_initial);
+            try self.emitRelease(sub_stage);
+            try self.emitRelease(sub_state);
+            try self.emitJmp(done_label);
+        }
+
+        try self.emitLabel(done_label);
+        try self.emitRelease(done);
+        try self.emitRelease(stage);
+        for (ids) |id| try self.emitRelease(id);
+        try self.emitReturn(null);
+
+        try self.finishFunctionBody(sig_idx);
+    }
+
+    fn emitLinearAwaitResult(self: *Codegen, data_slot: u32, out_poll_slot: u32, plan: lowering_rules.AsyncLinearAwaitContinuationPlan, last_value: u32) !void {
+        const result = try self.intern(try self.newTmp());
+        try self.emitAssignImm(result, plan.scalar.immediate);
+        for (plan.scalar.coeffs[0..plan.count], 0..) |coeff, i| {
+            if (coeff == 0) continue;
+            const value = try self.intern(try self.newTmp());
+            if (i + 1 == plan.count) {
+                // The final await's value is already in hand.
+                try self.emitOp(value, .add, .{ .reg = last_value }, .{ .imm_i64 = 0 });
+            } else {
+                try self.emitLoad(value, data_slot, plan.valueOffset(i), .u64);
+            }
+            if (coeff == 1) {
+                try self.emitOp(result, .add, .{ .reg = result }, .{ .reg = value });
+            } else if (coeff == -1) {
+                try self.emitOp(result, .sub, .{ .reg = result }, .{ .reg = value });
+            } else {
+                const abs_coeff: i64 = if (coeff < 0) -coeff else coeff;
+                const scaled = try self.intern(try self.newTmp());
+                try self.emitOp(scaled, .mul, .{ .reg = value }, .{ .imm_i64 = abs_coeff });
+                if (coeff < 0) {
+                    try self.emitOp(result, .sub, .{ .reg = result }, .{ .reg = scaled });
+                } else {
+                    try self.emitOp(result, .add, .{ .reg = result }, .{ .reg = scaled });
+                }
+                try self.emitRelease(scaled);
+            }
+            try self.emitRelease(value);
+        }
+        const out_poll_name = self.symbols.items[out_poll_slot];
+        try self.emitStdMacroFragment("sa_std/core/future.sa", "POLL_SET_READY", &.{
+            out_poll_name,
+            self.symbols.items[result],
+        });
+        try self.emitRelease(result);
     }
 
     fn emitAsyncJoin2AwaitPollHelper(self: *Codegen, name: []const u8, plan: lowering_rules.AsyncJoin2AwaitContinuationPlan) !void {
@@ -13727,6 +13980,9 @@ pub const Codegen = struct {
                 try self.recordFutureReadiness(dst, .unknown);
             } else if (lowering_rules.planAsyncTwoAwaitContinuation(func) != null) {
                 try self.future_state_vtables.put(dst, try self.asyncTwoAwaitVTableName(call_plan.target_symbol));
+                try self.recordFutureReadiness(dst, .unknown);
+            } else if (lowering_rules.planAsyncLinearAwaitContinuation(func) != null) {
+                try self.future_state_vtables.put(dst, try self.asyncLinearAwaitVTableName(call_plan.target_symbol));
                 try self.recordFutureReadiness(dst, .unknown);
             } else if (lowering_rules.planAsyncSingleAwaitContinuation(func) != null) {
                 try self.future_state_vtables.put(dst, try self.asyncSingleAwaitVTableName(call_plan.target_symbol));

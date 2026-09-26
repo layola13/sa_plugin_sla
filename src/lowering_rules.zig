@@ -263,6 +263,39 @@ pub const AsyncTwoAwaitContinuationPlan = struct {
     }
 };
 
+/// Sequential N-await linear continuation (N >= 3): N `defer_ready` awaits
+/// back to back, then a scalar return over any subset of the bindings.
+/// Shapes with 1-2 awaits keep their dedicated plans; this only triggers for
+/// sequences the two-await planner rejects, so existing behavior is untouched.
+/// State layout (mirrors the two-await helper): +0 outer stage u64,
+/// +8+16*i per-await sub-state ptr, +8+16*count+8*i per-await value slot.
+pub const AsyncLinearAwaitMax = 8;
+
+pub const AsyncLinearAwaitScalarPlan = struct {
+    coeffs: [AsyncLinearAwaitMax]i64 = [_]i64{0} ** AsyncLinearAwaitMax,
+    immediate: i64 = 0,
+};
+
+pub const AsyncLinearAwaitContinuationPlan = struct {
+    count: usize,
+    binding_names: [AsyncLinearAwaitMax][]const u8 = undefined,
+    await_exprs: [AsyncLinearAwaitMax]*const ast.Node = undefined,
+    awaited_kinds: [AsyncLinearAwaitMax]FutureRuntimeCallKind = undefined,
+    scalar: AsyncLinearAwaitScalarPlan = .{},
+
+    pub fn asyncStateSize(self: AsyncLinearAwaitContinuationPlan) usize {
+        return 8 + 24 * self.count;
+    }
+
+    pub fn valueOffset(self: AsyncLinearAwaitContinuationPlan, index: usize) usize {
+        return 8 + 16 * self.count + 8 * index;
+    }
+
+    pub fn subStateOffset(_: AsyncLinearAwaitContinuationPlan, index: usize) usize {
+        return 8 + 16 * index;
+    }
+};
+
 pub const AsyncPairResultScalarPlan = struct {
     left_coeff: i64 = 1,
     right_coeff: i64 = 1,
@@ -1813,6 +1846,113 @@ pub fn planAsyncTwoAwaitContinuation(func: *const ast.FuncDecl) ?AsyncTwoAwaitCo
         .second_awaited_kind = second_call.kind,
         .scalar = scalar,
     };
+}
+
+const AsyncLinearAwaitAddend = struct {
+    used: [AsyncLinearAwaitMax]bool = [_]bool{false} ** AsyncLinearAwaitMax,
+    coeffs: [AsyncLinearAwaitMax]i64 = [_]i64{0} ** AsyncLinearAwaitMax,
+    immediate: i64 = 0,
+};
+
+fn scaleAsyncLinearAwaitAddend(addend: *AsyncLinearAwaitAddend, count: usize, factor: i64) bool {
+    for (addend.coeffs[0..count]) |*coeff| {
+        coeff.* = std.math.mul(i64, coeff.*, factor) catch return false;
+    }
+    addend.immediate = std.math.mul(i64, addend.immediate, factor) catch return false;
+    return true;
+}
+
+fn addAsyncLinearAwaitAddend(target: *AsyncLinearAwaitAddend, count: usize, addend: AsyncLinearAwaitAddend) bool {
+    for (addend.used[0..count], 0..) |was_used, i| {
+        if (was_used) target.used[i] = true;
+    }
+    for (target.coeffs[0..count], addend.coeffs[0..count]) |*dst, src| {
+        dst.* = std.math.add(i64, dst.*, src) catch return false;
+    }
+    target.immediate = std.math.add(i64, target.immediate, addend.immediate) catch return false;
+    return true;
+}
+
+fn collectAsyncLinearAwaitAddend(expr: *const ast.Node, names: []const []const u8, addend: *AsyncLinearAwaitAddend) bool {
+    switch (expr.*) {
+        .identifier => |name| {
+            for (names, 0..) |binding_name, i| {
+                if (std.mem.eql(u8, name, binding_name)) {
+                    addend.used[i] = true;
+                    addend.coeffs[i] = std.math.add(i64, addend.coeffs[i], 1) catch return false;
+                    return true;
+                }
+            }
+            return false;
+        },
+        .literal => |lit| {
+            if (lit != .int_val) return false;
+            addend.immediate = std.math.add(i64, addend.immediate, lit.int_val) catch return false;
+            return true;
+        },
+        .binary_expr => |bin| {
+            if (bin.op == .mul) {
+                const left_lit = intLiteral(bin.left);
+                const right_lit = intLiteral(bin.right);
+                if (left_lit != null and right_lit != null) return false;
+                const factor = left_lit orelse right_lit orelse return false;
+                const expr_side = if (left_lit != null) bin.right else bin.left;
+                var nested = AsyncLinearAwaitAddend{};
+                if (!collectAsyncLinearAwaitAddend(expr_side, names, &nested)) return false;
+                if (!scaleAsyncLinearAwaitAddend(&nested, names.len, factor)) return false;
+                return addAsyncLinearAwaitAddend(addend, names.len, nested);
+            }
+            if (!(bin.op == .add or bin.op == .sub)) return false;
+            var left = AsyncLinearAwaitAddend{};
+            var right = AsyncLinearAwaitAddend{};
+            if (!collectAsyncLinearAwaitAddend(bin.left, names, &left)) return false;
+            if (!collectAsyncLinearAwaitAddend(bin.right, names, &right)) return false;
+            if (bin.op == .sub and !scaleAsyncLinearAwaitAddend(&right, names.len, -1)) return false;
+            return addAsyncLinearAwaitAddend(addend, names.len, left) and addAsyncLinearAwaitAddend(addend, names.len, right);
+        },
+        else => return false,
+    }
+}
+
+fn asyncLinearAwaitScalarExpr(expr: *const ast.Node, names: []const []const u8) ?AsyncLinearAwaitScalarPlan {
+    var addend = AsyncLinearAwaitAddend{};
+    if (!collectAsyncLinearAwaitAddend(expr, names, &addend)) return null;
+    var any_used = false;
+    for (addend.used[0..names.len]) |was_used| {
+        if (was_used) {
+            any_used = true;
+            break;
+        }
+    }
+    if (!any_used) return null;
+    var scalar = AsyncLinearAwaitScalarPlan{};
+    for (addend.coeffs[0..names.len], 0..) |coeff, i| scalar.coeffs[i] = coeff;
+    scalar.immediate = addend.immediate;
+    return scalar;
+}
+
+pub fn planAsyncLinearAwaitContinuation(func: *const ast.FuncDecl) ?AsyncLinearAwaitContinuationPlan {
+    if (!func.is_async) return null;
+    var plan = AsyncLinearAwaitContinuationPlan{ .count = 0 };
+    var idx: usize = 0;
+    while (idx < func.body.len and plan.count < AsyncLinearAwaitMax) {
+        const binding = asyncAwaitBindingAt(func, idx) orelse break;
+        if (binding.state_expr.* != .call_expr) return null;
+        const awaited_call = planFutureRuntimeCall(binding.state_expr.call_expr) orelse return null;
+        if (awaited_call.kind != .defer_ready) return null;
+        plan.binding_names[plan.count] = binding.binding_name;
+        plan.await_exprs[plan.count] = binding.state_expr;
+        plan.awaited_kinds[plan.count] = awaited_call.kind;
+        plan.count += 1;
+        idx = binding.next_idx;
+    }
+    // 1-2 awaits keep their dedicated plans; only longer runs match here.
+    if (plan.count < 3) return null;
+    if (idx + 1 != func.body.len) return null;
+    const ret_expr = asyncContinuationReturnExpr(func.body[idx]) orelse return null;
+    const scalar = asyncLinearAwaitScalarExpr(ret_expr, plan.binding_names[0..plan.count]) orelse return null;
+    plan.scalar = scalar;
+    return plan;
 }
 
 pub fn planAsyncSingleAwaitContinuation(func: *const ast.FuncDecl) ?AsyncSingleAwaitContinuationPlan {
@@ -7139,6 +7279,53 @@ test "shared async two await continuation plan recognizes defer-ready sequence" 
     try std.testing.expectEqual(@as(i64, 0), local_plan.scalar.immediate);
 
     try std.testing.expect(planAsyncTwoAwaitContinuation(&program.program.decls[2].func_decl) == null);
+}
+
+test "shared async linear await continuation plan recognizes three defer-ready awaits" {
+    const parser = @import("parser.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\async fn await_three_defer_ready_values() -> i32 {
+        \\    let a = future::defer_ready(20).await;
+        \\    let b = future::defer_ready(21).await;
+        \\    let c = future::defer_ready(1).await;
+        \\    return c;
+        \\}
+        \\async fn await_two_defer_ready_values() -> i32 {
+        \\    let a = future::defer_ready(20).await;
+        \\    let b = future::defer_ready(22).await;
+        \\    return a + b;
+        \\}
+        \\async fn await_ready_then_two_defer_ready_values() -> i32 {
+        \\    let a = future::ready(20).await;
+        \\    let b = future::defer_ready(21).await;
+        \\    let c = future::defer_ready(1).await;
+        \\    return c;
+        \\}
+    ;
+    var p = parser.Parser.init(arena.allocator(), source);
+    const program = try p.parseProgram();
+    try std.testing.expect(program.* == .program);
+    try std.testing.expectEqual(@as(usize, 3), program.program.decls.len);
+
+    const three_plan = planAsyncLinearAwaitContinuation(&program.program.decls[0].func_decl) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 3), three_plan.count);
+    try std.testing.expectEqualStrings("a", three_plan.binding_names[0]);
+    try std.testing.expectEqualStrings("b", three_plan.binding_names[1]);
+    try std.testing.expectEqualStrings("c", three_plan.binding_names[2]);
+    try std.testing.expectEqual(@as(usize, 80), three_plan.asyncStateSize());
+    try std.testing.expectEqual(@as(usize, 8 + 16 * 3 + 8 * 2), three_plan.valueOffset(2));
+    try std.testing.expectEqual(@as(i64, 0), three_plan.scalar.coeffs[0]);
+    try std.testing.expectEqual(@as(i64, 0), three_plan.scalar.coeffs[1]);
+    try std.testing.expectEqual(@as(i64, 1), three_plan.scalar.coeffs[2]);
+    try std.testing.expectEqual(@as(i64, 0), three_plan.scalar.immediate);
+
+    // Two awaits keep the dedicated plan: linear must not trigger.
+    try std.testing.expect(planAsyncLinearAwaitContinuation(&program.program.decls[1].func_decl) == null);
+    // A leading ready await breaks the defer-ready run: no plan.
+    try std.testing.expect(planAsyncLinearAwaitContinuation(&program.program.decls[2].func_decl) == null);
 }
 
 test "shared async join2 await continuation plan recognizes later-ready composite" {

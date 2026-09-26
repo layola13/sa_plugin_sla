@@ -8620,10 +8620,10 @@ test "sla sab backend releases str_eq loaded string data-pointer temps" {
         module.instructions.len;
 
     // `str_eq(a, a)` on a stack-backed string local materializes each argument
-    // as an 8-byte view slot holding the slice's data pointer, then `load`s the
-    // pointer into a fresh temporary. Those loaded temps are owned by the call
-    // and must be released; skipping them leaks them at function exit.
-    const ptr_ty_id = @intFromEnum(sci_bridge.sab.signature.PrimType.ptr);
+    // through an 8-byte view/counter slot; every temp loaded out of those
+    // slots is owned by the call sequence and must be released, otherwise it
+    // leaks at function exit. (Loads may be u64 counters or pointers
+    // depending on the lowering; what matters is full release coverage.)
     var view_slots = std.AutoHashMap(u32, void).init(std.testing.allocator);
     defer view_slots.deinit();
     var released_regs = std.AutoHashMap(u32, void).init(std.testing.allocator);
@@ -8636,7 +8636,7 @@ test "sla sab backend releases str_eq loaded string data-pointer temps" {
             try view_slots.put(item.operands[0].reg, {});
             continue;
         }
-        if (item.kind == .load and item.operands[0] == .reg and item.operands[1] == .reg and item.operands[3] == .ty and item.operands[3].ty == ptr_ty_id) {
+        if (item.kind == .load and item.operands[0] == .reg and item.operands[1] == .reg) {
             if (view_slots.contains(item.operands[1].reg)) try loaded_ptr_temps.append(item.operands[0].reg);
             continue;
         }

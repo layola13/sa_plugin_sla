@@ -1,5 +1,6 @@
 # SAB scalar parameter cleanup leak in focused table-erased wrapper
 
+状态：fixed/verified（2026-07-19）。
 日期：2026-07-06
 
 ## 背景
@@ -141,4 +142,13 @@ SAB direct backend 应在函数退出前正确清理未被移动的标量参数�
 传递的 `i32` 参数。SA/SAB 对 focused filter 的行为也应一致：表达式链产生的查询临时值应在测试函数退出前
 被正确释放。
 
-当前状态：上述期望已对当前 repro surface 验证通过；全局 roadmap 仍保持开放。
+当前状态：fixed/verified（2026-07-19 复验）。
+
+```sh
+./zig-out/bin/sla-local-cli sla test tests/test_unit_scalar_param_cleanup_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic   # 1/1
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_scalar_param_cleanup_direct.sla --test-backend sab --jobs 1 --trace-panic  # 1/1
+```
+
+全局 Y/shared-lowering roadmap 仍开放，但本工单不再作为开放 blocker。

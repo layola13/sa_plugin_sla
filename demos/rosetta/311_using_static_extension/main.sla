@@ -24,6 +24,13 @@ impl Meter {
     }
 }
 
+fn main() -> i32 {
+    let m = Meter { value: 7 };
+    println("{}", m.double());
+    println("{}", m.scale(3));
+    return 0;
+}
+
 @test "using demo"() {
     let m = Meter { value: 7 };
     if m.double() != 14 { panic(32000); };

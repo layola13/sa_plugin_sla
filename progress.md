@@ -4,6 +4,1629 @@ Update this file every time a compiler feature or demo milestone is completed an
 
 ## Latest Counted / In Progress
 
+- Completed the six-demo SAB verifier recovery (2026-08-20): fixed raw scalar `println` ownership, direct `Box::from_raw` lowering, `consume_value` ownership moves, and executable reachability handling for associated constructors. The previously failing `105_let_else`, `309_try_block_macro`, `121_rwlock_reader_writer`, `126_mpmc_channel`, `153_box_into_raw`, and `154_box_from_raw` cases are resolved. Focused `sa sla test` passes for the three ownership/control-flow regressions (`121`, `126`, `154`), `zig build` is green, and a complete `build-exe` sweep succeeds for all 313 `demos/rosetta/*/main.sla` (313/313, 0 failures or timeouts). The Windows-native dev plugin was reinstalled and a post-install full `sa sla test` sweep passes 313/313 with 0 failures. `build-exe` currently keeps the full typed program rather than pruning solely from `main`, because entry pruning can discard associated constructors such as `RwLock::new` and `mpsc::channel`; targeted reachability refinement remains future work.
+- Windows build support + full demo pass (2026-08-19): Added `windows-x86_64`
+  artifact mapping in `sap.json` (`zig-out/bin/sla.dll`) so `sa plugin install
+  --dev .` installs the native Windows DLL. Codegen fixes in `src/sab_codegen.zig`
+  (+463/-42) and shared sites in `src/codegen.zig`, `src/type_checker.zig`,
+  `src/lowering_rules.zig`, `src/plugin_reachability.zig`,
+  `src/plugin_project_shortcuts.zig`: extern-decl dedup, NUL-terminated UTF-8
+  string constants, `raw_ptr` CSTR_LEN, slice_expr lowering, format_push
+  string-like handling, let-binding ownership, and direct const-string struct
+  fields. Removed five unconditional `std.debug.print` debug traces
+  (`[TRACE-intern]`, `[TRACE-call]`, `[PPV-MARK]`, `[PRIMFMT-MARK]`,
+  `[GENPRINTLN-MARK]`, `genMacroIdentifier` series) from `sab_codegen.zig`;
+  kept the env-gated `traceUnsupported()`. `zig build` green; dev install via
+  `SA_PLUGIN_DEV=1 sa plugin install --dev .` green; `tools/verify_demos_test.sh`
+  reports 313/313 demos `ok` (no fail/buildfail/hang); `sa sla check` clean on
+  all 313. Operating rule added to `AGENTS.md`: every `sa sla` call needs
+  `SA_PLUGIN_DEV=1`.
+
+- Share smart-pointer/mem/mpsc/iter peels on Y (2026-07-22): Pure isNew/
+  isIntoRaw/isFromRaw/isIntoInner/isIter/isIntoIter plus associated Box/Rc/Arc,
+  ManuallyDrop, mem::forget, and mpsc::channel recognizers shared; SA emit/
+  macro-need and typecheck sites thin to them. Build 7/7; unit 1/1; Box raw
+  SA+SAB, arrays SA 3/3, mem_forget SA, ManuallyDrop SAB, channel SAB green;
+  official dev install plus MPSC/mem SA builds green.
+
+- Share collection/atomic/mpsc method peels on Y (2026-07-21): Pure isGet/
+  isInsert/isContains/isLoad/isStore/isFetchAdd/isCompareExchange/isAsPtr/
+  isSend/isRecv shared; SA emit/macro-need and typecheck method peels thin to
+  them. Unit 1/1; cell_bool SA+SAB, box_from_raw SA, result SAB, thread pair
+  SA, option methods SA green.
+
+- Share Option/Result method peels on Y (2026-07-21): Pure isIsSome/isIsNone/
+  isOptionQueryCall, isIsOk/isIsErr/isResultQueryCall, isUnwrapOr/Else/Default,
+  isAndThen/isCopied/isMap shared; SA emit/macro-need, typecheck method peels,
+  and planOptionClosureCall thin to them. Unit 1/1; option SA+SAB, option
+  methods SA 5/5, result SA+SAB green.
+
+- Share join/unwrap/clone/main peels on Y (2026-07-21): Pure isJoinCall/
+  isBareJoinUnaryCall/isUnwrapCall/isBareUnwrapUnaryCall/isCloneCall/
+  isCloneUnaryCall/isMainName shared; SA/SAB loweredFuncSymbol, join-handle join,
+  result unwrap, smart-pointer clone, string-join, option/result macro-need, and
+  typecheck method peels thin to them. Unit 1/1; thread pair SA+SAB, result
+  SA+SAB, join_handle_vec SA+SAB, println SAB green.
+
+- Share std builtin call peels on Y (2026-07-21): Pure println/hash/debug/str_eq/
+  vec/len/push/pop peels; SA/SAB/typecheck thin. Unit 1/1; println SA+SAB,
+  vec_len SA+SAB, vec_index SA+SAB, borrow_vec SAB, option SAB, result SA green.
+
+- Share ptr-null peels and pre-size plugin_compile prune maps on Y (2026-07-21):
+  Pure ptr null/read_volatile peels + callNeedsPtrMacros; SA/typecheck thin;
+  plugin_compile prune/filter containers pre-sized. Unit 1/1; result SA, option
+  SAB, borrow SA, println SAB green.
+
+- Share Option/Result constructor peels on Y (2026-07-21): Pure None/Some/Ok/Err
+  peels shared; SA emit/macro-need and typecheck thin. Unit 1/1; option SA+SAB,
+  option methods SA, result SA+SAB, println SAB, borrow SA green.
+
+- Share ABI type-name peels, residual internal-symbol, and panic-name facts on Y
+  (2026-07-21): Pure pointer/integer ABI names + panic name/call peels; typecheck
+  ABI wrappers and SA/SAB capture/release/panic stmt sites thin. Unit 2/2; panic
+  SA+SAB, result SA+SAB, switch SAB, borrow SAB, println SA, field_copy SA green.
+
+- Share switch-default, stack_alloc, internal-symbol, ordering-name, and
+  non-owning pointer-cast peels on Y (2026-07-21): Pure pattern/call/name peels
+  shared; SA/SAB/typecheck thin. Unit 3/3; switch SA+SAB, stack-slot SA+SAB,
+  result SA+SAB, borrow SAB, println SA+SAB, field_copy SA+SAB green.
+
+- Route residual discard/tmp peels through shared helpers on Y (2026-07-21):
+  Remaining SA/SAB discard and fragment tmp_ peels shared. Build 7/7; result SA,
+  thread pair SAB, borrow SAB, field_copy SA green.
+
+- Share isIdentChar for SAB call-body/target scanners on Y (2026-07-21):
+  Pure identifier character fact; SAB call scanners thin. Unit 2/2; build 7/7;
+  println SAB, thread pair SAB, result green.
+
+- Share std-macro template arg classifiers and residual thread-spawn peels on Y
+  (2026-07-21): Pure template integer/ident/safe args; SAB wrappers thin; SA
+  residual spawn sites use isThreadSpawnCall. Unit 2/2; build 7/7; thread pair
+  SAB, println SAB, derive SA, result green.
+
+- Share isDiscardName and isThreadSpawnCall on Y (2026-07-21):
+  Pure discard name + thread::spawn recognition; SA/SAB wrappers thin. Unit
+  2/2; build 7/7; thread pair SA+SAB, result green.
+
+- Share structFieldsAllNumeric/comparable and typecheck literalZero on Y
+  (2026-07-21): Pure numeric/comparable struct-field gates + literalZero shared.
+  Unit 2/2; build 7/7; derive SA, field_copy SAB, result green.
+
+- Share typecheck derive typing through named-derive base/gate on Y
+  (2026-07-21): type_checker Copy/Eq/Ord/Hash/Debug consume shared named-derive
+  base/gate; deriveNameMatches/structHasDerive thin. Build 7/7; derive
+  semantics SA+SAB 2/2, borrow SAB, field_copy SA, result green.
+
+- Share typecheck primitive/integer/float/pointer value classifiers on Y
+  (2026-07-21): Pure primitive/integer/float/cell/poll/pointer classifiers
+  shared; type_checker wrappers thin. Unit 2/2; build 7/7; borrow SA,
+  field_copy SAB, println SAB, result green.
+
+- Share abiCallArgCapKind, pointerOrBorrowPointee, and typecheck borrow-like on Y
+  (2026-07-21): Pure call-arg ABI cap + single-layer pointee peel; type_checker
+  borrow-like/deref peels shared. Unit 2/2; build 7/7; borrow SA+SAB, explicit
+  borrow-return SA+SAB, println, result green.
+
+- Share ABI cap-kind, temporary-register, and residual ABI string wrappers on Y
+  (2026-07-21): Pure AbiCapKind + isTemporaryRegisterName; SA ABI wrappers
+  thin; SAB returnCap maps shared kind. Unit 2/2; build 7/7; println SA+SAB,
+  field_copy SAB, result green.
+
+- Share pointer-scalar, scalar-reassign, and debugFormatSuffix facts on Y
+  (2026-07-21): Pure pointer-scalar / scalar-reassign / FORMAT_PUSH suffix on
+  Y; SAB wrappers thin, SA format push uses shared suffix. Unit 2/2; build
+  7/7; println SA+SAB, field_copy SAB, result green.
+
+- Share primitiveIsHashable and slotCopyStructTypeFact on Y (2026-07-21):
+  Pure Hash primitive leaf + pure slot-copy struct resolution on Y; SA wrappers
+  thin. Unit 2/2; build 7/7; field_copy SA+SAB, plain slot-return, result green.
+
+- Share typeHasNamedDeriveBase/struct-gate helpers on Y (2026-07-21):
+  Generalized derive base/gate for Copy/Hash/Debug. Unit 2/2x2; build 7/7;
+  field_copy/result SA+SAB green.
+
+- Share typeIsSmallPlainSlotStructDecl on Y (2026-07-21):
+  Pure small plain ABI slot-struct classifier; SA wrapper thin. Unit 2/2; build
+  7/7; field_copy/result SA+SAB green.
+
+- Share shallowCopyCallArgUserDefinedBase/struct-gate helpers on Y (2026-07-21):
+  Pure owner/smart depth base + resolved-struct gate for shallow-copy call-arg
+  typing. Unit 2/2x2; build 7/7; field_copy/fn_ptr_value/result SA+SAB green.
+
+- Share typeHasCopyDerive base/gate helpers on Y (2026-07-21):
+  Pure leaf/base + struct-gate for recursive Copy-derive typing. Unit 2/2x2;
+  build 7/7; field_copy/fn_ptr_value/result SA+SAB green.
+
+- Share typeIsCopyStructFact and pre-size selective-append emitted map
+  (2026-07-21): shared Copy-struct composition + emitted capacity. Unit 2/2x2;
+  module table 15/15; build 7/7; field_copy/result SA+SAB green.
+
+- Share shallowCopyCallArgFieldShouldRecurse nested-field decision on Y
+  (2026-07-21): pure nested-field recursion decision for shallow-copied call-arg
+  aggregates. Unit 2/2; build 7/7; field_copy/struct_update/fn_ptr_value/result
+  SA+SAB green.
+
+- Share typeIsCopyValueBase leaf facts on Y (2026-07-21):
+  Shared primitive/fnptr base for recursive Copy-value typing. Unit 2/2; build
+  7/7; field_copy/fn_ptr_value/result SA+SAB green.
+
+- Share shallowCopyCallArgValueBase leaf facts on Y (2026-07-21):
+  Shared depth/leaf/collection base for recursive shallow-copy call-arg typing.
+  Unit 2/2; build 7/7; field_copy/fn_ptr_value/result SA+SAB green.
+
+- Share identifierIsGeneratedScalarConst classifier on Y (2026-07-21):
+  Pure scalar-const identifier fact. Unit 2/2; build 7/7; toplevel_const_alias
+  SA/SAB 1/1; fn_ptr_value 12/12.
+
+- Share generated/local fnptr call-arg classifiers on Y (2026-07-21):
+  identifierIsGeneratedFnPtr + callArgIsGenerated/LocalFnPtrValue. Unit 2/2;
+  build 7/7; fn_ptr_value SA/SAB 12/12; fn_ptr_void 1/1.
+
+- Share valueArgTransfersOwnershipFromParam packaging helper (2026-07-21):
+  SA/SAB wrappers no longer package ValueArgOwnershipFacts locally. Unit 2/2x2;
+  build 7/7; field_copy/dyn/result SA+SAB green.
+
+- Share callArgIsShallowCopyValueCandidate for planned call-arg input
+  (2026-07-21): pure by-value non-Copy identifier shape; emitters pass depth
+  facts. Unit 2/2; build 7/7; field_copy/dyn/result SA+SAB green.
+
+- Share callArgIsCopyStructValue for planned call-arg input (2026-07-21):
+  Pure by-value Copy-struct identifier classifier shared by SA/SAB. Unit 2/2;
+  build 7/7; field_copy/dyn/result SA+SAB green.
+
+- Share StructLiteralFieldPlan source/transfer predicates (2026-07-21):
+  isExplicit/isUpdate + transfer isDirect/isDeepCopy/isMove drive SA/SAB.
+  Unit 1/1; build 7/7; struct_update/field_copy/result SA+SAB green.
+
+- Consume CallArgMaterializationPlan predicates in SA/SAB emitters (2026-07-21):
+  planned call-arg paths use is* helpers. Build 7/7; materialization 2/2;
+  dyn/borrow/result/method SA+SAB green.
+
+- Reserve expand-path root import / ordered-module capacity + warm residual
+  (2026-07-21): pre-size root_import_groups/ordered_modules/visited_modules.
+  Module table 15/15; build 7/7. Warm parallel_runner check expand ~230ms;
+  build expand ~458ms / codegen ~153ms. Residual: resolve-roots + selective append.
+
+- Share SpaceshipPlan predicates and SA/SAB consumption (2026-07-20):
+  planSpaceship drives both emitters; isNumeric/isSameStruct helpers. Unit 2/2;
+  build 7/7; spaceship_cmp SA/SAB 3/3.
+
+- Normalize CallArgMaterializationPlan shared predicates (2026-07-20):
+  Shared is* helpers on CallArgMaterializationPlan; unit test consumes them.
+  Build 7/7; materialization 2/2; SA/SAB dyn/borrow/result green.
+
+- Reserve module import-list capacity in getOrParse resolve path (2026-07-20):
+  Pre-size resolve/namespace import ArrayLists. Build 7/7; module table 15/15;
+  focused SA/SAB green.
+
+- Share reachability recordReferencedType peel on Y (2026-07-20):
+  recordReferencedType uses shared peel. Build 7/7; module table 15/15;
+  reachability session 2/2; SA/SAB result/option green.
+
+- Restore peel-share after accidental 8ed15b4 content mix (2026-07-20):
+  Restored codegen/sab/type_checker/lowering_rules/emit-reachability peels from
+  `9158a63` while keeping module-table fixes. Build 7/7; module table 15/15;
+  peel unit filters + focused SA/SAB fixtures green.
+
+- Fix pre-existing sla module table Zig filters (2026-07-20):
+  Test-codegen parses `@test` bodies again; scan-cache count expectations match
+  getOrParse publish behavior. `sla module table` 15/15; build 7/7.
+
+- Share emit-reachability dynConcreteTypeName peel on Y (2026-07-20):
+  emit reachability peels via shared helper. Build 7/7; dyn/method/result fixtures
+  green.
+
+- Fold residual lowering_rules multi-layer peels onto peelBorrowPointerType
+  (2026-07-20): option/result/future/array/map/generic/named/string/executor peels
+  share one walk. Unit 2/2x3; build 7/7; focused SA/SAB option/result/field green.
+
+- Share userDefinedLocalName and fold concrete/firstGeneric/dyn peels (2026-07-20):
+  Shared qualified-name local strip for SA/SAB `structDeclForType`; folded
+  `concreteTypeName`/`firstGenericArg`/`dynTraitName` onto `peelBorrowPointerType`.
+  Unit 2/2 each for peel + local-name tests; build 7/7; focused SA/SAB fixtures green.
+
+- Align SA structDeclForType peel with SAB + fold unwrapPointerLikeType (2026-07-20):
+  SA-text `structDeclForType` peels via shared `peelBorrowPointerType`; mutable
+  `unwrapPointerLikeType` is now a thin wrapper. Build 7/7; focused SA/SAB field/
+  borrow/result fixtures green. No full suite or host install.
+
+- Share residual peelBorrowPointerType call sites on Y (2026-07-20):
+  SA-text field/method/Result peels, direct SAB Result/Slice peels, and type-checker
+  field/method/enum/Result peels now consume `lowering_rules.peelBorrowPointerType`
+  instead of local borrow/pointer walk loops. Remaining emitter `while (true)` blocks
+  are const-fold fixpoints. Verified serially: `zig fmt --check`, `git diff --check`,
+  `zig build -j1 --summary all` 7/7, local SA+SAB focused fixtures for
+  field_compare/nested_len, result_direct, impl_static_methods, borrow_direct, and
+  vec_index_field_assign. No full suite or host install in this slice.
+
+- Latest warm wall-clock (2026-07-19):
+  parallel_runner check ~0.55-0.65s / build ~0.9-1.1s; system_param check ~0.7-0.9s;
+  task_pool build ~0.6-0.7s. Residual: root parse + resolve-roots getOrParse +
+  selective append/codegen.
+
+- Share typeIsCopyValueLeaf for primitive/fnptr (2026-07-19):
+  SA/SAB typeIsCopyValue use shared leaf facts; array/shallow/vec fixtures green.
+
+- Reserve primary_decls capacity during selective append (2026-07-19):
+  Pre-size primary_decls map while flattening import decls.
+
+- Wall-clock refresh (2026-07-19 late):
+  Warm parallel_runner check ~0.59s / build ~0.9-1.0s; system_param check ~0.83s;
+  task_pool build ~0.65s. Residual mainly root parse + resolve-roots getOrParse.
+
+- Reserve selective-append decls capacity (2026-07-19):
+  Pre-size decls ArrayList during import expand flatten to cut realloc churn.
+
+- Skip root test bodies on check/compile parse (2026-07-19):
+  Root Parser uses parse_test_bodies=false for sla check and compile frontends.
+  Also reserve capacity when loading reachable plan caches.
+
+- SAB aggregate bool storage uses u8 (2026-07-19):
+  storagePrimType maps boolean to u8 for struct field load/store parity with SA.
+  shallow_copy_call_arg_direct green after cache purge.
+
+- Skip function-body span capture on check path (2026-07-19):
+  SlaModuleTable.capture_body_spans=false for sla check include_all imports.
+  Compile/test materialize still captures spans.
+
+- Module/Y/SAB campaign status (2026-07-19):
+  Warm parallel_runner: check ~0.5-0.8s, build ~0.85-1.1s.
+  Caches: expand, macros, import-lists, reachable plans; check include_all.
+  Y: ownership/peels/copy/array/smart-pointer/type peels heavily shared.
+  Residual: root parse + getOrParse; SAB shallow_copy/str_eq known issues.
+
+- Lazy callable-index on warm one-shot materialize (2026-07-19):
+  Skip seeding callable index when plan-cache hit needs no reparse.
+  parallel_runner warm import expand ~296ms, build ~0.85s.
+
+- Warm parallel_runner build ~1.06s (2026-07-19):
+  Residual dominated by root parse + import resolve-roots getOrParse.
+  Materialize/load-contracts largely cached on warm path.
+
+- Skip warm one-shot drain when no reparse needed (2026-07-19):
+  Plan-cache hits with already-present bodies return immediately.
+  parallel_runner warm import expand ~358ms, build ~1.09s; SA byte-identical.
+
+- One-shot materialize on reachable plan cache hits (2026-07-19):
+  Warm compile materialize is ~0ms (reparses=0) with identical SA output to cold
+  path. parallel_runner warm build ~1.25s.
+
+- Warm reachable-plan disk cache for compile materialize (2026-07-19):
+  Stores reachable/type sets under `.sla-cache/reachable/*` after first compile
+  expand; warm hits materialize from cache without re-running full multipass
+  discovery. parallel_runner warm build ~1.36s (import expand ~809ms vs ~1.2s cold).
+
+- SA enumDeclForValueType uses shared typeBaseName (2026-07-19):
+  Matches SAB peel for Option/Result exclusion + enum lookup.
+
+- SAB enumDeclForValueType uses typeBaseName (2026-07-19):
+  Option/Result exclusion + enum lookup go through shared typeBaseName peel.
+
+- Share typeBaseName/firstGenericArg on Y (2026-07-19):
+  SAB wrappers delegate to lowering_rules; concreteTypeName reused for base name.
+
+- SAB shallow_copy fixed via bool u8 storage + cache bust (2026-07-19):
+  tests/test_unit_shallow_copy_call_arg_direct.sla green under strict SAB after
+  aggregate bool storagePrimType=u8 (stale .sla-cache/sab needed purge).
+
+- Fixed-array copy-value classification (2026-07-19):
+  typeIsCopyValue treats `[T; N]` as copy when element is copy on SA/SAB.
+  Restores tests/test_unit_array_direct.sla and borrow index fixtures (UseAfterMove
+  from false non-copy fixed arrays). Ownership fixtures still green.
+
+- Parser method-selection type peel uses shared concreteTypeName (2026-07-19):
+  parser.concreteTypeNameForMethodSelection delegates to lowering_rules.
+
+- Extend isStdCollectionType unit coverage (2026-07-19):
+  HashMap classified as std collection in shared unit test.
+
+- Wall-clock baseline after body-walk memo (2026-07-19):
+  Warm: parallel_runner check ~0.53s / build ~1.7s; system_param check ~0.98s;
+  task_pool build ~0.59s. Broad SAB ownership/async/thread fixtures all green.
+
+- Memoize non-test reachability body walks (2026-07-19):
+  ReachabilityBuildState.scanned_function_bodies skips rewalking the same body
+  when prune_for_test_codegen is off. Warm parallel_runner build ~1.61s.
+
+- Share Box/Rc/Arc type-name helpers on Y (2026-07-19):
+  isBoxTypeName/isRcTypeName/isArcTypeName/smartPointerStdImportPath shared;
+  SA constructor/from_raw/into_raw paths and SAB Rc/Arc receivers use them.
+
+- Wall-clock refresh after contract/macro caches (2026-07-19):
+  Warm parallel_runner: check ~0.65s, build ~1.68s (was ~2.4-2.9s). Remaining
+  build cost is mostly import materialize body walks (~1.0s).
+
+- dynConcreteTypeName uses shared dyn/smart peels (2026-07-19):
+  plugin_emit_reachability peels dyn trait names via lowering_rules.dynTraitName
+  and smart-pointer layers via smartPointerType. Box/smart fixtures green.
+
+- Cache @import lists for contract scan (2026-07-19):
+  scanExpandedSourceImports stores/loads `.sla-cache/imports/*` so warm vec.sa
+  contract scans avoid full line walks. Warm load contracts ~51-90ms.
+
+- Share primitiveIsCopyValue on Y (2026-07-19):
+  SA/SAB typeIsCopyValue and copy/debug derive primitive arms use shared
+  primitiveIsCopyValue. Ownership fixtures green.
+
+- Disk cache for imported macro index (2026-07-19):
+  loadImportedMacrosFromExpandedSource stores/loads `.sla-cache/macros/*`.
+  Warm parallel_runner build load contracts ~820ms→~90ms (vec macros 122ms→6ms).
+
+- Contract-load detail profiling gated (2026-07-19):
+  Per-file contract scan/macro timings require SLA_PROFILE_CONTRACTS=1.
+  vec.sa still dominates (~scan 491ms + macros 132ms) under normal compile.
+
+- Dedupe contract loads + expand cache in contract path (2026-07-19):
+  loadImportedContractsFromResolvedImports skips already-visited roots and uses
+  expandForModulePath. parallel_runner build load contracts ~730ms→~558ms; warm
+  wall-clock build ~1.89s (was ~2.4-2.9s).
+
+- Compile-path materialize scales with root size (2026-07-19):
+  task_pool_builder build import expand ~316ms materialize ~50ms (warm).
+  parallel_runner build still ~2.9s dominated by multi-pass body walks.
+
+- Unit test for isStdCollectionType (2026-07-19):
+  Shared collection classifier covered by lowering_rules unit test.
+
+- Share isStdCollectionType for shallow-copy guards (2026-07-19):
+  SA/SAB typeIsShallowCopyCallArgValue use one shared collection classifier.
+
+- Remove unused SA structHasDerive wrapper (2026-07-19):
+  Call sites already use lowering_rules.structHasDerive directly.
+
+- Hash/Debug derive short-circuit std owners (2026-07-19):
+  typeHasHashDerive/typeHasDebugDerive treat std owners as non-derived, matching
+  Copy ownership policy. Smart-pointer fixtures SA/SAB green.
+
+- SA derive checks call shared structHasDerive directly (2026-07-19):
+  hash/debug/ord derive paths use lowering_rules.structHasDerive for consistency
+  with copy-derive alignment.
+
+- Align SA/SAB typeHasCopyDerive semantics (2026-07-19):
+  SA now short-circuits std owners as non-Copy and uses shared structHasDerive;
+  SAB treats void primitives as non-Copy like SA. Ownership fixtures SA/SAB green.
+
+- Adaptive include_all threshold abandoned (2026-07-19):
+  Selective reachability for large roots regressed system_param check to ~3.4s.
+  Keep include_all for all check roots. Warm wall-clock: parallel_runner ~0.5-0.8s,
+  system_param ~1.3s (root parse+typecheck residual).
+
+- Unit test for expandForModulePath disk cache (2026-07-19):
+  source_expand test covers @expand_tuple cache hit path.
+
+- Unified disk expand cache for root + imports (2026-07-19):
+  `source_expand.expandForModulePath` caches @expand_tuple output for both root
+  check/compile and module getOrParse. Warm system_param root expand 148ms→3ms.
+
+- SLA_PROFILE stages for `sla check` (2026-07-19):
+  check path now reports read/expand/parse/import/mono/contracts/aliases/typecheck.
+  Warm parallel_runner: parse root ~281ms, import expand ~182ms, typecheck ~6ms.
+
+- Check-path include_all keeps raw decls only (2026-07-19):
+  Skip duplicate namespaced alias function nodes during include_all append;
+  aliases still come from registerImportedFunctionAliases. Decls 2345→1339 on
+  parallel_runner check; system_param/task_pool/world checks still green.
+
+- Expand keepsGenericUserDefinedName std surface (2026-07-19):
+  Shared monomorphizer keep-generic policy covers maps/sets/sync/async/channel
+  containers plus __dyn_*. Unit test added; box/vec/async/check green.
+
+- Share monomorphizer keepsGenericUserDefinedName on Y (2026-07-19):
+  Box/Vec/__dyn_* monomorphization name policy lives in lowering_rules.
+  Box/vec fixtures and check green.
+
+- Module check wall-clock refresh (2026-07-19):
+  Warm check: parallel_runner ~0.60s, task_pool_builder ~0.59s, system_param ~0.98s.
+  task_pool_builder SAB whole-file 6/6 still green after Y/module work.
+
+- Share FuturePair/FutureEither peels on Y (2026-07-19):
+  type_checker wraps shared future pair/either generic peels. Async fixture green.
+
+- Share Ordering/Executor/Poll/unwrap peels on Y (2026-07-19):
+  type_checker uses shared isOrderingType/executorInnerType/pollInnerType/
+  unwrapPointerLikeType/executorTaskBufferInnerType. Async/check fixtures green.
+
+- More type-checker peels routed to Y (2026-07-19):
+  isStringLike/array/atomic/file/metadata/concreteTypeName/dynTraitName and
+  isStringType now shared. Check/fixtures green.
+
+- Type-checker map/set/slice peels use shared Y helpers (2026-07-19):
+  hashMap/btreeMap/hashSet/btreeSet/slice peels in type_checker now wrap
+  lowering_rules. Check/fixtures green.
+
+- Type-checker peels consume shared Y helpers (2026-07-19):
+  type_checker now delegates Vec/Option/Result/Box/Arc/Rc/Mutex/RwLock/channel/
+  task/future peels and numeric/raw-ptr classifiers to lowering_rules. Check and
+  focused fixtures remain green.
+
+- Share literalZero on Y (2026-07-19):
+  Zero-literal detection moved into lowering_rules.literalZero; SA delegates.
+  Compile-path materialize still dominated by multi-pass body walks
+  (parallel_runner extend ~614ms across 5 extensions).
+
+- Module check wall-clock after optimizations (2026-07-19):
+  Warm local sla-local-cli check: parallel_runner ~0.68s, system_param_table_erased
+  ~0.98s (was multi-second materialize dominated). Remaining check cost is mostly
+  resolve-roots first parse of large expanded modules (~90-130ms world_table).
+
+- Share enumNameMatchesDecl on Y (2026-07-19):
+  SA and SAB enum pattern name matching now uses lowering_rules.enumNameMatchesDecl.
+
+- Share asyncContinuationConditionOpName on Y (2026-07-19):
+  Comparison op names for async continuations moved into lowering_rules; SA
+  delegates. Async defer-ready scalar fixture green.
+
+- Share Option/Result pattern helpers + atomicOrderingToken (2026-07-19):
+  patternUsesOptionMacros/patternUsesResultMacros and atomicOrderingToken live
+  in lowering_rules; SA wrappers delegate. Stack/vec fixtures green.
+
+- getOrParse body_spans timer (2026-07-19):
+  SLA_PROFILE reports body_spans cost separately; world_table_erased spans ~2ms
+  of ~130ms parse, confirming residual cost is lexer/parser of expanded surface.
+
+- Share patternUsesResultMacros + selective-append decl counters (2026-07-19):
+  Result pattern classification shared on Y; check-path selective append reports
+  decls/primary counts (parallel_runner ~2345 decls under include_all).
+
+- Share ABI param type/borrow helpers on Y (2026-07-19):
+  abiParamTypeString/abiParamNeedsBorrowArg pure facts moved into lowering_rules;
+  SA wrappers delegate. Ownership fixtures green.
+
+- Share remaining SA ABI string helpers on Y (2026-07-19):
+  abiReturnTypeString/abiRawPayloadTypeString/ptrReadVolatileMacroName moved into
+  lowering_rules; SA wrappers delegate. vec/box fixtures green.
+
+- Share abiTypeString on Y (2026-07-19):
+  SA-text typeString now uses lowering_rules.abiTypeString for scalar/ptr ABI
+  names. Ownership/fixed-array fixtures green.
+
+- Disk-backed @expand_tuple source cache (2026-07-19):
+  getOrParse caches expanded sources under `.sla-cache/expand/` keyed by path+
+  content hash. Warm check of parallel_runner: world_table expand 149ms→1ms,
+  getOrParse total 275ms→108ms, resolve-roots 333ms→156ms. Correctness fixtures green.
+
+- Share isRawPtrAliasType on Y (2026-07-19):
+  Void-as-raw-ptr alias classification moved into lowering_rules; SA delegates.
+
+- Expand capacity pre-size + share i32like/zeroLiteral (2026-07-19):
+  source_expand pre-reserves capacity for @expand_tuple heavy modules; SA
+  zeroLiteralForType/isI32LikeType delegate to lowering_rules. Fixtures green.
+
+- Share void/numeric/float type classifiers on Y (2026-07-19):
+  SA and SAB now delegate isVoidType/isNumericType/isFloatType/isUnsignedIntegerType
+  to lowering_rules. Fixed-array/vec/branch fixtures still green.
+
+- Check-path include_all_imported_decls skips root reachability (2026-07-19):
+  `sla check` now expands imports with include_all_imported_decls + decl-only
+  stubs, skipping buildReachableSymbols (~300ms body walks on parallel_runner).
+  Measured: parallel_runner/system_param materialize 0ms; typecheck still green.
+  Test/codegen paths keep selective reachability.
+
+- Share arrayType peel on Y (2026-07-19):
+  `lowering_rules.arrayType` peels borrow/pointer to array; SA delegates.
+  Fixed-array ptr struct fixtures SA/SAB green.
+
+- SA Result ok/err peels delegate to shared Y helpers (2026-07-19):
+  `resultOkType`/`resultErrType` in SA-text now call lowering_rules helpers.
+  Result entity cleanup fixture SA/SAB green.
+
+- Reachability drain profiling + empty-body skip (2026-07-19):
+  Profiled reachability init as index/roots/drain and drain body walks.
+  parallel_runner: drain ~310ms of which body_walk ~309ms across 121 non-empty
+  bodies (root program). Empty imported decl-only stubs skip collect walks.
+  Remaining materialize cost is root-body syntactic reachability, not tiny-import
+  reparse.
+
+- Module getOrParse stage timers + buildReachable counters (2026-07-19):
+  SLA_PROFILE now reports per-module getOrParse expand/parse/exports costs and
+  buildReachable symbol/type/module counts. Confirms remaining materialize cost
+  is primarily buildReachableSymbols over large decl-only ASTs (~370ms on
+  parallel_runner), not reparse of tiny importers.
+
+- Module import type-scan cache reuse + disable redundant prescan (2026-07-19):
+  getOrParse now publishes completed type surfaces into the shared import-type
+  scan cache, and module-table parser options set prescan_sla_import_types=false
+  because diamond discovery is already getOrParse-driven. Result on real ECS:
+  table_erased_access ~259ms→~0-2ms; schedule_table_erased ~327ms→~5ms;
+  system_param resolve-roots ~494ms→~321ms. world_table_erased first parse remains
+  the dominant unavoidable cost (~110-260ms for 466KB source).
+
+- SAB joinHandleInnerType uses shared Y peeler (2026-07-19):
+  Direct SAB now delegates JoinHandle peels to lowering_rules.joinHandleInnerType.
+
+- Y-share File/Metadata/Atomic named type peels (2026-07-19):
+  Shared isFileType/isMetadataType/isAtomicI32Type/isAtomicUsizeType into
+  lowering_rules; SA wrappers delegate. FS/vec/smart-pointer fixtures green.
+
+- Y-share ManuallyDrop/JoinHandle/channel/AtomicPtr peelers (2026-07-19):
+  Shared remaining pure generic peels into lowering_rules and delegated SA
+  wrappers. Thread/smart-pointer/vec ownership fixtures remain SA/SAB green.
+
+- Module import-expand ordered-module profile counter (2026-07-19):
+  SLA_PROFILE now prints `import expand ordered modules=N` after resolve-roots.
+  Real ECS check samples: world_table_erased N=12 (~70ms roots / ~517ms materialize),
+  parallel_runner N=16 (~678ms roots / ~510ms materialize). Resolve-roots cost scales
+  with getOrParse of the transitive diamond; further cuts need cheaper first parse
+  or deferred child discovery without inflating materialize.
+
+- Y-share Cell/Mutex/RwLock type peelers (2026-07-19):
+  Shared Cell/Mutex/MutexGuard/RwLock/ReadGuard/WriteGuard peels into
+  lowering_rules; SA wrappers delegate. Sync peeler unit test + smart-pointer
+  fixtures green.
+
+- Align SA/SAB shallow-copy collection depth rules (2026-07-19):
+  Direct SAB `typeIsShallowCopyCallArgValue` now treats nested std collections
+  (Vec/Map/Set/Deque) as depth>0 only, matching SA-text, and uses shared
+  peelers/noncopy helpers. Focused ownership fixtures still SA/SAB green.
+
+- Y-share HashSet/BTreeSet/Slice type peelers (2026-07-19):
+  Shared `hashSetElementType`, `btreeSetElementType`, `sliceElementType` into
+  lowering_rules; SA wrappers delegate. Collection peeler unit test extended;
+  ownership/smart-pointer fixtures still SA/SAB green.
+
+- Y-share std-owner noncopy + collection type peelers (2026-07-19):
+  Shared `userDefinedStdOwnerIsNonCopy`, `vecDequeElementType`, `hashMapTypes`,
+  `btreeMapTypes` into lowering_rules; SA wrappers delegate, SAB uses shared
+  noncopy. Zig unit tests cover peelers/noncopy; SA/SAB ownership fixtures still
+  pass. Module import-expand still dominated by resolve-roots + materialize on
+  real ECS graphs; check-path lazy-transitive remains disabled after regression.
+
+- Y-share value-arg ownership + fnptr slot plans (2026-07-19):
+  Lifted pure ownership decisions into `lowering_rules.planValueArgTransfersOwnership`
+  and `planNeedsFnPtrValueArgSlot`; SA-text and direct SAB now consume the same
+  contracts. Zig unit test covers the shared plans; focused SA/SAB fixtures
+  (pod vec push, fnptr thread pair, branch merge, child-scope) still pass.
+  Module import-expand real ECS baseline remeasured: world_table_erased
+  roots~45ms/materialize~396ms; parallel_runner roots~408ms/materialize~339ms;
+  system_param_table_erased roots~509ms/materialize~746ms. Aggressive lazy
+  transitive on check path was tried and reverted (inflated materialize).
+
+- HTTP loopback StackEscape slot-name uniqueness (2026-07-19):
+  Thread spawn/worker generated params use unique `__thread_*_slot_*` names so
+  they do not collide with user `slot = stack_alloc` symbols. SAB StackEscape on
+  http_loopback_sse_adapter is gone; llvmc return mismatch is current-non-repro.
+  Residual: SA assert panics / SAB runtime signal 11 on loopback tests.
+
+- Loop-live by-value Vec call-arg clone (2026-07-19):
+  SA-text and direct SAB clone by-value `Vec` identifiers when they must stay
+  live across a loop back-edge or later statement, so ABI `^` transfer does not
+  invent `PhiStateConflict`. Fixture
+  `tests/test_unit_param_vec_loop_equals_direct.sla` SA/SAB 1/1. Issue-doc
+  rechecks: issue028 filtered non-repro, compile-emit trap still closed,
+  checker-pool still open/perf, module-table correctness closed/perf open,
+  HTTP loopback still partial (StackEscape + llvmc return ABI).
+
+- Issue-doc status sweep (2026-07-19):
+  Closed/reaffirmed fixed docs (module specifier, sla_ts main SAB, parallel
+  MemoryLeak/Phi, scalar/anyof/call-target/result-entity). HTTP loopback remains
+  partial on SCI llvmc return ABI. Module Table correctness closed with
+  performance still open. Checker-pool remains downstream 10s performance smoke.
+
+- POD enum struct vec.push reuse (2026-07-19):
+  SA-text vec.push no longer consumes shallow-copy/POD elements that include
+  pure enums, so `push(info); return (registry, info)` stays valid. Added
+  `tests/test_unit_vec_push_pod_struct_return_direct.sla` SA/SAB 1/1.
+
+- Fixed-array ptr struct field SAB lowering (2026-07-19):
+  Direct SAB now stores inline fixed-array struct fields by element copy and
+  treats string literals as raw data pointers when expected type is `ptr`.
+  Added `tests/test_unit_fixed_array_ptr_struct_direct.sla` (SA/SAB 2/2).
+  `sla_ts` `runtime.sla` strict SAB 3/3 and `main.sla` focused SAB 1/1.
+
+- Struct-literal owner move_ emit + issue doc closures (2026-07-19):
+  Direct SAB struct-literal field ownership transfer now emits visible `.move_`
+  for source locals (`tests/test_unit_struct_literal_owner_move_direct.sla`
+  SA/SAB 1/1). Updated issue docs for task_pool_builder whole-file closure,
+  issue028, and http loopback check/build status.
+
+- SA-text by-value assign/discard consume parity (2026-07-19):
+  `src/codegen.zig` now emits `^src` for by-value non-Copy identifier assignment
+  into stack/assigned-value slots and for `let _ = owner` discards, matching the
+  type-checker consume state used by branch merges. Minimal fixture
+  `tests/test_unit_branch_param_consume_merge_direct.sla` now passes SA 2/2 and
+  SAB 2/2; whole-file `task_pool_builder.sla` SA and default/SAB both 6/6.
+
+- Parallel-runner child-scope + Arc<*World> combination (2026-07-19):
+  Added `tests/test_unit_parallel_runner_child_scope_arc_direct.sla` covering
+  child-scope returns of holders with Arc world fnptrs, call of returned holder,
+  and loop-extend into parent. Serial SA 3/3 and strict SAB 3/3. Prior
+  parallel-runner fixtures and `task_pool_builder.sla` whole-file SAB 6/6 still
+  green. Remaining gap is residual whole-file `parallel_runner.sla` cost / any
+  host suite growth onto external/result/recursive child-scope lanes.
+
+- Branch-param consume merge + task_pool_builder whole-file SAB (2026-07-19):
+  Fixed direct SAB discard/branch balancing for by-value non-Copy params so
+  then/else ownership of `get_or_init(pools, pool)` merges cleanly. Added
+  `tests/test_unit_branch_param_consume_merge_direct.sla` (SA/SAB 2/2) and
+  `tests/test_unit_parallel_runner_thread_arc_lane_direct.sla` (SA/SAB 1/1).
+  Downstream whole-file `sla_ecs/lib/task_pool_builder.sla` default/SAB now
+  passes 6/6. Child-scope/multi-lane/Arc fixtures remain green.
+
+- Parallel-runner child-scope return + by-value fnptr bits (2026-07-19):
+  Added `tests/test_unit_parallel_runner_child_scope_return_direct.sla` and fixed
+  direct SAB by-value `fn` call args to pass function-object pointer bits instead
+  of dangling stack-slot addresses, matching SA-text. This closed the strict SAB
+  signal 11 when spawning/extending runs loaded from a holder returned by
+  `call_indirect`. Serial SA 6/6 and strict SAB 6/6; prior multi-lane/Arc/loop
+  and broader fnptr fixtures still pass. Whole-file parallel_runner aggregation
+  remains open.
+
+- Parallel-runner Arc<*World> multi-lane fixture (2026-07-19):
+  Added `tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla` covering
+  threaded + on-scope `Vec<fn(Arc<*World>) -> i32>` lanes with ordered extend
+  and Arc shared-world call. Serial local SA 1/1 and strict SAB 1/1
+  (`sab direct codegen` ~3.95s). Whole-file parallel_runner aggregation remains
+  open; child-scope and thread-spawn dimensions still deferred.
+
+- Parallel-runner multi-lane Vec<fn> fixture (2026-07-19):
+  Added `tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla` for the
+  next open dimension of `docs/sab_parallel_runner_whole_file_memoryleak_issue_cn.md`:
+  two `Vec<fn>` lanes with independent order-position vectors and loop-time
+  ordered extend. Serial local verification after `zig build -j1`: SA backend
+  1/1, strict direct SAB 1/1 with `sab direct codegen` ~3.65s, and prior
+  `loop_fnptr_transfer` fixture still 1/1 under 10s. Whole-file
+  `parallel_runner.sla` / `task_pool_builder.sla` remain open dangerous smoke.
+
+- Shared residual plan helper normalization (2026-07-19):
+  `DynCoercionPlan` now exposes `isBoxToDyn()` / `isRcNewToDynRc()`, and both
+  SA-text and direct SAB dyn-coercion paths consume those helpers. Direct SAB
+  option-closure dispatch now uses `OptionClosureCallPlan` predicates instead
+  of switching on `plan.kind`. `WhileLetPatternPlan` / `LetPatternPlan` now
+  expose `isEnumVariant()` / `isOptionSome()` / `isOptionNone()` /
+  `isResultOk()` / `isResultErr()` / `isOptionCheck()` / `isResultCheck()`, and
+  direct SAB let-pattern check/bind, while-let, and match guard payload paths
+  consume those helpers instead of local `plan.kind` switches. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig src/codegen.zig
+  src/sab_codegen.zig`, `git diff --check`, and filters `shared while let
+  pattern classification` 2/2, `shared dyn coercion and receiver plans` 2/2,
+  `shared future runtime call classification` 2/2, and `shared executor task
+  buffer classification` 2/2. No full suite or concurrent tests were run.
+
+- Shared TaskRuntimeCallPlan dispatcher normalization (2026-07-19):
+  `src/codegen.zig` and `src/sab_codegen.zig` now route task runtime calls
+  through a shared `genTaskRuntimeCall()` helper that consumes
+  `TaskRuntimeCallPlan` predicates (`isNew` / `isPoll` / `isIsReady` /
+  `isResult` / `isState`) instead of string-matching `task::{new,poll,
+  is_ready,result,state}` in each emitter. The shared future/runtime
+  classification test exercises those helpers. Serial focused verification
+  passed `zig fmt --check src/lowering_rules.zig src/codegen.zig
+  src/sab_codegen.zig`, `git diff --check`, `zig build test -j1
+  -Dtest-filter='shared future runtime call classification' --summary all`
+  2/2, and `zig build test -j1 -Dtest-filter='shared executor task buffer
+  classification' --summary all` 2/2. No full suite or concurrent tests were
+  run.
+
+- Shared ExecutorRuntimeCallPlan dispatcher normalization (2026-07-19):
+  `src/codegen.zig` and `src/sab_codegen.zig` now route executor runtime calls
+  through the shared `ExecutorRuntimeCallPlan` predicates instead of switching
+  directly on `plan.kind` for `new`, `poll_one`, and `poll_ready_count`.
+  `ExecutorTaskBufferPlan` now exposes `isFixedArray()` / `isVec()`, and both
+  emitters consume those helpers for the task-buffer branch of `executor::new`.
+  The shared executor task-buffer and future/runtime classification tests
+  exercise the new predicates. Serial focused verification passed `zig fmt
+  --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`, `git
+  diff --check`, `zig build test -j1 -Dtest-filter='shared future runtime call
+  classification' --summary all` 2/2, and `zig build test -j1
+  -Dtest-filter='shared executor task buffer classification' --summary all`
+  2/2. No full suite or concurrent tests were run.
+
+- Shared PollRuntimeCallPlan dispatcher normalization (2026-07-19):
+  `src/codegen.zig` and `src/sab_codegen.zig` now route poll runtime calls
+  through the shared `PollRuntimeCallPlan` predicates instead of switching
+  directly on `plan.kind` for `ready`, `pending`, `is_ready`/`is_pending`,
+  and `value`. `src/lowering_rules.zig` now exposes `isReady()` / `isPending()` /
+  `isStatusCheck()` / `isValue()` on the shared plan, and the shared
+  classification test exercises those helpers directly. Serial focused
+  verification passed `zig fmt /home/vscode/projects/sa_plugins/sa_plugin_sla/src/lowering_rules.zig /home/vscode/projects/sa_plugins/sa_plugin_sla/src/codegen.zig /home/vscode/projects/sa_plugins/sa_plugin_sla/src/sab_codegen.zig`, `git diff --check`, and `zig build test -j1 -Dtest-filter='shared future runtime call classification' --summary all` 2/2. No full suite or concurrent tests were run.
+
+- Shared FutureRuntimeCallPlan direct SAB dispatcher normalization (2026-07-19):
+  `src/sab_codegen.zig` now routes direct SAB future runtime calls through the
+  shared `FutureRuntimeCallPlan` predicates instead of switching locally on
+  `future_plan.kind` in `genFutureTaskCall()`. The SAB path still keeps direct
+  `task` lowering and release behavior, but shares the same ready/pending/
+  defer_ready/join2/select2/pair/either classification surface.
+  Serial focused verification passed `zig fmt --check src/sab_codegen.zig src/lowering_rules.zig`
+  and `zig build test -j1 -Dtest-filter='shared future runtime call classification'
+  --summary all` 2/2. No full suite or concurrent tests were run.
+
+- Shared FutureRuntimeCallPlan dispatcher normalization (2026-07-19):
+  `src/codegen.zig` now routes SA-text future runtime calls through the shared
+  `genFutureRuntimeCall()` helper instead of duplicating the `future_plan.kind`
+  switch in both call-expression lowering sites. The helper reuses the shared
+  `FutureRuntimeCallPlan` predicates and macro-name helpers for `ready`,
+  `pending`, `defer_ready`, `join2`, `select2`, `pair_left`/`pair_right`, and
+  `either_side`/`either_left`/`either_right`.
+  Serial focused verification passed `zig fmt --check src/codegen.zig src/lowering_rules.zig`
+  and `zig build test -j1 -Dtest-filter='shared future runtime call classification'
+  --summary all` 2/2. No full suite or concurrent tests were run.
+
+- Shared FutureRuntimeCallPlan predicate test strengthening (2026-07-19):
+  `FutureRuntimeCallPlan` now exposes `isReady()` / `isPending()` /
+  `isDeferReady()` / `isJoin2()` / `isSelect2()` / `isPairAccessor()` /
+  `isEitherAccessor()`, and the shared future runtime call classification test
+  now exercises those helpers directly for `ready`, `pending`, `defer_ready`,
+  `join2`, `pair_left`, `select2`, and `either_right`. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig` and `zig build
+  test -j1 -Dtest-filter='shared future runtime call classification'
+  --summary all` 2/2. No full suite or concurrent tests were run.
+
+- Shared FutureRuntimeCallPlan predicate helper normalization (2026-07-18):
+  `FutureRuntimeCallPlan` now exposes `isReady()` / `isPending()` /
+  `isDeferReady()` / `isJoin2()` / `isSelect2()` / `isPairAccessor()` /
+  `isEitherAccessor()`, and the shared future runtime call classification test
+  now exercises those helpers alongside the existing kind checks. Serial
+  focused verification passed `zig fmt --check src/lowering_rules.zig` and
+  `zig build test -j1 -Dtest-filter='shared future runtime call classification'
+  --summary all` 2/2. No full suite or concurrent tests were run.
+
+- Shared OptionClosureCallPlan helper normalization (2026-07-18):
+  `OptionClosureCallPlan` now exposes `isMap()` / `isAndThen()` /
+  `isUnwrapOrElse()`, and SA-text option closure dispatch consumes those
+  shared helpers instead of switching locally on `plan.kind` for `map`,
+  `and_then`, and `unwrap_or_else`. Serial focused verification passed `zig
+  fmt --check src/lowering_rules.zig src/codegen.zig` and `zig build test -j1
+  -Dtest-filter='option unwrap and map' --summary all` 1/1. No full suite or
+  concurrent tests were run.
+
+- Shared DynDispatchReceiverPlan helper normalization (2026-07-18):
+  `DynDispatchReceiverPlan` now exposes `needsRcGetDyn()` / `isDirectDyn()`,
+  and both SA-text and direct SAB dyn-dispatch receiver paths consume those
+  shared helpers instead of switching locally on `receiver_plan.kind`. Serial
+  focused verification passed `zig fmt --check src/lowering_rules.zig
+  src/codegen.zig src/sab_codegen.zig` and `zig build test -j1
+  -Dtest-filter='shared dyn coercion and receiver plans' --summary all` 2/2.
+  No full suite or concurrent tests were run.
+
+- Shared FutureRuntimeCallPlan macro-name helper normalization (2026-07-18):
+  `FutureRuntimeCallPlan` now exposes `pairMacroName()` and
+  `eitherValueMacroName()`, and both SA-text and direct SAB future runtime
+  accessor paths consume those shared helpers instead of branching locally on
+  `future_plan.kind` for `FUTURE_PAIR_*` and `FUTURE_EITHER_*` macro names.
+  Serial focused verification passed `zig fmt --check src/lowering_rules.zig
+  src/codegen.zig src/sab_codegen.zig` and `zig build test -j1
+  -Dtest-filter='shared future runtime call classification' --summary all`
+  2/2. No full suite or concurrent tests were run.
+
+- Shared PollRuntimeCallPlan macro-name helper normalization (2026-07-18):
+  `PollRuntimeCallPlan` now exposes `pollStatusMacroName()`, and both SA-text
+  and direct SAB poll-status runtime call paths consume that shared helper
+  instead of branching locally on `plan.kind` to choose `POLL_IS_READY` vs
+  `POLL_IS_PENDING`. Serial focused verification passed `zig fmt --check
+  src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and `zig build
+  test -j1 -Dtest-filter='shared async single await continuation plan is
+  defer-ready only' --summary all` 2/2. No full suite or concurrent tests
+  were run.
+
+- Shared RefCell borrow-result helper normalization continuation (2026-07-18):
+  `src/codegen.zig` SA-text `genRefCellBorrowCall()` now consumes
+  `RefCellBorrowResultAction.usesBorrowSlot()` /
+  `loadsPointerPayload()` /
+  `takesPointerPayload()` instead of switching locally on the borrow-result
+  action. Direct SAB already used the shared predicates, so both emitters now
+  read the same plan contract. Serial focused verification passed `zig fmt
+  --check src/codegen.zig src/sab_codegen.zig src/lowering_rules.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify refcell
+  borrow result' --summary all` 1/1. No full suite or concurrent tests were
+  run.
+
+- Shared imported-macro bypass helper normalization (2026-07-18):
+  `ImportedMacroArgLoweringAction` now exposes `passesValue()` /
+  `passesRawPointerValue()` in `src/lowering_rules.zig`. SA-text
+  `genImportedMacroArg()` and direct SAB `genImportedMacroArg()` consume those
+  shared predicates instead of repeating local switch logic for value and raw
+  pointer bypass actions. Serial focused verification passed `zig fmt --check
+  src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and `zig build
+  test -j1 -Dtest-filter='shared imported macro' --summary all` 5/5. No full
+  tests or concurrent unit tests were run.
+
+- Shared refcell borrow-result helper normalization (2026-07-18):
+  `RefCellBorrowResultAction` now exposes `usesBorrowSlot()` /
+  `loadsPointerPayload()` / `takesPointerPayload()` in `src/lowering_rules.zig`.
+  Direct SAB `genRefCellBorrowCall()` uses those shared predicates instead of
+  switching locally on the borrow-result action. Serial focused verification
+  passed `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify refcell
+  borrow result' --summary all` 1/1. No full tests or concurrent unit tests
+  were run.
+
+- Shared param-cleanup planner normalization (2026-07-18):
+  `src/lowering_rules.zig` now exposes `ParamCleanupCapability`,
+  `ParamCleanupAction`, `ParamCleanupFacts`, and `planParamCleanup()`, and the
+  direct SAB `paramCleanupAction` helper maps `Local` state into the shared
+  facts before classifying cleanup behavior. Serial focused verification
+  passed `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify result-slot
+  value transfer' --summary all` 2/2. No full tests or concurrent unit tests
+  were run.
+
+- Shared refcell branch-owner merge helper normalization (2026-07-18):
+  `RefCellBranchHandleOwnerMergeAction` now exposes
+  `isMergeDynamicOwner()` in `src/lowering_rules.zig`. SA-text and direct SAB
+  branch-owner merge paths consume that shared predicate instead of switching
+  locally on the merge action. Serial focused verification passed `zig fmt
+  --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='function tail cleanup' --summary all`
+  2/2. No full tests or concurrent unit tests were run.
+
+- Shared function-exit cleanup helper normalization (2026-07-18):
+  `FunctionExitCleanupAction` now exposes `releasesValue()` and
+  `transfersResult()` in `src/control_flow_rules.zig`. SA-text function-tail
+  cleanup consumes those shared helpers instead of switching or comparing
+  directly on cleanup actions. Serial focused verification passed `zig fmt
+  --check src/control_flow_rules.zig src/codegen.zig` and `zig build test -j1
+  -Dtest-filter='function tail cleanup' --summary all` 2/2. No full tests or
+  concurrent unit tests were run.
+
+- Shared println-argument plan helper normalization (2026-07-18):
+  `PrintlnArgPlan` now exposes `isFormatString()` / `isStringLike()` /
+  `borrowedPrimitive()` / `boxedPrimitive()` / `primitiveFormat()` in
+  `src/lowering_rules.zig`. Direct SAB `emitPrintlnArg` consumes those shared
+  helpers instead of switching directly on the union payload. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify result-slot
+  value transfer' --summary all` 2/2. No full tests or concurrent unit tests
+  were run.
+
+- Shared refcell branch-state merge helper normalization (2026-07-18):
+  `BranchStateMergeAction` now exposes `restoresPre()` / `restoresThen()` /
+  `restoresElse()` in `src/control_flow_rules.zig`. SA-text and direct SAB
+  branch-local refcell restore paths consume those shared predicates instead of
+  switching locally on the merge action. Serial focused verification passed
+  `zig fmt --check src/control_flow_rules.zig src/codegen.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify
+  result-slot value transfer' --summary all` 2/2. No full tests or concurrent
+  unit tests were run.
+
+- Shared multi-branch merge helper normalization (2026-07-18):
+  `MultiBranchStateMergeAction` now exposes `restoresPre()` /
+  `restoresSingle()` / `intersectsLive()` in `src/control_flow_rules.zig`, and
+  direct SAB consumes those shared predicates in the multi-branch merge path
+  instead of switching locally on the merge action. Serial focused verification
+  passed `zig fmt --check src/control_flow_rules.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify result-slot
+  value transfer' --summary all` 2/2. No full tests or concurrent unit tests
+  were run.
+
+- Shared smart-pointer action helper normalization (2026-07-18):
+  `SmartPointerGetAction` now exposes `isGetValue()`, and
+  `SmartPointerValueSlotAction` now exposes `isAsPtrSlot()` in
+  `src/lowering_rules.zig`. Direct SAB smart-pointer get/value-slot paths use
+  those shared predicates instead of switching locally on the action enums.
+  Serial focused verification passed `zig fmt --check src/lowering_rules.zig
+  src/sab_codegen.zig` and `zig build test -j1 -Dtest-filter='shared lowering
+  rules classify result-slot value transfer' --summary all` 2/2. No full tests
+  or concurrent unit tests were run.
+
+- Shared smart-pointer address-action helper normalization (2026-07-18):
+  `SmartPointerAddressAction` now exposes `isDynBoxIdentity()` and
+  `isAsPtrTakePointerBackedValue()` in `src/lowering_rules.zig`. Direct SAB
+  smart-pointer address paths use those shared predicates instead of switching
+  locally on the action enum. Serial focused verification passed `zig fmt
+  --check src/lowering_rules.zig src/sab_codegen.zig` and `zig build test -j1
+  -Dtest-filter='shared dyn coercion and receiver plans' --summary all` 2/2.
+  No full tests or concurrent unit tests were run.
+
+- Shared stack-slot call-arg temp keep helper normalization (2026-07-18):
+  `StackSlotIdentifierCallArgTempAction` now exposes `isKeep()` in
+  `src/lowering_rules.zig`. SA-text call-arg cleanup uses that shared predicate
+  instead of comparing locally on the action enum when deciding whether to fall
+  back to ordinary result-temp release classification. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig src/codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify call
+  materialization decisions' --summary all` 2/2. No full tests or concurrent
+  unit tests were run.
+
+- Shared RefCell loop-state merge helper normalization (2026-07-18):
+  `RefCellLoopStateMergeAction` now exposes `restoresPreLoop()` in
+  `src/lowering_rules.zig`. SA-text and direct SAB loop-body restore paths
+  consume that shared predicate instead of switching locally on the merge
+  action. Serial focused verification passed `zig fmt --check
+  src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and `zig build
+  test -j1 -Dtest-filter='shared lowering rules classify result-slot value
+  transfer' --summary all` 2/2. No full tests or concurrent unit tests were
+  run.
+
+- Shared RefCell value-state transfer helper normalization (2026-07-18):
+  `RefCellHandleTransferAction` now exposes `movesBorrowHandle()`, and
+  `BorrowAddressTempTransferAction` now exposes `movesBorrowAddressTemps()` in
+  `src/lowering_rules.zig`. SA-text and direct SAB consume those shared
+  predicates for `refcell` transfer and rebinding paths instead of repeating
+  local switches on the transfer enums. Serial focused verification passed
+  `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify result-
+  slot value transfer' --summary all` 2/2. No full tests or concurrent unit
+  tests were run.
+
+- Shared RefCell handle-transfer binding helper normalization (2026-07-18):
+  SA-text and direct SAB let-binding transfer paths now consume
+  `RefCellHandleTransferAction.movesBorrowHandle()` when planning borrow-handle
+  rebinding instead of comparing locally on the transfer action enum. Serial
+  focused verification passed `zig fmt --check src/codegen.zig src/sab_codegen.zig`
+  and `zig build test -j1 -Dtest-filter='shared lowering rules classify
+  result-slot value transfer' --summary all` 2/2. No full tests or concurrent
+  unit tests were run.
+
+- Shared RefCell binding/owner-transfer helper normalization (2026-07-18):
+  `RefCellHandleBindingAction` now exposes `bindsBorrowHandle()`, and
+  `RefCellHandleOwnerTransferAction` now exposes `rebindsOwner()` in
+  `src/lowering_rules.zig`. SA-text and direct SAB emitters consume those
+  shared predicates for borrow-handle binding and owner rebinding instead of
+  repeating local switches. Serial focused verification passed `zig fmt
+  --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig` and
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify result-slot
+  value transfer' --summary all` 2/2. No full tests or concurrent unit tests
+  were run.
+
+- Shared RefCell handle-cell-release helper normalization (2026-07-18):
+  `RefCellHandleCellReleaseAction` now exposes `shouldRelease()` in
+  `src/lowering_rules.zig`. SA-text and direct SAB owner/cell release scans use
+  that shared predicate instead of switching locally on the action enum when
+  deciding whether a RefCell borrow handle must be released. Serial focused
+  verification passed `zig fmt --check src/lowering_rules.zig src/codegen.zig
+  src/sab_codegen.zig` and `zig build test -j1 -Dtest-filter='shared lowering
+  rules classify result-slot value transfer' --summary all` 2/2. No full tests
+  or concurrent unit tests were run.
+
+- Shared result-slot lifecycle helper normalization (2026-07-18):
+  `ResultSlotRefCellStoreAction`, `ResultSlotRefCellLoadAction`,
+  `ResultSlotLoadLifecycleAction`, and `ResultSlotStoreLifecycleAction` now
+  expose predicate helpers in `src/lowering_rules.zig`. SA-text and direct SAB
+  result-slot store/load paths consume those helpers instead of repeating local
+  switch logic for value-state transfer, source release, RefCell borrow-handle
+  companion restore, and empty companion cleanup. Serial focused verification
+  passed `zig build test -j1 -Dtest-filter='shared lowering rules classify
+  result-slot value transfer' --summary all` 2/2. No full tests or concurrent
+  unit tests were run.
+
+- Docs/issue013/issue027 status-header cleanup and focused recheck
+  (2026-07-18): the remaining numbered `docs/issue*.md` files without a
+  standard status header now have explicit fixed/verified status. Fresh
+  source-built local CLI focused checks passed serially: issue013
+  `tests/test_unit_borrow_param_alias_cleanup.sla` SA 1/1 and strict SAB 1/1;
+  issue027 `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla` SA 3/3 and
+  strict SAB 3/3. No full tests, downstream broad suites, or concurrent tests
+  were run.
+
+- Shared stack-slot temp-action helper normalization (2026-07-18):
+  `StackSlotIdentifierCallArgTempAction` now exposes `releasesTemp()` /
+  `consumesTemp()`, and both SA-text and direct SAB consume those shared
+  predicates instead of repeating local switch logic for stack-slot identifier
+  call-arg temp cleanup. Serial focused verification passed
+  `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`,
+  `zig build test -j1 -Dtest-filter='shared lowering rules classify call
+  materialization decisions' --summary all` 2/2, and `zig build test -j1
+  -Dtest-filter='direct sab normal sig keeps by-value ptr params raw'
+  --summary all` 2/2. No full tests were run.
+
+- Docs/issue049 scodex CLI direct-SAB PhiStateConflict current-non-repro
+  slice (2026-07-18): the current known external Responses CLI Phi family is
+  covered by the issue050 raw pointer imported-macro address-slot fix. Focused
+  serial strict-SAB checks with the source-built local CLI passed
+  `scodex cli imports external responses stream completion through workspace`
+  1/1 and the grouped filter `scodex cli imports external responses` 9/9.
+  The full 114-test CLI file, full suites, and dev-plugin install were not run
+  in this slice to avoid broad downstream testing and the current OOM-prone
+  dev-install path.
+
+- Docs/issue050 scodex-model stream completion direct-SAB PhiStateConflict
+  closure (2026-07-18): the reported stream-completion SAB failure was traced
+  to imported HTTP-client adapter setup code. A branch-local
+  `STR_PTR("application/json")` raw pointer borrow temporary was stored into an
+  addressable stack slot for an imported macro `&%value` argument without a
+  SAB-visible consume marker, so verifier merge state saw `tmp_429` as
+  `Composite` on one path and `Uninitialized` on the other. Direct SAB now
+  consumes raw pointer borrow temporaries with `move_` after storing them into
+  borrowed stack slots or imported macro materialized slots, but keeps
+  stack-allocated string slice temporaries internally consumed to avoid
+  StackEscape. Added focused coverage in
+  `tests/test_unit_stream_completion_aggregate_phi_direct.sla` and
+  `tests/import_fixtures/imported_ptr_slot_helpers.sa`. Serial focused gates
+  passed: `zig fmt --check src/sab_codegen.zig`; `zig build -j1 --summary all`
+  7/7; local SA and strict SAB fixture 1/1 each; downstream strict SAB filter
+  `responses live external api stream completion requires eof cleanup and db
+  commit` 1/1. No full suite or concurrent test was run.
+
+- RefCell `if let` branch-dependent owner merge (2026-07-18): direct SAB now
+  carries the existing RefCell branch owner-companion merge through both
+  value-producing and statement `if let` paths. Each live branch stores its
+  active borrow owner, and the merge loads a dynamic owner when the branches
+  differ before later handle use/release. Added the focused owner fixture
+  `refcell if-let handle reassignment merges owner`. Serial verification:
+  `zig build -j1 --summary all` 7/7, local SA 1/1, and strict local SAB 1/1.
+  No full suite or concurrent test was run; official dev install was not
+  repeated because its prior ReleaseFast build approached the session OOM
+  limit.
+
+- RefCell branch-dependent assigned-handle owner merge (2026-07-17): fixed the
+  `borrowed = right.borrow_mut()` in one live branch shape for SA-text assigned
+  value slots by storing RefCell borrow owner metadata in a companion slot,
+  releasing the old dynamic borrow on reassignment without freeing that slot,
+  restoring companion maps before the sibling branch is generated, and using
+  the companion to release the actual runtime owner on explicit `!borrowed`.
+  Direct SAB keeps the same shape in local register metadata and passed the
+  matching strict no-fallback filter. Added focused coverage to
+  `tests/test_unit_refcell_owner_release_direct.sla`. Serial verification
+  passed: lowering-rule Zig filter 1/1; `zig build -j1 --summary all` 7/7;
+  local generated-SA filter 1/1; local strict direct-SAB filter 1/1. No full
+  suite was run. Official dev install was attempted once but stopped when its
+  internal ReleaseFast build held two Zig child processes near 950MB RSS each
+  for several minutes, to avoid the OOM risk observed in this session.
+
+- docs/issue status sweep (2026-07-17): added explicit fixed/verified status
+  headers to early issue001-009/029 documents, marked issue011's original
+  `sf_pos` RegisterRedefinition surface fixed/current-non-repro while leaving
+  the later `vm_table_set_index` / `tm` UseAfterMove as a separate future
+  reducer, and corrected the issue029 task text to match the shared
+  `abiFalliblePayloadOffset` contract (`i32!` payload at `+4`, 8-byte payloads
+  at `+8`). Focused installed/dev issue001 fixture passed 2/2 under SA and 2/2
+  under strict SAB. No full suite was run.
+
+- docs/issue019 source-growth cross-test instability closure (2026-07-17):
+  current `sla_music_cli` already contains the historical source-growth shapes
+  that originally triggered unrelated failures: full 13-byte MIDI
+  indicator-header checking and expanded music-patch editor context/layout
+  serialization. After the direct-SAB `NUM_U64_CHECKED_ADD` subcase was fixed,
+  focused serial rechecks now pass on that source: `music patch editor text
+  serializes intents and spans` 1/1 SA-text, `music parser captures top level
+  track and score` 1/1 SA-text, `smf1 imports back into midi ir` 1/1 SA-text,
+  `music ir writes smf1 through midi ir` 1/1 SA-text, `smf1 decompiles into
+  normalized sla source` 1/1 strict SAB, and `midi import any detects smf clip
+  and raw ump containers` 1/1 strict SAB. No compiler source change and no
+  full suite was run.
+
+- docs/issue048 `sla_music_cli` struct-literal `Vec::new()` field direct-SAB
+  MemoryLeak closure (2026-07-17): filtered strict SAB for the dirty downstream
+  `src/music_lower.sla` test `music normalized sla orders same track notes by
+  tick` failed with live `tmp_8253`. SAB disassembly showed `tmp_8253` was the
+  owned `Vec::new()` result for `MusicIrTrack.imported_name`, stored into a
+  struct literal and then moved into `music_ir_add_track(&ir, ^track)`.
+  Direct SAB now emits a visible consumed marker for non-identifier moved
+  struct-literal field temporaries after storing them into the aggregate,
+  matching macro struct-literal lowering. Added focused
+  `tests/test_unit_vec_push_call_result_struct.sla` coverage. Serial focused
+  gates passed: `zig fmt --check src/sab_codegen.zig`; build 7/7; local and
+  installed/dev strict SAB fixture 1/1; dev install/help; downstream dirty
+  strict SAB filter 1/1. No full test suite was run.
+
+- docs/issue006 strict direct-SAB parser chained-reassign current-non-repro
+  closure (2026-07-17): the historical `sla_tsgo` parser `p2 = F(p2)`
+  `UseAfterMove` / `Consumed/Consumed` over-conservation blocker no longer
+  reproduces against the installed dev plugin. After unrelated external tests
+  finished, the dirty `sla_tsgo` checkout passed
+  `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test
+  tests/test_parser_contract.sla --test-backend sab --jobs 1 --trace-panic`
+  with 204/204 and exit 0. A narrower `--filter "parse arrow expression"`
+  attempt hit child-runner `no matching test` after source-side selection, so
+  the unfiltered single-file parser contract is the closure evidence. No full
+  test suite was run.
+
+- docs/issue028 strict-SAB timeout current-non-repro closure (2026-07-17):
+  `sa sla test` applies user `--filter` / `--filter=...` at the SLA
+  source-pruning layer, then compiled-test passthrough strips those
+  source-only filter args before invoking child `sa test` on generated `.sab`
+  or `.test.sa` inputs. This avoids the child SAB runner's `no matching test`
+  filter mismatch while still stripping plugin-private `--test-backend`. The
+  remaining unfiltered timeout path was rechecked serially in the dirty
+  `sla_tsgo` checkout after unrelated external tests finished. Direct
+  `sa test .sla-cache/sab/test_real_ts_project_reference_flow-96dd54743c5a82de.sab`
+  passed 2/2 and exited 0, and the original outer
+  `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test
+  tests/test_real_ts_project_reference_flow.sla --test-backend sab --jobs 1`
+  also passed 2/2 and exited 0 in about 17.5s. No full test suite was run.
+
+- docs/issue047 source-aware chord hook-span SA-text move-state closure
+  (2026-07-17): SA-text field-address lowering now treats a generated `tmp_*`
+  register that is the resolved binding for a local as a binding alias, not as
+  a borrow source temporary to be recursively released. This fixes the
+  source-aware nested-span shape where `&chord_note.hook_span` cleanup consumed
+  a repeated-let Vec element owner before later `chord_note.hook_span.start/end`
+  or `chord_note.pitch` reads. Added
+  `tests/test_unit_vec_index_assign.sla` coverage for the branch/repeated-let
+  alias reducer. Serial focused gates passed: lowering-rule Zig filter 2/2;
+  build 7/7; local SA and strict SAB filter 1/1 each; official dev
+  install/help; installed/dev SA and strict SAB filter 1/1 each. No full test
+  suite was run.
+
+- issue019 focused SLAN/source-growth direct-SAB subcase (2026-07-17): direct
+  SAB imported macro lowering now detects leading output args whose binding is
+  an existing stack-slot local and emits `macro output temp -> store slot`
+  instead of letting the macro fragment define the stack slot register again.
+  This fixes the `NUM_U64_CHECKED_ADD(add_ok, end_tick, ...)` shape exposed by
+  the current dirty `sla_music_cli/src/midi.sla` SMF2 UMP `SLAN` coverage.
+  Added `tests/test_unit_checked_add_macro_output_direct.sla` plus decoded-SAB
+  regression coverage. Serial focused verification passed: Zig filter 2/2;
+  build 7/7; local and installed/dev SA plus strict SAB fixture 1/1 each; dev
+  install/help; downstream dirty-checkout strict SAB filter
+  `smf2 ump rejects unsupported packet types` 1/1. No full test suite was run.
+  At that point the broad issue019 source-growth recheck was still pending; it
+  is now covered by the closure entry above.
+
+- docs/issue historical wording cleanup (2026-07-17): fixed residual
+  false-positive text in closed issue docs 014, 016, 020, 024, 031, and 040 so
+  open-issue scans no longer confuse historical repro notes with current
+  status. Documentation-only; no full tests were run.
+
+- docs/issue012 scodex plugin extern CapabilityMismatch reconciliation
+  (2026-07-17): the document now closes only the compiler-owned borrow-prefix
+  CapabilityMismatch root cause as fixed/current-non-repro. The old adapter
+  RC139 note is preserved as a historical separate runtime/ABI concern. Existing
+  issue031/016 installed/dev evidence covers the current HTTP adapter and CLI
+  strict-SAB gates; node/deno were not freshly rerun because the current
+  `sla_codex` checkout is dirty. Documentation-only; no full tests were run.
+
+- docs/issue025 sa_std buffer-free consumed-handle cleanup reconciliation
+  (2026-07-17): the source fix already covers direct scalar handles consumed
+  by `^` extern params and generated field-access temporaries for SA-text
+  extern move calls. Updated the issue status from pending release wording to
+  fixed/source-verified, with the current focused regression
+  `zig build test -j1 -Dtest-filter='extern move' --summary all` passing 3/3.
+  No full test suite was run. A fresh SA/SAB fixture rerun was not started
+  because another external `sa sla test` process was active.
+
+- docs/issue016/020 scodex pointer/response-reader stale-open reconciliation
+  (2026-07-17): issue016 already had a fixed/current-non-repro header, but old
+  repro sections still said it remained open; issue020 lacked a current
+  resolution. Updated both docs to classify those old notes as historical and
+  reference existing issue031/issue016 installed/dev evidence:
+  `http_client_adapter` 16/16, response-reader filter 1/1, CLI strict SAB 78/78,
+  SAB workspace, and build-workspace. Documentation-only; the current
+  `sla_codex` checkout is dirty, so no fresh broad downstream rerun was used.
+
+- docs/issue014 internal status reconciliation (2026-07-17): the file header
+  already marked issue014 resolved, but an intermediate investigation paragraph
+  still said the issue remained open. Updated the doc to make that paragraph
+  historical and reference the final shallow-copy field-transfer resolution plus
+  issue040's later `music_ir.sla` strict SAB 26/26 Vec-index closure.
+  Documentation-only; no fresh tests were run because another external
+  `sa sla test` process was active.
+
+- docs/issue031 scodex main direct-SAB workspace import aggregate MemoryLeak
+  current-non-repro closure (2026-07-17): the tracked unfiltered
+  `crates/scodex-cli/src/main.sla` strict-SAB aggregate leak is covered by the
+  later issue016 scodex revalidation. Installed/dev strict SAB passed
+  `crates/scodex-cli/src/main.sla` 78/78, adjacent scodex crate fixtures, SAB
+  workspace generation, and build-workspace. No compiler source change and no
+  full suite were run for this document closure. The current `sla_codex`
+  checkout is dirty, so no fresh broad downstream rerun was used as closure
+  evidence.
+
+- docs/issue021 direct-SAB early-return helper-chain ptr PhiStateConflict
+  current-non-repro closure (2026-07-17): current direct-SAB branch lowering
+  scopes branch-local release state before merge, covering reusable `ptr`
+  parameters passed through mutually exclusive early-return helper chains.
+  Existing `tests/test_unit_if_return_helper_chain_ptr_direct.sla` is the
+  repository-owned reduced fixture for the historical `buf` shape. Focused
+  installed/dev verification passed: generated-SA fixture 1/1 and strict
+  direct-SAB fixture 1/1. No compiler source change and no full suite were run.
+  The downstream `sla_tsgo` checkout is dirty, so no broad downstream rerun was
+  used as closure evidence.
+
+- docs/issue045 `u64::MAX` literal parser closure (2026-07-17): integer
+  suffixes are now identified before numeric parsing in `parsePrefixExpr`.
+  Explicit `u64` and `usize` literals parse through `u64` and retain their bit
+  pattern in the existing `i64` AST payload, so
+  `18446744073709551615u64` no longer fails with `InvalidCharacter`.
+  Unsuffixed and signed literals continue to use checked `i64` parsing. Added
+  `tests/test_unit_u64_max_literal.sla` for unsigned divide, modulo,
+  comparison, and shift behavior on the max literal. Serial focused
+  verification passed: `zig test src/parser.zig --test-filter "parser
+  accepts explicit u64 max literal suffix"` 1/1; `zig build -j1 --summary all`
+  7/7; local generated-SA and strict direct-SAB fixture 1/1 each; official dev
+  install/help; installed/dev generated-SA and strict direct-SAB fixture 1/1
+  each. No full suite was run.
+
+- docs/issue046 unsigned binary lowering closure (2026-07-17): ordinary scalar
+  binary expressions now share signed/unsigned/float operation selection through
+  `src/lowering_rules.zig`; generated-SA and direct SAB both select `udiv`,
+  `urem`, `ule`, `ult`, `uge`, `ugt`, and `lshr` for high-bit `u64` operations.
+  Direct SAB also emits typed unsigned literals and nonnegative values at or
+  above `2^62` as `imm_u64`, fixing the `9223372036854775807u64` SAB
+  `Leb128Overflow` surfaced by the focused fixture. Added
+  `tests/test_unit_unsigned_binary_ops.sla`. Serial focused verification passed:
+  `zig test src/lowering_rules.zig --test-filter "shared scalar binary plan
+  selects unsigned high bit operations"` 1/1; `zig build -j1 --summary all` 7/7;
+  local generated-SA and strict direct-SAB fixture 1/1 each; generated-SA and
+  SAB disassembly opcode checks; official dev install/help; installed/dev
+  generated-SA and strict direct-SAB fixture 1/1 each. No full suite was run.
+
+- docs/issue039 SA-backend thread/time fallible return mismatch closure
+  (2026-07-17): escaped thread closures with function-pointer or noncopy
+  captures now follow the shared inline-join execution plan. SA-text manually
+  constructs scalar join Results, lowers unwrap without the mismatched macro
+  surface, and prunes unused thread runtime imports. The time failure was
+  isolated to SCI's hardcoded fallible `sa_time_sleep_ns` LLVM shim conflicting
+  with its ordinary runtime `i32` ABI; the unshimmed
+  `sa_time_sleep_ms(u64) -> i32` ABI passes directly. When the selected time
+  surface contains only `TIME_DURATION_FROM_MILLIS` and
+  `TIME_THREAD_SLEEP_NS`, generated SA now emits the duration conversion
+  directly, skips `sa_std/time.sa`, and rounds nonzero nanoseconds up before
+  calling `sa_time_sleep_ms`. Added
+  `tests/test_unit_time_sleep_fallible_direct.sla`. Serial focused gates
+  passed: `zig fmt --check src/codegen.zig`; `git diff --check`; `zig build
+  -j1 --summary all` 7/7; local pair/time fixtures 1/1 each; official dev
+  install/help; installed/dev pair/time fixtures 1/1 each. Generated time SA
+  has no `sa_std/time.sa`, `TIME_*`, or `sa_time_sleep_ns`. No full suite was
+  run.
+
+- docs/issue `music_ir_vec_inline_struct_index_alias` stale-open closure
+  (2026-07-16): current SA-text Vec lowering treats `Vec<T>` element slots as
+  owner pointer slots for struct elements rather than inline struct storage.
+  Existing focused fixtures cover `Vec<struct>` slot reads, dynamic index
+  borrow/swap, `vec[i].field` writes, repeated scalar field reads from a Vec
+  element local, and cleanup for scalar field assignment on structs containing
+  `Vec`. Downstream focused verification passed in
+  `/home/vscode/projects/sla_music_cli`: `timeout 300s env SA_PLUGIN_DEV=1 sa
+  sla test src/music_ir.sla --test-backend sa --jobs 1 --trace-panic` returned
+  26/26. No compiler source change and no full suite were run.
+
+- docs/issue022 `sla_music_cli` direct-SAB `build-exe` closure (2026-07-16):
+  the earlier stale `ptr_add` operand, raw-ptr temp cleanup, and executable
+  entry-prune fixes are now joined by a direct-SAB repeated-byte-array fill path:
+  `[0u8; N]` lowers through `sa_mem_set` instead of one `store` per byte. This
+  removes the `io_write_writer_to_path` 65k-line hotspot caused by `[0u8; 65536]`.
+  Focused serial verification passed: `zig fmt --check src/sab_codegen.zig`;
+  `zig build test -j1 -Dtest-filter="direct sab large repeated byte array uses
+  mem set" --summary all` 2/2; `zig build -j1 --summary all` 7/7; official
+  dev install/help; `git diff --check`. Downstream local strict
+  `sla_music_cli/src/main.sla` full SAB build/disasm shows
+  `@sa_mem_set(..., 65536)` in `io_write_writer_to_path`, no tail store expansion,
+  and max function size about 2545 lines. Local strict `build-exe --jobs 1`
+  completed within 300s and produced `/tmp/slamusic-cli-repeatfill-20260716`;
+  default demo plus `verify`, `inspect`, and `build -o` passed on a minimal music
+  source, writing an 83-byte MIDI file. No full suite was run.
+
+- docs/issue043 `sla_music_cli` `cli_arg_eq` raw pointer byte-add SA
+  UseAfterMove current-non-repro closure (2026-07-16): the focused
+  `music cli output flag scan helpers` test is now present in
+  `/home/vscode/projects/sla_music_cli/src/main.sla` and passes against the
+  installed dev plugin. Serial focused verification passed:
+  `SA_PLUGIN_DEV=1 sa sla test src/main.sla --test-backend sa --jobs 1
+  --trace-panic` 1/1 and `SA_PLUGIN_DEV=1 SLA_SAB_NO_FALLBACK=1 sa sla test
+  src/main.sla --test-backend sab --jobs 1 --trace-panic` 1/1. No compiler
+  source change and no full suite were run.
+
+- docs/issue016 scodex pointer/string scanner direct-SAB current-non-repro
+  closure (2026-07-16): current `sla_codex` paths moved from `packages/` to
+  `crates/`, and the historical no-diagnostic direct-SAB exit no longer
+  reproduces against the installed dev plugin. Serial focused verification
+  passed under `SLA_SAB_NO_FALLBACK=1`: `crates/scodex-cli/src/args.sla`
+  strict SAB 11/11, `crates/scodex-config/src/config.sla` strict SAB 15/15,
+  `crates/scodex-app-server-protocol/src/protocol_v2.sla` strict SAB 8/8,
+  `crates/scodex-cli/src/main.sla` strict SAB 78/78,
+  `sa sla sab workspace -p scodex-cli --sab-out /tmp/scodex-issue016.sab`,
+  and `sa sla build-workspace -p scodex-cli -o /tmp/scodex-issue016`. No
+  compiler source change and no full suite were run.
+
+- docs/issue040 `sla_music_cli` `music_ir.sla` strict direct-SAB unsupported
+  Vec struct index-borrow closure (2026-07-16): direct SAB now lets
+  std-surface `index_address` lower `Vec<T>` when `T` is an ordinary
+  pointer-backed struct, and borrowed call arguments like `&values[j]` load the
+  stored object pointer before emitting the borrow operand. Added
+  `tests/test_unit_vec_index_assign.sla` coverage for a selection-sort shaped
+  `Vec<VecPoint>` dynamic index borrow and swap. Serial focused gates passed:
+  `zig fmt --check src/sab_codegen.zig`; `git diff --check`; `zig build -j1
+  --summary all` 7/7; local and installed/dev SA plus strict SAB filter
+  `vec struct dynamic index borrow and swap` 1/1 each; official dev
+  install/help; downstream `/home/vscode/projects/sla_music_cli/src/music_ir.sla`
+  strict SAB 26/26. No full suite was run.
+
+- docs/issue042 stack_alloc const-expression size closure (2026-07-16):
+  shared lowering rules now evaluate integer constant expressions for
+  `stack_alloc` allocation sizes instead of letting each emitter read only
+  literal arguments and fall back to 16. The shared helper resolves scalar
+  const identifiers and aliases, casts around integer constants, and supported
+  integer binary operators; SA-text and direct SAB both consume it. Focused
+  serial gates passed: `zig fmt --check src/lowering_rules.zig src/codegen.zig
+  src/sab_codegen.zig`; shared lowering-rule Zig 1/1; SA-text codegen Zig 1/1;
+  filtered direct-SAB `zig build test` 2/2; `zig build -j1 --summary all` 7/7;
+  official dev install/help. No full suite was run.
+
+- docs/issue041 MidiIR scalar field-assignment SA cleanup closure
+  (2026-07-16): fixed the generated-SA leak where assigning a scalar field on
+  an assigned value-slot aggregate local left the temporary base register live
+  at test exit. Ordinary SA-text field assignment now uses the shared
+  `fieldBaseResultNeedsRelease()` rule already used by field reads, so a
+  loaded value-slot temp is released after the store while resolved lexical
+  aliases remain live. Added
+  `tests/test_unit_field_assign_move_cleanup.sla` coverage for a struct with a
+  `Vec` field, scalar metadata assignment, and borrowed validation call.
+  Serial focused gates passed: `zig fmt --check src/codegen.zig`; `zig build
+  -j1 --summary all` 7/7; local and installed/dev SA fixture 4/4 each;
+  official dev install/help; downstream
+  `/home/vscode/projects/sla_music_cli/src/midi.sla` SA backend 38/38 and
+  `/home/vscode/projects/sla_music_cli/src/music_ir.sla` SA backend 26/26.
+  No full suite was run.
+
+- docs/issue018 scodex protocol JSON scanner cleanup closure (2026-07-16):
+  direct SAB now handles raw `ptr` locals initialized from `STR_PTR(identifier)`
+  and then borrowed as `&ptr`: non-owning raw pointer temps stored into
+  borrowed stack slots are consumed with a normal release, and dereferencing
+  `&ptr` loads with storage ABI primitive `ptr`. Added
+  `tests/test_unit_protocol_json_balance_cleanup.sla` for by-value ptr reads,
+  borrowed ptr locals, and the positive/malformed/missing protocol JSON scanner
+  paths. Serial focused gates passed: `zig fmt --check src/sab_codegen.zig`;
+  `git diff --check`; `zig build -j1 --summary all` 7/7; local and
+  installed/dev SA plus strict SAB fixture 5/5 each; adjacent strict SAB
+  raw-ptr and borrowed-primitive fixtures 1/1 each; official dev install/help;
+  downstream `/home/vscode/projects/sla_codex/crates/scodex-protocol/src/protocol_json.sla`
+  SA and strict SAB 8/8 each. No full suite was run.
+
+- raw-ptr ABI return assignment compatibility (2026-07-16): fixed the
+  TypeChecker path where SLA raw `ptr` is represented as `primitive.void_type`
+  but an extern ABI return such as `^ptr` is represented as a pointer type.
+  Explicit `var` assignment, typed `let`/`const`, top-level `const`, function
+  tail expressions, and `return` now use `valueAssignableTo()` so a raw `ptr`
+  target can accept a pointer ABI return without weakening pointer-to-pointer
+  equality. Kept the improved assignment diagnostic with function and target
+  names. Added focused regression coverage in `src/type_checker.zig`.
+  Verification passed: `zig build test -j1 -Dtest-filter='raw ptr bindings
+  from pointer abi returns' --summary all` 2/2, `zig build -j1`, and
+  `SA_PLUGIN_DEV=1 sa plugin install --dev
+  /home/vscode/projects/sa_plugins/sa_plugin_sla`. No full suite was run.
+
+- docs/issue034 Vec element repeated field-load SA closure (2026-07-16):
+  issue035/033's field-base lifetime fixes also cover the `sla_music_cli`
+  `midi_ir_to_music_ir` generated-SA `UseAfterMove`: a Vec element aggregate
+  local now survives repeated scalar field projections. Added
+  `tests/test_unit_vec_index_assign.sla` coverage for a Vec-stored struct
+  assigned to a local and read through repeated fields in one aggregate
+  literal. Serial focused verification passed: `git diff --check`;
+  `zig build -j1 --summary all` 7/7; local and installed/dev SA plus strict
+  SAB fixture 6/6 each; official dev install/help; downstream
+  `/home/vscode/projects/sla_music_cli/src/music_ir.sla` SA backend 25/25. The
+  downstream strict SAB file still fails differently with
+  `UnsupportedSabDirectFeature`, now tracked as issue040. No full suite was
+  run.
+
+- docs/issue038 nested owner aggregate call-arg closure (2026-07-16):
+  preserved by-value call arguments may now shallow-copy a plain outer
+  aggregate even when that aggregate contains nested standard-owner slots such
+  as `Vec`. Top-level standard owners remain non-copyable, and shallow-copy
+  emission stores nested owner slots directly instead of recursively copying
+  owner internals. Added
+  `tests/test_unit_sab_stack_aggregate_shallow_copy_arg.sla` to cover a
+  `QueueState` with two Vec fields passed to a read-only helper before later
+  mutation. Serial focused verification passed: `zig fmt
+  src/codegen.zig src/sab_codegen.zig`; `git diff --check`; `zig build -j1
+  --summary all` 7/7; local and installed/dev SA plus strict SAB fixture 1/1
+  each; official dev install/help; downstream
+  `/home/vscode/projects/sla_ecs/lib/task_scope_completion.sla` strict SAB
+  filters 3/3 and matching generated-SA filters 3/3. No full suite was run.
+
+- docs/issue036 loop-local scalar cleanup closure (2026-07-16):
+  SA-text while lowering now tracks top-level loop-body `let` locals and
+  releases them consistently on break/continue exits and natural backedges.
+  This fixes the `sla_tsgo` `emit_js_skip_class_member_modifiers` `next`
+  `PhiStateConflict`. After that blocker moved, the downstream contract
+  exposed `check_kw` double-releasing `kwb`; the old AST-scanned natural
+  backedge cleanup no longer releases tracked top-level `let` locals a second
+  time. `tests/test_unit_loop_body_local_cleanup.sla` now covers the scalar
+  break/backedge shape and the assignment-RHS single-cleanup shape. Serial
+  focused verification passed: `zig build -j1 --summary all` 7/7; local and
+  installed/dev SA plus strict SAB fixture 4/4 each; official
+  `SA_PLUGIN_DEV=1 sa plugin install --dev .` and `SA_PLUGIN_DEV=1 sa sla
+  help`; downstream `/home/vscode/projects/mnt/sla_tsgo`
+  `tests/test_compile_ts_to_js_text_contract.sla` SA backend 68/68. No full
+  suite was run.
+
+- docs/issue033 repeated aggregate alias field lifetime closure (2026-07-16):
+  the shared field-base release decision committed for issue035 also fixes
+  `sla_tsgo` `parse_jsx_like_expression`. Repeated `let after_lt`
+  declarations receive generated `tmp_*` lexical binding names; `.current_kind`
+  no longer consumes those live bindings before `advance(after_lt)`.
+  Focused serial verification passed: shared Zig test 1/1; build 7/7; local
+  and installed SA plus strict SAB fixture 3/3 each; official dev
+  install/help. The downstream compile-to-JS SA contract advances past
+  issue033; the later issue036 loop-local scalar blocker is now closed. No
+  full suite was run.
+
+- docs/issue035 assigned aggregate field-base lifetime closure (2026-07-16):
+  SA-text field lowering previously released any `tmp_*` field base, even
+  when that register was the resolved binding for an assigned aggregate
+  identifier. The first field projection therefore consumed the local and a
+  later branch or loop iteration failed with `UseAfterMove`.
+  `fieldBaseResultNeedsRelease()` now lives in shared
+  `src/lowering_rules.zig`; `src/codegen.zig` uses it for tuple, manual-drop,
+  and ordinary struct field projections. Extended
+  `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla` with the minimal
+  repeated-field regression. Serial focused verification passed: shared Zig
+  test 1/1; official dev install/help; compiler generated-SA fixture 1/1;
+  downstream `sla_ecs` generated-SA rescan fixture 1/1. The downstream
+  default backend was already green. No full suite was run.
+
+- docs/issue032 repeated lexical loop-local register isolation closure
+  (2026-07-16): the per-function repeated `let` scanner previously owned by
+  direct SAB now lives in shared `src/lowering_rules.zig` and feeds both
+  emitters. SA-text allocates a unique lexical alias for each repeated
+  declaration and records the concrete AST-node alias so natural loop
+  backedge cleanup does not fall back to an out-of-scope source name.
+  `tests/test_unit_loop_body_local_cleanup.sla` now covers two sequential
+  loops declaring `let c`; before the fix it reproduced the downstream
+  `expected Untracked, actual Consumed` Phi signature. Serial focused
+  verification passed: fmt/diff checks; shared Zig 1/1; build 7/7; local SA
+  and strict SAB 2/2 each; official dev install/help. Downstream
+  `test_compile_ts_to_js_text_contract.sla` gets past `emit_js_emit_enum`;
+  its later issue033 failure is now also fixed, and the current blocker is
+  issue036. No full suite was run.
+
+- docs/issue027 imported-macro type and assigned aggregate alias closure
+  (2026-07-16): shared imported-macro expression result classification now
+  covers the compiler helper macros used by `sla_tsgo`. SA-text identifier
+  lowering now checks the resolved binding against `assigned_value_slots`
+  after shadowing/redeclaration and loads the typed aggregate value from
+  `slot+0` instead of returning the stack-slot address. Extended
+  `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla` with the parser-state
+  redeclaration/reassignment return shape. Serial focused verification passed:
+  fmt and diff checks; build 7/7; local SA and strict SAB 2/2 each; official
+  dev install/help; downstream `tests/test_compiler_contract.sla` SA backend
+  41/41. The later `emit_js_emit_enum` loop `PhiStateConflict` is now fixed as
+  issue032, and the later issue033 field-base failure is also fixed. The
+  current downstream issue036 blocker is now closed. No full suite was run.
+
+- docs/issue029 fallible extern payload and call-arg temp cleanup closure
+  (2026-07-15): by-value raw `ptr` extern params now enter shared
+  call-argument materialization as by-value values in SA-text and direct SAB,
+  avoiding accidental move/ownership treatment. SA-text call-argument cleanup
+  now releases generated temporaries from stack-slot identifier loads and
+  materializing casts. Fallible extern payload extraction uses SCI's SA ABI
+  payload slot at `+8` for all payload widths, including `i32!`.
+  `tests/test_unit_fallible_extern_payload_direct.sla` covers `u64!` through
+  `sa_fs_read_file` and `i32!` through `sa_fs_metadata_free(metadata)`.
+  Serial focused verification: `zig fmt --check`; `git diff --check`; build
+  7/7; focused lowering-rule Zig 1/1; local SA and strict SAB 2/2 each;
+  official dev install/help; installed/dev SA and strict SAB 2/2 each. No full
+  suite was run.
+
+- docs/issue026 imported pointer-macro output binding closure (2026-07-15):
+  `ptr_add source, start` is SA instruction syntax rather than a legal SLA
+  expression; current installed/dev `sa sla check` and `sa sla build` both
+  reject the focused temporary repro at the same token, so the historical
+  parser disagreement is not reproducible. The legal
+  `SLA_PTR_ADD(base, source, start)` form exposed a direct-SAB leading-output
+  bug because `let base = source` can retain the raw-ptr source parameter
+  register as a borrow-like alias. `src/sab_codegen.zig` now reserves a
+  distinct destination for non-expression imported-macro leading outputs and
+  installs the output binding after argument lowering and macro emission.
+  Added `tests/test_unit_ptr_add_macro_output_direct.sla` and a decoded-SAB
+  regression proving the `ptr_add` destination differs from
+  `sla__source_map_base_name__param_0_source`. Serial focused verification:
+  build 7/7; focused Zig 2/2; local SA and strict SAB 1/1 each; official dev
+  install/help; installed/dev SA and strict SAB 1/1 each. No full suite was
+  run.
+
+- docs/issue023 SA-text imported-macro argument type closure (2026-07-15):
+  `src/codegen.zig` now recovers `len(...)`, comparison/logical expression, and
+  imported env buffer-producing macro result types before imported-macro
+  materialization. Extended the focused plugin regression with
+  `sa_fs_write_file(..., len(bytes))`, `ENV_ARGS_JSON`,
+  `ENV_BUFFER_DATA`, and `ENV_BUFFER_LEN`. Verification passed serially:
+  focused `plugin_tests.zig`, `zig build -j1 --summary all`, official
+  `SA_PLUGIN_DEV=1 sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`,
+  and the real `/home/vscode/projects/sla_music_cli`
+  `SA_PLUGIN_DEV=1 sa sla build src/main.sla --out /tmp/slamusic-main.sa`.
+  issue023 is fixed/verified. issue022's direct-SAB `build-exe` `tmp_167`
+  `UseAfterMove` was tracked separately and is now closed.
+
+- docs/issue raw-ptr and ptr-aggregate call-arg ABI closure (2026-07-14):
+  ordinary by-value `ptr` parameters no longer get implicit move capability
+  merely because raw `ptr` is represented as `primitive.void_type` and is not a
+  Copy value. SA-text `abiParamPrefix()` and direct SAB `paramCapability()` now
+  keep borrow-like raw pointer values by-value unless the source explicitly
+  requests borrow/move. Shallow-copy-safe ptr/scalar aggregates passed as
+  by-value call args now materialize a copy before move-prefixed calls, so a
+  `ScannerState`-style value can be reused across nested sibling args. Added
+  `tests/test_unit_ptr_value_arg_reuse.sla`,
+  `tests/test_unit_shallow_copy_ptr_aggregate_call_arg.sla`, and a direct SAB
+  signature regression. SA-text now also lowers reassigned shallow-copy-safe
+  aggregate locals through stack value slots, preventing `p2 = tmp`-style
+  RegisterRedefinition at branch/loop merges; added
+  `tests/test_unit_sa_assigned_ptr_aggregate_slot.sla`. Local and official dev
+  SA/SAB focused fixture gates pass. `sla_tsgo` `test_checker_contract.sla` now
+  gets past the original `lookup_keyword` `UnknownRegister tmp_220` / SA-text
+  `CapabilityMismatch tmp_338` raw-ptr surface, the follow-on `advance`/`mkpj`
+  `s2` UseAfterMove, and the `parse_function_expression` `p2 = tmp_6858`
+  RegisterRedefinition: official dev SA-text, default/direct SAB, and strict
+  direct SAB all pass 170/170. `lua_sla/src_lua/lvm.sla` also gets past the
+  historical issue011 `sf_pos` RegisterRedefinition and now stops at
+  `vm_table_set_index` `tm` UseAfterMove.
+
+- docs/issue focused cleanup and verification slice (2026-07-14): fixed the
+  remaining issue004 SA/SAB by-value call-argument cleanup gaps by recording
+  ownership-transfer operands in emitter cleanup state, including direct SAB
+  ABI-inferred `^` operands. Fixed issue007-adjacent SA-text raw pointer call
+  arguments by applying by-value `ptr` ABI move prefixes to string-literal and
+  imported-macro pointer results. Added a direct SAB lifecycle fix for
+  all-scalar struct values that are shallow-copied while being moved into a
+  struct field: the copied field is marked transferred into the parent and the
+  moved source is released. Reverified local focused issue batch plus official
+  dev-plugin gates after `SA_PLUGIN_DEV=1 sa plugin install --dev .` and
+  `SA_PLUGIN_DEV=1 sa sla help`: issue004 SA/SAB, issue007 SA/SAB, raw-pointer
+  literal SA, issue002/003/009 strict SAB Vec/field regressions, the extended
+  issue003 local-struct-copy fixture, and borrow-struct strict SAB all pass.
+  Source filters `direct sab extern` and
+  `resolve import by workspace package name` pass 2/2. `scodex-cli`
+  package-name import check and `build-workspace -p scodex-cli` pass through
+  official `SA_PLUGIN_DEV=1 sa sla ...`; issue008 official SA-text rerun passes;
+  issue014 `sla_music_cli/src/music_ir.sla` strict direct SAB now passes 4/4.
+  The borrow-temp strict SAB `--filter` registration mismatch no longer
+  reproduces: both tracked filters pass locally and through official
+  `SA_PLUGIN_DEV=1 sa sla ...`, and official dev strict SAB whole-file remains
+  25/25.
+
+- direct-SAB non-owning smart-pointer field-view lifecycle closure (2026-07-14): removed the ordinary direct-SAB borrow path that loaded a pointer-backed `&field` as the field's owning `Box`/`Rc`/`Arc` value, and removed the matching call-argument path that passed/released that owner instead of the already materialized field-slot address. Ordinary field borrows now follow the same shared `planAddressOf()` plus `PrefixedBorrowAddressCallArgReleasePlan` contract as macro borrows: the callee receives the field-slot view, address temporaries are discharged, and the owner stored in the containing struct remains live. `tests/test_unit_borrow_temp_release_order.sla` recovered from strict-SAB 16/25 to 25/25; local SA-text parity is 25/25. The stale std-surface metadata assertion was also corrected to verify the current structured `Vec_len` load while retaining the `sa_vec_len` signature, instead of requiring an obsolete call. Serial gates: `zig fmt --check`, `git diff --check`, build 7/7, shared borrow-plan Zig 1/1, static-call plan 2/2, std-surface metadata 2/2, full Zig 210/210, official dev install/help, local strict SAB 25/25, local SA 25/25, local strict SAB filters 1/1 each, official dev strict SAB filters 1/1 each, and official dev strict SAB whole-file 25/25. The SAB `--filter` registration mismatch is closed for the tracked borrow-temp cases.
+
+- borrow_temp void-call + SAB filter/harness diagnosis (2026-07-13): reconfirmed the two strict-SAB `--filter` cases on `tests/test_unit_borrow_temp_release_order.sla` fail with code 1 and `error: no matching test` even with `--trace-panic`; the same two cases PASS in the no-filter strict-SAB whole-file run, and the SA-text `--filter` path passes. This points at the sa test harness + SAB module + `--filter` runtime registration mismatch, not at the void-call codegen itself. The whole-file strict-SAB run is 16/25: the two void-call cases plus several deep-borrow cases PASS, but 9 `&field`/`&*field` smart-pointer borrow cases fail with signal 11; those 9 reproduce on unmodified `1df9edc` and are tracked as a pre-existing non-owning field-view + owner-cleanup lifecycle gap in `docs/sab_borrow_temp_void_call_regression_issue_cn.md`. No SA/SAB release special-case was added this slice; the pointer-backed `&field` SAB arg path was reverted to its prior `markNonOwningReg` + `release_reg = owner` shape after experiments (`release`/`markConsumed`/no-release variants all failed to move the 9 signal-11 cases) confirmed the fix needs shared call/lifecycle plan modeling, not an emitter release tweak. `emitRelease` non-owning branch keeps `move_` (its original behavior). Serial gates this slice: `zig build -j1` 7/7, `zig build test -j1` 209/210 (the single failure is the pre-existing `sla sab backend lowers std surface function metadata directly` std-surface `len` inline vs `@sa_vec_len` call assertion, unrelated to this diagnosis), `zig test src/lowering_rules.zig` shared static-call/borrow/refcell regressions 4/4, SA-text `tests/test_unit_borrow_temp_release_order.sla` 25/25, strict-SAB whole-file 16/25. Open: the 9 signal-11 field-borrow cases, the std-surface `len` assertion, and the Module Table import-expand latency target still dominated by import root resolution.
+
+- Module Table namespace-local helper binding correction (2026-07-13): focused selective-body materialization can now retain only namespace aliases for sibling modules that each define `entry -> helper` without flattening duplicate raw `helper` declarations. `src/type_checker.zig` tracks the namespace of the alias function currently being checked, resolves raw same-module calls against `<namespace>__<name>` first, and records the historical raw target plus alias metadata so both SA-text and direct-SAB keep consuming the same shared call binding contract. The same-named helper regression now asserts both emitted alias functions and `call @sla__dep__helper` / `call @sla__sibling__helper`. Serial gates passed: same-named helper 2/2, selective reachable bodies 1/1, Module Table 15/15, imported alias metadata 2/2, build 7/7, full Zig 210/210, official dev install/help, and real `sla_ecs` focused generated-SA profiles. Current profile samples pass but do not prove latency improvement: `parallel_query.sla` `parse 291ms`, `import expand 868ms`, `load contracts 0ms`, `import aliases 4ms`, `elapsed 4.34`; `parallel_table_erased.sla` `parse 246ms`, `import expand 1156ms`, `load contracts 0ms`, `import aliases 0ms`, `elapsed 5.23`. The latency issue stays open; the remaining cost is dominated by import root resolution and repeated reachability/materialization extension. This is a shared TypeChecker/Module Table correctness slice, not full namespace isolation for const/macro/type binding and not completion of Typed HIR/LoweringPlan.
+
+- Shared static-call LoweringPlan foundation (2026-07-13): added `StaticCallLoweringPlan`, combining the existing resolved target/namespace-alias plan with the shared result-shape plan. SA-text and direct-SAB now consume the composite plan; SA resolved void calls no longer emit invalid `dst = call` syntax and instead use the same no-result decision as direct SAB. Added focused shared-plan and SA/direct-SAB regressions. Serial gates passed: shared lowering rule 1/1, generated SA/direct-SAB void plan 2/2, same-named imported helper namespace regression 2/2, `zig build -j1` 7/7, official dev install, and help. This is the first executable slice toward `Parser -> Typed HIR -> LoweringPlan -> emitters`, not completion of typed HIR or emitter semantic removal. Added `docs/typed_hir_lowering_plan_architecture_cn.md`, including the final cross-repo source import count of 0; current `../../sci/src/plugin_bridge.zig` remains open. A separate existing regression was rediscovered: two deep-borrow void-call strict-SAB filters fail on both this worktree and unmodified `1df9edc`, while SA-text passes; tracked in `docs/sab_borrow_temp_void_call_regression_issue_cn.md` and not attributed to this slice.
+
+- Macro postfix try now supports non-identifier sources such as ordinary call expressions (2026-07-12). Shared analysis separates “this macro expansion can early-return through try” from “this parameter is the propagated container”: `macroBodyHasTry()` detects direct try nodes, TypeChecker recursively follows nested try-macro calls with a macro-level cycle guard, and only direct/forwarded container parameters enter the exclusion set. Therefore `direct_macro_make_option(value, succeed)?` receives a full caller cleanup list rather than incorrectly excluding value/succeed. Some(36) continues to Some(42); None returns early while releasing Box, result, and ordinary function parameters in SA/SAB. Verification: build 7/7; full Zig 208/208; local/installed macro SA/SAB 2/2; Option SA/SAB 1/1; filtered custom try SAB 3/3; owner SA/SAB 15/15; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100% for tracked identifier and call-expression macro try sources; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; corpus remains 130/130 without a new sweep.
+- Macro postfix-try call-site cleanup now propagates through nested user macros and covers standard/custom Result (2026-07-12). TypeChecker recursively resolves `(macro, parameter)` try-source effects through user-macro calls with a cycle guard, while direct `?param` also counts as an ownership-consuming macro effect. The outer concrete `CallExpr` therefore owns the real caller cleanup list even when an inner wrapper contains the try. The existing Option macro remains green; nested Result Ok(34) continues to Ok(42), Err(7) propagates unchanged, custom `{is_err,value,error}` success reaches 42, and custom error 6 propagates unchanged, with Box/result locals cleaned on each error path. Verification: build 7/7; full Zig 208/208; local/installed macro SA/SAB 2/2; filtered custom try SA/SAB 3/3; ordinary Result SA/SAB 1/1; owner SA/SAB 15/15; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100% for tracked Option/Result/custom Result macro try including one nested wrapper; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; corpus remains 130/130 without a new sweep.
+- User macros now support postfix `?` over Option with exact call-site early-return cleanup in SA-text and direct SAB (2026-07-12). Shared `macroParamIsTrySource()` identifies propagated macro parameters. TypeChecker permits infer-typed macro try bodies, records a cleanup list per concrete macro call (not on the shared macro AST), excludes the propagated container argument, and marks the container consumed through the existing macro effect path. Both emitters carry that invocation-specific list while expanding nested macros; SA resolves the inner type from macro argument context, and SAB temporarily supplies the same concrete type to ordinary `genTry()` while reusing its branch/result logic. The focused move-parameter function owns a Box plus result local: Some(33) continues to Some(42), while None returns early and releases both caller locals. Verification: shared try-source regression; build 7/7; full Zig 208/208 (rerun after the rule assertion); local/installed macro SA/SAB 2/2; filtered/custom try SA/SAB 3/3; owner SA/SAB 15/15; borrow-temp SAB 25/25; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100% for Option macro try; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; corpus remains 130/130 without a new sweep. Result/custom-Result macro try remains a follow-up coverage/typing extension.
+- SA-text inline user macros now preserve same-name caller/local hygiene inside value-producing `unsafe` blocks (2026-07-12). Codegen tracks the active inline macro across nested expansion and lowers unsafe block prefixes with the same hygienic alias/type stack used by top-level macro blocks, keeping aliases live through tail evaluation and cleanup. The fixture again names both caller and unsafe-local `local`; the macro computes 35 while the caller remains 100, so SA/SAB return 135. Before the fix SA consumed the caller local and failed on `result + local`. Verification: build 7/7; full Zig 208/208; local/installed macro SA/SAB 2/2; Box unsafe SA/SAB 1/1; owner SA/SAB 15/15; borrow-temp SAB 25/25; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; corpus remains 130/130 without a new sweep. Postfix try remains open on shared macro call-site early-return cleanup.
+- Direct SAB user macros now lower value-producing `unsafe` blocks with macro-context locals (2026-07-12). `genMacroUnsafeExpr()` resolves the result type through macro context, scopes/restores macro-local bindings, uses the existing macro block-tail result-slot helper, releases block locals, and restores transferred result state. The focused macro declares an explicitly typed unsafe-local, returns `value + 2`, and coexists with a differently named caller local; SA/SAB return 135. Verification: build 7/7; full Zig 208/208; local/installed macro SA/SAB 2/2; Box unsafe SA/SAB 1/1; owner SAB 15/15; borrow-temp SAB 25/25; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100% for this focused unsafe block surface; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; corpus remains 130/130 without a new sweep. Postfix `?` remains separate because macro-expanded early-return paths need a shared call-site cleanup plan. SA-text same-name caller/unsafe-local shadowing also remains a distinct recursive inline-hygiene gap.
+- User macros now support user-defined enum `match` expressions in SA-text and direct SAB (2026-07-12). Shared TypeChecker match checking infers an infer-typed macro scrutinee from the first enum-qualified case pattern, updates the macro parameter symbol and `expr_types`, and then validates every case against that enum. Because value-only macro arguments are cached as parameter locals, both emitters can reuse their ordinary match lowering without a duplicated macro-specific control-flow implementation. The macro matches `DirectMacroMessage::Pair { left: 17, right: 19 }` and returns 36. Verification: build 7/7; full Zig 208/208; local/installed macro SA/SAB 2/2; ordinary enum match SA/SAB 2/2; borrowed enum field SA/SAB 1/1; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- User-macro ownership-effect traversal now covers the remaining common expression containers (2026-07-12): binary operands, field bases, index target/index, slice target/bounds, cast, borrow, deref, postfix try, and await. The focused runtime macro evaluates `*^value` over a Box and returns 37 in both emitters. SA-text additionally strips the move capability prefix before using the source as a dereference/load address; previously it emitted `load ^source+0` and failed `UnknownRegister`. The installed deref-move diagnostic reuses `source` afterward and receives `UseAfterMove`. Verification: shared deref-container rule regression; build 7/7; full Zig 208/208; local/installed macro SA/SAB 2/2; conditional/aggregate/deref diagnostics; Box raw SA/SAB 1/1; owner SAB 15/15; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- User-macro ownership effects now traverse aggregate literal containers (2026-07-12). Shared macro-effect analysis recursively composes moves in struct fields and update expressions, enum payload fields, tuple/array elements, and repeat-array values. A macro moves a Box into `DirectMacroBoxHolder.value` and both emitters return 38; the new installed diagnostic then reuses the moved caller `source` and TypeChecker reports `UseAfterMove`, proving frontend state no longer relies only on emitter-local aggregate transfer. Verification: shared tuple-container rule regression; build 7/7; full Zig 208/208; local/installed macro SA/SAB 2/2; conditional and aggregate-move diagnostics; smart-pointer SA/SAB 3/3; owner SAB 15/15; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- User-macro ownership effects now include explicit moves passed to ordinary function move parameters (2026-07-12). Shared macro-effect recursion scans call arguments, and shared `rootIdentifier()` now unwraps move/borrow expressions so macro lvalue classification recognizes `^value` passed to a typed move parameter. SA-text `genCallArg()` resolves the prefixed identifier through active macro aliases instead of emitting the macro parameter spelling literally. A Box is consumed by `direct_macro_consume_box(^value)` inside a macro and returns 39; before the fix SAB passed, while SA emitted `^value` and failed `InvalidOperand`, and frontend cleanup did not record the caller consumption. Verification: shared rule regression; build 7/7; full Zig 208/208; local/installed macro SA/SAB 2/2; conditional diagnostic match; fn-ptr SA/SAB 12/12; owner SA/SAB 15/15; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- User-macro ownership effects are now path-sensitive at the macro boundary (2026-07-12). Shared `MacroParamConsumption` classifies each parameter as `never`, `always`, or `conditional`, with sequence/branch composition: both `if` arms consuming is always, one arm consuming is conditional, and loop-body consumption is conditional because the loop may execute zero times. TypeChecker propagates the same three-state effect through nested user-macro calls and rejects conditional effects with `MacroConditionalConsume` instead of unconditionally consuming the caller and leaking on the non-move path. Positive coverage moves a Box in both branches for true/false; the installed diagnostic forwards through a wrapper to an inner one-branch move and reports the expected error. Verification: build 7/7; full Zig 208/208; local/installed macro SA/SAB 2/2; installed diagnostic match; owner SA/SAB 15/15; smart-pointer SAB 3/3; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- User-macro consumption effects now propagate through nested user-macro calls (2026-07-12). TypeChecker resolves a `(macro declaration, parameter index)` effect recursively: the shared pure rule still owns direct move/release classification, while frontend call-graph traversal follows parameters forwarded into another user macro and uses a visiting set to terminate recursive macro cycles. A wrapper forwards its Box parameter to the previously fixed moving macro; before this slice direct SAB happened to pass from emitter-time nested expansion, but SA-text emitted a second `!source` because caller cleanup did not know the wrapper consumed it. Both now return 40. Verification: build 7/7; full Zig 207/207; local/installed macro SA/SAB 2/2; owner SA/SAB 15/15; smart-pointer cleanup SA/SAB 3/3; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- User-macro explicit moves now transfer ownership consistently through the shared frontend and both emitters (2026-07-12). Pure `control_flow_rules.macroParamConsumesValue()` classifies direct/nested `^param` and explicit release effects; TypeChecker applies that effect at macro call sites so moved caller bindings are excluded from later cleanup and rejected on reuse. Direct SAB macro move lowering now marks the resolved caller register consumed. SA-text storage assignments strip the call-argument-only `^` representation before emitting assignment/store while transferring lifecycle state from the underlying register. A Box moves from `source` into `destination` through a user macro and dereferences to 42; before the fix SAB failed during source cleanup and SA emitted an invalid `destination = ^source`. Verification: shared rule regression; build 7/7; full Zig 207/207; local/installed macro SA/SAB 2/2; owner-release SA/SAB 15/15; Box raw SA/SAB 1/1; smart-pointer cleanup SA/SAB 3/3; shallow-copy SA/SAB 3/3; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Direct SAB user macros now construct user-defined enum literals (2026-07-12). `genMacroExpr()` handles `enum_literal` through a macro-context emitter that consumes the existing shared enum variant/tag/field layout helpers and evaluates payload fields through macro substitution. The focused fixture covers both a payload variant whose fields come from macro parameters and a unit variant, then matches the assigned caller value to prove tag/payload correctness and ownership replacement. Verification: build 7/7; full Zig 206/206; local/installed user-macro SA/SAB 2/2; ordinary enum-match SA/SAB 2/2; imported-macro SAB 11/11; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; direct SAB fallback-removal remains 100%; authoritative no-fallback corpus remains 130/130 without a new sweep.
+- Direct SAB user-macro loops now support `break` and `continue` (2026-07-12). Macro `while`/numeric `for` lowering pushes the existing loop-control label stacks and consumes shared `planLoopControl()` so break cleanup blocks are emitted only for bodies that contain a break. Numeric macro loops split condition-false and break cleanup before the common exit and restore the pre-body released-register snapshot, matching ordinary direct-SAB loop capability-state boundaries. `test_unit_user_macro_direct.sla` adds a range loop that continues at 1, breaks at 4, and returns 5. Verification: build 7/7; full Zig 206/206; local and installed user-macro SA/SAB 2/2; imported-macro SA/SAB 11/11; borrow-temp SAB 25/25; RefCell SAB 8/8; official dev install/help; host `parallel.sla` SA/SAB 1/1. Feature completion 100%; broader Y/shared-lowering remains about 99%; direct SAB fallback-removal remains 100%; authoritative no-fallback corpus remains the previously verified 130/130 because no new full corpus sweep was run.
+- Nested user-macro to imported-macro field/index/deref and output-context coverage is now closed for the tracked address contract (2026-07-12). Two-level wrappers cover pointer-backed aggregate field read/write, array index read plus direct address-slot write-through, borrowed pointer deref read, and imported expression output participating in arithmetic/assignment. SA-text and direct SAB both pass 11/11, proving the prior `resolvedTypeForExpr()` context fix extends beyond the original field case. Verification: full Zig 206/206; official dev install/help; installed imported-macro SA/SAB 11/11; user macro SA/SAB 2/2; borrow-temp 25/25; host `parallel.sla` 1/1; diff check. No compiler code changed in this closure slice; broader untracked macro syntax/control-flow/type-generation surfaces remain separate.
+- Nested user-macro to imported-macro address/type context now preserves SA-text write-through aliases (2026-07-12). SA imported-macro argument planning now uses `resolvedTypeForExpr()` for the argument and deref/index source types, so nested macro `macro_arg_types` participate instead of the TypeChecker's infer-typed macro AST nodes. This prevents a pointer-backed aggregate field from falling back to temporary-slot materialization. Added two-layer user-macro wrappers around imported pair read/write macros; the old SA path returned 39 after mutating a copy, while direct SAB already passed. Both now read 42 and mutate the original holder to 42. Verification: build; full Zig 206/206; local/installed imported-macro SA/SAB 10/10; user macro SA/SAB 2/2; borrow-temp 25/25; official dev install/help; host `parallel.sla` 1/1; diff check. Deeper nested index/deref and imported-macro output context remain open.
+- User-macro lvalue classification now uses TypeChecker call signatures instead of treating every call argument as address-sensitive (2026-07-12). For a macro parameter passed to an ordinary function, only borrow/move target parameters require lazy lvalue substitution; ordinary by-value parameters remain cacheable once. Nested user macros and imported macros stay conservative lvalue boundaries. This closes the remaining repeated-evaluation case where one macro value parameter appeared twice in the same ordinary function call. The RefCell-backed regression now covers both binary use and `direct_macro_add(value, value)`, with one side effect and result 2 in SA-text/direct SAB. Verification: focused shared classifier test; build; full Zig 206/206; local/installed user macro SA/SAB 2/2; imported-macro 9/9; fn-ptr; RefCell; official dev install/help; host `parallel.sla` 1/1; diff check. Nested imported-macro address/type context remains open.
+- User-macro pure-value arguments now evaluate once consistently in SA-text and direct SAB (2026-07-12). Shared `macroParamRequiresLvalue()` classifies assignment/release/borrow/move/nested-call uses as lvalue substitution requirements; other parameters are value-only. Direct SAB eagerly evaluates value-only arguments at macro entry, protects cached registers as macro parameter locals across repeated uses, and releases temporary cached values after expansion, while lvalue parameters retain lazy AST/context substitution for write-through semantics. SA-text already evaluated arguments once. `test_unit_user_macro_direct.sla` adds a RefCell-backed side-effect argument used twice in a macro and proves one increment with result 2. Verification: focused shared classifier test; build; full Zig 206/206; local/installed user macro SA/SAB 2/2; imported-macro 9/9; borrow-temp 25/25; RefCell 8/8; official dev install/help; host `parallel.sla` 1/1; diff check. Deeper macro type/context substitution and imported-macro nesting remain open.
+- Result-slot store/source lifecycle now lives in shared lowering rules (2026-07-12). `ResultSlotStoreLifecycleAction` selects `transfer_value_state`, `release_source`, or `keep_source` from the transfer plan plus source-temporary status. SA-text block-tail and Option closure result paths call the store helper unconditionally; the helper owns transfer/release/keep, removing duplicated `transfers_value` branches. Direct SAB replaces its local non-transfer/is-local branch with the same shared action. RefCell companion store remains layered on the transfer action. Verification: focused shared result-slot test; build; full Zig 205/205; local/installed Option methods SA/SAB 5/5; RefCell SA/SAB 8/8; fn-ptr; official dev install/help; host `parallel.sla` 1/1; diff check. The focused result-slot load/store lifecycle convergence is complete; broader macro substitution remains open.
+- Result-slot load lifecycle now lives in shared lowering rules (2026-07-12). `ResultSlotLoadLifecycleAction` distinguishes `load_value_state` from `no_value_state` using the existing transfer plan. SA-text and direct SAB load helpers consume that action internally, so primitive/non-transfer results do not run metadata transfer and SA call sites no longer repeat five `transfers_value` guards before invoking the helper. RefCell companion restore and pointer/future state transfer remain on the transfer path. Verification: focused shared result-slot test; build; full Zig 205/205; local/installed RefCell SA/SAB 8/8; Option methods SA/SAB 5/5; direct Option 1/1; fn-ptr; official dev install/help; host `parallel.sla` 1/1; diff check. Result-slot store lifecycle and broader macro substitution remain open.
+- Preserved non-Copy value argument shallow-copy selection now lives in the shared target-aware call plan (2026-07-12). `shallow_copy_preserved_value` is selected only for direct SAB when an ordinary by-value identifier must remain live for a later expression/statement and its concrete layout is shallow-copy safe. SAB still owns the recursive layout capability check and concrete copy emission, while the shared plan owns the final target/preserve/capability combination; ordinary and macro-context SAB no longer re-check that combination inside their generic value branches. SA-text consumes the same plan target and keeps direct value passing. Verification: focused shared call-plan test; build; full Zig 205/205; local/installed SA and strict SAB thread-partition 11/11; fn-ptr 12/12; imported-macro 9/9; owner-release; official dev install/help; host `parallel.sla` 1/1; diff check. Shared result materialization and broader macro substitution remain open.
+- Function-pointer value argument representation now lives in the shared target-aware call plan (2026-07-12). `CallArgMaterializationTarget` plus `generated_fn_ptr_value_slot` and `borrow_local_fn_ptr_value` actions express that SA-text passes fn-ptr values directly, while direct SAB materializes a generated function symbol through a value slot and borrows an existing local fn-ptr slot. Direct SAB no longer re-decides these actions after entering the generic value branch. `test_unit_fn_ptr_value.sla` now explicitly passes a local fn-ptr variable to another function. Verification: focused shared call-plan test; build; full Zig 205/205; local/installed SA and strict SAB fn-ptr 12/12; void fn-ptr 1/1; thread-loop partition fixture; imported-macro 9/9; official dev install/help; host `parallel.sla` 1/1; diff check. Preserved non-Copy value and result materialization remain open.
+- Raw-pointer string literal call-argument materialization now lives in the shared call plan (2026-07-12). `CallArgMaterializationKind.raw_pointer_string_literal` is selected by `planCallArgMaterialization()` from the shared parameter/argument contract; SA-text, direct SAB ordinary calls, and direct SAB macro-context calls all consume that action instead of running emitter-local early/inner checks. `test_unit_str_ptr_len_identifier_direct.sla` now passes a string literal directly to a `ptr` parameter in addition to STR_PTR/STR_LEN identifier coverage. Verification: focused shared call-materialization test; build; full Zig 205/205; local/installed SA and strict SAB string fixture 1/1; imported JSON struct 2/2; pkgjson 1/1; owner-release 15/15; official dev install/help; host `parallel.sla` 1/1; diff check. Broader fn-pointer/preserved-value and result materialization convergence remains open.
+- Remaining special ownership-consuming expressions now use the loop-aware TypeChecker contract (2026-07-12). `await`, `mem::forget`, `ManuallyDrop::into_inner`, `Box::into_raw`, and non-Copy `?` propagation call `consumeBinding()` instead of writing symbol state directly, so outer values consumed on a reachable loop back-edge receive the same `LoopConditionalConsume` diagnostic as explicit/implicit moves while terminating paths remain valid. Added `tests/diagnostics/outer_box_into_raw_in_loop.sla`; all three installed loop-consume diagnostics match. Verification: full Zig 205/205; async block_on 1/1; Box raw 1/1; owner-release 15/15; imported-macro 9/9; official dev install/help; host `parallel.sla` 1/1; diff check. The remaining direct consumed-state writes are function/test finalization and branch-state merge bookkeeping, not unguarded expression consumption.
+- Loop outer-binding consumption checks now cover implicit and explicit ownership moves, with terminating-loop-path exemption (2026-07-12). TypeChecker centralizes consumption through `consumeBinding()` for explicit release, explicit `^move`, implicit non-Copy let moves, assignment moves, and destructuring moves. A pre-loop binding is rejected with `LoopConditionalConsume` only when the current loop body has a back-edge; an all-paths-terminating body may still move an outer value before `return`/break-only exit, preserving the existing `owner_release_loop_return_move_value` contract. Added `tests/diagnostics/outer_implicit_move_in_loop.sla`; both explicit-release and implicit-move diagnostics match under the installed plugin. Verification: full Zig 205/205; owner-release 15/15; RefCell SA/SAB 8/8; borrow-temp 25/25; imported-macro 9/9; official dev install/help; host `parallel.sla` 1/1; diff check. Remaining loop ownership work includes special consuming calls such as await/forget/raw conversions that still set state directly.
+- TypeChecker now rejects explicit consumption of a pre-loop binding from inside a loop body (2026-07-12). Such a handle is Active at the loop header and Consumed on the back-edge, which previously escaped frontend validation and failed later as SA/SAB `PhiStateConflict`; iteration count cannot make that register state valid for a general loop. `bindingIsLocalToLoop()` distinguishes nested/body locals from outer bindings, preserving legal explicit release of per-iteration RefCell handles while reporting `LoopConditionalConsume` for the unsafe outer case. Added a scope-classification unit test and `tests/diagnostics/refcell_outer_release_in_loop.sla`; the RefCell loop fixture now explicitly releases its local handles. Verification: full Zig 205/205; installed diagnostic match; local/installed RefCell SA/SAB 8/8; owner-release 15/15; borrow-temp 25/25; imported-macro 9/9; official dev install/help; host `parallel.sla` 1/1; diff check. Broader implicit move/ownership analysis across loops remains open.
+- Pointer-backed aggregate field/index projections now preserve imported-macro borrow aliases (2026-07-12). Shared `ImportedMacroArgLoweringAction.pass_pointer_backed_projection` distinguishes aggregate projections whose ABI value is already a pointer from scalar/address-slot cases: both emitters pass the loaded projection value to borrowed `%param` macros instead of copying the aggregate into a temporary stack slot. Added `SLA_IMPORTED_WRITE_PAIR_LEFT` and a holder-field regression proving a helper invoked through `&%value` mutates the original nested pair; the old path returned the copied value or crashed when forced through a raw projection address. Verification: shared imported-macro plan test; build; full Zig 204/204; local and installed SA/SAB imported-macro 9/9; RefCell 8/8; borrow-temp 25/25; official dev install/help; host `parallel.sla` 1/1; diff check. Broader macro expansion convergence remains open.
+- RefCell loop-exit lifecycle state now has a shared merge contract (2026-07-12). `planRefCellLoopStateMerge()` requires restoring the pre-loop RefCell handle and borrow-address temporary state after generating a loop body, because body-local metadata belongs to the iteration path and must not leak into the zero-iteration/post-loop compiler state. SA-text applies it to numeric/protocol `for` and both `while` forms; direct SAB applies it alongside its existing released-register restoration for `while`, `while let`, numeric `for`, and protocol `for`. `test_unit_refcell_struct_payload.sla` now covers repeated while/for local borrows followed by a fresh borrow. Verification: focused shared-rule test; build; full Zig 204/204; local and installed SA/SAB RefCell 8/8; borrow-temp 25/25; imported-macro address 8/8; official dev install/help; host `parallel.sla` 1/1; diff check. Broader conditional outer-handle mutation and pointer-backed macro alias planning remain open.
+- RefCell call-argument lifecycle actions now expose their final shared outcome directly (2026-07-12). `RefCellCallArgLifecycleAction.shouldRelease()` and `.releasesBorrowHandle()` keep the keep/value-release/borrow-handle-release distinction queryable in `lowering_rules.zig`; SA-text and direct SAB consume `shouldRelease()` instead of independently collapsing the shared action with duplicate switches. Focused shared-rule coverage, build, full Zig tests, local SA/SAB RefCell 7/7, borrow-temp 25/25, imported-macro address 8/8, official dev install/help, the same installed strict no-fallback fixtures, and host `parallel.sla` 1/1 pass. This is a completed call-argument contract sub-slice; broader RefCell scope/loop/early-return lifecycle and pointer-backed macro alias planning remain open.
+- Closed the true shallow imported-module scan/lazy-body parsing architecture target (2026-07-12). Declaration-only initial parsing now preserves exports/signatures, imported type surfaces, and exact function body spans; the reachability session materializes only newly reachable bodies in place, with safe selected macro fallback and lazy child discovery. Six focused gates passed: broad selective Parser 3/3, exact span 2/2, cached-span materialization 2/2, same-name method narrowing 2/2, dead-child skip 2/2, and transitive generic discovery 2/2. Current real profiles exercise the 678KB `world_table_erased.sla` through five cumulative body selections at single-digit parser cost while reporting query/table expanded-source reuse 12/13 and source reuse 20/21. Build 7/7, dev install/help, and strict query 1/1 pass. Broader corpus latency remains tracked separately; no compiler code changed in this closure slice.
+- Closed the stale reachable-only contract-loading target (2026-07-12). Exact regressions prove non-contributing and pure type-only modules skip contract loading, contributing modules load required contracts, and the final TypeChecker retains the reachable preload. Refreshed real profiles show parallel_query `load contracts 0ms` / `import aliases 5ms` and parallel_table_erased `load contracts 0ms` / `import aliases 0ms`; both focused SA tests pass. Build 7/7, official dev install/help, and strict parallel_query 1/1 pass. Remaining frontend latency is owned by import expansion rather than a separate contract-load or alias-rebuild stage. No compiler code changed in this closure slice.
+- Closed the stale broad `selectively parses` verification-gate audit (2026-07-12). Static matching now shows only the two Parser selective-body tests under the broad phrase; SA and direct-SAB reachable imported-body materialization remain separate exact plugin tests. The broad filter passed 3/3, exact SA materialization 2/2, and exact SAB materialization 2/2, confirming the old long/stuck mixed gate no longer exists. `zig build` 7/7, official dev install/help, and installed strict parallel_query 1/1 also passed. No compiler code changed in this closure slice.
+- Module Table now reuses the expanded source already produced during Parser import-type prescanning when that child module is later parsed for real (2026-07-12). Completed import surfaces retain both original and expanded bytes; provisional cycle entries remain unusable. `getOrParse()` checks the canonical module path before invoking `source_expand.expand()`, while uncached/direct roots retain the normal path. The shared-module regression now proves one expanded-source reuse after parsing the prescanned common child. Profile output reports expanded-source hits; parallel_query records 12 avoided expansions in addition to 20 avoided reads. Exact shared-cache/generic/macro-session tests passed; build 7/7, official dev install, focused query SA, and strict SAB passed. Query sampled 813ms import expand / 3.82s wall; the verified claim is 12 eliminated expansion passes, not a stable wall-time reduction. No full Zig/corpus sweep was run.
+- Module Table resolution of ordinary non-glob `.sla` child imports now reuses the source text already read by Parser type prescanning (2026-07-12). Completed import-type cache surfaces retain their canonical source; provisional cycle guards are never used as source. `resolveModuleImports()` checks this cache for ordinary filesystem SLA imports and retains the existing resolver for glob, `sla_std`, `sa_std`, missing, and excluded paths. The shared-module regression now proves both type-surface reuse and one source-reuse hit per parent module. Profile output reports source reuse; parallel_query records 20 avoided file reads alongside 12 type surfaces/25 type hits. Exact diamond/shared-cache/generic/macro-session tests passed; build 7/7, official dev install, focused query SA, and strict SAB passed. Query sampled 865ms import expand / 3.67s wall, so the verified claim is 20 eliminated reads rather than a stable timing reduction. No full Zig/corpus sweep was run.
+- Incremental referenced-root scanners now return in O(1) when their scanned-set count already matches the append-only referenced-root set (2026-07-12). Both symbol/const/macro roots and exported type-signature roots avoid a final/full hash-map walk when no new roots exist; explicit caller, macro, or module invalidation removes scanned entries and therefore automatically re-enables scanning. Added `sla reachability root scanners skip unchanged sets and honor invalidation`, covering initial scan, unchanged fast path, removal, and rescan for both scanners. Exact incremental-chain, macro-session, and imported type-signature filters passed; build 7/7, official dev install, focused parallel_query SA profile, and strict SAB passed. The focused query sample reached 757ms import expand / 3.63s wall, with materialization extension groups at 19/86/21/7ms, but broader timing remains noisy. No full Zig/corpus sweep was run.
+- Exported struct/enum/trait/type-alias declarations are now indexed in `SlaCallableIndex`, so each newly referenced type root resolves by hash lookup instead of scanning every discovered module (2026-07-12). The index is populated for root and imported declarations, extended when lazy modules arrive, and refreshed when a full selected-body/macro reparse replaces AST pointers. `scanReferencedExportedTypeSignatures()` now consumes that index directly. Added `sla callable index records exported type declarations`; exact imported type-signature, generic-argument type, incremental-body, and macro-session filters passed. Build 7/7, official dev install, focused SA query/table hosts, and strict parallel_query SAB passed. Query produced a good 820ms import-expand / 3.58s wall sample, but table profiling was heavily noisy at 1625ms / 6.83s, so no stable end-to-end performance claim is made. The verified improvement is removal of the `new type roots × all modules` search term; remaining extension time is primarily callable/body traversal and runtime noise. No full Zig/corpus sweep was run.
+- Recursive SLA import type prescanning now caches canonical path-specific type/enum surfaces and shares that cache across all declaration-only Module Table parsers (2026-07-12). A cache hit restores exactly the cached dependency surface rather than injecting unrelated global type names; an empty provisional entry also terminates import cycles. Added Parser diamond/repeated-import coverage and a Module Table cross-parser regression proving `left.sla` and `right.sla` share one `common.sla` scan while both retain `SharedThing` disambiguation. `SLA_PROFILE=1` now reports import-type cache entries/hits; the real parallel_query host records 12 unique surfaces and 25 avoided recursive scans. Exact diamond/shared-cache/import-body-skip/cached-reparse/span/generic/macro-session filters passed; build 7/7, official dev install, focused query/table SA hosts, and strict parallel_query SAB passed. Wall/import-expand timings remained noisy (query observed 769-899ms versus the prior 802ms point; table 1073ms versus 1040ms), so this slice claims eliminated duplicate scans and cycle-safe cached semantics, not a stable broad latency reduction. Next work remains reachability-extension/root-resolution profiling. No full Zig/corpus sweep was run.
+- Test-codegen import expansion now loads reachable contracts and imported macros directly into the final caller-owned TypeChecker instead of a temporary reachability-only TypeChecker followed by a second complete contract scan (2026-07-12). A new expansion entry point accepts the final TypeChecker; the compatibility wrapper retains the old API for checks/tests that do not need state reuse. SA and direct-SAB test compilation pass that TypeChecker during reachable import expansion and skip the later duplicate `load contracts` stage, while non-test compilation keeps the existing load path. Added `sla test import expansion reuses reachable contracts in final type checker`, proving a contributing `.sla` module's `.sa` macro and `.sai` extern remain available for final typecheck after their source files are deleted. Exact final-state reuse, dead-module contract skip, type-only contract skip, referenced type-only macro, macro-session refresh, and resolved-import reuse filters passed; build 7/7, official dev install/help, focused SA hosts, and strict direct-SAB parallel_query passed. Profiles: parallel_query `import expand 802ms`, `load contracts 0ms`, wall 3.77s versus 998ms + 305ms / 4.47s before; parallel_table_erased `import expand 1040ms`, `load contracts 0ms`, wall 4.15s versus 1096ms + 247ms / 5.08s before. The next latency owner remains root resolution and reachability extension inside import expansion. No full Zig/corpus sweep was run.
+- Selected imported function bodies now materialize directly from cached source spans instead of reparsing an entire module for every reachability-growth pass (2026-07-12). The Parser records the exact `{ ... }` span for skipped top-level, inherent, trait, and operator bodies; `SlaModule` indexes those spans by exported callable symbol; cumulative selections parse only newly reachable spans and mutate the existing AST declarations in place. Macro-body selection deliberately retains the full-reparse fallback. Added Parser and Module Table regressions, including a test that corrupts/deletes the original module after the declaration-only parse and still incrementally materializes a top-level function plus an associated method while leaving an invalid unselected body untouched. Exact span/cache/incremental/macro-session/generic/registry/macro-fallback/namespace Zig filters passed; `zig build` 7/7, official dev install/help, focused generated-SA hosts, and strict direct-SAB `parallel_query` passed. Real profiling proves the target component was removed: five cumulative `world_table_erased.sla` passes now parse newly selected bodies in about 4-5ms total instead of rescanning 678KB each pass; query import expand measured 998ms (previous 1849-2232ms range) and table 1096ms (previous 2242-2347ms range). The remaining dominant import-expand cost is root/module discovery, reachability extension, and macro-contract processing rather than selected-body parsing. No full 166-test Zig or 130-file SLA sweep was run.
+- Selected-body module reparses now reuse cached imported type/enum names instead of recursively prescanning `.sla` imports on every pass (2026-07-11). The initial decl-only Parser exposes its accumulated local/transitive type surface; `SlaModule` retains it, and later parsers seed the cache with import prescan disabled. Per-module profile output now reports source size, pass, newly/total selected functions/macros, and parser/export/commit timing. Added `sla module table reparses with cached imported type names`, which removes the child source after initial parse and proves a selected body containing `ImportedThing { ... }` still parses; no tests removed. Exact cache/incremental/generic/macro-session/namespace filters, build 7/7, dev install, focused SA profiles, and parallel_query strict SAB pass. Direct hotspot evidence: three reparses of 3.9KB `table_erased_access.sla` dropped from ~582ms to 2ms because its 678KB import is no longer recursively scanned; query secondary-module reparse dropped 112ms -> 40ms; table import expand measured 2242ms versus 2347ms. Query total wall time was noisy at 2232ms, so only component-level improvement is claimed there. Remaining dominant cost: the 678KB world_table_erased module is still scanned five times; next slice should record body spans and parse only newly selected function bodies.
+- Contributing imported-macro contracts now update the active reachability session instead of starting a fresh global analysis (2026-07-11). Calls that may become imported macros use a dedicated provenance kind, separate from direct/associated unresolved function records, so later macro availability requeues the exact caller even when an ordinary same-named function already resolved before contract loading. The rescanned call consumes existing `ImportedMacro.direct_callees`, extends reachability, and materializes any newly exposed bodies in place. Per-name hash buckets deduplicate provenance records without the O(n^2) full-record scan initially exposed by large hosts. Added `sla reachability session refreshes exact imported macro callers`, covering a same-named ordinary function, pre-refresh helper absence, exact post-refresh helper materialization, and no-op repeated refresh; no tests removed. Exact macro-session/imported-macro/lazy/generic/dead-child/method/fact/namespace filters pass; build 7/7, dev install, focused SA profiles, and parallel_query strict SAB pass. Final profiles: parallel_query import expand 1849ms versus 2258ms, macro contracts 228ms versus 560ms; parallel_table_erased 2347ms versus older stable 4207ms, macro contracts 221ms versus 592ms. Both macro stages now perform 0 module reparses rather than 4/7. The real latency target remains open in initial selected-body parsing/reparsing (query 1348ms, table 1882ms).
+- Lazy module discovery now reuses exact reachability state without treating every referenced type/constant/macro as a callable root (2026-07-11). `UnresolvedCallableSet` records direct versus associated calls with caller and receiver-type provenance. When a new module surface is added, only unresolved records that now have a real function or associated candidate cause their caller to be rescanned; root calls are narrowly replayed, imported const/macro/type roots retain their existing independent scan path, and receiver-aware associated exports can trigger child discovery. Added `sla reachability session retries only unresolved callable roots`: `leaf_identity<T>` and `RemoteThing_selected` materialize after lazy module addition, while a leaf function colliding with the root-only type name `TypeOnlyCollision` remains unreachable and bodyless. No tests removed. Exact session/generic/dead-child/macro/same-name-method/fact/namespace filters pass; build 7/7, dev install, focused SA, and parallel_query strict SAB pass. Final parallel_query import-expand profile was 2258ms versus prior 2334ms and retained 26 first-phase module reparses, avoiding the rejected mixed-root experiment's 41. Parallel-table timing was noisy at 3624-4837ms versus prior 4207ms, so no stable claim is made there. The next bottleneck is explicit: contributing macro contracts still start a fresh reachability session and cause 4 query / 7 table module reparses; next work should update imported macros in place and requeue only exact unresolved macro callers.
+- Reachable imported-body materialization now incrementally extends one persistent reachability traversal per stable module/macro-contract boundary (2026-07-11). `SlaCallableIndex`, worklist position, scanned symbol/type roots, and branch/caller facts survive selected-body reparses; each reparse refreshes declaration pointers, queues only newly materialized function and namespace-alias bodies, and reopens newly materialized macro roots. This removes the previous full callable-index/root/reachability rebuild after every materialization pass. Lazy discovery and selective append also preserve a proven transitive child through a non-contributing wrapper while invalid dead children remain skipped. Added `sla reachability incrementally extends newly materialized body chains`, locking 3 reparses + 3 incremental extensions + 4 convergence passes without removing tests. Exact incremental/macro/method/lazy/dead-child/generic/fact/namespace Zig guards pass; build 7/7, dev install, clean-host focused SA, and parallel_query strict SAB pass. Warm `sla_ecs` evidence improved: parallel_query import expand 3483ms -> 2334ms (reachable materialize 2866ms -> 1514ms), parallel_table_erased 6006ms -> 4207ms (5113ms -> 3257ms). The real latency target remains open; next work should reuse analysis across module-discovery and macro-contract boundaries or reduce repeated module reparsing/contract reloads.
+- Import expansion now exposes internal Module Table timing and discovers immediately-contributing child modules within the same discovery call (2026-07-11). `SLA_PROFILE=1` reports root resolution, reachable/materialize, macro-contract, selective-append, plus materialization pass/reparse/select/rebuild counts. Child discovery now walks the dynamically growing ordered module list, so descendants already proven contributing by the current reachable set do not wait for another outer rebuild; modules lacking current evidence remain deferred exactly as before. Exact lazy-transitive, dead-child, generic-template, namespace, and fact-merge Zig guards pass; build 7/7 and dev install pass. Clean-HEAD `sla_ecs` focused SA and parallel_query strict SAB pass. Current warm evidence is still far above target: parallel_query `import expand 3483ms` and parallel_table_erased 6006ms; profiling attributes most cost to 4-5 materialization calls and repeated global reachability rebuilds. This sub-slice is complete as instrumentation/limited discovery convergence, but the real latency target remains open; next work should cache or incrementally extend callable/reachability state across materialization passes.
+- Lazy transitive discovery now retains generic function-reference templates before their defining child module is parsed (2026-07-11). Syntactic reachability already marked ordinary unresolved calls as referenced discovery roots, but `generic_func_ref` only attempted callable lookup; `ecs_box_drop<T>` therefore disappeared when `box_drop.sla` was behind a contributing imported parent, and clean `sla_ecs` profiles spent seconds in import expansion before failing `TemplateNotFound`. Generic function references now also record their bare template name in shared `referenced_types`, allowing the existing child-module discovery and selected-body materialization fixpoint to load the template. Added a focused transitive generic-reference regression without removing tests. Gates: exact Zig filter, build 7/7, dev install, clean-HEAD `sla_ecs` parallel_query and parallel_table focused SA pass, and parallel_query strict SAB passes. Current clean profiles remain slow (`import expand` 4828ms / 5946ms), so this is a correctness prerequisite, not performance completion; the import-expand latency target remains open.
+- Empty-body void exits were audited and confirmed caller-managed rather than a missing callee cleanup (2026-07-11). SA-text emits no `!value` inside empty raw/borrow parameter functions, while call sites end their argument temporaries; direct SAB follows the same parameter-capability contract. Added a focused fixture and exact generated-SA structural test without removing coverage. The exact Zig filter plus SA and strict SAB fixture pass 1/1. No compiler semantic change or broad sweep was needed. This closes the remaining function-exit audit; the next main target returns to profile-driven `import expand` reduction in real `sla_ecs` workloads.
+- Ordinary async `.await` pending returns now release exactly the locals materialized at the suspension point in SA-text (2026-07-11). TypeChecker records a per-await cleanup list before consuming the awaited future, excluding the future's direct/borrow-alias escape chain while retaining active non-escaping locals and RefCell handles at that precise point. SA-text consumes the list through branch-scoped consumed/borrow-source/RefCell snapshots only on generated pending-return paths, restoring the ready path state; direct SAB already used exact `releaseOpenLocals(future)`. Added a new pending-exit RefCell fixture without removing tests. Focused gates: exact TypeChecker await-cleanup Zig filter, build 7/7, dev install, new fixture SA/SAB 1/1, and existing pending plus parameter-await fixtures SA/SAB 3/3. No broad sweep; authoritative corpus remains 130/130. Next exit gap is empty-body void function parameter cleanup in SA-text.
+- Explicit and specialized generated function exits now use exact cleanup/result-transfer behavior instead of SA-text's broad active-RefCell-handle sweep (2026-07-11). The pure function-exit cleanup plan now lives in `control_flow_rules`; TypeChecker additionally records ordinary borrow-alias provenance so a returned alias transfers its source borrow chain, while field/computed returns still release RefCell dynamic-borrow locals. SA-text explicit `return` consumes the exact cleanup list and no longer scans every active handle. Direct SAB keeps ordinary borrow aliases on the source register so exact result exclusion preserves the same lifetime. Specialized single-await, two-await, and join2 SA-text entry emitters release future-state source registers after storing them into continuation state and end remaining parameters, matching direct SAB's existing `releaseOpenLocals` path. No tests were removed; owner coverage grows to SA/SAB 15/15 and a new borrow-alias fixture passes SA/SAB 1/1. Focused gates: four exact Zig filters; build 7/7; dev install/help; owner SA/SAB 15/15; four representative async continuation fixtures SA 4/4 and strict SAB 4/4; Rosetta 026 plus the new alias fixture SA/SAB 2/2. No broad sweep; authoritative corpus remains 130/130. Next generated-exit gap is ordinary async `.await` pending-branch cleanup in SA-text.
+- Implicit function-tail returns now clean non-escaping locals while transferring the returned value in both backends (2026-07-11). Shared `planFunctionTailCleanup()` distinguishes a directly escaping binding from ordinary tail cleanup. SA-text consumes the TypeChecker cleanup list before its generated return without the rejected broad active-handle sweep; direct SAB marks tail expression generation as caller-escaping and retains its exact result-register exclusion. The new cleanup exposed and fixed missing SA-text RefCell owner metadata rebinding for non-identifier `let` initializers such as `let moved = if ...`. No tests were removed; the owner fixture grows from 13 to 14 and passes SA/SAB 14/14, including the existing if-result owner-move guard. Focused gates: exact shared-lowering Zig filter, build 7/7, dev install/help, and the single affected fixture in SA plus strict SAB. No broad sweep; authoritative corpus remains 130/130.
+- Postfix `?` and `let else` now preserve RefCell borrow lifetimes in both backends, and direct SAB supports both constructs (2026-07-11). Parser ternary lookahead cleanly falls through to postfix try parsing; TypeChecker consumes non-Copy try containers and includes borrow-like locals in early-return cleanup. SA-text snapshots/restores branch-local consumed, borrow-source, and RefCell state for try/let-else failure emission. Direct SAB adds structured Option/Result/custom Result try branches, metadata-aware propagation cleanup with stack-local lifetime handling, and shared-plan let-else pattern lowering. Existing tests remain; owner coverage rises to SA/SAB 13/13 and the new filtered/custom Result fixture passes SA/SAB 3/3 plus exact filtered strict 1/1. Focused gates also passed three Zig filters, build 7/7, dev install/help, rosetta 105 SA/SAB 1/1, and `test_spec.sla` check/direct SAB build/disasm. No broad sweep. Feature 100%; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130. Next lifecycle gap is implicit tail-expression cleanup with explicit exclusion/transfer of the escaping result.
+- Loop jumps now end borrow-like locals and SA-text emits natural loop backedges only from live body fallthrough (2026-07-11). TypeChecker no longer skips borrow locals while building break/continue cleanup lists, allowing both emitters to release active RefCell handles before jumping. Numeric for and plain while SA generation consume the existing shared termination decision before emitting natural cleanup/backedges, removing double terminators and duplicate loop-binding release after a terminating body. All prior tests remain; one owner regression covers while continue/break, numeric-for continue/break, and nested return/break owner paths, taking the fixture to SA/SAB 11/11. Focused verification also passed two new Zig filters, shared loop-control Zig, build 7/7, dev install/help, loop-body cleanup 1/1, var comprehensive 16/16, plain/generic protocol for-in 1/1 each, and two UseBeforeInit negatives. No broad sweep. Feature 100%; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130. The temporary filtered-call scope suspicion was later disproven by decoded reg-id inspection and stable serialized reruns.
+- Match/switch ownership state now intersects all live arms through a shared pure control-flow contract (2026-07-11). `control_flow_rules` owns the value-state enum plus zero/one/many-live-arm planning and three-state intersection. TypeChecker applies it to switch, user enums, Option, and Result without letting terminating arms or the last checked arm poison continuation state. Direct SAB match emission now merges release/RefCell/borrow-temp snapshots, uses path-consistent condition-temp lifetimes, and materializes its void result temp. All prior tests remain; the owner fixture adds one test covering one-live and all-live match owner moves and passes SA/SAB 10/10. Focused gates also passed two Zig filters, build 7/7, dev install/help, enum match strict SAB 2/2, borrowed enum strict SAB 1/1, and the existing negative move check. No broad sweep. Feature 100%; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130.
+- Chained `if let` ownership merges now follow the shared termination-aware control-flow contract (2026-07-11). TypeChecker restores pre/then/else ownership states according to which branch reaches the merge, matching ordinary `if` and direct SAB while preserving existing Phi behavior when both branches continue. No tests were removed; one owner-release regression covers both terminating directions and raises the fixture to SA/SAB 9/9. Focused verification also passed the new and ordinary-if Zig filters, build 7/7, dev install/help, rosetta 104 SA/SAB 1/1, and the existing negative one-branch move check. No broad sweep. Feature 100%; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130.
+- Ordinary `if` ownership-state merge now shares one termination-aware control-flow plan across TypeChecker and RefCell lowering (2026-07-11). New `control_flow_rules.zig` owns restore-pre/then/else/keep-current selection, avoiding the TypeChecker/lowering import cycle. A terminating branch that moves/releases a RefCell owner no longer poisons the fallthrough state, while an `if` result can move the owner through either branch and preserve attached handles in the merged destination. Existing owner tests were retained and two were added, taking the fixture to SA/SAB 8/8. Focused gates passed: three Zig filters 2/2 each, build 7/7, dev install/help, negative non-terminating one-branch release still rejects with UseAfterMove, RefCell payload SA/SAB 7/7, shallow-copy SA/SAB 3/3, borrow-temp SA/SAB 25/25, async branch SA/SAB 1/1, and host parallel SA/SAB 1/1. No broad sweep. Feature 100%; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130.
+- RefCell release-by-cell now follows logical owner moves and releases every attached handle (2026-07-11). The owner-release fixture retains all prior tests and adds two shared-handle cases: two active handles on one owner, and handles created before the owner moves to a new binding. Shared reachability recognizes `!binding` as a real identifier use; TypeChecker records non-Copy let aliases as ownership moves; `planRefCellHandleOwnerTransfer()` drives handle-owner rebinding in both emitters before destination release. This removes stale-source `UseAfterMove` and double-cleanup behavior while keeping concrete iteration/release instructions local. Focused gates passed: two Zig filters 2/2 each, build 7/7, dev install/help, owner-release SA/SAB 6/6 each, imported-macro alias SA/SAB 8/8 each, shallow-copy SA/SAB 3/3 each, aggregate-reassign SA/SAB 1/1 each, RefCell payload SA/SAB 7/7 each, borrow-temp SA/SAB 25/25 each, and host parallel SA/SAB 1/1. No broad sweep. Feature 100%; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130.
+- RefCell result companions and temporary borrows now have an explicit shared call-argument lifecycle contract (2026-07-11). `planRefCellCallArgLifecycle()` distinguishes keeping a value, releasing an ordinary temporary, and releasing a temporary carrying a dynamic RefCell borrow handle; SA-text and direct SAB planned-call paths consume that action before their emitter-local release machinery. The owner-release fixture retains its original tests and adds two: an `if` result-slot companion passed directly to a borrowed parameter, and repeated shared/mutable temporary call arguments in a loop, both proving borrow count returns to zero after each call. Focused gates passed: lowering 2/2, build 7/7, dev install/help, owner-release SA/SAB 4/4 each, RefCell payload SA/SAB 7/7 each, borrow-temp SA/SAB 25/25 each, imported-macro address SA/SAB 8/8 each, and host parallel SA/SAB 1/1. No broad sweep. Feature 100%; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130.
+- Imported-macro pointer-backed aggregate aliases now preserve address and ownership semantics (2026-07-11). Two new tests were added while retaining all existing tests: a moved aggregate alias and a borrowed aggregate alias dereference. Direct SAB now suppresses cleanup of the moved source through shared `storedValueMovesIdentifier()` after `let alias = pair`, without emitting a verifier `move_` that would invalidate the destination alias. Shared imported-macro typed argument planning now passes dereferenced pointer-backed aggregate addresses directly instead of materializing a ptr-to-ptr stack slot. Focused gates passed: lowering regression 2/2, build 7/7, dev install/help, imported-macro address SA/SAB 8/8 each, borrow-temp SAB 25/25, RefCell SAB 7/7, shallow-copy SAB 3/3, smart-pointer cleanup SAB 3/3, and host parallel SA/SAB 1/1. No broad sweep. Feature completion 100%; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130.
+- RefCell value-state transfer now has one shared lowering plan (2026-07-11). `planRefCellValueStateTransfer()` bundles active borrow-handle and borrow-address-temp transfer actions for ordinary bindings and result-slot/branch value movement; SA-text and direct SAB consume the same decision while retaining emitter-local name/register maps, direct-SAB same-register binding aliases, consumed-state mutation, and concrete releases. Focused gates passed: exact lowering regression 2/2, build 7/7, dev install/help, borrow-temp SA/SAB 25/25 each, RefCell struct payload SA/SAB 7/7 each, imported-macro address SA/SAB 6/6 each, and `sla_ecs/lib/parallel.sla` SA/SAB 1/1 each. No broad Zig or corpus sweep was run. Feature completion 100%; broader Y/shared-lowering is now about 99%; direct SAB fallback-removal remains 100%; the authoritative no-fallback corpus remains the previously verified 130/130.
+- Direct-SAB escaped thread closures now load stack-slot scalar captures before storing the closure environment (2026-07-11). The loop-thread function-pointer case creates `let value = i` inside a loop; direct SAB materializes that binding as a stack slot, but `genThreadSpawn()` previously stored the slot address itself as the captured `i32`. Isolated filtering passed accidentally according to pointer low-bit parity, while the whole fixture consistently failed panic 1412. The emitter now loads a stack-backed capture's actual value, stores that value in the escaped environment, and applies the existing shared `planEscapedClosureCapture` consume policy to the loaded value/source state. Added `sla sab escaped loop closure loads stack slot scalar capture`, asserting closure capture stores do not use stack-allocation registers directly. Focused final gates: Zig regression, `zig build`, official dev install, `test_unit_fn_ptr_value.sla` SA 11/11 and strict SAB 11/11. Milestone audit: an initial full dev-mode strict no-fallback sweep was 129/130 and exposed this case; after the fix, the identical 130-file sweep passed 130/130. This is the new authoritative corpus result. The 166-test Zig suite was not rerun per user instruction; focused Zig coverage was used during iteration. Focused feature completion 100%; Y/shared-lowering and broader fallback-removal estimates remain unchanged beyond the now-green tracked corpus.
+- Post-typecheck emit reachability now scans called user-macro bodies (2026-07-11). Direct SAB inlines local user macros, but final function pruning previously saw only the outer macro call in the AST; helpers called inside the macro body, including `direct_macro_add` and `direct_macro_read_i64`, were removed before emission, producing `UnknownRegister` with “callee is not declared”. Emit reachability now recursively visits a referenced local macro body and records a dedicated scanned-macro marker to avoid repeated or recursive expansion walks; nested macro calls are covered by the same traversal. Added `sla emit reachability keeps user macro direct callee`. Focused gates only: Zig regression, `zig build`, official dev install, `test_unit_user_macro_direct.sla` SA 2/2 and strict SAB 2/2. No full sweep was run. The last full audit remains 120/130; all 10 failures from that audit now have focused dev-mode closure evidence, but this is not a new 130/130 sweep result.
+- Reachability call facts now retain only facts shared by every caller (2026-07-11). `mergeFunctionFacts()` previously intersected only no-import and zero-scan sets; known int/bool fields and local types stayed frozen from the first call. In `test_unit_shallow_copy_call_arg_direct.sla`, the first `MiniSnapshotChange.reason=4` call therefore poisoned the later `reason=1` call and caused shared branch pruning to fold the false branch incorrectly in both SA and SAB. Reachability now removes int/bool/type facts missing or different at any incoming call while preserving equal facts. Added `sla reachability merges only call facts shared by every caller`. Focused gates only: Zig regression, `zig build`, official dev install, shallow-copy fixture SA 3/3 and strict SAB 3/3. No full sweep was run. The last full audit remains 120/130; focused closures now leave only `test_unit_user_macro_direct.sla` in the known queue.
+- Filtered direct-SAB std dependencies now preserve stable constants in cloned helper scopes (2026-07-11). HashSet test-codegen repeatedly merged the filtered `sa_std/hashset.sa` module. `appendDecodedModuleFiltered()` appended `HASHSET_SENTINEL` once per requested helper without deduplication and retained the source module's late `expanded_line`; after dedup/hoisting exposed the remaining issue, `cloneDecodedModuleFunctionSig()` was found to rebuild `reg_ids` only from params and renamed locals, dropping stable const ids deliberately skipped by local remapping. The merge now deduplicates constants, resets embedded const locations to zero, records their stable ids, and remaps the verified source function `reg_ids` into each cloned signature. Added `filtered decoded std deps deduplicate and hoist consts`, covering duplicate imports, hoisted locations, stable symbol recording, and function-scope membership. Focused gates only: Zig regression, `zig build`, official dev install, `test_unit_sets.sla` SA/SAB 2/2 each, and `test_unit_mixed_collections_order.sla` SA/SAB 2/2 each. No full sweep was run. The last full audit remains 120/130; focused closures now leave 2 known files.
+- For-in protocol methods now survive both test-codegen pruning stages (2026-07-11). `for item in value` implicitly calls `iter_len` and `iter_at`, but neither syntactic pre-typecheck reachability nor exact post-typecheck emit reachability recorded those hidden calls. The first pass removed the impl before TypeChecker (`Iterable` mismatch); after that was fixed, the second pass removed the methods before output, leaving SAB calls without declarations (`UnknownRegister` callee). Shared syntactic reachability now marks typed associated candidates, conservatively falling back when an inferred generic local type is not yet known; emit reachability uses `tc.expr_types` plus `methodForType()` to retain the exact checked methods. Extended the focused pruning regression to assert both stages. Precise gates only: focused Zig regression, `zig build`, official dev install, final SA 2/2 and strict SAB 2/2 for plain and generic fixtures. No full sweep was run. The last full audit remains 120/130; focused closures now leave 4 known files.
+- Test-codegen pruning now preserves local function-pointer callees (2026-07-11). `rewriteProjectSnapshotTestShortcuts()` pruned pure identifier/field `let` bindings from every test, while `reachabilityNodeUsesIdentifier()` scanned only call arguments and did not count the plain callee name in `f(...)`; focused `test_unit_fn_ptr_value.sla` cases therefore reached TypeChecker as `Undefined call: f`. Shared reachability now counts a non-associated call callee as an identifier use. Added the focused Zig regression `sla pre-typecheck pruning keeps local function pointer callees`, which runs filter pruning, pre-typecheck reachability pruning, and TypeChecker. Precise verification only: focused Zig regression, `zig build`, official dev install/help, SA parity 3/3, strict direct-SAB 3/3, and the neighboring Vec function-pointer strict-SAB guard 1/1. No 166-test or 130-file sweep was run. The last full audit remains 120/130; with the earlier three `StackEscape` closures plus this focused closure, 6 known files remain.
+- Direct-SAB temporary stack-slot cleanup is fixed for the three audited `StackEscape` fixtures (2026-07-11). Array-to-slice materialization, Vec pop out slots in the async while-let queue, and formatting out/buffer slots in derive debug all used `stack_alloc`, then flowed through generic `emitRelease`; non-owning cleanup emitted `move_`, which is illegal for function-stack storage. `emitRelease` now recognizes `stack_alloc_emitted` registers and only updates compiler metadata, matching SA-text's stack-managed lifetime. A typed-borrow SAB capability experiment was rejected and reverted after the focused 25-test borrow-temp fixture caught `CapabilityMismatch`. Focused dev-mode gates passed: build 7/7, dev install/help, strict SAB array 1/1, async queue 1/1, derive 2/2, borrow-temp 25/25, and SA parity for the three fixed files. Per user instruction, no repeated 166-test or 130-file full suite was run. Last full audit remains 120/130; focused retest removes these 3 failures, leaving 7 known files.
+- Direct-SAB sibling-scope plain `let` register identity is fixed (2026-07-11). The active `sla_tsgo` Program emit repro moved from the earlier `str_end` stack-slot `RegisterRedefinition` to `UseAfterMove ti`, then exposed `UnknownRegister id_len`: ordinary same-named lexical bindings were still sharing one name-keyed function register. `src/sab_codegen.zig` now detects repeated `let` names per function/test body and assigns each occurrence a fresh register id while keeping source-name lookup lexical. A first attempt that forced the names through one shared stack slot was rejected because the slot could be allocated only on a conditional path; a second global-name attempt was rejected by the full sweep because it rewrote unrelated functions. The final set is prepared per generated function. Added `tests/test_unit_sibling_scope_plain_let_direct.sla`. Verified with `zig fmt --check`, `zig build -j1 --summary all` 7/7, full batched Zig suite 166/166, official `sa plugin install --dev .`, `SA_PLUGIN_DEV=1 sa sla help`, installed dev strict-SAB and SA-text 2/2 for the fixture, and installed downstream `test_program_emit_text_contract.sla` strict-SAB 1/1. The larger compile contract now executes instead of trapping; its 3/17 business assertion failures match SA-text (14/17) and are downstream semantics, not this compiler register bug. Current dev strict no-fallback corpus audit is 120/130 files; the 10 remaining failures are separately listed in `current_plan.md`. Focused feature completion 100%; broader Y/shared-lowering and fallback-removal percentages unchanged.
 - `src/plugin.zig` functional split started from refreshed code-index map (2026-07-10): MCP code-index was rebuilt successfully for `/home/vscode/projects/sa_plugins/sa_plugin_sla` before editing and refreshed after the first extraction. The index map showed `src/plugin.zig` remained the largest Zig module and grouped naturally into handler ABI, skills/capability output, import/module table, reachability/project shortcuts, compile pipeline, CLI, and SAB command areas. First split moved the C ABI handler definitions/exported functions into `src/plugin_handler.zig` and moved SLA skill/capability JSON/markdown generation into `src/plugin_skills.zig`; `src/plugin.zig` now imports those modules and keeps explicit ABI aliases plus skills call sites. Verification this slice intentionally stayed static because the user forbade full/broad Zig tests: `zig fmt --check src/plugin.zig src/plugin_handler.zig src/plugin_skills.zig src/parser.zig` and `git diff --check` passed. No `zig build test`, broad `selectively parses`, or full test command was run.
 - Selective-body materialization hang audit in progress (2026-07-10): the broad `zig build test -j1 -Dtest-filter="selectively parses"` gate was not rerun. Static mapping showed that the old broad filter matched two tiny parser tests plus three plugin tests; the heavy/potentially stuck point was the strict direct-SAB half of the reachable-body plugin regression after the SA-text assertions (`compileSlaFileToSabWithOptions`). The plugin regressions have now been retargeted to separate exact names (`materializes reachable bodies`, `sla sab test codegen materializes reachable bodies`, `materializes reachable macro bodies`, and `narrows same named imported methods`) so the broad `selectively parses` filter now matches only the two parser tests. While auditing that path, `src/plugin.zig` fixed a concrete materialization convergence bug: selected imported function/macro body sets are now compared by set contents, not only by count, and temporary selected-body hash maps are released per module iteration instead of accumulating until function return. Verification so far: no leftover Zig process after the aborted run, `zig fmt --check src/plugin.zig src/parser.zig`, `git diff --check`, and `rg` confirms only parser tests still match `selectively parses`. The broad gate and the new exact plugin gates still need serial reruns.
 - Demand-driven transitive SLA module discovery sub-slice added (2026-07-10): focused test-codegen import expansion now starts from direct root `.sla` imports on small root programs and discovers child `.sla` modules only after a parent contributes reachable function/type/const/macro surface. Large root programs keep the old eager transitive collection to avoid paying an extra reachability pass over thousands of lines. `appendModuleDeclsSelective()` also stops parsing children of non-contributing modules on the lazy path. Added regressions `sla test codegen skips parsing non contributing transitive sla imports` and `sla test codegen lazily parses reachable transitive sla imports`. Serial gates passed: new transitive regressions 2/2, `selectively parses` 5/5, `sla module table` 10/10, `zig fmt --check src/parser.zig src/plugin.zig`, `zig build -j1 --summary all` 7/7, `zig build test -j1 --summary all` 165/165, official dev install, and real `sla_ecs` profile checks. Profile evidence was noisy but useful: `parallel_query.sla` import expand ranged 265-314ms; `parallel_table_erased.sla` ranged 360-420ms; `test_ecs_mut_parallel.sla` improved to 571ms; `system_param_table_erased.sla` remained noisy at 766-899ms. Feature completion: lazy transitive module discovery for small focused roots 100%; broader real ECS latency target remains open.
@@ -93,7 +1716,8 @@ Update this file every time a compiler feature or demo milestone is completed an
 - Completed docs-priority scalar parameter cleanup issue: `docs/sab_scalar_param_cleanup_issue_cn.md` is fixed for the current compiler repro and installed host surface. Direct SAB now classifies param cleanup as skip/consume/release so copy-value scalar params are consumed at function exit without primitive `release`; shared call-arg materialization now releases temporary auto-borrow receivers, and SA-text associated-target user-method lowering passes receiver-style auto-borrow options so `temporary().method()` owner temps are released. Added `tests/test_unit_scalar_param_cleanup_direct.sla` for table-erased-like wrapper, `_auto` wrapper, unused scalar param, and expression-chain receiver cleanup. Added Apache-2.0 `LICENSE` matching `sci`. Verified: `zig test src/lowering_rules.zig --test-filter "shared lowering rules normalize derives and call argument prefixes"`; `zig build --summary all`; `zig build test --summary all` (85/85); local and installed SA-text plus strict direct-SAB no-fallback focused fixture; scalar reassignment, Result/EntityItem, Box/from_raw, void fn-pointer, borrow-temp (25/25), RefCell payload (7/7); local full strict direct-SAB no-fallback sweep 108/108 files, 262/262 cases; official `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; installed host `system_param_table_erased.sla` check plus focused SA-text and strict direct-SAB no-fallback; installed host `parallel.sla` strict direct-SAB 1/1. Feature completion: 100% for this focused docs issue slice; global completion remains open.
 - Completed focused imported-macro whole-aggregate borrowed address follow-up: imported macro direct callees are now tracked from macro bodies, and pointer-backed whole aggregate identifier args for borrowed imported macros pass by value instead of pointer-to-pointer stack materialization. Added the whole-aggregate `SLA_IMPORTED_READ_PAIR_SUM` fixture and focused test. Installed SA-text and strict direct-SAB no-fallback for `tests/test_unit_imported_macro_address_direct.sla` both pass 6/6; this is included in the 108/108 strict unit sweep. Broader macro convergence remains open.
 - Completed docs-priority Result/EntityItem cleanup issue: `docs/result_entityitem_filter_cleanup_issue_cn.md` is fixed for the current host repro surface. Direct SAB now covers the tracked `Result<EntityItem<T>>` borrowed-composite cleanup shape, generic `Box::from_raw`, consuming `Box::into_raw`, void function-pointer indirect calls, `unsafe { ... }` block expressions, pointer-to-pointer bitcasts into fresh temps, and the follow-on primitive reassigned binding shape (`scan = scan - 1`, `found = scan`) by slotting reassigned primitive direct-SAB let/param bindings. Added `tests/test_unit_result_entityitem_self_cleanup.sla`, `tests/test_unit_box_from_raw_direct.sla`, `tests/test_unit_fn_ptr_void_direct.sla`, and `tests/test_unit_scalar_reassign_scan_direct.sla`; `sla_std/std_surface.sla_meta` now declares `Box::from_raw` and consuming `Box::into_raw`. Verified: `zig build --summary all`; `zig build test --summary all` (85/85); local SA-text plus strict direct-SAB no-fallback for the Result and scalar fixtures; local strict direct-SAB no-fallback for Box/from_raw and void fn-pointer fixtures; local full strict direct-SAB no-fallback sweep 107/107 files, 260/260 cases; official `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; installed host strict direct-SAB no-fallback and SA-text for `/home/vscode/projects/sla_ecs/tests/test_ecs_result_facades.sla` (172/172 each); installed host strict direct-SAB no-fallback for `/home/vscode/projects/sla_ecs/lib/parallel.sla` (1/1); installed focused borrow-temp (25/25) and RefCell payload (7/7); SAB disasm illegal-call-target guard for `parallel.sla` clean. The historical filter `ecs_world_try_query_single returns one` still selects 0 tests and is recorded only as a stale-filter fact. Feature completion: 100% for this focused docs issue slice; global completion remains open.
-- Completed docs-priority Phase 3 call/materialization follow-up: direct SAB now consumes shared `CallArgMaterializationKind.array_to_slice_borrow` for focused ordinary planned static calls. Added `tests/test_unit_array_to_slice_call.sla`, covering borrowed fixed arrays passed to borrowed slice parameters from local arrays and temporary array literals. `src/sab_codegen.zig` emits stack `Slice` materialization with `SLICE_NEW`, marks the stack slice non-owning, and releases temporary backing arrays after the call; `src/codegen.zig` now also releases temporary backing arrays for SA-text `&[literal]` array-to-slice call args. Verified: `zig fmt src/codegen.zig src/sab_codegen.zig`; `zig build --summary all`; `zig build test --summary all` (85/85); local and host SA-text plus strict direct-SAB no-fallback for the focused fixture (1/1 each); local strict direct-SAB regressions for RefCell payload (7/7), borrow-temp (25/25), and `/home/vscode/projects/sla_ecs/lib/parallel.sla` (1/1); official `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host strict direct-SAB no-fallback for borrow-temp (25/25) and `parallel.sla` (1/1); local and host full strict direct-SAB no-fallback sweeps are 103/103 fixture files and 256/256 cases; focused SAB disasm illegal-call-target grep produced no matches. Feature completion: 100% for this focused Phase 3 sub-slice; broader shared call/result/materialization planning remains open, and macro-body `&values` array-to-slice through macro parameter address semantics stays a Phase 2 macro-convergence gap. Rosetta `116_va_list_variadic` remains open because SA-text currently panics with code 116 and direct SAB now reaches a separate callee-declaration issue after this blocker.
+- Completed docs-priority Phase 3 call/materialization follow-up: direct SAB now consumes shared `CallArgMaterializationKind.array_to_slice_borrow` for focused ordinary planned static calls. Added `tests/test_unit_array_to_slice_call.sla`, covering borrowed fixed arrays passed to borrowed slice parameters from local arrays and temporary array literals. `src/sab_codegen.zig` emits stack `Slice` materialization with `SLICE_NEW`, marks the stack slice non-owning, and releases temporary backing arrays after the call; `src/codegen.zig` now also releases temporary backing arrays for SA-text `&[literal]` array-to-slice call args. Verified: `zig fmt src/codegen.zig src/sab_codegen.zig`; `zig build --summary all`; `zig build test --summary all` (85/85); local and host SA-text plus strict direct-SAB no-fallback for the focused fixture (1/1 each); local strict direct-SAB regressions for RefCell payload (7/7), borrow-temp (25/25), and `/home/vscode/projects/sla_ecs/lib/parallel.sla` (1/1); official `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host strict direct-SAB no-fallback for borrow-temp (25/25) and `parallel.sla` (1/1); local and host full strict direct-SAB no-fallback sweeps are 103/103 fixture files and 256/256 cases; focused SAB disasm illegal-call-target grep produced no matches. Feature completion: 100% for this focused Phase 3 sub-slice; broader shared call/result/materialization planning remains open. The specific macro-body `&values` array-to-slice-through-macro-parameter-address gap is now closed; broader macro convergence and rosetta `116_va_list_variadic` remain open.
+- Added a compiler-local minimal regression for the signed-parse delayed-field-projection shape: `tests/test_unit_signed_parse_field_projection.sla` now covers a small scalar struct returned from a helper, a subsequent call that uses the prior struct's `next_offset`, and a later read of the prior struct's `negative` flag/value. Local serial verification passed in both SA and SAB using `env SLA_KEEP_TEST_SA=1 ... --jobs 1 --trace-panic`. The downstream `sla_music_cli` blocker was a missing `MusicPatchHunk` field in `src/music_ir.sla`; after adding the missing `glyph_ledger_x_*` fields to the `MusicPatchHunk` construction paths, the single-file source also passes serial SA/SAB checks (`SA_PLUGIN_DEV=1 sa sla test src/music_ir.sla --test-backend sa --jobs 1 --trace-panic` and `--test-backend sab --jobs 1 --trace-panic`). Issue051 is now closed at the current source state.
 - Docs issue audit update: inserted priority review of `docs/` issue tickets is complete without changing feature percentages. Marked `docs/sab_call_target_issue_cn.md` verified-fixed using dev install/help, host strict direct-SAB `parallel.sla` (1/1), SAB build/disasm, and a clean illegal call-target grep. Marked `docs/sla_compiler_issues_and_lua_refactor_diagnostics_cn.md` issues 1-3 fixed/verified: SCI macro bodies require `owned_body_lines`, SLA imports are rewritten relative to final `.sa` output, and SCI `PackageNotResolved` no longer double-frees path ownership; the `sa_lua` empty-test issue remains open outside this compiler repo. Updated `docs/trace.md` so focused user-macro SA-text parity and tracked struct-update/call-target issues are no longer stale-open, while broader macro convergence, full RefCell lifecycle, pointer-backed imported-macro alias semantics, complete shared call planning, closures, full async, SCI boundary, and global 100% completion remain open.
 - Completed docs-priority implementation follow-up: direct SAB now lowers chained `if let` for rosetta `104_if_let_chains` without fallback. `src/lowering_rules.zig` now exposes shared `planLetPattern()` / `LetPatternPlan`, reusing the existing while-let pattern classification contract for Option/Result/user-enum tags; `src/sab_codegen.zig` consumes that plan for `if let` statements and value-producing expressions while keeping concrete labels, result-slot loads/stores, register releases, and RefCell branch-state restoration local to the emitter. Verified: `zig fmt src/lowering_rules.zig src/sab_codegen.zig`; `zig test src/lowering_rules.zig --test-filter "shared while let pattern classification"`; `zig build --summary all`; `zig build test --summary all` (84/84); local strict direct-SAB no-fallback and SA-text parity for `demos/rosetta/104_if_let_chains/main.sla` (1/1 each); local strict direct-SAB no-fallback for `tests/test_unit_async_while_let_future_queue_direct.sla` (1/1) and `tests/test_unit_refcell_struct_payload.sla` (7/7); `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host strict direct-SAB no-fallback and SA-text parity for rosetta 104 (1/1 each); host strict direct-SAB no-fallback for `/home/vscode/projects/sla_ecs/lib/parallel.sla` (1/1). Feature completion: 100% for this focused docs issue slice; broader pattern surface and global 100% remain open; Y/shared-lowering remains about 98-99%; direct SAB fallback-removal remains 100% for the tracked unit corpus.
 - Completed Phase 1 hardening: shared RefCell runtime scanner now traverses all chained `if let` condition values. `src/lowering_rules.zig` adds shared scanning for `IfLetCond.value` so runtime import decisions see RefCell constructors/receivers in second and later `&& let` conditions, not only `ife.cond` and branch bodies. This is a shared-layer import-surface fix; concrete SA-text/SAB import emission remains unchanged. Verified: `zig fmt src/lowering_rules.zig`; `zig test src/lowering_rules.zig --test-filter "shared refcell runtime scanner detects constructor and receiver calls"`; `zig build --summary all`; `zig build test --summary all` (84/84); local strict direct-SAB no-fallback for `tests/test_unit_refcell_struct_payload.sla` (7/7) and `tests/test_unit_borrow_temp_release_order.sla` (25/25); official `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host strict direct-SAB no-fallback for RefCell payload (7/7), borrow-temp (25/25), and `/home/vscode/projects/sla_ecs/lib/parallel.sla` (1/1); `git diff --check`. Feature completion: 100% for this focused runtime-scan sub-slice; full RefCell borrow-handle lifecycle across all scopes/branches/loops/call args remains open.
@@ -127,6 +1751,7 @@ Update this file every time a compiler feature or demo milestone is completed an
 - Completed Phase 3/Phase 2A hardening: direct SAB utf8 const declarations now store decoded byte payloads instead of source-escaped literal text. The shared `callArgUsesRawPointerStringLiteralValue` rule remains in `src/lowering_rules.zig`, while `src/sab_codegen.zig` now decodes escaped SLA string literal text before filling `ConstDecl.value.utf8.bytes`, escapes only `literal_text`/`raw_text`, and uses raw byte lengths for the affected direct-SAB const-byte paths. This closes the imported JSON direct-SAB regression where `{"types":"x"}` was being emitted into the SAB const payload with literal backslashes, causing host `sa_json_parse` to read an invalid 13-byte prefix and return null. Verified: `zig fmt src/sab_codegen.zig`; `zig build test --summary all` (80/80); local strict direct-SAB no-fallback for `tests/test_unit_imported_json_direct.sla`, `tests/test_unit_imported_json_struct_direct.sla`, `tests/test_unit_imported_json_string_direct.sla`, and `tests/test_unit_pkgjson_codegen.sla`; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host strict direct-SAB no-fallback for the same four fixtures plus imported JSON/FS direct fixtures, `tests/test_unit_user_macro_direct.sla`, `tests/test_unit_borrow_direct.sla`, and `/home/vscode/projects/sla_ecs/lib/parallel.sla`; host full no-fallback sweep 101/101. Feature completion: 100% for this direct SAB utf8 const-byte sub-slice; Y/shared-lowering remains about 98%; direct SAB fallback-removal remains 100% for the tracked corpus; current no-fallback baseline remains 101/101.
 - Completed Phase 2A/Phase 1 hardening: shared imported macro addressable arg action planning. `src/lowering_rules.zig` now exposes `ImportedMacroAddressableArgAction` and `ImportedMacroCallPlan.planAddressableArgAction`, so the imported-macro arg decision is shared: pass non-addressable args by value, reuse an existing addressable symbol when available, or materialize a temporary stack slot otherwise. `src/sab_codegen.zig` consumes that action while keeping macro-context lookup, concrete symbol names, stack allocation/store, and release mechanics local. Verified: `sa version` (`0.0.3.3`); focused lowering-rule test (`shared imported macro call plan`); `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig src/codegen.zig`; `zig build --summary all`; `zig build test --summary all` (75/75); local strict direct-SAB for `tests/test_unit_pkgjson_codegen.sla`, imported JSON/FS direct fixtures, and `tests/test_unit_user_macro_direct.sla` (2/2); local no-fallback sweep 101/101; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host strict direct-SAB for the same imported macro/user macro fixtures and `/home/vscode/projects/sla_ecs/lib/parallel.sla`; host no-fallback sweep 101/101. Feature completion: 100% for this shared imported macro addressable arg action sub-slice; Y/shared-lowering remains about 98%; direct SAB fallback-removal remains 100% for the tracked corpus; current no-fallback baseline remains 101/101. Open: full imported macro address-expression lowering, broader reusable address/projection, RefCell lifecycle planning, and broader shared macro expansion convergence.
 - In progress Phase 1 hardening: broader shared RefCell borrow-handle lifecycle and alias planning across scopes, branches, loops, call args, and early returns, plus the remaining pointer-backed aggregate borrow cases inside imported macros that still depend on emitter-local lifetime decisions. Starting baseline remains Y/shared-lowering about 98%, direct SAB fallback-removal 100% for the tracked corpus, and no-fallback sweep 102/102.
+- Completed focused shared call/materialization convergence slice (2026-07-18): `src/lowering_rules.zig` now owns `StackSlotIdentifierCallArgTempAction` and `planStackSlotIdentifierCallArgTemp()` so SA-text and direct SAB share the decision for stack-slot identifier temporaries passed to raw-pointer by-value params. `src/codegen.zig` and `src/sab_codegen.zig` now both consume that shared rule for release/consume cleanup rather than carrying raw-pointer-only local branches. Verified serially with `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`, `zig build test -j1 -Dtest-filter='shared lowering rules classify call materialization decisions' --summary all` (2/2), and `zig build test -j1 -Dtest-filter='direct sab normal sig keeps by-value ptr params raw' --summary all` (2/2). No full suites were run.
 - Completed Phase 1 hardening: direct SAB user-macro smart-pointer address lowering now supports macro-body `&*boxed` and a focused `&**nested_box` chain through shared smart-pointer action/get plans. `src/sab_codegen.zig` shares one deref-address fallback helper between ordinary and macro address paths, while macro deref type/value lowering recognizes smart-pointer deref via `lowering_rules.smartPointerDerefType` and `planSmartPointerGetAction`. `tests/test_unit_user_macro_direct.sla` imports Box and covers the new `borrow_smart_address_macro` case returning 42. Verified: `sa version` (`0.0.3.3`); focused lowering-rule test (`shared dyn coercion and receiver plans`); `zig fmt --check src/sab_codegen.zig src/lowering_rules.zig src/codegen.zig`; `zig build --summary all`; `zig build test --summary all` (74/74); local strict direct-SAB for `tests/test_unit_user_macro_direct.sla` (2/2), `tests/test_unit_borrow_temp_release_order.sla` (25/25), `tests/test_unit_smart_pointer_struct_field_cleanup.sla` (3/3), and `tests/test_unit_refcell_struct_payload.sla` (2/2); local no-fallback sweep 101/101; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host strict direct-SAB for the same four focused fixtures; host `/home/vscode/projects/sla_ecs/lib/parallel.sla`; host no-fallback sweep 101/101; `git diff --check`. Feature completion: 100% for the direct SAB user-macro smart-pointer address sub-slice; Y/shared-lowering remains about 98%; direct SAB fallback-removal remains 100% for the tracked unit corpus; current no-fallback baseline remains 101/101. Whole Phase 1 remains open for imported SA macro address lowering, fuller shared projection/`&**chain` classification, RefCell lifecycle planning, and broader shared macro expansion convergence.
 - Completed Phase 1 hardening: smart-pointer address action planning now lives in shared lowering rules. `src/lowering_rules.zig` owns the existing direct SAB address-of fallback decision for smart-pointer deref sources: dyn Box identity, `as_ptr` address slot, pointer-backed value take from that slot, nested smart-pointer value-slot handling, and `get` value fallback. `src/sab_codegen.zig` consumes the action plan while preserving emission and release ordering. Verified: focused lowering-rule tests (`shared dyn coercion and receiver plans`, `shared lowering rules classify address-of shapes`); `zig fmt --check src/lowering_rules.zig src/sab_codegen.zig src/codegen.zig`; `zig build --summary all`; `zig build test --summary all` (74/74); local strict direct-SAB for `tests/test_unit_borrow_temp_release_order.sla` (25/25), `tests/test_unit_smart_pointer_struct_field_cleanup.sla` (3/3), and `tests/test_unit_refcell_struct_payload.sla` (2/2); `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host strict direct-SAB for the same three fixtures; host `/home/vscode/projects/sla_ecs/lib/parallel.sla`; local and host no-fallback sweeps 101/101; `git diff --check`. Feature completion: 100% for the shared smart-pointer address action sub-slice; Y/shared-lowering remains about 98%; direct SAB fallback-removal remains 100% for the tracked unit corpus; current no-fallback baseline remains 101/101. Whole Phase 1 remains open for `&**chain`, imported macro address lowering, fuller RefCell lifecycle planning, and broader shared macro expansion convergence.
 - Completed Phase 1 hardening: ordinary index-address target unwrapping now lives in shared lowering rules. `src/lowering_rules.zig` owns the borrow/pointer peel and ordinary array/Slice addressability helper for classifying `&values[index]`, including `values: &[T; N]`; SA-text passes type-checker `index_target_ty` into the shared address plan, and direct SAB direct/macro address paths consume the same helper while preserving Vec/std-surface fallback behavior. Verified: `zig fmt --check src/lowering_rules.zig src/codegen.zig src/sab_codegen.zig`; focused lowering-rule test; `zig build --summary all`; `zig build test --summary all` (74/74); local and host SA-text plus strict direct-SAB for `tests/test_unit_borrow_direct.sla`; local and host strict direct-SAB for `tests/test_unit_user_macro_direct.sla`; local and host no-fallback sweeps 101/101; `sa plugin install --dev .`; `SA_PLUGIN_DEV=1 sa sla help`; host `/home/vscode/projects/sla_ecs/lib/parallel.sla`; `git diff --check`. Feature completion: 100% for the shared ordinary index-address target unwrapping sub-slice; Y/shared-lowering remains about 98%; direct SAB fallback-removal remains 100% for the tracked unit corpus; current no-fallback baseline remains 101/101. Whole Phase 1 remains open for smart-pointer address plans, `&**chain`, imported macro address lowering, RefCell lifecycle, and broader shared macro expansion convergence.
@@ -2557,9 +4182,90 @@ Update this file every time a compiler feature or demo milestone is completed an
   - Current sweep: full local direct SAB no-fallback `tests/test_unit_*.sla` is 50/64. Remaining failures are listed in `tasks.md`; this fixed slice moves the feature to 100%, broader Y/shared-lowering to approximately 66%, and direct SAB fallback-removal to approximately 85%.
 # 2026-07-09: SAB collection helper direct lowering progress
 
+# 2026-07-12: Project open-configured result layout compatibility
+
+# 2026-07-12: Two configured-project open query folding
+
+# 2026-07-12: Remaining multi-configured root-path audit
+
+# 2026-07-12: Inferred result-chain root folding
+
+# 2026-07-12: Folded empty project guard cleanup
+
+# 2026-07-12: Dual loose inferred-root state folding
+
+# 2026-07-12: Base single-loose inferred state folding
+
+# 2026-07-12: Project snapshot/background timeout closure
+
+- [done] Project shortcut rewriting is now pre-typecheck-only.
+  - Post-typecheck syntactic reachable pruning no longer reruns project AST rewrites against an already populated TypeChecker.
+  - Prevents direct SAB `MissingType` from typed-node replacement/deletion and removes duplicate shortcut work.
+  - New exact post-typecheck-mode regression passes; existing pre-typecheck calls explicitly enable rewriting.
+  - Multi-configured strict 10s passes three times at 5.64s/7.17s/7.29s and profile passes at 5.97s.
+  - All existing background/collection/config representative strict gates pass; historical API files are absent. Timeout issue closed.
+
+- [done] Extended known collection state to snapshot primary active/open plus one loose secondary open.
+  - State regression now proves inferred root count `1 -> 0` across add/update/close/update.
+  - Proven `/dev/null/inferred` defaults set through the open-file API reuse the existing inferred lookup fold.
+  - Real multi-configured remains 3/3; repeated strict 10s remains marginally open at about 10.02-10.03s.
+
+- [done] Added a narrow pre-reachability state model for the explicit clean collection + two loose open files path.
+  - Tracks known configured files, dual opens, inferred presence, secondary close, root count, and contains queries.
+  - Exact Zig state-transition regression passes; existing inferred/two-open guards and build 7/7 pass.
+  - Real multi-configured remains 3/3 and improves about 10.70s -> 10.46s, while strict 10s remains open at the boundary.
+
+- [done] Removed no-else constant `if false {}` statements created by root project-result folding.
+  - Handles direct and expression-statement AST shapes.
+  - Focused inferred invalid-body and cached inferred lookup regressions plus build 7/7 pass.
+  - No strict-10s performance claim; the inferred open/close/update chain remains open.
+
+- [done] Constant-folded proven inferred snapshot/project-list/service-list guards before imported reachability.
+  - Known three-project counts, tertiary presence, and inferred tertiary kind are rewritten in root panic guards.
+  - Iterative dead-let cleanup removes the unused pure query/session chain.
+  - Focused invalid-heavy-body regression passes and confirms those signatures are absent from SAB.
+  - Real multi-configured remains 3/3 correct and improves from about 11.52s to 10.70s; repeated strict 10s still times out, so inferred-root open/close/update remains open.
+
+- [progress] Isolated the third inferred/session test as the remaining dominant root.
+  - It selects about 120 snapshot functions, versus about 23 and 30 for the first two tests.
+  - A lightweight SessionState/session-constructor extension produced no real graph or timeout improvement and was reverted cleanly.
+  - Post-reachability known-field pruning is too late to reduce imported materialization; the next fix must constant-fold proven root assertions before reachability and then dead-prune the heavy inferred/session construction chain.
+
+- [done] Safely folded `project_collection_get_open_configured_projects` for two known single-file configured projects.
+  - Tracks single-file programs, configured-project paths/files, and primary/secondary snapshot propagation.
+  - Applies only when the collection open file syntactically matches both known project files.
+  - Focused regression proves the heavy query surface is absent from direct SAB.
+  - Real multi-configured test passes 3/3 in 11.52s; strict 10s remains open, while standalone SAB build improved from 12.27s to 10.50s.
+
+- [done] `ProjectOpenConfiguredProjects` shortcut now matches the current seven-field downstream structure.
+  - Added explicit empty secondary-project fields to the compiler-generated single-project literal.
+  - Extended the focused codegen fixture to assert `has_secondary == false` and zero secondary path length.
+  - Verified focused Zig 2/2, build 7/7, official dev install, and downstream collection-open/default-cache strict SAB 10s.
+  - The broader multi-configured test remains open: a 60s diagnostic build finishes in 12.27s with a 3.1MiB SAB; typecheck and direct codegen dominate because the two-project collection path is not yet shortcut-folded.
+
+- Completed Module Table namespace-alias allocation cleanup (2026-07-18): `src/plugin_import_expand.zig::isModuleContributing()` and `src/plugin_reachability.zig::collectReachableModuleBodyNames()` now avoid per-exported-function alias allocations in the common raw-name path. Alias fallback builds one namespace prefix and scans the sparse reachable set, preserving namespace-only sibling helper behavior while reducing repeated import-expansion allocation work. Verified serially with `zig fmt --check src/plugin_import_expand.zig src/plugin_reachability.zig`, `git diff --check`, `zig build -j1 --summary all` (7/7), `zig build test -j1 -Dtest-filter='sla module table selectively parses named function bodies' --summary all` (1/1), and `zig build test -j1 -Dtest-filter='sla test codegen qualifies same named imported helper reachability' --summary all` (2/2). No full test suite, no concurrent tests, and no real `sla_ecs` profile claim.
 - [progress] Project snapshot/background timeout issue is now about 78% complete.
   - Background strict 10s path remains closed from the earlier direct string Slice work.
   - Added direct SAB lowering for small imported platform helpers in `src/sab_codegen.zig`: byte pointer helpers, JSON single-output wrappers, FS single-output wrappers, plus literal-only `STR_PTR`/`STR_LEN`.
   - Verified serially with `zig fmt --check src/sab_codegen.zig`, `zig build -j1 --summary all`, `zig build test -j1 --summary all` (147/147), dev plugin install, and focused strict SAB fixtures for string ptr/len, pkgjson codegen, and tsconfig buffer cleanup.
   - `tests/test_unit_pkgjson_codegen.sla` strict SAB now runs around 1.5s locally after helper direct lowering.
   - Downstream `sla_tsgo` collection tests still do not stably satisfy the 10s strict timeout: default-cache remains near 10-12s depending on run, and open remains above 10s. The remaining work should shift to test-codegen reachability/pruning for resolver/packagejson rather than more wrapper fast paths.
+- Completed direct-SAB scalar comparison guards for user-enum matches, including user-macro expansion (2026-07-12). Shared `supportsScalarMatchGuard()` owns the supported identifier-vs-identifier/integer comparison shape. Direct SAB preallocates guarded-case scalar payload bindings and guard results before entering the match ladder, which gives tag-mismatch and guard-failure edges identical capability states; it also delays release of remaining case-condition registers until guard success. The focused macro returns 42 on guard success and 8 after guard failure falls through to a repeated variant. Verified with build 7/7, full Zig 208/208, local/installed macro SA/SAB 2/2, enum SA/SAB 2/2, borrowed enum SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for this scalar guard surface; complex/call guards and Option/Result direct-SAB matches remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed Option/Result pattern matching inside user macros for direct SAB (2026-07-12). TypeChecker now infers `Option<infer>` or `Result<infer,infer>` from standard patterns while checking an infer-typed macro body. At concrete expansion, direct SAB takes the match scrutinee's caller-local concrete type for std payload extraction and the macro assignment target's concrete type for the value-producing result slot. The ordinary match ladder now consumes shared `planLetPattern()` and existing Option/Result std macro fragments alongside user enums. Some(41) and Ok(40) return 42, None returns 0, and Err(7) returns -7 in both emitters. Verified with build 7/7, full Zig 208/208, local/installed macro SA/SAB 2/2, Option SA/SAB 1/1, Result SA/SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for unguarded standard macro matches; complex/call guards and standard-match guards remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed scalar Option/Result match guards inside user macros for direct SAB (2026-07-12). Guarded standard payloads now use the same preallocated binding and guard registers as guarded user enums, keeping tag mismatch and guard failure capability states identical. Standard discriminant checks and payload extraction still consume shared `planLetPattern()` and std macro fragments. Some(41)/Ok(40) pass their guards and return 42; low Some(9)/Ok(8) fall through to repeated-variant cases and return -9/-8; None and Err remain correct. Verified with build 7/7, full Zig 208/208, local/installed macro SA/SAB 2/2, rosetta 30 SA/SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for scalar standard-container guards; call/compound guards remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed compound comparison match guards joined by `&&`/`||` for direct SAB and user macros (2026-07-12). Shared `scalarMatchGuardTempCount()` recursively classifies the guard tree and returns the exact number of result temporaries. Direct SAB allocates and initializes those registers before the match ladder and emits comparisons/logical nodes postorder, so all control-flow edges retain compatible capability state. The Option macro guard `inner > floor && inner < ceiling` returns 42 for 41 in (40,42), while 9 below the floor and 21 above the ceiling reach the repeated Some fallback and return -9/-21. Verified with focused shared-plan test, build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for recursive scalar comparison/logical guard trees; call-expression guards remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed ordinary static call-expression match guards with identifier arguments for direct SAB and user macros (2026-07-12). Shared guard planning assigns one preallocated scratch register to an eligible call. Direct SAB static-call lowering can now emit into a supplied destination, so guard evaluation does not introduce a result register only on the matched path; identifier-only arguments avoid conditional materialization temporaries. The Result macro calls `direct_macro_guard_between(inner, floor, ceiling)`: Ok(40) returns 42, low/high Ok payloads reach repeated-variant fallbacks returning -8/-21, and Err(7) returns -7 in both emitters. Verified with shared-plan coverage, build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for identifier-argument static call guards; materialized call arguments remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed integer-literal arguments for ordinary static call-expression match guards (2026-07-12). Shared guard planning now accepts identifier and integer-literal args. Direct SAB encodes literals directly in call operand text instead of creating registers only on the matched path, while the result continues to target preallocated scratch. The Result macro calls `direct_macro_guard_between(inner, 39, 41)`: Ok(40) returns 42, Ok(8)/Ok(21) fall through to -8/-21, and Err(7) returns -7 in both emitters. Verified with build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for identifier/integer-literal static call guards; general expression/materialized arguments remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed recursively materialized integer-arithmetic arguments for static call match guards (2026-07-12). Shared guard planning counts supported `+`/`-`/`*`/`/`/`%` argument expression nodes plus the call result; direct SAB emits those nodes into the already preallocated scratch set before invoking the guard function. The Result macro calls `direct_macro_guard_between(inner + 1, 40, 42)`: Ok(40) returns 42, low/high Ok payloads fall through to -8/-21, and Err(7) returns -7 in both emitters. Focused planning coverage confirms one arithmetic node plus the call result requires two scratch registers. Verified with build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for integer-arithmetic static call args; other materialized argument shapes remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed primitive cast call arguments around supported scalar expressions for direct SAB match guards (2026-07-12). Shared planning counts the cast as an additional scratch node, and direct SAB materializes focused integer `i64/u64` casts into the preallocated set. The Result macro calls `direct_macro_guard_between((inner + 1) as i64, 40, 42)`: Ok(40) returns 42, low/high Ok payloads fall through to -8/-21, and Err(7) returns -7 in both emitters. Focused planning coverage confirms arithmetic + cast + call requires three scratch registers. Verified with build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for focused integer cast args; field/index argument materialization remains open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed scalar field-projection arguments for static call match guards (2026-07-12). Shared planning accepts `identifier.field` and counts one load scratch. Direct SAB now records the concrete call-site type when caching a user-macro value parameter, allowing ordinary match lowering to resolve shared struct field layout within expansion. The Result macro passes `limits.floor` and `limits.ceiling` from `DirectMacroGuardLimits`; Ok success, low/high fallback, and Err paths remain correct in both emitters. Focused planning coverage confirms field scratch counting. Verified with build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for identifier-based scalar field args; index argument materialization remains open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed fixed-array constant-index arguments for static call match guards (2026-07-12). Shared planning accepts `identifier[nonnegative integer literal]` and counts one load scratch. Direct SAB uses the cached macro parameter's concrete array type and shared `arrayElementLayout()` to load the selected scalar into preallocated scratch. The Result macro passes `limits[0]`/`limits[1]` from `[i64; 2]`; Ok success, low/high fallback, and Err paths remain correct in both emitters. Focused planning coverage confirms index scratch counting. Verified with build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. The install gate initially failed with `errno 28`; removing the 79GB regenerable project `.zig-cache` restored 79GB free and the gate passed. Feature completion is 100% for fixed-array constant index args; dynamic index materialization remains open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed fixed-array dynamic identifier index arguments for static call match guards (2026-07-12). Shared planning reserves three scratches for scaled offset, element pointer, and loaded value. Direct SAB consumes shared array stride/layout facts and emits multiply + pointer add + load into the preallocated set before the guard call. The Result macro passes `limits[floor_index]`/`limits[ceiling_index]`; Ok success, low/high fallback, and Err paths remain correct in both emitters. Focused planning coverage confirms a dynamic index plus call result requires four scratch registers. Verified with build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for identifier dynamic indexes; arithmetic index expressions remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed supported integer-arithmetic index expressions for fixed-array static call match guards (2026-07-12). Shared planning recursively counts the index expression and then reserves scaled-offset, element-pointer, and loaded-value scratches. Direct SAB evaluates the index tree into preallocated scratch before addressing. The Result macro passes `limits[floor_index + 1]` for the ceiling; Ok success, low/high fallback, and Err paths remain correct in both emitters. Focused planning coverage confirms one arithmetic index node plus addressing and call result requires five scratch registers. Verified with build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for supported arithmetic indexes; nested field/index targets and bounds checks remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Completed one-level array-field targets for static call match-guard indexing (2026-07-12). Shared planning accepts `identifier.field[index]` and adds one field-load scratch before the existing index-address scratches. Direct SAB resolves the concrete owner type from cached macro parameters, consumes shared field layout, loads the array pointer, and reuses dynamic/arithmetic index lowering. The Result macro passes `config.limits[floor_index]` and `config.limits[floor_index + 1]`; Ok success, low/high fallback, and Err paths remain correct in both emitters. Focused planning coverage confirms field target + dynamic index + call result requires five scratch registers. Verified with build 7/7, full Zig 209/209, local/installed macro SA/SAB 2/2, rosetta 30 SAB 1/1, Option SAB 1/1, Result SAB 1/1, owner SAB 15/15, imported macro SAB 11/11, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for one-level array-field targets; bounds checks and deeper target chains remain open; Y/shared-lowering remains about 99%; fallback-removal remains 100%; authoritative corpus remains 130/130 without a new sweep.
+- Refreshed the authoritative strict direct-SAB corpus after the full match/macro guard sequence (2026-07-12). The current `tests/test_unit_*.sla` glob contains 134 fixture files. The exact documented local sweep passed 134/134 through `./zig-out/bin/sla-local-cli`, and the equivalent installed/dev-dispatched sweep passed 134/134 through `SA_PLUGIN_DEV=1 sa sla test`; both enforced `SLA_SAB_NO_FALLBACK=1`, serial jobs, trace-panic, and a 120-second per-file timeout. No fallback or runtime regression was found. This replaces the stale 130/130 baseline. Tracked-corpus fallback removal remains 100%, broader Y/shared-lowering remains about 99%, and the historical P1 69-file membership mapping remains open as a separate evidence artifact.
+- Closed the historical P1 direct-SAB 69-file metric with an auditable membership artifact (2026-07-12). `docs/direct_sab_historical_69_corpus.md` derives the exact list from baseline commit `ecd9570`, records all 69 members, confirms none are missing from the current tree, and records that the current corpus consists of those 69 plus 65 newer fixtures. The completed local and installed/dev strict 134/134 sweeps therefore prove the historical subset at 69/69 in both paths. Historical P1 is closed; current authoritative baseline remains 134/134, tracked fallback removal remains 100%, and broader Y/shared-lowering remains about 99%.
+- Completed shared RefCell-aware deref-assignment lifecycle and direct-SAB deref assignment (2026-07-12). `planDerefAssignmentTargetLifecycle()` now owns the keep/release-value/release-borrow-handle decision. Direct SAB lowers `*cell.borrow_mut() = 42`, stores through the borrow slot, releases the temporary dynamic handle, and successfully borrows the cell again; SA-text consumes the same plan and does not release handles referenced through local identifiers. Verified with focused shared-plan coverage, build 7/7, full Zig 209/209, local/installed owner SA/SAB 16/16, local and installed/dev strict sweeps 134/134, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature completion is 100% for deref assignment lifecycle; broader RefCell lifecycle reuse remains open; Y/shared-lowering remains about 99%; fallback-removal remains 100%.
+- Closed the local-handle runtime half of RefCell deref-assignment lifecycle (2026-07-12). A `borrow_mut()` handle bound to a local survives two deref stores and remains readable; explicit release then permits a fresh immutable borrow. This proves the shared `.keep` action and complements the temporary-handle auto-release regression. Verified with full Zig 209/209, local/installed owner SA/SAB 17/17, local and installed/dev strict sweeps 134/134, official install/help, and host `parallel.sla` SA/SAB 1/1. The focused deref-assignment lifecycle surface is complete; broader RefCell lifecycle planning remains open; Y/shared-lowering remains about 99%; fallback-removal remains 100%.
+- Fixed SA-text RefCell local-handle reassignment metadata transfer (2026-07-12). A regression assigning `borrowed = right.borrow_mut()` initially passed direct SAB but failed SA with runtime borrow-conflict panic 107 after explicit release, proving the new right-cell handle remained attached to its temporary register. SA assignment now invokes existing shared RefCell value-state transfer whenever the source register carries a handle, independent of generic stored-value release classification. Left is reborrowable immediately after overwrite and right after `!borrowed`; both emitters pass. Verified with build 7/7, full Zig 209/209, local/installed owner SA/SAB 18/18, local and installed/dev strict sweeps 134/134, official install/help, and host `parallel.sla` SA/SAB 1/1. Feature complete; broader RefCell lifecycle remains open; Y/shared-lowering about 99%; fallback-removal 100%.
+- Investigated RefCell branch-dependent handle-owner merging (2026-07-12). A handle initially borrowing left and reassigned to right only in one live `if` branch cannot be represented by the current single static `cell_reg` after merge. The focused experiment compiled but the opposite runtime path released the wrong owner and later hit borrow-conflict panic 107. Correct support needs a pre-branch owner companion/phi slot, per-live-branch owner stores, and a merged owner load attached to handle metadata in both emitters under a shared plan. The failing regression was reverted so the verified 18/18 owner baseline remains clean; this is now the next explicit Phase 1 lifecycle task.

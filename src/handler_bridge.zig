@@ -240,8 +240,7 @@ pub fn compileHandlerWithSupport(
     defer arena.deinit();
     const a = arena.allocator();
 
-    const source = try std.fmt.allocPrint(
-        a,
+    const source = try std.fmt.allocPrint(a,
         \\
         \\extern {{
         \\  fn render();
@@ -317,10 +316,10 @@ test "compileHandler expands relative sla imports" {
     try tmp.dir.writeFile(.{
         .sub_path = "helpers.sla",
         .data =
-            \\fn add_two(value: i64) -> i64 {
-            \\    return value + 2;
-            \\}
-            \\
+        \\fn add_two(value: i64) -> i64 {
+        \\    return value + 2;
+        \\}
+        \\
         ,
     });
     const base_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
@@ -332,13 +331,13 @@ test "compileHandler expands relative sla imports" {
     const result = try compileHandlerWithSupport(
         std.testing.allocator,
         "inc",
-        
+
         \\@import "helpers.sla"
         \\fn inc() {
         \\    count = add_two(count);
         \\    render();
         \\}
-        ,
+    ,
         fields[0..],
         .{ .base_dir = base_dir },
     );

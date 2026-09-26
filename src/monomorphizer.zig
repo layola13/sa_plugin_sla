@@ -1082,11 +1082,7 @@ pub const Monomorphizer = struct {
                     for (ud.generics) |g| {
                         try spec_args.append(try self.specializeType(g));
                     }
-                    if (std.mem.eql(u8, ud.name, "Box") or
-                        std.mem.eql(u8, ud.name, "Vec") or
-                        std.mem.startsWith(u8, ud.name, "__dyn_") or
-                        (!self.struct_templates.contains(ud.name) and !self.enum_templates.contains(ud.name)))
-                    {
+                    if (!self.struct_templates.contains(ud.name) and !self.enum_templates.contains(ud.name)) {
                         const res = try self.allocator.create(ast.Type);
                         res.* = .{
                             .user_defined = .{
@@ -1202,6 +1198,7 @@ pub const Monomorphizer = struct {
                     .integer => try buf.appendSlice("int"),
                     .float => try buf.appendSlice("float"),
                     .boolean => try buf.appendSlice("bool"),
+                    .raw_ptr => try buf.appendSlice("ptr"),
                     .void_type => try buf.appendSlice("void"),
                 }
             },

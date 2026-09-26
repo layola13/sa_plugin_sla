@@ -9,7 +9,7 @@ fn sa_asm_quine_source_len() -> usize {
 fn main() -> i32 {
     let source = "const SOURCE";
     println("{}", source);
-    return 0;
+    return source.len();
 }
 
 @test "rosetta 200 200_sa_asm_quine"() {

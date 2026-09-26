@@ -1,5 +1,7 @@
 # SAB project snapshot/project collection/config registry/API 单测 10 秒无输出超时
 
+当前状态：已关闭（2026-07-12）。以下 closure 之前的性能记录保留为历史审计，不代表当前开放 blocker。
+
 日期：2026-07-07
 
 ## 现象
@@ -145,7 +147,7 @@ cd /home/vscode/projects/mnt/sla_tsgo
 - `primary decl filter`: 0ms
 - `reachable decl filter`: 1ms
 
-判断：import-expansion 可达体裁剪使 typecheck 继续下降到约 0.33s，import expand 从上一轮约 5.5s 降到约 4.8s，但本工单仍未关闭。当前剩余瓶颈仍包括 parser/import graph 预扫描、唯一模块解析和 reachable filter 之后的 direct-SAB codegen/依赖加载；下一步需要真正的 shallow signature index、命名空间隔离和 lazy codegen dependency loading，而不是继续把大量 imported body 拼入当前 program。
+判断：import-expansion 可达体裁剪使 typecheck 继续下降到约 0.33s，import expand 从上一轮约 5.5s 降到约 4.8s，但当时本工单仍未关闭（历史记录）。当时剩余瓶颈仍包括 parser/import graph 预扫描、唯一模块解析和 reachable filter 之后的 direct-SAB codegen/依赖加载；下一步需要真正的 shallow signature index、命名空间隔离和 lazy codegen dependency loading，而不是继续把大量 imported body 拼入当前 program。
 
 ## 2026-07-07 vtable-aware trait impl 裁剪复核
 
@@ -225,7 +227,7 @@ cd /home/vscode/projects/mnt/sla_tsgo
 - `primary decl filter`: 0ms
 - `reachable decl filter`: 1ms
 
-判断不变：本工单仍未关闭，主要瓶颈仍是大型 import graph 与 reachable filter 之后的 direct-SAB codegen/依赖加载。
+判断不变：当时本工单仍未关闭（历史记录），主要瓶颈仍是大型 import graph 与 reachable filter 之后的 direct-SAB codegen/依赖加载。
 
 ## 2026-07-08 associated callable candidate index 进展记录
 
@@ -263,7 +265,7 @@ cd /home/vscode/projects/mnt/sla_tsgo
 - `primary decl filter`: 0ms
 - `reachable decl filter`: 0ms
 
-判断不变：本工单仍未关闭。该切片消除了方法候选的全符号扫描，但剩余主要瓶颈仍是大型 import graph、真正的 exported-signature/lazy imported-body typecheck，以及 reachable filter 之后的 direct-SAB codegen/依赖加载。
+判断不变：当时本工单仍未关闭（历史记录）。该切片消除了方法候选的全符号扫描，但剩余主要瓶颈仍是大型 import graph、真正的 exported-signature/lazy imported-body typecheck，以及 reachable filter 之后的 direct-SAB codegen/依赖加载。
 
 ## 2026-07-09 hidden UseAfterMove 修复与剩余超时
 
@@ -548,3 +550,76 @@ timeout 90s /usr/bin/time -f 'elapsed %e maxrss %M' env SLA_PROFILE=1 SLA_SAB_NO
 - `parse_tokens`、`scanner_`、`session_parse_file`、`program_new_single_file`、`project_snapshot_from_single_file`、`project_snapshot_with_inferred`、`project_collection_get_default_project`、`project_contains_file`、`program_get_source_file_by_path` 均无命中。
 
 判断：`collection_default_cache` 代表目标已从 strict 10s timeout 收口为通过，且真实 SAB surface 大幅缩小。整个 project snapshot/collection/config/API issue 仍打开，因为 broader collection/API strict 10s 代表还未全部收敛。总体完成度从约 90% 上调为约 91%，下一步继续处理 API / broader collection cache-surface，而不是回到已回退的 `STR_PTR(identifier)` / `STR_LEN(identifier)` direct Slice 字段读取 fast path。
+
+## 2026-07-12 open-configured result layout compatibility checkpoint
+
+重新串行审计 project background/collection/config 代表门禁时，6 个现存 background/config/default-cache 目标均在 strict SAB 10 秒内通过；历史 `test_project_api_open_contract.sla` 与 `test_project_api_update_contract.sla` 已不在下游测试树中。`test_project_collection_open_contract.sla` 暴露了一个独立正确性回归：编译器 shortcut 仍生成旧的四字段 `ProjectOpenConfiguredProjects` 字面量，而当前下游结构已经扩展为七字段。
+
+本轮修复 `src/plugin_project_shortcuts.zig::makeOpenConfiguredProjectsLiteralNode()`，使单 configured-project shortcut 明确生成：
+
+- `count = 1`、`has_primary = true`、primary path/len；
+- `has_secondary = false`、`secondary_project_path = ""`、`secondary_project_path_len = 0`。
+
+聚焦 Zig fixture 同步采用七字段结构并断言 secondary 空状态。验证通过：聚焦测试 2/2、`zig build --summary all` 7/7、官方 `SA_PLUGIN_DEV=1 sa plugin install --dev .`，以及下游 `test_project_collection_open_contract.sla` 和 `test_project_collection_default_cache_contract.sla` strict SAB 10 秒门禁。
+
+broader `test_project_collection_multi_configured_contract.sla` 仍未关闭。长窗口 `sla sab build` 可完成，代表值为 12.27 秒、MaxRSS 约 527 MiB、SAB 约 3.1 MiB；profile 中 type check 约 5.9 秒、direct SAB codegen 约 4.9 秒。该路径没有命中现有单 cached-default collection shortcut，仍保留 project/compiler/parser 大子图。下一步是为双 configured collection 建立可审计的事实追踪和聚焦回归，而不是把这个性能问题混入七字段布局兼容修复。
+
+## 2026-07-12 two configured-project open query checkpoint
+
+编译器 project shortcut 事实现在安全追踪 `program_new_single_file` 的单文件、`configured_project_new` 的配置路径、snapshot primary/secondary project，以及 `project_snapshot_with_secondary_configured` 的传播。只有 collection 的 open file 与两个 configured project 的已知单文件均语法一致时，`project_collection_get_open_configured_projects` 才折叠为 count=2 的七字段字面量；未知 containment 继续保留普通运行时路径。
+
+新增 `sla sab test codegen folds two open configured projects`，使用与真实下游相同的 `multi_snapshot.collection.primary_configured_project` / `secondary_configured_project` 形状，并证明重查询函数不进入 SAB。聚焦双项目和既有单项目回归均通过。
+
+真实下游结果：
+
+- collection-open/default-cache strict SAB 10 秒守卫继续通过。
+- multi-configured 30 秒窗口完整通过 3/3，代表值 11.52 秒、MaxRSS 约 263 MiB。
+- strict 10 秒仍为 124，但 profile 改善到 import expand 约 1.22 秒、typecheck 约 1.33 秒、direct codegen 约 2.95 秒。
+- 单独 `sla sab build` 从前一代表值 12.27 秒降到 10.50 秒；产物仍约 3.1 MiB，说明同文件其余 project/session 查询仍保留主要子图。
+
+因此双 configured open-query 子切片完成，但当时整个 timeout issue 保持打开（历史记录）；下一步应针对同文件第一、第三测试中的 projects/default/inferred/session 查询继续做事实驱动裁剪。
+
+## 2026-07-12 remaining multi-configured root-path audit
+
+使用 `sa sla test ... --filter` 分别触发三个 root test 的编译 profile 后，第三个 `project collection multi configured with inferred tertiary projects list` 明确是剩余主导路径：snapshot 模块约选择 119-120 个函数，代表 profile 为 import expand 约 2.0 秒、typecheck 约 2.4 秒、direct codegen 约 5.1 秒；前两个 root 分别只需要约 23 和 30 个 snapshot 函数。当前 CLI 在该组合下把 filter 同时传给 SLA frontend 与生成后的 SA test runner，后者报告 `no matching test`，所以这些运行只作为编译子图/profile 证据，不作为测试正确性门禁；无 filter 的全文件仍正确通过 3/3。
+
+第三个 root 的主要保留链是 `project_snapshot_with_inferred`、`project_collection_update_inferred_project_roots`、`project_session_did_open_file` / `did_close_file`、default inferred lookup 和双 open-file 状态。一次尝试把轻量 `SessionState` 的允许用途扩展到 `project_session_from_snapshot`，真实全文件的可达函数数和 strict 10 秒结果均无改善，已完整回退。
+
+架构结论：现有 `pruneKnownFalseBranchesInReachableDecls` 位于 imported reachability/materialization 之后；即使补充 known-field facts，也不能阻止这些重函数先进入导入子图。下一实现必须放在 `rewriteProjectSnapshotTestShortcuts` 的 root AST 阶段，在 reachability 前把已证明的 inferred/session 字段断言常量化，并让 iterative dead-let cleanup 删除失去引用的重构造链。
+
+## 2026-07-12 inferred result-chain root folding checkpoint
+
+`rewriteProjectSnapshotTestShortcuts` 现在在 root reachability 前追踪由 `project_snapshot_with_inferred` 产生的 snapshot、其 `project_collection_projects` 结果、对应 session 和 language-service list。对当前可证明的固定三项目形状，以下字段读取会在 panic-guard 条件中直接常量化：snapshot `project_count=3`，project/service list `count=3`、`has_tertiary=true`，以及 project list tertiary `kind=PROJECT_KIND_INFERRED`。已知为 false 的 panic 分支被清空，随后 iterative dead-let cleanup 删除失去引用的纯查询链。
+
+新增 `sla sab test codegen prunes known inferred snapshot result chains before reachability`：重构造函数体故意引用不存在的 surface，仍能通过 direct SAB 编译，并验证相关函数签名均未进入产物。双 configured open-query 与 cached inferred lookup 回归继续通过。
+
+真实 multi-configured 全文件正确通过 3/3，长窗口代表值从上一轮约 11.52 秒降到约 10.70 秒。一次 6.88 秒样本未能稳定复现，不能作为门禁结论；连续三次 strict 10 秒仍为 124。因此此 root-folding 子切片完成，但当时 issue 继续打开（历史记录），下一步处理第三测试中更大的 inferred-root open/close/update 状态链。
+
+后续 root cleanup 会删除上述常量化产生的、无 else 且 then-block 为空的 `if false {}`，同时覆盖直接 `if_expr` 与 `expr_stmt` 包装形态。聚焦 inferred invalid-body 和 cached inferred lookup 回归、build 7/7、官方 dev install 均通过。该清理没有单独改变 multi-configured strict 10 秒结果，因此只声明 AST surface 收敛，不声明性能门禁关闭。
+
+## 2026-07-12 dual loose inferred-root state checkpoint
+
+root shortcut 新增一个窄 `KnownOpenCollectionState`：只从已知 snapshot primary/secondary 单文件事实和显式 `project_collection_with_open_files(..., 0, ...)` clean 起点建立状态，随后精确传播两次 `add_open_file`、`update_inferred_project_roots`、file-default passthrough，以及关闭已知 secondary open file。added path 与 configured files 通过 AST 精确相等比较；未知来源或不支持的转换立即丢弃事实。
+
+该状态在 reachability 前折叠 `has_inferred_project`、`open_file_count`、`has_secondary_open_file`、`project_collection_inferred_root_count` 和 `project_collection_inferred_contains_file`。新增 Zig 回归 `project shortcut tracks known dual inferred open state transitions`，验证双 loose root count 2、contains 两文件，以及关闭 secondary 后 root count 1/contains 只剩 primary。
+
+聚焦状态机/inferred-result/two-open 回归、build 7/7、官方 dev install 和 collection-open/default-cache strict 10 秒均通过。真实 multi-configured 全文件保持 3/3 正确，长窗口代表值约 10.46 秒（上一稳定值约 10.70 秒）；strict 10 秒仍处于约 10.04-10.07 秒边界并未关闭。下一步扩展同一状态模型到 base collection 单-loose 路径，随后复用于 session open/close。
+
+随后 snapshot-derived base collection state 明确保留 primary active/open file，使 `base -> add loose -> update inferred -> close loose -> update` 复用同一状态机；状态单测新增 root count `1 -> 0` 及 loose contains 断言。`set_file_default_for_open_file(..., "/dev/null/inferred")` 在 state 已证明该 open file 属于 inferred roots 时也记录 inferred default fact，复用既有 `ProjectLookup` 字面量折叠。未知 snapshot-id 仍不参与字段替换。
+
+聚焦状态机和 cached inferred lookup 回归、build 7/7、官方 dev install 均通过，真实全文件保持 3/3。连续 strict 10 秒仍约 10.02-10.03 秒，因此当时整个 issue 继续打开（历史记录）；此子切片只声明 base 单-loose/default 事实覆盖，不使用噪声较大的长窗口作性能收益声明。
+
+## 2026-07-12 closure: project shortcuts run only before typecheck
+
+最终根因不是还缺一条 project/session 特例，而是 `pruneUnreachableTestFunctionDeclsBeforeTypeCheck` 同时用于 pre-typecheck 和 post-typecheck 两个阶段，却在每次调用时都执行 `rewriteProjectSnapshotTestShortcuts`。第二次调用发生在 `tc.checkProgram()` 之后：它重复扫描和改写 root AST，既增加约数秒开销，也可能删除/替换 TypeChecker 已记录节点，导致 direct SAB `MissingType`。
+
+该函数现在显式接收 `rewrite_project_shortcuts`：pre-typecheck 调用为 true，post-typecheck syntactic reachable filter 为 false。post 阶段仍执行可达声明/known-branch 裁剪，但不再改变 project shortcut AST。新增 `sla post-typecheck pruning does not rerun project shortcuts`，证明 false 模式保留 shortcut candidate call；现有 pre-typecheck pruning 调用全部显式传 true。
+
+最终 installed strict SAB 证据：
+
+- multi-configured 连续三次通过 3/3：5.64s、7.17s、7.29s；profile 模式也在 5.97s 内通过。
+- background update/warm/wait、collection open/default、config registry、snapshot config registry 均在各自 strict 10 秒门禁通过。
+- 历史 API open/update 文件已不在当前下游测试树中，不能作为现存门禁。
+- focused post-typecheck mode 回归、inferred result regression、build 7/7、官方 dev install/help 均通过。
+
+因此本 issue 关闭。后续 project/session surface 扩展属于新功能或一般优化，不再归入本 timeout issue。

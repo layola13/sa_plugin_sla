@@ -23,6 +23,15 @@ fn mini_change_reason(change: MiniSnapshotChange) -> int {
     return change.reason;
 }
 
+fn mini_change_make(file: ptr, file_len: int, reason: int) -> MiniSnapshotChange {
+    return MiniSnapshotChange {
+        reason: reason,
+        has_active_file: true,
+        active_file: file,
+        active_file_len: file_len,
+    };
+}
+
 @test "direct sab shallow copies preserved aggregate call arg"() {
     let file = "main.ts";
     let change = MiniSnapshotChange {
@@ -55,4 +64,10 @@ fn mini_change_reason(change: MiniSnapshotChange) -> int {
     };
     if mini_change_warm_file_len(change) != 8 { panic(51602); };
     if mini_change_reason(change) != 4 { panic(51603); };
+}
+
+@test "direct sab call result aggregate can feed by-value static call"() {
+    let file = "nested.ts";
+    let got = mini_change_warm_file_len(mini_change_make(STR_PTR(file), STR_LEN(file), 4));
+    if got != 9 { panic(51604); };
 }

@@ -1,0 +1,122 @@
+START all
+FAIL: tests/test_unit_async_thread_pool.sla
+[sab-direct] stmt assign_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func pool_worker block failed: UnsupportedSabDirectFeature
+FAIL: tests/test_unit_sa_borrow_array_call_result_cleanup.sla
+[sab-direct] return value binary_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt return_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/102_raii_guard/main.sla
+[sab-direct] stmt assign_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func inspect block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/108_atomic_spin_lock/main.sla
+[sab-direct] let lock value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/109_atomic_fetch_add/main.sla
+[sab-direct] let value value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/113_union_ffi_types/main.sla
+[sab-direct] let payload value struct_literal failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/117_inline_assembly/main.sla
+[sab-direct] stmt expr_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func inline_assembly_value block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/121_rwlock_reader_writer/main.sla
+[sab-direct] let shared value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/122_condvar_wait_notify/main.sla
+[sab-direct] stmt assign_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func notify_ready block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/123_barrier_sync/main.sla
+[sab-direct] let barrier value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/126_mpmc_channel/main.sla
+[sab-direct] stmt let_destructure_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func mpmc_channel_total block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/127_hazard_pointers/main.sla
+[sab-direct] let shared value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/131_waker_vtable_mechanics/main.sla
+[sab-direct] let count value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/159_mem_forget_leak/main.sla
+[sab-direct] stmt expr_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func mem_forget_observable_value block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/160_manually_drop_union/main.sla
+[sab-direct] let slot value struct_literal failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/171_anyhow_dynamic_error/main.sla
+[sab-direct] call map arg 1 (closure_literal) failed: UnsupportedSabDirectFeature
+[sab-direct] static call map failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/173_catch_unwind_panic/main.sla
+[sab-direct] call std__panic__catch_unwind arg 0 (closure_literal) failed: UnsupportedSabDirectFeature
+[sab-direct] static call std__panic__catch_unwind failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/181_file_descriptor_raii/main.sla
+[sab-direct] let file value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/182_mmap_memory_mapping/main.sla
+[sab-direct] let file value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/185_dynamic_lib_dlopen/main.sla
+[sab-direct] func decl dynamic_lib_close_status failed: UnsupportedSabDirectFeature
+SAB Direct Error: direct SLA-to-SAB lowering failed without fallback: error.UnsupportedSabDirectFeature
+FAIL: demos/rosetta/187_opengl_context_swap/main.sla
+[sab-direct] func decl opengl_swap_result failed: UnsupportedSabDirectFeature
+SAB Direct Error: direct SLA-to-SAB lowering failed without fallback: error.UnsupportedSabDirectFeature
+FAIL: demos/rosetta/190_base64_encode_simd/main.sla
+[sab-direct] let q0 value binary_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/302_operator_overload_neg/main.sla
+[sab-direct] let b value binary_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/315_async_thread_pool/main.sla
+[sab-direct] stmt assign_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func pool_worker block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/32_trait_object_vector/main.sla
+[sab-direct] call map arg 1 (closure_literal) failed: UnsupportedSabDirectFeature
+[sab-direct] static call map failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/33_iterator_map/main.sla
+[sab-direct] call map arg 1 (closure_literal) failed: UnsupportedSabDirectFeature
+[sab-direct] static call map failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/34_iterator_filter/main.sla
+[sab-direct] call filter arg 1 (closure_literal) failed: UnsupportedSabDirectFeature
+[sab-direct] static call filter failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/35_iterator_fold/main.sla
+[sab-direct] call fold arg 2 (closure_literal) failed: UnsupportedSabDirectFeature
+[sab-direct] static call fold failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/49_pipeline_map/main.sla
+[sab-direct] call map arg 1 (closure_literal) failed: UnsupportedSabDirectFeature
+[sab-direct] static call map failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/52_queue_rotate/main.sla
+[sab-direct] let queue value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/53_cache_hits/main.sla
+[sab-direct] let cache value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/62_channel_pingpong/main.sla
+[sab-direct] stmt let_destructure_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func round_trip block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/63_router_table/main.sla
+[sab-direct] let router value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/65_job_scheduler/main.sla
+[sab-direct] stmt for_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func scheduled_cost block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/66_actor_mailbox/main.sla
+[sab-direct] stmt for_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func mailbox_score block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/68_parser_tokens/main.sla
+[sab-direct] stmt for_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func token_score block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/73_scene_nodes/main.sla
+[sab-direct] stmt for_stmt failed: UnsupportedSabDirectFeature
+[sab-direct] func visible_weight block failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/76_lockfree_counter/main.sla
+[sab-direct] let counter value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/81_kv_store/main.sla
+[sab-direct] let kv value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+FAIL: demos/rosetta/89_job_queue/main.sla
+[sab-direct] let queue value call_expr failed: UnsupportedSabDirectFeature
+[sab-direct] stmt let_stmt failed: UnsupportedSabDirectFeature
+STRICT SWEEP (all): pass=469 fail=40 total=509

@@ -130,6 +130,15 @@ zig build
 - `zig-out/lib/sap.json`
 - `zig-out/lib/libsla.so`
 
+## Windows global installation
+
+After building SCI into `%LOCALAPPDATA%\Programs\SCI\current`, install the plugin and the standalone `sla` command with:
+
+```powershell
+.\tools\install_windows.ps1
+```
+
+The script builds the plugin, installs its DLL through `sa plugin install --dev`, copies `sla.exe` to `SCI\current\bin`, and enforces a bounded install timeout. Open a new terminal if PATH was changed by the SCI installer; then use `sla check`, `sla build`, or `sla test` directly.
 ## Installation
 
 构建后用包管理器把插件注册进 SA 环境：

@@ -10,7 +10,7 @@ fn main() -> i32 {
     let context = "context: boom";
     let result = context.len();
     println("{}", result);
-    return 0;
+    return result;
 }
 
 @test "rosetta 172 172_eyre_color_eyre"() {

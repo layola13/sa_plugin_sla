@@ -1,7 +1,9 @@
 const std = @import("std");
 const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
+const lowering_rules = @import("lowering_rules.zig");
 const source_expand = @import("source_expand.zig");
+const host_paths = @import("host_paths.zig");
 
 pub const ParserError = error{
     SyntaxError,
@@ -19,6 +21,16 @@ pub const ParserError = error{
     InvalidCharacter,
 };
 
+pub const ImportTypeSurface = struct {
+    types: []const []const u8,
+    enums: []const []const u8,
+    source: []const u8,
+    expanded_source: []const u8,
+    complete: bool,
+};
+
+pub const ImportTypeScanCache = std.StringHashMap(ImportTypeSurface);
+
 pub const Parser = struct {
     pub const Options = struct {
         parse_function_bodies: bool = true,
@@ -26,6 +38,7 @@ pub const Parser = struct {
         parse_macro_bodies: bool = true,
         macro_body_names: ?*const std.StringHashMap(void) = null,
         parse_test_bodies: bool = true,
+        prescan_sla_import_types: bool = true,
     };
 
     allocator: std.mem.Allocator,
@@ -38,7 +51,16 @@ pub const Parser = struct {
     current_impl_target: ?*ast.Type,
     base_dir: []const u8,
     import_scan_depth: usize,
+    /// Canonical `.sla` paths already visited by recursive type prescanning.
+    /// Nested parsers copy this map state and return the updated state to their
+    /// parent, so diamond imports and cycles are scanned once per root Parser.
+    import_type_scan_cache: ImportTypeScanCache,
+    import_type_scan_cache_hits: usize,
     options: Options,
+    /// Exact `{ ... }` source slices for function bodies that were skipped
+    /// during the current parse. Keys are the created `func_decl` nodes and
+    /// values point into the parser buffer / expanded module source.
+    function_body_spans: std.AutoHashMap(*ast.Node, []const u8),
 
     pub fn init(allocator: std.mem.Allocator, buffer: []const u8) Parser {
         return initWithDir(allocator, buffer, ".");
@@ -60,10 +82,64 @@ pub const Parser = struct {
             .current_impl_target = null,
             .base_dir = base_dir,
             .import_scan_depth = 0,
+            .import_type_scan_cache = ImportTypeScanCache.init(allocator),
+            .import_type_scan_cache_hits = 0,
             .options = options,
+            .function_body_spans = std.AutoHashMap(*ast.Node, []const u8).init(allocator),
         };
         p.tok = p.lex.next();
         return p;
+    }
+
+    pub fn knownTypeNames(self: *const Parser) []const []const u8 {
+        return self.known_types.items;
+    }
+
+    pub fn knownEnumNames(self: *const Parser) []const []const u8 {
+        return self.known_enums.items;
+    }
+
+    pub fn prescannedImportPathCount(self: *const Parser) usize {
+        return self.import_type_scan_cache.count();
+    }
+
+    pub fn seedImportTypeScanCache(self: *Parser, cache: ImportTypeScanCache) void {
+        self.import_type_scan_cache = cache;
+    }
+
+    pub fn importTypeScanCache(self: *const Parser) ImportTypeScanCache {
+        return self.import_type_scan_cache;
+    }
+
+    pub fn importTypeScanCacheHitCount(self: *const Parser) usize {
+        return self.import_type_scan_cache_hits;
+    }
+
+    pub fn seedKnownTypeNames(self: *Parser, type_names: []const []const u8, enum_names: []const []const u8) !void {
+        try self.known_types.appendSlice(type_names);
+        try self.known_enums.appendSlice(enum_names);
+    }
+
+    pub fn functionBodySpanFor(self: *const Parser, node: *ast.Node) ?[]const u8 {
+        return self.function_body_spans.get(node);
+    }
+
+    /// Parse a previously captured `{ ... }` function-body span with the
+    /// caller's known type/enum surface, without recursive import prescanning.
+    pub fn parseFunctionBodySpan(
+        allocator: std.mem.Allocator,
+        body_source: []const u8,
+        type_names: []const []const u8,
+        enum_names: []const []const u8,
+    ) ParserError![]const *ast.Node {
+        var parser = initWithDirAndOptions(allocator, body_source, ".", .{
+            .parse_function_bodies = true,
+            .parse_macro_bodies = true,
+            .parse_test_bodies = true,
+            .prescan_sla_import_types = false,
+        });
+        try parser.seedKnownTypeNames(type_names, enum_names);
+        return try parser.parseBlock();
     }
 
     fn advance(self: *Parser) void {
@@ -312,10 +388,11 @@ pub const Parser = struct {
             if (try self.readSlaStdPathIfExists(env_root, rel_path)) |resolved| return resolved;
         } else |_| {}
 
-        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+        if (host_paths.homeDirectory(self.allocator)) |home| {
+            defer self.allocator.free(home);
             const home_std_root = try std.fs.path.join(self.allocator, &.{ home, "projects", "sa_plugins", "sa_plugin_sla", "sla_std" });
             if (try self.readSlaStdPathIfExists(home_std_root, rel_path)) |resolved| return resolved;
-        } else |_| {}
+        }
 
         const candidate_roots = [_][]const u8{
             "sla_std",
@@ -981,10 +1058,7 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (try self.shouldParseMethodBody(target_ty, trait_name, name)) try self.parseBlock() else blk: {
-            try self.skipBlock();
-            break :blk &.{};
-        };
+        const body_result = try self.parseOrCaptureFunctionBody(try self.shouldParseMethodBody(target_ty, trait_name, name));
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -994,11 +1068,12 @@ pub const Parser = struct {
                 .generics = generics,
                 .params = try params.toOwnedSlice(),
                 .ret_ty = ret_ty,
-                .body = body,
+                .body = body_result.body,
                 .is_inline = false,
                 .is_async = false,
             },
         };
+        try self.rememberFunctionBodySpan(node, body_result.span);
         return node;
     }
 
@@ -1057,10 +1132,7 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (try self.shouldParseMethodBody(target_ty, null, op_name)) try self.parseBlock() else blk: {
-            try self.skipBlock();
-            break :blk &.{};
-        };
+        const body_result = try self.parseOrCaptureFunctionBody(try self.shouldParseMethodBody(target_ty, null, op_name));
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1070,12 +1142,13 @@ pub const Parser = struct {
                 .generics = generics,
                 .params = try params.toOwnedSlice(),
                 .ret_ty = ret_ty,
-                .body = body,
+                .body = body_result.body,
                 .is_inline = false,
                 .is_async = false,
                 .operator = op,
             },
         };
+        try self.rememberFunctionBodySpan(node, body_result.span);
         return node;
     }
 
@@ -1112,10 +1185,10 @@ pub const Parser = struct {
             ret_ty.* = .{ .primitive = .void_type };
         }
 
-        const body = if (is_decl_only) &.{} else if (self.shouldParseFunctionBody(name)) try self.parseBlock() else blk: {
-            try self.skipBlock();
-            break :blk &.{};
-        };
+        const body_result = if (is_decl_only)
+            FunctionBodyParseResult{ .body = &.{}, .span = null }
+        else
+            try self.parseOrCaptureFunctionBody(self.shouldParseFunctionBody(name));
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{
@@ -1129,11 +1202,12 @@ pub const Parser = struct {
                 .generics = generics,
                 .params = try params.toOwnedSlice(),
                 .ret_ty = ret_ty,
-                .body = body,
+                .body = body_result.body,
                 .is_inline = is_inline,
                 .is_async = is_async,
             },
         };
+        try self.rememberFunctionBodySpan(node, body_result.span);
         return node;
     }
 
@@ -1190,7 +1264,7 @@ pub const Parser = struct {
         // `Name { ... }` from a block during its single forward pass.
         if (std.mem.endsWith(u8, import_path, ".sla")) {
             try self.recordImportModuleName(import_path);
-            self.prescanSlaImportTypes(import_path) catch {};
+            if (self.options.prescan_sla_import_types) self.prescanSlaImportTypes(import_path) catch {};
         }
 
         const node = try self.allocator.create(ast.Node);
@@ -1250,10 +1324,33 @@ pub const Parser = struct {
     }
 
     fn prescanResolvedSlaImportTypes(self: *Parser, resolved_path: []const u8) !void {
-        const source = std.fs.cwd().readFileAlloc(self.allocator, resolved_path, 16 * 1024 * 1024) catch return;
+        const canonical_path = blk: {
+            const real = std.fs.cwd().realpathAlloc(self.allocator, resolved_path) catch break :blk resolved_path;
+            const normed = host_paths.normalizePathSlashes(self.allocator, real) catch {
+                break :blk real;
+            };
+            self.allocator.free(real);
+            break :blk normed;
+        };
+        if (self.import_type_scan_cache.get(canonical_path)) |surface| {
+            self.import_type_scan_cache_hits += 1;
+            try self.mergeKnownTypeSurface(surface);
+            return;
+        }
+        // Insert a cycle guard before parsing. The completed surface replaces it
+        // below; recursive imports of this path observe an empty surface.
+        try self.import_type_scan_cache.put(canonical_path, .{
+            .types = &.{},
+            .enums = &.{},
+            .source = &.{},
+            .expanded_source = &.{},
+            .complete = false,
+        });
+
+        const source = std.fs.cwd().readFileAlloc(self.allocator, canonical_path, 16 * 1024 * 1024) catch return;
         const expanded_source = source_expand.expand(self.allocator, source) catch return;
 
-        const import_dir = std.fs.path.dirname(resolved_path) orelse ".";
+        const import_dir = std.fs.path.dirname(canonical_path) orelse ".";
 
         var sub = initWithDirAndOptions(self.allocator, expanded_source, import_dir, .{
             .parse_function_bodies = false,
@@ -1261,15 +1358,35 @@ pub const Parser = struct {
             .parse_test_bodies = false,
         });
         sub.import_scan_depth = self.import_scan_depth + 1;
-        const prog = sub.parseProgram() catch return;
+        sub.import_type_scan_cache = self.import_type_scan_cache;
+        sub.import_type_scan_cache_hits = self.import_type_scan_cache_hits;
+        const prog = sub.parseProgram() catch {
+            self.import_type_scan_cache = sub.import_type_scan_cache;
+            self.import_type_scan_cache_hits = sub.import_type_scan_cache_hits;
+            return;
+        };
+        self.import_type_scan_cache = sub.import_type_scan_cache;
+        self.import_type_scan_cache_hits = sub.import_type_scan_cache_hits;
         if (prog.* != .program) return;
 
-        // Merge the names the sub-parser collected (it recursively pre-scans its
-        // own .sla imports too, so transitive types come along).
-        for (sub.known_types.items) |name| {
+        const surface = ImportTypeSurface{
+            .types = try self.allocator.dupe([]const u8, sub.known_types.items),
+            .enums = try self.allocator.dupe([]const u8, sub.known_enums.items),
+            .source = source,
+            .expanded_source = expanded_source,
+            .complete = true,
+        };
+        try self.import_type_scan_cache.put(canonical_path, surface);
+        try self.mergeKnownTypeSurface(surface);
+    }
+
+    fn mergeKnownTypeSurface(self: *Parser, surface: ImportTypeSurface) !void {
+        // Cached surfaces include transitive imports, matching the original
+        // recursive parser behavior without rereading or reparsing the file.
+        for (surface.types) |name| {
             if (!self.isKnownTypeName(name)) try self.known_types.append(name);
         }
-        for (sub.known_enums.items) |name| {
+        for (surface.enums) |name| {
             if (!self.isKnownEnumName(name)) try self.known_enums.append(name);
         }
     }
@@ -1319,17 +1436,81 @@ pub const Parser = struct {
         return node;
     }
 
+    const FunctionBodyParseResult = struct {
+        body: []const *ast.Node,
+        span: ?[]const u8,
+    };
+
+    fn parseOrCaptureFunctionBody(self: *Parser, should_parse: bool) ParserError!FunctionBodyParseResult {
+        if (should_parse) {
+            const span = try self.peekBlockSpan();
+            const body = try self.parseBlock();
+            return .{ .body = body, .span = span };
+        }
+        const span = try self.skipBlockSpan();
+        return .{ .body = &.{}, .span = span };
+    }
+
+    fn rememberFunctionBodySpan(self: *Parser, node: *ast.Node, span: ?[]const u8) ParserError!void {
+        const body_span = span orelse return;
+        try self.function_body_spans.put(node, body_span);
+    }
+
+    fn peekBlockSpan(self: *const Parser) ParserError![]const u8 {
+        if (self.tok.tag != .l_brace) {
+            return ParserError.SyntaxError;
+        }
+        var lex = lexer.Lexer.init(self.lex.buffer[self.tok.loc.start..]);
+        var depth: usize = 0;
+        var end: usize = self.tok.loc.start;
+        while (true) {
+            const tok = lex.next();
+            switch (tok.tag) {
+                .l_brace => {
+                    depth += 1;
+                    end = self.tok.loc.start + tok.loc.end;
+                },
+                .r_brace => {
+                    if (depth == 0) {
+                        return ParserError.SyntaxError;
+                    }
+                    depth -= 1;
+                    end = self.tok.loc.start + tok.loc.end;
+                    if (depth == 0) {
+                        return self.lex.buffer[self.tok.loc.start..end];
+                    }
+                },
+                .eof => {
+                    return ParserError.SyntaxError;
+                },
+                else => {},
+            }
+        }
+    }
+
     fn skipBlock(self: *Parser) ParserError!void {
-        try self.expect(.l_brace);
+        _ = try self.skipBlockSpan();
+    }
+
+    fn skipBlockSpan(self: *Parser) ParserError![]const u8 {
+        if (self.tok.tag != .l_brace) {
+            self.last_expected = @tagName(lexer.Token.Tag.l_brace);
+            return ParserError.SyntaxError;
+        }
+        const start = self.tok.loc.start;
+        var end = self.tok.loc.end;
+        self.advance();
         var depth: usize = 1;
         while (depth > 0 and self.peek() != .eof) {
             switch (self.peek()) {
                 .l_brace => {
                     depth += 1;
+                    end = self.tok.loc.end;
                     self.advance();
                 },
                 .r_brace => {
                     depth -= 1;
+                    end = self.tok.loc.end;
                     self.advance();
                 },
                 else => self.advance(),
@@ -1339,6 +1520,7 @@ pub const Parser = struct {
             self.last_expected = "matching closing brace";
             return ParserError.SyntaxError;
         }
+        return self.lex.buffer[start..end];
     }
 
     fn shouldParseFunctionBody(self: *const Parser, name: []const u8) bool {
@@ -1354,15 +1536,7 @@ pub const Parser = struct {
     }
 
     fn concreteTypeNameForMethodSelection(ty: *const ast.Type) ?[]const u8 {
-        var curr = ty;
-        while (true) {
-            switch (curr.*) {
-                .borrow => |inner| curr = inner,
-                .pointer => |inner| curr = inner,
-                .user_defined => |ud| return ud.name,
-                else => return null,
-            }
-        }
+        return lowering_rules.concreteTypeName(ty);
     }
 
     fn shouldParseMethodBody(self: *const Parser, target_ty: *const ast.Type, trait_name: ?[]const u8, method_name: []const u8) !bool {
@@ -2281,38 +2455,33 @@ pub const Parser = struct {
                 const saved_tok = self.tok;
 
                 self.advance();
-                const then_expr = self.parseExpr(0) catch {
-                    self.lex = saved_lex;
-                    self.tok = saved_tok;
-                    break;
-                };
+                const ternary = if (tokenStartsPrefixExpr(self.peek())) blk: {
+                    const then_expr = self.parseExpr(0) catch break :blk null;
+                    if (!self.match(.colon)) break :blk null;
+                    const else_expr = self.parseExpr(0) catch break :blk null;
 
-                if (!self.match(.colon)) {
-                    self.lex = saved_lex;
-                    self.tok = saved_tok;
-                    break;
+                    const then_node = try self.allocator.create(ast.Node);
+                    then_node.* = .{ .expr_stmt = then_expr };
+                    const else_node = try self.allocator.create(ast.Node);
+                    else_node.* = .{ .expr_stmt = else_expr };
+
+                    const then_block = try self.allocator.alloc(*ast.Node, 1);
+                    then_block[0] = then_node;
+                    const else_block = try self.allocator.alloc(*ast.Node, 1);
+                    else_block[0] = else_node;
+
+                    const node = try self.allocator.create(ast.Node);
+                    node.* = .{ .if_expr = .{ .cond = left, .then_block = then_block, .else_block = else_block } };
+                    break :blk node;
+                } else null;
+
+                if (ternary) |node| {
+                    left = node;
+                    continue;
                 }
 
-                const else_expr = self.parseExpr(0) catch {
-                    self.lex = saved_lex;
-                    self.tok = saved_tok;
-                    break;
-                };
-
-                const then_node = try self.allocator.create(ast.Node);
-                then_node.* = .{ .expr_stmt = then_expr };
-                const else_node = try self.allocator.create(ast.Node);
-                else_node.* = .{ .expr_stmt = else_expr };
-
-                const then_block = try self.allocator.alloc(*ast.Node, 1);
-                then_block[0] = then_node;
-                const else_block = try self.allocator.alloc(*ast.Node, 1);
-                else_block[0] = else_node;
-
-                const node = try self.allocator.create(ast.Node);
-                node.* = .{ .if_expr = .{ .cond = left, .then_block = then_block, .else_block = else_block } };
-                left = node;
-                continue;
+                self.lex = saved_lex;
+                self.tok = saved_tok;
             }
 
             var op_prec = self.getInfixPrecedence(self.peek());
@@ -2344,6 +2513,45 @@ pub const Parser = struct {
         return left;
     }
 
+    fn tokenStartsPrefixExpr(tag: lexer.Token.Tag) bool {
+        return switch (tag) {
+            .int_literal,
+            .float_literal,
+            .string_literal,
+            .identifier,
+            .ampersand,
+            .caret,
+            .asterisk,
+            .minus,
+            .bang,
+            .keyword_if,
+            .keyword_switch,
+            .keyword_match,
+            .keyword_unsafe,
+            .keyword_await,
+            .pipe,
+            .pipe_pipe,
+            .l_paren,
+            .l_bracket,
+            => true,
+            else => false,
+        };
+    }
+
+    fn integerSuffixPrimitive(suffix: []const u8) ?ast.Primitive {
+        if (std.mem.eql(u8, suffix, "i8")) return .i8;
+        if (std.mem.eql(u8, suffix, "i16")) return .i16;
+        if (std.mem.eql(u8, suffix, "i32")) return .i32;
+        if (std.mem.eql(u8, suffix, "i64")) return .i64;
+        if (std.mem.eql(u8, suffix, "isize")) return .isize;
+        if (std.mem.eql(u8, suffix, "u8")) return .u8;
+        if (std.mem.eql(u8, suffix, "u16")) return .u16;
+        if (std.mem.eql(u8, suffix, "u32")) return .u32;
+        if (std.mem.eql(u8, suffix, "u64")) return .u64;
+        if (std.mem.eql(u8, suffix, "usize")) return .usize;
+        return null;
+    }
+
     fn parsePrefixExpr(self: *Parser) ParserError!*ast.Node {
         const tag = self.peek();
         switch (tag) {
@@ -2362,14 +2570,21 @@ pub const Parser = struct {
                 } else {
                     while (digit_len < str.len and std.ascii.isDigit(str[digit_len])) : (digit_len += 1) {}
                 }
-                const val = std.fmt.parseInt(i64, str[digits_start..digit_len], base) catch return ParserError.InvalidCharacter;
+                const primitive = if (digit_len < str.len)
+                    integerSuffixPrimitive(str[digit_len..]) orelse return ParserError.InvalidCharacter
+                else
+                    null;
+                const digits = str[digits_start..digit_len];
+                const unsigned_wide_suffix = if (primitive) |primitive_ty| primitive_ty == .u64 or primitive_ty == .usize else false;
+                const val: i64 = if (unsigned_wide_suffix) blk: {
+                    const unsigned = std.fmt.parseInt(u64, digits, base) catch return ParserError.InvalidCharacter;
+                    break :blk @bitCast(unsigned);
+                } else std.fmt.parseInt(i64, digits, base) catch return ParserError.InvalidCharacter;
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .literal = .{ .int_val = val } };
-                if (digit_len < str.len) {
-                    const suffix = str[digit_len..];
-                    const primitive: ast.Primitive = if (std.mem.eql(u8, suffix, "i8")) .i8 else if (std.mem.eql(u8, suffix, "i16")) .i16 else if (std.mem.eql(u8, suffix, "i32")) .i32 else if (std.mem.eql(u8, suffix, "i64")) .i64 else if (std.mem.eql(u8, suffix, "isize")) .isize else if (std.mem.eql(u8, suffix, "u8")) .u8 else if (std.mem.eql(u8, suffix, "u16")) .u16 else if (std.mem.eql(u8, suffix, "u32")) .u32 else if (std.mem.eql(u8, suffix, "u64")) .u64 else if (std.mem.eql(u8, suffix, "usize")) .usize else return ParserError.InvalidCharacter;
+                if (primitive) |primitive_ty| {
                     const ty = try self.allocator.create(ast.Type);
-                    ty.* = .{ .primitive = primitive };
+                    ty.* = .{ .primitive = primitive_ty };
                     const cast_node = try self.allocator.create(ast.Node);
                     cast_node.* = .{ .cast_expr = .{ .expr = node, .ty = ty } };
                     return cast_node;
@@ -2740,7 +2955,7 @@ pub const Parser = struct {
                 const saved_lex = self.lex;
                 const saved_tok = self.tok;
 
-                const ternary_result = blk: {
+                const ternary_result = if (tokenStartsPrefixExpr(self.peek())) blk: {
                     const then_expr = self.parseExpr(0) catch break :blk null;
                     if (!self.match(.colon)) break :blk null;
                     const else_expr = self.parseExpr(0) catch break :blk null;
@@ -2758,7 +2973,7 @@ pub const Parser = struct {
                     const node = try self.allocator.create(ast.Node);
                     node.* = .{ .if_expr = .{ .cond = left, .then_block = then_block, .else_block = else_block } };
                     break :blk node;
-                };
+                } else null;
 
                 if (ternary_result) |node| return node;
 
@@ -2805,8 +3020,15 @@ pub const Parser = struct {
         if (self.match(.keyword_else)) {
             if (self.peek() == .keyword_if) {
                 const nested_if = try self.parseIfExpr();
+                // Normalize `else if` to the same AST shape as an explicit
+                // `else { if ...; }` block: a block of statements whose tail is
+                // an expr_stmt-wrapped expression. A bare nested if_expr
+                // statement is not understood by the statement-level walkers
+                // in the type checker or either emitter.
+                const nested_stmt = try self.allocator.create(ast.Node);
+                nested_stmt.* = .{ .expr_stmt = nested_if };
                 const slice = try self.allocator.alloc(*ast.Node, 1);
-                slice[0] = nested_if;
+                slice[0] = nested_stmt;
                 else_block = slice;
             } else {
                 else_block = try self.parseBlock();
@@ -2888,7 +3110,7 @@ pub const Parser = struct {
                 } else if (std.mem.eql(u8, name, "void")) {
                     return try makePrimitive(self.allocator, .void_type);
                 } else if (std.mem.eql(u8, name, "ptr")) {
-                    return try makePrimitive(self.allocator, .void_type);
+                    return try makePrimitive(self.allocator, .raw_ptr);
                 } else if (std.mem.eql(u8, name, "i8")) {
                     return try makePrimitive(self.allocator, .i8);
                 } else if (std.mem.eql(u8, name, "i16")) {
@@ -3123,6 +3345,33 @@ test "parse sla import basename as module namespace" {
     try std.testing.expectEqualSlices(u8, "dep__imported_a", value.call_expr.func_name);
 }
 
+test "parser accepts explicit u64 max literal suffix" {
+    const source =
+        \\fn max_literal() -> u64 {
+        \\    let max: u64 = 18446744073709551615u64;
+        \\    return max;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+
+    const fn_decl = prog.program.decls[0];
+    try std.testing.expect(fn_decl.* == .func_decl);
+    const let_stmt = fn_decl.func_decl.body[0];
+    try std.testing.expect(let_stmt.* == .let_stmt);
+    const value = let_stmt.let_stmt.value;
+    try std.testing.expect(value.* == .cast_expr);
+    try std.testing.expect(value.cast_expr.ty.* == .primitive);
+    try std.testing.expectEqual(ast.Primitive.u64, value.cast_expr.ty.primitive);
+    try std.testing.expect(value.cast_expr.expr.* == .literal);
+    try std.testing.expectEqual(@as(i64, -1), value.cast_expr.expr.literal.int_val);
+}
+
 test "sla import type prescan skips imported function bodies" {
     var original_cwd = try std.fs.cwd().openDir(".", .{});
     defer original_cwd.close();
@@ -3165,6 +3414,63 @@ test "sla import type prescan skips imported function bodies" {
     try std.testing.expect(p.isKnownTypeName("ImportedThing"));
 }
 
+test "sla import type prescan visits diamond dependencies once" {
+    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    defer original_cwd.close();
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "common.sla",
+        .data =
+        \\struct SharedThing {
+        \\    value: i32,
+        \\}
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "left.sla",
+        .data =
+        \\@import "common.sla"
+        \\struct LeftThing { shared: SharedThing }
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "right.sla",
+        .data =
+        \\@import "common.sla"
+        \\struct RightThing { shared: SharedThing }
+        ,
+    });
+
+    try tmp.dir.setAsCwd();
+    defer original_cwd.setAsCwd() catch {};
+
+    const source =
+        \\@import "left.sla"
+        \\@import "right.sla"
+        \\@import "left.sla"
+        \\
+        \\fn main() -> i32 {
+        \\    let item = SharedThing { value: 42 };
+        \\    return item.value;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.initWithDir(allocator, source, ".");
+    const prog = try p.parseProgram();
+
+    try std.testing.expect(prog.* == .program);
+    try std.testing.expect(p.isKnownTypeName("SharedThing"));
+    try std.testing.expect(p.isKnownTypeName("LeftThing"));
+    try std.testing.expect(p.isKnownTypeName("RightThing"));
+    try std.testing.expectEqual(@as(usize, 3), p.prescannedImportPathCount());
+}
+
 test "sla parser selectively parses named function bodies" {
     const source =
         \\fn used() -> i32 {
@@ -3193,6 +3499,58 @@ test "sla parser selectively parses named function bodies" {
     try std.testing.expectEqual(@as(usize, 0), prog.program.decls[1].func_decl.body.len);
 }
 
+test "sla parser records exact skipped function body spans" {
+    const source =
+        \\fn first() -> i32 {
+        \\    return 1;
+        \\}
+        \\
+        \\impl Holder {
+        \\    fn second(self) -> i32 {
+        \\        return 2;
+        \\    }
+        \\}
+        \\
+        \\fn invalid_body() -> i32 {
+        \\    let = ;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.initWithDirAndOptions(allocator, source, ".", .{
+        .parse_function_bodies = false,
+        .parse_macro_bodies = false,
+        .parse_test_bodies = false,
+    });
+    const prog = try p.parseProgram();
+    try std.testing.expect(prog.* == .program);
+
+    const first = prog.program.decls[0];
+    const first_span = p.functionBodySpanFor(first) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(
+        \\{
+        \\    return 1;
+        \\}
+    , first_span);
+
+    const impl_decl = prog.program.decls[1];
+    try std.testing.expect(impl_decl.* == .impl_decl);
+    const second = impl_decl.impl_decl.methods[0];
+    const second_span = p.functionBodySpanFor(second) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(
+        \\{
+        \\        return 2;
+        \\    }
+    , second_span);
+
+    const body = try Parser.parseFunctionBodySpan(allocator, first_span, &.{}, &.{});
+    try std.testing.expectEqual(@as(usize, 1), body.len);
+    try std.testing.expect(body[0].* == .return_stmt);
+}
+
 test "sla parser selectively parses named macro bodies" {
     const source =
         \\macro used(value) {
@@ -3219,6 +3577,38 @@ test "sla parser selectively parses named macro bodies" {
     try std.testing.expectEqual(@as(usize, 2), prog.program.decls.len);
     try std.testing.expectEqual(@as(usize, 1), prog.program.decls[0].macro_decl.body.len);
     try std.testing.expectEqual(@as(usize, 0), prog.program.decls[1].macro_decl.body.len);
+}
+
+test "sla parser distinguishes postfix try from ternary" {
+    const source =
+        \\struct LocalResult {
+        \\    is_err: bool,
+        \\    value: i64,
+        \\    error: i64,
+        \\}
+        \\
+        \\fn propagate(result: LocalResult) -> i64 {
+        \\    let value = result?;
+        \\    return value;
+        \\}
+        \\
+        \\fn choose(flag: bool) -> i64 {
+        \\    return flag ? 1 : 2;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const propagate = prog.program.decls[1].func_decl;
+    try std.testing.expect(propagate.body[0].* == .let_stmt);
+    try std.testing.expect(propagate.body[0].let_stmt.value.* == .try_expr);
+
+    const choose = prog.program.decls[2].func_decl;
+    try std.testing.expect(choose.body[0].* == .return_stmt);
+    try std.testing.expect(choose.body[0].return_stmt.value.?.* == .if_expr);
 }
 
 test "syntax diagnostic includes location token and context" {

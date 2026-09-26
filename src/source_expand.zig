@@ -39,6 +39,8 @@ pub fn expand(allocator: std.mem.Allocator, source: []const u8) SourceExpandErro
     }
 
     var out = std.ArrayList(u8).init(allocator);
+    // Large ECS modules use many @expand_tuple blocks; avoid geometric realloc churn.
+    try out.ensureTotalCapacity(source.len * 2);
     var i: usize = 0;
     while (i < source.len) {
         if (startsWithAt(source, i, "@expand_tuple")) {
@@ -61,6 +63,45 @@ pub fn expand(allocator: std.mem.Allocator, source: []const u8) SourceExpandErro
         i += 1;
     }
     return out.toOwnedSlice() catch return SourceExpandError.OutOfMemory;
+}
+
+pub fn expandForModulePath(allocator: std.mem.Allocator, module_path: []const u8, source: []const u8) SourceExpandError![]const u8 {
+    if (std.mem.indexOf(u8, source, "@expand_tuple") == null) {
+        return expand(allocator, source);
+    }
+    const cache_path = expandCachePath(allocator, module_path, source) catch return expand(allocator, source);
+    defer allocator.free(cache_path);
+    if (loadExpandedSourceCache(allocator, cache_path) catch null) |cached| {
+        return cached;
+    }
+    const expanded = try expand(allocator, source);
+    storeExpandedSourceCache(cache_path, expanded);
+    return expanded;
+}
+
+fn expandCachePath(allocator: std.mem.Allocator, module_path: []const u8, source: []const u8) ![]u8 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(module_path);
+    hasher.update(&std.mem.toBytes(@as(u64, source.len)));
+    hasher.update(source);
+    const digest = hasher.final();
+    const stem = std.fs.path.basename(module_path);
+    return try std.fmt.allocPrint(allocator, ".sla-cache/expand/{s}-{x}.sla", .{ stem, digest });
+}
+
+fn loadExpandedSourceCache(allocator: std.mem.Allocator, cache_path: []const u8) !?[]u8 {
+    return std.fs.cwd().readFileAlloc(allocator, cache_path, 64 * 1024 * 1024) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => err,
+    };
+}
+
+fn storeExpandedSourceCache(cache_path: []const u8, expanded: []const u8) void {
+    const dir = std.fs.path.dirname(cache_path) orelse return;
+    std.fs.cwd().makePath(dir) catch return;
+    const file = std.fs.cwd().createFile(cache_path, .{}) catch return;
+    defer file.close();
+    file.writeAll(expanded) catch {};
 }
 
 const ExpandTupleSpec = struct {
@@ -387,4 +428,19 @@ test "expand tuple processes multiple top level directives" {
     try std.testing.expect(std.mem.indexOf(u8, expanded, "struct First2<T0, T1>") != null);
     try std.testing.expect(std.mem.indexOf(u8, expanded, "struct Second3<T0, T1, T2>") != null);
     try std.testing.expect(std.mem.indexOf(u8, expanded, "@expand_tuple") == null);
+}
+test "expandForModulePath uses disk cache for expand_tuple" {
+    const source =
+        \\@expand_tuple(1, 2, T) {
+        \\fn f_$N() -> i32 { return $N; }
+        \\}
+    ;
+    const path = "unit_expand_cache_mod.sla";
+    const first = try expandForModulePath(std.testing.allocator, path, source);
+    defer std.testing.allocator.free(first);
+    try std.testing.expect(std.mem.indexOf(u8, first, "fn f_1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first, "fn f_2") != null);
+    const second = try expandForModulePath(std.testing.allocator, path, source);
+    defer std.testing.allocator.free(second);
+    try std.testing.expectEqualStrings(first, second);
 }

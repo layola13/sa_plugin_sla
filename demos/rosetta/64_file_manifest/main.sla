@@ -10,7 +10,7 @@ fn file_manifest_count() -> usize {
 fn main() -> i32 {
     let count = file_manifest_count();
     println("{}", count);
-    return 0;
+    return count;
 }
 
 @test "rosetta 064 64_file_manifest"() {

@@ -7,13 +7,13 @@ fn sum(values: &[i32]) -> i32 {
 }
 
 fn main() -> i32 {
-    let values = [1, 2, 3, 4];
+    let values: [i32; 4] = [1, 2, 3, 4];
     println("{}", sum(&values));
     return 0;
 }
 
 @test "rosetta 044 slice iteration"() {
-    let values = [1, 2, 3, 4];
+    let values: [i32; 4] = [1, 2, 3, 4];
     let total = sum(&values);
     if total != 10 {
         panic(44);

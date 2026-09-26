@@ -1,6 +1,8 @@
 const std = @import("std");
+const sla_build_options = @import("sla_build_options");
 const sla_workspace = @import("workspace.zig");
 const plugin_cli = @import("plugin_cli.zig");
+const host_paths = @import("host_paths.zig");
 
 pub fn defaultOutputPath(allocator: std.mem.Allocator, file: []const u8, from_ext: []const u8, to_ext: []const u8) ![]u8 {
     if (std.mem.endsWith(u8, file, from_ext)) {
@@ -144,17 +146,27 @@ fn saStdRootLooksValid(allocator: std.mem.Allocator, root: []const u8) !bool {
 }
 
 pub fn sabSaStdRoot(allocator: std.mem.Allocator) ![]const u8 {
+    if (try saStdRootLooksValid(allocator, sla_build_options.sa_std_source_dir)) {
+        return try allocator.dupe(u8, sla_build_options.sa_std_source_dir);
+    }
     if (std.process.getEnvVarOwned(allocator, "SA_STD_DIR")) |env_root| {
         if (try saStdRootLooksValid(allocator, env_root)) return env_root;
     } else |_| {}
 
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+    if (std.process.getEnvVarOwned(allocator, "SCI_ROOT")) |sci_root| {
+        defer allocator.free(sci_root);
+        const sci_sa_std_root = try std.fs.path.join(allocator, &.{ sci_root, "sa_std" });
+        if (try saStdRootLooksValid(allocator, sci_sa_std_root)) return sci_sa_std_root;
+    } else |_| {}
+
+    if (host_paths.homeDirectory(allocator)) |home| {
+        defer allocator.free(home);
         const home_repo_std_root = try std.fs.path.join(allocator, &.{ home, "projects", "sci", "sa_std" });
         if (try saStdRootLooksValid(allocator, home_repo_std_root)) return home_repo_std_root;
 
         const installed_std_root = try std.fs.path.join(allocator, &.{ home, ".sa", "std" });
         if (try saStdRootLooksValid(allocator, installed_std_root)) return installed_std_root;
-    } else |_| {}
+    }
 
     const candidate_roots = [_][]const u8{
         "sa_std",

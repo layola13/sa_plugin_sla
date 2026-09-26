@@ -5,6 +5,6 @@ fn main() -> i32 {
     let fixed_array = [1, 2, 3, 4];
     let result = fixed_array.len();
     println("{}", result);
-    return 0;
+    return result;
 }
 @test "rosetta 167 167_const_generics_expansion"() { let got = const_generic_array_len(); if got != 4 { panic(167); }; }

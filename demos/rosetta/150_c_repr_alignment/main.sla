@@ -14,6 +14,6 @@ fn main() -> i32 {
     let right = pair.b;
     let result = left + right;
     println("{}", result);
-    return 0;
+    return result;
 }
 @test "rosetta 150 150_c_repr_alignment"() { let got = c_repr_pair_sum(); if got != 3 { panic(150); }; }

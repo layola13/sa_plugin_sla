@@ -11,8 +11,8 @@
 [MACRO] SLA_ARRAY_FILL_U8 %array_ptr, %value, %length
     call @sa_mem_set(&%array_ptr, %value, %length)
 [END_MACRO]
+@import "sa_std/ffi.sa"
 @const SLA_FNPTR_VT_config_error_message = vtable { call = @sla__config_error_message }
-@const SLA_FNPTR_VT_main = vtable { call = @main }
 @sla__config_error_message(path: ptr) -> ptr:
 L_ENTRY:
     EXPAND FORMAT_BEGIN tmp_0, 42
@@ -20,60 +20,39 @@ L_ENTRY:
     tmp_1 = &SLA_STR_0
     EXPAND FORMAT_PUSH_BYTES tmp_2, tmp_0, tmp_1, 16
     !tmp_1
-    EXPAND FORMAT_PUSH_SLICE tmp_3, tmp_0, path
+    EXPAND CSTR_LEN tmp_4, path
+    EXPAND FORMAT_PUSH_BYTES tmp_3, tmp_0, path, tmp_4
+    !tmp_4
+    !path
     return tmp_0
-
-@main() -> i32:
-L_ENTRY:
-    @const SLA_STR_1 = utf8:"oops"
-    tmp_5 = 4
-    tmp_4 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_4, &SLA_STR_1, tmp_5
-    !tmp_5
-    tmp_6 = call @sla__config_error_message(tmp_4)
-    err = tmp_6
-    EXPAND STRING_BUF_AS_STR tmp_7, err
-    EXPAND STRING_PTR tmp_8, tmp_7
-    EXPAND STRING_LEN tmp_9, tmp_7
-    call @sa_print_bytes(&tmp_8, tmp_9)
-    !tmp_8
-    !tmp_9
-    !tmp_7
-    @const SLA_STR_2 = utf8:"\n"
-    call @sa_print_bytes(&SLA_STR_2, 1)
-    tmp_10 = 0
-    EXPAND STRING_BUF_FREE err
-    return tmp_10
 
 @test "rosetta 175 175_thiserror_macro_derive"():
 L_TEST_ENTRY_0:
-    @const SLA_STR_3 = utf8:"oops"
-    tmp_12 = 4
-    tmp_11 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_11, &SLA_STR_3, tmp_12
-    !tmp_12
-    tmp_13 = call @sla__config_error_message(tmp_11)
-    err = tmp_13
-    @const SLA_STR_4 = utf8:"invalid config: oops"
-    tmp_15 = 20
-    tmp_14 = stack_alloc Slice_SIZE
-    EXPAND SLICE_NEW tmp_14, &SLA_STR_4, tmp_15
-    !tmp_15
-    EXPAND STRING_BUF_AS_STR tmp_16, err
-    EXPAND STR_EQ tmp_17, tmp_16, tmp_14
-    !tmp_16
-    tmp_18 = 1
-    tmp_19 = ne tmp_17, tmp_18
-    !tmp_17
-    !tmp_18
-    br tmp_19 -> L_THEN_1, L_ELSE_2
+    @const SLA_STR_1 = utf8:"oops\0"
+    tmp_5 = &SLA_STR_1
+    tmp_6 = call @sla__config_error_message(tmp_5)
+    !tmp_5
+    err = tmp_6
+    @const SLA_STR_2 = utf8:"invalid config: oops\0"
+    tmp_8 = 20
+    tmp_7 = stack_alloc Slice_SIZE
+    EXPAND SLICE_NEW tmp_7, &SLA_STR_2, tmp_8
+    !tmp_8
+    EXPAND STRING_BUF_AS_STR tmp_9, err
+    EXPAND STR_EQ tmp_10, tmp_9, tmp_7
+    !tmp_9
+    tmp_11 = 1
+    tmp_12 = ne tmp_10, tmp_11
+    !tmp_10
+    !tmp_11
+    br tmp_12 -> L_THEN_1, L_ELSE_2
 
 L_THEN_1:
-    !tmp_19
+    !tmp_12
     panic(175)
 
 L_ELSE_2:
-    !tmp_19
+    !tmp_12
     jmp L_MERGE_3
 
 L_MERGE_3:

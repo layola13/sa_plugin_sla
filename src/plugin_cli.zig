@@ -65,6 +65,19 @@ pub fn saTestFilterFromArgs(args: []const []const u8) ?[]const u8 {
 }
 
 pub fn appendSaTestPassthrough(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
+    try appendSaTestPassthroughInternal(argv, args, .keep_filter);
+}
+
+pub fn appendCompiledSaTestPassthrough(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
+    try appendSaTestPassthroughInternal(argv, args, .strip_filter);
+}
+
+const FilterPassthroughMode = enum {
+    keep_filter,
+    strip_filter,
+};
+
+fn appendSaTestPassthroughInternal(argv: *std.ArrayList([]const u8), args: []const []const u8, filter_mode: FilterPassthroughMode) !void {
     var idx: usize = 0;
     while (idx < args.len) : (idx += 1) {
         const arg = args[idx];
@@ -74,6 +87,12 @@ pub fn appendSaTestPassthrough(argv: *std.ArrayList([]const u8), args: []const [
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--test-backend=")) continue;
+        if (filter_mode == .strip_filter and std.mem.eql(u8, arg, "--filter")) {
+            idx += 1;
+            if (idx >= args.len) return error.InvalidFormat;
+            continue;
+        }
+        if (filter_mode == .strip_filter and std.mem.startsWith(u8, arg, "--filter=")) continue;
         try argv.append(arg);
     }
     try appendDefaultJobsAuto(argv, args);
@@ -310,7 +329,7 @@ pub fn commandUsage(command: []const u8) []const u8 {
     if (std.mem.eql(u8, command, "sab disasm")) return "usage: sa sla sab disasm <file.sab> [--out <file.sa>]\n       sa slab disasm <file.sab> [--out <file.sa>]\n";
     if (std.mem.eql(u8, command, "check")) return "usage: sa sla check [file] [-p <package>]\n";
     if (std.mem.eql(u8, command, "test")) return "usage: sa sla test [file] [-p <package>] [--test-backend auto|sab|sa] [sa-test-options...]\n";
-    return "usage: sa sla <command> [options]\n";
+    return "usage: sla <command> [options]\n       sa sla <command> [options]\n";
 }
 
 pub fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
@@ -444,4 +463,27 @@ test "sla delegated SA commands default to jobs auto unless supplied" {
         if (std.mem.eql(u8, item, "auto")) auto_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 0), auto_count);
+}
+
+test "sla compiled test passthrough strips source-only test selection for child runner" {
+    var argv = std.ArrayList([]const u8).init(std.testing.allocator);
+    defer argv.deinit();
+    try appendCompiledSaTestPassthrough(&argv, &.{ "--filter", "one", "--trace-panic", "--jobs=1", "--test-backend", "sab" });
+
+    for (argv.items) |item| {
+        try std.testing.expect(!std.mem.startsWith(u8, item, "--test-backend"));
+        try std.testing.expect(!std.mem.eql(u8, item, "--filter"));
+        try std.testing.expect(!std.mem.eql(u8, item, "one"));
+    }
+    try std.testing.expectEqual(@as(usize, 2), argv.items.len);
+    try std.testing.expectEqualStrings("--trace-panic", argv.items[0]);
+    try std.testing.expectEqualStrings("--jobs=1", argv.items[1]);
+
+    var argv_eq = std.ArrayList([]const u8).init(std.testing.allocator);
+    defer argv_eq.deinit();
+    try appendCompiledSaTestPassthrough(&argv_eq, &.{ "--filter=one", "--trace-panic" });
+    try std.testing.expectEqual(@as(usize, 3), argv_eq.items.len);
+    try std.testing.expectEqualStrings("--trace-panic", argv_eq.items[0]);
+    try std.testing.expectEqualStrings("--jobs", argv_eq.items[1]);
+    try std.testing.expectEqualStrings("auto", argv_eq.items[2]);
 }

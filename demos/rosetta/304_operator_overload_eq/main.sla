@@ -1,6 +1,7 @@
 @import "sa_std/io/print.sai"
 @import "sa_std/fmt.sai"
 
+@derive(PartialEq)
 struct Point {
     x: i32,
     y: i32,

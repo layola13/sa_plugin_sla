@@ -1,0 +1,105 @@
+# issue028: strict SAB test prints ok result but outer command exits by timeout
+
+Date: 2026-07-15
+
+## Status
+
+Status: fixed/verified (2026-07-17; reaffirmed 2026-07-19).
+
+Fixed / current non-repro as of 2026-07-17.
+
+After the filtered child-runner selection passthrough mitigation, the remaining
+unfiltered path was rechecked serially in the dirty
+`/home/vscode/projects/mnt/sla_tsgo` checkout. The direct generated SAB runner
+and the original outer plugin command both exited normally with status `0`
+inside the 90s timeout.
+
+## Summary
+
+A focused `sla_tsgo` strict SAB test can print a complete passing result, but the process does not exit before the outer `timeout` kills it, so the shell exit code is `124` even though all test assertions passed.
+
+## Repro
+
+From `/home/vscode/projects/mnt/sla_tsgo`:
+
+```sh
+timeout 90s env SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 \
+  sa sla test tests/test_real_ts_project_reference_flow.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+Observed output before timeout termination:
+
+```text
+[PASS] real project reference flow resolves declaration, emits app js, and keeps diagnostics clean
+[PASS] real project reference flow redirects source and declaration parse paths
+----
+test result: ok. 2 passed; 0 failed; 0 skipped
+```
+
+Observed shell status: `124`.
+
+No matching test process remained afterward.
+
+## Impact
+
+This makes automation treat an otherwise passing strict SAB test as failed. It also forces manual interpretation of output for focused `sla_tsgo` tests that compile slowly.
+
+## Expected
+
+After printing `test result: ok`, the `sa sla test ... --test-backend sab` process should exit with status `0`.
+
+## 2026-07-17 Compiled Child Filter Handling
+
+Static runner analysis found a related filter boundary in `sa_plugin_sla`.
+The SLA compiler already applies `--filter` / `--filter=...` before codegen by
+pruning unmatched source `@test` declarations. Forwarding that same filter to
+the compiled child `sa test <generated.sab>` process can fail on some SAB
+modules with `error: no matching test`, because the child runner's SAB test
+registry can disagree with the original source test title even though the
+source-side selected test was compiled.
+
+Compiled-test passthrough therefore strips source-only `--filter` arguments
+when invoking child `sa test`, while still stripping the plugin-private
+`--test-backend` option and preserving ordinary runner arguments such as
+`--trace-panic` / `--jobs`. This keeps selection owned by the SLA source
+pipeline and avoids the child SAB filter mismatch.
+
+Historical focused repro state before the closure recheck: a 60s profiled
+rerun in the dirty
+`/home/vscode/projects/mnt/sla_tsgo` checkout reached direct SAB codegen and
+then timed out while the nested `sa test <generated.sab>` phase was still
+running, before the pass summary. The generated SAB was about 5.2 MiB. The
+closure recheck below supplied the missing serial direct `sa test
+<generated.sab>` and original outer-command evidence.
+
+## 2026-07-17 Closure Recheck
+
+After waiting for unrelated external `sa sla test` processes to finish, the
+generated SAB and original outer strict-SAB command were rechecked serially:
+
+```sh
+timeout 90s env SLA_PROFILE=1 \
+  sa test .sla-cache/sab/test_real_ts_project_reference_flow-96dd54743c5a82de.sab \
+  --jobs 1 --trace-panic
+```
+
+This direct child-runner check printed the same 2/2 pass summary and exited
+with status `0`.
+
+```sh
+timeout 90s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 SA_PLUGIN_DEV=1 \
+  sa sla test tests/test_real_ts_project_reference_flow.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+The original outer path also printed the 2/2 pass summary and exited with
+status `0` in about 17.5s. The profile showed direct SAB codegen finishing in
+about 6.4s. No full suite was run.
+
+
+## 2026-07-19 recheck
+
+Filtered managed SAB (`test_real_ts_project_reference_flow-96dd54743c5a82de.sab`, ~5.2 MiB) direct child runner still exits 0 in ~1.7s with 2/2 pass. Source filter strip passthrough remains in place.
+
+Unfiltered whole-module SAB (~10 MiB from `sla sab build` without test prune) still produces no stdout within 90s in `sa test` child — that is a large-module runner cost, not the original ok-then-linger after printed summary. Original issue (pass summary printed then timeout exit) remains non-repro on the filtered path.

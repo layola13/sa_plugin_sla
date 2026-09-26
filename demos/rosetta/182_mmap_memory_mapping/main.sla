@@ -6,7 +6,7 @@
 fn mmap_mapped_fd() -> i32 {
     let mapped_fd = 0;
     {
-        let file = File::open("/dev/zero").unwrap();
+        let file = File::open("sap.json").unwrap();
         let raw_fd = file.as_raw_fd();
         mapped_fd = raw_fd + 1;
     }
@@ -14,7 +14,7 @@ fn mmap_mapped_fd() -> i32 {
 }
 
 fn main() -> i32 {
-    let file = File::open("/dev/zero").unwrap();
+    let file = File::open("sap.json").unwrap();
     let raw_fd = file.as_raw_fd();
     let result = raw_fd + 1;
     println("{}", result);

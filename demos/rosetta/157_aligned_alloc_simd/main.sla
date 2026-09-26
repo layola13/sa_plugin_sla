@@ -12,7 +12,7 @@ fn main() -> i32 {
     let lane_bytes: usize = 4;
     let result = alignment_bytes / lane_bytes;
     println("{}", result);
-    return 0;
+    return result;
 }
 
 @test "rosetta 157 157_aligned_alloc_simd"() {

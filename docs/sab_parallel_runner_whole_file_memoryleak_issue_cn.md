@@ -1,6 +1,6 @@
 # SAB parallel_runner whole-file MemoryLeak issue
 
-状态：部分修复，仍开放。最小危险 repro 中的 loop 内动态索引 `Vec<fn>` 并转存到另一个 holder 已修复为 10s 内稳定通过，SAB build 从约 9.6s 降到约 2.9s；但下游整文件 `lib/parallel_runner.sla` / `task_pool_builder.sla` 仍归类为危险测试，尚未证明整文件聚合 `MemoryLeak` 全面消失。下游 `sla_ecs` 已用 generated-SA 后端验证新增 `TaskPoolBuilder` / global task-pool facade 通过；默认/SAB 后端的单个 focused tests 也通过。但当测试文件导入 `lib/parallel_runner.sla` 并执行整文件聚合测试时，历史上 SAB verifier 在 `.sab` 文件尾部报告无源码定位的 `MemoryLeak`。当前全量 `lib/parallel_runner.sla` 在本地 direct-SAB 路径 10 秒内无输出且不写出 `.sab` 产物，后续不得用长超时反复探测，应先用编译器仓库内的细化模拟 fixture 定位。
+状态：fixed/verified for original MemoryLeak/Phi blockers（2026-07-19）。`task_pool_builder.sla` whole-file SA 与 default/SAB 均 6/6；local 维度 fixture 全绿（multi-lane / Arc / child-scope / thread / child-scope+Arc / branch-param merge）；`parallel_runner.sla` 本身无 `@test`（smoke 0/0）。大文件 compile cost 仍可能较高，但不作为当前 MemoryLeak 开放 blocker。最小危险 repro 中的 loop 内动态索引 `Vec<fn>` 并转存到另一个 holder 已修复为 10s 内稳定通过，SAB build 从约 9.6s 降到约 2.9s；2026-07-19 已证明 `task_pool_builder.sla` 整文件聚合在 SA/SAB 下 6/6；原 MemoryLeak/PhiStateConflict 不再复现。下游 `sla_ecs` 已用 generated-SA 后端验证新增 `TaskPoolBuilder` / global task-pool facade 通过；默认/SAB 后端的单个 focused tests 也通过。但当测试文件导入 `lib/parallel_runner.sla` 并执行整文件聚合测试时，历史上 SAB verifier 在 `.sab` 文件尾部报告无源码定位的 `MemoryLeak`。当前全量 `lib/parallel_runner.sla` 在本地 direct-SAB 路径 10 秒内无输出且不写出 `.sab` 产物，后续不得用长超时反复探测，应先用编译器仓库内的细化模拟 fixture 定位。
 
 ## 触发背景
 
@@ -188,3 +188,199 @@ timeout 10s env SA_PLUGIN_DEV=1 sa sla test lib/task_pool_builder.sla --test-bac
 如果 10s smoke 无输出，不能把它当作失败细节；必须回到本仓库细化 fixture 或缓存 SAB 反汇编定位。
 
 下游当前继续以 generated-SA 整文件通过和默认/SAB focused tests 作为 `TaskPoolBuilder` facade 的验证证据。
+
+## 2026-07-19 Multi Vec<fn> lane extend dimension
+
+Next local fixture for the multi-lane shape of `EcsParallelScopedTaskSet`
+(threaded `runs` + `on_scope_runs` with independent order-position vectors and
+loop-time ordered merge):
+
+- `tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla`
+
+This keeps Arc/World/thread out of the graph and only adds a second `Vec<fn>`
+lane plus `find_order` lookup merge, matching the extend loop shape in
+`sla_ecs/lib/parallel_runner.sla` without importing that whole file.
+
+Serial verification (after local `zig build -j1`):
+
+```bash
+timeout 30s env SLA_PROFILE=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic
+timeout 15s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_multi_fnptr_lane_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+timeout 10s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_loop_fnptr_transfer_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+Results:
+
+- SA backend 1/1 pass; profile `import expand` ~548ms, `sa codegen` ~6ms
+  (cold first 10s attempt can still linger in the SA backend compile/run tail).
+- Strict direct SAB 1/1 pass; profile `import expand` ~519ms,
+  `sab direct codegen` ~3650ms, under the 10s smoke budget.
+- Prior loop fnptr-transfer fixture still 1/1 under 10s strict SAB.
+
+Status remains partial/open for whole-file `parallel_runner.sla` /
+`task_pool_builder.sla` aggregation. Do not long-run those 10s+ smokes; next
+dimensions are still Arc<*World> parameter lanes and child-scope returns, each
+as a separate local fixture under the 10s rule.
+
+## 2026-07-19 Arc<*World> multi-lane Vec<fn> dimension
+
+Next local fixture after multi-lane plain `Vec<fn>`:
+
+- `tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla`
+
+Shape:
+
+- `Vec<fn(Arc<*ParallelRunnerTinyWorld>) -> i32>` threaded + on-scope lanes
+- independent order-position vectors and loop-time ordered extend
+- Arc world shared via `Box::into_raw` + `Arc::new` + `clone`, then both
+  extended callbacks are invoked (return constants; no Arc field projection)
+
+Serial verification (no concurrent builds; using existing local CLI):
+
+```bash
+timeout 30s env SLA_PROFILE=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic
+timeout 15s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_arc_world_fnptr_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+Results:
+
+- SA backend 1/1 pass; `import expand` ~489ms, `sa codegen` ~6ms.
+- Strict direct SAB 1/1 pass; `import expand` ~485ms,
+  `sab direct codegen` ~3952ms, under the 10s smoke budget.
+
+Status remains partial/open for whole-file `parallel_runner.sla` /
+`task_pool_builder.sla`. Next remaining local dimensions are still
+child-scope returns and thread spawn over the Arc lanes, each as separate
+fixtures under the 10s rule.
+
+## 2026-07-19 Child-scope return + by-value fnptr object bits
+
+Fixture:
+
+- `tests/test_unit_parallel_runner_child_scope_return_direct.sla`
+
+Stages:
+
+1. store `Vec<fn() -> Holder>` only
+2. call returned holder and invoke its runs
+3. ordinary holder-to-holder extend
+4. alias then call a returned holder run
+5. spawn one run loaded from a returned holder
+6. loop-extend runs from a returned holder
+
+Root cause of the strict SAB signal 11 on stages 5/6:
+
+Direct SAB previously passed by-value `fn` args as `&stack_slot` (address of an
+8-byte word holding the function-object / vtable pointer). `sa_vec_push` stores
+that raw value into the Vec. After the callee returned, the stack slot was gone,
+so later loads/calls through the stored bits crashed. SA-text already passed the
+function-object pointer bits themselves (`tmp = &SLA_FNPTR_VT_...; call(f, tmp)`).
+
+Fix in `src/sab_codegen.zig`:
+
+- generated and local by-value fnptr call args now pass object-pointer bits
+- non-identifier by-value fnptr temps such as `child.runs[i]` also pass bits
+- matches SA-text and keeps stored Vec fnptrs stable across call returns
+
+Serial verification:
+
+```bash
+timeout 180s zig build -j1 --summary all
+timeout 40s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_child_scope_return_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+timeout 30s ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_child_scope_return_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic
+```
+
+Results: SA 6/6, strict SAB 6/6. Prior multi-lane / Arc-world / loop-fnptr /
+`test_unit_fn_ptr_value.sla` / thread-pair fixtures still pass strict SAB.
+
+Whole-file `parallel_runner.sla` / `task_pool_builder.sla` remain open dangerous
+smoke; next remaining dimensions are thread-spawn over Arc lanes under the 10s
+rule.
+
+## 2026-07-19 Branch-param consume merge + thread Arc lane
+
+### Compiler fix: branch by-value param merge (task_pool_builder PhiStateConflict)
+
+Minimal fixture:
+
+- `tests/test_unit_branch_param_consume_merge_direct.sla`
+
+Root cause:
+
+1. `let _ = bag` on the else path did not consume by-value non-Copy params in direct SAB.
+2. Branch-exit balancing skipped params whose ABI storage was a pointer word, so Active vs Consumed disagreed at merge for shapes like `get_or_init(pools, pool)`.
+
+Fix in `src/sab_codegen.zig`:
+
+- `consumeDiscardedLocalBinding` for `let _ = <local/param>`
+- `emitBalanceReleaseLocal` balances params even when ABI is ptr
+
+Verification:
+
+```bash
+timeout 40s env SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_branch_param_consume_merge_direct.sla --test-backend sab --jobs 1 --trace-panic
+timeout 40s env SA_PLUGIN_DEV=1 ./zig-out/bin/sla-local-cli \
+  sla test /home/vscode/projects/sla_ecs/lib/task_pool_builder.sla --jobs 1 --trace-panic
+```
+
+Results: branch fixture SA/SAB 2/2; whole-file `task_pool_builder.sla` default/SAB **6/6 passed**.
+
+### Thread Arc multi-lane fixture
+
+- `tests/test_unit_parallel_runner_thread_arc_lane_direct.sla`
+- multi-lane extend + `thread::spawn` over `fn(Arc<*World>)` lanes
+- SA 1/1 and strict SAB 1/1
+
+### Status update
+
+- `task_pool_builder.sla` whole-file SAB aggregation is fixed/verified for the current source.
+- Local parallel_runner dimensions (multi-lane, Arc world, child-scope return, thread Arc) all have unit fixtures under the smoke budget.
+- Full `lib/parallel_runner.sla` may still be a long/dangerous smoke depending on suite size; keep 10-15s smoke only and treat remaining timeouts as residual cost, not the previous MemoryLeak/PhiStateConflict blockers.
+
+## 2026-07-19 Child-scope + Arc<*World> combination
+
+Next local fixture after thread-Arc and plain child-scope return:
+
+- `tests/test_unit_parallel_runner_child_scope_arc_direct.sla`
+
+Shape (mirrors `EcsParallelScopedTaskSet.child_scope_runs`):
+
+- `Vec<fn(Arc<*World>) -> Holder>` child-scope lane
+- nested holder carries `Vec<fn(Arc<*World>) -> i32>` runs
+- call returned holder with Arc world, then loop-extend those Arc runs into a parent
+
+Serial verification (existing local CLI; no rebuild):
+
+```bash
+timeout 40s env SLA_PROFILE=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_child_scope_arc_direct.sla \
+  --test-backend sa --jobs 1 --trace-panic
+timeout 40s env SLA_PROFILE=1 SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli \
+  sla test tests/test_unit_parallel_runner_child_scope_arc_direct.sla \
+  --test-backend sab --jobs 1 --trace-panic
+```
+
+Results:
+
+- SA backend 3/3 pass; `import expand` ~721ms, `sa codegen` ~7ms.
+- Strict direct SAB 3/3 pass; `import expand` ~749ms, `sab direct codegen` ~5348ms.
+- Prior thread-Arc / child-scope return / Arc-world fixtures still pass strict SAB.
+- 10s smoke: whole-file `task_pool_builder.sla` default/SAB still 6/6.
+- 10–15s smoke: `lib/parallel_runner.sla` has no `@test` entries (0/0 exit 0 under SAB); SA-backend whole-file still can linger past 15s — residual compile cost, not the old MemoryLeak blocker.
+
+Status: local dimension matrix for multi-lane / Arc / child-scope / thread-Arc / child-scope+Arc is covered under smoke budget. Remaining gap is whole-file `parallel_runner.sla` host suite size/compile cost and any still-unmodeled lanes (external lane, child-scope-with-result, recursive scope run) if host tests grow onto those.

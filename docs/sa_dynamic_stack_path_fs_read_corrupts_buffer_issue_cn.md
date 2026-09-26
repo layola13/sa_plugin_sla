@@ -1,11 +1,13 @@
 # SA 动态栈路径 FS_READ_TO_STRING 返回损坏 buffer
 
+状态：fixed/verified（2026-07-19）。
+
 ## 状态
 
 - 发现时间：2026-07-07
 - 下游项目：`/home/vscode/projects/mnt/sla_tsgo`
 - 后端：`--test-backend sa`
-- 当前状态：已在编译器侧修复并用本地 CLI 复验。下游 `extends inherits base target/strict, child overrides module` 原始 filter 已通过本地 `sla-local-cli` 的 SA 后端，完整 `tests/test_tsconfig_contract.sla` 也已通过 19/19。默认 installed `sa` 命令截至 2026-07-07 仍表现为旧版本，完整下游合同仍是 18/19 并在 panic 302 失败；这属于工具同步状态，不再作为下游源码阻塞证据。
+- 当前状态：fixed/verified（2026-07-19）。已在编译器侧修复并用本地 CLI 复验；下游 `extends inherits base target/strict, child overrides module` 原始 filter 已通过本地 `sla-local-cli` 的 SA 后端，完整 `tests/test_tsconfig_contract.sla` 也已通过 19/19。默认 installed `sa` 命令截至 2026-07-07 仍表现为旧版本，完整下游合同仍是 18/19 并在 panic 302 失败；这属于工具同步状态，不再作为下游源码阻塞证据。
 
 ## 现象
 
@@ -91,6 +93,15 @@ cd /home/vscode/projects/mnt/sla_tsgo
 ```
 
 结果：本 repo focused SA/strict SAB 为 5/5 通过；下游原始 filter 为 1/1 通过。
+
+## 2026-07-19 复验
+
+```sh
+./zig-out/bin/sla-local-cli sla test tests/test_unit_tsconfig_buffer_cleanup.sla \
+  --test-backend sa --jobs 1 --trace-panic   # 5/5
+SLA_SAB_NO_FALLBACK=1 ./zig-out/bin/sla-local-cli sla test \
+  tests/test_unit_tsconfig_buffer_cleanup.sla --test-backend sab --jobs 1 --trace-panic  # 5/5
+```
 
 ## 备注
 

@@ -1,6 +1,6 @@
 # sla_ecs Module Table 真实项目复测回归 issue
 
-状态：编译器/SAB 回归已修复；真实性能目标仍开放。
+状态：correctness closed / performance still open（2026-07-19）。编译器/SAB 回归已修复；真实 `import expand` 延迟目标仍开放（非 correctness blocker）。
 
 发现时间：2026-07-09。
 
@@ -309,3 +309,275 @@ parallel_query.sla focused generated-SA: parse 220ms, import expand 712ms, load 
 2. 继续实现真正的浅层扫描/懒解析：当前代码已跳过 imported tests，在非测试 build 路径支持浅解析后 materialize 可达模块，并让 test-codegen imported-macro preload 只加载 root + contributing module 的 contract imports；但 focused test-codegen 仍会解析大量未触达函数体，contract 数据也尚未做到完整按符号/模块可达性裁剪。这些才是 `import expand`、`parse`、`load contracts` 的主耗时。`import aliases` 已降到近零，已解析非 SLA imports 也不再被重读，但仍应保留 profile gate 防止回归。
 3. 继续复跑 `world_table_erased.sla`、`system_param_table_erased.sla`、`parallel_table_erased.sla`、`examples/parallel_query.sla` 的 generated-SA focused/profile gates，避免性能修复重新引入前端 check/import 回归。
 4. 默认/SAB `8701` 已在当前 compiler cleanup 切片中复验通过；后续仍应保留这些 focused strict/default gates，防止性能改动重新引入 SAB 后端回归。
+
+## 2026-07-13 namespace-local helper binding checkpoint
+
+Selective reachable-body materialization exposed a remaining namespace collision: if `dep.sla` and `sibling.sla` both define `entry()` calling a local `helper()`, reachability can correctly select `dep__helper` and `sibling__helper`, but flattening duplicate raw `helper` declarations previously caused TypeChecker `Redeclaration`.
+
+Current correction:
+
+- namespace-only reachable imported functions no longer require duplicate raw function declarations;
+- while checking an imported alias function, TypeChecker resolves a raw call against the current namespace alias first;
+- `resolved_call_symbols` retains the historical raw target, while `resolved_call_alias_metadata` carries the namespace/module identity consumed by both SA and SAB emitters;
+- regression `sla test codegen qualifies same named imported helper reachability` asserts both alias helper declarations and both module-qualified SA call targets.
+
+Serial verification passed: same-name helper 2/2, selective reachable bodies 1/1, Module Table 15/15, imported alias metadata 2/2, `zig build -j1 --summary all` 7/7, `zig build test -j1 --summary all` 210/210, official dev install/help.
+
+Installed real ECS focused generated-SA profiles also pass, but this sample is a performance regression rather than closure:
+
+```text
+parallel_query.sla: parse 291ms, import expand 868ms, load contracts 0ms, import aliases 4ms, elapsed 4.34
+parallel_table_erased.sla: parse 246ms, import expand 1156ms, load contracts 0ms, import aliases 0ms, elapsed 5.23
+```
+
+Profile detail shows the remaining tail in import root resolution and repeated reachability/materialization extension, including several passes over the large `world_table_erased.sla` module. Therefore the real latency target remains open. This checkpoint also does not claim full namespace isolation for imported const initializers, SLA macro bodies, types, or every raw AST binding; those belong in the Typed HIR/module symbol identity work.
+
+
+## 2026-07-19 复核
+
+编译器侧新增两处与真实 ECS 路径相关的修复（本插件）：
+
+1. SA `vec.push` 对含纯 enum 的 POD 结构体不再错误 `^` 消费；`component_register_table` 的 `push(info); return (registry, info)` 在 SA 后端恢复通过。回归：`tests/test_unit_vec_push_pod_struct_return_direct.sla`。
+2. 循环内对仍需存活的 by-value `Vec` 参数在 SA/SAB 调用点克隆，避免 `find_archetype` 类 `PhiStateConflict`。回归：`tests/test_unit_param_vec_loop_equals_direct.sla`。strict SAB `lib/parallel_table_erased.sla` focused 通过。
+
+SA 全路径 `parallel_table_erased` focused 仍暴露另一类 `CapabilityMismatch`（`ecs_box_drop` 前缀），与上述 UAM/Phi 不同，记为剩余 SA-backend 问题。
+
+性能目标仍 open：真实 focused generated-SA 前端仍约 1–2s 量级（import expand 主导），未压到几百毫秒。
+
+## 2026-07-19 baseline remeasure (local sla-local-cli, SLA_PROFILE=1)
+
+Correctness still closed. Current check import-expand profile (warmish):
+
+- `world_table_erased.sla`: resolve roots ~45ms, reachable materialize ~396ms
+- `parallel_runner.sla`: resolve roots ~408ms, reachable materialize ~339ms
+- `system_param_table_erased.sla`: resolve roots ~509ms, reachable materialize ~746ms
+
+Tried enabling lazy transitive discovery for registry-driven check/compile roots;
+resolve-roots dropped on some modules but reachable materialize inflated
+(system_param materialize ~2.5s). Reverted that enablement; keep historical
+small filtered-test lazy path only until materialize is reworked.
+
+## 2026-07-19 ordered-module counts
+
+`SLA_PROFILE=1` now reports transitive ordered module count after resolve-roots:
+
+- `world_table_erased.sla`: ordered modules=12
+- `parallel_runner.sla`: ordered modules=16
+
+Roots cost is dominated by `getOrParse` of that diamond (source expand + decl-only parse + export build). Materialize is a separate second pass.
+
+## 2026-07-19 type-scan cache reuse / no redundant prescan
+
+Root cause of tiny-module parse spikes: `getOrParse` of a large module did not
+publish its type surface into the shared import-type scan cache, so later small
+importers re-prescanned/reparsed the large dependency.
+
+Fixes:
+1. Publish complete ImportTypeSurface after each successful `getOrParse`.
+2. Disable `prescan_sla_import_types` for module-table parsers (discovery already walks imports via getOrParse).
+
+Measured (SLA_PROFILE, local sla-local-cli):
+- `table_erased_access.sla` getOrParse: ~259ms → ~0-2ms
+- `schedule_table_erased.sla` getOrParse: ~327ms → ~5ms
+- `system_param_table_erased.sla` resolve-roots: ~494ms → ~321ms
+- `parallel_runner.sla` resolve-roots: ~577-630ms → ~321ms (varies with world_table first-parse)
+
+Remaining dominant cost: first getOrParse of large bodies such as `world_table_erased.sla` (expand+parse ~250-300ms).
+
+## 2026-07-19 reachability materialize attribution
+
+On `parallel_runner.sla` check:
+
+- resolve-roots improved by type-scan cache reuse / no redundant prescan
+- remaining "reachable materialize" is almost entirely `buildReachableSymbols` drain:
+  - work_items=311, non_empty_bodies=121, body_walk~309ms
+  - non-empty bodies come from the large root program, not reparsed imports
+
+So further materialize cuts need cheaper root-body reachability scanning or a
+check-path mode that retains less imported surface without full syntactic walks.
+
+## 2026-07-19 check-path include_all shortcut
+
+`sla check` now uses `include_all_imported_decls=true` with decl-only imported
+bodies. That skips `buildReachableSymbols` root-body walks (previously
+~300ms on parallel_runner: 121 non-empty bodies). Imported methods/impls are
+retained decl-only without reachability filtering.
+
+Measured:
+- parallel_runner: materialize 0ms (was ~315-370ms), typecheck OK
+- system_param_table_erased: materialize 0ms, typecheck OK
+
+Test/codegen paths still use selective reachability.
+
+## 2026-07-19 disk-backed expand cache
+
+Large modules such as `world_table_erased.sla` spend ~140ms in `@expand_tuple`
+source expansion on cold process starts. `getOrParse` now stores expanded
+sources under `.sla-cache/expand/<stem>-<content-hash>.sla`.
+
+Warm second-process check (parallel_runner):
+- world_table_erased expand: 149ms → 1ms
+- world_table_erased getOrParse total: 275ms → 108ms (remaining mostly parse)
+- resolve-roots: 333ms → 156ms
+
+## 2026-07-19 compile-path materialize profile
+
+`sla build` of `parallel_runner.sla` (registry-driven reachable bodies):
+
+- resolve-roots ~138-176ms (warm expand cache)
+- materialize ~836ms-1s with `passes=6 reparses=37 extensions=5`
+  - select ~11ms, reparse ~16ms, **extend ~496ms**
+- selective append ~52ms with ~704 decls (selective, not include_all)
+
+Extend cost is drainReachabilityBuildState walking newly materialized imported
+function bodies. Check-path remains much cheaper via include_all shortcut.
+
+## 2026-07-19 wall-clock check status
+
+Warm `sla check` with current optimizations:
+
+- `parallel_runner.sla`: ~0.68s
+- `system_param_table_erased.sla`: ~0.98s
+
+Import expand materialize is ~0ms on check via include_all. Residual is first
+parse of large expanded sources (world_table_erased expanded ~678KB / 571 fns).
+
+## 2026-07-19 check include_all raw-only decls
+
+Under `include_all_imported_decls`, selective append no longer emits both raw
+and namespaced alias function nodes. Raw decl-only imports are kept; namespaced
+aliases continue to be registered via `registerImportedFunctionAliases*`.
+
+`parallel_runner` check selective append decls: 2345 → 1339.
+
+## 2026-07-19 check stage profile
+
+Warm `sla check parallel_runner.sla`:
+
+- check parse (root): ~281ms
+- check import expand: ~182ms
+- monomorphize: ~3ms
+- load contracts: ~41ms
+- import aliases: ~4ms
+- type check: ~6ms
+
+After import-expand wins, residual check cost is primarily root-source full parse.
+
+## 2026-07-19 unified expandForModulePath cache
+
+Moved disk-backed `@expand_tuple` caching into `source_expand.expandForModulePath`
+and use it for:
+- root expand in `sla check` / compile
+- imported-module expand in `getOrParse`
+
+Warm second-process `system_param_table_erased` check:
+- check source expand: 148ms → 3ms
+
+## 2026-07-19 adaptive include_all abandoned
+
+Tried `include_all` only when root source <= 200KB. Large roots then used
+selective materialize and system_param check regressed to ~3.45s (materialize
+~1.5s + contracts/typecheck). Reverted to always-on include_all for check.
+
+Warm wall-clock now:
+- parallel_runner: ~0.5-0.8s
+- system_param_table_erased: ~1.3s (root parse ~0.4-0.5s, typecheck ~0.3s)
+
+## 2026-07-19 compile-path scaling note
+
+Warm compile import-expand:
+
+- `task_pool_builder.sla`: import expand ~316ms, materialize ~50ms, selective decls=70
+- `parallel_runner.sla`: import expand ~1.0-1.4s with materialize extend ~0.5-0.6s
+
+Small roots stay healthy under registry-driven reachable materialize; large roots
+still pay multi-pass body walks.
+
+## 2026-07-19 contract load dedupe
+
+`loadImportedContractsFromResolvedImports` was reprocessing duplicate `.sa`
+contract roots (vec/box repeated). Now skips visited roots and expands through
+`expandForModulePath`.
+
+Warm `parallel_runner` build:
+- load contracts: ~730ms → ~558ms
+- wall-clock: ~1.89s
+
+## 2026-07-19 contract load residual
+
+Warm parallel_runner build load contracts ~550-650ms, dominated by `vec.sa`
+macro/import scan (~scan 491ms, macros 132ms). Detail timings are behind
+`SLA_PROFILE_CONTRACTS=1`.
+
+## 2026-07-19 imported macro index cache
+
+`loadImportedMacrosFromExpandedSource` now caches parsed macro indices under
+`.sla-cache/macros/<stem>-<hash>.idx`.
+
+Warm second-process `parallel_runner` build:
+- load contracts: ~820ms → ~90ms
+- `vec.sa` macros: ~122ms → ~6ms
+
+## 2026-07-19 contract @import list cache
+
+`scanExpandedSourceImports` now caches extracted `@import` paths under
+`.sla-cache/imports/<stem>-<hash>.lst`.
+
+Warm `parallel_runner` build load contracts: ~51-90ms after expand/macro/import
+list caches.
+
+## 2026-07-19 latest wall-clock
+
+Warm local sla-local-cli:
+
+- `sla check parallel_runner.sla`: ~0.65s
+- `sla build parallel_runner.sla`: ~1.68s
+
+Contract/macro/import-list caches cut load-contracts to ~50-90ms. Remaining build
+gap vs check is primarily registry-driven materialize body walks (~1.0s).
+
+## 2026-07-19 non-test body-walk memo
+
+`ReachabilityBuildState` now tracks `scanned_function_bodies` and skips repeat
+AST walks for the same function when `prune_for_test_codegen` is false (compile
+path). Warm `parallel_runner` build ~1.61s.
+
+## 2026-07-19 reachable plan cache
+
+Compile-path (`load_reachable_imported_bodies_from_registry`) now caches the
+final reachable symbol/type sets under `.sla-cache/reachable/<root>-<hash>.plan`.
+
+Warm second-process `parallel_runner` build:
+- import expand: ~1.2s → ~0.81s on cache hit
+- wall-clock: ~1.36s
+
+## 2026-07-19 one-shot materialize on plan cache hit
+
+Warm plan-cache hits now use `materializeImportedModuleBodiesOneShot` and often
+report `reparses=0/extend=0` when module tables already hold bodies from prior
+work in-process, while cold vs warm generated SA for parallel_runner is byte-identical.
+
+## 2026-07-19 warm one-shot early exit
+
+When a reachable plan cache hits and selected bodies are already present,
+materialize returns without drain/reparse.
+
+Warm `parallel_runner` build:
+- import expand: ~358ms
+- wall-clock: ~1.09s
+- SA output remains byte-identical to cold path
+
+## 2026-07-19 lazy callable-index on warm one-shot
+
+Warm plan-cache hits no longer seed the full callable index when no module
+reparses are required.
+
+Warm `parallel_runner` build:
+- import expand: ~296ms
+- wall-clock: ~0.85s
+
+## 2026-07-19 SAB shallow_copy bool storage
+
+SAB aggregate `bool` field storage now uses `u8` (matching SA ABI). After purging
+stale managed SAB cache entries, `tests/test_unit_shallow_copy_call_arg_direct.sla`
+passes under `SLA_SAB_NO_FALLBACK=1`.

@@ -307,6 +307,10 @@ pub const AsyncJoin2AwaitContinuationPlan = struct {
     await_expr: *const ast.Node,
     awaited_kind: FutureRuntimeCallKind,
     scalar: AsyncPairResultScalarPlan = .{},
+    /// Leading statements before the await construct; the emitter evaluates
+    /// them in order (they materialize the join2 inputs and any other
+    /// locals). Zero for the classic top-of-body shape.
+    prefix_len: usize = 0,
 
     pub fn asyncStateSize(_: AsyncJoin2AwaitContinuationPlan) usize {
         return 16;
@@ -1735,7 +1739,30 @@ fn pairAccessorKind(expr: *const ast.Node, binding_name: []const u8) ?FutureRunt
     return plan.kind;
 }
 
+/// Resolve `name` to the value of the latest preceding `let name = <value>`
+/// in `func.body[0..upto_idx]`. Used for single-level let-alias resolution
+/// (join2 inputs bound to locals, pair-accessor aliases before return).
+fn resolveLocalValue(func: *const ast.FuncDecl, upto_idx: usize, name: []const u8) ?*const ast.Node {
+    const bound = @min(upto_idx, func.body.len);
+    var idx = bound;
+    while (idx > 0) {
+        idx -= 1;
+        const stmt = func.body[idx];
+        if (stmt.* != .let_stmt) continue;
+        if (!std.mem.eql(u8, stmt.let_stmt.name, name)) continue;
+        return stmt.let_stmt.value;
+    }
+    return null;
+}
+
 fn collectAsyncPairResultAddend(expr: *const ast.Node, binding_name: []const u8, addend: *AsyncPairResultAddend) bool {
+    return collectAsyncPairResultAddendCtx(expr, binding_name, null, 0, 0, addend);
+}
+
+/// Alias-aware pair-result collector: identifiers bound by a preceding
+/// `let name = <pair accessor>` (or a chain of such aliases) resolve to the
+/// underlying accessor, so `let l = pair_left(p); ... return l + r` plans.
+fn collectAsyncPairResultAddendCtx(expr: *const ast.Node, binding_name: []const u8, func: ?*const ast.FuncDecl, upto_idx: usize, depth: u8, addend: *AsyncPairResultAddend) bool {
     if (pairAccessorKind(expr, binding_name)) |kind| {
         switch (kind) {
             .pair_left => {
@@ -1749,6 +1776,14 @@ fn collectAsyncPairResultAddend(expr: *const ast.Node, binding_name: []const u8,
             else => unreachable,
         }
         return true;
+    }
+    if (expr.* == .identifier) {
+        if (depth >= 8) return false;
+        const resolved = if (func) |f| resolveLocalValue(f, upto_idx, expr.identifier) else null;
+        const target = resolved orelse return false;
+        // Self-reference guard: alias must point at a different node.
+        if (target == expr) return false;
+        return collectAsyncPairResultAddendCtx(target, binding_name, func, upto_idx, depth + 1, addend);
     }
     switch (expr.*) {
         .literal => |lit| {
@@ -1764,15 +1799,15 @@ fn collectAsyncPairResultAddend(expr: *const ast.Node, binding_name: []const u8,
                 const factor = left_lit orelse right_lit orelse return false;
                 const expr_side = if (left_lit != null) bin.right else bin.left;
                 var nested = AsyncPairResultAddend{};
-                if (!collectAsyncPairResultAddend(expr_side, binding_name, &nested)) return false;
+                if (!collectAsyncPairResultAddendCtx(expr_side, binding_name, func, upto_idx, depth, &nested)) return false;
                 if (!scaleAsyncPairResultAddend(&nested, factor)) return false;
                 return addAsyncPairResultAddend(addend, nested);
             }
             if (!(bin.op == .add or bin.op == .sub)) return false;
             var left = AsyncPairResultAddend{};
             var right = AsyncPairResultAddend{};
-            if (!collectAsyncPairResultAddend(bin.left, binding_name, &left)) return false;
-            if (!collectAsyncPairResultAddend(bin.right, binding_name, &right)) return false;
+            if (!collectAsyncPairResultAddendCtx(bin.left, binding_name, func, upto_idx, depth, &left)) return false;
+            if (!collectAsyncPairResultAddendCtx(bin.right, binding_name, func, upto_idx, depth, &right)) return false;
             if (bin.op == .sub and !scaleAsyncPairResultAddend(&right, -1)) return false;
             return addAsyncPairResultAddend(addend, left) and addAsyncPairResultAddend(addend, right);
         },
@@ -1781,10 +1816,16 @@ fn collectAsyncPairResultAddend(expr: *const ast.Node, binding_name: []const u8,
 }
 
 fn asyncPairResultScalarExpr(expr: *const ast.Node, binding_name: []const u8) ?AsyncPairResultScalarPlan {
+    return asyncPairResultScalarExprCtx(expr, binding_name, null, 0);
+}
+
+fn asyncPairResultScalarExprCtx(expr: *const ast.Node, binding_name: []const u8, func: ?*const ast.FuncDecl, upto_idx: usize) ?AsyncPairResultScalarPlan {
     var addend = AsyncPairResultAddend{};
-    if (!collectAsyncPairResultAddend(expr, binding_name, &addend)) return null;
-    if (!addend.has_left or !addend.has_right) return null;
-    if (addend.left_coeff == 0 or addend.right_coeff == 0) return null;
+    if (!collectAsyncPairResultAddendCtx(expr, binding_name, func, upto_idx, 0, &addend)) return null;
+    // Either side may be unused (e.g. `return pair_left(p)` drops the right
+    // value); only require at least one side with a nonzero coefficient.
+    if (!addend.has_left and !addend.has_right) return null;
+    if (addend.left_coeff == 0 and addend.right_coeff == 0) return null;
     return .{
         .left_coeff = addend.left_coeff,
         .right_coeff = addend.right_coeff,
@@ -1792,37 +1833,85 @@ fn asyncPairResultScalarExpr(expr: *const ast.Node, binding_name: []const u8) ?A
     };
 }
 
-fn join2HasLaterReadyInput(call: ast.CallExpr) bool {
+/// Resolve a join2 argument to its future-constructor kind. Inline
+/// `future::ready()/defer_ready()/pending()` calls classify directly;
+/// identifiers resolve through the latest preceding `let name = <call>`
+/// binding in the same function body (locals materialize the future before
+/// the join2 call, so the poll helper observes identical state).
+fn join2ArgKind(func: *const ast.FuncDecl, upto_idx: usize, arg: *const ast.Node) ?FutureRuntimeCallKind {
+    if (arg.* == .call_expr) {
+        const plan = planFutureRuntimeCall(arg.call_expr) orelse return null;
+        return plan.kind;
+    }
+    if (arg.* != .identifier) return null;
+    const name = arg.identifier;
+    var idx = upto_idx;
+    while (idx > 0) {
+        idx -= 1;
+        const stmt = func.body[idx];
+        if (stmt.* != .let_stmt) continue;
+        if (!std.mem.eql(u8, stmt.let_stmt.name, name)) continue;
+        if (stmt.let_stmt.value.* != .call_expr) return null;
+        const plan = planFutureRuntimeCall(stmt.let_stmt.value.call_expr) orelse return null;
+        return plan.kind;
+    }
+    return null;
+}
+
+fn join2HasLaterReadyInput(func: *const ast.FuncDecl, upto_idx: usize, call: ast.CallExpr) bool {
     if (call.args.len != 2) return false;
-    var has_defer_ready = false;
-    var has_ready = false;
     for (call.args) |arg| {
-        if (arg.* != .call_expr) return false;
-        const plan = planFutureRuntimeCall(arg.call_expr) orelse return false;
-        switch (plan.kind) {
-            .defer_ready => has_defer_ready = true,
-            .ready => has_ready = true,
+        const kind = join2ArgKind(func, upto_idx, arg) orelse return false;
+        switch (kind) {
+            // Any statically-known leaf future combination is plannable: the
+            // poll helper polls the inner join2 future generically and
+            // reports pending until both inputs are ready. Previously only
+            // inline (defer_ready + ready) was accepted, which rejected
+            // let-bound inputs, ready+ready pairs, and pending inputs.
+            .ready, .defer_ready, .pending => {},
             else => return false,
         }
     }
-    return has_defer_ready and has_ready;
+    return true;
 }
 
 pub fn planAsyncJoin2AwaitContinuation(func: *const ast.FuncDecl) ?AsyncJoin2AwaitContinuationPlan {
     if (!func.is_async) return null;
-    const awaited = asyncAwaitBindingAt(func, 0) orelse return null;
-    if (awaited.next_idx + 1 != func.body.len) return null;
-    const ret_expr = asyncContinuationReturnExpr(func.body[awaited.next_idx]) orelse return null;
+    // Await may sit after leading input lets (`let left = ready(..)`):
+    // scan for the first await construct; every preceding statement must be
+    // a plain `let` (emitted verbatim by the backends before the plan).
+    var await_idx: usize = 0;
+    var awaited: AsyncAwaitBindingShape = undefined;
+    var found = false;
+    while (await_idx < func.body.len) : (await_idx += 1) {
+        if (asyncAwaitBindingAt(func, await_idx)) |shape| {
+            awaited = shape;
+            found = true;
+            break;
+        }
+        if (func.body[await_idx].* != .let_stmt) return null;
+    }
+    if (!found) return null;
+    // Trailing statements before the final return must be pair-alias lets.
+    if (func.body.len < 2) return null;
+    const ret_idx = func.body.len - 1;
+    if (ret_idx < awaited.next_idx) return null;
+    var tail_idx = awaited.next_idx;
+    while (tail_idx < ret_idx) : (tail_idx += 1) {
+        if (func.body[tail_idx].* != .let_stmt) return null;
+    }
+    const ret_expr = asyncContinuationReturnExpr(func.body[ret_idx]) orelse return null;
     if (awaited.state_expr.* != .call_expr) return null;
     const awaited_call = planFutureRuntimeCall(awaited.state_expr.call_expr) orelse return null;
     if (awaited_call.kind != .join2) return null;
-    if (!join2HasLaterReadyInput(awaited.state_expr.call_expr)) return null;
-    const scalar = asyncPairResultScalarExpr(ret_expr, awaited.binding_name) orelse return null;
+    if (!join2HasLaterReadyInput(func, await_idx, awaited.state_expr.call_expr)) return null;
+    const scalar = asyncPairResultScalarExprCtx(ret_expr, awaited.binding_name, func, func.body.len) orelse return null;
     return .{
         .binding_name = awaited.binding_name,
         .await_expr = awaited.state_expr,
         .awaited_kind = awaited_call.kind,
         .scalar = scalar,
+        .prefix_len = await_idx,
     };
 }
 
@@ -1948,6 +2037,125 @@ pub fn planAsyncLinearAwaitContinuation(func: *const ast.FuncDecl) ?AsyncLinearA
     }
     // 1-2 awaits keep their dedicated plans; only longer runs match here.
     if (plan.count < 3) return null;
+    if (idx + 1 != func.body.len) return null;
+    const ret_expr = asyncContinuationReturnExpr(func.body[idx]) orelse return null;
+    const scalar = asyncLinearAwaitScalarExpr(ret_expr, plan.binding_names[0..plan.count]) orelse return null;
+    plan.scalar = scalar;
+    return plan;
+}
+
+/// Sequential N-await continuation over ARBITRARY futures (N >= 2): each
+/// awaited expression is any call (user async calls, ready/defer_ready,
+/// pending); join2/select2 are excluded (dedicated plans own them). Unlike
+/// the linear plan, later futures may depend on earlier values: only the
+/// first future is built up front, the rest are built on stage transitions
+/// inside the poll helper. Single awaits keep the dedicated single plan.
+pub const AsyncGeneralAwaitMax = 8;
+
+pub const AsyncGeneralAwaitContinuationPlan = struct {
+    count: usize,
+    binding_names: [AsyncGeneralAwaitMax][]const u8 = undefined,
+    await_exprs: [AsyncGeneralAwaitMax]*const ast.Node = undefined,
+    scalar: AsyncLinearAwaitScalarPlan = .{},
+    /// Leading statements before the first await; emitted verbatim first.
+    prefix_len: usize = 0,
+
+    pub fn asyncStateSize(self: AsyncGeneralAwaitContinuationPlan) usize {
+        return 8 + 16 * self.count;
+    }
+
+    pub fn objectOffset(_: AsyncGeneralAwaitContinuationPlan, index: usize) usize {
+        return 8 + 8 * index;
+    }
+
+    pub fn valueOffset(self: AsyncGeneralAwaitContinuationPlan, index: usize) usize {
+        return 8 + 8 * self.count + 8 * index;
+    }
+};
+
+/// Fail-closed scope check: every identifier in `expr` must be one of the
+/// `allowed` names (earlier await bindings visible in the poll helper).
+/// Literals pass; calls recurse into args only (callee is a static name);
+/// anything else (await/if/match/closures/try/...) rejects the plan.
+fn generalAwaitExprInScope(expr: *const ast.Node, allowed: []const []const u8) bool {
+    switch (expr.*) {
+        .identifier => |name| {
+            for (allowed) |a| if (std.mem.eql(u8, a, name)) return true;
+            return false;
+        },
+        .literal => return true,
+        .binary_expr => |bin| return generalAwaitExprInScope(bin.left, allowed) and
+            generalAwaitExprInScope(bin.right, allowed),
+        .call_expr => |call| {
+            for (call.args) |arg| if (!generalAwaitExprInScope(arg, allowed)) return false;
+            return true;
+        },
+        .field_expr => |field| return generalAwaitExprInScope(field.expr, allowed),
+        .index_expr => |idx| return generalAwaitExprInScope(idx.target, allowed) and
+            generalAwaitExprInScope(idx.index, allowed),
+        .cast_expr => |cast| return generalAwaitExprInScope(cast.expr, allowed),
+        .deref_expr => |deref| return generalAwaitExprInScope(deref.expr, allowed),
+        .borrow_expr => |borrow| return generalAwaitExprInScope(borrow.expr, allowed),
+        .move_expr => |move| return generalAwaitExprInScope(move.expr, allowed),
+        .tuple_literal => |lit| {
+            for (lit.elements) |elem| if (!generalAwaitExprInScope(elem, allowed)) return false;
+            return true;
+        },
+        .array_literal => |lit| {
+            for (lit.elements) |elem| if (!generalAwaitExprInScope(elem, allowed)) return false;
+            return true;
+        },
+        .repeat_array_literal => |lit| return generalAwaitExprInScope(lit.value, allowed),
+        .struct_literal => |lit| {
+            for (lit.fields) |field| if (!generalAwaitExprInScope(field.value, allowed)) return false;
+            if (lit.update_expr) |update| if (!generalAwaitExprInScope(update, allowed)) return false;
+            return true;
+        },
+        .enum_literal => |lit| {
+            for (lit.fields) |field| if (!generalAwaitExprInScope(field.value, allowed)) return false;
+            return true;
+        },
+        .slice_expr => |slc| return generalAwaitExprInScope(slc.target, allowed) and
+            generalAwaitExprInScope(slc.start, allowed) and
+            generalAwaitExprInScope(slc.end, allowed),
+        else => return false,
+    }
+}
+
+pub fn planAsyncGeneralAwaitContinuation(func: *const ast.FuncDecl) ?AsyncGeneralAwaitContinuationPlan {
+    if (!func.is_async) return null;
+    var plan = AsyncGeneralAwaitContinuationPlan{ .count = 0 };
+    // Leading plain lets are the prefix (inputs visible to the awaits).
+    var idx: usize = 0;
+    while (idx < func.body.len) {
+        const stmt = func.body[idx];
+        if (stmt.* != .let_stmt) return null;
+        const is_await = stmt.let_stmt.value.* == .await_expr or
+            (idx + 1 < func.body.len and stmtIsPreboundAwaitState(stmt, func.body[idx + 1]));
+        if (is_await) break;
+        idx += 1;
+    }
+    plan.prefix_len = idx;
+    // Adjacent await constructs only (no gap statements between awaits).
+    while (idx < func.body.len and plan.count < AsyncGeneralAwaitMax) {
+        const binding = asyncAwaitBindingAt(func, idx) orelse break;
+        if (binding.state_expr.* != .call_expr) return null;
+        if (planFutureRuntimeCall(binding.state_expr.call_expr)) |known| {
+            switch (known.kind) {
+                .join2, .select2 => return null,
+                else => {},
+            }
+        }
+        // Stages after the first run inside the poll helper, where only
+        // earlier await bindings are visible: reject anything else.
+        if (plan.count > 0 and !generalAwaitExprInScope(binding.state_expr, plan.binding_names[0..plan.count])) return null;
+        plan.binding_names[plan.count] = binding.binding_name;
+        plan.await_exprs[plan.count] = binding.state_expr;
+        plan.count += 1;
+        idx = binding.next_idx;
+    }
+    // Dedicated plans own 0-1 awaits; general needs a run of 2+.
+    if (plan.count < 2) return null;
     if (idx + 1 != func.body.len) return null;
     const ret_expr = asyncContinuationReturnExpr(func.body[idx]) orelse return null;
     const scalar = asyncLinearAwaitScalarExpr(ret_expr, plan.binding_names[0..plan.count]) orelse return null;
@@ -7328,6 +7536,46 @@ test "shared async linear await continuation plan recognizes three defer-ready a
     try std.testing.expect(planAsyncLinearAwaitContinuation(&program.program.decls[2].func_decl) == null);
 }
 
+test "shared async general await continuation plan recognizes sequential user awaits" {
+    const parser = @import("parser.zig");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\async fn step(x: i32) -> i32 {
+        \\    let value = future::defer_ready(x).await;
+        \\    return value * 2;
+        \\}
+        \\async fn run() -> i32 {
+        \\    let first = step(10).await;
+        \\    let second = step(first + 1).await;
+        \\    return second;
+        \\}
+        \\async fn single_user_await() -> i32 {
+        \\    let only = step(10).await;
+        \\    return only;
+        \\}
+    ;
+    var p = parser.Parser.init(arena.allocator(), source);
+    const program = try p.parseProgram();
+    try std.testing.expect(program.* == .program);
+    try std.testing.expectEqual(@as(usize, 3), program.program.decls.len);
+
+    const general_plan = planAsyncGeneralAwaitContinuation(&program.program.decls[1].func_decl) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 2), general_plan.count);
+    try std.testing.expectEqualStrings("first", general_plan.binding_names[0]);
+    try std.testing.expectEqualStrings("second", general_plan.binding_names[1]);
+    try std.testing.expectEqual(@as(usize, 0), general_plan.prefix_len);
+    try std.testing.expectEqual(@as(usize, 8 + 16 * 2), general_plan.asyncStateSize());
+    try std.testing.expectEqual(@as(usize, 8 + 8 * 0), general_plan.objectOffset(0));
+    try std.testing.expectEqual(@as(usize, 8 + 8 * 2 + 8 * 1), general_plan.valueOffset(1));
+    try std.testing.expectEqual(@as(i64, 0), general_plan.scalar.coeffs[0]);
+    try std.testing.expectEqual(@as(i64, 1), general_plan.scalar.coeffs[1]);
+
+    // Single awaits stay on the dedicated single plan.
+    try std.testing.expect(planAsyncGeneralAwaitContinuation(&program.program.decls[2].func_decl) == null);
+}
+
 test "shared async join2 await continuation plan recognizes later-ready composite" {
     const parser = @import("parser.zig");
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -7369,7 +7617,12 @@ test "shared async join2 await continuation plan recognizes later-ready composit
     try std.testing.expectEqual(@as(i64, 1), local_plan.scalar.right_coeff);
     try std.testing.expectEqual(@as(i64, 0), local_plan.scalar.immediate);
 
-    try std.testing.expect(planAsyncJoin2AwaitContinuation(&program.program.decls[2].func_decl) == null);
+    // Pending inputs are plannable too: the poll helper reports pending
+    // until every input is ready (previously rejected by the narrow gate).
+    const pending_plan = planAsyncJoin2AwaitContinuation(&program.program.decls[2].func_decl) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("pair", pending_plan.binding_name);
+    try std.testing.expectEqual(@as(i64, 1), pending_plan.scalar.left_coeff);
+    try std.testing.expectEqual(@as(i64, 1), pending_plan.scalar.right_coeff);
 }
 
 test "shared result generic inner types" {

@@ -16942,8 +16942,13 @@ pub const Codegen = struct {
             case_binding_regs.deinit();
         }
         for (mat.cases) |case| {
+            // Check flags follow the if-merge discipline: defined once by
+            // their check and never released. Releasing them per-check or
+            // per-arm gives later arms a different release count than
+            // earlier ones, which the verifier rejects at the merge
+            // (PhiStateConflict). Bool check temps need no cleanup, exactly
+            // like if/else condition flags.
             const cond = try self.intern(try self.newTmp());
-            try self.emitAssignImm(cond, 0);
             try case_cond_regs.append(cond);
             const guard_count = if (case.guard) |guard| lowering_rules.scalarMatchGuardTempCount(guard) orelse return Error.UnsupportedSabDirectFeature else 0;
             const guard_regs = try self.allocator.alloc(u32, guard_count);
@@ -16974,13 +16979,13 @@ pub const Codegen = struct {
 
         try self.emitJmp(check_labels.items[0]);
 
-        // Each arm's check flag is released on the not-taken path via the
-        // pre-allocated per-case cond regs (codegen.zig does !cond at the next
-        // check label); otherwise multi-fallthrough matches diverge at merge
-        // (PhiStateConflict).
+        // Each arm's check flag is defined once by its own check and never
+        // released (if-merge discipline): per-check or per-arm releases
+        // give later arms a different release count, which the verifier
+        // rejects at the merge (PhiStateConflict). Bool check temps need
+        // no cleanup, exactly like if/else condition flags.
         for (mat.cases, 0..) |case, i| {
             try self.emitLabel(check_labels.items[i]);
-            if (i > 0) try self.emitBranchRelease(case_cond_regs.items[i - 1]);
             const plan = lowering_rules.planLetPattern(case.pattern, decl != null) orelse return Error.UnsupportedSabDirectFeature;
             const variant = if (decl) |enum_decl|
                 lowering_rules.enumVariant(enum_decl, case.pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature
@@ -16990,7 +16995,6 @@ pub const Codegen = struct {
                 if (case.pattern.bindings.len != enum_variant.fields.len) return Error.UnsupportedSabDirectFeature;
             } else if (case.pattern.bindings.len > 1) return Error.UnsupportedSabDirectFeature;
             const cond = case_cond_regs.items[i];
-            try self.emitBranchRelease(cond);
             try self.emitLetPatternCheck(case.pattern, val_reg, decl, plan, cond);
 
             const body_label = try self.newLabel("L_MATCH_CASE");
@@ -17052,7 +17056,7 @@ pub const Codegen = struct {
                 try self.emitJmp(next_label);
                 try self.emitLabel(guard_body_label);
             }
-            for (case_cond_regs.items[i..]) |remaining_cond| try self.emitBranchRelease(remaining_cond);
+            // Check flags are never released (see above).
 
             const terminated = if (value_match)
                 try self.genBlockTailValueStore(case.body, result_slot.?, expr_ty)
@@ -17073,6 +17077,7 @@ pub const Codegen = struct {
         }
 
         // Exhausted the ladder without a match: release the scrutinee and panic.
+        // Check flags are never released (see above).
         try self.emitLabel(panic_label);
         try self.emitBranchRelease(case_cond_regs.items[case_cond_regs.items.len - 1]);
         for (case_guard_regs.items) |regs| for (regs) |reg| try self.emitBranchRelease(reg);

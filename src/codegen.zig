@@ -25,11 +25,13 @@ const ThreadCapture = struct {
     offset: usize,
     is_fn_ptr: bool = false,
     is_noncopy_payload: bool = false,
+    ty: ?*const ast.Type = null,
 };
 
 const ThreadCaptureInfo = struct {
     is_fn_ptr: bool = false,
     is_noncopy_payload: bool = false,
+    ty: ?*const ast.Type = null,
 };
 
 const RefCellBorrowHandle = struct {
@@ -1625,9 +1627,11 @@ pub const Codegen = struct {
         if (lowering_rules.isInternalSymbol(name)) return;
         var info = captures.get(name) orelse ThreadCaptureInfo{};
         if (used_as_fn_ptr) info.is_fn_ptr = true;
-        if (ty) |capture_ty| {
-            if (capture_ty.* == .fn_ptr) info.is_fn_ptr = true;
-            if (!self.typeIsCopyValue(capture_ty) and !lowering_rules.isBorrowLikeType(capture_ty)) {
+        const capture_ty = ty orelse self.localBindingTypeForName(name);
+        if (capture_ty) |cty| {
+            if (info.ty == null) info.ty = cty;
+            if (cty.* == .fn_ptr) info.is_fn_ptr = true;
+            if (!self.typeIsCopyValue(cty) and !lowering_rules.isBorrowLikeType(cty)) {
                 info.is_noncopy_payload = true;
             }
         }
@@ -1799,6 +1803,7 @@ pub const Codegen = struct {
                 .offset = offset,
                 .is_fn_ptr = entry.value_ptr.is_fn_ptr,
                 .is_noncopy_payload = entry.value_ptr.is_noncopy_payload,
+                .ty = entry.value_ptr.ty,
             }) catch return CodegenError.OutOfMemory;
             offset += 8;
         }
@@ -3204,6 +3209,23 @@ pub const Codegen = struct {
     fn rememberLocalBindingType(self: *Codegen, name: []const u8, ty: *const ast.Type) CodegenError!void {
         if (isDiscardName(name) or ty.* == .infer) return;
         self.local_binding_types.put(name, ty) catch return CodegenError.OutOfMemory;
+    }
+
+    /// Thread-spawn helpers are emitted after all functions, when the local
+    /// binding table is empty. Seed captured value types so bodies that call
+    /// a captured fn-ptr (or otherwise query binding types) resolve them the
+    /// same way as in the enclosing function. Mirrors the thread_capture_regs
+    /// put/remove discipline at the emission site.
+    fn seedThreadCaptureBindingTypes(self: *Codegen, captures: []const ThreadCapture) CodegenError!void {
+        for (captures) |capture| {
+            if (capture.ty) |ty| try self.rememberLocalBindingType(capture.name, ty);
+        }
+    }
+
+    fn clearThreadCaptureBindingTypes(self: *Codegen, captures: []const ThreadCapture) void {
+        for (captures) |capture| {
+            if (capture.ty != null) _ = self.local_binding_types.remove(capture.name);
+        }
     }
 
     fn makeBorrowType(self: *Codegen, inner: *const ast.Type) CodegenError!*const ast.Type {
@@ -6449,11 +6471,26 @@ pub const Codegen = struct {
     fn collectThreadSpawnHelpers(self: *Codegen, program: *const ast.Node) CodegenError!void {
         for (program.program.decls) |decl| {
             switch (decl.*) {
-                .func_decl => |f| try self.collectThreadSpawnInBlock(f.body),
-                .impl_decl => |i| for (i.methods) |method| {
-                    if (method.* == .func_decl) try self.collectThreadSpawnInBlock(method.func_decl.body);
+                .func_decl => |f| {
+                    // The walk below plans helpers before any function is
+                    // generated, when local_binding_types is still empty.
+                    // Seed the enclosing params so captured callee types
+                    // (e.g. fn-ptr params) resolve during collection.
+                    for (f.params) |p| try self.rememberLocalBindingType(p.name, p.ty);
+                    try self.collectThreadSpawnInBlock(f.body);
+                    self.local_binding_types.clearRetainingCapacity();
                 },
-                .test_decl => |t| try self.collectThreadSpawnInBlock(t.body),
+                .impl_decl => |i| for (i.methods) |method| {
+                    if (method.* == .func_decl) {
+                        for (method.func_decl.params) |p| try self.rememberLocalBindingType(p.name, p.ty);
+                        try self.collectThreadSpawnInBlock(method.func_decl.body);
+                        self.local_binding_types.clearRetainingCapacity();
+                    }
+                },
+                .test_decl => |t| {
+                    try self.collectThreadSpawnInBlock(t.body);
+                    self.local_binding_types.clearRetainingCapacity();
+                },
                 .const_stmt => |c| try self.collectThreadSpawnInExpr(c.value),
                 else => {},
             }
@@ -6499,9 +6536,17 @@ pub const Codegen = struct {
     fn collectThreadSpawnInBlock(self: *Codegen, block: []const *ast.Node) CodegenError!void {
         for (block) |stmt| {
             switch (stmt.*) {
-                .let_stmt => |let| try self.collectThreadSpawnInExpr(let.value),
+                .let_stmt => |let| {
+                    try self.collectThreadSpawnInExpr(let.value);
+                    // Record in-order so a later spawn in the same walk sees
+                    // let-bound callee types (best-effort pre-pass context).
+                    if (self.tc.expr_types.get(let.value)) |ty| try self.rememberLocalBindingType(let.name, ty);
+                },
                 .let_destructure_stmt => |let| try self.collectThreadSpawnInExpr(let.value),
-                .const_stmt => |c| try self.collectThreadSpawnInExpr(c.value),
+                .const_stmt => |c| {
+                    try self.collectThreadSpawnInExpr(c.value);
+                    if (self.tc.expr_types.get(c.value)) |ty| try self.rememberLocalBindingType(c.name, ty);
+                },
                 .assign_stmt => |assign| {
                     try self.collectThreadSpawnInExpr(assign.target);
                     try self.collectThreadSpawnInExpr(assign.value);
@@ -6612,6 +6657,7 @@ pub const Codegen = struct {
             }
             var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
             defer hoisted_allocs.deinit();
+            try self.seedThreadCaptureBindingTypes(helper.captures);
             if (isVoidType(helper.ret_ty)) {
                 // Void closure body: generate as a statement. genExpr would
                 // emit `reg = call @void_fn()` and LLVM rejects a named void.
@@ -6623,6 +6669,7 @@ pub const Codegen = struct {
                 for (helper.captures) |capture| {
                     _ = self.thread_capture_regs.remove(capture.name);
                 }
+                self.clearThreadCaptureBindingTypes(helper.captures);
                 self.out.writer().print("    !slot\n    return 0\n\n", .{}) catch return CodegenError.CodegenError;
                 continue;
             }
@@ -6630,6 +6677,7 @@ pub const Codegen = struct {
             for (helper.captures) |capture| {
                 _ = self.thread_capture_regs.remove(capture.name);
             }
+            self.clearThreadCaptureBindingTypes(helper.captures);
             self.out.writer().print("    store slot+8, {s} as {s}\n", .{ value_reg, typeString(helper.ret_ty) }) catch return CodegenError.CodegenError;
             if (helper.ret_ty.* == .primitive and helper.ret_ty.primitive == .i32) {
                 self.out.writer().print("    !slot\n    return {s}\n\n", .{value_reg}) catch return CodegenError.CodegenError;

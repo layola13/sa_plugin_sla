@@ -1,12 +1,12 @@
 fn f(j: i64, c: i64) -> i64 {
-    let mut out = 0;
+    let out = 0;
     if c == 34 {
-        let mut str_end = j + 1;
+        let str_end = j + 1;
         str_end = str_end + 1;
         out = str_end;
     };
     if c == 39 {
-        let mut str_end = j + 1;
+        let str_end = j + 1;
         str_end = str_end + 1;
         out = str_end;
     };

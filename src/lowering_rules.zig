@@ -1220,6 +1220,148 @@ pub fn moveExprConsumesSource(inner_ty: ?*const ast.Type, value_is_copy: bool) b
     return true;
 }
 
+/// Y-SHARE: unified identifier-use scan over expressions, statements and
+/// blocks (nested if/match/switch/loop/closure/unsafe fully covered).
+/// SA-text (`fnPtrInlineCandidateExpr`) and SAB share this fact so a use
+/// hidden in a match/switch arm can never be missed on one backend: a miss
+/// lets SA-text inline a body that references a parameter, emitting a call
+/// site that names an unbound register.
+pub fn sharedClosureShadowsIdentifier(closure: ast.ClosureLiteral, name: []const u8) bool {
+    for (closure.params) |param| {
+        if (std.mem.eql(u8, param.name, name)) return true;
+    }
+    return false;
+}
+
+pub fn sharedNodeBindsIdentifier(node: *const ast.Node, name: []const u8) bool {
+    return switch (node.*) {
+        .let_stmt => |let| std.mem.eql(u8, let.name, name),
+        .const_stmt => |constant| std.mem.eql(u8, constant.name, name),
+        .var_stmt => |variable| std.mem.eql(u8, variable.name, name),
+        .let_destructure_stmt => |let| blk: {
+            for (let.names) |binding| {
+                if (std.mem.eql(u8, binding, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
+pub fn sharedBlockUsesIdentifier(body: []const *ast.Node, name: []const u8) bool {
+    for (body) |stmt| {
+        if (sharedNodeUsesIdentifier(stmt, name)) return true;
+        if (sharedNodeBindsIdentifier(stmt, name)) return false;
+    }
+    return false;
+}
+
+pub fn sharedNodeUsesIdentifier(node: *const ast.Node, name: []const u8) bool {
+    return switch (node.*) {
+        .program => |program| sharedBlockUsesIdentifier(program.decls, name),
+        .func_decl => |func| sharedBlockUsesIdentifier(func.body, name),
+        .macro_decl => |macro| sharedBlockUsesIdentifier(macro.body, name),
+        .test_decl => |test_decl| sharedBlockUsesIdentifier(test_decl.body, name),
+        .impl_decl => |impl_decl| sharedBlockUsesIdentifier(impl_decl.methods, name),
+        .let_stmt => |let| sharedNodeUsesIdentifier(let.value, name),
+        .let_else_stmt => |let| sharedNodeUsesIdentifier(let.value, name) or sharedBlockUsesIdentifier(let.else_block, name),
+        .let_destructure_stmt => |let| sharedNodeUsesIdentifier(let.value, name),
+        .const_stmt => |constant| sharedNodeUsesIdentifier(constant.value, name),
+        .assign_stmt => |assign| sharedNodeUsesIdentifier(assign.target, name) or sharedNodeUsesIdentifier(assign.value, name),
+        .block_stmt => |block| sharedBlockUsesIdentifier(block.body, name),
+        .expr_stmt => |expr| sharedNodeUsesIdentifier(expr, name),
+        .return_stmt => |ret| if (ret.value) |value| sharedNodeUsesIdentifier(value, name) else false,
+        .for_stmt => |for_stmt| blk: {
+            if (sharedNodeUsesIdentifier(for_stmt.start, name)) break :blk true;
+            if (for_stmt.end) |end| {
+                if (sharedNodeUsesIdentifier(end, name)) break :blk true;
+            }
+            if (std.mem.eql(u8, for_stmt.var_name, name)) break :blk false;
+            break :blk sharedBlockUsesIdentifier(for_stmt.body, name);
+        },
+        .while_stmt => |while_stmt| sharedNodeUsesIdentifier(while_stmt.cond, name) or sharedBlockUsesIdentifier(while_stmt.body, name),
+        .identifier => |ident| std.mem.eql(u8, ident, name),
+        .generic_func_ref => false,
+        .if_expr => |ife| blk: {
+            if (sharedNodeUsesIdentifier(ife.cond, name)) break :blk true;
+            if (ife.let_chain) |chain| {
+                for (chain) |item| {
+                    if (sharedNodeUsesIdentifier(item.value, name)) break :blk true;
+                }
+            }
+            if (sharedBlockUsesIdentifier(ife.then_block, name)) break :blk true;
+            if (ife.else_block) |else_block| {
+                if (sharedBlockUsesIdentifier(else_block, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .switch_expr => |switch_expr| blk: {
+            if (sharedNodeUsesIdentifier(switch_expr.val, name)) break :blk true;
+            for (switch_expr.cases) |case| {
+                if (sharedBlockUsesIdentifier(case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .match_expr => |match_expr| blk: {
+            if (sharedNodeUsesIdentifier(match_expr.val, name)) break :blk true;
+            for (match_expr.cases) |case| {
+                if (case.guard) |guard| {
+                    if (sharedNodeUsesIdentifier(guard, name)) break :blk true;
+                }
+                if (sharedBlockUsesIdentifier(case.body, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .unsafe_expr => |unsafe_expr| sharedBlockUsesIdentifier(unsafe_expr.body, name),
+        .await_expr => |await_expr| sharedNodeUsesIdentifier(await_expr.expr, name),
+        .binary_expr => |bin| sharedNodeUsesIdentifier(bin.left, name) or sharedNodeUsesIdentifier(bin.right, name),
+        .call_expr => |call| blk: {
+            for (call.args) |arg| {
+                if (sharedNodeUsesIdentifier(arg, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .closure_literal => |closure| if (sharedClosureShadowsIdentifier(closure, name)) false else sharedNodeUsesIdentifier(closure.body, name),
+        .borrow_expr => |borrow| sharedNodeUsesIdentifier(borrow.expr, name),
+        .move_expr => |move| sharedNodeUsesIdentifier(move.expr, name),
+        .deref_expr => |deref| sharedNodeUsesIdentifier(deref.expr, name),
+        .cast_expr => |cast| sharedNodeUsesIdentifier(cast.expr, name),
+        .field_expr => |field| sharedNodeUsesIdentifier(field.expr, name),
+        .struct_literal => |lit| blk: {
+            if (lit.update_expr) |update| {
+                if (sharedNodeUsesIdentifier(update, name)) break :blk true;
+            }
+            for (lit.fields) |field| {
+                if (sharedNodeUsesIdentifier(field.value, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .enum_literal => |lit| blk: {
+            for (lit.fields) |field| {
+                if (sharedNodeUsesIdentifier(field.value, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .tuple_literal => |tuple| blk: {
+            for (tuple.elements) |elem| {
+                if (sharedNodeUsesIdentifier(elem, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .array_literal => |array| blk: {
+            for (array.elements) |elem| {
+                if (sharedNodeUsesIdentifier(elem, name)) break :blk true;
+            }
+            break :blk false;
+        },
+        .repeat_array_literal => |repeat| sharedNodeUsesIdentifier(repeat.value, name),
+        .index_expr => |idx| sharedNodeUsesIdentifier(idx.target, name) or sharedNodeUsesIdentifier(idx.index, name),
+        .slice_expr => |slice| sharedNodeUsesIdentifier(slice.target, name) or sharedNodeUsesIdentifier(slice.start, name) or sharedNodeUsesIdentifier(slice.end, name),
+        .try_expr => |try_expr| sharedNodeUsesIdentifier(try_expr.expr, name),
+        else => false,
+    };
+}
+
 pub fn abiRawPayloadTypeString(raw: []const u8) []const u8 {
     var name = std.mem.trim(u8, raw, " \t\r");
     if (name.len > 0 and (name[0] == '&' or name[0] == '^' or name[0] == '*')) {

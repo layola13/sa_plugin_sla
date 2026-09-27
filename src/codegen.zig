@@ -9305,13 +9305,6 @@ pub const Codegen = struct {
         }
     }
 
-    fn closureShadowsIdentifier(closure: ast.ClosureLiteral, name: []const u8) bool {
-        for (closure.params) |param| {
-            if (std.mem.eql(u8, param.name, name)) return true;
-        }
-        return false;
-    }
-
     fn nodeBindsIdentifier(node: *const ast.Node, name: []const u8) bool {
         return switch (node.*) {
             .let_stmt => |let| std.mem.eql(u8, let.name, name),
@@ -9328,97 +9321,10 @@ pub const Codegen = struct {
     }
 
     fn nodeUsesIdentifier(node: *const ast.Node, name: []const u8) bool {
-        return switch (node.*) {
-            .identifier => |ident| std.mem.eql(u8, ident, name),
-            .literal, .generic_func_ref => false,
-            .await_expr => |await_expr| nodeUsesIdentifier(await_expr.expr, name),
-            .binary_expr => |bin| nodeUsesIdentifier(bin.left, name) or nodeUsesIdentifier(bin.right, name),
-            .call_expr => |call| blk: {
-                for (call.args) |arg| {
-                    if (nodeUsesIdentifier(arg, name)) break :blk true;
-                }
-                break :blk false;
-            },
-            .closure_literal => |closure| if (closureShadowsIdentifier(closure, name)) false else nodeUsesIdentifier(closure.body, name),
-            .borrow_expr => |borrow| nodeUsesIdentifier(borrow.expr, name),
-            .move_expr => |move| nodeUsesIdentifier(move.expr, name),
-            .deref_expr => |deref| nodeUsesIdentifier(deref.expr, name),
-            .cast_expr => |cast| nodeUsesIdentifier(cast.expr, name),
-            .field_expr => |field| nodeUsesIdentifier(field.expr, name),
-            .struct_literal => |lit| blk: {
-                if (lit.update_expr) |update| {
-                    if (nodeUsesIdentifier(update, name)) break :blk true;
-                }
-                for (lit.fields) |field| {
-                    if (nodeUsesIdentifier(field.value, name)) break :blk true;
-                }
-                break :blk false;
-            },
-            .enum_literal => |lit| blk: {
-                for (lit.fields) |field| {
-                    if (nodeUsesIdentifier(field.value, name)) break :blk true;
-                }
-                break :blk false;
-            },
-            .tuple_literal => |tuple| blk: {
-                for (tuple.elements) |elem| {
-                    if (nodeUsesIdentifier(elem, name)) break :blk true;
-                }
-                break :blk false;
-            },
-            .array_literal => |array| blk: {
-                for (array.elements) |elem| {
-                    if (nodeUsesIdentifier(elem, name)) break :blk true;
-                }
-                break :blk false;
-            },
-            .repeat_array_literal => |repeat| nodeUsesIdentifier(repeat.value, name),
-            .index_expr => |idx| nodeUsesIdentifier(idx.target, name) or nodeUsesIdentifier(idx.index, name),
-            .slice_expr => |slice| nodeUsesIdentifier(slice.target, name) or nodeUsesIdentifier(slice.start, name) or nodeUsesIdentifier(slice.end, name),
-            .try_expr => |try_expr| nodeUsesIdentifier(try_expr.expr, name),
-            .if_expr => |ife| blk: {
-                if (nodeUsesIdentifier(ife.cond, name)) break :blk true;
-                if (ife.let_chain) |chain| {
-                    for (chain) |item| {
-                        if (nodeUsesIdentifier(item.value, name)) break :blk true;
-                    }
-                }
-                for (ife.then_block) |stmt| {
-                    if (nodeUsesIdentifier(stmt, name)) break :blk true;
-                }
-                if (ife.else_block) |else_block| {
-                    for (else_block) |stmt| {
-                        if (nodeUsesIdentifier(stmt, name)) break :blk true;
-                    }
-                }
-                break :blk false;
-            },
-            .while_stmt => |w| blk: {
-                if (nodeUsesIdentifier(w.cond, name)) break :blk true;
-                for (w.body) |stmt| {
-                    if (nodeUsesIdentifier(stmt, name)) break :blk true;
-                }
-                break :blk false;
-            },
-            .for_stmt => |f| blk: {
-                if (nodeUsesIdentifier(f.start, name)) break :blk true;
-                if (f.end) |end_expr| {
-                    if (nodeUsesIdentifier(end_expr, name)) break :blk true;
-                }
-                if (std.mem.eql(u8, f.var_name, name)) break :blk false;
-                for (f.body) |stmt| {
-                    if (nodeUsesIdentifier(stmt, name)) break :blk true;
-                }
-                break :blk false;
-            },
-            .expr_stmt => |e| nodeUsesIdentifier(e, name),
-            .return_stmt => |r| if (r.value) |v| nodeUsesIdentifier(v, name) else false,
-            .let_stmt => |let| nodeUsesIdentifier(let.value, name),
-            .assign_stmt => |a| nodeUsesIdentifier(a.target, name) or nodeUsesIdentifier(a.value, name),
-            .switch_expr => |switch_expr| nodeUsesIdentifier(switch_expr.val, name),
-            .match_expr => |match_expr| nodeUsesIdentifier(match_expr.val, name),
-            else => false,
-        };
+        // Y-SHARE: thin to the shared use-scan so match/switch arms, guards
+        // and nested blocks are covered exactly like SAB. A miss here lets
+        // fnPtrInlineCandidateExpr inline a body that references a parameter.
+        return lowering_rules.sharedNodeUsesIdentifier(node, name);
     }
 
     fn identifierUsedLaterInCurrentExpr(self: *Codegen, name: []const u8) bool {

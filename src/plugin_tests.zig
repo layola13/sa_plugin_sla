@@ -8220,6 +8220,65 @@ test "sla sab backend lowers borrow and deref directly" {
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
+test "sla sab backend loads pointer-backed field for standalone borrow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_standalone_borrow_pointer_field.sla",
+        ".sla-cache/sab/standalone_borrow_pointer_field.sab",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "standalone borrow of pointer-backed field", .allow_fallback = false },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+    var saw_borrow = false;
+    var saw_load_before_borrow = false;
+    for (module.instructions, 0..) |item, idx| {
+        try std.testing.expectEqualStrings("", item.raw_text);
+        if (item.kind == .borrow) {
+            saw_borrow = true;
+            // A standalone `&holder.values` over a pointer-backed Vec field must
+            // materialize the stored buffer pointer (load) immediately before
+            // borrowing it, matching the SA-text backend. Borrowing the field
+            // slot address instead would hand the callee a different pointer.
+            if (idx > 0 and module.instructions[idx - 1].kind == .load) saw_load_before_borrow = true;
+        }
+    }
+    try std.testing.expect(saw_borrow);
+    try std.testing.expect(saw_load_before_borrow);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+test "sla sa-text loads pointer-backed field for standalone borrow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sa_code = (try compileSlaToSaStringWithOptions(
+        arena.allocator(),
+        "tests/test_unit_standalone_borrow_pointer_field.sla",
+        "standalone_borrow_pointer_field.test.sa",
+        stderr_buf.writer().any(),
+        .{ .test_filter = "standalone borrow of pointer-backed field" },
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "standalone borrow of pointer-backed field") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sa_code, "load ") != null);
+    try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
 test "sla sab backend lowers array literals dynamic indexes and range for directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

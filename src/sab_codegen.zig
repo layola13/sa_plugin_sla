@@ -2897,10 +2897,33 @@ pub const Codegen = struct {
                 for (lit.fields) |field| try self.collectBorrowedBindingsInNode(field.value);
                 if (lit.update_expr) |update| try self.collectBorrowedBindingsInNode(update);
             },
+            .enum_literal => |lit| for (lit.fields) |field| try self.collectBorrowedBindingsInNode(field.value),
             .tuple_literal => |lit| for (lit.elements) |elem| try self.collectBorrowedBindingsInNode(elem),
+            .array_literal => |lit| for (lit.elements) |elem| try self.collectBorrowedBindingsInNode(elem),
+            .repeat_array_literal => |lit| try self.collectBorrowedBindingsInNode(lit.value),
             .index_expr => |idx| {
                 try self.collectBorrowedBindingsInNode(idx.target);
                 try self.collectBorrowedBindingsInNode(idx.index);
+            },
+            .slice_expr => |slc| {
+                try self.collectBorrowedBindingsInNode(slc.target);
+                try self.collectBorrowedBindingsInNode(slc.start);
+                try self.collectBorrowedBindingsInNode(slc.end);
+            },
+            .closure_literal => |lit| try self.collectBorrowedBindingsInNode(lit.body),
+            .try_expr => |try_expr| try self.collectBorrowedBindingsInNode(try_expr.expr),
+            .unsafe_expr => |unsafe_expr| try self.collectBorrowedBindingsInBlock(unsafe_expr.body),
+            .await_expr => |aw| try self.collectBorrowedBindingsInNode(aw.expr),
+            .switch_expr => |swe| {
+                try self.collectBorrowedBindingsInNode(swe.val);
+                for (swe.cases) |case| try self.collectBorrowedBindingsInBlock(case.body);
+            },
+            .match_expr => |mat| {
+                try self.collectBorrowedBindingsInNode(mat.val);
+                for (mat.cases) |case| {
+                    if (case.guard) |guard| try self.collectBorrowedBindingsInNode(guard);
+                    try self.collectBorrowedBindingsInBlock(case.body);
+                }
             },
             .if_expr => |ife| {
                 try self.collectBorrowedBindingsInNode(ife.cond);
@@ -2908,11 +2931,21 @@ pub const Codegen = struct {
                 if (ife.else_block) |else_block| try self.collectBorrowedBindingsInBlock(else_block);
                 if (ife.let_chain) |chain| for (chain) |cond| try self.collectBorrowedBindingsInNode(cond.value);
             },
+            .for_stmt => |for_stmt| {
+                try self.collectBorrowedBindingsInNode(for_stmt.start);
+                if (for_stmt.end) |end_expr| try self.collectBorrowedBindingsInNode(end_expr);
+                try self.collectBorrowedBindingsInBlock(for_stmt.body);
+            },
             .while_stmt => |w| {
                 try self.collectBorrowedBindingsInNode(w.cond);
                 try self.collectBorrowedBindingsInBlock(w.body);
             },
             .let_stmt => |let| try self.collectBorrowedBindingsInNode(let.value),
+            .let_else_stmt => |let| {
+                try self.collectBorrowedBindingsInNode(let.value);
+                try self.collectBorrowedBindingsInBlock(let.else_block);
+            },
+            .const_stmt => |c| try self.collectBorrowedBindingsInNode(c.value),
             .let_destructure_stmt => |let| try self.collectBorrowedBindingsInNode(let.value),
             .assign_stmt => |assign| {
                 try self.collectBorrowedBindingsInNode(assign.target);
@@ -3639,10 +3672,19 @@ pub const Codegen = struct {
     }
 
     fn paramCapability(self: *Codegen, param: ast.Param) inst.CapPrefix {
-        if (param.is_borrow or param.ty.* == .borrow) return .borrow;
-        if (lowering_rules.byValueRawPointerParam(param)) return .by_value;
-        if (param.is_move or (!self.typeIsCopyValue(param.ty) and !lowering_rules.isBorrowLikeType(param.ty))) return .move;
-        return .by_value;
+        const cap = lowering_rules.sharedAbiParamCap(
+            param.is_borrow,
+            param.is_move,
+            param.ty.* == .borrow,
+            lowering_rules.byValueRawPointerParam(param),
+            self.typeIsCopyValue(param.ty),
+            lowering_rules.isBorrowLikeType(param.ty),
+        );
+        return switch (cap) {
+            .borrow => .borrow,
+            .move => .move,
+            else => .by_value,
+        };
     }
 
     fn emitAssignmentMove(self: *Codegen, reg: u32) !void {
@@ -8829,6 +8871,25 @@ pub const Codegen = struct {
     }
 
     fn genMacroBorrow(self: *Codegen, borrow: ast.BorrowExpr, ctx: *MacroExpansionContext) anyerror!u32 {
+        // Same Y-SHARE parity as genBorrow above, via the macro-expansion
+        // address helpers.
+        if (borrow.expr.* == .field_expr) {
+            if ((try self.macroExprType(borrow.expr, ctx))) |inner_ty| {
+                if (self.fieldBorrowLoadsStoredPointer(inner_ty)) {
+                    const projection = try self.genMacroFieldAddress(borrow.expr.field_expr, ctx);
+                    const owner = try self.intern(try self.newTmp());
+                    try self.emitLoad(owner, projection.reg, 0, .ptr);
+                    try self.markNonOwningReg(owner);
+                    const dst = try self.intern(try self.newTmp());
+                    try self.emitBorrowReg(dst, owner, "read");
+                    try self.rememberBorrowAddressTemps(dst, .{
+                        .reg = owner,
+                        .release_regs = try self.fieldProjectionReleaseRegs(projection),
+                    });
+                    return dst;
+                }
+            }
+        }
         const source = try self.genMacroAddressOf(borrow.expr, ctx);
         const dst = try self.intern(try self.newTmp());
         try self.emitBorrowReg(dst, source.reg, "read");
@@ -8852,7 +8913,11 @@ pub const Codegen = struct {
 
     fn genMacroMove(self: *Codegen, move: ast.MoveExpr, ctx: *MacroExpansionContext) anyerror!u32 {
         const source = try self.genMacroExpr(move.expr, ctx);
-        try self.markConsumed(source);
+        const inner_ty = try self.macroExprType(move.expr, ctx);
+        const value_is_copy = if (inner_ty) |ty| self.typeIsCopyValue(ty) else false;
+        if (lowering_rules.moveExprConsumesSource(inner_ty, value_is_copy)) {
+            try self.markConsumed(source);
+        }
         return source;
     }
 
@@ -11497,6 +11562,29 @@ pub const Codegen = struct {
     }
 
     fn genBorrow(self: *Codegen, borrow: ast.BorrowExpr) anyerror!u32 {
+        // Y-SHARE parity with SA-text `&field`: a borrow of a pointer-backed
+        // owning field (Vec/String/nested aggregate) denotes the stored buffer
+        // pointer, not the address of the field slot. Load it first, mirroring
+        // genPrefixedBorrowAddressCallArg's field branch and SA-text's
+        // structFieldIsPointerBacked load. The loaded owner temp is tracked as
+        // a borrow address temp so it is released with the borrow.
+        if (borrow.expr.* == .field_expr) {
+            if (self.tc.expr_types.get(borrow.expr)) |inner_ty| {
+                if (self.fieldBorrowLoadsStoredPointer(inner_ty)) {
+                    const projection = try self.genFieldAddress(borrow.expr.field_expr);
+                    const owner = try self.intern(try self.newTmp());
+                    try self.emitLoad(owner, projection.reg, 0, .ptr);
+                    try self.markNonOwningReg(owner);
+                    const dst = try self.intern(try self.newTmp());
+                    try self.emitBorrowReg(dst, owner, "read");
+                    try self.rememberBorrowAddressTemps(dst, .{
+                        .reg = owner,
+                        .release_regs = try self.fieldProjectionReleaseRegs(projection),
+                    });
+                    return dst;
+                }
+            }
+        }
         const source = try self.genAddressOf(borrow.expr);
         const dst = try self.intern(try self.newTmp());
         try self.emitBorrowReg(dst, source.reg, "read");
@@ -11506,7 +11594,11 @@ pub const Codegen = struct {
 
     fn genMove(self: *Codegen, move: ast.MoveExpr) anyerror!u32 {
         const source = try self.genExpr(move.expr);
-        try self.markConsumed(source);
+        const inner_ty = self.tc.expr_types.get(move.expr);
+        const value_is_copy = if (inner_ty) |ty| self.typeIsCopyValue(ty) else false;
+        if (lowering_rules.moveExprConsumesSource(inner_ty, value_is_copy)) {
+            try self.markConsumed(source);
+        }
         return source;
     }
 
@@ -14361,9 +14453,15 @@ pub const Codegen = struct {
     }
 
     fn moveCallArgFromValueReg(self: *Codegen, value_reg: u32) !SabLoweredCallArg {
+        return try self.moveCallArgFromValueRegWithType(value_reg, null, false);
+    }
+
+    fn moveCallArgFromValueRegWithType(self: *Codegen, value_reg: u32, inner_ty: ?*const ast.Type, value_is_copy: bool) !SabLoweredCallArg {
         const moved_reg = try self.intern(try self.newTmp());
         try self.emitAssignReg(moved_reg, value_reg);
-        try self.markConsumed(value_reg);
+        if (lowering_rules.moveExprConsumesSource(inner_ty, value_is_copy)) {
+            try self.markConsumed(value_reg);
+        }
         return .{
             .operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[moved_reg]}),
             .release_reg = null,
@@ -14375,7 +14473,9 @@ pub const Codegen = struct {
             .borrow_expr => |borrow| if (prefix == '&') borrow.expr else return null,
             .move_expr => |move| if (prefix == '^') {
                 const value_reg = try self.genExpr(move.expr);
-                return try self.moveCallArgFromValueReg(value_reg);
+                const inner_ty = self.tc.expr_types.get(move.expr);
+                const value_is_copy = if (inner_ty) |ty| self.typeIsCopyValue(ty) else false;
+                return try self.moveCallArgFromValueRegWithType(value_reg, inner_ty, value_is_copy);
             } else return null,
             else => return null,
         };
@@ -14434,7 +14534,9 @@ pub const Codegen = struct {
             .borrow_expr => |borrow| if (prefix == '&') borrow.expr else return null,
             .move_expr => |move| if (prefix == '^') {
                 const value_reg = try self.genMacroExpr(move.expr, ctx);
-                return try self.moveCallArgFromValueReg(value_reg);
+                const inner_ty = try self.macroExprType(move.expr, ctx);
+                const value_is_copy = if (inner_ty) |ty| self.typeIsCopyValue(ty) else false;
+                return try self.moveCallArgFromValueRegWithType(value_reg, inner_ty, value_is_copy);
             } else return null,
             else => return null,
         };

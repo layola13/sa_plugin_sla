@@ -2404,10 +2404,14 @@ pub const Codegen = struct {
     }
 
     fn abiParamPrefix(self: *Codegen, p: ast.Param) []const u8 {
-        if (p.is_borrow or p.ty.* == .borrow) return "&";
-        if (lowering_rules.byValueRawPointerParam(p)) return "";
-        if (p.is_move or (!self.typeIsCopyValue(p.ty) and !lowering_rules.isBorrowLikeType(p.ty))) return "^";
-        return "";
+        return lowering_rules.sharedAbiParamPrefix(
+            p.is_borrow,
+            p.is_move,
+            p.ty.* == .borrow,
+            lowering_rules.byValueRawPointerParam(p),
+            self.typeIsCopyValue(p.ty),
+            lowering_rules.isBorrowLikeType(p.ty),
+        );
     }
 
     fn abiParamNeedsBorrowArg(p: ast.Param) bool {

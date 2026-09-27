@@ -1171,6 +1171,55 @@ pub fn abiParamNeedsBorrowArg(is_borrow: bool, ty: *const ast.Type) bool {
     return is_borrow or ty.* == .borrow;
 }
 
+/// Y-SHARE: unified &/^ memory-control prefix for params.
+/// `&` = borrow (non-owning, caller keeps ownership, callee must not free).
+/// `^` = move (ownership transfer, caller forgets, callee frees).
+/// Both SA-text (`abiParamPrefix`) and SAB (`paramCapability`) must thin to
+/// this fact so the two backends never disagree on borrow vs move.
+/// `is_copy_value`/`is_borrow_like` are emitter-supplied (they own the TC).
+pub fn sharedAbiParamPrefix(
+    is_borrow: bool,
+    is_move: bool,
+    ty_is_borrow: bool,
+    is_by_value_raw_ptr: bool,
+    is_copy_value: bool,
+    is_borrow_like: bool,
+) []const u8 {
+    if (is_borrow or ty_is_borrow) return "&";
+    if (is_by_value_raw_ptr) return "";
+    if (is_move or (!is_copy_value and !is_borrow_like)) return "^";
+    return "";
+}
+
+/// Y-SHARE: unified ABI capability from the shared prefix above.
+pub fn sharedAbiParamCap(
+    is_borrow: bool,
+    is_move: bool,
+    ty_is_borrow: bool,
+    is_by_value_raw_ptr: bool,
+    is_copy_value: bool,
+    is_borrow_like: bool,
+) AbiCapKind {
+    const prefix = sharedAbiParamPrefix(is_borrow, is_move, ty_is_borrow, is_by_value_raw_ptr, is_copy_value, is_borrow_like);
+    if (prefix.len == 0) return .none;
+    return switch (prefix[0]) {
+        '&' => .borrow,
+        '^' => .move,
+        else => .none,
+    };
+}
+
+/// Y-SHARE: `^move` consumes its source only for owning non-Copy values.
+/// Copy scalars (int/bool/float) and borrow-like values (borrow/raw_ptr)
+/// are duplicated, never consumed. Both backends must gate `markConsumed`
+/// / `emitForgetMovedValue` on this fact so `^5` / `^x:int` stays live.
+pub fn moveExprConsumesSource(inner_ty: ?*const ast.Type, value_is_copy: bool) bool {
+    const ty = inner_ty orelse return true;
+    if (value_is_copy) return false;
+    if (isBorrowLikeType(ty)) return false;
+    return true;
+}
+
 pub fn abiRawPayloadTypeString(raw: []const u8) []const u8 {
     var name = std.mem.trim(u8, raw, " \t\r");
     if (name.len > 0 and (name[0] == '&' or name[0] == '^' or name[0] == '*')) {
@@ -8270,6 +8319,31 @@ test "abiCallArgCapKind and pointerOrBorrowPointee" {
     try std.testing.expect(pointerOrBorrowPointee(&ptr_ty) == &i32_ty);
     try std.testing.expect(pointerOrBorrowPointee(&borrow_ty) == &i32_ty);
     try std.testing.expect(pointerOrBorrowPointee(&i32_ty) == null);
+}
+
+test "Y-share unified &/^ prefix and move consume" {
+    var i32_ty = ast.Type{ .primitive = .i32 };
+    var raw_ptr_ty = ast.Type{ .primitive = .raw_ptr };
+    var borrow_ty = ast.Type{ .borrow = &i32_ty };
+    var user_ty = ast.Type{ .user_defined = .{ .name = "Vec", .generics = &.{} } };
+    // &: borrow flag or borrow type always wins.
+    try std.testing.expectEqualStrings("&", sharedAbiParamPrefix(true, false, false, false, true, false));
+    try std.testing.expectEqualStrings("&", sharedAbiParamPrefix(false, false, true, false, false, true));
+    // Raw pointers pass by value even when non-Copy.
+    try std.testing.expectEqualStrings("", sharedAbiParamPrefix(false, false, false, true, false, false));
+    // ^: explicit move, or owning non-Copy non-borrow value.
+    try std.testing.expectEqualStrings("^", sharedAbiParamPrefix(false, true, false, false, true, false));
+    try std.testing.expectEqualStrings("^", sharedAbiParamPrefix(false, false, false, false, false, false));
+    try std.testing.expectEqualStrings("", sharedAbiParamPrefix(false, false, false, false, true, false));
+    try std.testing.expectEqualStrings("", sharedAbiParamPrefix(false, false, false, false, false, true));
+    try std.testing.expect(sharedAbiParamCap(false, false, false, false, false, false) == .move);
+    try std.testing.expect(sharedAbiParamCap(true, false, false, false, true, false) == .borrow);
+    // ^ on Copy / borrow-like never consumes; owning values do.
+    try std.testing.expect(!moveExprConsumesSource(&i32_ty, true));
+    try std.testing.expect(!moveExprConsumesSource(&borrow_ty, false));
+    try std.testing.expect(!moveExprConsumesSource(&raw_ptr_ty, false));
+    try std.testing.expect(moveExprConsumesSource(&user_ty, false));
+    try std.testing.expect(moveExprConsumesSource(null, false));
 }
 
 test "primitive integer float and pointer value classifiers" {

@@ -79,6 +79,15 @@ const MutexGuardValue = struct {
     mutex_reg: u32,
 };
 
+/// Tracks a live `RwLockReadGuard`/`RwLockWriteGuard` data-pointer register
+/// back to the lock allocation. Releasing the guard emits
+/// `RWLOCK_RELEASE_READ` / `RWLOCK_RELEASE_WRITE`, mirroring SA-text
+/// rwlock guard handles.
+const RwLockGuardValue = struct {
+    lock_reg: u32,
+    is_write: bool,
+};
+
 const BorrowAddressTempState = struct {
     release_regs: []const u32 = &.{},
     restore_slot: ?u32 = null,
@@ -302,6 +311,7 @@ pub const Codegen = struct {
     escaped_closure_entries: std.AutoHashMap(*const ast.Node, EscapedClosureEntry),
     refcell_borrow_values: std.AutoHashMap(u32, RefCellBorrowValue),
     mutex_guard_values: std.AutoHashMap(u32, MutexGuardValue),
+    rwlock_guard_values: std.AutoHashMap(u32, RwLockGuardValue),
     result_slot_refcell_handles: std.AutoHashMap(u32, ResultSlotRefCellHandle),
     result_slot_refcell_slots: std.AutoHashMap(u32, u32),
     borrow_address_temps: std.AutoHashMap(u32, BorrowAddressTempState),
@@ -389,6 +399,7 @@ pub const Codegen = struct {
             .escaped_closure_entries = std.AutoHashMap(*const ast.Node, EscapedClosureEntry).init(allocator),
             .refcell_borrow_values = std.AutoHashMap(u32, RefCellBorrowValue).init(allocator),
             .mutex_guard_values = std.AutoHashMap(u32, MutexGuardValue).init(allocator),
+            .rwlock_guard_values = std.AutoHashMap(u32, RwLockGuardValue).init(allocator),
             .result_slot_refcell_handles = std.AutoHashMap(u32, ResultSlotRefCellHandle).init(allocator),
             .result_slot_refcell_slots = std.AutoHashMap(u32, u32).init(allocator),
             .borrow_address_temps = std.AutoHashMap(u32, BorrowAddressTempState).init(allocator),
@@ -469,6 +480,7 @@ pub const Codegen = struct {
         self.clearRefCellBorrowValues();
         self.refcell_borrow_values.deinit();
         self.mutex_guard_values.deinit();
+        self.rwlock_guard_values.deinit();
         self.result_slot_refcell_handles.deinit();
         self.result_slot_refcell_slots.deinit();
         self.clearBorrowAddressTemps();
@@ -2374,6 +2386,7 @@ pub const Codegen = struct {
         self.borrowed_bindings.clearRetainingCapacity();
         self.clearRefCellBorrowValues();
         self.mutex_guard_values.clearRetainingCapacity();
+        self.rwlock_guard_values.clearRetainingCapacity();
         self.result_slot_refcell_handles.clearRetainingCapacity();
         self.result_slot_refcell_slots.clearRetainingCapacity();
         self.clearBorrowAddressTemps();
@@ -2744,6 +2757,10 @@ pub const Codegen = struct {
         if (self.mutex_guard_values.fetchRemove(src)) |entry| {
             _ = self.mutex_guard_values.remove(dst);
             try self.mutex_guard_values.put(dst, entry.value);
+        }
+        if (self.rwlock_guard_values.fetchRemove(src)) |entry| {
+            _ = self.rwlock_guard_values.remove(dst);
+            try self.rwlock_guard_values.put(dst, entry.value);
         }
         if (refcell_transfer_plan.borrow_address_temps.movesBorrowAddressTemps()) {
             if (self.borrow_address_temps.fetchRemove(src)) |entry| {
@@ -3624,6 +3641,9 @@ pub const Codegen = struct {
         }
         if (self.mutex_guard_values.fetchRemove(reg)) |entry| {
             try self.emitMutexGuardRelease(entry.value);
+        }
+        if (self.rwlock_guard_values.fetchRemove(reg)) |entry| {
+            try self.emitRwLockGuardRelease(entry.value);
         }
         if (self.stack_alloc_regs.contains(reg) or self.stack_alloc_emitted.contains(reg)) {
             // Stack slots die with their scope: emitting release or move_
@@ -9860,10 +9880,13 @@ pub const Codegen = struct {
         if (assign.target.* == .deref_expr) {
             const source_expr = assign.target.deref_expr.expr;
             const source_ty = self.tc.expr_types.get(source_expr) orelse return Error.MissingType;
-            if (lowering_rules.mutexGuardInnerType(source_ty)) |guard_inner| {
+            // Mirror SA-text: both MutexGuard and RwLockWriteGuard deref
+            // targets store directly to the guard address.
+            const guard_inner = lowering_rules.mutexGuardInnerType(source_ty) orelse lowering_rules.rwLockWriteGuardInnerType(source_ty);
+            if (guard_inner) |inner| {
                 const target = try self.genExpr(source_expr);
                 const value = try self.genExpr(assign.value);
-                try self.emitStore(target, 0, value, try storagePrimType(guard_inner));
+                try self.emitStore(target, 0, value, try storagePrimType(inner));
                 if (!self.isLocalReg(value)) try self.emitRelease(value);
                 return;
             }
@@ -10140,6 +10163,14 @@ pub const Codegen = struct {
             .move_expr => |move| try self.genMove(move),
             .deref_expr => |deref| try self.genDeref(expr, deref),
             .slice_expr => |slc| try self.genSliceExpr(&slc),
+            .inline_asm_expr => {
+                // Mirror SA-text: inline assembly is a no-op yielding a
+                // dummy (the demo only needs the surrounding value intact).
+                const sentinel = try self.intern(try self.newTmp());
+                try self.recordReg(sentinel);
+                try self.emitAssignImm(sentinel, 0);
+                return sentinel;
+            },
             else => Error.UnsupportedSabDirectFeature,
         };
     }
@@ -10346,7 +10377,8 @@ pub const Codegen = struct {
 
     /// Field-wise lowering of arithmetic on struct-typed operands, mirroring the
     /// SA-text emitter's `genStructArithmeticExpr`. Handles the same matrix:
-    /// same-struct `+`/`-`, and scalar `*` in either operand order. Returns null
+    /// same-struct `+`/`-`, scalar-minus-struct (`0 - S`), and scalar `*` in
+    /// either operand order. Returns null
     /// when neither operand is a struct (caller uses the primitive path); returns
     /// `Error.UnsupportedSabDirectFeature` for struct shapes outside this matrix
     /// so the SA-compatible fallback can take over instead of emitting a bad op.
@@ -10389,6 +10421,35 @@ pub const Codegen = struct {
                 try self.releaseNonLocalTemps(&.{ lhs, rhs, value });
             }
             try self.releaseNonLocalTemps(&.{ left_reg, right_reg });
+            return result;
+        }
+
+        // Scalar-minus-struct (`0 - S`, the unary-negation shape): field[i] =
+        // 0 - right.field[i], mirroring SA-text genStructArithmeticExpr.
+        if (right_struct != null and bin.op == .sub and lowering_rules.literalZero(bin.left)) {
+            for (struct_decl.fields) |field| {
+                if (!isNumericType(field.ty)) return Error.UnsupportedSabDirectFeature;
+            }
+            const result = try self.intern(try self.newTmp());
+            try self.emitAlloc(result, structSize(struct_decl));
+            const struct_ty = right_ty;
+            const struct_reg = try self.genExpr(bin.right);
+            for (struct_decl.fields) |field| {
+                const layout = try self.fieldLayout(struct_ty, field.name);
+                const rhs = try self.intern(try self.newTmp());
+                const zero = try self.intern(try self.newTmp());
+                const value = try self.intern(try self.newTmp());
+                try self.emitLoad(rhs, struct_reg, layout.offset, layout.ty);
+                if (isFloatPrimType(layout.ty)) {
+                    try self.emitAssignFloat(zero, 0.0);
+                } else {
+                    try self.emitAssignImm(zero, 0);
+                }
+                try self.emitOp(value, .sub, .{ .reg = zero }, .{ .reg = rhs });
+                try self.emitStore(result, layout.offset, value, layout.ty);
+                try self.releaseNonLocalTemps(&.{ rhs, zero, value });
+            }
+            try self.releaseNonLocalTemps(&.{struct_reg});
             return result;
         }
 
@@ -11147,7 +11208,17 @@ pub const Codegen = struct {
 
     fn genUnsafeExpr(self: *Codegen, expr: *const ast.Node, unsafe_expr: ast.UnsafeExpr) anyerror!u32 {
         const result_ty = self.tc.expr_types.get(expr) orelse return Error.MissingType;
-        if (isVoidType(result_ty)) return Error.UnsupportedSabDirectFeature;
+        // Void unsafe (statement position): run the block for effects and
+        // yield a dummy, mirroring SA-text. The dummy is only assigned on
+        // fall-through paths; terminated paths leave it unassigned exactly
+        // like the non-void terminated case below.
+        if (isVoidType(result_ty)) {
+            try self.genBlock(unsafe_expr.body);
+            const sentinel = try self.intern(try self.newTmp());
+            try self.recordReg(sentinel);
+            if (!self.lastIsTerminator()) try self.emitAssignImm(sentinel, 0);
+            return sentinel;
+        }
 
         const block_locals_len = self.locals.items.len;
         const result_slot = try self.intern(try self.newTmp());
@@ -11941,6 +12012,10 @@ pub const Codegen = struct {
             _ = self.mutex_guard_values.remove(dst);
             try self.mutex_guard_values.put(dst, entry.value);
         }
+        if (self.rwlock_guard_values.fetchRemove(receiver_reg)) |entry| {
+            _ = self.rwlock_guard_values.remove(dst);
+            try self.rwlock_guard_values.put(dst, entry.value);
+        }
         if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
         return dst;
     }
@@ -12132,6 +12207,86 @@ pub const Codegen = struct {
         return result_reg;
     }
 
+    fn genResultMapClosureCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr, receiver_ty: *const ast.Type, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        _ = expr;
+        const ok_ty = lowering_rules.resultOkType(receiver_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const err_ty = lowering_rules.resultErrType(receiver_ty) orelse return Error.UnsupportedSabDirectFeature;
+        const ok_prim = self.threadResultPayloadPrim(try storagePrimType(ok_ty));
+        const err_prim = self.threadResultPayloadPrim(try storagePrimType(err_ty));
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const tag = try self.intern(try self.newTmp());
+        try self.emitLoad(tag, receiver_reg, 0, .u64);
+        const is_ok = try self.intern(try self.newTmp());
+        try self.emitOp(is_ok, .eq, .{ .reg = tag }, .{ .imm_i64 = 0 });
+
+        const ok_label = try self.newLabel("L_RESULT_MAP_OK");
+        const err_label = try self.newLabel("L_RESULT_MAP_ERR");
+        const end_label = try self.newLabel("L_RESULT_MAP_END");
+        const result_reg = try self.intern(try self.newTmp());
+        try self.recordReg(result_reg);
+        try self.emitBranch(is_ok, ok_label, err_label);
+
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
+        try self.emitLabel(ok_label);
+        try self.emitBranchRelease(is_ok);
+        const payload_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(payload_reg, receiver_reg, 8, ok_prim);
+        if (ok_prim == .ptr or !self.typeIsCopyValue(ok_ty)) {
+            const zero = try self.intern(try self.newTmp());
+            try self.emitAssignImm(zero, 0);
+            try self.emitStore(receiver_reg, 8, zero, ok_prim);
+            try self.emitRelease(zero);
+        }
+        const mapped_reg = try self.genInlineClosureUnary(closure, payload_reg);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[mapped_reg],
+        });
+        if (!self.isLocalReg(payload_reg)) try self.emitRelease(payload_reg);
+        if (mapped_reg != payload_reg and !self.isLocalReg(mapped_reg)) try self.emitRelease(mapped_reg);
+        try self.emitBranchRelease(tag);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+
+        try self.emitLabel(err_label);
+        try self.emitBranchRelease(is_ok);
+        const err_val = try self.intern(try self.newTmp());
+        try self.emitLoad(err_val, receiver_reg, 8, err_prim);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[err_val],
+        });
+        if (!self.isLocalReg(err_val)) try self.emitRelease(err_val);
+        try self.emitBranchRelease(tag);
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(receiver_reg)) try self.emitRelease(receiver_reg);
+        return result_reg;
+    }
+
+    fn genResultClosureCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len != 2) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.resultOkType(receiver_ty) == null) return null;
+        if (!lowering_rules.isMapCall(call)) return null;
+        const closure = closureLiteralFromExpr(call.args[1]) orelse return Error.UnsupportedSabDirectFeature;
+        if (closure.params.len != 1) return Error.UnsupportedSabDirectFeature;
+        return try self.genResultMapClosureCall(expr, call, receiver_ty, closure);
+    }
+
     fn genOptionClosureCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         if (call.args.len == 0) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
@@ -12211,9 +12366,13 @@ pub const Codegen = struct {
         }
 
         if (receiver_ty.* == .primitive and receiver_ty.primitive == .raw_ptr) {
+            // A bare pointer carries no length field: mirror SA-text, whose
+            // len() fallthrough emits EXPAND STRING_LEN (NUL scan) for any
+            // non-container receiver. The old slice-field load read garbage
+            // past byte-string data (demo 35 fold computed wrong sums).
             const base_reg = try self.genExpr(@constCast(call.args[0]));
             const dst = try self.intern(try self.newTmp());
-            try self.emitLoad(dst, base_reg, lowering_rules.SliceAbi.len_offset, .u64);
+            try self.emitStdMacroFragment("sa_std/ffi.sa", "CSTR_LEN", &.{ self.symbols.items[dst], self.symbols.items[base_reg] });
             if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
             return dst;
         }
@@ -12276,11 +12435,64 @@ pub const Codegen = struct {
             }
         }
 
+        // `sum(map(iter/into_iter(src), |x| ...))` over arrays: unrolled
+        // per-element map + add, mirroring SA-text genArrayIterMapSum.
+        if (call.args[0].* == .call_expr) {
+            const inner = &call.args[0].call_expr;
+            if (lowering_rules.isMapCall(inner.*) and inner.args.len == 2 and inner.args[0].* == .call_expr) {
+                const iter_call = &inner.args[0].call_expr;
+                if (lowering_rules.isIterOrIntoIterCall(iter_call.*) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
+                    const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return null;
+                    if (lowering_rules.arrayType(source_ty)) |arr| {
+                        return try self.genArrayIterMapSum(iter_call.args[0], arr, &inner.args[1].closure_literal);
+                    }
+                }
+            }
+            // `sum(filter(iter/into_iter(array), |x| ...))`: unrolled
+            // per-element predicate + conditional add, mirroring SA-text
+            // genArrayIterFilterSum.
+            if (std.mem.eql(u8, inner.func_name, "filter") and inner.args.len == 2 and inner.args[0].* == .call_expr) {
+                const iter_call = &inner.args[0].call_expr;
+                if (lowering_rules.isIterOrIntoIterCall(iter_call.*) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
+                    const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return null;
+                    if (lowering_rules.arrayType(source_ty)) |arr| {
+                        return try self.genArrayIterFilterSum(iter_call.args[0], arr, &inner.args[1].closure_literal);
+                    }
+                }
+            }
+            // `sum(map(iter/into_iter(vec), |x| ...))`: counted loop over
+            // the vec buffer with per-element closure inline, mirroring
+            // SA-text genVecIterSum.
+            if (lowering_rules.isMapCall(inner.*) and inner.args.len == 2 and inner.args[0].* == .call_expr) {
+                const iter_call = &inner.args[0].call_expr;
+                if (lowering_rules.isIterOrIntoIterCall(iter_call.*) and iter_call.args.len == 1 and inner.args[1].* == .closure_literal) {
+                    const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return null;
+                    if (lowering_rules.vecElementType(source_ty)) |elem_ty| {
+                        return try self.genVecIterMapSum(iter_call.args[0], elem_ty, &inner.args[1].closure_literal);
+                    }
+                }
+            }
+        }
+
         return null;
     }
 
-    fn genArrayIterSum(self: *Codegen, source: *ast.Node, arr: ast.ArrayType) anyerror!u32 {
-        if (arr.len == 0) {
+    /// `fold(iter/into_iter(array), init, |acc, x| ...)` dispatcher,
+    /// mirroring the SA-text fold shape (unrolled per-element binary
+    /// closure over an accumulator slot).
+    fn genIterFoldCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!std.mem.eql(u8, call.func_name, "fold") or call.args.len != 3) return null;
+        if (call.args[0].* != .call_expr or call.args[2].* != .closure_literal) return null;
+        const iter_call = &call.args[0].call_expr;
+        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
+        const source_ty = self.tc.expr_types.get(iter_call.args[0]) orelse return null;
+        if (lowering_rules.arrayType(source_ty)) |arr| {
+            return try self.genArrayIterFold(iter_call.args[0], call.args[1], arr, &call.args[2].closure_literal);
+        }
+        return null;
+    }
+
+    fn genArrayIterSum(self: *Codegen, source: *ast.Node, arr: ast.ArrayType) anyerror!u32 {        if (arr.len == 0) {
             const dst = try self.intern(try self.newTmp());
             try self.emitAssignImm(dst, 0);
             return dst;
@@ -12306,8 +12518,182 @@ pub const Codegen = struct {
         return acc;
     }
 
-    fn genSliceIterSum(self: *Codegen, source: *ast.Node, elem_ty: *const ast.Type) anyerror!u32 {
+    /// `sum(map(iter/into_iter(array), |x| ...))`: unrolled per-element map +
+    /// add, mirroring SA-text `genArrayIterMapSum` (closure body inlined per
+    /// element via the existing `genInlineClosureUnary` plumbing).
+    fn genArrayIterMapSum(self: *Codegen, source: *ast.Node, arr: ast.ArrayType, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        if (arr.len == 0) {
+            const dst = try self.intern(try self.newTmp());
+            try self.emitAssignImm(dst, 0);
+            return dst;
+        }
         const base_reg = try self.genExpr(@constCast(source));
+        const stride = arrayStride(arr.elem);
+        const elem_prim = try storagePrimType(arr.elem);
+        var acc = try self.intern(try self.newTmp());
+        try self.emitAssignImm(acc, 0);
+        for (0..arr.len) |i| {
+            const elem_ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(elem_ptr, base_reg, .{ .imm_u64 = @intCast(stride * i) });
+            const item = try self.intern(try self.newTmp());
+            try self.emitLoad(item, elem_ptr, 0, elem_prim);
+            const mapped = try self.genInlineClosureUnary(closure, item);
+            const next_acc = try self.intern(try self.newTmp());
+            try self.emitOp(next_acc, .add, .{ .reg = acc }, .{ .reg = mapped });
+            try self.emitRelease(elem_ptr);
+            try self.emitRelease(item);
+            if (mapped != item) try self.emitRelease(mapped);
+            try self.emitRelease(acc);
+            acc = next_acc;
+        }
+        if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+        return acc;
+    }
+
+    /// `sum(filter(iter/into_iter(array), |x| ...))`: unrolled per-element
+    /// predicate + conditional add, mirroring SA-text genArrayIterFilterSum.
+    fn genArrayIterFilterSum(self: *Codegen, source: *ast.Node, arr: ast.ArrayType, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        const elem_prim = try storagePrimType(arr.elem);
+        if (arr.len == 0) {
+            const dst = try self.intern(try self.newTmp());
+            try self.emitAssignImm(dst, 0);
+            return dst;
+        }
+        const base_reg = try self.genExpr(@constCast(source));
+        const stride = arrayStride(arr.elem);
+        const acc_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(acc_slot, sig.primTypeBytes(elem_prim));
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(acc_slot, 0, zero, elem_prim);
+        try self.emitRelease(zero);
+        for (0..arr.len) |i| {
+            const elem_ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(elem_ptr, base_reg, .{ .imm_u64 = @intCast(stride * i) });
+            const item = try self.intern(try self.newTmp());
+            try self.emitLoad(item, elem_ptr, 0, elem_prim);
+            const keep = try self.genInlineClosureUnary(closure, item);
+            const then_label = try self.newLabel("L_FILTER_KEEP");
+            const else_label = try self.newLabel("L_FILTER_SKIP");
+            const merge_label = try self.newLabel("L_FILTER_MERGE");
+            try self.emitBranch(keep, then_label, else_label);
+            try self.emitLabel(then_label);
+            const acc = try self.intern(try self.newTmp());
+            try self.emitLoad(acc, acc_slot, 0, elem_prim);
+            const next_acc = try self.intern(try self.newTmp());
+            try self.emitOp(next_acc, .add, .{ .reg = acc }, .{ .reg = item });
+            try self.emitStore(acc_slot, 0, next_acc, elem_prim);
+            try self.emitRelease(acc);
+            try self.emitRelease(next_acc);
+            try self.emitJmp(merge_label);
+            try self.emitLabel(else_label);
+            try self.emitJmp(merge_label);
+            try self.emitLabel(merge_label);
+            // Single release point: SAB tracks release as register state,
+            // so releasing `keep` in both arms would trip PhiStateConflict
+            // at the merge (SA-text tolerates dual `!keep` hints).
+            try self.emitRelease(keep);
+            try self.emitRelease(elem_ptr);
+            try self.emitRelease(item);
+        }
+        if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+        const result = try self.intern(try self.newTmp());
+        try self.emitLoad(result, acc_slot, 0, elem_prim);
+        return result;
+    }
+
+    /// `fold(iter/into_iter(array), init, |acc, x| ...)` unrolled,
+    /// mirroring SA-text genArrayIterFold (accumulator lives in a stack
+    /// slot; the binary closure body is inlined per element).
+    fn genArrayIterFold(self: *Codegen, source: *ast.Node, init_expr: *ast.Node, arr: ast.ArrayType, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        if (closure.params.len != 2) return Error.UnsupportedSabDirectFeature;
+        const acc_ty = closure.params[0].ty;
+        const acc_prim = try storagePrimType(acc_ty);
+        const elem_prim = try storagePrimType(arr.elem);
+        const base_reg = try self.genExpr(@constCast(source));
+        const stride = arrayStride(arr.elem);
+        const init_reg = try self.genExpr(@constCast(init_expr));
+        const acc_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(acc_slot, sig.primTypeBytes(acc_prim));
+        try self.emitStore(acc_slot, 0, init_reg, acc_prim);
+        if (lowering_rules.callArgNeedsRelease(init_expr)) try self.emitRelease(init_reg);
+        for (0..arr.len) |i| {
+            const elem_ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(elem_ptr, base_reg, .{ .imm_u64 = @intCast(stride * i) });
+            const item = try self.intern(try self.newTmp());
+            try self.emitLoad(item, elem_ptr, 0, elem_prim);
+            const acc = try self.intern(try self.newTmp());
+            try self.emitLoad(acc, acc_slot, 0, acc_prim);
+            const next_acc = try self.genInlineClosureBinary(closure, acc, item);
+            try self.emitStore(acc_slot, 0, next_acc, acc_prim);
+            try self.emitRelease(elem_ptr);
+            try self.emitRelease(item);
+            try self.emitRelease(acc);
+            if (next_acc != acc and next_acc != item) try self.emitRelease(next_acc);
+        }
+        if (lowering_rules.callArgNeedsRelease(source)) try self.emitRelease(base_reg);
+        const result = try self.intern(try self.newTmp());
+        try self.emitLoad(result, acc_slot, 0, acc_prim);
+        return result;
+    }
+
+    /// `sum(map(iter/into_iter(vec), |x| ...))`: counted loop over the vec
+    /// buffer with per-element closure inline, mirroring SA-text
+    /// genVecIterSum. The dynamic-dispatch closure body (`v.score()`) flows
+    /// through the existing `genDynMethodCall` machinery.
+    fn genVecIterMapSum(self: *Codegen, source: *ast.Node, elem_ty: *const ast.Type, closure: *const ast.ClosureLiteral) anyerror!u32 {
+        _ = self.tc.expr_types.get(closure.body) orelse return Error.MissingType;
+        const vec_reg = try self.genExpr(@constCast(source));
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
+        const data_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_AS_PTR", &.{
+            self.symbols.items[data_reg],
+            self.symbols.items[vec_reg],
+        });
+        const len_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_LEN", &.{
+            self.symbols.items[len_reg],
+            self.symbols.items[vec_reg],
+        });
+        const acc = try self.intern(try self.newTmp());
+        try self.emitAssignImm(acc, 0);
+
+        const loop_start = try self.newLabel("L_VEC_MAP_SUM_LOOP");
+        const loop_body = try self.newLabel("L_VEC_MAP_SUM_BODY");
+        const loop_end = try self.newLabel("L_VEC_MAP_SUM_END");
+        const idx = try self.intern(try self.newTmp());
+        try self.emitAssignImm(idx, 0);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_start);
+        const cmp = try self.intern(try self.newTmp());
+        try self.emitOp(cmp, .slt, .{ .reg = idx }, .{ .reg = len_reg });
+        try self.emitBranch(cmp, loop_body, loop_end);
+        try self.emitLabel(loop_body);
+        const byte_offset = try self.intern(try self.newTmp());
+        const slot_size = lowering_rules.vecElementSlotSize(elem_ty);
+        try self.emitOp(byte_offset, .mul, .{ .reg = idx }, .{ .imm_u64 = @intCast(slot_size) });
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, data_reg, .{ .reg = byte_offset });
+        const item = try self.intern(try self.newTmp());
+        try self.emitLoad(item, elem_ptr, 0, try storagePrimType(elem_ty));
+        const mapped = try self.genInlineClosureUnary(closure, item);
+        try self.emitOp(acc, .add, .{ .reg = acc }, .{ .reg = mapped });
+        try self.emitOp(idx, .add, .{ .reg = idx }, .{ .imm_i64 = 1 });
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(elem_ptr);
+        try self.emitRelease(item);
+        if (mapped != item) try self.emitRelease(mapped);
+        try self.emitRelease(cmp);
+        try self.emitJmp(loop_start);
+        try self.emitLabel(loop_end);
+        try self.emitRelease(data_reg);
+        try self.emitRelease(len_reg);
+        try self.emitRelease(idx);
+        if (!self.isLocalReg(vec_reg)) try self.emitRelease(vec_reg);
+        return acc;
+    }
+
+    fn genSliceIterSum(self: *Codegen, source: *ast.Node, elem_ty: *const ast.Type) anyerror!u32 {        const base_reg = try self.genExpr(@constCast(source));
         const ptr_reg = try self.intern(try self.newTmp());
         try self.emitLoad(ptr_reg, base_reg, lowering_rules.SliceAbi.ptr_offset, .ptr);
         const len_reg = try self.intern(try self.newTmp());
@@ -12489,6 +12875,18 @@ pub const Codegen = struct {
         try self.emitStdMacroFragment("sa_std/sync/mutex.sa", "MUTEX_UNLOCK", &.{
             self.symbols.items[handle.mutex_reg],
         });
+    }
+
+    fn emitRwLockGuardRelease(self: *Codegen, handle: RwLockGuardValue) !void {
+        if (handle.is_write) {
+            try self.emitStdMacroFragment("sa_std/sync/rwlock.sa", "RWLOCK_RELEASE_WRITE", &.{
+                self.symbols.items[handle.lock_reg],
+            });
+        } else {
+            try self.emitStdMacroFragment("sa_std/sync/rwlock.sa", "RWLOCK_RELEASE_READ", &.{
+                self.symbols.items[handle.lock_reg],
+            });
+        }
     }
 
     /// Direct-SAB `Mutex::new(value)` for `i32`-like values, mirroring the
@@ -13116,8 +13514,152 @@ pub const Codegen = struct {
         return result_reg;
     }
 
-    fn genRefCellBorrowCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
-        if (call.args.len == 0) return null;
+    /// `RwLock::read()` / `RwLock::write()`, mirroring the SA-text backend
+    /// (`EXPAND RWLOCK_TRY_READ/WRITE_NOERR` + `RESULT_NEW_OK/ERR` + data
+    /// pointer guard). The guard data pointer is tracked so releasing it
+    /// unlocks via `RWLOCK_RELEASE_READ` / `RWLOCK_RELEASE_WRITE`.
+    /// `RwLock_data` is at +8 per `sa_std/sync/rwlock.sal` (same hardcoded
+    /// offset style as the Mutex `ptr_add ..., 8` above).
+    fn genRwLockReadWriteCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.associated_target != null) return null;
+        const is_write = std.mem.eql(u8, call.func_name, "write");
+        const is_read = std.mem.eql(u8, call.func_name, "read");
+        if (!is_read and !is_write) return null;
+        if (call.args.len != 1) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.rwLockInnerType(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        try self.ensureStdDeps("sa_std/sync/rwlock.sa", &.{"__rwlock_release_read"});
+        const ok_reg = try self.intern(try self.newTmp());
+        try self.recordReg(ok_reg);
+        const macro_guard = try self.intern(try self.newTmp());
+        try self.recordReg(macro_guard);
+        const macro_name = if (is_write) "RWLOCK_TRY_WRITE_NOERR" else "RWLOCK_TRY_READ_NOERR";
+        try self.emitStdMacroFragment("sa_std/sync/rwlock.sa", macro_name, &.{
+            self.symbols.items[ok_reg],
+            self.symbols.items[macro_guard],
+            self.symbols.items[recv_reg],
+        });
+
+        const ok_label = try self.newLabel("L_RWLOCK_ACQUIRE_OK");
+        const err_label = try self.newLabel("L_RWLOCK_ACQUIRE_ERR");
+        const end_label = try self.newLabel("L_RWLOCK_ACQUIRE_END");
+        const result_reg = try self.intern(try self.newTmp());
+        try self.recordReg(result_reg);
+        try self.emitBranch(ok_reg, ok_label, err_label);
+
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+
+        try self.emitLabel(ok_label);
+        try self.emitBranchRelease(ok_reg);
+        const guard_reg = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(guard_reg, recv_reg, .{ .imm_u64 = 8 });
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[guard_reg],
+        });
+        if (!self.isLocalReg(guard_reg)) try self.emitRelease(guard_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+
+        try self.emitLabel(err_label);
+        try self.emitBranchRelease(ok_reg);
+        const err_code = try self.intern(try self.newTmp());
+        try self.emitAssignImm(err_code, 1);
+        try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{
+            self.symbols.items[result_reg],
+            self.symbols.items[err_code],
+        });
+        try self.emitRelease(err_code);
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+
+        self.popLocalsTo(branch_locals_len);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+
+        try self.emitLabel(end_label);
+        try self.emitRelease(ok_reg);
+        try self.emitRelease(macro_guard);
+        try self.rwlock_guard_values.put(result_reg, .{ .lock_reg = recv_reg, .is_write = is_write });
+        return result_reg;
+    }
+
+    /// `std::panic::catch_unwind(|| ...)` / `std__panic__catch_unwind`
+    /// statically evaluates the nullary closure body at codegen time,
+    /// mirroring SA-text: a `panic(..)` body becomes `Err(1)`, any other
+    /// body becomes `Ok(body_value)`.
+    fn genCatchUnwindCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!std.mem.eql(u8, call.func_name, "std__panic__catch_unwind") and
+            !(call.associated_target != null and std.mem.eql(u8, call.associated_target.?, "panic") and std.mem.eql(u8, call.func_name, "catch_unwind")))
+        {
+            return null;
+        }
+        if (call.args.len != 1 or call.args[0].* != .closure_literal) return Error.UnsupportedSabDirectFeature;
+        const closure = &call.args[0].closure_literal;
+        if (closure.params.len != 0) return Error.UnsupportedSabDirectFeature;
+        const result_reg = try self.intern(try self.newTmp());
+        try self.recordReg(result_reg);
+        const body = closure.body;
+        const panics = body.* == .call_expr and lowering_rules.isPanicBuiltinName(body.call_expr.func_name);
+        if (panics) {
+            const err_reg = try self.intern(try self.newTmp());
+            try self.emitAssignImm(err_reg, 1);
+            try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_ERR", &.{
+                self.symbols.items[result_reg],
+                self.symbols.items[err_reg],
+            });
+            try self.emitRelease(err_reg);
+        } else {
+            const ok_reg = try self.genExpr(@constCast(body));
+            try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
+                self.symbols.items[result_reg],
+                self.symbols.items[ok_reg],
+            });
+            if (!self.isLocalReg(ok_reg)) try self.emitRelease(ok_reg);
+        }
+        return result_reg;
+    }
+
+    /// `ManuallyDrop::new(v)` / `ManuallyDrop::into_inner(slot)`,
+    /// mirroring SA-text (`MANUALLY_DROP_U64_NEW` / `MANUALLY_DROP_U64_INTO_INNER`
+    /// fragments over an 8-byte slot, `ManuallyDropU64_SIZE`).
+    fn genManuallyDropCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (lowering_rules.isManuallyDropNewCall(call)) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const value_reg = try self.genExpr(@constCast(call.args[0]));
+            const slot = try self.intern(try self.newTmp());
+            try self.emitStackAlloc(slot, 8);
+            try self.emitStdMacroFragment("sa_std/mem.sa", "MANUALLY_DROP_U64_NEW", &.{
+                self.symbols.items[slot],
+                self.symbols.items[value_reg],
+            });
+            if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+            return slot;
+        }
+        if (lowering_rules.isManuallyDropIntoInnerCall(call)) {
+            if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+            const slot_reg = try self.genExpr(@constCast(call.args[0]));
+            const dst = try self.intern(try self.newTmp());
+            try self.recordReg(dst);
+            try self.emitStdMacroFragment("sa_std/mem.sa", "MANUALLY_DROP_U64_INTO_INNER", &.{
+                self.symbols.items[dst],
+                self.symbols.items[slot_reg],
+            });
+            if (!self.isLocalReg(slot_reg)) try self.emitRelease(slot_reg);
+            return dst;
+        }
+        return null;
+    }
+
+    fn genRefCellBorrowCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {        if (call.args.len == 0) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         const plan = lowering_rules.planRefCellBorrowCall(call, receiver_ty) orelse return null;
 
@@ -13954,6 +14496,7 @@ pub const Codegen = struct {
         if (try self.genJoinHandleJoin(expr, call)) |reg| return reg;
         if (try self.genDynMethodCall(expr, call)) |reg| return reg;
         if (try self.genOptionClosureCall(expr, call)) |reg| return reg;
+        if (try self.genResultClosureCall(expr, call)) |reg| return reg;
         if (try self.genResultUnwrap(expr, call)) |reg| return reg;
         if (try self.genVecNewCall(expr, call)) |reg| return reg;
         if (try self.genVecLenCall(call)) |reg| return reg;
@@ -13963,6 +14506,9 @@ pub const Codegen = struct {
         if (try self.genMapInsertCall(expr, call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genMutexLockCall(expr, call)) |reg| return reg;
+        if (try self.genManuallyDropCall(call)) |reg| return reg;
+        if (try self.genRwLockReadWriteCall(expr, call)) |reg| return reg;
+        if (try self.genCatchUnwindCall(call)) |reg| return reg;
         if (try self.genSmartPointerCloneCall(call)) |reg| return reg;
         if (try self.genSenderCloneCall(expr, call)) |reg| return reg;
         if (try self.genMpscSendCall(expr, call)) |reg| return reg;
@@ -13974,6 +14520,7 @@ pub const Codegen = struct {
         if (try self.genFileAsRawFdCall(expr, call)) |reg| return reg;
         if (try self.genStructConstructorCall(expr, call)) |reg| return reg;
         if (try self.genIterSumCall(call)) |reg| return reg;
+        if (try self.genIterFoldCall(call)) |reg| return reg;
         if (try self.genArrayFillCall(call)) |reg| return reg;
         if (try self.genPtrBuiltinCall(expr, call)) |reg| return reg;
         if (try self.genPointerMethodCall(call)) |reg| return reg;
@@ -14019,8 +14566,27 @@ pub const Codegen = struct {
         if (call.args.len == 0) return null;
         const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
         if (lowering_rules.isAsPtrCall(call)) {
-            if (receiver_ty.* != .array or call.args.len != 1) return null;
-            return try self.genExpr(@constCast(call.args[0]));
+            if (receiver_ty.* == .array and call.args.len == 1) return try self.genExpr(@constCast(call.args[0]));
+            if (call.args.len != 1) return null;
+            // Mirror SA-text: string-like receivers lower through
+            // STR_AS_PTR (format strings via STRING_BUF_AS_PTR).
+            if (!lowering_rules.isStringLikeType(receiver_ty)) return null;
+            const recv_reg = try self.genExpr(@constCast(call.args[0]));
+            const dst = try self.intern(try self.newTmp());
+            try self.recordReg(dst);
+            if (lowering_rules.isFormatStringType(receiver_ty)) {
+                try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_AS_PTR", &.{
+                    self.symbols.items[dst],
+                    self.symbols.items[recv_reg],
+                });
+            } else {
+                try self.emitStdMacroFragment("sa_std/string.sa", "STR_AS_PTR", &.{
+                    self.symbols.items[dst],
+                    self.symbols.items[recv_reg],
+                });
+            }
+            if (lowering_rules.callArgNeedsRelease(call.args[0]) and !self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+            return dst;
         }
         if (receiver_ty.* != .pointer or !std.mem.eql(u8, call.func_name, "add")) return null;
         if (call.args.len != 2) return Error.UnsupportedSabDirectFeature;
@@ -15061,6 +15627,18 @@ pub const Codegen = struct {
         return try self.genExpr(@constCast(closure.body));
     }
 
+    fn genInlineClosureBinary(self: *Codegen, closure: *const ast.ClosureLiteral, left_reg: u32, right_reg: u32) anyerror!u32 {
+        if (closure.params.len != 2) return Error.UnsupportedSabDirectFeature;
+        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        defer saved.deinit();
+        try saved.append(.{ .name = closure.params[0].name, .old = self.closure_param_regs.get(closure.params[0].name) });
+        try saved.append(.{ .name = closure.params[1].name, .old = self.closure_param_regs.get(closure.params[1].name) });
+        try self.closure_param_regs.put(closure.params[0].name, left_reg);
+        try self.closure_param_regs.put(closure.params[1].name, right_reg);
+        defer self.restoreClosureParams(saved.items);
+        return try self.genExpr(@constCast(closure.body));
+    }
+
     fn genClosureCall(self: *Codegen, closure: *const ast.ClosureLiteral, call: ast.CallExpr) anyerror!u32 {
         if (closure.params.len != call.args.len) return Error.UnsupportedSabDirectFeature;
 
@@ -15194,6 +15772,11 @@ pub const Codegen = struct {
         // iterable protocol (`iter_len`/`iter_at`), mirroring SA-text `genFor`.
         const end_expr = f.end orelse {
             const iterable_ty = self.tc.expr_types.get(f.start) orelse return Error.MissingType;
+            // Fixed arrays iterate by index over the inline elements, mirroring
+            // SA-text's `source_arr` path (counter 0..len, element load).
+            if (lowering_rules.arrayType(iterable_ty)) |arr| {
+                return try self.genForOverArray(f, arr);
+            }
             return try self.genForOverProtocol(f, iterable_ty);
         };
         const old_locals = self.locals.items.len;
@@ -15276,6 +15859,106 @@ pub const Codegen = struct {
 
         try self.emitLabel(exit_label);
         if (!self.isLocalReg(end_reg)) try self.emitRelease(end_reg);
+    }
+
+    /// `for item in <array>` over a fixed-size array: counted index loop
+    /// with per-element loads, mirroring SA-text `genFor`'s `source_arr`
+    /// path. Branch scoping and release discipline follow the numeric
+    /// `genFor` above.
+    fn genForOverArray(self: *Codegen, f: ast.ForStmt, arr: ast.ArrayType) anyerror!void {
+        const old_locals = self.locals.items.len;
+        defer self.popLocalsTo(old_locals);
+        const loop_control = lowering_rules.planLoopControl(f.body);
+
+        const counter_slot = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(counter_slot, 8);
+        const base_reg = try self.genExpr(f.start);
+        const zero = try self.intern(try self.newTmp());
+        try self.emitAssignImm(zero, 0);
+        try self.emitStore(counter_slot, 0, zero, .i64);
+        try self.emitRelease(zero);
+
+        const head_label = try self.newLabel("L_FOR_ARR_HEAD");
+        const body_label = try self.newLabel("L_FOR_ARR_BODY");
+        const cont_label = try self.newLabel("L_FOR_ARR_CONTINUE");
+        const cond_false_label = try self.newLabel("L_FOR_ARR_COND_FALSE");
+        const break_cleanup_label = try self.newLabel("L_FOR_ARR_BREAK_CLEANUP");
+        const exit_label = try self.newLabel("L_FOR_ARR_EXIT");
+
+        try self.emitJmp(head_label);
+        try self.emitLabel(head_label);
+        const index_reg = try self.intern(try self.newTmp());
+        try self.emitLoad(index_reg, counter_slot, 0, .i64);
+        const cond = try self.intern(try self.newTmp());
+        try self.emitOp(cond, .slt, .{ .reg = index_reg }, .{ .imm_i64 = @intCast(arr.len) });
+
+        var br = self.makeInst(.br);
+        br.operands[0] = .{ .reg = cond };
+        br.operands[1] = .{ .label = try self.intern(body_label) };
+        br.operands[2] = .{ .label = try self.intern(body_label) };
+        br.operands[3] = .{ .label = try self.intern(cond_false_label) };
+        try self.appendInst(br);
+
+        const body_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        var pre_refcell_values = try self.cloneRefCellBorrowValues();
+        defer self.deinitRefCellBorrowValueSnapshot(&pre_refcell_values);
+        var pre_refcell_temps = try self.cloneBorrowAddressTemps();
+        defer self.deinitBorrowAddressTempSnapshot(&pre_refcell_temps);
+
+        try self.emitLabel(body_label);
+        try self.emitBranchRelease(cond);
+        const stride = arrayStride(arr.elem);
+        const elem_prim = try storagePrimType(arr.elem);
+        const byte_offset = try self.intern(try self.newTmp());
+        if (stride == 1) {
+            try self.emitOp(byte_offset, .add, .{ .reg = index_reg }, .{ .imm_i64 = 0 });
+        } else {
+            try self.emitOp(byte_offset, .mul, .{ .reg = index_reg }, .{ .imm_i64 = @intCast(stride) });
+        }
+        const elem_ptr = try self.intern(try self.newTmp());
+        try self.emitPtrAdd(elem_ptr, base_reg, .{ .reg = byte_offset });
+        const loop_value = try self.intern(try self.newTmp());
+        try self.emitLoad(loop_value, elem_ptr, 0, elem_prim);
+        try self.emitRelease(byte_offset);
+        try self.emitRelease(elem_ptr);
+        try self.pushLocal(f.var_name, loop_value, false);
+        try self.loop_continue_labels.append(cont_label);
+        try self.loop_break_labels.append(if (loop_control.has_break) break_cleanup_label else exit_label);
+        try self.genBlock(f.body);
+        _ = self.loop_continue_labels.pop();
+        _ = self.loop_break_labels.pop();
+        if (!self.lastIsTerminator()) {
+            try self.releaseLocalsFrom(body_locals_len, null);
+            try self.emitJmp(cont_label);
+        }
+
+        self.popLocalsTo(body_locals_len);
+        try self.restoreReleased(&pre_released);
+        if (lowering_rules.planRefCellLoopStateMerge().restoresPreLoop()) try self.restoreRefCellBranchState(&pre_refcell_values, &pre_refcell_temps);
+
+        try self.emitLabel(cont_label);
+        const next = try self.intern(try self.newTmp());
+        try self.emitOp(next, .add, .{ .reg = index_reg }, .{ .imm_i64 = 1 });
+        try self.emitStore(counter_slot, 0, next, .i64);
+        try self.emitRelease(next);
+        try self.emitBranchRelease(index_reg);
+        try self.emitJmp(head_label);
+
+        if (loop_control.has_break) {
+            try self.emitLabel(break_cleanup_label);
+            try self.emitBranchRelease(index_reg);
+            try self.emitJmp(exit_label);
+        }
+
+        try self.emitLabel(cond_false_label);
+        try self.emitBranchRelease(cond);
+        try self.emitBranchRelease(index_reg);
+        try self.emitJmp(exit_label);
+
+        try self.emitLabel(exit_label);
+        if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
     }
 
     /// `for item in <iterable>` over a user type implementing the iterable
@@ -15946,9 +16629,53 @@ pub const Codegen = struct {
         return dst;
     }
 
+    /// Union literal: store each listed field at its (overlapping) layout
+    /// offset — `structFieldLayout` yields offset 0 for union fields —
+    /// mirroring SA-text's union arm. `ManuallyDrop::new(v)` values go
+    /// through the `MANUALLY_DROP_U64_NEW` fragment like SA-text.
+    fn genUnionLiteral(self: *Codegen, lit: ast.StructLiteral, decl: *const ast.StructDecl) anyerror!u32 {
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, structSize(decl));
+        for (lit.fields) |literal_field| {
+            const layout = lowering_rules.structFieldLayout(decl, literal_field.name) orelse return Error.UnsupportedSabDirectFeature;
+            const field_ty = for (decl.fields) |decl_field| {
+                if (std.mem.eql(u8, decl_field.name, literal_field.name)) break decl_field.ty;
+            } else return Error.UnsupportedSabDirectFeature;
+            if (lowering_rules.manuallyDropInnerType(field_ty) != null and literal_field.value.* == .call_expr) {
+                const md_call = &literal_field.value.call_expr;
+                if (lowering_rules.isManuallyDropNewCall(md_call.*)) {
+                    if (md_call.args.len != 1) return Error.UnsupportedSabDirectFeature;
+                    const value_reg = try self.genExpr(@constCast(md_call.args[0]));
+                    if (layout.offset == 0) {
+                        try self.emitStdMacroFragment("sa_std/mem.sa", "MANUALLY_DROP_U64_NEW", &.{
+                            self.symbols.items[dst],
+                            self.symbols.items[value_reg],
+                        });
+                    } else {
+                        const slot = try self.intern(try self.newTmp());
+                        try self.emitPtrAdd(slot, dst, .{ .imm_u64 = @intCast(layout.offset) });
+                        try self.emitStdMacroFragment("sa_std/mem.sa", "MANUALLY_DROP_U64_NEW", &.{
+                            self.symbols.items[slot],
+                            self.symbols.items[value_reg],
+                        });
+                        try self.emitRelease(slot);
+                    }
+                    if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+                    continue;
+                }
+            }
+            const val_reg = try self.genExpr(@constCast(literal_field.value));
+            const prim = try storagePrimType(layout.ty);
+            try self.emitStore(dst, layout.offset, val_reg, prim);
+            if (!self.isLocalReg(val_reg)) try self.emitRelease(val_reg);
+        }
+        return dst;
+    }
+
     fn genStructLiteral(self: *Codegen, lit: ast.StructLiteral) anyerror!u32 {
         const decl = self.structDeclForType(lit.ty) orelse return Error.UnsupportedSabDirectFeature;
-        if (decl.is_opaque or decl.is_union) return Error.UnsupportedSabDirectFeature;
+        if (decl.is_opaque) return Error.UnsupportedSabDirectFeature;
+        if (decl.is_union) return try self.genUnionLiteral(lit, decl);
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, structSize(decl));
@@ -16811,6 +17538,15 @@ pub const Codegen = struct {
         const field_ty = self.fieldType(expr_ty, field.field_name) orelse return Error.UnsupportedSabDirectFeature;
 
         const base = try self.genExpr(field.expr);
+        // Mirror SA-text: a ManuallyDrop-typed field decays to its address
+        // (callers like `into_inner` load through it); loading it as a
+        // value would misread the inline payload as a pointer.
+        if (lowering_rules.manuallyDropInnerType(field_ty) != null) {
+            const addr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(addr, base, .{ .imm_u64 = @intCast(layout.offset) });
+            if (!self.isLocalReg(base)) try self.emitRelease(base);
+            return addr;
+        }
         const dst = try self.intern(try self.newTmp());
         try self.emitLoad(dst, base, layout.offset, layout.ty);
         try self.markLoadedFieldViewIfNeeded(dst, field_ty);
@@ -16819,7 +17555,16 @@ pub const Codegen = struct {
     }
 
     fn genBlockTailValueStore(self: *Codegen, block: []const *ast.Node, target: u32, target_ty: *const ast.Type) anyerror!bool {
-        const tail = blockTailExpr(block) orelse return Error.UnsupportedSabDirectFeature;
+        const tail = blockTailExpr(block) orelse {
+            // No value tail (e.g. an unsafe/fn body ending in `return`):
+            // run the block as statements. Valid only when a terminator
+            // ends the path; otherwise there is no value to store.
+            for (block) |stmt| {
+                try self.genStmt(stmt);
+                if (self.lastIsTerminator()) return true;
+            }
+            return Error.UnsupportedSabDirectFeature;
+        };
         for (block[0 .. block.len - 1]) |stmt| {
             try self.genStmt(stmt);
             if (self.lastIsTerminator()) return true;

@@ -3,6 +3,10 @@
 // Locks Y-SHARE sharedNodeUsesIdentifier: a use hidden in a match arm body
 // or guard must block fn-ptr body inlining in SA-text. Inlining such a body
 // splices a parameter reference into a call site where it is unbound.
+// NOTE: SAB execution of this file awaits the pre-existing match
+// value-merge discipline fix (baseline-identical PhiStateConflict on any
+// value-merging match, e.g. test_unit_option_match; verified separately).
+// SA-text runs it green; strict SAB builds it clean.
 fn fixed_opt() -> Option<i32> {
     return Option::Some(3);
 }

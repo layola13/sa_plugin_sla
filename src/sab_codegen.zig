@@ -3820,6 +3820,27 @@ pub const Codegen = struct {
         try self.appendInst(item);
         try self.transferReleaseMetadata(dst, src);
         if (!self.isLocalReg(src)) try self.markConsumed(src);
+        // Mirror the verifier: a reg-source `assign` consumes the source at
+        // runtime (move semantics), so later cleanups of it must be
+        // suppressed or they trap UseAfterMove. Special lifecycles (guards,
+        // borrows, stack slots, non-owning views) keep their own cleanup
+        // paths and are exempt here.
+        if (!self.assignSourceNeedsCleanup(src)) try self.markConsumed(src);
+    }
+
+    /// Whether a register assigned-from keeps its normal scope-end cleanup.
+    /// Returns false for lifecycles with dedicated release paths (guard
+    /// unlocks, borrow clears, stack slots, non-owning views): marking those
+    /// consumed would suppress their mandatory cleanup.
+    fn assignSourceNeedsCleanup(self: *Codegen, src: u32) bool {
+        if (self.non_owning_regs.contains(src)) return true;
+        if (self.stack_alloc_regs.contains(src)) return true;
+        if (self.stack_alloc_emitted.contains(src)) return true;
+        if (self.mutex_guard_values.contains(src)) return true;
+        if (self.rwlock_guard_values.contains(src)) return true;
+        if (self.refcell_borrow_values.contains(src)) return true;
+        if (self.borrow_address_temps.contains(src)) return true;
+        return false;
     }
 
     fn emitOp(self: *Codegen, dst: u32, op: inst.OpKind, lhs: inst.Operand, rhs: inst.Operand) !void {
@@ -14908,6 +14929,22 @@ pub const Codegen = struct {
     }
 
     fn moveCallArgFromValueRegWithType(self: *Codegen, value_reg: u32, inner_ty: ?*const ast.Type, value_is_copy: bool) !SabLoweredCallArg {
+        // Copy aggregates (arrays) are value-semantic: a shallow `assign`
+        // would only alias the shared backing allocation, so moving the
+        // alias would consume the caller's value too (and mutate it through
+        // the callee). Deep-copy Copy arrays into a fresh allocation, then
+        // move the copy; the source stays live, mirroring SA-text.
+        if (value_is_copy) {
+            if (inner_ty) |ty| {
+                if (ty.* == .array) {
+                    const copied = try self.genCopyArrayValue(value_reg, ty.array);
+                    return .{
+                        .operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[copied]}),
+                        .release_reg = null,
+                    };
+                }
+            }
+        }
         const moved_reg = try self.intern(try self.newTmp());
         try self.emitAssignReg(moved_reg, value_reg);
         if (lowering_rules.moveExprConsumesSource(inner_ty, value_is_copy)) {
@@ -14917,6 +14954,61 @@ pub const Codegen = struct {
             .operand = try std.fmt.allocPrint(self.allocator, "^{s}", .{self.symbols.items[moved_reg]}),
             .release_reg = null,
         };
+    }
+
+    /// Deep copy of a Copy array into a fresh allocation (element-wise, so
+    /// no backing store is shared with the source). Only Copy element
+    /// shapes are supported: scalars/pointers copy directly, nested arrays
+    /// recurse, flat Copy structs copy field-wise. Anything else returns
+    /// UnsupportedSabDirectFeature loudly rather than aliasing.
+    fn genCopyArrayValue(self: *Codegen, source: u32, arr: ast.ArrayType) anyerror!u32 {
+        const dst = try self.intern(try self.newTmp());
+        try self.emitAlloc(dst, arrayStride(arr.elem) * arr.len);
+        try self.genCopyArrayContents(source, dst, arr);
+        return dst;
+    }
+
+    fn genCopyArrayContents(self: *Codegen, src_ptr: u32, dst_ptr: u32, arr: ast.ArrayType) anyerror!void {
+        const stride = arrayStride(arr.elem);
+        for (0..arr.len) |i| {
+            const off: u64 = @intCast(stride * i);
+            if (arr.elem.* == .array) {
+                const src_elem = try self.intern(try self.newTmp());
+                const dst_elem = try self.intern(try self.newTmp());
+                try self.emitPtrAdd(src_elem, src_ptr, .{ .imm_u64 = off });
+                try self.emitPtrAdd(dst_elem, dst_ptr, .{ .imm_u64 = off });
+                try self.genCopyArrayContents(src_elem, dst_elem, arr.elem.array);
+                try self.emitRelease(src_elem);
+                try self.emitRelease(dst_elem);
+            } else if (arr.elem.* == .user_defined) {
+                const decl = self.structDeclForType(arr.elem) orelse return Error.UnsupportedSabDirectFeature;
+                for (decl.fields) |field| {
+                    const layout = lowering_rules.structFieldLayout(decl, field.name) orelse return Error.UnsupportedSabDirectFeature;
+                    const field_off: u64 = @intCast(off + layout.offset);
+                    const src_field = try self.intern(try self.newTmp());
+                    const dst_field = try self.intern(try self.newTmp());
+                    try self.emitPtrAdd(src_field, src_ptr, .{ .imm_u64 = field_off });
+                    try self.emitPtrAdd(dst_field, dst_ptr, .{ .imm_u64 = field_off });
+                    const val = try self.intern(try self.newTmp());
+                    try self.emitLoad(val, src_field, 0, try storagePrimType(layout.ty));
+                    try self.emitStore(dst_field, 0, val, try storagePrimType(layout.ty));
+                    try self.emitRelease(val);
+                    try self.emitRelease(src_field);
+                    try self.emitRelease(dst_field);
+                }
+            } else {
+                const val = try self.intern(try self.newTmp());
+                const elem_ptr = try self.intern(try self.newTmp());
+                try self.emitPtrAdd(elem_ptr, src_ptr, .{ .imm_u64 = off });
+                try self.emitLoad(val, elem_ptr, 0, try storagePrimType(arr.elem));
+                const dst_elem = try self.intern(try self.newTmp());
+                try self.emitPtrAdd(dst_elem, dst_ptr, .{ .imm_u64 = off });
+                try self.emitStore(dst_elem, 0, val, try storagePrimType(arr.elem));
+                try self.emitRelease(val);
+                try self.emitRelease(elem_ptr);
+                try self.emitRelease(dst_elem);
+            }
+        }
     }
 
     fn genPrefixedBorrowAddressCallArg(self: *Codegen, arg: *const ast.Node, prefix: u8) anyerror!?SabLoweredCallArg {

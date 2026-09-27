@@ -14452,10 +14452,6 @@ pub const Codegen = struct {
         return try self.ownedReleaseRegs(regs.items);
     }
 
-    fn moveCallArgFromValueReg(self: *Codegen, value_reg: u32) !SabLoweredCallArg {
-        return try self.moveCallArgFromValueRegWithType(value_reg, null, false);
-    }
-
     fn moveCallArgFromValueRegWithType(self: *Codegen, value_reg: u32, inner_ty: ?*const ast.Type, value_is_copy: bool) !SabLoweredCallArg {
         const moved_reg = try self.intern(try self.newTmp());
         try self.emitAssignReg(moved_reg, value_reg);

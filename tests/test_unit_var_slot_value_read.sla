@@ -22,9 +22,9 @@ fn var_slot_bool_roundtrip(seed: bool) -> bool {
     var acc: bool;
     acc = seed;
     if acc {
-        acc = false;
-    } else {
         acc = true;
+    } else {
+        acc = false;
     };
     return acc;
 }

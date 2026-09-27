@@ -42,15 +42,27 @@ fn fallible_extern_json_free_status(node: ptr, owned: bool) -> i32 {
 }
 
 @test "fallible extern payload can feed buffer externs"() {
-    let got = fallible_extern_read_len("E:/projects/sa_plugin_sla/tests/test_unit_basic.sla", 51);
+    // Hermetic round-trip: write a probe file to the runner cwd, then read
+    // it back. (The old Windows absolute path does not exist on other
+    // machines; a repo-relative path is equally fragile because test-runner
+    // cwd is not the package dir.)
+    let path = "fallible_extern_probe_tmp.sla";
+    let content = "0123456789ABCDEF";
+    if sa_fs_write_file(STR_PTR(path), STR_LEN(path) as u64, STR_PTR(content), STR_LEN(content) as u64) != 0 {
+        panic(43015);
+    };
+    let got = fallible_extern_read_len(STR_PTR(path), STR_LEN(path) as u64);
+    if got != 16 {
+        panic(43011);
+    };
     let ok = nonzero_status_u64(got);
     if ok == 0 {
-        panic(43011);
+        panic(43016);
     };
 }
 
 @test "fallible i32 extern payload uses SA ABI offset"() {
-    let status = fallible_extern_metadata_free_status("E:/projects/sa_plugin_sla/tests/test_unit_basic.sla", 51);
+    let status = fallible_extern_metadata_free_status("tests/test_unit_basic.sla", 25);
     if status != 0 {
         panic(43012);
     };

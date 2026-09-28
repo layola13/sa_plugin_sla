@@ -12482,10 +12482,24 @@ pub const Codegen = struct {
                         return reg;
                     }
                     if (self.addressable_bindings.contains(resolved_name)) {
+                        // Parity with SAB `stackLocal`: only load when the binding
+                        // was actually materialized to a stack slot. Struct/enum
+                        // bindings borrowed via `&name` stay as registers
+                        // (`planBorrowedBindingStorage` only materializes primitives);
+                        // unconditional load double-derefs struct pointers (SIGSEGV).
+                        if (self.stack_alloc_bindings.contains(resolved_name)) {
+                            const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
+                            const reg = try self.newTmp();
+                            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                            return reg;
+                        }
                         const expr_ty = self.resolvedTypeForExpr(expr) orelse return CodegenError.CodegenError;
-                        const reg = try self.newTmp();
-                        self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
-                        return reg;
+                        if (expr_ty.* == .primitive) {
+                            const reg = try self.newTmp();
+                            self.out.writer().print("    {s} = load {s}+0 as {s}\n", .{ reg, resolved_name, typeString(expr_ty) }) catch return CodegenError.CodegenError;
+                            return reg;
+                        }
+                        return resolved_name;
                     }
                     return resolved_name;
                 }
@@ -15442,6 +15456,11 @@ pub const Codegen = struct {
                 const val_reg = try self.genExpr(swe.val, hoisted_allocs);
                 const val_needs_release = exprResultNeedsRelease(swe.val);
                 const merge_label = try self.newLabel("L_SWITCH_MERGE");
+                // Parity with SAB `emitSwitchCaseCondition`: a fieldless enum
+                // literal pattern must compare the scrutinee discriminant tag,
+                // not the scrutinee pointer against a freshly allocated literal.
+                const switch_val_ty = self.resolvedTypeForExpr(swe.val) orelse self.tc.expr_types.get(swe.val);
+                const switch_enum_decl = if (switch_val_ty) |ty| self.enumDeclForValueType(ty) else null;
 
                 var cases_labels = std.ArrayList([]const u8).init(self.allocator);
                 var check_labels = std.ArrayList([]const u8).init(self.allocator);
@@ -15468,9 +15487,38 @@ pub const Codegen = struct {
                     const is_default = isSwitchDefaultPattern(case.pattern);
                     const is_eq = if (is_default) "" else try self.newTmp();
                     if (!is_default) {
-                        const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
-                        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
-                        if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
+                        if (switch_enum_decl) |decl| {
+                            if (case.pattern.* == .enum_literal) {
+                                const lit = case.pattern.enum_literal;
+                                if (lit.fields.len == 0 and enumNameMatchesDecl(lit.enum_name, decl.name)) {
+                                    if (enumVariantIndex(decl, lit.variant_name)) |tag| {
+                                        const tag_reg = try self.newTmp();
+                                        self.out.writer().print("    {s} = load {s}+0 as i64\n", .{ tag_reg, val_reg }) catch return CodegenError.CodegenError;
+                                        const tag_const = try self.newTmp();
+                                        try self.emitIntConst(tag_const, @as(i64, @intCast(tag)));
+                                        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, tag_reg, tag_const }) catch return CodegenError.CodegenError;
+                                        self.out.writer().print("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
+                                        self.out.writer().print("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;
+                                    } else {
+                                        const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
+                                        self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
+                                        if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
+                                    }
+                                } else {
+                                    const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
+                                    self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
+                                    if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
+                                }
+                            } else {
+                                const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
+                                self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
+                                if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
+                            }
+                        } else {
+                            const pat_reg = try self.genExpr(case.pattern, hoisted_allocs);
+                            self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, val_reg, pat_reg }) catch return CodegenError.CodegenError;
+                            if (exprResultNeedsRelease(case.pattern)) try self.emitRelease(pat_reg);
+                        }
                     }
 
                     const next_chk = if (idx + 1 < swe.cases.len) check_labels.items[idx + 1] else merge_label;

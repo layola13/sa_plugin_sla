@@ -668,6 +668,18 @@ pub const ImportedMacroCallPlan = struct {
     }
 };
 
+/// Imported macros whose body moves (`^`) a by-value argument: the caller's
+/// binding is consumed by the expansion (the verifier sees the `^` inside the
+/// macro body, e.g. `FS_READ_BUFFER_FREE` expands to
+/// `call @sa_fs_read_buffer_free(^%buffer)`), so no scope-end release may be
+/// emitted for it afterwards. Shared by the SA-text emitter (compiler-side
+/// consume marking) and the SAB direct emitter (release suppression) so both
+/// backends agree on these macro surfaces.
+pub fn importedMacroDirectCallConsumesValueArg(macro_name: []const u8, call_arg_index: usize) bool {
+    return (std.mem.eql(u8, macro_name, "FS_READ_BUFFER_FREE") or
+        std.mem.eql(u8, macro_name, "SLA_FS_BUFFER_FREE")) and call_arg_index == 0;
+}
+
 pub fn planBorrowedBindingStorage(binding_is_borrowed: bool, ty: *const ast.Type) BorrowedBindingStoragePlan {
     return .{ .materialize_stack_slot = binding_is_borrowed and ty.* == .primitive };
 }

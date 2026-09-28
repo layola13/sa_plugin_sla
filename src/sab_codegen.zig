@@ -13853,8 +13853,7 @@ pub const Codegen = struct {
     }
 
     fn importedMacroDirectCallConsumesValueArg(_: *Codegen, plan: lowering_rules.ImportedMacroCallPlan, call_arg_index: usize) bool {
-        return (std.mem.eql(u8, plan.macro_name, "FS_READ_BUFFER_FREE") or
-            std.mem.eql(u8, plan.macro_name, "SLA_FS_BUFFER_FREE")) and call_arg_index == 0;
+        return lowering_rules.importedMacroDirectCallConsumesValueArg(plan.macro_name, call_arg_index);
     }
 
     fn importedMacroValueArgNeedsRelease(self: *Codegen, arg: *const ast.Node, reg: u32, ctx: ?*MacroExpansionContext) anyerror!bool {

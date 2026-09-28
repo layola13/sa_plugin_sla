@@ -9989,6 +9989,19 @@ pub const Codegen = struct {
         defer release_regs.deinit();
         for (call.args, 0..) |arg, i| {
             const lowered_arg = try self.genImportedMacroArg(plan, i, arg, hoisted_allocs);
+            // Parity with SAB `importedMacroDirectCallConsumesValueArg`: the
+            // macro body moves (`^`) this value arg, so the verifier marks the
+            // source Consumed; mirror that compiler-side so tail cleanups skip
+            // it instead of emitting a second `!` (UseAfterMove). Only when the
+            // source binding was passed through by value — a materialized slot
+            // moves the slot temp, not the source. No `^` marker is emitted
+            // here because the macro body already carries it.
+            if (lowering_rules.importedMacroDirectCallConsumesValueArg(plan.macro_name, i) and arg.* == .identifier) {
+                const resolved = self.resolveBindingName(arg.identifier);
+                if (std.mem.eql(u8, lowered_arg.reg, arg.identifier) or std.mem.eql(u8, lowered_arg.reg, resolved)) {
+                    try self.markConsumedBinding(resolved);
+                }
+            }
             try arg_regs.append(lowered_arg.reg);
             release_regs.append(lowered_arg.release_reg orelse if (lowered_arg.release_after_call) lowered_arg.reg else null) catch return CodegenError.OutOfMemory;
         }

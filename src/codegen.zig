@@ -8126,6 +8126,10 @@ pub const Codegen = struct {
             self.out.writer().print("    {s} = 0\n", .{ctx}) catch return CodegenError.CodegenError;
             self.out.writer().print("    EXPAND TASK_NEW {s}, {s}, {s}\n", .{ task, future_obj, ctx }) catch return CodegenError.CodegenError;
             try self.emitRelease(ctx);
+            // The state object was moved into the future wrapper above; forget
+            // the source reg like every sibling branch does for its consumed
+            // arg, otherwise it stays Active until function exit (MemoryLeak).
+            if (callArgNeedsRelease(call.args[0])) try self.emitRelease(state_reg);
             self.task_future_objects.put(task, future_obj) catch return CodegenError.OutOfMemory;
             return task;
         }

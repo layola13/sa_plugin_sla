@@ -8,7 +8,6 @@ const sab_codegen_mod = @import("sab_codegen.zig");
 const source_expand = @import("source_expand.zig");
 const sla_workspace = @import("workspace.zig");
 const lowering_rules = @import("lowering_rules.zig");
-const sci_bridge = @import("sci_bridge");
 
 const plugin_cli = @import("plugin_cli.zig");
 const plugin_sab_paths = @import("plugin_sab_paths.zig");
@@ -27,9 +26,6 @@ const saTestFilterFromArgs = plugin_cli.saTestFilterFromArgs;
 const defaultOutputPath = plugin_sab_paths.defaultOutputPath;
 const managedSabTestPath = plugin_sab_paths.managedSabTestPath;
 const writeSabFile = plugin_sab_paths.writeSabFile;
-const virtualSaPathForSabOutput = plugin_sab_paths.virtualSaPathForSabOutput;
-const sabSaStdRoot = plugin_sab_paths.sabSaStdRoot;
-const sabProjectRoot = plugin_sab_paths.sabProjectRoot;
 const SlaModuleTable = plugin_module_table.SlaModuleTable;
 const SlaResolvedImportGroup = plugin_module_table.SlaResolvedImportGroup;
 const ReachabilityAnalysis = plugin_reachability.ReachabilityAnalysis;
@@ -52,7 +48,6 @@ const SlaCompileOptions = plugin_compile_options.SlaCompileOptions;
 const defaultSlaCompileOptions = plugin_compile_options.defaultSlaCompileOptions;
 const slaProfileEnabled = plugin_compile_options.slaProfileEnabled;
 const slaProfileStage = plugin_compile_options.slaProfileStage;
-const slaSabFallbackAllowed = plugin_compile_options.slaSabFallbackAllowed;
 const collectNeededTraitImplsBlock = plugin_emit_reachability.collectNeededTraitImplsBlock;
 const collectNeededTraitImplsExpr = plugin_emit_reachability.collectNeededTraitImplsExpr;
 const collectReachableBlock = plugin_emit_reachability.collectReachableBlock;
@@ -831,115 +826,6 @@ pub fn compileSlaFileToSab(
     return compileSlaFileToSabWithOptions(allocator, file, output_file, stderr, defaultSlaCompileOptions());
 }
 
-fn encodeSaTextAsSab(
-    allocator: std.mem.Allocator,
-    source_file: []const u8,
-    source_path: []const u8,
-    sa_code: []const u8,
-    stderr: std.io.AnyWriter,
-    profile: bool,
-) !?[]u8 {
-    if (std.fs.path.dirname(source_path)) |dir| {
-        std.fs.cwd().makePath(dir) catch |err| {
-            try stderr.print("File Error: failed to create SAB work directory {s}: {}\n", .{ dir, err });
-            return null;
-        };
-    }
-
-    const project_root = sabProjectRoot(allocator, source_file) catch |err| {
-        try stderr.print("SAB Error: failed to resolve project root for {s}: {}\n", .{ source_file, err });
-        return null;
-    };
-    const std_root = sabSaStdRoot(allocator) catch |err| {
-        try stderr.print("SAB Error: failed to resolve SA std root: {}\n", .{err});
-        return null;
-    };
-    const resolve_ctx = sci_bridge.flattener.ResolveContext{ .options = .{ .project_root = project_root, .std_root = std_root } };
-
-    var stage_start = std.time.nanoTimestamp();
-    var flat = sci_bridge.flattener.flattenFileWithPackages(allocator, source_path, sa_code, resolve_ctx) catch |err| {
-        try stderr.print("SAB Error: failed to flatten SA-compatible lowering {s}: {}\n", .{ source_path, err });
-        return null;
-    };
-    defer flat.deinit(allocator);
-    slaProfileStage(stderr, profile, "sa flatten", stage_start);
-
-    stage_start = std.time.nanoTimestamp();
-    const encode_result = sci_bridge.encodeSabFromFlatDetailed(allocator, &flat) catch |err| {
-        try stderr.print("SAB Error: failed to encode SAB for {s}: {}\n", .{ source_path, err });
-        return null;
-    };
-    const sab_bytes: []u8 = switch (encode_result) {
-        .ok => |bytes| bytes,
-        .trap => |report| {
-            try printSabVerificationTrap(stderr, source_path, report);
-            return null;
-        },
-    };
-    slaProfileStage(stderr, profile, "sab encode", stage_start);
-    return sab_bytes;
-}
-
-/// Render a verification TrapReport produced by encodeSabFromFlatDetailed
-/// in a human-readable form analogous to cli.zig::printTrapReport, followed
-/// by the machine-readable JSON form. This replaces the previous bare
-/// error.VerificationTrap summary that hid the underlying trap reason.
-fn printSabVerificationTrap(stderr: std.io.AnyWriter, source_path: []const u8, report: anytype) !void {
-    _ = source_path;
-    const trap_lib = sci_bridge.trap_lib;
-    try stderr.writeAll("SAB Error: verification failed while encoding SAB\n");
-    try stderr.print("error[{s}]: {s}\n", .{ trap_lib.trapName(report.trap), report.message });
-    if (report.source_line != 0) {
-        if (report.line != 0 and report.line != report.source_line) {
-            try stderr.print("  line {d} (expanded {d})\n", .{ report.source_line, report.line });
-        } else {
-            try stderr.print("  line {d}\n", .{ report.source_line });
-        }
-    }
-    if (report.source_text) |t| {
-        try stderr.print("  source: {s}\n", .{t});
-    }
-    if (report.register) |r| {
-        try stderr.print("  register: {s}\n", .{r});
-    }
-    if (report.function) |fn_name| {
-        try stderr.print("  in function: {s}\n", .{fn_name});
-    }
-    if (report.hint) |h| {
-        try stderr.print("  help: {s}\n", .{h});
-    }
-    try stderr.writeAll("  ");
-    try trap_lib.writeJson(stderr, report);
-    try stderr.writeByte('\n');
-}
-
-fn compileTypedSlaProgramToCompatibleSab(
-    allocator: std.mem.Allocator,
-    tc: *type_checker_mod.TypeChecker,
-    program: *ast.Node,
-    source_file: []const u8,
-    output_file: []const u8,
-    stderr: std.io.AnyWriter,
-    profile: bool,
-) !?[]u8 {
-    const stage_start = std.time.nanoTimestamp();
-    rewriteProgramImportsForOutput(allocator, program, source_file, output_file) catch |err| {
-        try stderr.print("Import Error: failed to rewrite @import paths for SAB output: {}\n", .{err});
-        return null;
-    };
-
-    var cg = codegen_mod.Codegen.init(allocator, tc);
-    defer cg.deinit();
-    const sa_code = cg.generate(program) catch |err| {
-        try stderr.print("SAB Error: failed to lower SLA through SA-compatible SAB path: {}\n", .{err});
-        return null;
-    };
-    slaProfileStage(stderr, profile, "sa-compatible codegen", stage_start);
-
-    const virtual_sa_path = try virtualSaPathForSabOutput(allocator, output_file);
-    return try encodeSaTextAsSab(allocator, source_file, virtual_sa_path, sa_code, stderr, profile);
-}
-
 pub fn compileSlaFileToSabWithOptions(
     allocator: std.mem.Allocator,
     file: []const u8,
@@ -947,6 +833,9 @@ pub fn compileSlaFileToSabWithOptions(
     stderr: std.io.AnyWriter,
     options: SlaCompileOptions,
 ) !?[]u8 {
+    // output_file is kept for API stability; the SAB-direct pipeline manages
+    // its own cache paths and returns bytes (no SA-text fallback output).
+    _ = output_file;
     const profile = slaProfileEnabled(allocator);
 
     var mono = monomorphizer_mod.Monomorphizer.init(allocator);
@@ -987,11 +876,8 @@ pub fn compileSlaFileToSabWithOptions(
         switch (err) {
             error.OutOfMemory => return err,
             else => {
-                if (!slaSabFallbackAllowed(allocator, options)) {
-                    try stderr.print("SAB Direct Error: direct SLA-to-SAB lowering failed without fallback: {}\n", .{err});
-                    return null;
-                }
-                return try compileTypedSlaProgramToCompatibleSab(allocator, &tc, specialized_prog, file, output_file, stderr, profile);
+                try stderr.print("SAB Error: direct SLA-to-SAB lowering failed: {}\n", .{err});
+                return null;
             },
         }
     };

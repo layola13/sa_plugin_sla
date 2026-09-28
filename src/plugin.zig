@@ -169,7 +169,6 @@ const plugin_compile_options = @import("plugin_compile_options.zig");
 const SlaCompileOptions = plugin_compile_options.SlaCompileOptions;
 const defaultSlaCompileOptions = plugin_compile_options.defaultSlaCompileOptions;
 const slaProfileEnabled = plugin_compile_options.slaProfileEnabled;
-const slaSabFallbackAllowed = plugin_compile_options.slaSabFallbackAllowed;
 const slaProfileStage = plugin_compile_options.slaProfileStage;
 const writeEmptyTestResult = plugin_compile_options.writeEmptyTestResult;
 

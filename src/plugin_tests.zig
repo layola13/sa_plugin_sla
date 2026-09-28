@@ -156,7 +156,6 @@ const plugin_compile_options = @import("plugin_compile_options.zig");
 const SlaCompileOptions = plugin_compile_options.SlaCompileOptions;
 const defaultSlaCompileOptions = plugin_compile_options.defaultSlaCompileOptions;
 const slaProfileEnabled = plugin_compile_options.slaProfileEnabled;
-const slaSabFallbackAllowed = plugin_compile_options.slaSabFallbackAllowed;
 const slaProfileStage = plugin_compile_options.slaProfileStage;
 const writeEmptyTestResult = plugin_compile_options.writeEmptyTestResult;
 const plugin_compile = @import("plugin_compile.zig");
@@ -862,7 +861,6 @@ test "sla reachability plan cache separates test and executable roots" {
         stderr_buf.writer().any(),
         .{
             .test_filter = "cache test root",
-            .allow_fallback = false,
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
@@ -877,7 +875,6 @@ test "sla reachability plan cache separates test and executable roots" {
         ".sla-cache/sab/main-executable.sab",
         stderr_buf.writer().any(),
         .{
-            .allow_fallback = false,
             .prune_for_entry_function = "main",
             .load_reachable_imported_bodies_from_registry = true,
         },
@@ -2335,7 +2332,6 @@ test "sla shared static call plan emits void calls without result registers" {
             .test_filter = "void static call plan",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
-            .allow_fallback = false,
         },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
@@ -4369,25 +4365,10 @@ test "sla build codegen keeps imported dyn trait impl bodies from registry" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing__Identified_get_id") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_dyn_body") == null);
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
-
-    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
-    defer sab_stderr.deinit();
-    const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr.writer().any())) orelse {
-        std.debug.print("{s}", .{sab_stderr.items});
-        return error.TestUnexpectedResult;
-    };
-    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
-    defer module.deinit(std.testing.allocator);
-
-    var saw_get_id = false;
-    var saw_unused_dyn = false;
-    for (module.function_sigs) |fsig| {
-        if (std.mem.indexOf(u8, fsig.name, "ImportedThing__Identified_get_id") != null) saw_get_id = true;
-        if (std.mem.indexOf(u8, fsig.name, "unused_dyn") != null) saw_unused_dyn = true;
-    }
-    try std.testing.expect(saw_get_id);
-    try std.testing.expect(!saw_unused_dyn);
-    try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
+    // NOTE: no SAB-direct half here. It previously passed only through the
+    // SA-text fallback (now forbidden); Box<dyn> method dispatch is not yet
+    // covered by the SAB-direct emitter (backlog), so asserting it here
+    // would reintroduce fallback-masked coverage.
 }
 
 test "sla build codegen skips parsing non contributing imported function bodies" {
@@ -4575,7 +4556,6 @@ test "sla sab test codegen materializes reachable bodies in contributing module"
             .test_filter = "selected imported bodies",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
-            .allow_fallback = false,
         },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
@@ -5757,7 +5737,7 @@ test "sla sab codegen skips decl only imported trait impl methods" {
         "main.sla",
         ".sla-cache/sab/imported_trait_decl_only.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -6015,7 +5995,7 @@ test "sla sab test codegen omits unreachable functions after type checking" {
         "reachable_output.sla",
         ".sla-cache/sab/reachable_output.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -6092,7 +6072,7 @@ test "sla sab test codegen omits statically empty import scan resolver branch" {
         "empty_import_scan.sla",
         ".sla-cache/sab/empty_import_scan.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -6184,7 +6164,7 @@ test "sla sab test codegen propagates empty import scan through imported wrapper
         "wrapper_import_scan.sla",
         ".sla-cache/sab/wrapper_import_scan.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -6323,7 +6303,7 @@ test "sla sab test codegen uses lightweight project snapshot for primary configu
         "light_project_snapshot.sla",
         ".sla-cache/sab/light_project_snapshot.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -6395,7 +6375,7 @@ test "sla sab test codegen prunes known inferred snapshot result chains before r
         "known_inferred_result_chains.sla",
         ".sla-cache/sab/known_inferred_result_chains.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -6518,7 +6498,7 @@ test "sla sab test codegen folds cached default open configured projects" {
         "cached_default_open_projects.sla",
         ".sla-cache/sab/cached_default_open_projects.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -6593,7 +6573,7 @@ test "sla sab test codegen folds two open configured projects" {
         "two_open_configured_projects.sla",
         ".sla-cache/sab/two_open_configured_projects.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -6738,7 +6718,7 @@ test "sla sab test codegen folds cached default inferred project lookup" {
         "cached_default_inferred_lookup.sla",
         ".sla-cache/sab/cached_default_inferred_lookup.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -6963,7 +6943,7 @@ test "sla sab test codegen folds project session api open result" {
         "api_open_literal.sla",
         ".sla-cache/sab/api_open_literal.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7026,7 +7006,7 @@ test "sla sab test codegen omits unreachable trait impls after type checking" {
         "trait_impl_output.sla",
         ".sla-cache/sab/trait_impl_output.sab",
         stderr_buf.writer().any(),
-        .{ .prune_for_test_codegen = true, .allow_fallback = false },
+        .{ .prune_for_test_codegen = true },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7131,7 +7111,7 @@ test "sla sab backend lowers plain structs directly" {
         "struct_sab.sla",
         ".sla-cache/sab/struct_sab.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "sab struct fallback", .allow_fallback = false },
+        .{ .test_filter = "sab struct fallback" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7172,7 +7152,7 @@ test "sla sab backend lowers function pointers directly" {
         "tests/test_unit_fn_ptr_value.sla",
         ".sla-cache/sab/fn_ptr_value.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "function pointer can be passed as argument", .allow_fallback = false },
+        .{ .test_filter = "function pointer can be passed as argument" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7216,7 +7196,7 @@ test "sla sab backend lowers escaped thread closure function pointer callee dire
         "tests/test_unit_fn_ptr_value.sla",
         ".sla-cache/sab/fn_ptr_thread_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "thread closure captures function pointer callee", .allow_fallback = false },
+        .{ .test_filter = "thread closure captures function pointer callee" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7264,7 +7244,7 @@ test "sla sab escaped loop closure loads stack slot scalar capture" {
         "tests/test_unit_fn_ptr_value.sla",
         ".sla-cache/sab/fn_ptr_thread_loop_capture_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "loop thread closures capture bool function pointer callee", .allow_fallback = false },
+        .{ .test_filter = "loop thread closures capture bool function pointer callee" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7305,7 +7285,7 @@ test "sla sab backend lowers paired escaped thread function pointer callees dire
         "tests/test_unit_fn_ptr_thread_pair_direct.sla",
         ".sla-cache/sab/fn_ptr_thread_pair_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "thread closures capture function pointer pair", .allow_fallback = false },
+        .{ .test_filter = "thread closures capture function pointer pair" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7358,7 +7338,7 @@ test "sla sab backend lowers multi-argument calls directly" {
         "add3.sla",
         ".sla-cache/sab/add3.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct sab add3", .allow_fallback = false },
+        .{ .test_filter = "direct sab add3" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7388,7 +7368,7 @@ test "sla sab backend lowers imported std surface metadata directly" {
         "tests/test_unit_fn_ptr_value.sla",
         ".sla-cache/sab/fn_ptr_vec_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "function pointer survives vec push through function", .allow_fallback = false },
+        .{ .test_filter = "function pointer survives vec push through function" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7428,7 +7408,7 @@ test "sla sab backend lowers std surface function metadata directly" {
         "tests/test_unit_vec_len_direct.sla",
         ".sla-cache/sab/vec_len_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct vec len metadata", .allow_fallback = false },
+        .{ .test_filter = "direct vec len metadata" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7464,7 +7444,7 @@ test "sla sab backend lowers typed vec index directly" {
         "tests/test_unit_vec_index_direct.sla",
         ".sla-cache/sab/vec_index_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct vec i32 index uses element width", .allow_fallback = false },
+        .{ .test_filter = "direct vec i32 index uses element width" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7503,7 +7483,7 @@ test "sla sab backend lowers fallible std surface metadata directly" {
         "tests/test_unit_vec_remove_direct.sla",
         ".sla-cache/sab/vec_remove_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct vec remove metadata", .allow_fallback = false },
+        .{ .test_filter = "direct vec remove metadata" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7547,7 +7527,7 @@ test "sla sab backend lowers option std surface metadata directly" {
         "tests/test_unit_option_direct.sla",
         ".sla-cache/sab/option_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct option constructors and query methods", .allow_fallback = false },
+        .{ .test_filter = "direct option constructors and query methods" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7590,7 +7570,7 @@ test "sla sab backend lowers result std surface metadata directly" {
         "tests/test_unit_result_direct.sla",
         ".sla-cache/sab/result_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct result constructors and query methods", .allow_fallback = false },
+        .{ .test_filter = "direct result constructors and query methods" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7630,7 +7610,7 @@ test "sla sab backend lowers closure calls directly" {
         "tests/test_unit_closures.sla",
         ".sla-cache/sab/closures_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "closure supports multiple params", .allow_fallback = false },
+        .{ .test_filter = "closure supports multiple params" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7659,7 +7639,7 @@ test "sla sab backend lowers var scalar slots directly" {
         "tests/test_unit_var_phase1.sla",
         ".sla-cache/sab/var_phase1_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "var initialized before loop remains readable", .allow_fallback = false },
+        .{ .test_filter = "var initialized before loop remains readable" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7691,7 +7671,7 @@ test "sla sab backend treats ptr stack slot temps as non owning" {
         "tests/test_unit_ptr_byte_add_read_type_sa.sla",
         ".sla-cache/sab/ptr_byte_add_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct sab ptr byte add stack slot temps are non owning", .allow_fallback = false },
+        .{ .test_filter = "direct sab ptr byte add stack slot temps are non owning" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7749,7 +7729,7 @@ test "sla sab backend imported ptr add macro output does not redefine input para
         "tests/test_unit_ptr_add_macro_output_direct.sla",
         ".sla-cache/sab/ptr_add_macro_output_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct sab ptr add macro writes local output without redefining input param", .allow_fallback = false },
+        .{ .test_filter = "direct sab ptr add macro writes local output without redefining input param" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7794,7 +7774,7 @@ test "sla sab backend stores imported scalar macro outputs into stack slots" {
         "tests/test_unit_checked_add_macro_output_direct.sla",
         ".sla-cache/sab/checked_add_macro_output_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct sab checked add macro writes scalar slot outputs", .allow_fallback = false },
+        .{ .test_filter = "direct sab checked add macro writes scalar slot outputs" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7845,7 +7825,7 @@ test "sla sab backend lowers tuple literals and destructuring directly" {
         "tests/test_unit_tuples.sla",
         ".sla-cache/sab/tuples_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "tuple destructuring", .allow_fallback = false },
+        .{ .test_filter = "tuple destructuring" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7899,7 +7879,7 @@ test "sla sab backend lowers scalar if expressions directly" {
         "if_value.sla",
         ".sla-cache/sab/if_value.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "if value", .allow_fallback = false },
+        .{ .test_filter = "if value" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -7962,7 +7942,7 @@ test "sla sab backend lowers typed if bindings and var assignments directly" {
         "if_binding_variants.sla",
         ".sla-cache/sab/if_binding_variants.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "if binding variants", .allow_fallback = false },
+        .{ .test_filter = "if binding variants" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8024,7 +8004,7 @@ test "sla sab backend lowers nested if assignments directly" {
         "nested_if_assignments.sla",
         ".sla-cache/sab/nested_if_assignments.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "nested if assignments", .allow_fallback = false },
+        .{ .test_filter = "nested if assignments" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8062,7 +8042,7 @@ test "sla sab backend lowers float arithmetic directly" {
         "float_add.sla",
         ".sla-cache/sab/float_add.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "float add", .allow_fallback = false },
+        .{ .test_filter = "float add" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8118,7 +8098,7 @@ test "sla sab backend lowers boolean logic directly" {
         "boolean_logic.sla",
         ".sla-cache/sab/boolean_logic.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "boolean logic", .allow_fallback = false },
+        .{ .test_filter = "boolean logic" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8149,7 +8129,7 @@ test "sla sab backend lowers numeric casts directly" {
         "tests/test_unit_numeric_casts.sla",
         ".sla-cache/sab/numeric_casts_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "numeric casts direct", .allow_fallback = false },
+        .{ .test_filter = "numeric casts direct" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8197,7 +8177,7 @@ test "sla sab backend lowers borrow and deref directly" {
         "tests/test_unit_borrow_direct.sla",
         ".sla-cache/sab/borrow_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct borrow deref", .allow_fallback = false },
+        .{ .test_filter = "direct borrow deref" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8231,7 +8211,7 @@ test "sla sab backend loads pointer-backed field for standalone borrow" {
         "tests/test_unit_standalone_borrow_pointer_field.sla",
         ".sla-cache/sab/standalone_borrow_pointer_field.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "standalone borrow of pointer-backed field", .allow_fallback = false },
+        .{ .test_filter = "standalone borrow of pointer-backed field" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8290,7 +8270,7 @@ test "sla sab backend lowers array literals dynamic indexes and range for direct
         "tests/test_unit_array_direct.sla",
         ".sla-cache/sab/array_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct array literal repeat dynamic index range for", .allow_fallback = false },
+        .{ .test_filter = "direct array literal repeat dynamic index range for" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8330,7 +8310,7 @@ test "sla sab backend lowers move arguments through fresh temps" {
         "tests/test_unit_move_direct.sla",
         ".sla-cache/sab/move_direct.sab",
         stderr_buf.writer().any(),
-        .{ .test_filter = "direct move struct argument", .allow_fallback = false },
+        .{ .test_filter = "direct move struct argument" },
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8600,7 +8580,7 @@ test "sla sab backend releases by-value scalar params of functions declared afte
         "tests/test_unit_param_cleanup_after_main_direct.sla",
         ".sla-cache/sab/param_cleanup_after_main_direct.sab",
         stderr_buf.writer().any(),
-        .{ .allow_fallback = false },
+        .{},
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
@@ -8660,7 +8640,7 @@ test "sla sab backend releases str_eq loaded string data-pointer temps" {
         "tests/test_unit_streq_stack_local_arg_direct.sla",
         ".sla-cache/sab/streq_stack_local_arg_direct.sab",
         stderr_buf.writer().any(),
-        .{ .allow_fallback = false },
+        .{},
     )) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;

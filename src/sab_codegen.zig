@@ -12892,6 +12892,61 @@ pub const Codegen = struct {
         return sentinel;
     }
 
+    /// Direct-SAB `vec.remove(index)`, mirroring the SA-text backend
+    /// (`src/codegen.zig` `EXPAND VEC_REMOVE` + `panic(86)` on OOB).
+    /// Previously these calls fell through to a generic `@sla__remove`
+    /// method call whose body test-pruning drops, leaving a dangling callee
+    /// (`UnknownRegister` at runtime). Other receivers/widths stay on the
+    /// previous path.
+    fn genVecRemoveCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (!lowering_rules.isRemoveCall(call) or call.args.len != 2) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const elem_ty = lowering_rules.vecElementType(receiver_ty) orelse return null;
+        if (lowering_rules.vecElementSlotSize(elem_ty) != 8) return null;
+        const elem_prim = primType(elem_ty) catch return null;
+
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_try_remove"});
+        const receiver_reg = try self.genExpr(@constCast(call.args[0]));
+        const index_reg = try self.genExpr(@constCast(call.args[1]));
+        const ok_reg = try self.intern(try self.newTmp());
+        const raw_reg = try self.intern(try self.newTmp());
+        try self.recordReg(ok_reg);
+        try self.recordReg(raw_reg);
+        const size_text = try std.fmt.allocPrint(self.allocator, "{}", .{lowering_rules.vecElementSlotSize(elem_ty)});
+        try self.emitStdMacroFragment("sa_std/vec.sa", "VEC_REMOVE", &.{
+            self.symbols.items[ok_reg],
+            self.symbols.items[raw_reg],
+            self.symbols.items[receiver_reg],
+            self.symbols.items[index_reg],
+            size_text,
+        });
+
+        const hit_label = try self.newLabel("L_VEC_REMOVE_HIT");
+        const miss_label = try self.newLabel("L_VEC_REMOVE_MISS");
+        try self.emitBranch(ok_reg, hit_label, miss_label);
+
+        try self.emitLabel(miss_label);
+        try self.emitBranchRelease(ok_reg);
+        if (!self.isLocalReg(raw_reg)) try self.emitBranchRelease(raw_reg);
+        if (!self.isLocalReg(index_reg)) try self.emitBranchRelease(index_reg);
+        try self.emitPanicCode(86);
+
+        try self.emitLabel(hit_label);
+        try self.emitBranchRelease(ok_reg);
+        if (!self.isLocalReg(index_reg)) try self.emitRelease(index_reg);
+        if (elem_prim == .u64) return raw_reg;
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        var item = self.makeInst(.op);
+        item.op_kind = try opKindForCast(.u64, elem_prim);
+        item.operands[0] = .{ .reg = dst };
+        item.operands[1] = .{ .reg = raw_reg };
+        item.operands[2] = .{ .ty = @intFromEnum(elem_prim) };
+        try self.appendInst(item);
+        if (!self.isLocalReg(raw_reg)) try self.emitRelease(raw_reg);
+        return dst;
+    }
+
     fn emitMutexGuardRelease(self: *Codegen, handle: MutexGuardValue) !void {
         try self.emitStdMacroFragment("sa_std/sync/mutex.sa", "MUTEX_UNLOCK", &.{
             self.symbols.items[handle.mutex_reg],
@@ -14523,6 +14578,7 @@ pub const Codegen = struct {
         if (try self.genVecLiteralCall(expr, call)) |reg| return reg;
         if (try self.genVecPopCall(call)) |reg| return reg;
         if (try self.genVecPushCall(call)) |reg| return reg;
+        if (try self.genVecRemoveCall(call)) |reg| return reg;
         if (try self.genMapInsertCall(expr, call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genMutexLockCall(expr, call)) |reg| return reg;

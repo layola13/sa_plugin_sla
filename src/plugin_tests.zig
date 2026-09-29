@@ -4362,13 +4362,36 @@ test "sla build codegen keeps imported dyn trait impl bodies from registry" {
         std.debug.print("{s}", .{sa_stderr.items});
         return error.TestUnexpectedResult;
     };
+    // SAB-direct resolves associated calls (Box::new) through the std
+    // surface rules, which the loader finds via SLA_STD_DIR or the
+    // cwd-relative "sla_std/std_surface.sla_meta" candidate. Stage the
+    // package's real rules file into the tmp dir so this test is hermetic
+    // and does not depend on ambient SLA_STD_DIR.
+    const surface_meta = try original_cwd.readFileAlloc(allocator, "sla_std/std_surface.sla_meta", 1024 * 1024);
+    try tmp.dir.makeDir("sla_std");
+    try tmp.dir.writeFile(.{ .sub_path = "sla_std/std_surface.sla_meta", .data = surface_meta });
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing__Identified_get_id") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_dyn_body") == null);
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
-    // NOTE: no SAB-direct half here. It previously passed only through the
-    // SA-text fallback (now forbidden); Box<dyn> method dispatch is not yet
-    // covered by the SAB-direct emitter (backlog), so asserting it here
-    // would reintroduce fallback-masked coverage.
+
+    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    defer sab_stderr.deinit();
+    const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr.writer().any())) orelse {
+        std.debug.print("{s}", .{sab_stderr.items});
+        return error.TestUnexpectedResult;
+    };
+    var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
+    defer module.deinit(std.testing.allocator);
+
+    var saw_get_id = false;
+    var saw_unused_dyn = false;
+    for (module.function_sigs) |fsig| {
+        if (std.mem.indexOf(u8, fsig.name, "ImportedThing__Identified_get_id") != null) saw_get_id = true;
+        if (std.mem.indexOf(u8, fsig.name, "unused_dyn") != null) saw_unused_dyn = true;
+    }
+    try std.testing.expect(saw_get_id);
+    try std.testing.expect(!saw_unused_dyn);
+    try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
 }
 
 test "sla build codegen skips parsing non contributing imported function bodies" {

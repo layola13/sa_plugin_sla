@@ -1961,7 +1961,7 @@ pub const Codegen = struct {
 
     fn nodeUsesFutureTaskRuntime(node: *const ast.Node) bool {
         return switch (node.*) {
-            .func_decl => |f| blockUsesFutureTaskRuntime(f.body),
+            .func_decl => |f| f.is_async or blockUsesFutureTaskRuntime(f.body),
             .test_decl => |t| blockUsesFutureTaskRuntime(t.body),
             .let_stmt => |let| nodeUsesFutureTaskRuntime(let.value),
             .let_destructure_stmt => |let| nodeUsesFutureTaskRuntime(let.value),
@@ -1971,7 +1971,9 @@ pub const Codegen = struct {
             .expr_stmt => |expr| nodeUsesFutureTaskRuntime(expr),
             .return_stmt => |ret| if (ret.value) |value| nodeUsesFutureTaskRuntime(value) else false,
             .block_stmt => |block| blockUsesFutureTaskRuntime(block.body),
-            .await_expr => |aw| nodeUsesFutureTaskRuntime(aw.expr),
+            // SA-text parity (programNeedsAsyncMacros): any await needs the
+            // shared future helpers (READY/DEFER vtables + poll fns).
+            .await_expr => true,
             .binary_expr => |bin| nodeUsesFutureTaskRuntime(bin.left) or nodeUsesFutureTaskRuntime(bin.right),
             .borrow_expr => |borrow| nodeUsesFutureTaskRuntime(borrow.expr),
             .move_expr => |move| nodeUsesFutureTaskRuntime(move.expr),
@@ -12404,7 +12406,18 @@ pub const Codegen = struct {
         const receiver_reg = receiver_source.reg;
         const dst = try self.intern(try self.newTmp());
         try self.recordReg(dst);
-        try self.emitLoad(dst, receiver_reg, lowering_rules.VecAbi.len_offset, .u64);
+        // SA-text parity: scope the len load through an explicit borrow of
+        // the Vec value (SA-text emits `tmp = &vec … load tmp+len … !tmp`
+        // before moving the value). Loading directly off the Composite
+        // value leaves a live derivative at the owner's move, so loop-head
+        // merges see Composite vs Uninitialized (trap 1015, e.g.
+        // `len(holder.values)` in a while cond). The borrow attributes the
+        // derivation to the borrow temp; releasing it first lets the
+        // owner's move retire cleanly.
+        const len_view = try self.intern(try self.newTmp());
+        try self.emitBorrowReg(len_view, receiver_reg, "read");
+        try self.emitLoad(dst, len_view, lowering_rules.VecAbi.len_offset, .u64);
+        try self.emitRelease(len_view);
         try self.releaseAddressSource(receiver_source);
         return dst;
     }

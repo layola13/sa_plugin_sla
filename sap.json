@@ -1,7 +1,7 @@
 {
   "schema": "sa.plugin/1",
   "name": "sla",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "source": {
     "type": "local",
     "path": "."

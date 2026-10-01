@@ -1,0 +1,9 @@
+# Binaries are build artifacts fetched from GitHub Releases
+# (npm/tools/fetch-sla-binaries.sh) or staged from local builds
+# (npm/tools/stage-sla-binaries.sh) — never committed.
+packages/sla-linux-x64/bin/sla
+packages/sla-linux-arm64/bin/sla
+packages/sla-darwin-arm64/bin/sla
+packages/sla-darwin-x64/bin/sla
+packages/sla-win32-x64/bin/sla.exe
+packages/sla-freebsd-x64/bin/sla

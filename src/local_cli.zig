@@ -1,6 +1,7 @@
 const std = @import("std");
 const plugin = @import("plugin.zig");
 const plugin_api = @import("plugin_api");
+const sla_build_options = @import("sla_build_options");
 
 /// Returns true when the token is one of the sla plugin's top-level commands,
 /// i.e. something that should be dispatched as `sla <command> ...`.  When the
@@ -23,7 +24,7 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, argv);
 
     if (argv.len >= 2 and (std.mem.eql(u8, argv[1], "--version") or std.mem.eql(u8, argv[1], "-V"))) {
-        try std.io.getStdOut().writer().print("sla 0.1.0{c}", .{10});
+        try std.io.getStdOut().writer().print("sla {s}{c}", .{ sla_build_options.version, 10 });
         return;
     }
 

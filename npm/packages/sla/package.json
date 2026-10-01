@@ -1,0 +1,39 @@
+{
+  "name": "@slalang/sla",
+  "version": "0.1.3",
+  "description": "Sla language toolchain (global sla command), powered by the SA compiler",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/layola13/sa_plugin_sla"
+  },
+  "homepage": "https://github.com/layola13/sa_plugin_sla",
+  "keywords": [
+    "sla",
+    "sa",
+    "compiler",
+    "language"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "bin": {
+    "sla": "bin/sla.js"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@salang/sa": "0.1.3"
+  },
+  "optionalDependencies": {
+    "@slalang/sla-darwin-arm64": "0.1.3",
+    "@slalang/sla-darwin-x64": "0.1.3",
+    "@slalang/sla-freebsd-x64": "0.1.3",
+    "@slalang/sla-linux-arm64": "0.1.3",
+    "@slalang/sla-linux-x64": "0.1.3",
+    "@slalang/sla-win32-x64": "0.1.3"
+  }
+}

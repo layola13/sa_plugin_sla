@@ -2,6 +2,17 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    // System root / libc installation file for cross-compilation to targets
+    // without bundled libc (FreeBSD: extract base.txz, generate libc file;
+    // same pattern as sci/build.zig -Dsysroot/-Dlibc).
+    if (b.option([]const u8, "sysroot", "System root directory for cross-compilation (provides target libc headers/libs).")) |s| {
+        b.sysroot = s;
+    }
+    if (b.option([]const u8, "libc", "Custom libc installation file for cross-compilation targets without bundled libc.")) |l| {
+        b.libc_file = l;
+    }
+    // SLA toolchain version, kept in sync with the @salang/sa npm line.
+    const sla_version = b.option([]const u8, "version", "SLA toolchain semantic version.") orelse "0.1.3";
     const requested_optimize = b.standardOptimizeOption(.{});
     const optimize = effectiveOptimizeForDevInstall(b, requested_optimize);
     const test_filter = b.option([]const u8, "test-filter", "Only compile and run Zig tests whose name contains this filter.");
@@ -26,6 +37,7 @@ pub fn build(b: *std.Build) void {
     sci_build_options.addOption([]const u8, "version", "dev");
     const sla_build_options = b.addOptions();
     sla_build_options.addOption([]const u8, "sa_std_dir", sa_std_dir);
+    sla_build_options.addOption([]const u8, "version", sla_version);
     const sa_std_source_dir = b.pathJoin(&.{ repo_root, "sa_std" });
     sla_build_options.addOption([]const u8, "sa_std_source_dir", sa_std_source_dir);
     const root_module = b.createModule(.{

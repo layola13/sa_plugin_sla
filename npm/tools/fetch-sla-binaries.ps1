@@ -1,4 +1,4 @@
-#Requires-Version 7.0
+#Requires -Version 7.0
 <#
 .SYNOPSIS
   Fetch prebuilt `sla` binaries from a sa_plugin_sla GitHub Release.

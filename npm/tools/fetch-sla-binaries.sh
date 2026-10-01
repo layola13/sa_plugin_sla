@@ -37,3 +37,10 @@ fetch mac-aarch64    darwin-arm64 sla
 fetch mac-x86_64     darwin-x64  sla
 fetch windows-x86_64 win32-x64   sla.exe
 fetch freebsd-x86_64 freebsd-x64 sla
+
+# Stage the SLA source stdlib (platform-independent) into the @slalang/sla
+# meta package. Sources, not binaries: copy straight from this checkout
+# (same tag as the release being published).
+rm -rf "$ROOT/packages/sla/sla_std"
+cp -r "$ROOT/../sla_std" "$ROOT/packages/sla/sla_std"
+echo "[ok] sla stdlib <= $ROOT/../sla_std"

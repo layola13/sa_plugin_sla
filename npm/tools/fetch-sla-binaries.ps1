@@ -46,5 +46,14 @@ foreach ($m in $Map) {
     Write-Host "[ok] sla-$($m[1]) <= sla-$Version-$($m[0]).zip"
 }
 
+# Stage the SLA source stdlib (platform-independent) into the @slalang/sla
+# meta package. Sources, not binaries: copy straight from this checkout
+# (same tag as the release being published).
+$StdSrc = Join-Path (Split-Path $Root -Parent) "sla_std"
+$StdDst = Join-Path $Root "packages/sla/sla_std"
+if (Test-Path $StdDst) { Remove-Item -Recurse -Force $StdDst }
+Copy-Item -Recurse -Force $StdSrc $StdDst
+Write-Host "[ok] sla stdlib <= $StdSrc"
+
 Remove-Item -Recurse -Force $Tmp
 Write-Host "[✓] all platform binaries staged under npm/packages/*/bin"

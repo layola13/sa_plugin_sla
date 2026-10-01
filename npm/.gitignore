@@ -7,3 +7,6 @@ packages/sla-darwin-arm64/bin/sla
 packages/sla-darwin-x64/bin/sla
 packages/sla-win32-x64/bin/sla.exe
 packages/sla-freebsd-x64/bin/sla
+# Staged SLA source stdlib copy for the @slalang/sla meta package
+# (copied from ../sla_std by stage/fetch scripts at publish time).
+packages/sla/sla_std/

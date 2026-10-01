@@ -73,6 +73,31 @@ function main() {
   const saDir = pkgDir('@salang/sa');
   if (saDir) prependPath(path.join(saDir, 'bin'));
 
+  // Bundled stdlibs: the meta packages ship their source stdlibs
+  // (@slalang/sla/sla_std, @salang/sa/sa_std). Point the env vars at them
+  // unless the user already set ones; both compilers prefer the env var
+  // over any baked-in fallback path.
+  if (!env.SLA_STD_DIR) {
+    const metaDir = pkgDir('@slalang/sla');
+    if (metaDir) {
+      const bundled = path.join(metaDir, 'sla_std');
+      try {
+        fs.accessSync(path.join(bundled, 'cmp.sla'));
+        env.SLA_STD_DIR = bundled;
+      } catch {}
+    }
+  }
+  if (!env.SA_STD_DIR) {
+    const saMetaDir = pkgDir('@salang/sa');
+    if (saMetaDir) {
+      const bundled = path.join(saMetaDir, 'sa_std');
+      try {
+        fs.accessSync(path.join(bundled, 'io', 'print.sai'));
+        env.SA_STD_DIR = bundled;
+      } catch {}
+    }
+  }
+
   const binPath = path.join(slaDir, 'bin', entry.bin);
   // Tarballs packed on Windows lose the Unix exec bit; restore it.
   try {

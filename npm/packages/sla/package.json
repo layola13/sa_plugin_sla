@@ -22,6 +22,7 @@
   },
   "files": [
     "bin/",
+    "sla_std/",
     "README.md",
     "LICENSE"
   ],

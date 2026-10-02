@@ -18,6 +18,11 @@ pub const Token = struct {
         int_literal,
         float_literal,
         string_literal,
+        // Template literal pieces: `head ${expr} tail`
+        template_start, // opening backtick
+        template_string, // raw literal chunk (escapes unprocessed)
+        template_interp, // ${
+        template_end, // closing backtick
 
         // Keywords
         keyword_struct,
@@ -103,6 +108,14 @@ pub const Token = struct {
 pub const Lexer = struct {
     buffer: []const u8,
     index: usize,
+    /// True while scanning template-literal text (between ` and ${ or `).
+    in_template: bool = false,
+    /// Open `${` depth while lexing an interpolation (0 at template level).
+    /// `{`/`}` adjust it only when > 0, so plain blocks are untouched.
+    interp_depth: u16 = 0,
+    /// Saved interp depths for nested templates (cap 8, else invalid).
+    tmpl_stack: [8]u16 = [_]u16{0} ** 8,
+    tmpl_sp: u8 = 0,
 
     pub fn init(buffer: []const u8) Lexer {
         return .{
@@ -111,7 +124,51 @@ pub const Lexer = struct {
         };
     }
 
+    fn invalidAt(self: *Lexer, start: usize) Token {
+        return Token{ .tag = .invalid, .loc = .{ .start = start, .end = self.index } };
+    }
+
+    /// Scans one template-literal piece. Called with in_template set;
+    /// whitespace is significant here. Returns template_string chunks,
+    /// template_interp (`${`), or template_end (closing backtick).
+    fn nextTemplate(self: *Lexer) Token {
+        // `${` opener.
+        if (self.index + 1 < self.buffer.len and self.buffer[self.index] == '$' and self.buffer[self.index + 1] == '{') {
+            const start = self.index;
+            self.index += 2;
+            self.in_template = false;
+            self.interp_depth = 1;
+            return Token{ .tag = .template_interp, .loc = .{ .start = start, .end = self.index } };
+        }
+        // Closing backtick.
+        if (self.index < self.buffer.len and self.buffer[self.index] == '`') {
+            const start = self.index;
+            self.index += 1;
+            if (self.tmpl_sp == 0) return self.invalidAt(start);
+            self.tmpl_sp -= 1;
+            self.interp_depth = self.tmpl_stack[self.tmpl_sp];
+            self.in_template = false;
+            return Token{ .tag = .template_end, .loc = .{ .start = start, .end = self.index } };
+        }
+        // Literal chunk up to (not consuming) `${`, backtick, or EOF.
+        const start = self.index;
+        while (self.index < self.buffer.len) {
+            const c = self.buffer[self.index];
+            if (c == '\\') {
+                self.index += 2;
+                continue;
+            }
+            if (c == '`') break;
+            if (c == '$' and self.index + 1 < self.buffer.len and self.buffer[self.index + 1] == '{') break;
+            self.index += 1;
+        }
+        if (self.index >= self.buffer.len) return self.invalidAt(start);
+        return Token{ .tag = .template_string, .loc = .{ .start = start, .end = self.index } };
+    }
+
     pub fn next(self: *Lexer) Token {
+        // Template-literal text is significant whitespace: bypass skipping.
+        if (self.in_template) return self.nextTemplate();
         self.skipWhitespace();
 
         if (self.index >= self.buffer.len) {
@@ -226,8 +283,17 @@ pub const Lexer = struct {
             },
             '(' => return Token{ .tag = .l_paren, .loc = .{ .start = start, .end = self.index } },
             ')' => return Token{ .tag = .r_paren, .loc = .{ .start = start, .end = self.index } },
-            '{' => return Token{ .tag = .l_brace, .loc = .{ .start = start, .end = self.index } },
-            '}' => return Token{ .tag = .r_brace, .loc = .{ .start = start, .end = self.index } },
+            '{' => {
+                if (self.interp_depth > 0) self.interp_depth += 1;
+                return Token{ .tag = .l_brace, .loc = .{ .start = start, .end = self.index } };
+            },
+            '}' => {
+                if (self.interp_depth > 0) {
+                    self.interp_depth -= 1;
+                    if (self.interp_depth == 0) self.in_template = true;
+                }
+                return Token{ .tag = .r_brace, .loc = .{ .start = start, .end = self.index } };
+            },
             '[' => return Token{ .tag = .l_bracket, .loc = .{ .start = start, .end = self.index } },
             ']' => return Token{ .tag = .r_bracket, .loc = .{ .start = start, .end = self.index } },
             '<' => {
@@ -306,6 +372,17 @@ pub const Lexer = struct {
                 }
                 const tag: Token.Tag = if (is_float) .float_literal else .int_literal;
                 return Token{ .tag = tag, .loc = .{ .start = start, .end = self.index } };
+            },
+            '`' => {
+                // Template open (possibly nested inside an interpolation).
+                if (self.tmpl_sp >= self.tmpl_stack.len) {
+                    return Token{ .tag = .invalid, .loc = .{ .start = start, .end = self.index } };
+                }
+                self.tmpl_stack[self.tmpl_sp] = self.interp_depth;
+                self.tmpl_sp += 1;
+                self.interp_depth = 0;
+                self.in_template = true;
+                return Token{ .tag = .template_start, .loc = .{ .start = start, .end = self.index } };
             },
             else => return Token{ .tag = .invalid, .loc = .{ .start = start, .end = self.index } },
         }

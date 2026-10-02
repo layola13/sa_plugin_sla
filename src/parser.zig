@@ -2639,6 +2639,7 @@ pub const Parser = struct {
             .int_literal,
             .float_literal,
             .string_literal,
+            .template_start,
             .identifier,
             .ampersand,
             .caret,
@@ -2729,6 +2730,9 @@ pub const Parser = struct {
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .literal = .{ .string_val = val } };
                 return node;
+            },
+            .template_start => {
+                return try self.parseTemplateLiteral();
             },
             .identifier => {
                 const tok = self.tok;
@@ -3135,6 +3139,104 @@ pub const Parser = struct {
             .keyword_as => 9,
             else => 0,
         };
+    }
+
+    /// Appends one raw template chunk to a synthesized `format()` pattern.
+    /// Backslashes pass through untouched (regular strings unescape them
+    /// downstream); only template-only escapes are resolved here (`\${`
+    /// would otherwise be an unknown downstream escape). `"` is escaped
+    /// for the synthesized literal; `{`/`}` are doubled for `format()`.
+    fn appendTemplateChunk(out: *std.ArrayList(u8), raw: []const u8) ParserError!void {
+        const push = struct {
+            fn s(list: *std.ArrayList(u8), text: []const u8) ParserError!void {
+                list.appendSlice(text) catch return ParserError.OutOfMemory;
+            }
+            fn c(list: *std.ArrayList(u8), ch: u8) ParserError!void {
+                list.append(ch) catch return ParserError.OutOfMemory;
+            }
+        };
+        var i: usize = 0;
+        while (i < raw.len) {
+            const c = raw[i];
+            if (c == '\\') {
+                if (i + 1 >= raw.len) {
+                    try push.c(out, c);
+                    break;
+                }
+                const n = raw[i + 1];
+                if (n == '$' and i + 2 < raw.len and raw[i + 2] == '{') {
+                    try push.s(out, "${");
+                    i += 3;
+                    continue;
+                } else if (n == '`') {
+                    try push.c(out, '`');
+                    i += 2;
+                    continue;
+                } else {
+                    try push.c(out, c);
+                    try push.c(out, n);
+                    i += 2;
+                    continue;
+                }
+            }
+            if (c == '"') {
+                try push.s(out, "\\\"");
+            } else if (c == '{') {
+                try push.s(out, "{{");
+            } else if (c == '}') {
+                try push.s(out, "}}");
+            } else {
+                try push.c(out, c);
+            }
+            i += 1;
+        }
+    }
+
+    /// Parses a template literal (called on `template_start`) and desugars
+    /// `` `head ${a} tail` `` to `format("head {} tail", a)`. Interpolation
+    /// reuses the existing `format()` machinery, so supported value types
+    /// are exactly `format()`'s (strings, ints, floats, bools). A template
+    /// without interpolation degrades to a plain string literal.
+    fn parseTemplateLiteral(self: *Parser) ParserError!*ast.Node {
+        try self.expect(.template_start);
+        var fmt_parts = std.ArrayList(u8).init(self.allocator);
+        var args = std.ArrayList(*ast.Node).init(self.allocator);
+        while (true) {
+            if (self.peek() == .template_string) {
+                const tok = self.tok;
+                self.advance();
+                try appendTemplateChunk(&fmt_parts, self.lexeme(tok.loc));
+            } else if (self.peek() == .template_interp) {
+                self.advance();
+                const arg = try self.parseExpr(0);
+                try self.expect(.r_brace);
+                fmt_parts.appendSlice("{}") catch return ParserError.OutOfMemory;
+                args.append(arg) catch return ParserError.OutOfMemory;
+            } else if (self.peek() == .template_end) {
+                self.advance();
+                break;
+            } else {
+                return ParserError.UnexpectedToken;
+            }
+        }
+        const fmt_text = fmt_parts.toOwnedSlice() catch return ParserError.OutOfMemory;
+        const fmt_node = try self.allocator.create(ast.Node);
+        fmt_node.* = .{ .literal = .{ .string_val = fmt_text } };
+        if (args.items.len == 0) return fmt_node;
+        const call_args = try self.allocator.alloc(*ast.Node, args.items.len + 1);
+        call_args[0] = fmt_node;
+        @memcpy(call_args[1..], args.items);
+        const generics = try self.allocator.alloc(*ast.Type, 0);
+        const node = try self.allocator.create(ast.Node);
+        node.* = .{
+            .call_expr = .{
+                .func_name = "format",
+                .associated_target = null,
+                .generics = generics,
+                .args = call_args,
+            },
+        };
+        return node;
     }
 
     fn parseIfExpr(self: *Parser) ParserError!*ast.Node {
@@ -3799,8 +3901,7 @@ test "sla postfix bang desugars to unwrap call" {
     try std.testing.expect(call.args.len == 1);
 }
 
-test "sla optional chain desugars to if-let-Some" {
-    const source =
+test "sla optional chain desugars to if-let-Some" {    const source =
         \\fn pick(o: i64) -> i64 {
         \\    return o?.field;
         \\}
@@ -3858,4 +3959,41 @@ test "parser rejects legacy let mut" {
     defer arena.deinit();
     var p = Parser.init(arena.allocator(), source);
     try std.testing.expectError(ParserError.UnexpectedToken, p.parseProgram());
+}
+
+test "sla template literal desugars to format call" {
+    const source =
+        \\fn greet(name: i64) -> i64 {
+        \\    return `hi ${name}!`;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const greet = prog.program.decls[0].func_decl;
+    try std.testing.expect(greet.body[0].* == .return_stmt);
+    const call = greet.body[0].return_stmt.value.?.call_expr;
+    try std.testing.expect(std.mem.eql(u8, call.func_name, "format"));
+    try std.testing.expect(call.args.len == 2);
+    try std.testing.expect(call.args[0].* == .literal);
+}
+
+test "sla plain template degrades to string literal" {
+    const source =
+        \\fn plain() -> i64 {
+        \\    return `just text`;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const plain = prog.program.decls[0].func_decl;
+    try std.testing.expect(plain.body[0].* == .return_stmt);
+    try std.testing.expect(plain.body[0].return_stmt.value.?.* == .literal);
 }

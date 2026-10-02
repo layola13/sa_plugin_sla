@@ -95,6 +95,7 @@ pub const Token = struct {
         range, // ..
         question_mark, // ?
         question_question, // ??
+        question_dot, // ?.
         at, // @
     };
 };
@@ -130,6 +131,14 @@ pub const Lexer = struct {
                 if (self.index < self.buffer.len and self.buffer[self.index] == '?') {
                     self.index += 1;
                     return Token{ .tag = .question_question, .loc = .{ .start = start, .end = self.index } };
+                }
+                // `?.` is the optional chain, but NOT when a digit follows
+                // (TS rule: `a?.5:0` stays ternary + number).
+                if (self.index < self.buffer.len and self.buffer[self.index] == '.' and
+                    (self.index + 1 >= self.buffer.len or !std.ascii.isDigit(self.buffer[self.index + 1])))
+                {
+                    self.index += 1;
+                    return Token{ .tag = .question_dot, .loc = .{ .start = start, .end = self.index } };
                 }
                 return Token{ .tag = .question_mark, .loc = .{ .start = start, .end = self.index } };
             },

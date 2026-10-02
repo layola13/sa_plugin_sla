@@ -57,6 +57,9 @@ pub const Parser = struct {
     import_type_scan_cache: ImportTypeScanCache,
     import_type_scan_cache_hits: usize,
     options: Options,
+    /// Counter for parser-synthesized temporaries (`?.` desugar). Fresh per
+    /// Parser so nested/chained chains never collide with each other.
+    synth_counter: usize,
     /// Exact `{ ... }` source slices for function bodies that were skipped
     /// during the current parse. Keys are the created `func_decl` nodes and
     /// values point into the parser buffer / expanded module source.
@@ -85,6 +88,7 @@ pub const Parser = struct {
             .import_type_scan_cache = ImportTypeScanCache.init(allocator),
             .import_type_scan_cache_hits = 0,
             .options = options,
+            .synth_counter = 0,
             .function_body_spans = std.AutoHashMap(*ast.Node, []const u8).init(allocator),
         };
         p.tok = p.lex.next();
@@ -2538,6 +2542,69 @@ pub const Parser = struct {
                 continue;
             }
 
+            // Optional chain `a?.field` desugars (single evaluation) to:
+            //   if let Some(__qcN) = a { Some(__qcN.field) } else { None }
+            // so a None LHS yields None instead of propagating. Postfix binds
+            // tightest: fire at any level; `a?.b == c` reads `(a?.b) == c`.
+            // Method form `a?.m()` is NOT covered yet (clear error below when
+            // `(` follows the desugared node).
+            if (self.peek() == .question_dot) {
+                self.advance();
+                const field_tok = self.tok;
+                if (self.peek() != .identifier and self.peek() != .int_literal) return ParserError.UnexpectedToken;
+                self.advance();
+                const field_name = self.lexeme(field_tok.loc);
+
+                const tmp_name = try std.fmt.allocPrint(self.allocator, "__qc{d}", .{self.synth_counter});
+                self.synth_counter += 1;
+                const bindings = try self.allocator.alloc([]const u8, 1);
+                bindings[0] = tmp_name;
+                const chain = try self.allocator.alloc(ast.IfLetCond, 1);
+                chain[0] = .{
+                    .pattern = .{ .enum_name = "Option", .variant_name = "Some", .bindings = bindings },
+                    .value = left,
+                };
+
+                const tmp_ident = try self.allocator.create(ast.Node);
+                tmp_ident.* = .{ .identifier = tmp_name };
+                const field_access = try self.allocator.create(ast.Node);
+                field_access.* = .{ .field_expr = .{ .expr = tmp_ident, .field_name = field_name } };
+                const some_args = try self.allocator.alloc(*ast.Node, 1);
+                some_args[0] = field_access;
+                const generics = try self.allocator.alloc(*ast.Type, 0);
+                const some_call = try self.allocator.create(ast.Node);
+                some_call.* = .{
+                    .call_expr = .{
+                        .func_name = "Some",
+                        .associated_target = null,
+                        .generics = generics,
+                        .args = some_args,
+                    },
+                };
+                const then_node = try self.allocator.create(ast.Node);
+                then_node.* = .{ .expr_stmt = some_call };
+                const none_ident = try self.allocator.create(ast.Node);
+                none_ident.* = .{ .identifier = "None" };
+                const else_node = try self.allocator.create(ast.Node);
+                else_node.* = .{ .expr_stmt = none_ident };
+                const then_block = try self.allocator.alloc(*ast.Node, 1);
+                then_block[0] = then_node;
+                const else_block = try self.allocator.alloc(*ast.Node, 1);
+                else_block[0] = else_node;
+
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{
+                    .if_expr = .{
+                        .cond = left,
+                        .let_chain = chain,
+                        .then_block = then_block,
+                        .else_block = else_block,
+                    },
+                };
+                left = node;
+                continue;
+            }
+
             var op_prec = self.getInfixPrecedence(self.peek());
             // A `<` following an identifier may begin a generic call `f<T>(...)`,
             // generic struct literal `S<T> { ... }`, or generic function reference
@@ -3730,6 +3797,26 @@ test "sla postfix bang desugars to unwrap call" {
     const call = force.body[0].return_stmt.value.?.call_expr;
     try std.testing.expect(std.mem.eql(u8, call.func_name, "unwrap"));
     try std.testing.expect(call.args.len == 1);
+}
+
+test "sla optional chain desugars to if-let-Some" {
+    const source =
+        \\fn pick(o: i64) -> i64 {
+        \\    return o?.field;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const pick = prog.program.decls[0].func_decl;
+    try std.testing.expect(pick.body[0].* == .return_stmt);
+    const ife = &pick.body[0].return_stmt.value.?.if_expr;
+    try std.testing.expect(ife.let_chain != null);
+    try std.testing.expect(ife.let_chain.?[0].pattern.variant_name[0] == 'S');
+    try std.testing.expect(ife.else_block != null);
 }
 
 test "syntax diagnostic includes location token and context" {

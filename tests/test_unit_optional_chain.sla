@@ -1,0 +1,21 @@
+@import "sa_std/core/option.sa"
+
+struct QcPoint {
+    x: i32,
+    y: i32,
+}
+
+@test "optional chain Some yields Some field"() {
+    let p: Option<QcPoint> = Some(QcPoint { x: 1, y: 2 });
+    if (p?.x ?? -1) != 1 { panic(95101); };
+};
+
+@test "optional chain None yields None"() {
+    let q: Option<QcPoint> = None;
+    if (q?.x ?? -1) != -1 { panic(95102); };
+};
+
+@test "optional chain picks second field"() {
+    let p: Option<QcPoint> = Some(QcPoint { x: 1, y: 2 });
+    if (p?.y ?? -1) != 2 { panic(95103); };
+};

@@ -3955,6 +3955,10 @@ pub const Codegen = struct {
         return lowering_rules.enumVariantIndex(e, name);
     }
 
+    fn enumVariantValue(e: *const ast.EnumDecl, name: []const u8) ?i64 {
+        return lowering_rules.enumVariantValue(e, name);
+    }
+
     fn enumVariant(e: *const ast.EnumDecl, name: []const u8) ?ast.EnumVariant {
         return lowering_rules.enumVariant(e, name);
     }
@@ -3967,9 +3971,9 @@ pub const Codegen = struct {
     fn genEnumPatternCheck(self: *Codegen, decl: *const ast.EnumDecl, pattern: ast.EnumPattern, value_reg: []const u8, branch_flag: []const u8) CodegenError!void {
         const tag_reg = try self.newTmp();
         self.out.writer().print("    {s} = load {s}+0 as i64\n", .{ tag_reg, value_reg }) catch return CodegenError.CodegenError;
-        const tag = enumVariantIndex(decl, pattern.variant_name) orelse return CodegenError.CodegenError;
+        const tag = enumVariantValue(decl, pattern.variant_name) orelse return CodegenError.CodegenError;
         const tag_const = try self.newTmp();
-        try self.emitIntConst(tag_const, @as(i64, @intCast(tag)));
+        try self.emitIntConst(tag_const, tag);
         self.out.writer().print("    {s} = eq {s}, {s}\n", .{ branch_flag, tag_reg, tag_const }) catch return CodegenError.CodegenError;
         self.out.writer().print("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
         self.out.writer().print("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;
@@ -11458,7 +11462,7 @@ pub const Codegen = struct {
             return;
         }
         const decl = self.tc.enums.get(lit.enum_name) orelse return CodegenError.CodegenError;
-        const tag = enumVariantIndex(decl, lit.variant_name) orelse return CodegenError.CodegenError;
+        const tag = enumVariantValue(decl, lit.variant_name) orelse return CodegenError.CodegenError;
         const variant = enumVariant(decl, lit.variant_name) orelse return CodegenError.CodegenError;
 
         self.out.writer().print("    {s} = alloc {}\n", .{ target, enumSize(decl) }) catch return CodegenError.CodegenError;
@@ -11525,9 +11529,9 @@ pub const Codegen = struct {
             }
             const tag_reg = try self.newTmp();
             self.out.writer().print("    {s} = load {s}+0 as i64\n", .{ tag_reg, val_reg }) catch return CodegenError.CodegenError;
-            const tag = enumVariantIndex(decl, case.pattern.variant_name) orelse return CodegenError.CodegenError;
+            const tag = enumVariantValue(decl, case.pattern.variant_name) orelse return CodegenError.CodegenError;
             const tag_const = try self.newTmp();
-            try self.emitIntConst(tag_const, @as(i64, @intCast(tag)));
+            try self.emitIntConst(tag_const, tag);
             const cond = try self.newTmp();
             cond_regs.append(cond) catch return CodegenError.OutOfMemory;
             self.out.writer().print("    {s} = eq {s}, {s}\n", .{ cond, tag_reg, tag_const }) catch return CodegenError.CodegenError;
@@ -15508,11 +15512,11 @@ pub const Codegen = struct {
                             if (case.pattern.* == .enum_literal) {
                                 const lit = case.pattern.enum_literal;
                                 if (lit.fields.len == 0 and enumNameMatchesDecl(lit.enum_name, decl.name)) {
-                                    if (enumVariantIndex(decl, lit.variant_name)) |tag| {
+                                    if (enumVariantValue(decl, lit.variant_name)) |tag| {
                                         const tag_reg = try self.newTmp();
                                         self.out.writer().print("    {s} = load {s}+0 as i64\n", .{ tag_reg, val_reg }) catch return CodegenError.CodegenError;
                                         const tag_const = try self.newTmp();
-                                        try self.emitIntConst(tag_const, @as(i64, @intCast(tag)));
+                                        try self.emitIntConst(tag_const, tag);
                                         self.out.writer().print("    {s} = eq {s}, {s}\n", .{ is_eq, tag_reg, tag_const }) catch return CodegenError.CodegenError;
                                         self.out.writer().print("    !{s}\n", .{tag_reg}) catch return CodegenError.CodegenError;
                                         self.out.writer().print("    !{s}\n", .{tag_const}) catch return CodegenError.CodegenError;

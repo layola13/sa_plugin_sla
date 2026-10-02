@@ -812,6 +812,23 @@ pub const Parser = struct {
             try self.expect(.identifier);
             const variant_name = self.lexeme(variant_tok.loc);
 
+            // Explicit discriminant: `Red = 1` (C/TS-like). Leading digits
+            // only; a trailing type suffix (`1u8`) is accepted and ignored.
+            var discriminant: ?i64 = null;
+            if (self.match(.equal)) {
+                var negative = false;
+                if (self.match(.minus)) negative = true;
+                const num_tok = self.tok;
+                try self.expect(.int_literal);
+                const num_str = self.lexeme(num_tok.loc);
+                var digit_len: usize = 0;
+                while (digit_len < num_str.len and std.ascii.isDigit(num_str[digit_len])) : (digit_len += 1) {}
+                if (digit_len == 0) return ParserError.InvalidCharacter;
+                var value = std.fmt.parseInt(i64, num_str[0..digit_len], 10) catch return ParserError.InvalidCharacter;
+                if (negative) value = -value;
+                discriminant = value;
+            }
+
             var fields = std.ArrayList(ast.Field).init(self.allocator);
             if (self.match(.l_brace)) {
                 while (self.peek() != .r_brace and self.peek() != .eof) {
@@ -836,10 +853,28 @@ pub const Parser = struct {
                 try self.expect(.r_paren);
             }
 
-            try variants.append(.{ .name = variant_name, .fields = try fields.toOwnedSlice() });
+            try variants.append(.{ .name = variant_name, .fields = try fields.toOwnedSlice(), .discriminant = discriminant });
             _ = self.match(.comma);
         }
         try self.expect(.r_brace);
+
+        // Explicit discriminants only make sense on fieldless variants, and
+        // effective values (explicit or C-like auto-increment from 0) must be
+        // unique or match arms would silently miscompile. Deliberately
+        // stricter than C: `A, B = 0` (aliased tags) is rejected here.
+        {
+            var seen = std.ArrayList(i64).init(self.allocator);
+            var next_auto: i64 = 0;
+            for (variants.items) |variant| {
+                if (variant.fields.len != 0 and variant.discriminant != null) return ParserError.UnexpectedToken;
+                const value = variant.discriminant orelse next_auto;
+                for (seen.items) |prev| {
+                    if (prev == value) return ParserError.UnexpectedToken;
+                }
+                seen.append(value) catch return ParserError.OutOfMemory;
+                next_auto = value + 1;
+            }
+        }
 
         const node = try self.allocator.create(ast.Node);
         node.* = .{ .enum_decl = .{ .name = name, .generics = try generics.toOwnedSlice(), .variants = try variants.toOwnedSlice() } };
@@ -3981,8 +4016,7 @@ test "sla template literal desugars to format call" {
     try std.testing.expect(call.args[0].* == .literal);
 }
 
-test "sla plain template degrades to string literal" {
-    const source =
+test "sla plain template degrades to string literal" {    const source =
         \\fn plain() -> i64 {
         \\    return `just text`;
         \\}
@@ -3996,4 +4030,55 @@ test "sla plain template degrades to string literal" {
     const plain = prog.program.decls[0].func_decl;
     try std.testing.expect(plain.body[0].* == .return_stmt);
     try std.testing.expect(plain.body[0].return_stmt.value.?.* == .literal);
+}
+
+test "sla enum accepts explicit discriminants" {
+    const source =
+        \\enum Code {
+        \\    Ok,
+        \\    NotFound = 5,
+        \\    Denied,
+        \\    Custom = -2,
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    try std.testing.expect(prog.program.decls[0].* == .enum_decl);
+    const variants = prog.program.decls[0].enum_decl.variants;
+    try std.testing.expectEqual(@as(usize, 4), variants.len);
+    try std.testing.expect(variants[0].discriminant == null);
+    try std.testing.expectEqual(@as(i64, 5), variants[1].discriminant.?);
+    try std.testing.expect(variants[2].discriminant == null);
+    try std.testing.expectEqual(@as(i64, -2), variants[3].discriminant.?);
+}
+
+test "sla enum rejects duplicate effective discriminants" {
+    const source =
+        \\enum Dup {
+        \\    A,
+        \\    B = 0,
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    try std.testing.expectError(ParserError.UnexpectedToken, parser.parseProgram());
+}
+
+test "sla enum rejects explicit value on payload variant" {
+    const source =
+        \\enum Bad {
+        \\    Pair = 3 { x: i32 },
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    try std.testing.expectError(ParserError.UnexpectedToken, parser.parseProgram());
 }

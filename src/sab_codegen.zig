@@ -1631,10 +1631,10 @@ pub const Codegen = struct {
     ) !void {
         if (plan.isEnumVariant()) {
             const decl = enum_decl orelse return Error.UnsupportedSabDirectFeature;
-            const tag = lowering_rules.enumVariantIndex(decl, pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+            const tag = lowering_rules.enumVariantValue(decl, pattern.variant_name) orelse return Error.UnsupportedSabDirectFeature;
             const tag_reg = try self.intern(try self.newTmp());
             try self.emitLoad(tag_reg, value_reg, lowering_rules.enum_tag_offset, .i64);
-            try self.emitOp(branch_flag, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = @intCast(tag) });
+            try self.emitOp(branch_flag, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = tag });
             try self.emitRelease(tag_reg);
             return;
         }
@@ -9034,14 +9034,14 @@ pub const Codegen = struct {
 
     fn genMacroEnumLiteral(self: *Codegen, lit: ast.EnumLiteral, ctx: *MacroExpansionContext) anyerror!u32 {
         const decl = self.tc.enums.get(lit.enum_name) orelse return Error.UnsupportedSabDirectFeature;
-        const tag = lowering_rules.enumVariantIndex(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+        const tag = lowering_rules.enumVariantValue(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
         const variant = lowering_rules.enumVariant(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, lowering_rules.enumAbiSize(decl));
 
         const tag_reg = try self.intern(try self.newTmp());
-        try self.emitAssignImm(tag_reg, @intCast(tag));
+        try self.emitAssignImm(tag_reg, tag);
         try self.emitStore(dst, lowering_rules.enum_tag_offset, tag_reg, .i64);
         try self.emitRelease(tag_reg);
 
@@ -9997,10 +9997,10 @@ pub const Codegen = struct {
             const lit = pattern.enum_literal;
             if (!enumNameMatchesDecl(lit.enum_name, decl.name)) return Error.UnsupportedSabDirectFeature;
             if (lit.fields.len != 0) return Error.UnsupportedSabDirectFeature;
-            const tag = lowering_rules.enumVariantIndex(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+            const tag = lowering_rules.enumVariantValue(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
             const tag_reg = try self.intern(try self.newTmp());
             try self.emitLoad(tag_reg, val_reg, lowering_rules.enum_tag_offset, .i64);
-            try self.emitOp(cond, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = @intCast(tag) });
+            try self.emitOp(cond, .eq, .{ .reg = tag_reg }, .{ .imm_i64 = tag });
             try self.emitRelease(tag_reg);
             return;
         }
@@ -17021,14 +17021,14 @@ pub const Codegen = struct {
             return dst;
         }
         const decl = self.tc.enums.get(lit.enum_name) orelse return Error.UnsupportedSabDirectFeature;
-        const tag = lowering_rules.enumVariantIndex(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
+        const tag = lowering_rules.enumVariantValue(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
         const variant = lowering_rules.enumVariant(decl, lit.variant_name) orelse return Error.UnsupportedSabDirectFeature;
 
         const dst = try self.intern(try self.newTmp());
         try self.emitAlloc(dst, lowering_rules.enumAbiSize(decl));
 
         const tag_reg = try self.intern(try self.newTmp());
-        try self.emitAssignImm(tag_reg, @intCast(tag));
+        try self.emitAssignImm(tag_reg, tag);
         try self.emitStore(dst, lowering_rules.enum_tag_offset, tag_reg, .i64);
         try self.emitRelease(tag_reg);
 

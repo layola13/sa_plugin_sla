@@ -4912,10 +4912,26 @@ pub fn structFieldLayout(decl: *const ast.StructDecl, name: []const u8) ?AbiFiel
 pub const enum_tag_offset: usize = 0;
 pub const enum_payload_offset: usize = 8;
 
-/// Index (discriminant tag) of an enum variant by name.
+/// Index (declaration order) of an enum variant by name.
+/// NOTE: this is the positional index, NOT the runtime tag value. Use
+/// `enumVariantValue` anywhere a tag is materialized or compared.
 pub fn enumVariantIndex(decl: *const ast.EnumDecl, name: []const u8) ?usize {
     for (decl.variants, 0..) |variant, i| {
         if (std.mem.eql(u8, variant.name, name)) return i;
+    }
+    return null;
+}
+
+/// Effective discriminant (tag value) of an enum variant by name: the
+/// explicit `= N` if present, else C-like auto-increment (first variant 0,
+/// then previous effective value + 1). The parser rejects duplicate
+/// effective values, so every variant maps to a distinct tag.
+pub fn enumVariantValue(decl: *const ast.EnumDecl, name: []const u8) ?i64 {
+    var next_auto: i64 = 0;
+    for (decl.variants) |variant| {
+        const value = variant.discriminant orelse next_auto;
+        if (std.mem.eql(u8, variant.name, name)) return value;
+        next_auto = value + 1;
     }
     return null;
 }
@@ -6949,6 +6965,32 @@ test "shared enum tag/payload layout" {
 
     // Total size = tag word + largest variant payload (Move: through y at 16+8=24).
     try std.testing.expectEqual(@as(usize, 24), enumAbiSize(&decl));
+}
+
+test "shared enum explicit discriminant values" {
+    const variants = [_]ast.EnumVariant{
+        .{ .name = "A", .fields = &.{}, .discriminant = null },
+        .{ .name = "B", .fields = &.{}, .discriminant = 5 },
+        .{ .name = "C", .fields = &.{}, .discriminant = null },
+        .{ .name = "D", .fields = &.{}, .discriminant = -2 },
+        .{ .name = "E", .fields = &.{}, .discriminant = null },
+    };
+    const decl = ast.EnumDecl{
+        .name = "Code",
+        .generics = &.{},
+        .variants = variants[0..],
+    };
+
+    // Auto-increment from 0; explicit sets the counter; negatives allowed.
+    try std.testing.expectEqual(@as(i64, 0), enumVariantValue(&decl, "A").?);
+    try std.testing.expectEqual(@as(i64, 5), enumVariantValue(&decl, "B").?);
+    try std.testing.expectEqual(@as(i64, 6), enumVariantValue(&decl, "C").?);
+    try std.testing.expectEqual(@as(i64, -2), enumVariantValue(&decl, "D").?);
+    try std.testing.expectEqual(@as(i64, -1), enumVariantValue(&decl, "E").?);
+    try std.testing.expectEqual(@as(?i64, null), enumVariantValue(&decl, "Nope"));
+    // Positional indices are unaffected by explicit values.
+    try std.testing.expectEqual(@as(usize, 0), enumVariantIndex(&decl, "A").?);
+    try std.testing.expectEqual(@as(usize, 4), enumVariantIndex(&decl, "E").?);
 }
 
 test "shared while let pattern classification" {

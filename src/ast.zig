@@ -82,6 +82,10 @@ pub const EnumDecl = struct {
 pub const EnumVariant = struct {
     name: []const u8,
     fields: []const Field,
+    /// Explicit discriminant from `Variant = N` (C/TS-like). Null means
+    /// auto-increment (first variant 0, then previous + 1). Only allowed
+    /// on fieldless variants; see `enumVariantValue` for resolution.
+    discriminant: ?i64 = null,
 };
 
 pub const ImplDecl = struct {

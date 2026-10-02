@@ -100,6 +100,7 @@ pub const Token = struct {
         range, // ..
         question_mark, // ?
         question_question, // ??
+        question_question_equal, // ??=
         question_dot, // ?.
         at, // @
     };
@@ -186,6 +187,13 @@ pub const Lexer = struct {
             '@' => return Token{ .tag = .at, .loc = .{ .start = start, .end = self.index } },
             '?' => {
                 if (self.index < self.buffer.len and self.buffer[self.index] == '?') {
+                    // `??=` (but not `??==`, which is `??` + `==`).
+                    if (self.index + 1 < self.buffer.len and self.buffer[self.index + 1] == '=' and
+                        (self.index + 2 >= self.buffer.len or self.buffer[self.index + 2] != '='))
+                    {
+                        self.index += 2;
+                        return Token{ .tag = .question_question_equal, .loc = .{ .start = start, .end = self.index } };
+                    }
                     self.index += 1;
                     return Token{ .tag = .question_question, .loc = .{ .start = start, .end = self.index } };
                 }

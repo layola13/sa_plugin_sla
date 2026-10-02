@@ -1645,6 +1645,29 @@ pub const Parser = struct {
                 node.* = .{ .assign_stmt = .{ .target = expr, .value = sum } };
                 return node;
             }
+            // `a ??= b` desugars to `a = a.unwrap_or(b)`, mirroring `+=`
+            // above (same target-reuse tradeoff: complex place expressions
+            // evaluate twice; bind them first).
+            if (self.match(.question_question_equal)) {
+                const rhs = try self.parseExpr(0);
+                try self.expect(.semicolon);
+                const fallback_args = try self.allocator.alloc(*ast.Node, 2);
+                fallback_args[0] = expr;
+                fallback_args[1] = rhs;
+                const fallback_generics = try self.allocator.alloc(*ast.Type, 0);
+                const fallback = try self.allocator.create(ast.Node);
+                fallback.* = .{
+                    .call_expr = .{
+                        .func_name = "unwrap_or",
+                        .associated_target = null,
+                        .generics = fallback_generics,
+                        .args = fallback_args,
+                    },
+                };
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{ .assign_stmt = .{ .target = expr, .value = fallback } };
+                return node;
+            }
             if (self.match(.pipe_equal)) {
                 const rhs = try self.parseExpr(0);
                 try self.expect(.semicolon);
@@ -2577,12 +2600,13 @@ pub const Parser = struct {
                 continue;
             }
 
-            // Optional chain `a?.field` desugars (single evaluation) to:
+            // Optional chain `a?.field` / `a?.method(args)` desugars (single
+            // evaluation) to:
             //   if let Some(__qcN) = a { Some(__qcN.field) } else { None }
             // so a None LHS yields None instead of propagating. Postfix binds
             // tightest: fire at any level; `a?.b == c` reads `(a?.b) == c`.
-            // Method form `a?.m()` is NOT covered yet (clear error below when
-            // `(` follows the desugared node).
+            // Generic method form `a?.m<T>()` is not covered (clear error when
+            // `<` follows the field name).
             if (self.peek() == .question_dot) {
                 self.advance();
                 const field_tok = self.tok;
@@ -2602,10 +2626,40 @@ pub const Parser = struct {
 
                 const tmp_ident = try self.allocator.create(ast.Node);
                 tmp_ident.* = .{ .identifier = tmp_name };
-                const field_access = try self.allocator.create(ast.Node);
-                field_access.* = .{ .field_expr = .{ .expr = tmp_ident, .field_name = field_name } };
+                // `a?.method(args)`: the wrapped value is a UFCS method call
+                // `method(__qcN, args...)`; otherwise a plain field access.
+                const wrapped_value = blk: {
+                    if (self.peek() == .l_paren) {
+                        self.advance();
+                        var call_args = std.ArrayList(*ast.Node).init(self.allocator);
+                        try call_args.append(tmp_ident);
+                        if (self.peek() != .r_paren and self.peek() != .eof) {
+                            while (true) {
+                                const arg = try self.parseExpr(0);
+                                try call_args.append(arg);
+                                if (!self.match(.comma)) break;
+                            }
+                        }
+                        try self.expect(.r_paren);
+                        const method_generics = try self.allocator.alloc(*ast.Type, 0);
+                        const method_call = try self.allocator.create(ast.Node);
+                        method_call.* = .{
+                            .call_expr = .{
+                                .func_name = field_name,
+                                .associated_target = null,
+                                .generics = method_generics,
+                                .args = try call_args.toOwnedSlice(),
+                            },
+                        };
+                        break :blk method_call;
+                    } else {
+                        const field_access = try self.allocator.create(ast.Node);
+                        field_access.* = .{ .field_expr = .{ .expr = tmp_ident, .field_name = field_name } };
+                        break :blk field_access;
+                    }
+                };
                 const some_args = try self.allocator.alloc(*ast.Node, 1);
-                some_args[0] = field_access;
+                some_args[0] = wrapped_value;
                 const generics = try self.allocator.alloc(*ast.Type, 0);
                 const some_call = try self.allocator.create(ast.Node);
                 some_call.* = .{
@@ -3955,6 +4009,28 @@ test "sla optional chain desugars to if-let-Some" {    const source =
     try std.testing.expect(ife.else_block != null);
 }
 
+test "sla optional call desugars to if-let-Some with call" {    const source =
+        \\fn invoke(o: i64) -> i64 {
+        \\    return o?.method(1, 2);
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const invoke = prog.program.decls[0].func_decl;
+    try std.testing.expect(invoke.body[0].* == .return_stmt);
+    const ife = &invoke.body[0].return_stmt.value.?.if_expr;
+    try std.testing.expect(ife.let_chain != null);
+    const then_call = ife.then_block[0].expr_stmt.call_expr;
+    try std.testing.expect(std.mem.eql(u8, then_call.func_name, "Some"));
+    const inner = then_call.args[0].call_expr;
+    try std.testing.expect(std.mem.eql(u8, inner.func_name, "method"));
+    try std.testing.expect(inner.args.len == 3);
+}
+
 test "syntax diagnostic includes location token and context" {
     const source =
         \\fn ok() -> i32 {
@@ -4081,4 +4157,25 @@ test "sla enum rejects explicit value on payload variant" {
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), source);
     try std.testing.expectError(ParserError.UnexpectedToken, parser.parseProgram());
+}
+
+test "sla nullish assign desugars to assign unwrap_or" {
+    const source =
+        \\fn fill(slot: i64) -> i64 {
+        \\    let present = slot;
+        \\    present ??= 9;
+        \\    return present;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const fill = prog.program.decls[0].func_decl;
+    try std.testing.expect(fill.body[1].* == .assign_stmt);
+    const fallback = fill.body[1].assign_stmt.value.call_expr;
+    try std.testing.expect(std.mem.eql(u8, fallback.func_name, "unwrap_or"));
+    try std.testing.expect(fallback.args.len == 2);
 }

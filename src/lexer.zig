@@ -94,6 +94,7 @@ pub const Token = struct {
         fat_arrow, // =>
         range, // ..
         question_mark, // ?
+        question_question, // ??
         at, // @
     };
 };
@@ -125,7 +126,13 @@ pub const Lexer = struct {
 
         switch (c) {
             '@' => return Token{ .tag = .at, .loc = .{ .start = start, .end = self.index } },
-            '?' => return Token{ .tag = .question_mark, .loc = .{ .start = start, .end = self.index } },
+            '?' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '?') {
+                    self.index += 1;
+                    return Token{ .tag = .question_question, .loc = .{ .start = start, .end = self.index } };
+                }
+                return Token{ .tag = .question_mark, .loc = .{ .start = start, .end = self.index } };
+            },
             '+' => {
                 if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
                     self.index += 1;

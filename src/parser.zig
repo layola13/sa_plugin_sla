@@ -2450,7 +2450,12 @@ pub const Parser = struct {
     fn parseExpr(self: *Parser, precedence: u8) ParserError!*ast.Node {
         var left = try self.parsePrefixExpr();
         while (true) {
-            if (self.peek() == .question_mark) {
+            // Ternary interception only fires at the loosest level: inside
+            // a tighter operator's RHS (precedence >= 1) the `?` must be left
+            // for the outer loop, so `a == b ? x : y` conditions on the whole
+            // comparison. Postfix `?` (try) still works everywhere: a failed
+            // ternary attempt restores the cursor and falls through below.
+            if (self.peek() == .question_mark and precedence < 1) {
                 const saved_lex = self.lex;
                 const saved_tok = self.tok;
 
@@ -2482,6 +2487,55 @@ pub const Parser = struct {
 
                 self.lex = saved_lex;
                 self.tok = saved_tok;
+            }
+
+            // Null-coalescing `a ?? b` desugars to the Option method call
+            // `a.unwrap_or(b)` (single evaluation, no new AST/lowering work).
+            // Same loosest-level rule as ternary: only fire at precedence 0,
+            // so `x == none ?? y` keeps the whole comparison as the LHS.
+            if (self.peek() == .question_question and precedence < 1) {
+                self.advance();
+                const rhs = try self.parseExpr(1);
+
+                const args = try self.allocator.alloc(*ast.Node, 2);
+                args[0] = left;
+                args[1] = rhs;
+                const generics = try self.allocator.alloc(*ast.Type, 0);
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{
+                    .call_expr = .{
+                        .func_name = "unwrap_or",
+                        .associated_target = null,
+                        .generics = generics,
+                        .args = args,
+                    },
+                };
+                left = node;
+                continue;
+            }
+
+            // Non-null assertion `x!` desugars to the Option/Result method
+            // call `x.unwrap()` (TS `!` is compile-time-only; SLA checks at
+            // runtime and panics on None/Err — same zero-machinery trick as
+            // `??` above). Postfix binds tightest: fire at any level. A bare
+            // `.bang` can never legally follow an operand otherwise (`!=`
+            // lexes as one token), so there is no ambiguity with prefix `!`.
+            if (self.peek() == .bang) {
+                self.advance();
+                const args = try self.allocator.alloc(*ast.Node, 1);
+                args[0] = left;
+                const generics = try self.allocator.alloc(*ast.Type, 0);
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{
+                    .call_expr = .{
+                        .func_name = "unwrap",
+                        .associated_target = null,
+                        .generics = generics,
+                        .args = args,
+                    },
+                };
+                left = node;
+                continue;
             }
 
             var op_prec = self.getInfixPrecedence(self.peek());
@@ -3001,7 +3055,16 @@ pub const Parser = struct {
             .less_less, .greater_greater => 6,
             .plus, .minus => 7,
             .asterisk, .slash, .percent => 8,
-            .dot, .bang, .l_paren, .l_bracket, .question_mark => 10,
+            .dot, .bang, .l_paren, .l_bracket => 10,
+            // `??` shares ternary's loosest level: `a ?? b == c` reads the
+            // whole comparison as the fallback, matching `?:` behavior.
+            .question_question => 1,
+            // Ternary `?:` binds looser than every binary operator (C-like):
+            // `a == b ? x : y` must read the whole comparison as the
+            // condition, not `b ? x : y`. Postfix `?` (try) is unaffected:
+            // it is attempted first at the interception site below and only
+            // falls through here when no colon follows.
+            .question_mark => 1,
             .keyword_as => 9,
             else => 0,
         };
@@ -3609,6 +3672,64 @@ test "sla parser distinguishes postfix try from ternary" {
     const choose = prog.program.decls[2].func_decl;
     try std.testing.expect(choose.body[0].* == .return_stmt);
     try std.testing.expect(choose.body[0].return_stmt.value.?.* == .if_expr);
+}
+
+test "sla ternary binds looser than ==" {
+    const source =
+        \\fn compare(a: i64, b: i64) -> i64 {
+        \\    return a == b ? 1 : 2;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const compare = prog.program.decls[0].func_decl;
+    try std.testing.expect(compare.body[0].* == .return_stmt);
+    const ife = &compare.body[0].return_stmt.value.?.if_expr;
+    // The whole comparison must be the condition, not just `b`.
+    try std.testing.expect(ife.cond.* == .binary_expr);
+    try std.testing.expect(ife.cond.binary_expr.op == .eq);
+}
+
+test "sla null coalescing desugars to unwrap_or call" {
+    const source =
+        \\fn coalesce(a: i64) -> i64 {
+        \\    return a ?? 9;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const coalesce = prog.program.decls[0].func_decl;
+    try std.testing.expect(coalesce.body[0].* == .return_stmt);
+    const call = coalesce.body[0].return_stmt.value.?.call_expr;
+    try std.testing.expect(std.mem.eql(u8, call.func_name, "unwrap_or"));
+    try std.testing.expect(call.args.len == 2);
+}
+
+test "sla postfix bang desugars to unwrap call" {
+    const source =
+        \\fn force(a: i64) -> i64 {
+        \\    return a!;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), source);
+    const prog = try parser.parseProgram();
+
+    const force = prog.program.decls[0].func_decl;
+    try std.testing.expect(force.body[0].* == .return_stmt);
+    const call = force.body[0].return_stmt.value.?.call_expr;
+    try std.testing.expect(std.mem.eql(u8, call.func_name, "unwrap"));
+    try std.testing.expect(call.args.len == 1);
 }
 
 test "syntax diagnostic includes location token and context" {

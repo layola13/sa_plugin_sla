@@ -48,6 +48,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 18_fib_sieve | 173_fib_loop / 128_sieve | fib 循环，筛法计数 |
 | 19_matrix | 143_mat_add / 144_transpose | 2x2 矩阵加法 + 转置求和 |
 | 20_closures | 109_closure / 24_find_some_every | 闭包捕获，`find/some` 手写循环版 |
+| 21_gcd_lcm | 120_lcm | 递归 `gcd` + `lcm` |
+| 22_second_max | 121_second_max | 一遍扫描最大/次大，`else if` 链 |
+| 23_rotate | 122_rotate | 左旋（取模索引，无 `slice/concat`） |
+| 24_fizzbuzz | 191_fizz20 | `for 1..(n+1)` + `||` 整除计数 |
+| 25_leap | 180_leap | 多 `if` 早返回闰年判断 |
+| 26_clamp_max3 | 126_clamp | `if` 表达式链代替 `Math.min/max` |
+| 27_sum_sq_dot | 141_sum_sq / 142_dot | 平方和 + 点积 |
+| 28_mat_mul | 184_matrix_mul | 2x2 乘法对角元 |
+| 29_sum_even_swap | 192_sum_even / 195_swap | 偶数求和 + 三变量交换 |
+| 30_palindrome | 103_palindrome | int 数组回文（字符串索引有坑，见 POTENTIAL_ISSUES #3/#5） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

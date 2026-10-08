@@ -1,0 +1,53 @@
+# SLA 潜在问题追记（basic demos 反哺）
+
+在参考 `tsgosa/demos` 丰富 `demos/basic` 时，用 `sa sla check/test/build-exe` 实际验证，
+发现以下候选问题。状态分为：已确认 / 待复核 / 已规避（demo 侧绕行）。
+
+## #1 定长数组元素类型错配：check 放行，运行值错（已确认）
+
+- 复现：`fn array_sum(values: [i32; 5])` + 调用 `array_sum([3,1,4,1,5])`，
+  字面量按 `int`(i64, 8B stride) 分配 40B，形参按 `i32`(4B stride) 读取，
+  `check` 通过，`test` 在求和断言上 panic（`demos/basic/08_arrays` 初版 panic 804）。
+- 期望：`check` 应对 `[i64;5]` → `[i32;5]` 报类型错，或自动统一字面量元素类型。
+- 现状规避：`08_arrays` 改用 `[int; 5]`（与 `tests/test_unit_arrays.sla` 一致）。
+- 归属：前端类型检查（Phase 5 聚合布局相关）。
+
+## #2 `if` 表达式作返回值需要 `return if ...`（写法约束，非 bug）
+
+- `fn max(a: i32, b: i32) -> i32 { if a > b { a } else { b } }` 可通过，
+  但多行函数体中 `return if c > 10 { 100 } else { 200 };` 更稳。
+- 已在 `03_if_else / 06_ternary` 两种写法各保留一种，验证均通过。
+
+## #3 字符串字面量类型推断：无注解绑定 str_eq 失败（已确认）
+
+- 复现（/tmp/probe_str.sla）：`str_eq("hello","hello")` 通过；
+  `let s = "hello"; str_eq(s, "hello")` panic；
+  `let s: ptr = "hello"; str_eq(s, "hello")` 通过。
+- 期望：无注解 `let s = "hello"` 应推断为与字面量一致的字符串类型，或 `check` 给出类型提示。
+- 现状规避：`10_strings` 用两个独立绑定——`a: ptr` 只做 `str_eq` 断言，
+  `s`（无注解）只做 `println` 打印（见 #5）。
+- 关联：`current_plan.md` 提到 `str_eq` 相关 known issues；`68_parser_tokens`（数组/参数来源的 ptr）不受影响。
+
+## #4 模板字符串多插值：check 与 test 前端不一致 + 特定组合 runtime 崩溃（已确认）
+
+- `check` 拒绝多插值模板：`println(`hi ${name}, n=${n}!`)` 报 `ExpectedDeclaration`，
+  但同文件 `sa sla test`（SAB 路径）可通过（`tests/test_unit_template_string.sla` 亦如此：check 失败、test 3/3 通过）。
+- 组合 `let name: ptr = "sa"; println(`hi ${name}, n=${n}!`)` 在 test 运行时触发
+  `signal 6 / reached unreachable code`（`10_strings` 初版）。
+  对照探针：`ptr` 单插值通过、无注解双插值通过，崩溃仅出现在 `ptr + 多插值` 组合。
+- 现状规避：`10_strings` 的 `str_eq` 用 `: ptr` 绑定，模板插值用无注解绑定，两者分离。
+
+## #5 `println("{}", s)` 与 `str_eq(s, …)` 对字符串变量注解的要求互斥（已确认）
+
+- `str_eq` 要求显式 `: ptr`（#3），但 `println("{}", s)` 对 `: ptr` 绑定在运行时崩溃
+  （`signal 6 / reached unreachable code`，/tmp/probe10e.sla）；
+  无注解绑定的 `println` 则正常（/tmp/probe10f.sla）。
+- 现状规避：`10_strings` 用两个独立绑定——`a: ptr` 只做 `str_eq` 断言，
+  `s`（无注解）只做 `println` 打印。
+- 归属：`println`/格式化路径与字符串变量物化（待定位到具体 lowering 规则）。
+
+- [x] `Vec<i32>` vs `Vec<int>` 是否有同类 stride 问题（09_vec_methods 用 `Vec<i32>` + `push` 验证）。
+  - 结果：`Vec<i32>` + `push` + `len(v) as i32` + `v[i]` 全绿，无数组字面量式的 stride 问题。
+- [x] `switch` over `i32`（13_enum_switch 全绿，check+test 通过）。
+- [x] `Option::Some/None + match`（15_option 全绿，`Some(v) => { v + 1 }` 收敛值臂双路径可验证，未触发 PhiStateConflict）。
+- [x] 闭包捕获 + 循环（20_closures 全绿，check+test 通过）。

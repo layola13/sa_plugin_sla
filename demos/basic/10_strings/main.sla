@@ -1,0 +1,29 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+@import "sa_std/string.sa"
+
+// 对标 tsgosa 10_strings / 16_template：格式化输出 + 字符串相等。
+// 注意（POTENTIAL_ISSUES #3/#5）：
+// - `str_eq` 要求 `let s: ptr = "hello"` 显式注解，无注解绑定会 panic；
+// - `println("{}", s)` 要求无注解绑定，`: ptr` 绑定会 runtime 崩溃（signal 6）；
+// 因此演示中两者用各自独立的绑定（a 用于断言，s 用于打印）。
+
+fn main() -> i32 {
+    let s = "hello";
+    println("{}", s);
+    println("{} world", s);
+    println("hi {}, n={}!", "sa", 3);
+    return 0;
+}
+
+@test "basic 10 strings format eq"() {
+    let a: ptr = "hello";
+    if !str_eq(a, "hello") { panic(1001); };
+    if str_eq(a, "world") { panic(1002); };
+    let s = "hello";
+    println("{}", s);
+    println("{} world", s);
+    let name = "sa";
+    let n = 3;
+    println("hi {}, n={}!", name, n);
+}

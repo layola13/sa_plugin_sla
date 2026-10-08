@@ -98,3 +98,6 @@
 - [x] 闭包捕获 + 循环（20_closures 全绿）。
 - [x] `while true + break/continue`（32 全绿）、`do-while` 语义经 `break` 表达（40 全绿）。
 - [x] 嵌套循环众数/中位数排序（37/38 全绿）、`Vec` 拼接去重（39 全绿）。
+- [x] 归并/位运算/素数上限/默认参数双函数/label 改写（41-48 全绿）。
+- [x] 长循环 collatz（49 全绿，步数口径已用 build-exe 核对为 111）、
+  嵌套 `if` + 步长 `while`（50 全绿；`for` 暂无步长语法，用 `while` 表达）。

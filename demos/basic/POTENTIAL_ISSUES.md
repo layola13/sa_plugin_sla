@@ -68,6 +68,28 @@
   一臂直接 `return`，其余臂赋值 + 尾 `return r`，check/test 双绿。
   tsgosa 的纯 `case: return` 风格在 SLA 侧暂无一对一写法。
 
+## #8 默认参数值不支持：`fn f(a: i32 = 1)` 直接 parse 失败（已确认）
+
+- 复现（/tmp/p_def2.sla）：`fn f(a: i32 = 1, b: i32 = 2) -> i32` 报
+  `Syntax Error ... error.SyntaxError`（形参位置）。
+- 现状规避：`47_default_args` 用 `f_default()`（零参）+ `f_full(a,b,c)`（全参）
+  表达 `f()=6, f(10,2,3)=15, f(10,20,30)=60` 语义。
+
+## #9 Label（`outer:` / `continue outer`）不支持（已确认）
+
+- 复现（/tmp/p_lbl2.sla）：`outer: for i in 0..3` 报 `Syntax Error`。
+  无 label 的内层 `break/continue` 正常（/tmp/p_lbl.sla check 通过）。
+- 现状规避：`48_nested_break` 用内层 `break` 改写 `continue outer`
+ （本用例等价，`t=3`；一般的跨层 continue 仍无对等写法）。
+
+## #10 `len()` 作用于字符串返回表示字数而非字符数（已确认）
+
+- 复现（/tmp/p_strlen*.sla）：`len("hi there")` / `len("")` / `len("hello")`
+  均返回 `2`（疑为胖指针表示字数），`check` 通过但断言 `== 8` panic；
+  数组/Vec 的 `len` 正常。
+- 期望：`len` 对字符串应返回字节数/字符数，或 `check` 拒绝字符串入参。
+- 现状规避：字符串相等断言统一用 `str_eq`（见 #3），本批不新增依赖 `len(str)` 的 demo。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

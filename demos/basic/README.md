@@ -68,6 +68,14 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 38_median | 147_median | 插入排序后取中位数（无 `toSorted`） |
 | 39_vec_concat_dedup | 136_concat_all / 117_dedup | `Vec` 拼接 + 手写 `contains` 去重 |
 | 40_do_sum | 158_do_sum | `while true + break` 表达 `do-while` 语义 |
+| 41_merge_sorted | 123_merge | 双指针归并 + `&&` 收尾 |
+| 42_every_positive | 127_sorted | 定长数组手写 `every` |
+| 43_tally_even | 140_tally | 偶数计数 + 求和 |
+| 44_bit_count | 148_bit_count | `&` + `>>` 置位计数 |
+| 45_divmod_maxmin | 179_div_mod / 186_max3 | 整除取余 + 手写 max/min |
+| 46_prime_upto | 183_prime_upto | `for + break` 剪枝，30 以内 10 个 |
+| 47_default_args | 150_multi_default | 默认参数用双函数表达（见 POTENTIAL_ISSUES #8） |
+| 48_nested_break | 157_label_nested | 内层 `break` 代替 label（见 POTENTIAL_ISSUES #9） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

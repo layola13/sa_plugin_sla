@@ -46,8 +46,33 @@
   `s`（无注解）只做 `println` 打印。
 - 归属：`println`/格式化路径与字符串变量物化（待定位到具体 lowering 规则）。
 
-- [x] `Vec<i32>` vs `Vec<int>` 是否有同类 stride 问题（09_vec_methods 用 `Vec<i32>` + `push` 验证）。
-  - 结果：`Vec<i32>` + `push` + `len(v) as i32` + `v[i]` 全绿，无数组字面量式的 stride 问题。
-- [x] `switch` over `i32`（13_enum_switch 全绿，check+test 通过）。
-- [x] `Option::Some/None + match`（15_option 全绿，`Some(v) => { v + 1 }` 收敛值臂双路径可验证，未触发 PhiStateConflict）。
-- [x] 闭包捕获 + 循环（20_closures 全绿，check+test 通过）。
+## #6 复合赋值仅支持 `+= |= &=`，`-= *= /= %=` 无词法 token（已确认，根因已定位）
+
+- 复现（/tmp/probe_op.sla）：`x += 1` 通过；`x -= 1` / `x *= 2` / `x /= 4` / `x %= 5`
+  均报 `Unexpected prefix token: equal`；对照 `x |= 1` / `x &= 1` 通过。
+- 根因：`src/lexer.zig:62-106` 的 token 枚举仅定义 `plus_equal`、`pipe_equal`、
+  `ampersand_equal`（另有 `question_question_equal`），缺失 `minus_equal` /
+  `asterisk_equal` / `slash_equal` / `percent_equal`，故 `-=` 等被切分为 `-` + `=`。
+- 期望：在 lexer + parser 补齐四种复合赋值（或 `check` 给出明确不支持提示）。
+- 现状规避：`31_compound` 中 `-= *= /= %=` 用 `x = x - 3` 脱糖写法，另断言 `|=` / `&=`。
+
+## #7 全 return 臂的 switch 函数：check 与 SAB 后端要求互斥（已确认）
+
+- 初版（各臂均 `return`，尾表达式即 `switch`）：`check` 与 `test` 均报
+  `TypeMismatch in function tail expression: expected i32, actual void_type`，
+  因 `switch` 本身是 `void` 语句。
+- 加尾兜底 `return 3;` 后：`check` 通过，但 SAB 后端（`test`）报
+  `FallthroughForbidden: basic blocks must end with jmp, br, br_null, or return`
+ （不可达兜底块缺少终止子，SAB emitter 缺口）。
+- 现状规避：采用 `tests/test_unit_switch_statement_direct.sla` 已验证的混合写法——
+  一臂直接 `return`，其余臂赋值 + 尾 `return r`，check/test 双绿。
+  tsgosa 的纯 `case: return` 风格在 SLA 侧暂无一对一写法。
+
+## 已验证无问题（回归对照）
+
+- [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。
+- [x] `switch` over `i32`（13_enum_switch 全绿）。
+- [x] `Option::Some/None + match`（15_option 全绿，未触发 PhiStateConflict）。
+- [x] 闭包捕获 + 循环（20_closures 全绿）。
+- [x] `while true + break/continue`（32 全绿）、`do-while` 语义经 `break` 表达（40 全绿）。
+- [x] 嵌套循环众数/中位数排序（37/38 全绿）、`Vec` 拼接去重（39 全绿）。

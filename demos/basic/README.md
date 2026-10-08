@@ -58,6 +58,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 28_mat_mul | 184_matrix_mul | 2x2 乘法对角元 |
 | 29_sum_even_swap | 192_sum_even / 195_swap | 偶数求和 + 三变量交换 |
 | 30_palindrome | 103_palindrome | int 数组回文（字符串索引有坑，见 POTENTIAL_ISSUES #3/#5） |
+| 31_compound | 21_compound | `+= \|= &=` 原生，其余脱糖（词法缺 token，见 POTENTIAL_ISSUES #6） |
+| 32_while_break | 110_while_break | `while true + break/continue` |
+| 33_switch_return | 111_switch_fn | 各臂 `return` + 尾兜底（见 POTENTIAL_ISSUES #7） |
+| 34_pick_max | 112_pick_max | `if + 早返回`（与 03 表达式式互补） |
+| 35_min_range | 116_minloop / 129_range | 最小值 + 区间求和 |
+| 36_prefix | 118_prefix | `^borrow` 原地前缀和 |
+| 37_mode | 146_mode | 嵌套循环众数 |
+| 38_median | 147_median | 插入排序后取中位数（无 `toSorted`） |
+| 39_vec_concat_dedup | 136_concat_all / 117_dedup | `Vec` 拼接 + 手写 `contains` 去重 |
+| 40_do_sum | 158_do_sum | `while true + break` 表达 `do-while` 语义 |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

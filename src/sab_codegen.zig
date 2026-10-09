@@ -301,6 +301,17 @@ pub const Codegen = struct {
     // register even though they have distinct lexical lifetimes. Each occurrence
     // of a name in this set receives a fresh register id when it is lowered.
     multi_let_bindings: std.StringHashMap(void),
+    // Names bound by un-annotated `let name = "literal"` whose runtime value
+    // is an owned Slice even though the checker exposes the literal as
+    // raw_ptr (#3). `genStrEqArg` must use the slice directly for these
+    // instead of CSTR_FROM_PTR (which would treat the slice struct as a
+    // C string). Explicit `: ptr` bindings hold real C strings and stay out.
+    inferred_string_slice_locals: std.StringHashMap(void),
+    // Names bound by explicit `let name: ptr = "literal"` holding genuine
+    // NUL-terminated C strings (#5). Consumers that branch on the raw_ptr tag
+    // (println/len/format-push/as_ptr) must use C-string paths for these
+    // instead of slice-field loads.
+    explicit_ptr_string_locals: std.StringHashMap(void),
     std_surface_rules: std.ArrayList(StdSurfaceRule),
     included_imports: std.StringHashMap(void),
     pending_std_deps: std.ArrayList(PendingStdDep),
@@ -389,6 +400,8 @@ pub const Codegen = struct {
             .borrowed_bindings = std.StringHashMap(void).init(allocator),
             .assigned_bindings = std.StringHashMap(void).init(allocator),
             .multi_let_bindings = std.StringHashMap(void).init(allocator),
+            .inferred_string_slice_locals = std.StringHashMap(void).init(allocator),
+            .explicit_ptr_string_locals = std.StringHashMap(void).init(allocator),
             .std_surface_rules = std.ArrayList(StdSurfaceRule).init(allocator),
             .included_imports = std.StringHashMap(void).init(allocator),
             .pending_std_deps = std.ArrayList(PendingStdDep).init(allocator),
@@ -438,6 +451,8 @@ pub const Codegen = struct {
         self.borrowed_bindings.deinit();
         self.assigned_bindings.deinit();
         self.multi_let_bindings.deinit();
+        self.inferred_string_slice_locals.deinit();
+        self.explicit_ptr_string_locals.deinit();
         for (self.std_surface_rules.items) |rule| {
             self.allocator.free(rule.type_name);
             if (rule.member_name) |name| self.allocator.free(name);
@@ -2381,6 +2396,8 @@ pub const Codegen = struct {
         self.released_regs.clearRetainingCapacity();
         self.stack_alloc_emitted.clearRetainingCapacity();
         self.multi_let_bindings.clearRetainingCapacity();
+        self.inferred_string_slice_locals.clearRetainingCapacity();
+        self.explicit_ptr_string_locals.clearRetainingCapacity();
         self.loop_continue_labels.clearRetainingCapacity();
         self.loop_break_labels.clearRetainingCapacity();
         self.closure_bindings.clearRetainingCapacity();
@@ -6861,6 +6878,28 @@ pub const Codegen = struct {
         // the literal as a raw pointer in pointer-oriented contexts. Keeping
         // it as a raw data pointer makes STR_PTR work but causes STR_LEN (and
         // every slice macro) to read arbitrary bytes at offset 8.
+        // Explicit `: ptr` bindings (#5) hold the NUL-terminated data pointer
+        // itself so C-string consumers see a real C string; inferred bindings
+        // (#3) are recorded in `inferred_string_slice_locals` so `str_eq`
+        // uses the slice directly instead of CSTR_FROM_PTR.
+        if (let.value.* == .literal and let.value.literal == .string_val and let.ty != null and lowering_rules.typeIsPointerScalarValue(let.ty.?)) {
+            const dst = try self.bindingReg(let.name);
+            const ptr = try self.genRawPointerStringLiteralArg(let.value.literal.string_val);
+            try self.pushTypedLocal(let.name, dst, false, let.ty.?);
+            try self.emitAssignReg(dst, ptr);
+            try self.markNonOwningReg(dst);
+            try self.emitRelease(ptr);
+            _ = self.inferred_string_slice_locals.remove(let.name);
+            try self.explicit_ptr_string_locals.put(let.name, {});
+            return;
+        }
+        if (let.value.* == .literal and let.value.literal == .string_val and let.ty == null) {
+            try self.inferred_string_slice_locals.put(let.name, {});
+            _ = self.explicit_ptr_string_locals.remove(let.name);
+        } else {
+            _ = self.inferred_string_slice_locals.remove(let.name);
+            _ = self.explicit_ptr_string_locals.remove(let.name);
+        }
         const src = if (let.value.* == .literal and let.value.literal == .string_val and let.ty == null)
             try self.genStringLiteral(let.value.literal.string_val)
         else
@@ -10868,6 +10907,13 @@ pub const Codegen = struct {
             return;
         }
         if (ty.* == .primitive and ty.primitive == .raw_ptr) {
+            // #3: inferred slice bindings must not be NUL-scanned.
+            if (self.isInferredStringSliceLocal(arg)) {
+                const slice_reg = try self.genExpr(@constCast(arg));
+                try self.emitStdMacroFragment("sa_std/string_format.sa", "FORMAT_PUSH_SLICE", &.{ tag, self.symbols.items[out_string], self.symbols.items[slice_reg] });
+                try self.releaseExprResultIfNeeded(arg, slice_reg);
+                return;
+            }
             const ptr_reg = try self.genExpr(@constCast(arg));
             const len_reg = try self.intern(try self.newTmp());
             try self.emitStdMacroFragment("sa_std/ffi.sa", "CSTR_LEN", &.{ self.symbols.items[len_reg], self.symbols.items[ptr_reg] });
@@ -11097,6 +11143,16 @@ pub const Codegen = struct {
             return;
         }
         if (plan.isStringLike()) {
+            // #5: genuine C strings must be NUL-scanned, not slice-loaded.
+            if (self.isExplicitPtrStringLocal(arg)) {
+                const ptr_reg = try self.genExpr(@constCast(arg));
+                const len_reg = try self.intern(try self.newTmp());
+                try self.emitStdMacroFragment("sa_std/ffi.sa", "CSTR_LEN", &.{ self.symbols.items[len_reg], self.symbols.items[ptr_reg] });
+                try self.emitPrintBytes(self.symbols.items[ptr_reg], self.symbols.items[len_reg]);
+                try self.emitRelease(len_reg);
+                try self.releaseExprResultIfNeeded(arg, ptr_reg);
+                return;
+            }
             const slice_reg = try self.genExpr(@constCast(arg));
             try self.emitPrintSliceValue(slice_reg);
             try self.releaseExprResultIfNeeded(arg, slice_reg);
@@ -12393,6 +12449,15 @@ pub const Codegen = struct {
             // len() fallthrough emits EXPAND STRING_LEN (NUL scan) for any
             // non-container receiver. The old slice-field load read garbage
             // past byte-string data (demo 35 fold computed wrong sums).
+            // #10: inferred `let s = "lit"` bindings are Slices despite the
+            // raw_ptr tag, so load the slice length field for those.
+            if (self.isInferredStringSliceLocal(call.args[0])) {
+                const base_reg = try self.genExpr(@constCast(call.args[0]));
+                const dst = try self.intern(try self.newTmp());
+                try self.emitLoad(dst, base_reg, lowering_rules.SliceAbi.len_offset, .u64);
+                if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+                return dst;
+            }
             const base_reg = try self.genExpr(@constCast(call.args[0]));
             const dst = try self.intern(try self.newTmp());
             try self.emitStdMacroFragment("sa_std/ffi.sa", "CSTR_LEN", &.{ self.symbols.items[dst], self.symbols.items[base_reg] });
@@ -14660,6 +14725,11 @@ pub const Codegen = struct {
             // Mirror SA-text: string-like receivers lower through
             // STR_AS_PTR (format strings via STRING_BUF_AS_PTR).
             if (!lowering_rules.isStringLikeType(receiver_ty)) return null;
+            // #5: genuine C strings need no conversion; STR_AS_PTR would
+            // read the string bytes as a slice struct.
+            if (self.isExplicitPtrStringLocal(call.args[0])) {
+                return try self.genExpr(@constCast(call.args[0]));
+            }
             const recv_reg = try self.genExpr(@constCast(call.args[0]));
             const dst = try self.intern(try self.newTmp());
             try self.recordReg(dst);
@@ -14691,13 +14761,24 @@ pub const Codegen = struct {
         return dst;
     }
 
+    /// #3: inferred `let s = "lit"` bindings hold Slices, not raw pointers,
+    /// so the pointer-equality fast path must not claim them.
+    fn isInferredStringSliceLocal(self: *Codegen, arg: *const ast.Node) bool {
+        return arg.* == .identifier and self.inferred_string_slice_locals.contains(arg.identifier);
+    }
+
+    /// #5: explicit `: ptr` string bindings hold genuine C strings.
+    fn isExplicitPtrStringLocal(self: *Codegen, arg: *const ast.Node) bool {
+        return arg.* == .identifier and self.explicit_ptr_string_locals.contains(arg.identifier);
+    }
+
     fn genStrEqCall(self: *Codegen, call: ast.CallExpr) anyerror!u32 {
         const left_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.UnsupportedSabDirectFeature;
         const right_ty = self.tc.expr_types.get(call.args[1]) orelse return Error.UnsupportedSabDirectFeature;
-        if (lowering_rules.typeIsPointerScalarValue(left_ty) and call.args[1].* == .literal and call.args[1].literal == .string_val) {
+        if (lowering_rules.typeIsPointerScalarValue(left_ty) and call.args[1].* == .literal and call.args[1].literal == .string_val and !self.isInferredStringSliceLocal(call.args[0])) {
             return try self.genRawPointerStringLiteralEq(call.args[0], call.args[1].literal.string_val);
         }
-        if (lowering_rules.typeIsPointerScalarValue(right_ty) and call.args[0].* == .literal and call.args[0].literal == .string_val) {
+        if (lowering_rules.typeIsPointerScalarValue(right_ty) and call.args[0].* == .literal and call.args[0].literal == .string_val and !self.isInferredStringSliceLocal(call.args[1])) {
             return try self.genRawPointerStringLiteralEq(call.args[1], call.args[0].literal.string_val);
         }
         const left = try self.genStrEqArg(call.args[0], left_ty);
@@ -14752,6 +14833,12 @@ pub const Codegen = struct {
             return .{ .reg = view, .orig_reg = orig, .needs_release = true };
         }
         if (lowering_rules.typeIsPointerScalarValue(ty)) {
+            // #3: inferred `let s = "lit"` bindings are Slice values despite
+            // the raw_ptr tag; converting them with CSTR_FROM_PTR reads the
+            // slice struct as a C string. Use the slice directly.
+            if (arg.* == .identifier and self.inferred_string_slice_locals.contains(arg.identifier)) {
+                return .{ .reg = orig, .orig_reg = orig, .needs_release = false };
+            }
             const view = try self.intern(try self.newTmp());
             try self.emitStackAlloc(view, lowering_rules.SliceAbi.size);
             try self.emitStdMacroFragment("sa_std/ffi.sa", "CSTR_FROM_PTR", &.{ self.symbols.items[view], self.symbols.items[orig] });

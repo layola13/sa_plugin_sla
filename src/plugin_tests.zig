@@ -8653,6 +8653,21 @@ test "sla sab backend releases by-value scalar params of functions declared afte
 }
 
 test "sla sab backend releases str_eq loaded string data-pointer temps" {
+    // Explicit `: ptr` locals still materialize each `str_eq` argument
+    // through an 8-byte CSTR view slot (temps must be released); inferred
+    // `let s = "lit"` locals are Slices and lower without view slots (#3).
+    // Both lowerings must verify cleanly.
+    const Fixture = struct { path: []const u8, cache: []const u8, expect_view_temps: bool };
+    const fixtures = [_]Fixture{
+        .{ .path = "tests/test_unit_streq_stack_local_arg_direct.sla", .cache = ".sla-cache/sab/streq_stack_local_arg_direct.sab", .expect_view_temps = false },
+        .{ .path = "tests/test_unit_streq_ptr_local_arg_direct.sla", .cache = ".sla-cache/sab/streq_ptr_local_arg_direct.sab", .expect_view_temps = true },
+    };
+    for (fixtures) |fixture| {
+        try checkStrEqFixtureReleasesTemps(fixture.path, fixture.cache, fixture.expect_view_temps);
+    }
+}
+
+fn checkStrEqFixtureReleasesTemps(path: []const u8, cache: []const u8, expect_view_temps: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
@@ -8660,8 +8675,8 @@ test "sla sab backend releases str_eq loaded string data-pointer temps" {
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
-        "tests/test_unit_streq_stack_local_arg_direct.sla",
-        ".sla-cache/sab/streq_stack_local_arg_direct.sab",
+        path,
+        cache,
         stderr_buf.writer().any(),
         .{},
     )) orelse {
@@ -8707,8 +8722,12 @@ test "sla sab backend releases str_eq loaded string data-pointer temps" {
         }
     }
 
-    // One materialized data-pointer temp per `str_eq` argument.
-    try std.testing.expect(loaded_ptr_temps.items.len >= 2);
+    // One materialized data-pointer temp per `str_eq` argument (CSTR view
+    // lowering for genuine `: ptr` locals). Inferred slice locals lower
+    // without view slots; whatever temps exist must still be released.
+    if (expect_view_temps) {
+        try std.testing.expect(loaded_ptr_temps.items.len >= 2);
+    }
     for (loaded_ptr_temps.items) |reg| {
         try std.testing.expect(released_regs.contains(reg));
     }

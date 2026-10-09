@@ -28,11 +28,14 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   验收：`/tmp/probe_arr.sla`（`[i32;5]` 形参 × `[3,1,4,1,5]` 字面量）`check` 退出 1 并报错；
   SA 后端原静默值错转为前置拦截，SAB 行为不变；现有 `08/16/22/27/28/35/36/37/38` 不回归，
   全量 50/50 + `zig build test` 302/302。
-- [ ] **#3/#5 字符串变量物化互斥**（`str_eq` 要 `: ptr`，`println("{}")` 对 `: ptr` 崩溃
-  `signal 6`；归属格式化 lowering）。验收：同一绑定既可 `str_eq` 又可 `println`；
-  `10_strings` 合并为单绑定后全绿。
-- [ ] **#10 `len(str)` 恒返 2**（疑为胖指针字数）。验收：`len` 返回字节数，或 `check`
-  拒绝字符串入参并给出明确错误。
+- [x] **#3/#5 字符串变量物化互斥**（已修复：SAB `: ptr` 绑定持有真正的 NUL 结尾
+  C 字符串，无注解绑定保持 Slice 并以两集合区分消费路径；`str_eq/println/len/
+  format-push/as_ptr` 均按实际表示 lowering）。验收：同一绑定既可 `str_eq` 又可
+  `println`；`10_strings` 已合并为单绑定（另保留 `: ptr` 对照）后双后端全绿 +
+  build-exe 输出正常。
+- [x] **#10 `len(str)` 恒返 2**（已修复：字面量本轮复测已返回正确字节数；
+  SAB 变量情形加推断集合护栏读 Slice 长度字段）。验收：`/tmp/p10_len.sla` 与
+  `/tmp/plen_var.sla` 双后端全绿。
 - [ ] **#4 模板多插值 check/test 前端不一致**（`check` 拒收多插值但 SAB 路径可跑；
   `ptr + 多插值` 组合运行时 `unreachable`）。验收：两端行为一致，不一致时 `check`
   给出明确不支持提示而非 `ExpectedDeclaration` 误导。
@@ -85,3 +88,6 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   `31_compound` 改回原生写法；已推送（`0915b61`）后继续 #1，再做 §2 的 51–60（每批10个及时提交推送）。
 - 2026-10-09：#1 已修复并验证（错配探针 `check` 退出 1 报错，全量 50/50 + zig build test 302/302），
   待推送后继续 #3/#5/#10。
+- 2026-10-09：#3/#5/#10 已修复并验证（探针串全绿：`p3 EQ/PASS`、`p5 build-exe hello 退出0`、
+  `plen_var` 双后端、`p10`；`10_strings` 合并单绑定后双后端全绿 + build-exe 正常；
+  全量 50/50 + zig build test 302/302），待推送后继续 #4/#7。

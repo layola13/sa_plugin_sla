@@ -22,14 +22,17 @@
   但多行函数体中 `return if c > 10 { 100 } else { 200 };` 更稳。
 - 已在 `03_if_else / 06_ternary` 两种写法各保留一种，验证均通过。
 
-## #3 字符串字面量类型推断：无注解绑定 str_eq 失败（已确认）
+## #3 字符串字面量类型推断：无注解绑定 str_eq 失败（已修复）
 
 - 复现（/tmp/probe_str.sla）：`str_eq("hello","hello")` 通过；
   `let s = "hello"; str_eq(s, "hello")` panic；
   `let s: ptr = "hello"; str_eq(s, "hello")` 通过。
-- 期望：无注解 `let s = "hello"` 应推断为与字面量一致的字符串类型，或 `check` 给出类型提示。
-- 现状规避：`10_strings` 用两个独立绑定——`a: ptr` 只做 `str_eq` 断言，
-  `s`（无注解）只做 `println` 打印（见 #5）。
+- 根因：无注解绑定运行时是 Slice，但检查器暴露为 raw_ptr；
+  SAB 的 `str_eq` 指针相等快径与 `CSTR_FROM_PTR` 把 Slice 结构体误当 C 字符串。
+- 已修复：SAB 以 `inferred_string_slice_locals` 识别无注解绑定，
+  快径排除 + 参数直通 Slice；`/tmp/p3_unannot.sla` 与 `/tmp/p3_main.sla`
+ （`EQ`）在默认/SA 双后端全绿。
+- 现状（已消除绕行）：`10_strings` 已合并为单绑定，另保留 `: ptr` 对照断言。
 - 关联：`current_plan.md` 提到 `str_eq` 相关 known issues；`68_parser_tokens`（数组/参数来源的 ptr）不受影响。
 
 ## #4 模板字符串多插值：check 与 test 前端不一致 + 特定组合 runtime 崩溃（已确认）
@@ -41,14 +44,20 @@
   对照探针：`ptr` 单插值通过、无注解双插值通过，崩溃仅出现在 `ptr + 多插值` 组合。
 - 现状规避：`10_strings` 的 `str_eq` 用 `: ptr` 绑定，模板插值用无注解绑定，两者分离。
 
-## #5 `println("{}", s)` 与 `str_eq(s, …)` 对字符串变量注解的要求互斥（已确认）
+## #5 `println("{}", s)` 与 `str_eq(s, …)` 对字符串变量注解的要求互斥（已修复）
 
-- `str_eq` 要求显式 `: ptr`（#3），但 `println("{}", s)` 对 `: ptr` 绑定在运行时崩溃
-  （`signal 6 / reached unreachable code`，/tmp/probe10e.sla）；
-  无注解绑定的 `println` 则正常（/tmp/probe10f.sla）。
-- 现状规避：`10_strings` 用两个独立绑定——`a: ptr` 只做 `str_eq` 断言，
-  `s`（无注解）只做 `println` 打印。
-- 归属：`println`/格式化路径与字符串变量物化（待定位到具体 lowering 规则）。
+- 复现：`str_eq` 要求显式 `: ptr`（#3），但 `println("{}", s)` 对 `: ptr` 绑定
+  在 SAB 原生 `build-exe` 运行时崩溃（`signal 6 / reached unreachable code`，
+  /tmp/probe10e.sla；本轮复现为 `/tmp/p5_noimp.sla` build-exe `abort 134`，
+  而 `test` 双后端通过、`sa run` 正常）。
+- 根因：SAB 的 `: ptr` 绑定借用 dance 引用了未定义的寄存器
+  （反汇编见 `borrow r17,r18` 且 `r18` 无定义），`println` 再把数据指针
+  当 Slice 解引用（`load +0/+8`）。
+- 已修复：SAB 的 `: ptr` 字符串绑定直接持有 NUL 结尾数据指针
+  （`explicit_ptr_string_locals`），`println/len/format-push/as_ptr` 对其走
+  C 字符串路径；`/tmp/p5_noimp.sla` build-exe 输出 `hello`，退出 0。
+- 现状（已消除绕行）：`10_strings` 已合并为单绑定，另保留 `: ptr` 对照断言。
+- 归属：`println`/格式化路径与字符串变量物化（SAB emitter）。
 
 ## #6 复合赋值仅支持 `+= |= &=`，`-= *= /= %=` 无词法 token（已修复）
 
@@ -88,13 +97,17 @@
 - 现状规避：`48_nested_break` 用内层 `break` 改写 `continue outer`
  （本用例等价，`t=3`；一般的跨层 continue 仍无对等写法）。
 
-## #10 `len()` 作用于字符串返回表示字数而非字符数（已确认）
+## #10 `len()` 作用于字符串返回表示字数而非字符数（已修复）
 
 - 复现（/tmp/p_strlen*.sla）：`len("hi there")` / `len("")` / `len("hello")`
-  均返回 `2`（疑为胖指针表示字数），`check` 通过但断言 `== 8` panic；
-  数组/Vec 的 `len` 正常。
-- 期望：`len` 对字符串应返回字节数/字符数，或 `check` 拒绝字符串入参。
-- 现状规避：字符串相等断言统一用 `str_eq`（见 #3），本批不新增依赖 `len(str)` 的 demo。
+  曾返回 `2`（疑为胖指针表示字数）；本轮复测字面量 `len` 已返回正确字节数
+  （`5/0/8`，`test` + build-exe 双绿）。
+- 根因（变量情形）：SAB 的 `len()` 对 raw_ptr 统一做 `CSTR_LEN` NUL 扫描，
+  而无注解变量实际是 Slice，扫描结构体字节得垃圾值
+ （本轮复现：`/tmp/plen_var.sla` 默认后端 `panic 2001`，SA 后端通过）。
+- 已修复：SAB 的 `len()` 对 `inferred_string_slice_locals` 改读 Slice 长度字段；
+  `/tmp/plen_var.sla` 双后端全绿。
+- 现状：字符串相等断言统一用 `str_eq`（见 #3），`len(str)` 字面量与变量均已验证。
 
 ## 已验证无问题（回归对照）
 

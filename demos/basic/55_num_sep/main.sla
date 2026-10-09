@@ -1,0 +1,18 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+// 对标 tsgosa 164_num_sep：数字分隔符字面量 `1_000_000`。
+// 缺口 #11：SLA 词法暂不支持数字中的 `_` 分隔符（`1_000` 报
+// `found '_000', expected semicolon`，探针见 /tmp/psep.sla），
+// 此处用普通字面量表达同一语义（1000000 / 1000 = 1000）。
+
+fn main() -> i32 {
+    let x = 1000000;
+    println("{}", x / 1000);
+    return 0;
+}
+
+@test "basic 55 num sep"() {
+    let x = 1000000;
+    if x / 1000 != 1000 { panic(5501); };
+}

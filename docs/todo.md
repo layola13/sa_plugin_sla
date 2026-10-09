@@ -79,4 +79,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   用 build-exe 核对为 111（`d5a2f6f` + `fe747f7` 已推送）。
 - 下一步：先做 §1 前两项（#6、#1），再做 §2 的 51–60。
 - 2026-10-09：#6 已修复并验证（全量 50/50 + zig build test 302/302 + build-exe 抽查 01_hello），
-  `31_compound` 改回原生写法；待推送后继续 #1，再做 §2 的 51–60（每批10个及时提交推送）。
+  `31_compound` 改回原生写法；已推送（`0915b61`）后继续 #1，再做 §2 的 51–60（每批10个及时提交推送）。

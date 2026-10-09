@@ -58,9 +58,9 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 28_mat_mul | 184_matrix_mul | 2x2 乘法对角元 |
 | 29_sum_even_swap | 192_sum_even / 195_swap | 偶数求和 + 三变量交换 |
 | 30_palindrome | 103_palindrome | int 数组回文（字符串索引有坑，见 POTENTIAL_ISSUES #3/#5） |
-| 31_compound | 21_compound | `+= \|= &=` 原生，其余脱糖（词法缺 token，见 POTENTIAL_ISSUES #6） |
+| 31_compound | 21_compound | `+= -= *= /= %= \|= &=` 全原生（#6 已修复） |
 | 32_while_break | 110_while_break | `while true + break/continue` |
-| 33_switch_return | 111_switch_fn | 各臂 `return` + 尾兜底（见 POTENTIAL_ISSUES #7） |
+| 33_switch_return | 111_switch_fn | 混合写法保留，纯全 `return` 臂亦支持（#7 已修复） |
 | 34_pick_max | 112_pick_max | `if + 早返回`（与 03 表达式式互补） |
 | 35_min_range | 116_minloop / 129_range | 最小值 + 区间求和 |
 | 36_prefix | 118_prefix | `^borrow` 原地前缀和 |
@@ -78,6 +78,11 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 48_nested_break | 157_label_nested | 内层 `break` 代替 label（见 POTENTIAL_ISSUES #9） |
 | 49_collatz_pow | 155_collatz / 135_pow_loop | collatz(27)=111（计数口径已核对）+ 2^10 |
 | 50_nested_sign_min_step | 189_nest_if3 / 175_min3 / 199_for_step2 | 嵌套 `if` 符号函数 + min3 + `while` 步长求和（`for` 无步长） |
+| 51_gcd_sum | 159_gcd_sum | `while` 版 `gcd` + `gcd(i,12)` 累加（=27） |
+| 52_pow2_series | 160_pow2 | 翻倍循环 2 的幂 `Vec`（无 `**`，8/1/128） |
+| 53_concat3 | 161_concat3 | `Vec::push` 三段拼接（无 `concat`，4/1/4） |
+| 54_neg_index | 162_at_neg / 169_neg_idx | `a[len-1]` 表达 `at(-1)`（无负索引） |
+| 55_num_sep | 164_num_sep | 普通字面量（数字分隔符见缺口 #11） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

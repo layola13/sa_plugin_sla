@@ -51,12 +51,12 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 > 约束：`for in` 迭代器协议（Phase 6）、`async`、Node/Deno/NPM/Zod（203+）暂不碰；
 > 字符串索引/`charCodeAt`/`charAt` 有物化坑（#3/#5/#10），字符串类用 `str_eq` 断言。
 
-- [ ] `51_gcd_sum` ← tsgosa `159_gcd_sum`（多值 gcd 累加；`17/21` 已有 gcd，可复用）。
-- [ ] `52_pow2_series` ← tsgosa `160_pow2`（2 的幂序列；与 `49_pow2` 互补）。
-- [ ] `53_concat3` ← tsgosa `161_concat3`（三段拼接；`Vec::push` 表达，参考 `39`）。
-- [ ] `54_neg_index` ← tsgosa `162_at_neg` / `169_neg_idx`（负索引语义用 `len - k` 表达，
+- [x] `51_gcd_sum` ← tsgosa `159_gcd_sum`（多值 gcd 累加；`17/21` 已有 gcd，可复用）。
+- [x] `52_pow2_series` ← tsgosa `160_pow2`（2 的幂序列；与 `49_pow2` 互补）。
+- [x] `53_concat3` ← tsgosa `161_concat3`（三段拼接；`Vec::push` 表达，参考 `39`）。
+- [x] `54_neg_index` ← tsgosa `162_at_neg` / `169_neg_idx`（负索引语义用 `len - k` 表达，
   SLA 暂无 `at(-1)`，README 注明）。
-- [ ] `55_num_sep` ← tsgosa `164_num_sep`（数字分隔符字面量；先探针 `1_000` 是否支持，
+- [x] `55_num_sep` ← tsgosa `164_num_sep`（数字分隔符字面量；先探针 `1_000` 是否支持，
   不支持则记缺口 #11）。
 - [ ] `56_chain_ops` ← tsgosa `165_chain`（链式调用；探针方法链在 direct-SAB 是否全绿）。
 - [ ] `57_iife` ← tsgosa `170_iife`（立即调用闭包；参考 `20_closures`）。
@@ -99,3 +99,5 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 2026-10-09：#8/#9 已决策（规范 §15 新增不支持条目 + 解析器针对性拒识；
   `p8/p9` 探针指引明确，`47/48` 双绿；全量 50/50 + zig build test 302/302），
   待推送后做 §2 的 51–60。
+- 2026-10-09：51–55 落地（`check+test` 5/5 + build-exe 抽查 51/52 输出核对；
+  新发现 #11 数字分隔符；全量 55/55），待推送后做 56–60。

@@ -3,12 +3,16 @@
 在参考 `tsgosa/demos` 丰富 `demos/basic` 时，用 `sa sla check/test/build-exe` 实际验证，
 发现以下候选问题。状态分为：已确认 / 待复核 / 已规避（demo 侧绕行）。
 
-## #1 定长数组元素类型错配：check 放行，运行值错（已确认）
+## #1 定长数组元素类型错配：check 放行，运行值错（已修复：check 拦截）
 
 - 复现：`fn array_sum(values: [i32; 5])` + 调用 `array_sum([3,1,4,1,5])`，
   字面量按 `int`(i64, 8B stride) 分配 40B，形参按 `i32`(4B stride) 读取，
   `check` 通过，`test` 在求和断言上 panic（`demos/basic/08_arrays` 初版 panic 804）。
+  SA 后端（`--test-backend sa`）复现 panic 1001，SAB 后端因 `expected_ty` 路径碰巧通过。
 - 期望：`check` 应对 `[i64;5]` → `[i32;5]` 报类型错，或自动统一字面量元素类型。
+- 已修复：`src/type_checker.zig` 在全部 `plainCallArgMatches` 调用点后加
+  `arrayCallArgStrictMatches` 宽度检查，错配报
+  `array element type mismatch (stride differs)`；`/tmp/probe_arr.sla` 现 `check` 退出 1。
 - 现状规避：`08_arrays` 改用 `[int; 5]`（与 `tests/test_unit_arrays.sla` 一致）。
 - 归属：前端类型检查（Phase 5 聚合布局相关）。
 

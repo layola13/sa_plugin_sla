@@ -22,9 +22,12 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   脱糖为 `sub/mul/div/mod` 二元运算；`31_compound` 已改回原生写法）。
   验收：`/tmp/probe_op.sla` 五种复合赋值 `check+test` 全过；`31_compound` 原生写法全绿；
   全量 50/50 + `zig build test` 302/302。
-- [ ] **#1 数组字面量元素类型错配**（`[i32;N]` 形参 × `[int;N]` 字面量 stride 错位，
-  `check` 放行运行值错；归属 Phase 5 聚合布局）。验收：错配用例 `check` 报错或自动统一；
-  现有 `08/16/22/27/28/35/36/37/38` 不回归。
+- [x] **#1 数组字面量元素类型错配**（已修复：`src/type_checker.zig` 新增
+  `arrayElemStrictEqual/arrayCallArgStrictMatches`，`[i64;N]`→`[i32;N]` 等宽度错配
+  在 `check` 直接报 `array element type mismatch`；`int` 即 `i64` 故现有 `08` 等不受影响）。
+  验收：`/tmp/probe_arr.sla`（`[i32;5]` 形参 × `[3,1,4,1,5]` 字面量）`check` 退出 1 并报错；
+  SA 后端原静默值错转为前置拦截，SAB 行为不变；现有 `08/16/22/27/28/35/36/37/38` 不回归，
+  全量 50/50 + `zig build test` 302/302。
 - [ ] **#3/#5 字符串变量物化互斥**（`str_eq` 要 `: ptr`，`println("{}")` 对 `: ptr` 崩溃
   `signal 6`；归属格式化 lowering）。验收：同一绑定既可 `str_eq` 又可 `println`；
   `10_strings` 合并为单绑定后全绿。
@@ -80,3 +83,5 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 下一步：先做 §1 前两项（#6、#1），再做 §2 的 51–60。
 - 2026-10-09：#6 已修复并验证（全量 50/50 + zig build test 302/302 + build-exe 抽查 01_hello），
   `31_compound` 改回原生写法；已推送（`0915b61`）后继续 #1，再做 §2 的 51–60（每批10个及时提交推送）。
+- 2026-10-09：#1 已修复并验证（错配探针 `check` 退出 1 报错，全量 50/50 + zig build test 302/302），
+  待推送后继续 #3/#5/#10。

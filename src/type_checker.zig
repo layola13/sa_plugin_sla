@@ -754,6 +754,11 @@ pub const TypeChecker = struct {
             }
             const arg_ty = try self.checkExpr(arg, scope);
             if (!self.plainCallArgMatches(param.ty, arg, arg_ty)) return TypeError.TypeMismatch;
+            // #1: reject silent integer-width array mismatches ([i64;N] vs [i32;N]).
+            if (!self.arrayCallArgStrictMatches(param.ty, arg_ty)) {
+                self.setError("TypeMismatch in call to {s}: array element type mismatch (param {s} vs arg {s}, stride differs)", .{ call_name, typeDesc(param.ty), typeDesc(arg_ty) });
+                return TypeError.TypeMismatch;
+            }
             if ((arg.* == .tuple_literal or arg.* == .array_literal) and
                 self.typesEqual(arg_ty, param.ty))
             {
@@ -814,6 +819,43 @@ pub const TypeChecker = struct {
             .pointer => |inner| self.typesEqual(inner, arg_ty.borrow),
             else => false,
         };
+    }
+
+    /// #1: array element width must match exactly (stride safety).
+    /// `typesEqual` is intentionally permissive across integer widths
+    /// (i32 vs i64), but `[i64;N]` storage (8B stride) read as `[i32;N]`
+    /// (4B stride) yields silent wrong values on the SA-text backend.
+    /// Generic `.integer`/`.float` still matches any width.
+    fn arrayElemStrictEqual(self: *TypeChecker, param_elem: *const ast.Type, arg_elem: *const ast.Type) bool {
+        if (param_elem.* == .primitive and arg_elem.* == .primitive) {
+            const pa = param_elem.primitive;
+            const pb = arg_elem.primitive;
+            if (pa == pb) return true;
+            if (pa == .integer) return isAnyIntegerType(arg_elem);
+            if (pb == .integer) return isAnyIntegerType(param_elem);
+            if (pa == .float) return isAnyFloatType(arg_elem);
+            if (pb == .float) return isAnyFloatType(param_elem);
+            return false;
+        }
+        if (param_elem.* == .array and arg_elem.* == .array) {
+            if (param_elem.array.len != arg_elem.array.len) return false;
+            return self.arrayElemStrictEqual(param_elem.array.elem, arg_elem.array.elem);
+        }
+        if (param_elem.* == .tuple and arg_elem.* == .tuple) {
+            if (param_elem.tuple.elems.len != arg_elem.tuple.elems.len) return false;
+            for (param_elem.tuple.elems, arg_elem.tuple.elems) |pe, ae| {
+                if (!self.arrayElemStrictEqual(pe, ae)) return false;
+            }
+            return true;
+        }
+        return self.typesEqual(@constCast(param_elem), @constCast(arg_elem));
+    }
+
+    fn arrayCallArgStrictMatches(self: *TypeChecker, param_ty: *const ast.Type, arg_ty: *ast.Type) bool {
+        const p_arr = if (param_ty.* == .array) param_ty.array else return true;
+        const a_arr = if (arg_ty.* == .array) arg_ty.array else return true;
+        if (p_arr.len != a_arr.len) return false;
+        return self.arrayElemStrictEqual(p_arr.elem, a_arr.elem);
     }
 
     fn isNumericType(ty: *const ast.Type) bool {
@@ -4229,6 +4271,7 @@ pub const TypeChecker = struct {
                         for (closure.params, call.args) |param_ty, arg| {
                             const arg_ty = try self.checkExpr(arg, scope);
                             if (!self.plainCallArgMatches(param_ty, arg, arg_ty)) return TypeError.TypeMismatch;
+                            if (!self.arrayCallArgStrictMatches(param_ty, arg_ty)) return TypeError.TypeMismatch;
                         }
                         return closure.ret;
                     }
@@ -4238,6 +4281,7 @@ pub const TypeChecker = struct {
                         for (fn_ptr.params, call.args) |param_ty, arg| {
                             const arg_ty = try self.checkExpr(arg, scope);
                             if (!self.plainCallArgMatches(param_ty, arg, arg_ty)) return TypeError.TypeMismatch;
+                            if (!self.arrayCallArgStrictMatches(param_ty, arg_ty)) return TypeError.TypeMismatch;
                         }
                         self.fn_ptr_calls.put(expr, {}) catch return TypeError.OutOfMemory;
                         return fn_ptr.ret;
@@ -5132,6 +5176,10 @@ pub const TypeChecker = struct {
                                     }
                                     const arg_ty = try self.checkExpr(arg, scope);
                                     if (!self.plainCallArgMatches(param.ty, arg, arg_ty)) return TypeError.TypeMismatch;
+                                    if (!self.arrayCallArgStrictMatches(param.ty, arg_ty)) {
+                                        self.setError("TypeMismatch in call to {s}: array element type mismatch (stride differs)", .{call.func_name});
+                                        return TypeError.TypeMismatch;
+                                    }
                                 }
                                 if (func.is_async) return try self.makeFutureType(func.ret_ty);
                                 return func.ret_ty;

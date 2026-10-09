@@ -15499,6 +15499,11 @@ pub const Codegen = struct {
 
                 // Generate equality checking ladder
                 var previous_cond: ?[]const u8 = null;
+                // #7: when every arm diverges and a `default` arm closes the
+                // ladder, no merge block is reachable; emitting it would end
+                // the function on an unterminated label.
+                var any_fallthrough = false;
+                var has_default = false;
                 for (swe.cases, 0..) |case, idx| {
                     self.out.writer().print("{s}:\n", .{check_labels.items[idx]}) catch return CodegenError.CodegenError;
                     if (previous_cond) |cond| {
@@ -15506,6 +15511,7 @@ pub const Codegen = struct {
                         previous_cond = null;
                     }
                     const is_default = isSwitchDefaultPattern(case.pattern);
+                    if (is_default) has_default = true;
                     const is_eq = if (is_default) "" else try self.newTmp();
                     if (!is_default) {
                         if (switch_enum_decl) |decl| {
@@ -15557,12 +15563,19 @@ pub const Codegen = struct {
                     try self.genBlock(case.body, hoisted_allocs);
                     if (!blockTerminates(case.body)) {
                         self.out.writer().print("    jmp {s}\n", .{merge_label}) catch return CodegenError.CodegenError;
+                        any_fallthrough = true;
                     }
                     self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
                 }
 
-                self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
-                if (val_needs_release) try self.emitRelease(val_reg);
+                // The last non-default check branches to the merge label, so
+                // the merge block stays whenever it can be referenced.
+                const last_is_default = swe.cases.len > 0 and isSwitchDefaultPattern(swe.cases[swe.cases.len - 1].pattern);
+                const need_merge = any_fallthrough or !has_default or !last_is_default;
+                if (need_merge) {
+                    self.out.writer().print("{s}:\n", .{merge_label}) catch return CodegenError.CodegenError;
+                    if (val_needs_release) try self.emitRelease(val_reg);
+                }
                 const reg = try self.newTmp();
                 return reg;
             },

@@ -2682,6 +2682,19 @@ pub const TypeChecker = struct {
                 }
                 break :blk true;
             },
+            // #7: an all-diverging `switch` tail (every arm returns/panics,
+            // with a `default` arm so no value can fall through) terminates
+            // the function; without this the tail check misreports the
+            // void-typed switch statement as a value mismatch.
+            .switch_expr => |swe| blk: {
+                if (swe.cases.len == 0) break :blk false;
+                var has_default = false;
+                for (swe.cases) |case| {
+                    if (lowering_rules.isSwitchDefaultPattern(case.pattern)) has_default = true;
+                    if (!blockTerminates(case.body)) break :blk false;
+                }
+                break :blk has_default;
+            },
             else => false,
         };
     }

@@ -36,11 +36,13 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - [x] **#10 `len(str)` 恒返 2**（已修复：字面量本轮复测已返回正确字节数；
   SAB 变量情形加推断集合护栏读 Slice 长度字段）。验收：`/tmp/p10_len.sla` 与
   `/tmp/plen_var.sla` 双后端全绿。
-- [ ] **#4 模板多插值 check/test 前端不一致**（`check` 拒收多插值但 SAB 路径可跑；
-  `ptr + 多插值` 组合运行时 `unreachable`）。验收：两端行为一致，不一致时 `check`
-  给出明确不支持提示而非 `ExpectedDeclaration` 误导。
-- [ ] **#7 全 return 臂 switch**（`check` 要尾表达式类型 vs SAB `FallthroughForbidden`
-  互斥；SAB emitter 缺口）。验收：纯 `case: return` 风格任一写法双绿，或文档明确写法约束。
+- [x] **#4 模板多插值 check/test 前端不一致**（已修复 check 侧：跳块扫描模板感知；
+  `ptr + 多插值` 崩溃已消除）。验收：`/tmp/p4_multi.sla` 等 `check+test` 双绿；
+  残留 #4b（嵌套 `format()` 在 `println` 内双后端只输出换行）已文档化，模板断言
+  用 `str_eq`/直接格式化。
+- [x] **#7 全 return 臂 switch**（已修复：检查器/共享层补 `switch` 终止判定，
+  SAB 函数尾声 + 双后端合并块仅可达时发射）。验收：`/tmp/p7a.sla` 纯 `return` 臂
+  尾 `switch` 写法 `check+test` 双后端全绿，build-exe 返回值正确；`33` 混合写法不回归。
 - [ ] **#8 默认参数 / #9 label**（`parse` 直接失败类；需语言设计决策：支持 or 明确拒绝+文档）。
   验收：`47/48` 的 README 与语言规范口径一致。
 
@@ -91,3 +93,6 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 2026-10-09：#3/#5/#10 已修复并验证（探针串全绿：`p3 EQ/PASS`、`p5 build-exe hello 退出0`、
   `plen_var` 双后端、`p10`；`10_strings` 合并单绑定后双后端全绿 + build-exe 正常；
   全量 50/50 + zig build test 302/302），待推送后继续 #4/#7。
+- 2026-10-09：#4 已修复 check 侧（跳块扫描模板感知，`p4` 探针串双绿；残留 #4b 嵌套
+  输出已文档化）+#7 已修复（终止判定 + 双后端合并门，`p7a` 双后端全绿 + exe 返回 20；
+  全量 50/50 + zig build test 302/302），待推送后继续 #8/#9 与 51–60。

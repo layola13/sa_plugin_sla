@@ -35,14 +35,26 @@
 - 现状（已消除绕行）：`10_strings` 已合并为单绑定，另保留 `: ptr` 对照断言。
 - 关联：`current_plan.md` 提到 `str_eq` 相关 known issues；`68_parser_tokens`（数组/参数来源的 ptr）不受影响。
 
-## #4 模板字符串多插值：check 与 test 前端不一致 + 特定组合 runtime 崩溃（已确认）
+## #4 模板字符串多插值：check 与 test 前端不一致 + 特定组合 runtime 崩溃（已修复 check 侧；残留 #4b）
 
 - `check` 拒绝多插值模板：`println(`hi ${name}, n=${n}!`)` 报 `ExpectedDeclaration`，
   但同文件 `sa sla test`（SAB 路径）可通过（`tests/test_unit_template_string.sla` 亦如此：check 失败、test 3/3 通过）。
-- 组合 `let name: ptr = "sa"; println(`hi ${name}, n=${n}!`)` 在 test 运行时触发
-  `signal 6 / reached unreachable code`（`10_strings` 初版）。
-  对照探针：`ptr` 单插值通过、无注解双插值通过，崩溃仅出现在 `ptr + 多插值` 组合。
-- 现状规避：`10_strings` 的 `str_eq` 用 `: ptr` 绑定，模板插值用无注解绑定，两者分离。
+- 根因（check 侧）：`check` 以 `.parse_test_bodies = false` 解析，`@test` 体走
+  `skipBlockSpan/peekBlockSpan` 跳块；两者按裸花括号计数，模板 `${...}` 的插值
+  `}` 被误作块结束，块被提前截断，剩余 `, n=...` 在顶层报 `ExpectedDeclaration`
+ （单插值在 `@test` 内同样触发；`fn` 体因正常解析不受影响）。
+- 已修复：`src/parser.zig` 两处跳块扫描镜像词法模板状态机
+ （`template_start/interp/end` + `interp_depth` 栈），`/tmp/p4_multi.sla`、
+  `/tmp/p4_single_test.sla`、`ptr+多插值` 的 `check` 均通过，`test` 双绿；
+  本轮复测 `ptr + 多插值` 的 `unreachable` 崩溃已不再出现
+  （`: ptr` 绑定持有真 C 串后 CSTR 路径正常）。
+- 现状规避：`10_strings` 的打印统一用 `"..."` 格式化（见其 README）。
+- 残留 #4b（双后端一致、无崩溃、仅输出语义缺口，另行立项）：
+  反引号模板脱糖为嵌套 `format()` 调用（`println(format(...))`），双后端
+  `println` 仅当首参为字符串字面量才展开占位，嵌套调用目前只输出换行
+  （探针 `/tmp/p4_var1.sla`、`/tmp/p4_lit.sla` build-exe 退出 0 但无正文；
+  直接 `println("hi {}!", ...)` 与 `format()` 赋值后打印均正常）。
+  模板断言请用 `str_eq(format(...), ...)` 或 `"..."` 直调。
 
 ## #5 `println("{}", s)` 与 `str_eq(s, …)` 对字符串变量注解的要求互斥（已修复）
 
@@ -71,7 +83,7 @@
   `src/parser.zig` 在 `parseStmt` 脱糖为 `sub/mul/div/mod` + `assign`，
   并补入 `genericLookaheadBoundary`；`31_compound` 已改回原生写法，全量 50/50 全绿。
 
-## #7 全 return 臂的 switch 函数：check 与 SAB 后端要求互斥（已确认）
+## #7 全 return 臂的 switch 函数：check 与 SAB 后端要求互斥（已修复）
 
 - 初版（各臂均 `return`，尾表达式即 `switch`）：`check` 与 `test` 均报
   `TypeMismatch in function tail expression: expected i32, actual void_type`，
@@ -79,9 +91,16 @@
 - 加尾兜底 `return 3;` 后：`check` 通过，但 SAB 后端（`test`）报
   `FallthroughForbidden: basic blocks must end with jmp, br, br_null, or return`
  （不可达兜底块缺少终止子，SAB emitter 缺口）。
-- 现状规避：采用 `tests/test_unit_switch_statement_direct.sla` 已验证的混合写法——
-  一臂直接 `return`，其余臂赋值 + 尾 `return r`，check/test 双绿。
-  tsgosa 的纯 `case: return` 风格在 SLA 侧暂无一对一写法。
+- 根因：三处不识别全发散 `switch` 尾——检查器 `exprTerminates` 无 `switch` 分支；
+  共享 `lowering_rules.exprTerminates` 同缺；SAB 函数尾声无条件发射取值尾声；
+  SAB/SA 的 `switch` 合并哨兵无条件发射（不可达指令落到终止子之后）。
+- 已修复：检查器 + 共享层 `exprTerminates` 新增 `switch` 臂
+  （全臂发散 + 含 `default` 才算终止）；SAB 函数尾声对终止体跳过取值尾声；
+  SAB/SA 的 `switch` 合并块仅在可达时发射（有 fallthrough、无 default、
+  或末臂非 default）。探针 `/tmp/p7a.sla`（纯 `return` 臂尾 `switch`）
+  `check + test`（SAB/SA 双后端）全绿，build-exe 运行返回 20 正确。
+- 现状：`33_switch_return` 保留已验证的混合写法（仍双绿）；
+  纯 `case: return` 尾 `switch` 风格现已同等支持。
 
 ## #8 默认参数值不支持：`fn f(a: i32 = 1)` 直接 parse 失败（已确认）
 

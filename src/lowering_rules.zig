@@ -1085,6 +1085,17 @@ fn exprTerminates(expr: *const ast.Node) bool {
             }
             return true;
         },
+        // #7: all-diverging `switch` tails need a `default` arm; otherwise a
+        // non-matching value falls through and the function still owes a value.
+        .switch_expr => |swe| {
+            if (swe.cases.len == 0) return false;
+            var has_default = false;
+            for (swe.cases) |case| {
+                if (isSwitchDefaultPattern(case.pattern)) has_default = true;
+                if (!blockTerminates(case.body)) return false;
+            }
+            return has_default;
+        },
         else => false,
     };
 }

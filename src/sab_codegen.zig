@@ -6166,7 +6166,10 @@ pub const Codegen = struct {
         try self.emitLabel("L_ENTRY");
         try self.materializeBorrowedParams(f.params);
         const ret_prim = try primType(async_plan.abi_ret_ty);
-        if (ret_prim != .void and blockTailExpr(f.body) != null) {
+        // #7: a terminating tail (e.g. an all-return `switch`) is compiled
+        // as statements; emitting the value epilogue after it would leave
+        // unreachable instructions past a terminator (FallthroughForbidden).
+        if (ret_prim != .void and blockTailExpr(f.body) != null and !lowering_rules.blockTerminates(f.body)) {
             const tail = blockTailExpr(f.body).?;
             for (f.body[0 .. f.body.len - 1]) |stmt| {
                 self.genStmt(stmt) catch |err| {
@@ -10151,11 +10154,21 @@ pub const Codegen = struct {
         }
 
         try self.setMergeBranchEmitterState(live_branch_states.items, &pre_branch_state);
-        if (any_fallthrough) try self.emitLabel(merge_label);
+        // #7: when every arm diverges there is no merge point; emitting the
+        // sentinel here would place instructions past a terminator
+        // (FallthroughForbidden). Mirror genMatch: return an unassigned
+        // bookkeeping tmp that statement-position callers discard.
+        if (any_fallthrough) {
+            try self.emitLabel(merge_label);
+            const sentinel = try self.intern(try self.newTmp());
+            try self.emitAssignImm(sentinel, 0);
+            return sentinel;
+        }
 
-        const sentinel = try self.intern(try self.newTmp());
-        try self.emitAssignImm(sentinel, 0);
-        return sentinel;
+        if (!val_is_local) try self.emitRelease(val_reg);
+        const result = try self.intern(try self.newTmp());
+        try self.recordReg(result);
+        return result;
     }
 
     fn genExpr(self: *Codegen, expr: *ast.Node) anyerror!u32 {

@@ -1502,14 +1502,55 @@ pub const Parser = struct {
         var lex = lexer.Lexer.init(self.lex.buffer[self.tok.loc.start..]);
         var depth: usize = 0;
         var end: usize = self.tok.loc.start;
+        // Mirror the lexer template state so `${...}` interpolation braces
+        // don't disturb the block depth (#4: skipped @test bodies containing
+        // template literals were truncated at the first interp `}`).
+        var in_template = false;
+        var interp_depth: u16 = 0;
+        var tmpl_stack: [8]u16 = [_]u16{0} ** 8;
+        var tmpl_sp: u8 = 0;
         while (true) {
             const tok = lex.next();
+            if (tok.tag == .template_start) {
+                if (tmpl_sp >= tmpl_stack.len) return ParserError.SyntaxError;
+                tmpl_stack[tmpl_sp] = interp_depth;
+                tmpl_sp += 1;
+                interp_depth = 0;
+                in_template = true;
+                continue;
+            }
+            if (in_template) {
+                if (tok.tag == .template_interp) {
+                    in_template = false;
+                    interp_depth = 1;
+                } else if (tok.tag == .template_end) {
+                    if (tmpl_sp == 0) return ParserError.SyntaxError;
+                    tmpl_sp -= 1;
+                    interp_depth = tmpl_stack[tmpl_sp];
+                    in_template = false;
+                } else if (tok.tag == .eof) {
+                    return ParserError.SyntaxError;
+                }
+                continue;
+            }
             switch (tok.tag) {
+                .template_interp => {
+                    in_template = false;
+                    interp_depth = 1;
+                },
                 .l_brace => {
+                    if (interp_depth > 0) interp_depth += 1;
                     depth += 1;
                     end = self.tok.loc.start + tok.loc.end;
                 },
                 .r_brace => {
+                    if (interp_depth > 0) {
+                        interp_depth -= 1;
+                        if (interp_depth == 0) {
+                            in_template = true;
+                            continue;
+                        }
+                    }
                     if (depth == 0) {
                         return ParserError.SyntaxError;
                     }
@@ -1540,14 +1581,62 @@ pub const Parser = struct {
         var end = self.tok.loc.end;
         self.advance();
         var depth: usize = 1;
+        // Same template-state mirror as peekBlockSpan (#4).
+        var in_template = false;
+        var interp_depth: u16 = 0;
+        var tmpl_stack: [8]u16 = [_]u16{0} ** 8;
+        var tmpl_sp: u8 = 0;
         while (depth > 0 and self.peek() != .eof) {
+            if (self.peek() == .template_start) {
+                if (tmpl_sp >= tmpl_stack.len) {
+                    self.last_expected = "matching closing brace";
+                    return ParserError.SyntaxError;
+                }
+                tmpl_stack[tmpl_sp] = interp_depth;
+                tmpl_sp += 1;
+                interp_depth = 0;
+                in_template = true;
+                self.advance();
+                continue;
+            }
+            if (in_template) {
+                if (self.peek() == .template_interp) {
+                    in_template = false;
+                    interp_depth = 1;
+                } else if (self.peek() == .template_end) {
+                    if (tmpl_sp == 0) {
+                        self.last_expected = "matching closing brace";
+                        return ParserError.SyntaxError;
+                    }
+                    tmpl_sp -= 1;
+                    interp_depth = tmpl_stack[tmpl_sp];
+                    in_template = false;
+                }
+                self.advance();
+                continue;
+            }
             switch (self.peek()) {
+                .template_interp => {
+                    in_template = false;
+                    interp_depth = 1;
+                    self.advance();
+                },
                 .l_brace => {
+                    if (interp_depth > 0) interp_depth += 1;
                     depth += 1;
                     end = self.tok.loc.end;
                     self.advance();
                 },
                 .r_brace => {
+                    if (interp_depth > 0) {
+                        interp_depth -= 1;
+                        if (interp_depth == 0) {
+                            in_template = true;
+                            end = self.tok.loc.end;
+                            self.advance();
+                            continue;
+                        }
+                    }
                     depth -= 1;
                     end = self.tok.loc.end;
                     self.advance();

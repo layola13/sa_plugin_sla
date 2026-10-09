@@ -46,7 +46,7 @@
   `s`（无注解）只做 `println` 打印。
 - 归属：`println`/格式化路径与字符串变量物化（待定位到具体 lowering 规则）。
 
-## #6 复合赋值仅支持 `+= |= &=`，`-= *= /= %=` 无词法 token（已确认，根因已定位）
+## #6 复合赋值仅支持 `+= |= &=`，`-= *= /= %=` 无词法 token（已修复）
 
 - 复现（/tmp/probe_op.sla）：`x += 1` 通过；`x -= 1` / `x *= 2` / `x /= 4` / `x %= 5`
   均报 `Unexpected prefix token: equal`；对照 `x |= 1` / `x &= 1` 通过。
@@ -54,7 +54,9 @@
   `ampersand_equal`（另有 `question_question_equal`），缺失 `minus_equal` /
   `asterisk_equal` / `slash_equal` / `percent_equal`，故 `-=` 等被切分为 `-` + `=`。
 - 期望：在 lexer + parser 补齐四种复合赋值（或 `check` 给出明确不支持提示）。
-- 现状规避：`31_compound` 中 `-= *= /= %=` 用 `x = x - 3` 脱糖写法，另断言 `|=` / `&=`。
+- 已修复：`src/lexer.zig` 新增四种 token 及 `-/ * / / / %` 后接 `=` 分支；
+  `src/parser.zig` 在 `parseStmt` 脱糖为 `sub/mul/div/mod` + `assign`，
+  并补入 `genericLookaheadBoundary`；`31_compound` 已改回原生写法，全量 50/50 全绿。
 
 ## #7 全 return 臂的 switch 函数：check 与 SAB 后端要求互斥（已确认）
 

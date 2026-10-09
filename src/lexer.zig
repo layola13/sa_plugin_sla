@@ -62,6 +62,10 @@ pub const Token = struct {
         // Symbols
         plus, // +
         plus_equal, // +=
+        minus_equal, // -=
+        asterisk_equal, // *=
+        slash_equal, // /=
+        percent_equal, // %=
         pipe_equal, // |=
         ampersand_equal, // &=
         minus, // -
@@ -219,9 +223,19 @@ pub const Lexer = struct {
                     self.index += 1;
                     return Token{ .tag = .arrow, .loc = .{ .start = start, .end = self.index } };
                 }
+                if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
+                    self.index += 1;
+                    return Token{ .tag = .minus_equal, .loc = .{ .start = start, .end = self.index } };
+                }
                 return Token{ .tag = .minus, .loc = .{ .start = start, .end = self.index } };
             },
-            '*' => return Token{ .tag = .asterisk, .loc = .{ .start = start, .end = self.index } },
+            '*' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
+                    self.index += 1;
+                    return Token{ .tag = .asterisk_equal, .loc = .{ .start = start, .end = self.index } };
+                }
+                return Token{ .tag = .asterisk, .loc = .{ .start = start, .end = self.index } };
+            },
             '/' => {
                 if (self.index < self.buffer.len and self.buffer[self.index] == '/') {
                     // Line comment, skip till newline
@@ -229,9 +243,19 @@ pub const Lexer = struct {
                     while (self.index < self.buffer.len and self.buffer[self.index] != '\n') : (self.index += 1) {}
                     return self.next();
                 }
+                if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
+                    self.index += 1;
+                    return Token{ .tag = .slash_equal, .loc = .{ .start = start, .end = self.index } };
+                }
                 return Token{ .tag = .slash, .loc = .{ .start = start, .end = self.index } };
             },
-            '%' => return Token{ .tag = .percent, .loc = .{ .start = start, .end = self.index } },
+            '%' => {
+                if (self.index < self.buffer.len and self.buffer[self.index] == '=') {
+                    self.index += 1;
+                    return Token{ .tag = .percent_equal, .loc = .{ .start = start, .end = self.index } };
+                }
+                return Token{ .tag = .percent, .loc = .{ .start = start, .end = self.index } };
+            },
             '=' => {
                 if (self.index < self.buffer.len and self.buffer[self.index] == '>') {
                     self.index += 1;

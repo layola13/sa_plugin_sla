@@ -17,9 +17,11 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 
 ## 1. 编译器缺口修复（按 ROI 排序）
 
-- [ ] **#6 补齐 `-= *= /= %=` 词法 token**（根因已定位：`src/lexer.zig:62-106` 缺
-  `minus_equal/asterisk_equal/slash_equal/percent_equal`；`31_compound` 现用脱糖绕行）。
-  验收：`/tmp/probe_op.sla` 五种复合赋值 `check` 全过；`31_compound` 改回原生写法后全绿。
+- [x] **#6 补齐 `-= *= /= %=` 词法 token**（已修复：`src/lexer.zig` 新增
+  `minus_equal/asterisk_equal/slash_equal/percent_equal` + `src/parser.zig`
+  脱糖为 `sub/mul/div/mod` 二元运算；`31_compound` 已改回原生写法）。
+  验收：`/tmp/probe_op.sla` 五种复合赋值 `check+test` 全过；`31_compound` 原生写法全绿；
+  全量 50/50 + `zig build test` 302/302。
 - [ ] **#1 数组字面量元素类型错配**（`[i32;N]` 形参 × `[int;N]` 字面量 stride 错位，
   `check` 放行运行值错；归属 Phase 5 聚合布局）。验收：错配用例 `check` 报错或自动统一；
   现有 `08/16/22/27/28/35/36/37/38` 不回归。
@@ -76,3 +78,5 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 2026-10-08：41–50 落地，全绿 50/50；新增 #8/#9/#10；49 collatz 步数口径
   用 build-exe 核对为 111（`d5a2f6f` + `fe747f7` 已推送）。
 - 下一步：先做 §1 前两项（#6、#1），再做 §2 的 51–60。
+- 2026-10-09：#6 已修复并验证（全量 50/50 + zig build test 302/302 + build-exe 抽查 01_hello），
+  `31_compound` 改回原生写法；待推送后继续 #1，再做 §2 的 51–60（每批10个及时提交推送）。

@@ -2,16 +2,16 @@
 @import "sa_std/fmt.sai"
 
 // 对标 tsgosa 21_compound：复合赋值。
-// 注意（POTENTIAL_ISSUES #6）：词法仅支持 += |= &=，-= *= /= %= 暂不支持，
-// 此处 -= *= /= %= 用脱糖写法（x = x - 3），语义与 tsgosa 一致（终值 1）。
+// 已修复（POTENTIAL_ISSUES #6）：词法已补齐 -= *= /= %= 原生 token，
+// 此处全部使用原生复合赋值写法（终值 1）。
 
 fn main() -> i32 {
     let x: i32 = 10;
     x += 5;
-    x = x - 3;
-    x = x * 2;
-    x = x / 4;
-    x = x % 5;
+    x -= 3;
+    x *= 2;
+    x /= 4;
+    x %= 5;
     println("{}", x);
     return 0;
 }
@@ -20,13 +20,13 @@ fn main() -> i32 {
     let x: i32 = 10;
     x += 5;
     if x != 15 { panic(3101); };
-    x = x - 3;
+    x -= 3;
     if x != 12 { panic(3102); };
-    x = x * 2;
+    x *= 2;
     if x != 24 { panic(3103); };
-    x = x / 4;
+    x /= 4;
     if x != 6 { panic(3104); };
-    x = x % 5;
+    x %= 5;
     if x != 1 { panic(3105); };
     // 受支持的复合赋值全覆盖：
     x |= 2;

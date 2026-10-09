@@ -1645,6 +1645,42 @@ pub const Parser = struct {
                 node.* = .{ .assign_stmt = .{ .target = expr, .value = sum } };
                 return node;
             }
+            if (self.match(.minus_equal)) {
+                const rhs = try self.parseExpr(0);
+                try self.expect(.semicolon);
+                const value = try self.allocator.create(ast.Node);
+                value.* = .{ .binary_expr = .{ .op = .sub, .left = expr, .right = rhs } };
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{ .assign_stmt = .{ .target = expr, .value = value } };
+                return node;
+            }
+            if (self.match(.asterisk_equal)) {
+                const rhs = try self.parseExpr(0);
+                try self.expect(.semicolon);
+                const value = try self.allocator.create(ast.Node);
+                value.* = .{ .binary_expr = .{ .op = .mul, .left = expr, .right = rhs } };
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{ .assign_stmt = .{ .target = expr, .value = value } };
+                return node;
+            }
+            if (self.match(.slash_equal)) {
+                const rhs = try self.parseExpr(0);
+                try self.expect(.semicolon);
+                const value = try self.allocator.create(ast.Node);
+                value.* = .{ .binary_expr = .{ .op = .div, .left = expr, .right = rhs } };
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{ .assign_stmt = .{ .target = expr, .value = value } };
+                return node;
+            }
+            if (self.match(.percent_equal)) {
+                const rhs = try self.parseExpr(0);
+                try self.expect(.semicolon);
+                const value = try self.allocator.create(ast.Node);
+                value.* = .{ .binary_expr = .{ .op = .mod, .left = expr, .right = rhs } };
+                const node = try self.allocator.create(ast.Node);
+                node.* = .{ .assign_stmt = .{ .target = expr, .value = value } };
+                return node;
+            }
             // `a ??= b` desugars to `a = a.unwrap_or(b)`, mirroring `+=`
             // above (same target-reuse tradeoff: complex place expressions
             // evaluate twice; bind them first).
@@ -1974,9 +2010,13 @@ pub const Parser = struct {
             .plus,
             .plus_equal,
             .minus,
+            .minus_equal,
             .asterisk,
+            .asterisk_equal,
             .slash,
+            .slash_equal,
             .percent,
+            .percent_equal,
             .ampersand,
             .amp_amp,
             .ampersand_equal,

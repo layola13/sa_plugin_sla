@@ -58,11 +58,13 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   SLA 暂无 `at(-1)`，README 注明）。
 - [x] `55_num_sep` ← tsgosa `164_num_sep`（数字分隔符字面量；先探针 `1_000` 是否支持，
   不支持则记缺口 #11）。
-- [ ] `56_chain_ops` ← tsgosa `165_chain`（链式调用；探针方法链在 direct-SAB 是否全绿）。
-- [ ] `57_iife` ← tsgosa `170_iife`（立即调用闭包；参考 `20_closures`）。
-- [ ] `58_sum_2d` ← tsgosa `172_sum_2d`（二维扁平求和；参考 `19/28` 行主序布局）。
-- [ ] `59_count_even` ← tsgosa `174_count_even`（偶数计数；与 `29/43` 互补，换 `Vec` 版）。
-- [ ] `60_sort_desc` ← tsgosa `190_sort_desc`（降序插入排序；`16/38` 已有升序，取反比较子）。
+- [x] `56_chain_ops` ← tsgosa `165_chain`（实为链式赋值 `a = b = 5`，SLA 不支持，
+  用顺序赋值表达；记缺口 #12）。
+- [x] `57_iife` ← tsgosa `170_iife`（立即调用闭包；直接调用字面量不支持，
+  先绑定再调用；参考 `20_closures`，记缺口 #13）。
+- [x] `58_sum_2d` ← tsgosa `172_sum_2d`（二维扁平求和；参考 `19/28` 行主序布局）。
+- [x] `59_count_even` ← tsgosa `174_count_even`（偶数计数；与 `29/43` 互补，换 `Vec` 版）。
+- [x] `60_sort_desc` ← tsgosa `190_sort_desc`（降序插入排序；`16/38` 已有升序，取反比较子）。
 
 每个 demo 要求：`main.sla`（`main + println` + `@test`）+ `README.md`
 （tsgosa 编号 + 命令 + 绕行说明）+ 入 `demos/basic/README.md` 索引表。
@@ -101,3 +103,5 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   待推送后做 §2 的 51–60。
 - 2026-10-09：51–55 落地（`check+test` 5/5 + build-exe 抽查 51/52 输出核对；
   新发现 #11 数字分隔符；全量 55/55），待推送后做 56–60。
+- 2026-10-09：56–60 落地（`check+test` 5/5 + build-exe 抽查 56/58/60 输出核对；
+  新发现 #12 链式赋值、#13 闭包直接调用；全量 60/60 + zig build test 302/302），已推送。

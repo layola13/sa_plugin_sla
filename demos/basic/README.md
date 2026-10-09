@@ -83,6 +83,11 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 53_concat3 | 161_concat3 | `Vec::push` 三段拼接（无 `concat`，4/1/4） |
 | 54_neg_index | 162_at_neg / 169_neg_idx | `a[len-1]` 表达 `at(-1)`（无负索引） |
 | 55_num_sep | 164_num_sep | 普通字面量（数字分隔符见缺口 #11） |
+| 56_chain_ops | 165_chain | 顺序赋值表达链式赋值（缺口 #12） |
+| 57_iife | 170_iife | 先绑定再调用（直接调用见缺口 #13） |
+| 58_sum_2d | 172_sum_2d | 扁平 `[int; 6]` 双层循环（无嵌套字面量） |
+| 59_count_even | 174_count_even | `Vec` 版偶数计数（与 29/43 互补） |
+| 60_sort_desc | 190_sort_desc | 取反比较子降序插入（与 16/38 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

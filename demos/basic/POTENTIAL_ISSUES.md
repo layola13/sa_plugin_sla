@@ -143,6 +143,19 @@
 - 期望：支持 `1_000_000` 分隔符，或 `check` 给出明确不支持提示。
 - 现状规避：`55_num_sep` 用普通字面量表达同一语义，README 注明。
 
+## #12 链式赋值不支持（已确认，51–60 批次新发现）
+
+- 复现（/tmp/pchain.sla）：`a = b = 5;` 报 `found '=', expected semicolon`
+  （赋值语句不返回值，属明确拒绝）。
+- 现状规避：`56_chain_ops` 用两条顺序赋值表达同一语义，README 注明。
+
+## #13 闭包字面量直接调用不支持（已确认，51–60 批次新发现）
+
+- 复现（/tmp/piife.sla）：`(|x: int| x * 2)(21)` 报
+  `found '21', expected callable function ... (error.InvalidCallTarget)`，
+  属明确拒绝；零参闭包 `|| 42` 本身可解析（探针 `/tmp/pclos0.sla`）。
+- 现状规避：`57_iife` 先绑定再调用，块作用域限定可见性，语义等价，README 注明。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

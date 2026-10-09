@@ -1,0 +1,24 @@
+@import "sa_std/io/print.sai"
+@import "sa_std/fmt.sai"
+
+// 对标 tsgosa 165_chain：链式赋值 `a = b = 5`。
+// SLA 不支持链式赋值（`a = b = 5` 报 `found '=', expected semicolon`，
+// 探针见 /tmp/pchain.sla），此处用两条顺序赋值表达同一语义。
+
+fn main() -> i32 {
+    let a = 0;
+    let b = 0;
+    b = 5;
+    a = b;
+    println("{},{}", a, b);
+    return 0;
+}
+
+@test "basic 56 chain ops"() {
+    let a = 0;
+    let b = 0;
+    b = 5;
+    a = b;
+    if a != 5 { panic(5601); };
+    if b != 5 { panic(5602); };
+}

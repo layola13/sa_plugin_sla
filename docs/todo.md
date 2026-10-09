@@ -105,3 +105,12 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   新发现 #11 数字分隔符；全量 55/55），待推送后做 56–60。
 - 2026-10-09：56–60 落地（`check+test` 5/5 + build-exe 抽查 56/58/60 输出核对；
   新发现 #12 链式赋值、#13 闭包直接调用；全量 60/60 + zig build test 302/302），已推送。
+- 2026-10-09：工具链收尾——`sa_plugin_node` 链打通：`http_server` 构建崩溃根因为
+  `-Dsci-root` 必须用相对路径（绝对路径触发 `b.path` panic），改用 `-Dsci-root=../sci`
+  后三件均构建成功；又立 `/content/sci -> /content/sa_all/sci` 符号链接使各仓默认
+  `../../sci` 正确解析，`http-client` / `http-server` / `node` 均
+  `sa plugin install --dev .` 成功，`sa plugin list` 四件齐备、`sa node --help` 正常；
+  全量复核 60/60。
+- 已知架构债（Y-规则 42 备案，不影响验证结论）：#3/#5 的
+  `inferred/explicit_*_string_locals` 跟踪集目前只落在 `sab_codegen.zig` 发射端，
+  未上收为 `lowering_rules.zig` 共享语义；待后续以共享 lowering 契约重构，行为不变。

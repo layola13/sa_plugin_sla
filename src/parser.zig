@@ -1210,6 +1210,10 @@ pub const Parser = struct {
             const p_name = self.lexeme(p_tok.loc);
             try self.expect(.colon);
             const p_ty = try self.parseType();
+            if (self.peek() == .equal) {
+                self.last_expected = "r_paren (default parameter values such as `= 1` are not supported; define f_default() + f_full(...) instead, see demos/basic/47_default_args)";
+                return ParserError.SyntaxError;
+            }
             try params.append(.{ .name = p_name, .ty = p_ty, .is_borrow = is_borrow, .is_move = is_move });
             if (!self.match(.comma)) break;
         }
@@ -1812,6 +1816,12 @@ pub const Parser = struct {
                 return node;
             }
             if (!self.match(.semicolon)) {
+                // `name:` at statement level is a loop-label definition, which
+                // SLA does not support (#9).
+                if (expr.* == .identifier and self.peek() == .colon) {
+                    self.last_expected = "semicolon (loop labels such as `outer:` are not supported; restructure with an inner break, see demos/basic/48_nested_break)";
+                    return ParserError.SyntaxError;
+                }
                 if (self.peek() != .r_brace) {
                     try self.expect(.semicolon);
                 }

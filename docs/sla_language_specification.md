@@ -682,3 +682,20 @@ The Sla compiler lifecycle is divided into two distinct phases:
 *   **Target Repository**: Merge Sla's AST parser and lowering frontend into the core `sci` repository.
 *   **Workflow**: The core `sa` CLI natively supports `.sla` file extensions, compiling them directly from Sla ➔ SA ➔ Referee ➔ WASM/EXE through a unified compilation pipeline.
 *   **Milestones**: Promote Sla to the default, recommended high-level language for SA development, completely replacing raw, manual SA assembly for writing business logic and plugins.
+
+---
+
+## 15. Explicitly Unsupported Syntax (Design Decisions)
+
+The following constructs are **rejected at parse time with a targeted diagnostic** (not silent miscompiles). Each entry records the approved workaround so demos, docs, and diagnostics share one wording.
+
+*   **Default parameter values** (`fn f(a: i32 = 1)`):
+    rejected with `expected r_paren (default parameter values ... are not supported; ...)`.
+    Approved workaround: split into `f_default()` (zero parameters, default semantics)
+    plus `f_full(a, b, c)` (all parameters); see `demos/basic/47_default_args`.
+*   **Loop labels** (`outer: for ...` / `continue outer` / `break outer`):
+    rejected with `expected semicolon (loop labels ... are not supported; ...)`.
+    Approved workaround: restructure with an inner `break` (equivalent when the
+    labelled `continue` targets the inner loop's next iteration); see
+    `demos/basic/48_nested_break`. Cross-level `continue` has no one-to-one
+    spelling and must be rewritten explicitly.

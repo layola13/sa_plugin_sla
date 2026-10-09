@@ -43,8 +43,8 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - [x] **#7 全 return 臂 switch**（已修复：检查器/共享层补 `switch` 终止判定，
   SAB 函数尾声 + 双后端合并块仅可达时发射）。验收：`/tmp/p7a.sla` 纯 `return` 臂
   尾 `switch` 写法 `check+test` 双后端全绿，build-exe 返回值正确；`33` 混合写法不回归。
-- [ ] **#8 默认参数 / #9 label**（`parse` 直接失败类；需语言设计决策：支持 or 明确拒绝+文档）。
-  验收：`47/48` 的 README 与语言规范口径一致。
+- [x] **#8 默认参数 / #9 label**（已决策：规范 §15 明确不支持 + 解析器针对性拒识；
+  `47/48` README 与规范口径一致）。验收：`/tmp/p8.sla`、`/tmp/p9.sla` 报出指引性错误。
 
 ## 2. demos/basic 51–60（tsgosa 待移植候选）
 
@@ -96,3 +96,6 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 2026-10-09：#4 已修复 check 侧（跳块扫描模板感知，`p4` 探针串双绿；残留 #4b 嵌套
   输出已文档化）+#7 已修复（终止判定 + 双后端合并门，`p7a` 双后端全绿 + exe 返回 20；
   全量 50/50 + zig build test 302/302），待推送后继续 #8/#9 与 51–60。
+- 2026-10-09：#8/#9 已决策（规范 §15 新增不支持条目 + 解析器针对性拒识；
+  `p8/p9` 探针指引明确，`47/48` 双绿；全量 50/50 + zig build test 302/302），
+  待推送后做 §2 的 51–60。

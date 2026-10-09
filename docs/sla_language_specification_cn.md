@@ -664,3 +664,18 @@ Sla 编译器的生命周期划分为两个核心阶段：
 *   **集成实体**：Sla 前端实现整体合并至主仓 `sci` 代码树中。
 *   **编译流程**：主仓 `sa` CLI 原生处理 `.sla` 扩展名，内部自动无缝走过 Sla ➔ SA ➔ Referee ➔ WASM/EXE 生成的完整管道。
 *   **目标**：Sla 正式提升为整个安全编译生态的第一公民，彻底取代手写 SA 汇编，成为开发者进行业务和智能合约编写的首选高层语言。
+
+---
+
+## 15. 明确不支持的语法（设计决策）
+
+以下构造在解析期即被**拒绝并给出针对性提示**（不会静默误编译）。每条均记录官方绕行写法，demo、文档与报错口径保持一致。
+
+*   **默认参数值**（`fn f(a: i32 = 1)`）：
+    报错 `expected r_paren (default parameter values ... are not supported; ...)`。
+    官方绕行：拆分为 `f_default()`（零参，默认语义）+ `f_full(a, b, c)`（全参），
+    见 `demos/basic/47_default_args`。
+*   **循环标签**（`outer: for ...` / `continue outer` / `break outer`）：
+    报错 `expected semicolon (loop labels ... are not supported; ...)`。
+    官方绕行：用内层 `break` 改写（当被标记的 `continue` 等价于内层下一次迭代时），
+    见 `demos/basic/48_nested_break`。跨层 `continue` 暂无一对一写法，需显式重写。

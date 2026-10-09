@@ -102,19 +102,27 @@
 - 现状：`33_switch_return` 保留已验证的混合写法（仍双绿）；
   纯 `case: return` 尾 `switch` 风格现已同等支持。
 
-## #8 默认参数值不支持：`fn f(a: i32 = 1)` 直接 parse 失败（已确认）
+## #8 默认参数值不支持：`fn f(a: i32 = 1)` 直接 parse 失败（已决策：明确拒绝）
 
 - 复现（/tmp/p_def2.sla）：`fn f(a: i32 = 1, b: i32 = 2) -> i32` 报
   `Syntax Error ... error.SyntaxError`（形参位置）。
-- 现状规避：`47_default_args` 用 `f_default()`（零参）+ `f_full(a,b,c)`（全参）
-  表达 `f()=6, f(10,2,3)=15, f(10,20,30)=60` 语义。
+- 决策：语言规范 §15 明确列为不支持；解析器对形参 `=` 给出针对性提示
+  （`expected r_paren (default parameter values ... see demos/basic/47_default_args)`，
+  探针 `/tmp/p8.sla` 已验证）。
+- 官方绕行：`47_default_args` 用 `f_default()`（零参）+ `f_full(a,b,c)`（全参）
+  表达 `f()=6, f(10,2,3)=15, f(10,20,30)=60` 语义（README 与规范口径一致）。
 
-## #9 Label（`outer:` / `continue outer`）不支持（已确认）
+## #9 Label（`outer:` / `continue outer`）不支持（已决策：明确拒绝）
 
 - 复现（/tmp/p_lbl2.sla）：`outer: for i in 0..3` 报 `Syntax Error`。
   无 label 的内层 `break/continue` 正常（/tmp/p_lbl.sla check 通过）。
-- 现状规避：`48_nested_break` 用内层 `break` 改写 `continue outer`
- （本用例等价，`t=3`；一般的跨层 continue 仍无对等写法）。
+  `break/continue` 后不接受标签名（`continue outer` 报 `expected semicolon`）。
+- 决策：语言规范 §15 明确列为不支持；解析器对语句首 `name:` 给出针对性提示
+  （`expected semicolon (loop labels ... see demos/basic/48_nested_break)`，
+  探针 `/tmp/p9.sla` 已验证）。
+- 官方绕行：`48_nested_break` 用内层 `break` 改写 `continue outer`
+  （本用例等价，`t=3`；一般的跨层 continue 仍无对等写法，需显式重写；
+  README 与规范口径一致）。
 
 ## #10 `len()` 作用于字符串返回表示字数而非字符数（已修复）
 

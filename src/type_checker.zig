@@ -612,6 +612,16 @@ pub const TypeChecker = struct {
         return lowering_rules.isBorrowLikeType(ty);
     }
 
+    /// BTreeSet keys are slices/C strings at runtime (key slots hold
+    /// pointer-sized string data); scalar keys (int/bool/…) would be stored
+    /// as bogus pointers and silently never match. Reject them loudly.
+    fn btreeSetKeySupported(self: *TypeChecker, key_ty: *ast.Type) bool {
+        _ = self;
+        if (key_ty.* == .primitive and key_ty.primitive == .raw_ptr) return true;
+        if (lowering_rules.sliceElementType(key_ty) != null) return true;
+        return false;
+    }
+
     fn iterableElementType(ty: *ast.Type) ?*ast.Type {
         if (arrayType(ty)) |arr| return arr.elem;
         if (sliceElementType(ty)) |elem| return elem;
@@ -4827,6 +4837,7 @@ pub const TypeChecker = struct {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(bs.key, key_ty)) return TypeError.TypeMismatch;
+                            if (!self.btreeSetKeySupported(key_ty)) return TypeError.TypeMismatch;
                             if (rootIdentifier(call.args[0])) |recv_name| {
                                 if (scope.lookup(recv_name)) |sym| {
                                     if (bs.key.* == .infer) {
@@ -4844,6 +4855,7 @@ pub const TypeChecker = struct {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(bs.key, key_ty)) return TypeError.TypeMismatch;
+                            if (!self.btreeSetKeySupported(key_ty)) return TypeError.TypeMismatch;
                             const ty = try self.allocator.create(ast.Type);
                             ty.* = .{ .primitive = .boolean };
                             return ty;
@@ -6015,4 +6027,37 @@ test "type checker allows raw ptr bindings from pointer abi returns" {
         \\@extern abi_make_ptr(data: ptr, len: u64) -> ^ptr
     , "");
     try tc.checkProgram(program);
+}
+
+test "type checker rejects scalar btreeset keys" {
+    const parser_mod = @import("parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const bad_source =
+        \\fn main() -> i32 {
+        \\    let s = BTreeSet::new();
+        \\    s.insert(1);
+        \\    return 0;
+        \\}
+    ;
+    var bad_parser = parser_mod.Parser.init(arena.allocator(), bad_source);
+    const bad_program = try bad_parser.parseProgram();
+    var bad_tc = TypeChecker.init(arena.allocator());
+    defer bad_tc.deinit();
+    try std.testing.expectError(error.TypeMismatch, bad_tc.checkProgram(bad_program));
+
+    const ok_source =
+        \\fn main() -> i32 {
+        \\    let s = BTreeSet::new();
+        \\    s.insert("a");
+        \\    return 0;
+        \\}
+    ;
+    var ok_parser = parser_mod.Parser.init(arena.allocator(), ok_source);
+    const ok_program = try ok_parser.parseProgram();
+    var ok_tc = TypeChecker.init(arena.allocator());
+    defer ok_tc.deinit();
+    try ok_tc.checkProgram(ok_program);
 }

@@ -165,8 +165,14 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   双后端全绿 + build-exe `0,3,0,8`；全量 105/105 + `zig build test` 313/313），
   已推送（`8b5ce06`）。
 - 2026-10-10：立缺口 #15（`String` 形参端到端：借入 ABI + 返回保持 + `str_eq` +
-  SA 物化；小写映射已回退，保 loud 错误；POTENTIAL_ISSUES #15 入账），已推送
-  （`fa999ce`）。
+  SA 物化；小写映射已回退，保 loud 错误；POTENTIAL_ISSUES #15 入账；根因已钉死
+  Slice/Vec 布局混用），已推送（`fa999ce`/`a201764`）。
+- 2026-10-10：修缺口 #16（`BTreeSet<int>` 键静默错→checker 门转 loud；
+  在仓 `set code generation` 单测 int 键一并正为字符串键；正反单测），已推送
+  （`待填`）。
+- 2026-10-10：修缺口 #16（`BTreeSet<int>` 键静默错→checker 门转 loud；
+  附带确认 `check` 跳 `@test` 体，回归须走 `test`；正反单测），已推送
+  （`待填`）。
 - 2026-10-10：101–104 落地（`check+test` 4/4 一遍全绿 + build-exe 抽查 101/103/104
   输出核对 `3,0,2` / `2,3,18,7` / `5,true,7`；全量 104/104 + `zig build test`
   311/311），已推送（`e9d5a92`）。选型：Map 链（35/132，#14 已修复）+ Vec 手写

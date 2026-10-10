@@ -15972,8 +15972,8 @@ test "set code generation" {
         \\    let hash_len = hash.len();
         \\
         \\    let tree = BTreeSet::new();
-        \\    let tree_inserted = tree.insert(3);
-        \\    let tree_contains = tree.contains(4);
+        \\    let tree_inserted = tree.insert("three");
+        \\    let tree_contains = tree.contains("four");
         \\    let tree_len = tree.len();
         \\
         \\    if hash_inserted == false { panic(101); };

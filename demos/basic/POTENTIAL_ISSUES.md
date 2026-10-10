@@ -222,6 +222,18 @@
 - 探针：`/tmp/probe_strarg.sla`、`/tmp/probe_sgen*.sla`、`/tmp/probe_capstr.sla`、
   `/tmp/probe_letmid.sla`、`/tmp/probe_letann.sla`、`/tmp/probe_sbody.sla`。
 
+## #16 `BTreeSet<int>` 静默错键（已修复，2026-10-10）
+
+- 现象：`BTreeSet::new()` + `s.insert(1)` 双后端 `test` 全绿（`check` 因跳过
+  `@test` 体而空转，见 #4），但 `contains(1)` 恒假、`len` 亦错——整数被当
+  指针存槽，永不命中。在仓 `codegen.zig` 的 `set code generation` 单测亦用
+  int 键（把 bug 写进断言），一并改为字符串键。
+- 修复：checker `btreeSet insert/contains` 加 `btreeSetKeySupported` 门
+  （仅 raw_ptr 字面量/Slice；整数等标量报 TypeMismatch loud 错误）。
+  `BTreeSet<string>` 在仓用例不受影响。
+- 验证：int 键 `test` 报 TypeMismatch；string 键双后端绿；正反单测各一
+  （`type checker rejects scalar btreeset keys`）。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

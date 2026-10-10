@@ -259,6 +259,35 @@
   `/tmp/probes2/r_strcmp4.sla`（矩阵 `9,9,-1,9`）、
   `/tmp/probes2/r_strcmp5.sla`（`@test` 直写触发 MemoryLeak）。
 
+## #19 顶层 `const` 结构体双后端失联（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：`const O: P = P { x: 1, y: 2 };` 可过 `check`，但 `test` 与
+  build-exe 均报 `UnknownRegister` trap（结构体常量对后端不可见）；
+  顶层 `const` 标量/f64/数组正常（133/136 双后端全绿），顶层 `let`
+  直接 parse 拒绝（ExpectedDeclaration）。
+- 现状规避：136–145 batch 中 136 只用顶层常量数组，144 用局部结构体；
+  需全局共享结构体时暂以函数返回构造表达（见 111）。
+- 复现探针：`/tmp/probes2/t_topstruct.sla`。
+
+## #20 嵌套定长数组读崩溃（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：`const N: [[i32; 2]; 2]` 可过 `check`；`len(N)` 与 `len(N[0])`
+  正常，但 `N[1][0]` 在 `test` 后端触发 signal 11，在 build-exe 中打印
+  前缀后 SIGSEGV（确定性复现，双路径一致）。
+- 现状规避：多维数据一律用扁平行主序 + 手工索引（见 19/28/58），
+  不用嵌套定长数组。
+- 复现探针：`/tmp/probes2/t_nestarr.sla`。
+
+## #21 `&&`/`||` 为急求值（已确认语义分歧，2026-10-10，记档不断言修复）
+
+- 现象：`false && eff()` 与 `true || eff()` 仍执行右侧（build-exe 打印
+  两次 EFF；`@test` 结果值与短路一致故不断言区分），与 TS 短路语义不同。
+- 定性：急求值本身自洽（纯函数无观察差异），仅含副作用时可观察；
+  138 以 exe 输出锁定当前语义，后续若实现短路需同步更新 138。
+- 复现探针：`/tmp/probes2/t_short.sla`。
+
+## 已验证无问题（回归对照）
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

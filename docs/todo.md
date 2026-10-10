@@ -102,7 +102,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 ## 3. 门禁（提交前必查，每轮均执行，见账本）
 
 - [x] 新增 demo 逐个 `check + test` 通过（命令见 §0）。
-- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 135）。
+- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 145）。
 - [x] `build-exe` 抽查 ≥2 个新增 demo 可运行输出。
 - [x] `POTENTIAL_ISSUES.md`：新发现记编号 + 复现探针路径；已修复的把“现状规避”改为
   “已修复（commit）”并保留复现记录（当前 #1–#14、#16 已修复，#15 确认缺口）。
@@ -261,3 +261,14 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   严格布尔 / 定长类型三类约束，不立新缺口）；两条语义发现记 README
   （数组形参调用者可见可变；位移 64 位无掩码，与 TS mod-32 不同）；
   本轮无新缺口、无需 JEV 裁定。
+- 2026-10-10：136–145 落地（`check+test` 10/10 + build-exe 抽查 136/138/142
+  输出核对 `63,20,3` / `EFF,EFF,0,3` / `10`；全量 145/145 + `zig build test`
+  314/314），待推送。选型：tsgosa 高编号池
+  （698/701/643/672+676/710/507-sub/183/173/790-local/1250；
+  638–697 真值/null/`??`/`void` 系多不可移植、740 系高阶方法与既有 demo 重复、
+  788–805 顶层对象/嵌套数组多触缺口、818 顶层 `let` 不可解析暂略）；
+  探针结论：`HashMap.remove` 不在 SLA 面（TypeMismatch）、顶层 `let` 拒绝、
+  `0o`/`0b` 拒绝（`0x` 可用）；145 另踩 `&` 优先级坑（自有 bug，补括号解决）；
+  立缺口 #19（顶层 const 结构体双后端 UnknownRegister，JEV record 12%）、
+  #20（嵌套数组读双路径 SIGSEGV，JEV record 60%）、#21（`&&`/`||` 急求值语义分歧，
+  138 以 exe 锁定）；141 首跑 fail 重跑绿（抖动，老规律）。

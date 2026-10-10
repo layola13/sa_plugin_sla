@@ -163,6 +163,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 133_pi_const | 574_piconst | 顶层 `const` f64 比较 |
 | 134_max_min | 511_math_int | 分支 max/min 双函数（无 `Math.max/min`） |
 | 135_enum_ret | 575_enumret | 函数返回枚举 + `match` 消费 |
+| 136_top_const_arr | 698_top_const_arr | 顶层 `const` 数组跨函数读（结构体常量见 #19） |
+| 137_oob_zero | 701_top_arr_oob | 动态越界读零（字面量越界 exe 不支持） |
+| 138_eager_logic | 643_logic_short | `&&`/`||` 急求值（与短路语义不同，见 #21） |
+| 139_discard_loop | 672_void_i32 + 676_void_loop | 弃值调用（无 `void` 运算符） |
+| 140_indexof_from | 710_top_arr_indexof | 起始位查找（116 延伸） |
+| 141_vec_pop | 507_arr_api | `pop().unwrap()`（空表 `None`） |
+| 142_prime_count | 183_prime_upto | 试除法素数计数（与 18 筛法互补） |
+| 143_fib_iter | 173_fib_loop | 迭代 fib（与 120 递归互补） |
+| 144_struct_bool | 790_top_obj_bool | 局部布尔字段结构体（顶层常量见 #19） |
+| 145_hex_mask | 1250_mask_idioms | `0x` 字面量掩码（无 `0o`/`0b`；`&` 优先级坑） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

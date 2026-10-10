@@ -4710,6 +4710,116 @@ pub fn planPrintlnArg(ty: ?*const ast.Type) PrintlnArgPlan {
     return .unsupported;
 }
 
+/// Y-架构债契约 (#3/#5):字符串 `let` 绑定的运行时物化形态.
+///
+/// 背景:无注解 `let s = "lit"` 在运行时是 Slice 值,但检查器在指针语境下
+/// 把字面量暴露为 raw_ptr;显式 `let s: ptr = "lit"` 则持有真正的 NUL 结尾
+/// C 字符串.两后端都要按实际表示选择消费路径(str_eq/println/len/
+/// format-push/as_ptr),故分类表与各消费点的决策收拢在此,发射端只做查询.
+///
+/// SA-text 后端现状:它的 `let` lowering 本来就保留真实表示(Slice 存 Slice,
+/// C 串存指针),各消费点按键后类型走统一宏(Slice→STR_EQ/STRING_LEN…;
+/// 真指针→CSTR_*),无需按绑定历史分叉,所以 SA 侧只用本文档,不引入跟踪集.
+/// SAB 后端现状:发射期在 `sab_codegen.zig` 用两集合记录本契约的分类结果,
+/// 消费点经下面的 plan 函数查询.行为与上收前逐字一致.
+pub const StringBindingMaterialization = enum {
+    /// `let s = "lit"`(无注解):运行时 Slice,不可做指针相等快径/CSTR 扫描.
+    inferred_slice,
+    /// `let s: ptr = "lit"`(显式指针标量类型):真正的 C 字符串.
+    explicit_c_string,
+    /// 其他一切绑定(非字面量、有注解但非指针标量类型等).
+    other,
+};
+
+pub const StringLetBindingFacts = struct {
+    value_is_string_literal: bool,
+    has_explicit_ty: bool,
+    explicit_ty_is_pointer_scalar: bool = false,
+};
+
+/// `let` 语句的字符串物化分类(对应 SAB 发射端原来的三分支).
+pub fn classifyStringLetBinding(facts: StringLetBindingFacts) StringBindingMaterialization {
+    if (!facts.value_is_string_literal) return .other;
+    if (!facts.has_explicit_ty) return .inferred_slice;
+    if (facts.explicit_ty_is_pointer_scalar) return .explicit_c_string;
+    return .other;
+}
+
+pub const StrEqPointerLiteralFastPathFacts = struct {
+    side_ty_is_pointer_scalar: bool,
+    other_side_is_string_literal: bool,
+    other_side_materialization: StringBindingMaterialization = .other,
+};
+
+/// `str_eq(ptr_side, "lit")` 指针相等快径是否可用.
+/// 推断 Slice 绑定即使被标为 raw_ptr 也必须走慢径(见 #3).
+pub fn planStrEqPointerLiteralFastPath(facts: StrEqPointerLiteralFastPathFacts) bool {
+    return facts.side_ty_is_pointer_scalar and
+        facts.other_side_is_string_literal and
+        facts.other_side_materialization != .inferred_slice;
+}
+
+pub const StrEqArgPlan = enum {
+    slice_direct,
+    cstr_from_ptr,
+    passthrough,
+};
+
+/// `str_eq` 单个参数的物化方式(调用方已保证非常量字面量直通形状由外层处理).
+pub fn planStrEqArg(ty_is_pointer_scalar: bool, materialization: StringBindingMaterialization) StrEqArgPlan {
+    if (!ty_is_pointer_scalar) return .passthrough;
+    if (materialization == .inferred_slice) return .slice_direct;
+    return .cstr_from_ptr;
+}
+
+pub const FormatPushRawPtrPlan = enum {
+    push_slice,
+    cstr_len_push_bytes,
+};
+
+/// format `"{}"` 插值遇到 raw_ptr 参数时的推送方式(调用方已保证 raw_ptr 分支).
+/// 推断 Slice 不得做 NUL 扫描(见 #3).
+pub fn planFormatPushRawPtrArg(materialization: StringBindingMaterialization) FormatPushRawPtrPlan {
+    if (materialization == .inferred_slice) return .push_slice;
+    return .cstr_len_push_bytes;
+}
+
+pub const PrintlnStringLikePlan = enum {
+    cstr_scan,
+    slice_value,
+};
+
+/// `println` string_like 参数的打印方式(调用方已保证 `planPrintlnArg` 为 string_like).
+/// 真 C 字符串必须 NUL 扫描(见 #5),其余一律按 Slice 加载.
+pub fn planPrintlnStringLikeArg(materialization: StringBindingMaterialization) PrintlnStringLikePlan {
+    if (materialization == .explicit_c_string) return .cstr_scan;
+    return .slice_value;
+}
+
+pub const LenRawPtrPlan = enum {
+    slice_len_field,
+    cstr_len_scan,
+};
+
+/// `len()` 遇到 raw_ptr 接收者时的求长方式(调用方已保证 raw_ptr 分支).
+/// 推断 Slice 读 Slice 长度字段(见 #10),其余做 NUL 扫描.
+pub fn planLenRawPtrReceiver(materialization: StringBindingMaterialization) LenRawPtrPlan {
+    if (materialization == .inferred_slice) return .slice_len_field;
+    return .cstr_len_scan;
+}
+
+pub const AsPtrPlan = enum {
+    passthrough,
+    str_as_ptr,
+};
+
+/// `.as_ptr()` 的接收者物化方式(调用方已保证 string-like).
+/// 真 C 字符串无需转换(见 #5).
+pub fn planAsPtrReceiver(materialization: StringBindingMaterialization) AsPtrPlan {
+    if (materialization == .explicit_c_string) return .passthrough;
+    return .str_as_ptr;
+}
+
 /// Returns true when an associated-call rule (e.g. `Rc::clone`, `Arc::clone`)
 /// expects its `value` argument to be the underlying smart-pointer value rather
 /// than a `borrow` handle. The SA-text emitter treats `&rc1` as a transparent
@@ -6313,6 +6423,66 @@ test "shared lowering rules keep string literals as raw pointers for ptr params"
         .ty = &borrow_ptr_ty,
         .is_borrow = true,
     }));
+}
+
+test "shared lowering rules plan string binding materialization" {
+    // 分类表:非字面量一律 other;无注解字面量为推断 Slice;显式指针标量为真 C 串.
+    try std.testing.expectEqual(StringBindingMaterialization.other, classifyStringLetBinding(.{
+        .value_is_string_literal = false,
+        .has_explicit_ty = false,
+    }));
+    try std.testing.expectEqual(StringBindingMaterialization.inferred_slice, classifyStringLetBinding(.{
+        .value_is_string_literal = true,
+        .has_explicit_ty = false,
+    }));
+    try std.testing.expectEqual(StringBindingMaterialization.explicit_c_string, classifyStringLetBinding(.{
+        .value_is_string_literal = true,
+        .has_explicit_ty = true,
+        .explicit_ty_is_pointer_scalar = true,
+    }));
+    try std.testing.expectEqual(StringBindingMaterialization.other, classifyStringLetBinding(.{
+        .value_is_string_literal = true,
+        .has_explicit_ty = true,
+        .explicit_ty_is_pointer_scalar = false,
+    }));
+
+    // str_eq 指针-字面量快径:推断 Slice 不得走快径(#3),真 C 串可以.
+    try std.testing.expect(planStrEqPointerLiteralFastPath(.{
+        .side_ty_is_pointer_scalar = true,
+        .other_side_is_string_literal = true,
+        .other_side_materialization = .explicit_c_string,
+    }));
+    try std.testing.expect(planStrEqPointerLiteralFastPath(.{
+        .side_ty_is_pointer_scalar = true,
+        .other_side_is_string_literal = true,
+        .other_side_materialization = .other,
+    }));
+    try std.testing.expect(!planStrEqPointerLiteralFastPath(.{
+        .side_ty_is_pointer_scalar = true,
+        .other_side_is_string_literal = true,
+        .other_side_materialization = .inferred_slice,
+    }));
+    try std.testing.expect(!planStrEqPointerLiteralFastPath(.{
+        .side_ty_is_pointer_scalar = false,
+        .other_side_is_string_literal = true,
+        .other_side_materialization = .other,
+    }));
+
+    // 各消费点:推断 Slice 走 Slice 路径,显式 C 串走 CSTR 路径,其他保持原行为.
+    try std.testing.expectEqual(StrEqArgPlan.passthrough, planStrEqArg(false, .other));
+    try std.testing.expectEqual(StrEqArgPlan.slice_direct, planStrEqArg(true, .inferred_slice));
+    try std.testing.expectEqual(StrEqArgPlan.cstr_from_ptr, planStrEqArg(true, .explicit_c_string));
+    try std.testing.expectEqual(StrEqArgPlan.cstr_from_ptr, planStrEqArg(true, .other));
+    try std.testing.expectEqual(FormatPushRawPtrPlan.push_slice, planFormatPushRawPtrArg(.inferred_slice));
+    try std.testing.expectEqual(FormatPushRawPtrPlan.cstr_len_push_bytes, planFormatPushRawPtrArg(.explicit_c_string));
+    try std.testing.expectEqual(PrintlnStringLikePlan.slice_value, planPrintlnStringLikeArg(.inferred_slice));
+    try std.testing.expectEqual(PrintlnStringLikePlan.slice_value, planPrintlnStringLikeArg(.other));
+    try std.testing.expectEqual(PrintlnStringLikePlan.cstr_scan, planPrintlnStringLikeArg(.explicit_c_string));
+    try std.testing.expectEqual(LenRawPtrPlan.slice_len_field, planLenRawPtrReceiver(.inferred_slice));
+    try std.testing.expectEqual(LenRawPtrPlan.cstr_len_scan, planLenRawPtrReceiver(.explicit_c_string));
+    try std.testing.expectEqual(AsPtrPlan.passthrough, planAsPtrReceiver(.explicit_c_string));
+    try std.testing.expectEqual(AsPtrPlan.str_as_ptr, planAsPtrReceiver(.inferred_slice));
+    try std.testing.expectEqual(AsPtrPlan.str_as_ptr, planAsPtrReceiver(.other));
 }
 
 test "shared imported macro call plan classifies addressable arg actions" {

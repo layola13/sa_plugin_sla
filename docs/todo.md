@@ -112,8 +112,11 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   `sa plugin install --dev .` 成功，`sa plugin list` 四件齐备、`sa node --help` 正常；
   全量复核 60/60。
 - 已知架构债（Y-规则 42 备案，不影响验证结论）：#3/#5 的
-  `inferred/explicit_*_string_locals` 跟踪集目前只落在 `sab_codegen.zig` 发射端，
-  未上收为 `lowering_rules.zig` 共享语义；待后续以共享 lowering 契约重构，行为不变。
+  `inferred/explicit_*_string_locals` 跟踪集曾只落在 `sab_codegen.zig` 发射端，
+  2026-10-10 已上收为 `lowering_rules.zig` 共享语义（`StringBindingMaterialization`
+  分类器 + str_eq/println/len/format-push/as_ptr 六处 plan 函数 + 内联单测；
+  SAB 存储不动仅改调用，SA 侧无跟踪需求只留文档说明；行为不变，全量 70/70 +
+  `zig build test` 303/303 双后端抽查全绿）。
 - 2026-10-10：61–70 落地（`check+test` 10/10 + build-exe 抽查 61/66/70 输出核对
   `55` / `33,11,22` / `55,9`；全量 70/70 + `zig build test` 302/302），已推送
   （`1787ed7`）；工具链在新机重建：zig 0.14.1 + go 1.22.2 + llvm-14（18 的

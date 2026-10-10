@@ -6876,6 +6876,8 @@ pub const Codegen = struct {
             try self.pushLocal(let.name, dst, false);
             return;
         }
+        // 字符串绑定的运行时物化形态走共享契约分类
+        // (`lowering_rules.classifyStringLetBinding`),见 #3/#5.
         // Match the SA backend's local string-literal lowering. An inferred
         // string binding is a Slice value even when the type checker exposes
         // the literal as a raw pointer in pointer-oriented contexts. Keeping
@@ -6885,25 +6887,33 @@ pub const Codegen = struct {
         // itself so C-string consumers see a real C string; inferred bindings
         // (#3) are recorded in `inferred_string_slice_locals` so `str_eq`
         // uses the slice directly instead of CSTR_FROM_PTR.
-        if (let.value.* == .literal and let.value.literal == .string_val and let.ty != null and lowering_rules.typeIsPointerScalarValue(let.ty.?)) {
-            const dst = try self.bindingReg(let.name);
-            const ptr = try self.genRawPointerStringLiteralArg(let.value.literal.string_val);
-            try self.pushTypedLocal(let.name, dst, false, let.ty.?);
-            try self.emitAssignReg(dst, ptr);
-            try self.markNonOwningReg(dst);
-            try self.emitRelease(ptr);
-            _ = self.inferred_string_slice_locals.remove(let.name);
-            try self.explicit_ptr_string_locals.put(let.name, {});
-            return;
+        const string_materialization = lowering_rules.classifyStringLetBinding(.{
+            .value_is_string_literal = let.value.* == .literal and let.value.literal == .string_val,
+            .has_explicit_ty = let.ty != null,
+            .explicit_ty_is_pointer_scalar = if (let.ty) |ty| lowering_rules.typeIsPointerScalarValue(ty) else false,
+        });
+        switch (string_materialization) {
+            .explicit_c_string => {
+                const dst = try self.bindingReg(let.name);
+                const ptr = try self.genRawPointerStringLiteralArg(let.value.literal.string_val);
+                try self.pushTypedLocal(let.name, dst, false, let.ty.?);
+                try self.emitAssignReg(dst, ptr);
+                try self.markNonOwningReg(dst);
+                try self.emitRelease(ptr);
+                _ = self.inferred_string_slice_locals.remove(let.name);
+                try self.explicit_ptr_string_locals.put(let.name, {});
+                return;
+            },
+            .inferred_slice => {
+                try self.inferred_string_slice_locals.put(let.name, {});
+                _ = self.explicit_ptr_string_locals.remove(let.name);
+            },
+            .other => {
+                _ = self.inferred_string_slice_locals.remove(let.name);
+                _ = self.explicit_ptr_string_locals.remove(let.name);
+            },
         }
-        if (let.value.* == .literal and let.value.literal == .string_val and let.ty == null) {
-            try self.inferred_string_slice_locals.put(let.name, {});
-            _ = self.explicit_ptr_string_locals.remove(let.name);
-        } else {
-            _ = self.inferred_string_slice_locals.remove(let.name);
-            _ = self.explicit_ptr_string_locals.remove(let.name);
-        }
-        const src = if (let.value.* == .literal and let.value.literal == .string_val and let.ty == null)
+        const src = if (string_materialization == .inferred_slice)
             try self.genStringLiteral(let.value.literal.string_val)
         else
             self.genExpr(let.value) catch |err| {
@@ -10920,8 +10930,8 @@ pub const Codegen = struct {
             return;
         }
         if (ty.* == .primitive and ty.primitive == .raw_ptr) {
-            // #3: inferred slice bindings must not be NUL-scanned.
-            if (self.isInferredStringSliceLocal(arg)) {
+            // #3: inferred slice bindings must not be NUL-scanned (shared plan).
+            if (lowering_rules.planFormatPushRawPtrArg(self.stringBindingMaterialization(arg)) == .push_slice) {
                 const slice_reg = try self.genExpr(@constCast(arg));
                 try self.emitStdMacroFragment("sa_std/string_format.sa", "FORMAT_PUSH_SLICE", &.{ tag, self.symbols.items[out_string], self.symbols.items[slice_reg] });
                 try self.releaseExprResultIfNeeded(arg, slice_reg);
@@ -11156,8 +11166,8 @@ pub const Codegen = struct {
             return;
         }
         if (plan.isStringLike()) {
-            // #5: genuine C strings must be NUL-scanned, not slice-loaded.
-            if (self.isExplicitPtrStringLocal(arg)) {
+            // #5: genuine C strings must be NUL-scanned, not slice-loaded (shared plan).
+            if (lowering_rules.planPrintlnStringLikeArg(self.stringBindingMaterialization(arg)) == .cstr_scan) {
                 const ptr_reg = try self.genExpr(@constCast(arg));
                 const len_reg = try self.intern(try self.newTmp());
                 try self.emitStdMacroFragment("sa_std/ffi.sa", "CSTR_LEN", &.{ self.symbols.items[len_reg], self.symbols.items[ptr_reg] });
@@ -12463,8 +12473,8 @@ pub const Codegen = struct {
             // non-container receiver. The old slice-field load read garbage
             // past byte-string data (demo 35 fold computed wrong sums).
             // #10: inferred `let s = "lit"` bindings are Slices despite the
-            // raw_ptr tag, so load the slice length field for those.
-            if (self.isInferredStringSliceLocal(call.args[0])) {
+            // raw_ptr tag, so load the slice length field for those (shared plan).
+            if (lowering_rules.planLenRawPtrReceiver(self.stringBindingMaterialization(call.args[0])) == .slice_len_field) {
                 const base_reg = try self.genExpr(@constCast(call.args[0]));
                 const dst = try self.intern(try self.newTmp());
                 try self.emitLoad(dst, base_reg, lowering_rules.SliceAbi.len_offset, .u64);
@@ -14739,8 +14749,8 @@ pub const Codegen = struct {
             // STR_AS_PTR (format strings via STRING_BUF_AS_PTR).
             if (!lowering_rules.isStringLikeType(receiver_ty)) return null;
             // #5: genuine C strings need no conversion; STR_AS_PTR would
-            // read the string bytes as a slice struct.
-            if (self.isExplicitPtrStringLocal(call.args[0])) {
+            // read the string bytes as a slice struct (shared plan).
+            if (lowering_rules.planAsPtrReceiver(self.stringBindingMaterialization(call.args[0])) == .passthrough) {
                 return try self.genExpr(@constCast(call.args[0]));
             }
             const recv_reg = try self.genExpr(@constCast(call.args[0]));
@@ -14774,24 +14784,31 @@ pub const Codegen = struct {
         return dst;
     }
 
-    /// #3: inferred `let s = "lit"` bindings hold Slices, not raw pointers,
-    /// so the pointer-equality fast path must not claim them.
-    fn isInferredStringSliceLocal(self: *Codegen, arg: *const ast.Node) bool {
-        return arg.* == .identifier and self.inferred_string_slice_locals.contains(arg.identifier);
-    }
-
-    /// #5: explicit `: ptr` string bindings hold genuine C strings.
-    fn isExplicitPtrStringLocal(self: *Codegen, arg: *const ast.Node) bool {
-        return arg.* == .identifier and self.explicit_ptr_string_locals.contains(arg.identifier);
+    /// #3/#5:将绑定名映射到共享的字符串物化契约
+    /// (`lowering_rules.StringBindingMaterialization`).发射端只做查询,
+    /// 分类表与消费决策收拢在 `lowering_rules` 侧.
+    fn stringBindingMaterialization(self: *Codegen, arg: *const ast.Node) lowering_rules.StringBindingMaterialization {
+        if (arg.* != .identifier) return .other;
+        if (self.inferred_string_slice_locals.contains(arg.identifier)) return .inferred_slice;
+        if (self.explicit_ptr_string_locals.contains(arg.identifier)) return .explicit_c_string;
+        return .other;
     }
 
     fn genStrEqCall(self: *Codegen, call: ast.CallExpr) anyerror!u32 {
         const left_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.UnsupportedSabDirectFeature;
         const right_ty = self.tc.expr_types.get(call.args[1]) orelse return Error.UnsupportedSabDirectFeature;
-        if (lowering_rules.typeIsPointerScalarValue(left_ty) and call.args[1].* == .literal and call.args[1].literal == .string_val and !self.isInferredStringSliceLocal(call.args[0])) {
+        if (lowering_rules.planStrEqPointerLiteralFastPath(.{
+            .side_ty_is_pointer_scalar = lowering_rules.typeIsPointerScalarValue(left_ty),
+            .other_side_is_string_literal = call.args[1].* == .literal and call.args[1].literal == .string_val,
+            .other_side_materialization = self.stringBindingMaterialization(call.args[0]),
+        })) {
             return try self.genRawPointerStringLiteralEq(call.args[0], call.args[1].literal.string_val);
         }
-        if (lowering_rules.typeIsPointerScalarValue(right_ty) and call.args[0].* == .literal and call.args[0].literal == .string_val and !self.isInferredStringSliceLocal(call.args[1])) {
+        if (lowering_rules.planStrEqPointerLiteralFastPath(.{
+            .side_ty_is_pointer_scalar = lowering_rules.typeIsPointerScalarValue(right_ty),
+            .other_side_is_string_literal = call.args[0].* == .literal and call.args[0].literal == .string_val,
+            .other_side_materialization = self.stringBindingMaterialization(call.args[1]),
+        })) {
             return try self.genRawPointerStringLiteralEq(call.args[1], call.args[0].literal.string_val);
         }
         const left = try self.genStrEqArg(call.args[0], left_ty);
@@ -14848,8 +14865,8 @@ pub const Codegen = struct {
         if (lowering_rules.typeIsPointerScalarValue(ty)) {
             // #3: inferred `let s = "lit"` bindings are Slice values despite
             // the raw_ptr tag; converting them with CSTR_FROM_PTR reads the
-            // slice struct as a C string. Use the slice directly.
-            if (arg.* == .identifier and self.inferred_string_slice_locals.contains(arg.identifier)) {
+            // slice struct as a C string. Use the slice directly (shared plan).
+            if (lowering_rules.planStrEqArg(true, self.stringBindingMaterialization(arg)) == .slice_direct) {
                 return .{ .reg = orig, .orig_reg = orig, .needs_release = false };
             }
             const view = try self.intern(try self.newTmp());

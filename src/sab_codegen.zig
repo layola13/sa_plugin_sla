@@ -12510,7 +12510,22 @@ pub const Codegen = struct {
             return dst;
         }
 
-        _ = lowering_rules.vecElementType(receiver_ty) orelse return null;
+        _ = lowering_rules.vecElementType(receiver_ty) orelse {
+            // HashMap length mirrors the SA-text emitter (`EXPAND MAP_LEN`).
+            if (lowering_rules.hashMapTypes(receiver_ty) != null) {
+                try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_len"});
+                const map_reg = try self.genExpr(@constCast(call.args[0]));
+                const map_len_dst = try self.intern(try self.newTmp());
+                try self.recordReg(map_len_dst);
+                try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_LEN", &.{
+                    self.symbols.items[map_len_dst],
+                    self.symbols.items[map_reg],
+                });
+                if (!self.isLocalReg(map_reg)) try self.emitRelease(map_reg);
+                return map_len_dst;
+            }
+            return null;
+        };
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
         const receiver_source = try self.genVecOwnerReceiver(@constCast(call.args[0]));
         const receiver_reg = receiver_source.reg;

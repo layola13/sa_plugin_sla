@@ -128,6 +128,10 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 98_sort_copy | 26_sort | 原地排序 + 手工拷贝排序（无 `toSorted`） |
 | 99_closure_dbl | 30_closure | 最简闭包绑定调用（与 20 互补） |
 | 100_math_floor | 31_math | 分支 `abs` + `as i32` 截断 `floor` |
+| 101_map_getset | 35_map_getset | 缺键取零表 `has` + `len(m)` 表长（#14 已修复） |
+| 102_map_count | 132_map_count | 取-加-存覆盖累加（11, 2） |
+| 103_vec_ops | 28_push_unshift | 整数核手写 `unshift/fill/with`（无方法） |
+| 104_generic | 34_generic_fn | `int + bool` 两具化（字符串实例暂略） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

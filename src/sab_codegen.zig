@@ -871,7 +871,10 @@ pub const Codegen = struct {
                 try self.collectAssignedBindingsInNode(bin.left);
                 try self.collectAssignedBindingsInNode(bin.right);
             },
-            .call_expr => |call| for (call.args) |arg| try self.collectAssignedBindingsInNode(arg),
+            .call_expr => |call| {
+                if (call.callee) |callee| try self.collectAssignedBindingsInNode(callee);
+                for (call.args) |arg| try self.collectAssignedBindingsInNode(arg);
+            },
             .field_expr => |field| try self.collectAssignedBindingsInNode(field.expr),
             .struct_literal => |lit| {
                 for (lit.fields) |field| try self.collectAssignedBindingsInNode(field.value);
@@ -2028,6 +2031,9 @@ pub const Codegen = struct {
             .closure_literal => |lit| nodeUsesFutureTaskRuntime(lit.body),
             .call_expr => |call| blk: {
                 if (isFutureTaskRuntimeCall(call)) break :blk true;
+                if (call.callee) |callee| {
+                    if (nodeUsesFutureTaskRuntime(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (nodeUsesFutureTaskRuntime(arg)) break :blk true;
                 }
@@ -2190,6 +2196,7 @@ pub const Codegen = struct {
                     }
                 }
                 for (call.args) |arg| try self.preloadNodeStdSurfaceDeps(arg);
+                if (call.callee) |callee| try self.preloadNodeStdSurfaceDeps(callee);
             },
             .index_expr => |idx| {
                 if (self.tc.expr_types.get(idx.target)) |target_ty| {
@@ -3426,9 +3433,10 @@ pub const Codegen = struct {
             .cast_expr => |cast| try self.collectEscapedCapturesInExpr(cast.expr, captures, locals),
             .field_expr => |field| try self.collectEscapedCapturesInExpr(field.expr, captures, locals),
             .call_expr => |call| {
-                if (call.associated_target == null) {
+                if (call.associated_target == null and call.callee == null) {
                     try self.addEscapedCapture(call.func_name, self.localType(call.func_name), captures, locals);
                 }
+                if (call.callee) |callee| try self.collectEscapedCapturesInExpr(callee, captures, locals);
                 for (call.args) |arg| try self.collectEscapedCapturesInExpr(arg, captures, locals);
             },
             .struct_literal => |lit| {
@@ -14616,6 +14624,12 @@ pub const Codegen = struct {
     }
 
     fn genCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!u32 {
+        // #13: immediately-invoked closure literal; bypasses every
+        // func_name-keyed path below (func_name is "" for these calls).
+        if (call.callee) |callee| {
+            if (callee.* != .closure_literal) return Error.UnsupportedSabDirectFeature;
+            return try self.genClosureCall(&callee.closure_literal, call);
+        }
         if (std.mem.eql(u8, call.func_name, "panic")) {
             var item = self.makeInst(.panic);
             if (call.args.len == 1 and call.args[0].* == .literal and call.args[0].literal == .int_val) {

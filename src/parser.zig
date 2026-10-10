@@ -3260,8 +3260,12 @@ pub const Parser = struct {
             },
             .l_paren => {
                 var func_name: []const u8 = "";
+                var callee: ?*ast.Node = null;
                 switch (left.*) {
                     .identifier => |id| func_name = id,
+                    // #13: immediately-invoked closure literal; every other
+                    // non-identifier callee keeps the historical rejection.
+                    .closure_literal => callee = left,
                     else => return ParserError.InvalidCallTarget,
                 }
 
@@ -3280,6 +3284,7 @@ pub const Parser = struct {
                         .associated_target = null,
                         .generics = &.{},
                         .args = try args.toOwnedSlice(),
+                        .callee = callee,
                     },
                 };
                 return node;
@@ -3716,6 +3721,30 @@ pub const Parser = struct {
         return ty;
     }
 };
+
+test "parse immediately-invoked closure literal callee" {
+    const source =
+        \\fn main() -> i32 {
+        \\    let v = (|x: int| x * 2)(21);
+        \\    return v;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+
+    const d1 = prog.program.decls[0];
+    const s1 = d1.func_decl.body[0];
+    try std.testing.expect(s1.* == .let_stmt);
+    try std.testing.expect(s1.let_stmt.value.* == .call_expr);
+    const call = s1.let_stmt.value.call_expr;
+    try std.testing.expect(call.callee != null);
+    try std.testing.expect(call.callee.?.* == .closure_literal);
+}
 
 test "parse struct and function" {
     const source =

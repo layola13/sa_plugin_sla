@@ -1711,7 +1711,7 @@ pub const Codegen = struct {
             .cast_expr => |cast| try self.collectThreadClosureCapturesInExpr(cast.expr, captures, locals),
             .field_expr => |field| try self.collectThreadClosureCapturesInExpr(field.expr, captures, locals),
             .call_expr => |call| {
-                if (call.associated_target == null) {
+                if (call.associated_target == null and call.callee == null) {
                     try self.captureNameFromIdentifier(call.func_name, null, true, captures, locals);
                 }
                 for (call.args) |arg| try self.collectThreadClosureCapturesInExpr(arg, captures, locals);
@@ -2533,7 +2533,10 @@ pub const Codegen = struct {
                 try self.collectAssignedBindingsInNode(bin.left);
                 try self.collectAssignedBindingsInNode(bin.right);
             },
-            .call_expr => |call| for (call.args) |arg| try self.collectAssignedBindingsInNode(arg),
+            .call_expr => |call| {
+                if (call.callee) |callee| try self.collectAssignedBindingsInNode(callee);
+                for (call.args) |arg| try self.collectAssignedBindingsInNode(arg);
+            },
             .field_expr => |field| try self.collectAssignedBindingsInNode(field.expr),
             .index_expr => |index| {
                 try self.collectAssignedBindingsInNode(index.target);
@@ -2635,6 +2638,9 @@ pub const Codegen = struct {
                     for (call.args, 0..) |arg, i| {
                         if (plan.addressableIdentifierArgName(i, arg)) |name| self.addressable_bindings.put(name, {}) catch return CodegenError.OutOfMemory;
                     }
+                }
+                if (call.callee) |callee| {
+                    try self.collectAddressableBindingsInExpr(callee);
                 }
                 for (call.args) |arg| {
                     try self.collectAddressableBindingsInExpr(arg);
@@ -4657,6 +4663,9 @@ pub const Codegen = struct {
         return switch (expr.*) {
             .call_expr => |call| blk: {
                 if (arrayIterSumSource(&call) != null) break :blk true;
+                if (call.callee) |callee| {
+                    if (exprNeedsIterMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (exprNeedsIterMacros(arg)) break :blk true;
                 }
@@ -4752,6 +4761,9 @@ pub const Codegen = struct {
                 if (lowering_rules.isBoxNewCall(call) or
                     lowering_rules.isBoxIntoRawCall(call) or
                     lowering_rules.isBoxFromRawCall(call)) break :blk true;
+                if (call.callee) |callee| {
+                    if (exprNeedsBoxMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (exprNeedsBoxMacros(arg)) break :blk true;
                 }
@@ -4838,6 +4850,9 @@ pub const Codegen = struct {
         return switch (expr.*) {
             .call_expr => |call| blk: {
                 if (std.mem.eql(u8, call.func_name, "vec") or lowering_rules.isPushCall(call)) break :blk true;
+                if (call.callee) |callee| {
+                    if (self.exprNeedsVecMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (self.exprNeedsVecMacros(arg)) break :blk true;
                 }
@@ -4972,6 +4987,9 @@ pub const Codegen = struct {
                         }
                     }
                 }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsFfiCstrMacros(callee)) return true;
+                }
                 for (call.args) |arg| if (self.exprNeedsFfiCstrMacros(arg)) return true;
             },
             .binary_expr => |bin| return self.exprNeedsFfiCstrMacros(bin.left) or self.exprNeedsFfiCstrMacros(bin.right),
@@ -5020,6 +5038,9 @@ pub const Codegen = struct {
                 {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and (optionInnerType(recv_ty.?) != null or hashMapTypes(recv_ty.?) != null)) break :blk true;
+                }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsOptionMacros(callee)) break :blk true;
                 }
                 for (call.args) |arg| {
                     if (self.exprNeedsOptionMacros(arg)) break :blk true;
@@ -5120,6 +5141,9 @@ pub const Codegen = struct {
         return switch (expr.*) {
             .binary_expr => |bin| bin.op == .spaceship or self.exprNeedsCmpMacros(bin.left) or self.exprNeedsCmpMacros(bin.right),
             .call_expr => |call| blk: {
+                if (call.callee) |callee| {
+                    if (self.exprNeedsCmpMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| if (self.exprNeedsCmpMacros(arg)) break :blk true;
                 break :blk false;
             },
@@ -5231,6 +5255,9 @@ pub const Codegen = struct {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and isAtomicI32Type(recv_ty.?)) break :blk true;
                 }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsResultMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (self.exprNeedsResultMacros(arg)) break :blk true;
                 }
@@ -5336,6 +5363,9 @@ pub const Codegen = struct {
                         if (senderInnerType(ty) != null or receiverInnerType(ty) != null) break :blk true;
                     }
                 }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsMpscMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (self.exprNeedsMpscMacros(arg)) break :blk true;
                 }
@@ -5425,6 +5455,9 @@ pub const Codegen = struct {
                 if (lowering_rules.isCloneUnaryCall(call)) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and rcInnerType(recv_ty.?) != null) break :blk true;
+                }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsRcMacros(callee)) break :blk true;
                 }
                 for (call.args) |arg| {
                     if (self.exprNeedsRcMacros(arg)) break :blk true;
@@ -5533,6 +5566,9 @@ pub const Codegen = struct {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and vecDequeElementType(recv_ty.?) != null) break :blk true;
                 }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsVecDequeMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (self.exprNeedsVecDequeMacros(arg)) break :blk true;
                 }
@@ -5640,6 +5676,9 @@ pub const Codegen = struct {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and hashMapTypes(recv_ty.?) != null) break :blk true;
                 }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsHashMapMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (self.exprNeedsHashMapMacros(arg)) break :blk true;
                 }
@@ -5743,6 +5782,9 @@ pub const Codegen = struct {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and hashSetTypes(recv_ty.?) != null) break :blk true;
                 }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsHashSetMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (self.exprNeedsHashSetMacros(arg)) break :blk true;
                 }
@@ -5836,6 +5878,9 @@ pub const Codegen = struct {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and btreeSetTypes(recv_ty.?) != null) break :blk true;
                 }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsBTreeSetMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| {
                     if (self.exprNeedsBTreeSetMacros(arg)) break :blk true;
                 }
@@ -5924,6 +5969,9 @@ pub const Codegen = struct {
             .call_expr => |call| blk: {
                 if (call.associated_target) |target| {
                     if (std.mem.eql(u8, target, "BTreeMap")) break :blk true;
+                }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsBTreeMapMacros(callee)) break :blk true;
                 }
                 for (call.args) |arg| {
                     if (self.exprNeedsBTreeMapMacros(arg)) break :blk true;
@@ -6017,6 +6065,9 @@ pub const Codegen = struct {
                     if (recv_ty != null and isAtomicI32Type(recv_ty.?)) break :blk true;
                     if (recv_ty != null and isAtomicUsizeType(recv_ty.?)) break :blk true;
                 }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsAtomicMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| if (self.exprNeedsAtomicMacros(arg)) break :blk true;
                 break :blk false;
             },
@@ -6099,6 +6150,9 @@ pub const Codegen = struct {
         return switch (expr.*) {
             .call_expr => |call| blk: {
                 if (lowering_rules.callNeedsPtrMacros(call)) break :blk true;
+                if (call.callee) |callee| {
+                    if (self.exprNeedsPtrMacros(callee)) break :blk true;
+                }
                 for (call.args) |arg| if (self.exprNeedsPtrMacros(arg)) break :blk true;
                 break :blk false;
             },
@@ -6192,6 +6246,9 @@ pub const Codegen = struct {
                 if (call.args.len > 0) {
                     const recv_ty = self.tc.expr_types.get(call.args[0]) orelse null;
                     if (recv_ty != null and cellInnerType(recv_ty.?) != null) break :blk true;
+                }
+                if (call.callee) |callee| {
+                    if (self.exprNeedsCellMacros(callee)) break :blk true;
                 }
                 for (call.args) |arg| if (self.exprNeedsCellMacros(arg)) break :blk true;
                 break :blk false;
@@ -6317,6 +6374,9 @@ pub const Codegen = struct {
                     {
                         break :blk true;
                     }
+                }
+                if (call.callee) |callee| {
+                    if (exprNeedsAsyncMacros(callee)) break :blk true;
                 }
                 for (call.args) |arg| {
                     if (exprNeedsAsyncMacros(arg)) break :blk true;
@@ -13027,6 +13087,12 @@ pub const Codegen = struct {
                 return try self.genSliceExpr(&slc, hoisted_allocs);
             },
             .call_expr => |call| {
+                // #13: immediately-invoked closure literal; bypasses every
+                // func_name-keyed path below (func_name is "" for these calls).
+                if (call.callee) |callee| {
+                    if (callee.* != .closure_literal) return CodegenError.CodegenError;
+                    return try self.genClosureCall(&callee.closure_literal, &call, hoisted_allocs);
+                }
                 if (lowering_rules.planResolvedStaticCallLowering(self.tc, expr, call, self.tc.expr_types.get(expr))) |lowering| {
                     return try self.genResolvedFunctionCall(lowering, &call, hoisted_allocs, call.associated_target == null);
                 }

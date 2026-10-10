@@ -3651,6 +3651,21 @@ pub const TypeChecker = struct {
                 return ty;
             },
             .call_expr => |call| {
+                // #13: immediately-invoked closure literal `(|x| ...)(args)`.
+                // Mirrors the named-closure-symbol path below; every builtin
+                // special-case underneath is func_name-keyed and untouched.
+                if (call.callee) |callee| {
+                    const callee_ty = try self.checkExpr(callee, scope);
+                    if (callee_ty.* != .closure) return TypeError.TypeMismatch;
+                    const closure = callee_ty.closure;
+                    if (closure.params.len != call.args.len) return TypeError.InvalidArgsCount;
+                    for (closure.params, call.args) |param_ty, arg| {
+                        const arg_ty = try self.checkExpr(arg, scope);
+                        if (!self.plainCallArgMatches(param_ty, arg, arg_ty)) return TypeError.TypeMismatch;
+                        if (!self.arrayCallArgStrictMatches(param_ty, arg_ty)) return TypeError.TypeMismatch;
+                    }
+                    return closure.ret;
+                }
                 const recv_node_ty = if (call.args.len > 0 and call.args[0].* != .move_expr) try self.checkExpr(call.args[0], scope) else null;
 
                 if (lowering_rules.isOptionSomeCall(call)) {

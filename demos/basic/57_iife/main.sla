@@ -2,9 +2,8 @@
 @import "sa_std/fmt.sai"
 
 // 对标 tsgosa 170_iife：立即调用函数表达式 `(() => 42)()`。
-// SLA 不支持对闭包字面量直接调用（`(|x| ...)()` 报 `error.InvalidCallTarget`，
-// 探针见 /tmp/piife.sla）；此处先绑定再调用，块作用域限定绑定可见性，
-// 语义与 IIFE 等价（参考 20_closures 的闭包写法）。
+// 缺口 #13 已修复：闭包字面量可直接调用（`(|x| ...)()` 经 callee 契约直达
+// `genClosureCall`，双后端一致）；先绑定再调用仍为等价写法保留于此。
 
 fn main() -> i32 {
     let v = 0;
@@ -13,10 +12,12 @@ fn main() -> i32 {
         v = f();
     }
     println("{}", v);
+    println("{}", (|x: int| x * 2)(21));
     return 0;
 }
 
 @test "basic 57 iife"() {
     let f = || 42;
     if f() != 42 { panic(5701); };
+    if (|x: int| x * 2)(21) != 42 { panic(5702); };
 }

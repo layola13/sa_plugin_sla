@@ -149,12 +149,21 @@
   （赋值语句不返回值，属明确拒绝）。
 - 现状规避：`56_chain_ops` 用两条顺序赋值表达同一语义，README 注明。
 
-## #13 闭包字面量直接调用不支持（已确认，51–60 批次新发现）
+## #13 闭包字面量直接调用（已修复，2026-10-10）
 
-- 复现（/tmp/piife.sla）：`(|x: int| x * 2)(21)` 报
-  `found '21', expected callable function ... (error.InvalidCallTarget)`，
-  属明确拒绝；零参闭包 `|| 42` 本身可解析（探针 `/tmp/pclos0.sla`）。
-- 现状规避：`57_iife` 先绑定再调用，块作用域限定可见性，语义等价，README 注明。
+- 原复现（/tmp/piife.sla）：`(|x: int| x * 2)(21)` 报
+  `found '21', expected callable function ... (error.InvalidCallTarget)`。
+- 修复：`ast.CallExpr` 加 `callee: ?*Node`（默认 null，零兼容影响）；
+  parser `l_paren` 位仅放行 `.closure_literal`（其余保持原拒绝文案）；
+  checker 首分支镜像命名闭包路径做元数/类型检查；
+  SAB/SA 发射首分支直达既有 `genClosureCall`；
+  单态化 5 处重建点透传并特化 `callee`（本轮真凶：重建丢字段导致空名调用）；
+  18 处 `exprNeeds*` + assigned/addressable/future-runtime/preload/escaped/thread
+  visitor 同步覆盖 callee 子树。
+- 验证：位置矩阵（let/println 实参/嵌套调用/嵌套闭包/while cond/if cond）
+  双后端全绿 + build-exe 输出核对 + 三拒绝路径（非闭包 callee 沿用
+  InvalidCallTarget；元数/类型错配各有明确错误）；回归 `57_iife` 已补直接调用断言。
+- 现状：`57_iife` 先绑定写法保留为等价写法，直接调用为推荐写法。
 
 ## #14 HashMap 在 SAB 默认后端报 UnknownRegister（已确认，91–100 批次新发现）
 

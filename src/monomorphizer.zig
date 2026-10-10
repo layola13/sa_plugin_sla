@@ -731,6 +731,7 @@ pub const Monomorphizer = struct {
                     for (call.generics) |g| {
                         try new_generics.append(try self.specializeType(g));
                     }
+                    const new_callee = if (call.callee) |c| try self.specializeNode(c) else null;
                     const res = try self.allocator.create(ast.Node);
                     res.* = .{
                         .call_expr = .{
@@ -738,6 +739,7 @@ pub const Monomorphizer = struct {
                             .associated_target = call.associated_target,
                             .generics = try new_generics.toOwnedSlice(),
                             .args = try new_args.toOwnedSlice(),
+                            .callee = new_callee,
                         },
                     };
                     return res;
@@ -758,6 +760,7 @@ pub const Monomorphizer = struct {
                         try new_args.append(try self.specializeNode(arg));
                     }
 
+                    const new_callee = if (call.callee) |c| try self.specializeNode(c) else null;
                     const res = try self.allocator.create(ast.Node);
                     res.* = .{
                         .call_expr = .{
@@ -765,6 +768,7 @@ pub const Monomorphizer = struct {
                             .associated_target = call.associated_target,
                             .generics = &.{},
                             .args = try new_args.toOwnedSlice(),
+                            .callee = new_callee,
                         },
                     };
                     return res;
@@ -782,6 +786,7 @@ pub const Monomorphizer = struct {
                             try new_args.append(try self.specializeNode(arg));
                         }
 
+                        const new_callee = if (call.callee) |c| try self.specializeNode(c) else null;
                         const res = try self.allocator.create(ast.Node);
                         res.* = .{
                             .call_expr = .{
@@ -789,6 +794,7 @@ pub const Monomorphizer = struct {
                                 .associated_target = call.associated_target,
                                 .generics = &.{},
                                 .args = try new_args.toOwnedSlice(),
+                                .callee = new_callee,
                             },
                         };
                         return res;
@@ -800,6 +806,7 @@ pub const Monomorphizer = struct {
                 for (call.args) |arg| {
                     try new_args.append(try self.specializeNode(arg));
                 }
+                const new_callee = if (call.callee) |c| try self.specializeNode(c) else null;
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
                     .call_expr = .{
@@ -807,6 +814,7 @@ pub const Monomorphizer = struct {
                         .associated_target = call.associated_target,
                         .generics = &.{},
                         .args = try new_args.toOwnedSlice(),
+                        .callee = new_callee,
                     },
                 };
                 return res;
@@ -1842,6 +1850,7 @@ pub const Monomorphizer = struct {
                 for (call.args) |arg| {
                     try spec_args.append(try self.substituteNode(arg, params, args));
                 }
+                const spec_callee = if (call.callee) |c| try self.substituteNode(c, params, args) else null;
                 const res = try self.allocator.create(ast.Node);
                 res.* = .{
                     .call_expr = .{
@@ -1849,6 +1858,7 @@ pub const Monomorphizer = struct {
                         .associated_target = call.associated_target,
                         .generics = try spec_generics.toOwnedSlice(),
                         .args = try spec_args.toOwnedSlice(),
+                        .callee = spec_callee,
                     },
                 };
                 return res;

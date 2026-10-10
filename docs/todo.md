@@ -140,3 +140,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   for-of 改写/内联 gcd/拷贝排序/最简闭包/abs+floor
   （182/197/104/105/11/12/134/26/30/31）；Map 类（35/132/167）因 SAB 缺口 #14 暂略；
   探针确认模板赋值打印、HashMap（SA 过/SAB trap，立 #14）、`as i32` 取整三项结论。
+- 2026-10-10：缺口 #13 已修复（`ast.CallExpr.callee` + parser/checker/双后端/
+  单态化5处透传 + visitor 加固；位置矩阵双后端全绿 + build-exe 核对 +
+  三拒绝路径；`57_iife` 补直接调用断言；POTENTIAL_ISSUES #13 转已修复），已推送
+  （`待填`）。红队曾裁 harden_first（compat_break 57%），真凶正是单态化重建丢字段。

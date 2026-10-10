@@ -337,6 +337,10 @@ pub const CallExpr = struct {
     associated_target: ?[]const u8 = null,
     generics: []const *Type,
     args: []const *Node,
+    /// #13: immediately-invoked closure literal callee (`(|x| ...)(args)`).
+    /// Null for every ordinary named call; when set, `func_name` is "" and
+    /// all name-keyed dispatch must be bypassed in favor of this node.
+    callee: ?*Node = null,
 };
 
 pub const GenericFuncRef = struct {

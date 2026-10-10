@@ -203,6 +203,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 173_xor_swap | 1251_xor_swap | 三遍 `^` 交换（无 `^=`） |
 | 174_clamp | 1263_clamp | 三参数夹逼（与 134 互补） |
 | 175_between | 1267_between | `&&` 双边区间判定 |
+| 176_shift_varcount | 1233_shift_varcount | 变量位移计数（119 字面量版互补） |
+| 177_shift_chain | 1239_shift_chain + 1247_shift_compare | 连续位移 + 符号判定（64 位） |
+| 178_shift_halve | 1256_shift_while | 循环右移折半（与 170 方向互补） |
+| 179_compare_chain | 1258_compare_chain | 比较传递链（与 175 同构） |
+| 180_swbind_str | 435_str_switch | `: ptr` 绑定 scrutinee（#18 缩小） |
+| 181_find_last | 430_find_last | 倒序查找（无 `findLast`） |
+| 182_struct_value | 476_field_compound | 结构体形参值语义（对照 127） |
+| 183_factory_struct | 482_factory_arg | 工厂返回结构体（对照 #17） |
+| 184_paren_call | 481_paren_call | 括号包裹被调函数 |
+| 185_nested_ternary | 1262_nested_ternary | 右嵌套三元分档（06 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

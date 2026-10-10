@@ -102,7 +102,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 ## 3. 门禁（提交前必查，每轮均执行，见账本）
 
 - [x] 新增 demo 逐个 `check + test` 通过（命令见 §0）。
-- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 175）。
+- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 185）。
 - [x] `build-exe` 抽查 ≥2 个新增 demo 可运行输出。
 - [x] `POTENTIAL_ISSUES.md`：新发现记编号 + 复现探针路径；已修复的把“现状规避”改为
   “已修复（commit）”并保留复现记录（当前 #1–#14、#16 已修复，#15 确认缺口）。
@@ -305,3 +305,14 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   `!`/`!!` 限布尔、`1<<31` 64 位正数、`(1<<31)+1` 不回绕（与 TS 三处分歧均锁定）；
   立缺口 #22（`switch true` 条件臂 test 绿但 exe MissingType，按先例直接记档）；
   172 首版自误断言（`4&3=0`，修复）；本轮无抖动。
+- 2026-10-10：176–185 落地（`check+test` 10/10 一遍全绿 + build-exe 抽查
+  177/182/185 输出核对 `4294967296,1,0` / `11,10` / `1,2,3`；
+  全量 185/185 + `zig build test` 314/314），待推送。选型：tsgosa 435–1262
+  混杂池（1233/1239+1247/1256/1258/435/430-rw/476-rw/482/481/1262；
+  类/this/new、`??`/可选链/标签模板、Set<int>（#16）、高阶方法与迭代器、
+  `===`/`~~`/`>>>`/逗号表达式无 token、注解闭包（fn_ptr/closure 错配）、
+  块体与赋值捕获不可用、1085/436 switch-true（#22）、937 后续轮次暂略）；
+  探针结论：`: ptr` 绑定 switch 分发正常（#18 缩小：失真仅限关系比较）、
+  结构体形参值语义（对照 127 数组引用语义）、结构体返回正常（对照 #17）、
+  括号调用与嵌套三元正常；立缺口 #23（Option 字段解包 @test 内必泄漏、
+  exe 正常，JEV record 12%，本轮不落地该 demo）；本轮无抖动无自误。

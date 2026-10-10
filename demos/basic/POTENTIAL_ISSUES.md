@@ -256,7 +256,9 @@
   推断绑定——凡绑定左值皆失真，仅字面量可比。
 - 现状规避：116–125 batch 中 122 只用字面量比较，且包进无参 helper fn
   再由 `@test` 断言（探针 `r_strcmp6` 双后端 + exe `-1` 核对）；
-  需比较变量字符串时改用 `str_eq` 判等。
+  需比较变量字符串时改用 `str_eq` 判等；2026-10-10 缩小：`switch` 分发
+  不受影响——`: ptr` 绑定 scrutinee + 字面量臂三线全绿（180），
+  失真仅限 `<`/`>` 关系比较。
 - 复现探针：`/tmp/probes2/r_strcmp.sla`（绑定左值 exe 失真）、
   `/tmp/probes2/r_strcmp4.sla`（矩阵 `9,9,-1,9`）、
   `/tmp/probes2/r_strcmp5.sla`（`@test` 直写触发 MemoryLeak）。
@@ -297,6 +299,24 @@
   （非 trap/崩溃），严重度低；按既有裁定先例直接记档，不另问 JEV。
 - 现状规避：166 只用布尔字面量臂；条件分发改用 `if/else if` 链（115）。
 - 复现探针：`/tmp/probes2/w_swtrue.sla`、`/tmp/probes2/w_swtrue2.sla`。
+
+## #23 Option 字段解包在 `@test` 内泄漏（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：含 `Option` 字段的结构体可过 `check`；exe 全对（`unwrap` 得 5、
+  `match` 得 true），但 `@test` 内任何载荷提取（`unwrap`/`match`、
+  单次/多次、helper 包裹皆然）均报 `MemoryLeak` trap；结构体本身构造
+  与 `.a` 字段读在 `@test` 内正常；复用同一绑定二次提取另报
+  `UseAfterMove`（值语义搬移）。
+- 定性：与 #15/#17 同属值格特性，不半修（JEV 单选 record 12%，分歧大但
+  批量优先；#19 同轮亦 12%，同类缺口裁定口径一致）。
+- 现状规避：本轮不落地 Option-字段 demo；需可选字段时以哨兵值 +
+  `bool` 标记表达（见 144 的 bool 字段）。
+- 复现探针：`/tmp/probes2/x_optstruct.sla`（泄漏）、
+  `/tmp/probes2/x_optstruct2.sla`（复用搬移）、
+  `/tmp/probes2/x_optstruct3.sla`（单次 helper 仍漏）、
+  `/tmp/probes2/x_optstruct4.sla`（match 提取仍漏）。
+
+## 已验证无问题（回归对照）
 
 ## 已验证无问题（回归对照）
 

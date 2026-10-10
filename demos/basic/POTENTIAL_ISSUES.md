@@ -200,6 +200,22 @@
 - 验证：空表缺失/覆盖写/多键/缺键矩阵双后端全绿 + build-exe 输出 `10,2,0` 核对；
   `53_cache_hits` 通过。
 
+## #15 `String` 形参端到端不可用（已确认缺口，本轮探针结论）
+
+- 现象：`fn echo(s: String) -> String { return s; }` + `echo("hi")`：
+  `check` 通过，SAB `str_eq` 恒假（`@sla__echo(^s: ptr)` 借入栈 Slice，
+  返回借用指针再与字面量做指针相等）；SA 后端报 `CapabilityMismatch`。
+  小写 `s: string` 注解亦然（`isStringType` 只认 `String`，属同一缺口；
+  曾尝试 parser 层小写映射，但单映射无一可用用例——`let s: string = "hi"`
+  报 declared/val 标签错配——且把 loud 的 check 错误推迟为运行期静默错，
+  故已回退，映射须与值格（字面量/Slice→String 强制）同批交付）。
+- 连 `let t = "hi"; echo(t)` 亦报 arg TypeMismatch（Slice vs String），
+  故暂无绕行；字符串请用推断绑定 + `str_eq`/模板（见 10/68/69/94）。
+- 范围：字面量/绑定实参→String 形参的借入 ABI（`^s: ptr`）、返回值保持、
+  `str_eq` 对借入 Slice 的处理、SA 侧同形调用实参物化。
+- 探针：`/tmp/probe_strarg.sla`、`/tmp/probe_sgen*.sla`、`/tmp/probe_capstr.sla`、
+  `/tmp/probe_letmid.sla`、`/tmp/probe_letann.sla`。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

@@ -233,6 +233,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 203_prefix_slice | 1423_slice_0_2 | 手写前缀切片（89 尾段版互补） |
 | 204_cond_break | 1268_while_break | 条件循环跳过加早停（147 无停互补） |
 | 205_ceil_neg | 1426_ceil_neg | 负数上取整（130 未测分支） |
+| 206_iife_nest | 864_top_iife_nest | 嵌套直接调用（57 单层互补） |
+| 207_tern_switch | 942_ternary_switch | 三元判别 switch（151 调用版互补） |
+| 208_void_fn | 915_void_call | 首个 void 函数（668 同形） |
+| 209_boolret | 567_boolret | 布尔返回函数（165 形参互补） |
+| 210_sw_field | 939_sw_member | 字段路径 switch（151/207 互补） |
+| 211_void_nest | 671_void_fn | void 嵌套调用（208 单层互补） |
+| 212_discard_call | 672_void_i32 | 返回值丢弃（141 语句版互补） |
+| 213_void_branch | 675_void_branch | 分支内 void 调用 |
+| 214_void_loop | 676_void_loop | 循环内 void 调用 |
+| 215_dyn_range | 605_top_cond_forlen | 动态上界区间（此前皆字面量） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

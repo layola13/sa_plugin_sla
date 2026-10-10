@@ -356,6 +356,44 @@
   `probe_enum_eq2.sla`（9003 双后端复现）、`probe_enum_int.sla`
   （`as i32` 拒识对照）。
 
+## #26 捕获型闭包直接调用 check/test 不一致（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：`(|x: int| x + k)(5)`（k 为外层绑定）可过 `check`，
+  但 `test` 报 `UndefinedVariable: k`（复现探针 `probe_iife_cap.sla`）；
+  非捕获嵌套直接调用（864，`206` 已落地）双后端正常；
+  先绑定再调用的捕获语义（20/77/164）正常。
+- 定性：与 #4 同属 check/test 前端不一致；JEV 单选 record
+  （53/47 分歧大，批量优先）。
+- 现状规避：捕获型闭包一律先绑定再调用（20 口径）；861 类用例暂略。
+- 复现探针：`probe_iife_cap.sla`。
+
+## #27 `Vec.push` 作值 check/test 不一致（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：`let n = v.push(2)` 可过 `check`，但 `test` 报
+  `binary_expr TypeMismatch`（复现探针 `probe_push_ret.sla`，`n != 2` 处）；
+  `push` 作语句（141 口径）双后端正常；多参 `push(2, 3)` 被 checker
+  以 `InvalidArgsCount` 拒识（定元数）。
+- 定性：与 #4/#26 同属 check/test 前端不一致；JEV 单选 record 74%。
+- 现状规避：`push` 只作语句；需表长时用 `len(v)`（584 类用例暂略）。
+- 复现探针：`probe_push_multi.sla`（定元数拒识）、
+  `probe_push_ret.sla`（作值不一致）。
+
+## #28 SA 后端绑定 void 闭包 lowering 失败（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：`let f = || hit(); f();`（hit 为 void 函数）可过 `check`，
+  SAB 后端 `test` 绿，但 SA（LLVM）后端报
+  `Instruction has a name, but provides a void value!`；
+  `println` 作闭包体另报 `ForbiddenSyntax/InvalidMacroInvocation`；
+  int 体绑定闭包（57 口径）双后端正常；void 函数直调
+  （208/211/213/214）双后端正常；直接调用 void 闭包
+  `(|| hit())()` 则连名字决议都不过（`Undefined call: hit`，归入 #26 类）。
+- 定性：SA-text 后端 void 值命名缺陷；JEV 单选 record 73%。
+- 现状规避：void 效果一律直调 void 函数；670 类用例暂略
+  （块体闭包另有解析层拒识：闭包体仅表达式）。
+- 复现探针：`probe_void_extra.sla`（SAB 绿/SA 败）、
+  `probe_clo_void2.sla`（LLVM void 报错）、`probe_void_iife.sla`
+  （直接调用名字决议败）。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

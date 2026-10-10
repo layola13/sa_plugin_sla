@@ -283,6 +283,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 253_vec_equal | 167_arr_identity | 逐元版（167 引用版互补） |
 | 254_run_prod | 243_cumsum | 积版（243 和版互补） |
 | 255_vec_second | 121_second_max | Vec 版（22 定长版互补） |
+| 256_gcd_sub | 119_gcd3 | 减法版（17/80 取模版互补） |
+| 257_isqrt_newton | 347_math_sqrt | 牛顿版（117 试乘版互补） |
+| 258_pow_sqmul | 1231_pow | 平方乘版（49/113 连乘版互补） |
+| 259_divmod_sub | 179_div_mod | 减法版（45 算子版互补） |
+| 260_bsearch_rec | 101_bsearch | 递归版（17 循环版互补） |
+| 261_prime_wheel | 183_prime_upto | 轮式版（46 试除版互补） |
+| 262_select_sort | 26_sort | 选择版（16/38/98 互补） |
+| 263_lower_bound | 101_bsearch | 下界版（17 等值版互补） |
+| 264_mult_table | 893_nested_continue | 嵌套算术（146 计数互补） |
+| 265_deep_count | 38_nested_loops | 三层版（228 双层互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

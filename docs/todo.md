@@ -433,7 +433,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   本轮无抖动无自误。
 - 2026-10-10：266–275 落地（`check+test` 10/10 + 双后端 sab/sa 10/10 +
   build-exe 抽查 266/268/272 输出核对 `1,7` / `1,0,2` / `2,1`；
-  全量 275/275 + `zig build test` 315/315），待推送。选型：容器与包覆池
+  全量 275/275 + `zig build test` 315/315），已推送（`0a1b7fe`）。选型：容器与包覆池
   （1022-or/1026-or/1104/1321-str/87-三层写/223-写/149-容器/1104-str/
   15-谓词/605-定长；`Vec.clear` 不在面、`HashMap.contains` 不在面（源码
   确认仅 insert/get/clear）、嵌套 fn + 变量遮蔽双拒识、`match` bool 拒识
@@ -443,3 +443,11 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   定长界三线绿（272 下标 `e[1]` 变体验证，269 首个 BTreeSet）；
   立缺口 #33（map 内存体 exe 不支持，JEV record 85%，三分二分钉死）；
   本轮无抖动无自误。
+- 2026-10-10：276–285 落地（`check+test` 10/10 + 双后端 sab/sa 10/10 +
+  build-exe 抽查 276/280/285 输出核对 `8` / `5,16` / `9`；
+  全量 285/285 + `zig build test` 315/315），待推送。选型：表/和系列三轮
+  （14-带参/125-表/141-表/137-表/176-表/183-和/173-和/155-最值/04-步进/
+  125-和；等差 dropped（锚弱，奇数和/阶乘和更实）、271 系已用、`Vec.clear`
+  不在面暂略）；
+  探针结论：带参方法/四表/三和/最值/步进三线绿（280 末项 `16`，285 另断言
+  `4!`）；本轮无抖动无自误。

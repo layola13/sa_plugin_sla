@@ -303,6 +303,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 273_hashset_str | 1104_set_has_size | str 版（268 互补） |
 | 274_opt_pred | 15_option | 谓词版（15 match 版互补） |
 | 275_fixed_dynrange | 605_top_cond_forlen | 定长版（215 Vec 版互补） |
+| 276_method_args | 14_class | 带参版（12 无参版互补） |
+| 277_fact_list | 125_fact | 表版（230 单值版互补） |
+| 278_sq_list | 141_sum_sq | 表版（27 总额版互补） |
+| 279_tri_list | 137_tri | 表版（71 单值版互补） |
+| 280_pow_list | 176_pow_sum | 表版（62 求和版互补） |
+| 281_prime_sum | 183_prime_upto | 求和版（238 表版互补） |
+| 282_fib_sum | 173_fib_loop | 求和版（237 表版互补） |
+| 283_collatz_max | 155_collatz | 最值版（236 序列版互补） |
+| 284_odd_sum | 04_while_sum | 步进版（04 逐一版互补） |
+| 285_fact_sum | 125_fact | 求和版（230 单值版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

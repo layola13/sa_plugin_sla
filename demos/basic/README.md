@@ -343,6 +343,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 313_tri_search | 116×17×39 | 三向对峙（2=2=1） |
 | 314_duel_stats | 22×27 | 单遍三遍对峙（35=35） |
 | 315_tri_sum | 61×305×245 | 三向对峙（55 三版） |
+| 316_tri_sort | 16×262×306 | 三向对峙（3 三版） |
+| 317_sqrt_bs | 347_math_sqrt | 二分版（117/257 互补） |
+| 318_cbrt | 347_math_sqrt | 立方版（117 平方版互补） |
+| 319_tri_prime | 46×261×241 | 三向对峙（10 三版） |
+| 320_ilog2 | 983_math_aux | log2 部（157 互补） |
+| 321_is_square | 347_math_sqrt | 判定版（117 取值版互补） |
+| 322_duel_clamp | 26×174 | 语句三元对峙（5=5） |
+| 323_tri_gcd | 17×256×310 | 三向对峙（25 三版） |
+| 324_duel_rev | 246×246 | 自对偶复原（301 异操作互补） |
+| 325_is_tri | 137_tri | 成员版（71 取值版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

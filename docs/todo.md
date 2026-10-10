@@ -160,7 +160,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   附记：`sa sla test` 对零 `@test` 文件不执行 `main`（回归断言必须进 `@test`）。
 - 2026-10-10：101–104 落地（`check+test` 4/4 一遍全绿 + build-exe 抽查 101/103/104
   输出核对 `3,0,2` / `2,3,18,7` / `5,true,7`；全量 104/104 + `zig build test`
-  待跑），已推送（`待填`）。选型：Map 链（35/132，#14 已修复）+ Vec 手写
+  311/311），已推送（`e9d5a92`）。选型：Map 链（35/132，#14 已修复）+ Vec 手写
   （28 整数核）+ 用户泛型（34，int+bool 具化）；`.clear()` 双后端 check 即拒、
   字符串泛型实例暂略；另补 `genMapLenCall`（`len(m)` SAB 直降，SA 本已支持）。
   说明：tsgosa ≤200 可移植池已尽（余皆为字符串下标/Date/super/迭代器协议/

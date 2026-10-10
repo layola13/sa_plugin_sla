@@ -143,4 +143,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 2026-10-10：缺口 #13 已修复（`ast.CallExpr.callee` + parser/checker/双后端/
   单态化5处透传 + visitor 加固；位置矩阵双后端全绿 + build-exe 核对 +
   三拒绝路径；`57_iife` 补直接调用断言；POTENTIAL_ISSUES #13 转已修复），已推送
-  （`待填`）。红队曾裁 harden_first（compat_break 57%），真凶正是单态化重建丢字段。
+  （`d88242c`）。红队曾裁 harden_first（compat_break 57%），真凶正是单态化重建丢字段。

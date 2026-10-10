@@ -175,15 +175,23 @@
   InvalidCallTarget；元数/类型错配各有明确错误）；回归 `57_iife` 已补直接调用断言。
 - 现状：`57_iife` 先绑定写法保留为等价写法，直接调用为推荐写法。
 
-## #14 HashMap 在 SAB 默认后端报 UnknownRegister（已确认，91–100 批次新发现）
+## #14 HashMap 在 SAB 默认后端报 UnknownRegister（已修复，2026-10-10）
 
-- 复现（`/tmp/probe_ma.sla`，两次 `insert` + 一次 `get().copied().unwrap_or_default()`）：
-  `check` 通过，`test` 在 SAB 默认后端报
-  `trap UnknownRegister 1007 ... "callee is not declared"`；
-  同文件 `--test-backend sa` 通过；仓库内 `demos/rosetta/53_cache_hits`
-  同样默认后端 trap、SA 后端通过，属预置缺口非本轮引入。
-- 期望：SAB 直接路径支持 `HashMap::new/insert/get`（或 `check` 给出明确不支持提示）。
-- 现状规避：91–100 批次未收录 Map 类 demo（`35/132/167` 暂略），README 与账本注明。
+- 原复现：两次 `insert` + `get().copied().unwrap_or_default()` 在 SAB 默认后端报
+  `trap UnknownRegister 1007 ... "callee is not declared"`；`--test-backend sa` 通过；
+  仓库内 `demos/rosetta/53_cache_hits` 同症。另注意 `sa sla test` 对零 `@test`
+  文件不执行 `main`（m1–m6 空转教训），回归断言必须进 `@test`。
+- 根因：SAB 对 `HashMap.get` / `Option.copied` / `Option.unwrap_or_default`
+  全无 lowering，通用路径放出 `@sla__get` 等不存在的 callee。
+- 修复：SAB 加三处 direct lowering 并挂入 `genCall` 分发（`genMapInsertCall` 之后）：
+  `genMapGetCall`（`MAP_TRY_GET` + `OPTION_NEW_SOME/NONE` 折叠，miss 得 `None`，
+  与 SA 的 `SLA_MAP_TRY_GET_OPTION` 同语义）；`genOptionCopiedCall`
+  （`OPTION_COPIED_U64`）；`genOptionUnwrapOrDefaultCall`
+  （`OPTION_UNWRAP_OR_DEFAULT`，零值默认与 SA 一致）。接管条件均为 receiver
+  类型匹配（HashMap/Option），其余保持原 fallback。
+  `BTreeMap.get` 仍走原路径（无在仓用例，另行立项）。
+- 验证：空表缺失/覆盖写/多键/缺键矩阵双后端全绿 + build-exe 输出 `10,2,0` 核对；
+  `53_cache_hits` 通过。
 
 ## 已验证无问题（回归对照）
 

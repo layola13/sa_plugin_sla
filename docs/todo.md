@@ -153,3 +153,8 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 2026-10-10：缺口 #4b 已修复（单参 string-like/format-string 走既有 per-arg 发射，
   双后端一致；其余元数保持裸换行；`94_nested_tpl` 补直打断言；
   POTENTIAL_ISSUES #4b 转已修复），已推送（`82f3f01`）。
+- 2026-10-10：缺口 #14 已修复（SAB 加 `HashMap.get` / `Option.copied` /
+  `Option.unwrap_or_default` 三处 direct lowering；空表缺失/覆盖写/多键/缺键矩阵
+  双后端全绿 + build-exe 输出 `10,2,0` 核对；`53_cache_hits` 通过；
+  POTENTIAL_ISSUES #14 转已修复），已推送（`待填`）。
+  附记：`sa sla test` 对零 `@test` 文件不执行 `main`（回归断言必须进 `@test`）。

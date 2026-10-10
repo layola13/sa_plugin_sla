@@ -14709,6 +14709,9 @@ pub const Codegen = struct {
         if (try self.genVecPushCall(call)) |reg| return reg;
         if (try self.genVecRemoveCall(call)) |reg| return reg;
         if (try self.genMapInsertCall(expr, call)) |reg| return reg;
+        if (try self.genMapGetCall(expr, call)) |reg| return reg;
+        if (try self.genOptionCopiedCall(call)) |reg| return reg;
+        if (try self.genOptionUnwrapOrDefaultCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genMutexLockCall(expr, call)) |reg| return reg;
         if (try self.genManuallyDropCall(call)) |reg| return reg;
@@ -16812,6 +16815,104 @@ pub const Codegen = struct {
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
         try self.releaseExprResultIfNeeded(key_arg, key_reg);
         return option_reg;
+    }
+
+    /// Direct-SAB `map.get(key)` for HashMap, mirroring the SA-text emitter's
+    /// `SLA_MAP_TRY_GET_OPTION`: `MAP_TRY_GET` (found flag + slot pointer),
+    /// folded into an `Option` exactly like `genMapInsertCall` above (#14).
+    /// A miss yields `None` (no 404 panic, unlike `map[key]`).
+    fn genMapGetCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 2) return null;
+        if (!lowering_rules.isGetCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.hashMapTypes(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const key_arg = call.args[1];
+        const key_reg = try self.genMapKeyReg(key_arg);
+        try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_try_get"});
+        const ok_reg = try self.intern(try self.newTmp());
+        const payload_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_TRY_GET", &.{
+            self.symbols.items[ok_reg],
+            self.symbols.items[payload_reg],
+            self.symbols.items[recv_reg],
+            self.symbols.items[key_reg],
+        });
+        const option_reg = try self.intern(try self.newTmp());
+        try self.recordReg(option_reg);
+        const some_label = try self.newLabel("L_MAP_GET_SOME");
+        const none_label = try self.newLabel("L_MAP_GET_NONE");
+        const end_label = try self.newLabel("L_MAP_GET_END");
+        try self.emitBranch(ok_reg, some_label, none_label);
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+            self.symbols.items[option_reg],
+            self.symbols.items[payload_reg],
+        });
+        try self.emitBranchRelease(payload_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitBranchRelease(payload_reg);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+            self.symbols.items[option_reg],
+        });
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        return option_reg;
+    }
+
+    /// Direct-SAB `Option.copied()`, mirroring the SA-text emitter's
+    /// `OPTION_COPIED_U64` expansion (#14). Gated on `Option` receivers.
+    fn genOptionCopiedCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len != 1) return null;
+        if (!lowering_rules.isCopiedCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.optionInnerType(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_COPIED_U64", &.{
+            self.symbols.items[dst],
+            self.symbols.items[recv_reg],
+        });
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        return dst;
+    }
+
+    /// Direct-SAB `Option.unwrap_or_default()`, mirroring the SA-text
+    /// emitter's `OPTION_UNWRAP_OR_DEFAULT` expansion (#14). Gated on
+    /// `Option` receivers; the default is the type's zero value, same as SA.
+    fn genOptionUnwrapOrDefaultCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len != 1) return null;
+        if (!lowering_rules.isUnwrapOrDefaultCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.optionInnerType(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_UNWRAP_OR_DEFAULT", &.{
+            self.symbols.items[dst],
+            self.symbols.items[recv_reg],
+        });
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        return dst;
     }
 
     fn genVecDirectIndex(self: *Codegen, idx: ast.IndexExpr, target_ty: *const ast.Type) anyerror!?u32 {

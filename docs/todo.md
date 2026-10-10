@@ -169,7 +169,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   Slice/Vec 布局混用），已推送（`fa999ce`/`a201764`）。
 - 2026-10-10：修缺口 #16（`BTreeSet<int>` 键静默错→checker 门转 loud；
   在仓 `set code generation` 单测 int 键一并正为字符串键；正反单测），已推送
-  （`待填`）。
+  （`b51e190`）。
 - 2026-10-10：修缺口 #16（`BTreeSet<int>` 键静默错→checker 门转 loud；
   附带确认 `check` 跳 `@test` 体，回归须走 `test`；正反单测），已推送
   （`待填`）。

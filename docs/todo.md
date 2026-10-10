@@ -130,7 +130,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   探针确认 `|`/`^`、bool 闭包、嵌套结构体读值三项写法可用。
 - 2026-10-10：81–90 落地（`check+test` 10/10 一遍全绿 + build-exe 抽查 87/90
   输出核对 `12` / `true,true,true`；全量 90/90 + `zig build test` 303/303），已推送
-  （`待填`）。选型：reduce/展开/剩余参数/解构/嵌套写/分档/浮点比较
+  （`98933a3`）。选型：reduce/展开/剩余参数/解构/嵌套写/分档/浮点比较
   （25/107/27/29/154/156/113/23/166/22）；28（含 unshift/fill/with 多重未验证）、
   32（startsWith/includes）、35/167（Map）、31（Math）暂略；
   探针确认嵌套结构体写字段、f64 字面量比较两项写法可用。

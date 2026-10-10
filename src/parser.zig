@@ -821,10 +821,12 @@ pub const Parser = struct {
                 const num_tok = self.tok;
                 try self.expect(.int_literal);
                 const num_str = self.lexeme(num_tok.loc);
+                // #11: drop `_` separators in enum discriminant digits.
+                const num_clean = try stripNumericSeparators(self.allocator, num_str);
                 var digit_len: usize = 0;
-                while (digit_len < num_str.len and std.ascii.isDigit(num_str[digit_len])) : (digit_len += 1) {}
+                while (digit_len < num_clean.len and std.ascii.isDigit(num_clean[digit_len])) : (digit_len += 1) {}
                 if (digit_len == 0) return ParserError.InvalidCharacter;
-                var value = std.fmt.parseInt(i64, num_str[0..digit_len], 10) catch return ParserError.InvalidCharacter;
+                var value = std.fmt.parseInt(i64, num_clean[0..digit_len], 10) catch return ParserError.InvalidCharacter;
                 if (negative) value = -value;
                 discriminant = value;
             }
@@ -2888,6 +2890,19 @@ pub const Parser = struct {
         };
     }
 
+    /// #11: copy a numeric literal lexeme sans `_` separators. The lexer only
+    /// keeps `_` between digits, so dropping every `_` is exact.
+    fn stripNumericSeparators(allocator: std.mem.Allocator, str: []const u8) ![]u8 {
+        var out = try allocator.alloc(u8, str.len);
+        var len: usize = 0;
+        for (str) |ch| {
+            if (ch == '_') continue;
+            out[len] = ch;
+            len += 1;
+        }
+        return out[0..len];
+    }
+
     fn integerSuffixPrimitive(suffix: []const u8) ?ast.Primitive {
         if (std.mem.eql(u8, suffix, "i8")) return .i8;
         if (std.mem.eql(u8, suffix, "i16")) return .i16;
@@ -2909,22 +2924,24 @@ pub const Parser = struct {
                 const tok = self.tok;
                 self.advance();
                 const str = self.lexeme(tok.loc);
+                // #11: drop `_` separators before scanning digits/suffix.
+                const clean = try stripNumericSeparators(self.allocator, str);
                 var digit_len: usize = 0;
                 var base: u8 = 10;
                 var digits_start: usize = 0;
-                if (str.len >= 2 and str[0] == '0' and (str[1] == 'x' or str[1] == 'X')) {
+                if (clean.len >= 2 and clean[0] == '0' and (clean[1] == 'x' or clean[1] == 'X')) {
                     base = 16;
                     digits_start = 2;
                     digit_len = 2;
-                    while (digit_len < str.len and std.ascii.isHex(str[digit_len])) : (digit_len += 1) {}
+                    while (digit_len < clean.len and std.ascii.isHex(clean[digit_len])) : (digit_len += 1) {}
                 } else {
-                    while (digit_len < str.len and std.ascii.isDigit(str[digit_len])) : (digit_len += 1) {}
+                    while (digit_len < clean.len and std.ascii.isDigit(clean[digit_len])) : (digit_len += 1) {}
                 }
-                const primitive = if (digit_len < str.len)
-                    integerSuffixPrimitive(str[digit_len..]) orelse return ParserError.InvalidCharacter
+                const primitive = if (digit_len < clean.len)
+                    integerSuffixPrimitive(clean[digit_len..]) orelse return ParserError.InvalidCharacter
                 else
                     null;
-                const digits = str[digits_start..digit_len];
+                const digits = clean[digits_start..digit_len];
                 const unsigned_wide_suffix = if (primitive) |primitive_ty| primitive_ty == .u64 or primitive_ty == .usize else false;
                 const val: i64 = if (unsigned_wide_suffix) blk: {
                     const unsigned = std.fmt.parseInt(u64, digits, base) catch return ParserError.InvalidCharacter;
@@ -2945,7 +2962,9 @@ pub const Parser = struct {
                 const tok = self.tok;
                 self.advance();
                 const str = self.lexeme(tok.loc);
-                const val = std.fmt.parseFloat(f64, str) catch return ParserError.InvalidCharacter;
+                // #11: drop `_` separators before parsing.
+                const clean = try stripNumericSeparators(self.allocator, str);
+                const val = std.fmt.parseFloat(f64, clean) catch return ParserError.InvalidCharacter;
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .literal = .{ .float_val = val } };
                 return node;
@@ -3114,9 +3133,11 @@ pub const Parser = struct {
                         const len_tok = self.tok;
                         try self.expect(.int_literal);
                         const len_str = self.lexeme(len_tok.loc);
+                        // #11: drop `_` separators before scanning length digits.
+                        const len_clean = try stripNumericSeparators(self.allocator, len_str);
                         var digit_len: usize = 0;
-                        while (digit_len < len_str.len and std.ascii.isDigit(len_str[digit_len])) : (digit_len += 1) {}
-                        const len = std.fmt.parseInt(usize, len_str[0..digit_len], 10) catch return ParserError.InvalidCharacter;
+                        while (digit_len < len_clean.len and std.ascii.isDigit(len_clean[digit_len])) : (digit_len += 1) {}
+                        const len = std.fmt.parseInt(usize, len_clean[0..digit_len], 10) catch return ParserError.InvalidCharacter;
                         try self.expect(.r_bracket);
                         const node = try self.allocator.create(ast.Node);
                         node.* = .{ .repeat_array_literal = .{ .value = first, .len = len } };
@@ -3663,7 +3684,9 @@ pub const Parser = struct {
                     const len_tok = self.tok;
                     try self.expect(.int_literal);
                     const len_str = self.lexeme(len_tok.loc);
-                    const len = std.fmt.parseInt(usize, len_str, 10) catch return ParserError.InvalidCharacter;
+                    // #11: drop `_` separators in fixed array length.
+                    const len_clean = try stripNumericSeparators(self.allocator, len_str);
+                    const len = std.fmt.parseInt(usize, len_clean, 10) catch return ParserError.InvalidCharacter;
                     try self.expect(.r_bracket);
                     const ty = try self.allocator.create(ast.Type);
                     ty.* = .{ .array = .{ .elem = elem, .len = len } };
@@ -3744,6 +3767,36 @@ test "parse immediately-invoked closure literal callee" {
     const call = s1.let_stmt.value.call_expr;
     try std.testing.expect(call.callee != null);
     try std.testing.expect(call.callee.?.* == .closure_literal);
+}
+
+test "parse numeric separators" {
+    const source =
+        \\fn main() -> i32 {
+        \\    let a = 1_000;
+        \\    let b = 0xFF_FF;
+        \\    let c = 7_000.5;
+        \\    return a;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+
+    const d1 = prog.program.decls[0];
+    const s1 = d1.func_decl.body[0];
+    try std.testing.expect(s1.* == .let_stmt);
+    try std.testing.expect(s1.let_stmt.value.* == .literal);
+    try std.testing.expectEqual(@as(i64, 1000), s1.let_stmt.value.literal.int_val);
+    const s2 = d1.func_decl.body[1];
+    try std.testing.expect(s2.let_stmt.value.* == .literal);
+    try std.testing.expectEqual(@as(i64, 65535), s2.let_stmt.value.literal.int_val);
+    const s3 = d1.func_decl.body[2];
+    try std.testing.expect(s3.let_stmt.value.* == .literal);
+    try std.testing.expectEqual(@as(f64, 7000.5), s3.let_stmt.value.literal.float_val);
 }
 
 test "parse struct and function" {

@@ -144,3 +144,6 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   单态化5处透传 + visitor 加固；位置矩阵双后端全绿 + build-exe 核对 +
   三拒绝路径；`57_iife` 补直接调用断言；POTENTIAL_ISSUES #13 转已修复），已推送
   （`d88242c`）。红队曾裁 harden_first（compat_break 57%），真凶正是单态化重建丢字段。
+- 2026-10-10：缺口 #11 已修复（词法数字间 `_` + parser 五处去分隔符；双后端/
+  build-exe/非法形式三线验证；`55_num_sep` 改直写；POTENTIAL_ISSUES #11 转已修复），
+  已推送（`待填`）。

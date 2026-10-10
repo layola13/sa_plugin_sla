@@ -378,7 +378,13 @@ pub const Lexer = struct {
             '0'...'9' => {
                 if (c == '0' and self.index < self.buffer.len and (self.buffer[self.index] == 'x' or self.buffer[self.index] == 'X')) {
                     self.index += 1;
-                    while (self.index < self.buffer.len and std.ascii.isHex(self.buffer[self.index])) : (self.index += 1) {}
+                    // #11: `_` separators allowed between hex digits (`0xFF_FF`).
+                    while (self.index < self.buffer.len) : (self.index += 1) {
+                        const hex_c = self.buffer[self.index];
+                        if (std.ascii.isHex(hex_c)) continue;
+                        if (hex_c == '_' and self.index + 1 < self.buffer.len and std.ascii.isHex(self.buffer[self.index + 1])) continue;
+                        break;
+                    }
                     while (self.index < self.buffer.len and std.ascii.isAlphabetic(self.buffer[self.index])) : (self.index += 1) {}
                     while (self.index < self.buffer.len and std.ascii.isDigit(self.buffer[self.index])) : (self.index += 1) {}
                     return Token{ .tag = .int_literal, .loc = .{ .start = start, .end = self.index } };
@@ -395,6 +401,13 @@ pub const Lexer = struct {
                             break;
                         }
                         is_float = true;
+                    } else if (next_c == '_') {
+                        // #11: `_` separators allowed between digits (`1_000`,
+                        // `1_000.5`, `1.5_0`); a trailing/lone `_` keeps the
+                        // historical split (`1` + identifier) behavior.
+                        if (self.index + 1 >= self.buffer.len or !std.ascii.isDigit(self.buffer[self.index + 1])) {
+                            break;
+                        }
                     } else if (!std.ascii.isDigit(next_c)) {
                         break;
                     }
@@ -484,4 +497,28 @@ test "basic lexing" {
     try std.testing.expectEqual(Token.Tag.identifier, l.next().tag);
     try std.testing.expectEqual(Token.Tag.r_brace, l.next().tag);
     try std.testing.expectEqual(Token.Tag.eof, l.next().tag);
+}
+
+test "numeric separators lex as single literal" {
+    // #11: `_` between digits stays inside the number token.
+    var l = Lexer.init("1_000 7_000.5 0xFF_FF 1_000..2");
+    var tok = l.next();
+    try std.testing.expectEqual(Token.Tag.int_literal, tok.tag);
+    try std.testing.expectEqualSlices(u8, "1_000", l.buffer[tok.loc.start..tok.loc.end]);
+    tok = l.next();
+    try std.testing.expectEqual(Token.Tag.float_literal, tok.tag);
+    tok = l.next();
+    try std.testing.expectEqual(Token.Tag.int_literal, tok.tag);
+    try std.testing.expectEqualSlices(u8, "0xFF_FF", l.buffer[tok.loc.start..tok.loc.end]);
+    tok = l.next();
+    try std.testing.expectEqual(Token.Tag.int_literal, tok.tag);
+    try std.testing.expectEqualSlices(u8, "1_000", l.buffer[tok.loc.start..tok.loc.end]);
+
+    // Trailing/lone `_` keeps the historical split (`1` + identifier).
+    var m = Lexer.init("1_ ");
+    tok = m.next();
+    try std.testing.expectEqual(Token.Tag.int_literal, tok.tag);
+    try std.testing.expectEqualSlices(u8, "1", m.buffer[tok.loc.start..tok.loc.end]);
+    tok = m.next();
+    try std.testing.expectEqual(Token.Tag.identifier, tok.tag);
 }

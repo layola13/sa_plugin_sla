@@ -102,7 +102,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 ## 3. 门禁（提交前必查，每轮均执行，见账本）
 
 - [x] 新增 demo 逐个 `check + test` 通过（命令见 §0）。
-- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 105）。
+- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 115）。
 - [x] `build-exe` 抽查 ≥2 个新增 demo 可运行输出。
 - [x] `POTENTIAL_ISSUES.md`：新发现记编号 + 复现探针路径；已修复的把“现状规避”改为
   “已修复（commit）”并保留复现记录（当前 #1–#14、#16 已修复，#15 确认缺口）。
@@ -227,3 +227,16 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   字符串泛型实例暂略；另补 `genMapLenCall`（`len(m)` SAB 直降，SA 本已支持）。
   说明：tsgosa ≤200 可移植池已尽（余皆为字符串下标/Date/super/迭代器协议/
   Node 系），后续批次需新方向。
+- 2026-10-10：106–115 落地（`check+test` 10/10 + build-exe 抽查 107/112/115
+  输出核对 `40` / `2,4,8` / `12,100`；全量 115/115 + `zig build test`
+  314/314），待推送。新方向：tsgosa 201+ 池
+  （268/282/279/313/315/310/269/273/272/271；203–267 Node/Deno/Zod/命名空间系、
+  274/276 字符串方法、275 try、289 crypto、293 元组暂略）；探针结论：
+  `++`/`--`、C 式堆叠 case、元组类型、`**`、字符串 `+=` 均不支持（改写绕行，
+  README 注明）；立缺口 #17（函数返回定长数组值错，`p_arrret/p_arrret2`
+  4/4 确定性复现，JEV 单选 record 84% 裁定记档绕行，110 只做局部存取）。
+  另记：112 首跑偶发 `UnsupportedSabDirectFeature`（重跑 3/3 绿，属抖动非缺口）；
+  探针乌龙一则（`q_vec2` 少 push 致断言误报，`as i32` 无辜，103 式写法无碍）。
+  工具链在新机重建：zig 0.14.1（现存）+ go 1.22.2 + llvm-14 + `sci` 直建
+  （默认路径即 llvm-14）+ `/content/sci` 符号链接，`sla/http-client/http-server/node`
+  四插件齐备，基线复核 105/105 后开工。

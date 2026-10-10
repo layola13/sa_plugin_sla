@@ -133,6 +133,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 103_vec_ops | 28_push_unshift | 整数核手写 `unshift/fill/with`（无方法） |
 | 104_generic | 34_generic_fn | `int + bool` 两具化（字符串实例暂略） |
 | 105_map_clear | 167_map_clear | `clear()` 后表长为 0（`MAP_CLEAR` 直降） |
+| 106_postfix | 268_postfix | 显式加减表达后置自增（无 `++`/`--`） |
+| 107_switch_stacked | 282_switch_stacked | 胖箭头两臂同体（无 C 式堆叠 `case`） |
+| 108_f64_loop | 279_f64_loop | `while` 显式累加 f64 步进（`n=3,m=7`） |
+| 109_f64_neg | 313_fneg | f64 取负 + 比较（`11`） |
+| 110_f64_array | 315_float_arr | f64 数组局部存取（#17 绕行：不跨函数返回） |
+| 111_struct_args | 310_iface_lit_arg | 结构体字面量/绑定作实参（无继承） |
+| 112_vec_grow | 269_arr_rebind | `Vec::push` 表达数组生长（无 `concat`） |
+| 113_pow_loop | 273_pow_assign | 循环连乘表达幂赋值（无 `**`/`**=`） |
+| 114_struct_pair | 272_destructure_defaults | 显式字段/索引表达解构（无解构语法） |
+| 115_switch_dispatch | 271_switch_arms | switch 分发 + `else if` 链（`12,100`） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

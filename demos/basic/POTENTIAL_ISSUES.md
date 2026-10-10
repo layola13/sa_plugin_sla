@@ -234,6 +234,16 @@
 - 验证：int 键 `test` 报 TypeMismatch；string 键双后端绿；正反单测各一
   （`type checker rejects scalar btreeset keys`）。
 
+## #17 函数返回定长数组值语义错（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：`fn get() -> [i32; 2] { return [1, 2]; }` 可过 `check`，但 `test`
+  读回值错——直接索引 `get()[0] + get()[1]` 与绑定后 `a[0] + a[1]` 均
+  断言失败（探针 `panic=9007/9008/9004`，4/4 确定性复现，非偶发）。
+- 根因（待编译器专轮定位）：数组按值返回 ABI；与 #15 同属值格特性，不半修。
+- 现状规避：106–115  batch 中 110 只做局部数组存取；需跨函数传递数组时
+  改用 `Vec`（如 112）或模块级数组；JEV 单选（record 84%）裁定记档绕行。
+- 复现探针：`/tmp/probes/p_arrret.sla`、`/tmp/probes/p_arrret2.sla`。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

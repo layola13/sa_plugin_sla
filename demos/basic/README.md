@@ -353,6 +353,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 323_tri_gcd | 17×256×310 | 三向对峙（25 三版） |
 | 324_duel_rev | 246×246 | 自对偶复原（301 异操作互补） |
 | 325_is_tri | 137_tri | 成员版（71 取值版互补） |
+| 326_mat_det | 143_mat_add | 行列式版（19 加法版互补） |
+| 327_mat_trace | 143_mat_add | 迹版（19 加法版互补） |
+| 328_powmod | 258_pow_sqmul | 取模版（258 明文版互补） |
+| 329_quad_roots | 117_isqrt | 求根应用（117 取值版互补） |
+| 330_arith_seq | 04_while_sum | 等差版（04 逐一版互补） |
+| 331_narci | 103_palindrome | 立方和版（234 回文版互补） |
+| 332_palprime | 234×238 | 回文素数合取（234/46 互补） |
+| 333_is_fib | 173_fib_loop | 成员版（237 表版互补） |
+| 334_perfect | 183_prime_upto | 因子和版（46 素数版互补） |
+| 335_amicable | 334_perfect | 亲和版（334 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

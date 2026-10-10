@@ -98,6 +98,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 68_str_count | 185_str_join2 | `for-of` 改直列 `str_eq` 计数（无迭代器协议） |
 | 69_len_sum | 196_str_len_sum | 字面量 + 变量 `len` 求和（=10，缺口 #10 已修复） |
 | 70_finale_mini | 200_finale | 递归 `fib(10)` + 排序首尾和收官综合 |
+| 71_tri | 137_tri | `for` 正序三角数累加（=55，与 04/05/61 互补） |
+| 72_diag | 138_diag | 扁平 `[int; 4]` 2x2 对角和（无嵌套字面量） |
+| 73_area | 133_area | 结构体作函数参数（`6x7=42`） |
+| 74_manhattan | 151_obj_param | 对象参数坐标求和（与 73 互补） |
+| 75_weekend | 152_enum_calc | `enum + match` 周末判断（全臂列举） |
+| 76_flags | 106_flags | `|` 组合 + `&` 测试 + `^` 翻转（与 44 互补） |
+| 77_find_index | 108_find_index | 显式循环 + 闭包谓词表达 `findIndex` |
+| 78_map_filter | 114_compose | 两轮显式循环表达 `map/filter` 链 |
+| 79_nested | 33_nested_struct | 整数嵌套结构体读值（字符串字段暂略） |
+| 80_gcd_all | 181_gcd_all | 循环版多组 `gcd` 打印（与 17/21/51 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

@@ -122,3 +122,8 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   （`1787ed7`）；工具链在新机重建：zig 0.14.1 + go 1.22.2 + llvm-14（18 的
   PassManagerBuilder 已移除故用 14 默认路径直建）+ `sci` + `/content/sci` 符号链接，
   `sla/http-client/http-server/node` 四插件齐备。
+- 2026-10-10：71–80 落地（`check+test` 10/10 一遍全绿 + build-exe 抽查 75/78
+  输出核对 `1,0,1` / `2,3`；全量 80/80 + `zig build test` 303/303），待推送。
+  选型：全整数路线零字符串坑（137/138/133/151/152/106/108/114/33/181）；
+  145/130/177（charCodeAt）与 139（indexOf）、163（字符串切片）、168（Date）暂略；
+  探针确认 `|`/`^`、bool 闭包、嵌套结构体读值三项写法可用。

@@ -152,4 +152,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   POTENTIAL_ISSUES #12 转已修复），已推送（`bec0084`）。
 - 2026-10-10：缺口 #4b 已修复（单参 string-like/format-string 走既有 per-arg 发射，
   双后端一致；其余元数保持裸换行；`94_nested_tpl` 补直打断言；
-  POTENTIAL_ISSUES #4b 转已修复），已推送（`待填`）。
+  POTENTIAL_ISSUES #4b 转已修复），已推送（`82f3f01`）。

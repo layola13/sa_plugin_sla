@@ -213,8 +213,14 @@
   故暂无绕行；字符串请用推断绑定 + `str_eq`/模板（见 10/68/69/94）。
 - 范围：字面量/绑定实参→String 形参的借入 ABI（`^s: ptr`）、返回值保持、
   `str_eq` 对借入 Slice 的处理、SA 侧同形调用实参物化。
+- 根因（2026-10-10 反汇编钉死）：`@sla__echo(^s: ptr)` 体的 `return_` 直接返回
+  借用指针；调用方重建 Slice 时按 Vec 布局取 len@16，而借入实为栈 Slice
+  （len@8，应按 SliceAbi 取 len@8），长度读成垃圾致 `str_eq` 恒假。
+  即 String（Vec-backed，len@16）与 Slice（len@8）两套表示在借入链路上
+  混用。修须统一 String 形参约定（借入 Slice 全链按 SliceAbi 解引用，
+  或调用方转 owned-String 后全链按 Vec 布局），属值格特性，不半修。
 - 探针：`/tmp/probe_strarg.sla`、`/tmp/probe_sgen*.sla`、`/tmp/probe_capstr.sla`、
-  `/tmp/probe_letmid.sla`、`/tmp/probe_letann.sla`。
+  `/tmp/probe_letmid.sla`、`/tmp/probe_letann.sla`、`/tmp/probe_sbody.sla`。
 
 ## 已验证无问题（回归对照）
 

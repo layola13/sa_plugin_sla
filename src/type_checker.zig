@@ -4806,6 +4806,7 @@ pub const TypeChecker = struct {
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             const value_ty = try self.checkExpr(call.args[2], scope);
                             if (!self.typesEqual(bm.key, key_ty) or !self.typesEqual(bm.value, value_ty)) return TypeError.TypeMismatch;
+                            if (!self.btreeSetKeySupported(key_ty)) return TypeError.TypeMismatch;
                             if (rootIdentifier(call.args[0])) |recv_name| {
                                 if (scope.lookup(recv_name)) |sym| {
                                     if (bm.key.* == .infer or bm.value.* == .infer) {
@@ -4821,6 +4822,7 @@ pub const TypeChecker = struct {
                             if (call.args.len != 2) return TypeError.InvalidArgsCount;
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(bm.key, key_ty)) return TypeError.TypeMismatch;
+                            if (!self.btreeSetKeySupported(key_ty)) return TypeError.TypeMismatch;
                             return try self.makeOptionType(try self.makeBorrowType(bm.value));
                         }
                         if (lowering_rules.isClearCall(call)) {
@@ -6052,6 +6054,39 @@ test "type checker rejects scalar btreeset keys" {
         \\fn main() -> i32 {
         \\    let s = BTreeSet::new();
         \\    s.insert("a");
+        \\    return 0;
+        \\}
+    ;
+    var ok_parser = parser_mod.Parser.init(arena.allocator(), ok_source);
+    const ok_program = try ok_parser.parseProgram();
+    var ok_tc = TypeChecker.init(arena.allocator());
+    defer ok_tc.deinit();
+    try ok_tc.checkProgram(ok_program);
+}
+
+test "type checker rejects scalar btreemap keys" {
+    const parser_mod = @import("parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const bad_source =
+        \\fn main() -> i32 {
+        \\    let m = BTreeMap::new();
+        \\    m.insert(1, 10);
+        \\    return 0;
+        \\}
+    ;
+    var bad_parser = parser_mod.Parser.init(arena.allocator(), bad_source);
+    const bad_program = try bad_parser.parseProgram();
+    var bad_tc = TypeChecker.init(arena.allocator());
+    defer bad_tc.deinit();
+    try std.testing.expectError(error.TypeMismatch, bad_tc.checkProgram(bad_program));
+
+    const ok_source =
+        \\fn main() -> i32 {
+        \\    let m = BTreeMap::new();
+        \\    m.insert("a", 1);
         \\    return 0;
         \\}
     ;

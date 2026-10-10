@@ -394,6 +394,38 @@
   `probe_clo_void2.sla`（LLVM void 报错）、`probe_void_iife.sla`
   （直接调用名字决议败）。
 
+## #29 f64 `{}` 打印向零截断（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：f64 值在 `@test` 内精确（`4.5`/`7.5`/`-1.25` 相等断言全过），
+  但 `println("{}")` 显示向零截断（`7.5→7.0000000000`、
+  `-1.25→-1.0000000000`、`4.5→4.0000000000`），exe 三线复现。
+- 定性：显示层数值转换（#24 同类调用边界问题，但限显示不断言值）；
+  JEV 单选 record 87%。
+- 现状规避：裸 f64 永不直打，一律比较转 int 旗（125/194/216 口径）；
+  454 类用例暂略。
+- 复现探针：`probe_f64print.sla`、`probe_f64print2.sla`。
+
+## #30 `BTreeMap<int>` 插入三线崩溃（已修复，2026-10-10，JEV 裁定本轮修）
+
+- 现象：单条 int 键 `insert` 即三线 SIGSEGV（test 双后端 signal 11 +
+  exe 139）；str 键正常（191）；int 键 HashMap 正常（217 已落地）。
+- 根因：与 #16 同胞（BTree 键槽按指针/字符串布局，标量键非法）；
+  JEV 单选 fix_now 84%，对齐 #16 修法：checker insert/get 加
+  `btreeSetKeySupported` loud 门（`src/type_checker.zig` +2 行注释 +2 门 +
+  单测 `type checker rejects scalar btreemap keys`；`zig build test`
+  314/314→315/315；191 不回归；探针复测 check 即拒）。
+- 现状：BTree 只用 string 键（191/192/222 口径）。
+- 复现探针：`probe_intbtree.sla`（双 get 版）、`probe_intbtree2.sla`
+  （单插 + len 版）、`probe_intbtree3.sla`（单插最小版）。
+
+## #31 绑定嵌套闭包字面量解析拒识（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：`let mk = || |x: int| x * 3;` 报 `InvalidCallTarget` 解析拒识；
+  直接嵌套调用已修（#13，206 已落地）；loud 错误非静默坏。
+- 定性：#13 的绑定位残留；JEV 单选 record 82%。
+- 现状规避：嵌套闭包一律直接调用（206 口径）；386 类用例暂略。
+- 复现探针：`probe_clofactory.sla`。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

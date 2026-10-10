@@ -243,6 +243,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 213_void_branch | 675_void_branch | 分支内 void 调用 |
 | 214_void_loop | 676_void_loop | 循环内 void 调用 |
 | 215_dyn_range | 605_top_cond_forlen | 动态上界区间（此前皆字面量） |
+| 216_f64_channel | 278_f64_channel | f64 通道（125 比较口径） |
+| 217_intmap | 35_map_getset | int 键版（101 字符串版互补） |
+| 218_nested_calls | 1062_nested_calls | 实参位嵌套（189 组数组互补） |
+| 219_chainret | 1065_chained_returns | 返回表达式组合 |
+| 220_elseif_calls | 1066_elseif_calls | 调用判别链（50 变量版互补） |
+| 221_gen_struct | 343_generic_erase | 泛型结构体（104 函数版互补） |
+| 222_btree_overwrite | 132_map_count | BTree 覆写（102 HashMap 版互补） |
+| 223_vec_struct | 13_struct | 结构体数组（141×11 组合） |
+| 224_nest4 | 916_nested_struct | 四层穿透（195 三层延伸） |
+| 225_struct_write | 13_struct | 单层字段写（87 嵌套版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

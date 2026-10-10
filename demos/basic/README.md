@@ -223,6 +223,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 193_str_array | 286_str_elem | 定长字符串数组存取（无 `split`） |
 | 194_f64_param | 1011_arr_param_twice | f64 数组形参（变长不可表达） |
 | 195_nest3 | 916_nested_struct | 三层嵌套穿透读（79 两层互补） |
+| 196_nested_count | 1278_nested_loop | 裸双层循环计数（146 分支版互补） |
+| 197_step2_up | 1279_while_even | 步长 +2 上行累加（159 下行互补） |
+| 198_clz32 | 1438_clz32 | 手写前导零计数（178 右移同机制） |
+| 199_dowhile_continue | 1395_dowhile_continue | do-while 语义 + 跳过（40 无跳过互补） |
+| 200_loop_carry | 1397_loop_var_after | 循环外带末轮值（163 调用界互补） |
+| 201_pop_drain | 1416_pop_cond | `len` 驱动排空求和（141 单 pop 互补） |
+| 202_for_break | 1270_for_break | 单层区间 for 早停（32 while 版互补） |
+| 203_prefix_slice | 1423_slice_0_2 | 手写前缀切片（89 尾段版互补） |
+| 204_cond_break | 1268_while_break | 条件循环跳过加早停（147 无停互补） |
+| 205_ceil_neg | 1426_ceil_neg | 负数上取整（130 未测分支） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

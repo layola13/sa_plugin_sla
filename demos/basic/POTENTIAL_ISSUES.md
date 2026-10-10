@@ -339,6 +339,23 @@
   `/tmp/probes2/y_vecf64c.sla`（变量 push 同坏）、
   `/tmp/probes2/y_vecf64pop.sla`（pop 回 4.6e18）。
 
+## #25 枚举 `==` 双后端恒假（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：显式判别值枚举（`enum Color { R = 0, G = 1, B = 2 }`）可过 `check`；
+  同值 `==` 在双后端皆为假（`G == G` 进 `else`，复现探针 `probe_enum_eq2`
+  以 `panic(9003)` 双后端确定性复现）；`!=` 相应恒真。
+  另有两条 parser/checker 前置约束：`Color.G` 点式路径不可解析
+  （须 `Color::G`）；`if` 条件内直写 `Color::R` 字面量报
+  `found '1', expected identifier`（须先 `let` 绑定再比较）。
+- 定性：与 #21/#22 同属“前端放行、语义失真”类；`match` 版枚举分发
+  （149）正常，故失真限于 `==`/`!=` 算子 lowering；`as i32` 转枚举
+  被 checker 拒识（仅数值源可转），无旁路；JEV 单选 record 62%
+  （批量优先）。
+- 现状规避：枚举相等一律用 `match` 表达（149 口径）；1363 类用例暂略。
+- 复现探针：`probe_enum_eq.sla`（绑定版，check 过、test 9002）、
+  `probe_enum_eq2.sla`（9003 双后端复现）、`probe_enum_int.sla`
+  （`as i32` 拒识对照）。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

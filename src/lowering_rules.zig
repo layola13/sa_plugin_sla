@@ -3862,6 +3862,11 @@ pub fn isLenCall(call: ast.CallExpr) bool {
     return std.mem.eql(u8, call.func_name, "len");
 }
 
+/// Shared pure `clear` call-name fact.
+pub fn isClearCall(call: ast.CallExpr) bool {
+    return std.mem.eql(u8, call.func_name, "clear");
+}
+
 /// Shared pure bare unary `len(x)` call recognition.
 pub fn isBareLenUnaryCall(call: ast.CallExpr) bool {
     return call.associated_target == null and isLenCall(call) and call.args.len == 1;

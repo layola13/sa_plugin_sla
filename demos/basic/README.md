@@ -132,6 +132,7 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 102_map_count | 132_map_count | 取-加-存覆盖累加（11, 2） |
 | 103_vec_ops | 28_push_unshift | 整数核手写 `unshift/fill/with`（无方法） |
 | 104_generic | 34_generic_fn | `int + bool` 两具化（字符串实例暂略） |
+| 105_map_clear | 167_map_clear | `clear()` 后表长为 0（`MAP_CLEAR` 直降） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

@@ -14838,6 +14838,13 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
                             }
+                            if (lowering_rules.isClearCall(call)) {
+                                if (call.args.len != 1) return CodegenError.CodegenError;
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                self.out.writer().print("    EXPAND MAP_CLEAR {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+                                return "return_ty_sentinel";
+                            }
                         }
                         if (btreeMapTypes(ty) != null) {
                             if (lowering_rules.isInsertCall(call)) {
@@ -14861,6 +14868,13 @@ pub const Codegen = struct {
                                 if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
                                 if (callArgNeedsRelease(call.args[1])) try self.emitRelease(key_reg);
                                 return reg;
+                            }
+                            if (lowering_rules.isClearCall(call)) {
+                                if (call.args.len != 1) return CodegenError.CodegenError;
+                                const recv_reg = try self.genExpr(call.args[0], hoisted_allocs);
+                                self.out.writer().print("    EXPAND BTREE_MAP_CLEAR {s}\n", .{recv_reg}) catch return CodegenError.CodegenError;
+                                if (callArgNeedsRelease(call.args[0])) try self.emitRelease(recv_reg);
+                                return "return_ty_sentinel";
                             }
                         }
                         if (hashSetTypes(ty) != null) {

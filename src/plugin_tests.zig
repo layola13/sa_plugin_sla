@@ -8846,3 +8846,22 @@ test "sla sab backend lowers btree get len chain" {
     };
     try std.testing.expect(sab_bytes.len > 0);
 }
+
+test "sla sab backend lowers map clear" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_map_clear.sla",
+        ".sla-cache/sab/map_clear.sab",
+        stderr_buf.writer().any(),
+        .{},
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(sab_bytes.len > 0);
+}

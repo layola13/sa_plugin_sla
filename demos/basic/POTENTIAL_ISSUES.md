@@ -193,6 +193,10 @@
   与 SA 的 `SLA_BTREE_MAP_TRY_GET_OPTION` 同语义）与 `len()` 的 BTree 分支
   （`genVecLenCall` 内 `BTREE_MAP_LEN`）一并补齐；空表缺失/覆盖写/多键/缺键/
   表长矩阵双后端全绿 + build-exe 输出 `10,2,0,2` 核对。
+- 后续（2026-10-10）：`map.clear()` 双容器支持（checker `isClearCall` 分支定
+  void 类型；SAB 经 `MAP_CLEAR` / `BTREE_MAP_CLEAR` 宏，SA 直调
+  `@sa_map_clear` / `@sa_btree_map_clear`；清零后重插矩阵双后端全绿 +
+  build-exe 输出 `0,3,0,8` 核对）。`167_map_clear` 可据此落地。
 - 验证：空表缺失/覆盖写/多键/缺键矩阵双后端全绿 + build-exe 输出 `10,2,0` 核对；
   `53_cache_hits` 通过。
 

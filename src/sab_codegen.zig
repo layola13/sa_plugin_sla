@@ -14739,6 +14739,7 @@ pub const Codegen = struct {
         if (try self.genMapInsertCall(expr, call)) |reg| return reg;
         if (try self.genMapGetCall(expr, call)) |reg| return reg;
         if (try self.genBTreeMapGetCall(expr, call)) |reg| return reg;
+        if (try self.genMapClearCall(expr, call)) |reg| return reg;
         if (try self.genOptionCopiedCall(call)) |reg| return reg;
         if (try self.genOptionUnwrapOrDefaultCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
@@ -16969,6 +16970,32 @@ pub const Codegen = struct {
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
         try self.releaseExprResultIfNeeded(key_arg, key_reg);
         return option_reg;
+    }
+
+    /// Direct-SAB `map.clear()` for HashMap/BTreeMap, via the std
+    /// `MAP_CLEAR` / `BTREE_MAP_CLEAR` macros (void; returns a 0 sentinel
+    /// like other void surface calls).
+    fn genMapClearCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 1) return null;
+        if (!lowering_rules.isClearCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        const is_hash_map = lowering_rules.hashMapTypes(receiver_ty) != null;
+        const is_btree_map = lowering_rules.btreeMapTypes(receiver_ty) != null;
+        if (!is_hash_map and !is_btree_map) return null;
+        const map_reg = try self.genExpr(@constCast(call.args[0]));
+        if (is_hash_map) {
+            try self.ensureStdDeps("sa_std/hashmap.sa", &.{"sa_map_clear"});
+            try self.emitStdMacroFragment("sa_std/hashmap.sa", "MAP_CLEAR", &.{self.symbols.items[map_reg]});
+        } else {
+            try self.ensureStdDeps("sa_std/btree_map.sa", &.{"sa_btree_map_clear"});
+            try self.emitStdMacroFragment("sa_std/btree_map.sa", "BTREE_MAP_CLEAR", &.{self.symbols.items[map_reg]});
+        }
+        if (!self.isLocalReg(map_reg)) try self.emitRelease(map_reg);
+        const sentinel = try self.intern(try self.newTmp());
+        try self.recordReg(sentinel);
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
     }
 
     /// Direct-SAB `Option.copied()`, mirroring the SA-text emitter's

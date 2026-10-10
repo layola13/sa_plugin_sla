@@ -4753,6 +4753,13 @@ pub const TypeChecker = struct {
                             if (!self.typesEqual(hm.key, key_ty)) return TypeError.TypeMismatch;
                             return try self.makeOptionType(try self.makeBorrowType(hm.value));
                         }
+                        if (lowering_rules.isClearCall(call)) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            _ = try self.checkExpr(call.args[0], scope);
+                            const void_ty = try self.allocator.create(ast.Type);
+                            void_ty.* = .{ .primitive = .void_type };
+                            return void_ty;
+                        }
                     }
 
                     if (hashSetTypes(recv_ty)) |hs| {
@@ -4805,6 +4812,13 @@ pub const TypeChecker = struct {
                             const key_ty = try self.checkExpr(call.args[1], scope);
                             if (!self.typesEqual(bm.key, key_ty)) return TypeError.TypeMismatch;
                             return try self.makeOptionType(try self.makeBorrowType(bm.value));
+                        }
+                        if (lowering_rules.isClearCall(call)) {
+                            if (call.args.len != 1) return TypeError.InvalidArgsCount;
+                            _ = try self.checkExpr(call.args[0], scope);
+                            const void_ty = try self.allocator.create(ast.Type);
+                            void_ty.* = .{ .primitive = .void_type };
+                            return void_ty;
                         }
                     }
 

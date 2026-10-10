@@ -12560,6 +12560,44 @@ pub const Codegen = struct {
         return dst;
     }
 
+    /// `iter()/into_iter()` over a `[u8; N]` array collected into a `String`,
+    /// mirroring the SA-text emitter (owned buffer built byte by byte, same
+    /// representation as `format()` results, so `println`/`str_eq` handle it
+    /// through the existing format-string paths).
+    fn genArrayIterCollectStringCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (!std.mem.eql(u8, call.func_name, "collect") or call.args.len != 1) return null;
+        if (call.generics.len != 1 or !lowering_rules.isStringType(call.generics[0])) return null;
+        const iter_expr = call.args[0];
+        if (iter_expr.* != .call_expr) return null;
+        const iter_call = &iter_expr.call_expr;
+        if (!lowering_rules.isIterOrIntoIterCall(iter_call.*) or iter_call.args.len != 1) return null;
+        const source = iter_call.args[0];
+        const source_ty = self.tc.expr_types.get(source) orelse return null;
+        const arr = lowering_rules.arrayType(source_ty) orelse return null;
+        if (arr.elem.* != .primitive or arr.elem.primitive != .u8) return null;
+        try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_with_capacity", "sa_vec_push"});
+        const base_reg = try self.genExpr(@constCast(source));
+        const buf = try self.intern(try self.newTmp());
+        try self.recordReg(buf);
+        try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_NEW", &.{self.symbols.items[buf]});
+        const stride = arrayStride(arr.elem);
+        for (0..arr.len) |i| {
+            const elem_ptr = try self.intern(try self.newTmp());
+            try self.emitPtrAdd(elem_ptr, base_reg, .{ .imm_u64 = @intCast(stride * i) });
+            const item = try self.intern(try self.newTmp());
+            try self.emitLoad(item, elem_ptr, 0, .u8);
+            try self.emitStdMacroFragment("sa_std/string.sa", "STRING_BUF_PUSH_BYTE", &.{
+                self.symbols.items[buf],
+                self.symbols.items[item],
+            });
+            try self.emitRelease(elem_ptr);
+            try self.emitRelease(item);
+        }
+        if (!self.isLocalReg(base_reg)) try self.emitRelease(base_reg);
+        return buf;
+    }
+
     fn arrayIterSumSource(call: ast.CallExpr) ?*ast.Node {
         if (!std.mem.eql(u8, call.func_name, "sum") or call.args.len != 1) return null;
         const iter_expr = call.args[0];
@@ -14724,6 +14762,7 @@ pub const Codegen = struct {
             }
         }
         if (try self.genFutureTaskCall(call)) |reg| return reg;
+        if (try self.genArrayIterCollectStringCall(expr, call)) |reg| return reg;
         if (isThreadSpawnCall(call)) return try self.genThreadSpawn(expr, call);
         if (try self.genJoinHandleJoin(expr, call)) |reg| return reg;
         if (try self.genDynMethodCall(expr, call)) |reg| return reg;

@@ -253,6 +253,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 223_vec_struct | 13_struct | 结构体数组（141×11 组合） |
 | 224_nest4 | 916_nested_struct | 四层穿透（195 三层延伸） |
 | 225_struct_write | 13_struct | 单层字段写（87 嵌套版互补） |
+| 226_idx_copy | 79_copy_loop | 下标逐元拷贝（203 push 版互补） |
+| 227_avg | 76_sum_avg | 整平均（27+45 组合） |
+| 228_for_continue | 38_nested_loops | 区间嵌套跳过（146 while 版互补） |
+| 229_nest_vec | 172_sum_2d | 嵌套 Vec（58 扁平版互补） |
+| 230_fact_iter | 125_fact | 迭代阶乘（120 递归版互补） |
+| 231_minmax_sum | 1264_minmax_sum | 极值组合（134 单体互补） |
+| 232_leap_list | 25_leap | 闰年表（25 单点互补） |
+| 233_fizz_count | 24_fizzbuzz | 整除计数（24 打印版互补） |
+| 234_numpalin | 103_palindrome | 算术回文（30 数组版互补） |
+| 235_sw_arm | 271_switch_arms | 臂内计算（107 常量版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

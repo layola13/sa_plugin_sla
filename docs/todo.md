@@ -208,7 +208,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   失败，File RAII/drop 深水）/182（mmap，UseAfterMove 同家族）/185/187
   （dlopen/opengl，FallthroughForbidden，平台 FFI 深水）/314（async Pending
   恢复，2s deadline 内未完成）/315（async PANIC，同类）均深水，记档不追。
-  `syntax_sugar` 5/5 全绿。已推送（`待填`）。
+  `syntax_sugar` 5/5 全绿。已推送（`dce4658`）。
 - 2026-10-10：101–104 落地（`check+test` 4/4 一遍全绿 + build-exe 抽查 101/103/104
   输出核对 `3,0,2` / `2,3,18,7` / `5,true,7`；全量 104/104 + `zig build test`
   311/311），已推送（`e9d5a92`）。选型：Map 链（35/132，#14 已修复）+ Vec 手写

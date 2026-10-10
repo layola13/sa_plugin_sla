@@ -108,6 +108,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 78_map_filter | 114_compose | 两轮显式循环表达 `map/filter` 链 |
 | 79_nested | 33_nested_struct | 整数嵌套结构体读值（字符串字段暂略） |
 | 80_gcd_all | 181_gcd_all | 循环版多组 `gcd` 打印（与 17/21/51 互补） |
+| 81_reduce | 25_reduce | 显式循环表达 `reduce` 求和 + 右折求积 |
+| 82_reduce_right | 107_reduce_right | 右折减法（`0-4-3-2-1=-10`，与 81 互补） |
+| 83_slice_concat | 27_slice_concat | `Vec::push` 手工表达 `slice/concat` |
+| 84_spread | 29_spread_elem | 拷贝循环 + `push` 表达展开（无展开语法） |
+| 85_rest | 154_rest_first | 定长数组形参表达剩余参数（无 `...rest`） |
+| 86_destructure | 156_destructure_call | 显式索引表达解构（无解构语法） |
+| 87_chainwrite | 113_chainwrite | 嵌套结构体字段写（与 79 互补） |
+| 88_grade | 23_switch_plain | 纯全 `return` 臂分档（#7 已修复） |
+| 89_splice | 166_splice_do | 开区间尾段手工切片（与 65/83 同口径） |
+| 90_f64_cmp | 22_f64_cmp | 浮点运算比较（首个 f64 demo） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

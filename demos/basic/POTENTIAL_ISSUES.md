@@ -271,7 +271,11 @@
   直接 parse 拒绝（ExpectedDeclaration）。
 - 现状规避：136–145 batch 中 136 只用顶层常量数组，144 用局部结构体；
   需全局共享结构体时暂以函数返回构造表达（见 111）。
-- 复现探针：`/tmp/probes2/t_topstruct.sla`。
+- 追测（2026-10-10）：顶层常量数组作值参亦有问题——`first(A)` 可过 check、
+  exe 正确（`1`），但 `@test` 内报 MemoryLeak trap；局部数组作值参正常
+  （116/127/140）。故顶层 `const` 复合体（结构体/数组传值）一律以后端
+  失联/泄漏对待，只做全局只读。
+- 复现探针：`/tmp/probes2/t_topstruct.sla`、`/tmp/probes2/y_topparam.sla`。
 
 ## #20 嵌套定长数组读崩溃（已确认缺口，2026-10-10，JEV 裁定记档绕行）
 
@@ -316,11 +320,24 @@
   `/tmp/probes2/x_optstruct3.sla`（单次 helper 仍漏）、
   `/tmp/probes2/x_optstruct4.sla`（match 提取仍漏）。
 
-## 已验证无问题（回归对照）
+## #24 `Vec<f64>` 存读按位错乱（已确认缺口，2026-10-10，记档延修）
 
-## 已验证无问题（回归对照）
-
-## 已验证无问题（回归对照）
+- 现象：`Vec<f64>` 可过 `check`；`len()` 正确，但元素读回恒错——
+  `push(1.5)` 后 `v[0]` 在双后端皆得 `0.0`（`5e-324` 量级，确定性复现）；
+  定长 `[f64; N]` 数组存读正常（110 三线全绿）。
+- 根因（已钉死）：`@sa_vec_push(^vec, value: u64, …)` 的值形参为 `u64`，
+  f64 在 SA 调用边界被数值转换而非按位存；且双后端症状分歧——
+  SAB 侧 index 读回 `0.0`，exe 侧 `pop` 回 `4.6e18`（位模式的数值重解释），
+  证明 push/index/pop 三处转换各异，非单点 stride bug。
+- JEV 单选曾裁 fix_now（84%），但根因探明后复议：双后端多站点按位
+  修复超出本批 scope， partial fix 必致后端分歧（更坏）；故记档延修，
+  本分析即未来专轮的修复输入（修复点：push/index/pop 三处 f64/f32
+  按位传输，SAB + SA-text 双后端）。
+- 现状规避：浮点集合一律用定长数组（110/194）；`Vec` 只装整数/布尔。
+- 复现探针：`/tmp/probes2/y_vecf64.sla`（读零）、
+  `/tmp/probes2/y_vecf64b.sla`（index 写读正常，对照）、
+  `/tmp/probes2/y_vecf64c.sla`（变量 push 同坏）、
+  `/tmp/probes2/y_vecf64pop.sla`（pop 回 4.6e18）。
 
 ## 已验证无问题（回归对照）
 

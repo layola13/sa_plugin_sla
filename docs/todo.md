@@ -102,7 +102,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 ## 3. 门禁（提交前必查，每轮均执行，见账本）
 
 - [x] 新增 demo 逐个 `check + test` 通过（命令见 §0）。
-- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 185）。
+- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 195）。
 - [x] `build-exe` 抽查 ≥2 个新增 demo 可运行输出。
 - [x] `POTENTIAL_ISSUES.md`：新发现记编号 + 复现探针路径；已修复的把“现状规避”改为
   “已修复（commit）”并保留复现记录（当前 #1–#14、#16 已修复，#15 确认缺口）。
@@ -316,3 +316,17 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   结构体形参值语义（对照 127 数组引用语义）、结构体返回正常（对照 #17）、
   括号调用与嵌套三元正常；立缺口 #23（Option 字段解包 @test 内必泄漏、
   exe 正常，JEV record 12%，本轮不落地该 demo）；本轮无抖动无自误。
+- 2026-10-10：186–195 落地（`check+test` 10/10 + build-exe 抽查 190/191/192/195
+  输出核对 `7` / `1,2,0` / `3,false` / `9`；全量 195/195 + `zig build test`
+  314/314），待推送。选型：tsgosa 散池查漏补缺
+  （1233/791-local/475/1063/1075/132-BTree/1026-rw/286-sub/1011-rw/916-depth3；
+  keyof/类/async/元组/解析/映射类型、satisfies、剩余参数、反射、
+  顶层 `let`/局部 `const`（顶层仅容 `const`）、`to_string` 不在面、
+  1011 变长之第二 call（#1）、`Array.isArray` 不在面、嵌套数组系（#20）、
+  charAt 系（约束）、`===` 无 token 暂略）；探针结论：泛型推断调用、
+  调用结果组数组、f64 三元/BTree/Result/字符串数组/f64 形参/三层嵌套均可用；
+  顶层常量数组作值参 @test 泄漏（exe 正常，记入 #19 追测）；
+  立缺口 #24（`Vec<f64>` 按位错乱：根因钉死为 `sa_vec_push(value: u64)`
+  调用边界数值转换 + 双后端症状分歧；JEV 曾裁 fix_now 84%，根因探明后复议——
+  双后端多站点修复超 scope、partial 必分歧，故记档延修，分析即修复输入）；
+  191/192 首跑 fail 重跑绿（map/option 路径抖动，老规律）。

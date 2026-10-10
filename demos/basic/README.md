@@ -213,6 +213,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 183_factory_struct | 482_factory_arg | 工厂返回结构体（对照 #17） |
 | 184_paren_call | 481_paren_call | 括号包裹被调函数 |
 | 185_nested_ternary | 1262_nested_ternary | 右嵌套三元分档（06 互补） |
+| 186_shift_varcount | 1233_shift_varcount | 变量位移计数（局部 `const` 不可用） |
+| 187_two_structs | 791_top_obj_multi | 双局部结构体交叉读（顶层见 #19） |
+| 188_f64_pick | 475_f64_mixed_ternary | f64 三元钳零（185 整数版互补） |
+| 189_calls_array | 1063_calls_in_array | 调用结果组数组 |
+| 190_generic_infer | 1075_generic_erased | 泛型推断调用（104 显式版互补） |
+| 191_btree_basic | 132_map_count | 首个 BTreeMap 端到端（#14 口径） |
+| 192_result_basic | 1026_catch_arith | 首个 Result demo（无 try/catch） |
+| 193_str_array | 286_str_elem | 定长字符串数组存取（无 `split`） |
+| 194_f64_param | 1011_arr_param_twice | f64 数组形参（变长不可表达） |
+| 195_nest3 | 916_nested_struct | 三层嵌套穿透读（79 两层互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

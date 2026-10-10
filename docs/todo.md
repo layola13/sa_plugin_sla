@@ -203,7 +203,8 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 2026-10-10：rosetta 普查 307/8→补 `Option.unwrap` + `VecDeque.push_back` /
   `pop_front` 三处 SAB 直降，收复 `89_job_queue`（双后端 + build-exe `10`），
   现 308/7；余 181（SAB UseAfterMove，SA 侧报 PANIC 17，双后端异构失败，
-  File RAII/drop 深水）/182/185/187（平台 FFI）/190（疑 String 值格
+  File RAII/drop 深水）/182（mmap，UseAfterMove 同家族）/185/187（dlopen/opengl，
+  FallthroughForbidden，平台 FFI 深水）/190（疑 String 值格
   相邻）/314（async Pending 恢复，2s deadline 内未完成）/315（async）均深水，
   记档不追。`syntax_sugar` 5/5 全绿。已推送（`10fdb0f`）。
 - 2026-10-10：101–104 落地（`check+test` 4/4 一遍全绿 + build-exe 抽查 101/103/104

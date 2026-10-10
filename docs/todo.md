@@ -2,7 +2,7 @@
 
 > 生成时间：2026-10-08；基准：`demos/basic` 50/50 `check + test` 全绿（`master fe747f7`）。
 > 本文件是下一步工作的唯一入口：修编译器缺口 → 补 demos → 全量验证 → 推送。
-> 缺口明细见 [`demos/basic/POTENTIAL_ISSUES.md`](../demos/basic/POTENTIAL_ISSUES.md)（#1–#10）；
+> 缺口明细见 [`demos/basic/POTENTIAL_ISSUES.md`](../demos/basic/POTENTIAL_ISSUES.md)（#1–#16，其中 #15 为确认缺口）；
 > 路线图背景见 [`roadmap_status_cn.md`](./roadmap_status_cn.md)（Phase 3–6）。
 
 ## 0. 标准验证命令（每项工作收尾必跑）
@@ -45,6 +45,22 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   尾 `switch` 写法 `check+test` 双后端全绿，build-exe 返回值正确；`33` 混合写法不回归。
 - [x] **#8 默认参数 / #9 label**（已决策：规范 §15 明确不支持 + 解析器针对性拒识；
   `47/48` README 与规范口径一致）。验收：`/tmp/p8.sla`、`/tmp/p9.sla` 报出指引性错误。
+- [x] **#13 闭包字面量直接调用**（已修复：`ast.CallExpr.callee` + parser/checker/双后端/
+  单态化 5 处透传 + visitor 加固；真凶系单态化重建丢字段）。验收：位置矩阵双后端
+  全绿 + build-exe 核对 + 三拒绝路径；`57_iife` 补直接调用断言。
+- [x] **#11 数字分隔符**（已修复：词法保留数字间 `_` + parser 五处去分隔符；
+  `55_num_sep` 改直写）。验收：双后端/build-exe/非法形式三线验证。
+- [x] **#12 链式赋值**（已修复：parser `=` 右结合 desugar 为 `__chain` 块，右值求值
+  一次；`56_chain_ops` 改直写）。验收：双/三链 + 字段/索引目标双后端全绿。
+- [x] **#4b 嵌套 `format()` 直打只出换行**（已修复：单参 string-like/format-string
+  走既有 per-arg 发射，双后端一致；`94_nested_tpl` 补直打断言）。
+- [x] **#14 HashMap SAB 野调用**（已修复：SAB 加 `HashMap.get` / `Option.copied` /
+  `Option.unwrap_or_default` 三处 direct lowering；后补 `BTreeMap.get` + `len()`
+  BTree 分支 + 双容器 `map.clear()`）。验收：矩阵双后端全绿 + build-exe 核对。
+- [ ] **#15 `String` 形参端到端**（确认缺口：借入 ABI + 返回保持 + `str_eq` + SA 物化；
+  根因已钉死 Slice/Vec 布局混用；属值格特性，不半修）。
+- [x] **#16 `BTreeSet<int>` 静默错键**（已修复：checker 门转 loud；`set code generation`
+  单测 int 键一并正为字符串键）。
 
 ## 2. demos/basic 51–60（tsgosa 待移植候选）
 
@@ -66,17 +82,31 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - [x] `59_count_even` ← tsgosa `174_count_even`（偶数计数；与 `29/43` 互补，换 `Vec` 版）。
 - [x] `60_sort_desc` ← tsgosa `190_sort_desc`（降序插入排序；`16/38` 已有升序，取反比较子）。
 
+> 61–105 落地记录（约束不变；每批 README + 索引 + 全量 + build-exe 抽查 + 推送）：
+> 61–70（`1787ed7`）：while 倒数/幂和/二进制组装/索引取值/排序切片/双字段结构/
+>   显式 map/字符串计数/len 和/收官综合；
+> 71–80（`fd41b6f`）：三角数/对角和/结构体传参/坐标求和/enum 周末/位标志/
+>   闭包谓词查找/map-filter 链/嵌套结构/多组 gcd；
+> 81–90（`98933a3`）：reduce/右折/切片拼接/展开/剩余参数/解构/嵌套写/分档/
+>   尾段切片/f64 比较；
+> 91–100（`1718a73`）：lcm/与或非/双结构体覆写/双插值模板/字符串直列/
+>   for-of 改写/内联 gcd/拷贝排序/最简闭包/abs+floor，基本线满百；
+> 101–104（`e9d5a92`）：Map 存取计数/覆盖累加/Vec 手写 ops/双具化泛型；
+> 105（`8b5ce06`）：`map.clear()`（167）。
+> tsgosa ≤200 可移植池已尽（余为字符串下标/Date/super/迭代器协议/Node 系/
+>   `.clear()` 已解/字符串泛型实例暂略），见账本。
+
 每个 demo 要求：`main.sla`（`main + println` + `@test`）+ `README.md`
 （tsgosa 编号 + 命令 + 绕行说明）+ 入 `demos/basic/README.md` 索引表。
 
-## 3. 门禁（提交前必查）
+## 3. 门禁（提交前必查，每轮均执行，见账本）
 
-- [ ] 新增 demo 逐个 `check + test` 通过（命令见 §0）。
-- [ ] 全量 `TOTAL pass=N fail=0`（N = 现有数 + 新增数）。
-- [ ] `build-exe` 抽查 ≥2 个新增 demo 可运行输出。
-- [ ] `POTENTIAL_ISSUES.md`：新发现记编号 + 复现探针路径；已修复的把“现状规避”改为
-  “已修复（commit）”并保留复现记录。
-- [ ] commit message 大写英文（例：`FEAT(SLA): ...`），`git push` 到 `origin/master`，
+- [x] 新增 demo 逐个 `check + test` 通过（命令见 §0）。
+- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 105）。
+- [x] `build-exe` 抽查 ≥2 个新增 demo 可运行输出。
+- [x] `POTENTIAL_ISSUES.md`：新发现记编号 + 复现探针路径；已修复的把“现状规避”改为
+  “已修复（commit）”并保留复现记录（当前 #1–#14、#16 已修复，#15 确认缺口）。
+- [x] commit message 大写英文（例：`FEAT(SLA): ...`），`git push` 到 `origin/master`，
   回报 `pass/fail` 数字与 commit hash。
 
 ## 4. 进度账本（追加记录，不删历史）

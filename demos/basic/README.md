@@ -273,6 +273,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 243_cumsum | 141_sum_sq | 累计版（27 总额版互补） |
 | 244_prefix_max | 121_second_max | 前缀版（22 单遍版互补） |
 | 245_formula | 137_tri | 公式版（71/27 循环版互补） |
+| 246_vec_reverse | 1441_toReversed | 手写逆序（89 尾段版互补） |
+| 247_vec_rotate | 122_rotate | 循环版（23 展开版互补） |
+| 248_vec_write | 1281_arr_index | Vec 版（226 定长版互补） |
+| 249_vec_swap | 547_swap | Vec 版（127 定长版互补） |
+| 250_vec_max | 134_max_min | 扫描版（134 函数版互补） |
+| 251_vec_min | 134_max_min | 镜像版（250 互补） |
+| 252_vec_prod | 125_fact | Vec 版（230 区间版互补） |
+| 253_vec_equal | 167_arr_identity | 逐元版（167 引用版互补） |
+| 254_run_prod | 243_cumsum | 积版（243 和版互补） |
+| 255_vec_second | 121_second_max | Vec 版（22 定长版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

@@ -429,6 +429,21 @@
   （`90 =>`）解析拒识（149/152 均为路径臂）；int 分发用 `switch`
   （33/107 口径）。复现探针：`probe_matchint.sla`。
 
+## #32 Vec 值参跨语句复用搬移 trap（已确认语义，2026-10-10，JEV 修票根因覆写记档）
+
+- 现象：`fn vec_eq(a: Vec<i32>, b: Vec<i32>)` 连调两次复用首参，
+  check/test 双绿，exe 构建期报 `UseAfterMove`（`tmp_21`）；
+  单调用 + 无复用双调用三线绿；阳性对照 `take(e1)` 后 `len(e1)`
+  同样 check 过、test 过、exe 构建败（`tmp_2`）。
+- 根因（已钉死，非 lowering bug）：Vec 值参即搬移（与 127 的数组借入
+  不同），跨语句复用本就违规；39 的循环体内复用系分析未覆盖才放行
+  （勿仿）；JEV 单选曾裁 fix_now（64%，低置信），根因探明后复议——
+  收紧循环侧必断 39、放松序列侧必坏所有权，两向皆坏，故记档（#24 先例）。
+- 现状规避：Vec 比较以内联写（253 口径）；值参调用后不再碰原绑定。
+- 复现探针：`probe_vecmore.sla`（三调版，exe 败）、`probe_veceq3.sla`
+  （复用版 trap / 无复用版绿）、`probe_vecmove.sla`（阳性对照）、
+  `probe_veceq2.sla`（内联版三线绿）。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

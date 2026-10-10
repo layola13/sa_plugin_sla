@@ -263,6 +263,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 233_fizz_count | 24_fizzbuzz | 整除计数（24 打印版互补） |
 | 234_numpalin | 103_palindrome | 算术回文（30 数组版互补） |
 | 235_sw_arm | 271_switch_arms | 臂内计算（107 常量版互补） |
+| 236_collatz_seq | 155_collatz | 序列版（49 步数版互补） |
+| 237_fib_list | 173_fib_loop | 表版（143 单值版互补） |
+| 238_prime_list | 183_prime_upto | 表版（46 计数版互补） |
+| 239_f64_arith | 278_f64_channel | 减乘除（278 加法互补） |
+| 240_vec_dot | 142_dot | Vec 版（27 定长版互补） |
+| 241_sieve_mark | 128_sieve | 真筛版（18 试除版互补） |
+| 242_minmax_fn | 1264_minmax_sum | 三元体版（134 分支版互补） |
+| 243_cumsum | 141_sum_sq | 累计版（27 总额版互补） |
+| 244_prefix_max | 121_second_max | 前缀版（22 单遍版互补） |
+| 245_formula | 137_tri | 公式版（71/27 循环版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

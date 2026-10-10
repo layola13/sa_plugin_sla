@@ -353,6 +353,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 323_tri_gcd | 17×256×310 | 三向对峙（25 三版） |
 | 324_duel_rev | 246×246 | 自对偶复原（301 异操作互补） |
 | 325_is_tri | 137_tri | 成员版（71 取值版互补） |
+| 336_euler_phi | 183_prime_upto | 计数版（46 素数版互补） |
+| 337_div_count | 183_prime_upto | 计数版（334 和版互补） |
+| 338_pyth_check | 347_math_sqrt | 判定应用（321 互补） |
+| 339_pyth_gen | 117_isqrt | 生成版（338 判定互补） |
+| 340_fib_gcd | 120×17 | 恒等式对峙（2=2） |
+| 341_wilson | 230×328 | 定理合取（5→1） |
+| 342_droot | 103_palindrome | 数位版（234 回文版互补） |
+| 343_pal_count | 234_numpalin | 计数版（234 单值版互补） |
+| 344_modinv | 181_gcd_all | 逆元版（80 互补） |
+| 345_euler_thm | 328×336 | 定理合取（1） |
 | 326_mat_det | 143_mat_add | 行列式版（19 加法版互补） |
 | 327_mat_trace | 143_mat_add | 迹版（19 加法版互补） |
 | 328_powmod | 258_pow_sqmul | 取模版（258 明文版互补） |

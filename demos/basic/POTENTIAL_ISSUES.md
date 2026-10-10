@@ -288,6 +288,18 @@
   138 以 exe 输出锁定当前语义，后续若实现短路需同步更新 138。
 - 复现探针：`/tmp/probes2/t_short.sla`。
 
+## #22 `switch true` 条件臂 exe 失联（已确认缺口，2026-10-10，记档绕行）
+
+- 现象：`switch true` + 布尔表达式臂（`x > 10 =>`，括号与否皆然）
+  可过 `check` + `test`（trivial 体），但 build-exe 报
+  `MissingType` lowering 错误；布尔字面量臂（`true =>`）三线全绿。
+- 定性：与 #19/#20 同属“前端放行、后端失联”类，但为 loud 错误
+  （非 trap/崩溃），严重度低；按既有裁定先例直接记档，不另问 JEV。
+- 现状规避：166 只用布尔字面量臂；条件分发改用 `if/else if` 链（115）。
+- 复现探针：`/tmp/probes2/w_swtrue.sla`、`/tmp/probes2/w_swtrue2.sla`。
+
+## 已验证无问题（回归对照）
+
 ## 已验证无问题（回归对照）
 
 ## 已验证无问题（回归对照）

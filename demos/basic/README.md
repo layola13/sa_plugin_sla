@@ -193,6 +193,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 163_call_bound_loop | 1057_for_call_bound | 调用作循环上界（逐次重求） |
 | 164_closure_array | 1071_closure_arr | 捕获数组的闭包（体仅表达式） |
 | 165_bool_param | 1044_bool_param | 布尔参数取反（严格布尔） |
+| 166_switch_bool | 1099_switch_bool | 布尔字面量臂（条件臂见 #22） |
+| 167_arr_identity | 1202_arr_identity + 1203_self_identity | 数组 `==` 为引用恒等 |
+| 168_shift_32bit | 1228_shift_sign | 32 位边界 64 位语义（无 `>>>`） |
+| 169_bool_not | 1220_double_negation | `!`/`!!` 布尔操作数 |
+| 170_shift_loop | 1234_shift_loop | 循环左移翻倍（与 52 机制互补） |
+| 171_overflow_64 | 1237_mul_overflow | 64 位不回绕（TS 末项分歧） |
+| 172_bit_test | 1248_bit_condition + 1249_bit_ternary | 位→布尔判定（显式比零） |
+| 173_xor_swap | 1251_xor_swap | 三遍 `^` 交换（无 `^=`） |
+| 174_clamp | 1263_clamp | 三参数夹逼（与 134 互补） |
+| 175_between | 1267_between | `&&` 双边区间判定 |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

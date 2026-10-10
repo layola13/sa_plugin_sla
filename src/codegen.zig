@@ -2094,6 +2094,15 @@ pub const Codegen = struct {
         return reg;
     }
 
+    /// Trailing newline for `println`: a named const borrowed with `&`.
+    /// The bare-literal form (`call @sa_print_bytes("\n", 1)`) traps with
+    /// CapabilityMismatch outside `@main` bodies, so it must not be used.
+    fn emitPrintlnNewline(self: *Codegen) CodegenError!void {
+        const nl_label = try self.newStringConst();
+        self.out.writer().print("    @const {s} = utf8:\"\\n\"\n", .{nl_label}) catch return CodegenError.CodegenError;
+        self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{nl_label}) catch return CodegenError.CodegenError;
+    }
+
     fn emitPrintln(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
         if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) {
             // #4b: a single string-like/format-string argument (e.g. the
@@ -2116,7 +2125,7 @@ pub const Codegen = struct {
                         try self.emitRelease(len_reg);
                         try self.emitRelease(slice_reg);
                         if (callArgNeedsRelease(arg)) try self.emitRelease(string_reg);
-                        self.out.writer().print("    call @sa_print_bytes(\"\\n\", 1)\n", .{}) catch return CodegenError.CodegenError;
+                        try self.emitPrintlnNewline();
                         return;
                     }
                     if (isStringLikeType(ty)) {
@@ -2129,12 +2138,12 @@ pub const Codegen = struct {
                         try self.emitRelease(ptr_reg);
                         try self.emitRelease(len_reg);
                         if (callArgNeedsRelease(arg)) try self.emitRelease(slice_reg);
-                        self.out.writer().print("    call @sa_print_bytes(\"\\n\", 1)\n", .{}) catch return CodegenError.CodegenError;
+                        try self.emitPrintlnNewline();
                         return;
                     }
                 }
             }
-            self.out.writer().print("    call @sa_print_bytes(\"\\n\", 1)\n", .{}) catch return CodegenError.CodegenError;
+            try self.emitPrintlnNewline();
             return;
         }
 

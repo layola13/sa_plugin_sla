@@ -293,6 +293,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 263_lower_bound | 101_bsearch | 下界版（17 等值版互补） |
 | 264_mult_table | 893_nested_continue | 嵌套算术（146 计数互补） |
 | 265_deep_count | 38_nested_loops | 三层版（228 双层互补） |
+| 266_unwrap_or | 1022_map_str_int | `-or` 版（101 取零版互补） |
+| 267_result_or | 1026_catch_arith | `-or` 版（192 基础版互补） |
+| 268_hashset_int | 1104_set_has_size | 首个 HashSet（#16 互补） |
+| 269_btreeset_str | 1321_set_add_add | 首个 BTreeSet（#16 互补） |
+| 270_deep_write | 87_chainwrite | 三层版（87 双层互补） |
+| 271_vec_struct_write | 223_vec_struct | 写版（223 读版互补） |
+| 272_vec_enum | 149_multi_enum | 容器版（149 变量版互补） |
+| 273_hashset_str | 1104_set_has_size | str 版（268 互补） |
+| 274_opt_pred | 15_option | 谓词版（15 match 版互补） |
+| 275_fixed_dynrange | 605_top_cond_forlen | 定长版（215 Vec 版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

@@ -428,6 +428,9 @@
 - 追测（2026-10-10）：`match` 判别式仅支持路径模式，int 字面量臂
   （`90 =>`）解析拒识（149/152 均为路径臂）；int 分发用 `switch`
   （33/107 口径）。复现探针：`probe_matchint.sla`。
+- 追测（2026-10-10）：`match` 要求枚举 scrutinee，bool 变量作判别式
+  解析拒识（166 的 bool 分发用 `switch`，272 的枚举下标可用）。
+  复现探针：`probe_matchbool.sla`。
 
 ## #32 Vec 值参跨语句复用搬移 trap（已确认语义，2026-10-10，JEV 修票根因覆写记档）
 
@@ -443,6 +446,18 @@
 - 复现探针：`probe_vecmore.sla`（三调版，exe 败）、`probe_veceq3.sla`
   （复用版 trap / 无复用版绿）、`probe_vecmove.sla`（阳性对照）、
   `probe_veceq2.sla`（内联版三线绿）。
+
+## #33 容器装结构体值 exe 不支持（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：`HashMap<str, Pt>` 存取可过 check；`unwrap_or_default` 版 test
+  双绿但 exe 报 `UnsupportedSabDirectFeature`；`match` 提取版 SAB 亦败、
+  SA 报 `MemoryLeak`（`tmp_9`）；Vec 内结构体读写（223/271）与枚举表
+  （272）三线全绿（容器装值本身可用，map 侧 direct lowering 缺失）。
+- 定性：与 #48 同属值格容器类；JEV 单选 record 85%。
+- 现状规避：容器只装标量（253 口径）；map-struct 类用例暂略。
+- 复现探针：`probe_combos.sla`（三分）、`probe_c1.sla`（vecstruct 写绿）、
+  `probe_c2.sla`（vecenum 绿）、`probe_c3.sla`（mapstruct exe 败）、
+  `probe_c4.sla`（match 版双端败）。
 
 ## 已验证无问题（回归对照）
 

@@ -14741,6 +14741,9 @@ pub const Codegen = struct {
         if (try self.genBTreeMapGetCall(expr, call)) |reg| return reg;
         if (try self.genMapClearCall(expr, call)) |reg| return reg;
         if (try self.genOptionCopiedCall(call)) |reg| return reg;
+        if (try self.genOptionUnwrapCall(call)) |reg| return reg;
+        if (try self.genVecDequePushBackCall(expr, call)) |reg| return reg;
+        if (try self.genVecDequePopFrontCall(expr, call)) |reg| return reg;
         if (try self.genOptionUnwrapOrDefaultCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
         if (try self.genMutexLockCall(expr, call)) |reg| return reg;
@@ -17014,6 +17017,103 @@ pub const Codegen = struct {
         });
         if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
         return dst;
+    }
+
+    /// Direct-SAB `Option.unwrap()`, mirroring the SA-text emitter's
+    /// `OPTION_UNWRAP` expansion. Gated on `Option` receivers.
+    fn genOptionUnwrapCall(self: *Codegen, call: ast.CallExpr) anyerror!?u32 {
+        if (call.args.len != 1) return null;
+        if (!lowering_rules.isUnwrapCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.optionInnerType(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const dst = try self.intern(try self.newTmp());
+        try self.recordReg(dst);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_UNWRAP", &.{
+            self.symbols.items[dst],
+            self.symbols.items[recv_reg],
+        });
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        return dst;
+    }
+
+    /// Direct-SAB `VecDeque.push_back(value)`, mirroring the SA-text emitter's
+    /// `VEC_DEQUE_PUSH_BACK` expansion (void; returns a 0 sentinel).
+    fn genVecDequePushBackCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 2) return null;
+        if (!lowering_rules.isPushBackCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.vecDequeElementType(receiver_ty) == null) return null;
+        try self.ensureStdDeps("sa_std/vec_deque.sa", &.{"sa_vec_deque_push_back"});
+        const deque_reg = try self.genExpr(@constCast(call.args[0]));
+        const value_reg = try self.genExpr(@constCast(call.args[1]));
+        try self.emitStdMacroFragment("sa_std/vec_deque.sa", "VEC_DEQUE_PUSH_BACK", &.{
+            self.symbols.items[deque_reg],
+            self.symbols.items[value_reg],
+        });
+        if (!self.isLocalReg(deque_reg)) try self.emitRelease(deque_reg);
+        if (!self.isLocalReg(value_reg)) try self.emitRelease(value_reg);
+        const sentinel = try self.intern(try self.newTmp());
+        try self.recordReg(sentinel);
+        try self.emitAssignImm(sentinel, 0);
+        return sentinel;
+    }
+
+    /// Direct-SAB `VecDeque.pop_front()` returning `Option`, mirroring the
+    /// SA-text emitter (`VEC_DEQUE_TRY_POP_FRONT` + `OPTION_NEW_SOME/NONE`
+    /// fold, same merge idiom as `genMapInsertCall`).
+    fn genVecDequePopFrontCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 1) return null;
+        if (!lowering_rules.isPopFrontCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.vecDequeElementType(receiver_ty) == null) return null;
+        try self.ensureStdDeps("sa_std/vec_deque.sa", &.{"sa_vec_deque_try_pop_front"});
+        const deque_reg = try self.genExpr(@constCast(call.args[0]));
+        const ok_reg = try self.intern(try self.newTmp());
+        const value_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/vec_deque.sa", "VEC_DEQUE_TRY_POP_FRONT", &.{
+            self.symbols.items[ok_reg],
+            self.symbols.items[value_reg],
+            self.symbols.items[deque_reg],
+        });
+        const option_reg = try self.intern(try self.newTmp());
+        try self.recordReg(option_reg);
+        const some_label = try self.newLabel("L_DEQUE_POP_SOME");
+        const none_label = try self.newLabel("L_DEQUE_POP_NONE");
+        const end_label = try self.newLabel("L_DEQUE_POP_END");
+        try self.emitBranch(ok_reg, some_label, none_label);
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+            self.symbols.items[option_reg],
+            self.symbols.items[value_reg],
+        });
+        try self.emitBranchRelease(value_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitBranchRelease(value_reg);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+            self.symbols.items[option_reg],
+        });
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(deque_reg)) try self.emitRelease(deque_reg);
+        return option_reg;
     }
 
     /// Direct-SAB `Option.unwrap_or_default()`, mirroring the SA-text

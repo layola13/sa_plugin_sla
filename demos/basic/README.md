@@ -183,6 +183,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 153_case_const | 948_case_ident | 顶层 `const` 作 case 臂 |
 | 154_vec_bool | 388_boolkw | `Vec<bool>`（124 定长版的换 Vec 版） |
 | 155_neg_divmod | 383_div_guard | 负数除余向零截断（383 正数延伸） |
+| 156_copywithin | 981_copywithin | 显式循环前向重叠拷贝（无方法） |
+| 157_ilog10 | 983_math_aux | 循环除数 log10（`sign` 见 118） |
+| 158_step3_down | 1048_for_dec | 步长 3 倒数求和（`for` 无步长） |
+| 159_while_dec2 | 1050_while_dec | 步长 2 倒数求和（与 158 互补） |
+| 160_rev_index_sum | 1052_rev_index | 倒序下标求和（`len()` 先 `as i32`） |
+| 161_deep_break | 1053_deep_break | 三层嵌套裸 break（label 见 #9） |
+| 162_switch_in_loop | 1055_sw_loop | 循环内 switch（偶 +10/奇 +1） |
+| 163_call_bound_loop | 1057_for_call_bound | 调用作循环上界（逐次重求） |
+| 164_closure_array | 1071_closure_arr | 捕获数组的闭包（体仅表达式） |
+| 165_bool_param | 1044_bool_param | 布尔参数取反（严格布尔） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

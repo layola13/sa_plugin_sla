@@ -1725,8 +1725,38 @@ pub const Parser = struct {
         } else {
             const expr = try self.parseExpr(0);
             if (self.match(.equal)) {
-                const rhs = try self.parseExpr(0);
+                var rhs = try self.parseExpr(0);
+                // #12: right-associative `=` chains (`a = b = ... = value`).
+                // Desugars to `{ let __chainK = value; ... = __chainK; }` so
+                // the value evaluates once (mirrors the `__qcN` precedent for
+                // `?.` chains; plain single assignment below is untouched).
+                var chain_targets = std.ArrayList(*ast.Node).init(self.allocator);
+                try chain_targets.append(expr);
+                while (self.match(.equal)) {
+                    try chain_targets.append(rhs);
+                    rhs = try self.parseExpr(0);
+                }
                 try self.expect(.semicolon);
+                if (chain_targets.items.len > 1) {
+                    const tmp_name = try std.fmt.allocPrint(self.allocator, "__chain{d}", .{self.synth_counter});
+                    self.synth_counter += 1;
+                    var chain_body = std.ArrayList(*ast.Node).init(self.allocator);
+                    const tmp_let = try self.allocator.create(ast.Node);
+                    tmp_let.* = .{ .let_stmt = .{ .name = tmp_name, .ty = null, .value = rhs } };
+                    try chain_body.append(tmp_let);
+                    var ci: usize = chain_targets.items.len;
+                    while (ci > 0) {
+                        ci -= 1;
+                        const tmp_read = try self.allocator.create(ast.Node);
+                        tmp_read.* = .{ .identifier = tmp_name };
+                        const chain_assign = try self.allocator.create(ast.Node);
+                        chain_assign.* = .{ .assign_stmt = .{ .target = chain_targets.items[ci], .value = tmp_read } };
+                        try chain_body.append(chain_assign);
+                    }
+                    const chain_block = try self.allocator.create(ast.Node);
+                    chain_block.* = .{ .block_stmt = .{ .body = try chain_body.toOwnedSlice() } };
+                    return chain_block;
+                }
                 const node = try self.allocator.create(ast.Node);
                 node.* = .{ .assign_stmt = .{ .target = expr, .value = rhs } };
                 return node;
@@ -3797,6 +3827,32 @@ test "parse numeric separators" {
     const s3 = d1.func_decl.body[2];
     try std.testing.expect(s3.let_stmt.value.* == .literal);
     try std.testing.expectEqual(@as(f64, 7000.5), s3.let_stmt.value.literal.float_val);
+}
+
+test "parse chain assignment desugar" {
+    const source =
+        \\fn main() -> i32 {
+        \\    a = b = 5;
+        \\    return a;
+        \\}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = Parser.init(allocator, source);
+    const prog = try p.parseProgram();
+
+    const d1 = prog.program.decls[0];
+    const s1 = d1.func_decl.body[0];
+    // `a = b = 5` desugars to `{ let __chainK = 5; b = __chainK; a = __chainK; }`.
+    try std.testing.expect(s1.* == .block_stmt);
+    try std.testing.expectEqual(@as(usize, 3), s1.block_stmt.body.len);
+    try std.testing.expect(s1.block_stmt.body[0].* == .let_stmt);
+    try std.testing.expect(s1.block_stmt.body[0].let_stmt.value.* == .literal);
+    try std.testing.expect(s1.block_stmt.body[1].* == .assign_stmt);
+    try std.testing.expect(s1.block_stmt.body[2].* == .assign_stmt);
 }
 
 test "parse struct and function" {

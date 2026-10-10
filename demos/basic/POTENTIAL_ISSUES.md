@@ -147,11 +147,17 @@
   build-exe 输出核对；`1_`、`1__000` 仍为同类语法错误；回归 `55_num_sep`
   已改直写分隔符形式。
 
-## #12 链式赋值不支持（已确认，51–60 批次新发现）
+## #12 链式赋值（已修复，2026-10-10）
 
-- 复现（/tmp/pchain.sla）：`a = b = 5;` 报 `found '=', expected semicolon`
+- 原复现（/tmp/pchain.sla）：`a = b = 5;` 报 `found '=', expected semicolon`
   （赋值语句不返回值，属明确拒绝）。
-- 现状规避：`56_chain_ops` 用两条顺序赋值表达同一语义，README 注明。
+- 修复：parser 语句层将 `=` 右结合链 desugar 为块
+  `{ let __chainK = value; tn = __chainK; …; t1 = __chainK; }`
+ （`__qcN` precedent；右向左赋值；纯 `=` 链，`let x = a = 5` 与混合 op-assign
+  不在范围）；单赋值路径逐字保留。单态化/checker/双后端零改动（块/let/赋值
+  均为既有节点）。
+- 验证：双/三链（含函数调用右值）与字段/索引目标双后端全绿 + build-exe
+  输出核对；回归 `56_chain_ops` 已改直写链式。
 
 ## #13 闭包字面量直接调用（已修复，2026-10-10）
 

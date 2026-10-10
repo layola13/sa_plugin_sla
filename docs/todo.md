@@ -208,7 +208,8 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   失败，File RAII/drop 深水）/182（mmap，已二分最小复现 `/tmp/probe_fd1.sla`：
   无块，仅 `File::open().unwrap()` + `as_raw_fd()` 即挂，系 Result-move-out
   与 File-drop 交织）/185/187
-  （dlopen/opengl，FallthroughForbidden，平台 FFI 深水）/314（async Pending
+  （dlopen/opengl，`extern "C"` + `@no_mangle` + `unsafe` FFI 特性，
+  FallthroughForbidden，平台 FFI 深水）/314（async Pending
   恢复，2s deadline 内未完成）/315（async PANIC，同类）均深水，记档不追。
   `syntax_sugar` 5/5 全绿。已推送（`dce4658`）。
 - 2026-10-10：101–104 落地（`check+test` 4/4 一遍全绿 + build-exe 抽查 101/103/104

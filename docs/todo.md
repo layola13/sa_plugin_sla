@@ -162,8 +162,8 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   空表/覆盖/多键/缺键/表长矩阵双后端全绿 + build-exe `10,2,0,2`），已推送
   （`806205b`）。
 - 2026-10-10：`map.clear()` 双容器支持 + `105_map_clear` 落地（清零后重插矩阵
-  双后端全绿 + build-exe `0,3,0,8`；全量 105/105 + `zig build test` 待跑），
-  已推送（`待填`）。
+  双后端全绿 + build-exe `0,3,0,8`；全量 105/105 + `zig build test` 313/313），
+  已推送（`8b5ce06`）。
 - 2026-10-10：101–104 落地（`check+test` 4/4 一遍全绿 + build-exe 抽查 101/103/104
   输出核对 `3,0,2` / `2,3,18,7` / `5,true,7`；全量 104/104 + `zig build test`
   311/311），已推送（`e9d5a92`）。选型：Map 链（35/132，#14 已修复）+ Vec 手写

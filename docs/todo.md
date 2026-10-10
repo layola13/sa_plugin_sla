@@ -158,6 +158,9 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   双后端全绿 + build-exe 输出 `10,2,0` 核对；`53_cache_hits` 通过；
   POTENTIAL_ISSUES #14 转已修复），已推送（`0be71d8`）。
   附记：`sa sla test` 对零 `@test` 文件不执行 `main`（回归断言必须进 `@test`）。
+- 2026-10-10：#14 收尾 `BTreeMap.get` + `len()` BTree 分支（值直存栈槽中转；
+  空表/覆盖/多键/缺键/表长矩阵双后端全绿 + build-exe `10,2,0,2`），已推送
+  （`待填`）。
 - 2026-10-10：101–104 落地（`check+test` 4/4 一遍全绿 + build-exe 抽查 101/103/104
   输出核对 `3,0,2` / `2,3,18,7` / `5,true,7`；全量 104/104 + `zig build test`
   311/311），已推送（`e9d5a92`）。选型：Map 链（35/132，#14 已修复）+ Vec 手写

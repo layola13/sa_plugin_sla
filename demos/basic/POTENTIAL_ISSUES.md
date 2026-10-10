@@ -189,7 +189,10 @@
   （`OPTION_COPIED_U64`）；`genOptionUnwrapOrDefaultCall`
   （`OPTION_UNWRAP_OR_DEFAULT`，零值默认与 SA 一致）。接管条件均为 receiver
   类型匹配（HashMap/Option），其余保持原 fallback。
-  `BTreeMap.get` 仍走原路径（无在仓用例，另行立项）。
+- 后续（2026-10-10）：`BTreeMap.get`（`genBTreeMapGetCall`，值直存经栈槽中转，
+  与 SA 的 `SLA_BTREE_MAP_TRY_GET_OPTION` 同语义）与 `len()` 的 BTree 分支
+  （`genVecLenCall` 内 `BTREE_MAP_LEN`）一并补齐；空表缺失/覆盖写/多键/缺键/
+  表长矩阵双后端全绿 + build-exe 输出 `10,2,0,2` 核对。
 - 验证：空表缺失/覆盖写/多键/缺键矩阵双后端全绿 + build-exe 输出 `10,2,0` 核对；
   `53_cache_hits` 通过。
 

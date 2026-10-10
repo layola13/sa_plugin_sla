@@ -12524,6 +12524,19 @@ pub const Codegen = struct {
                 if (!self.isLocalReg(map_reg)) try self.emitRelease(map_reg);
                 return map_len_dst;
             }
+            // BTreeMap length mirrors the SA-text emitter (`EXPAND BTREE_MAP_LEN`).
+            if (lowering_rules.btreeMapTypes(receiver_ty) != null) {
+                try self.ensureStdDeps("sa_std/btree_map.sa", &.{"sa_btree_map_len"});
+                const btree_reg = try self.genExpr(@constCast(call.args[0]));
+                const btree_len_dst = try self.intern(try self.newTmp());
+                try self.recordReg(btree_len_dst);
+                try self.emitStdMacroFragment("sa_std/btree_map.sa", "BTREE_MAP_LEN", &.{
+                    self.symbols.items[btree_len_dst],
+                    self.symbols.items[btree_reg],
+                });
+                if (!self.isLocalReg(btree_reg)) try self.emitRelease(btree_reg);
+                return btree_len_dst;
+            }
             return null;
         };
         try self.ensureStdDeps("sa_std/vec.sa", &.{"sa_vec_len"});
@@ -14725,6 +14738,7 @@ pub const Codegen = struct {
         if (try self.genVecRemoveCall(call)) |reg| return reg;
         if (try self.genMapInsertCall(expr, call)) |reg| return reg;
         if (try self.genMapGetCall(expr, call)) |reg| return reg;
+        if (try self.genBTreeMapGetCall(expr, call)) |reg| return reg;
         if (try self.genOptionCopiedCall(call)) |reg| return reg;
         if (try self.genOptionUnwrapOrDefaultCall(call)) |reg| return reg;
         if (try self.genRefCellBorrowCall(call)) |reg| return reg;
@@ -16878,6 +16892,70 @@ pub const Codegen = struct {
         try self.emitLabel(none_label);
         try self.emitBranchRelease(ok_reg);
         try self.emitBranchRelease(payload_reg);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
+            self.symbols.items[option_reg],
+        });
+        try self.emitJmp(end_label);
+        var else_released = try self.released_regs.clone();
+        defer else_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
+        try self.emitLabel(end_label);
+        if (!self.isLocalReg(recv_reg)) try self.emitRelease(recv_reg);
+        try self.releaseExprResultIfNeeded(key_arg, key_reg);
+        return option_reg;
+    }
+
+    /// Direct-SAB `map.get(key)` for BTreeMap, mirroring the SA-text emitter's
+    /// `SLA_BTREE_MAP_TRY_GET_OPTION`. Unlike `MAP_TRY_GET` (slot pointer),
+    /// `BTREE_MAP_TRY_GET` yields the value directly, so the SOME branch
+    /// stages it through a stack slot first, exactly like SA.
+    fn genBTreeMapGetCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
+        _ = expr;
+        if (call.args.len != 2) return null;
+        if (!lowering_rules.isGetCall(call)) return null;
+        const receiver_ty = self.tc.expr_types.get(call.args[0]) orelse return null;
+        if (lowering_rules.btreeMapTypes(receiver_ty) == null) return null;
+        const recv_reg = try self.genExpr(@constCast(call.args[0]));
+        const key_arg = call.args[1];
+        const key_reg = try self.genMapKeyReg(key_arg);
+        try self.ensureStdDeps("sa_std/btree_map.sa", &.{"sa_btree_map_try_get"});
+        const ok_reg = try self.intern(try self.newTmp());
+        const val_reg = try self.intern(try self.newTmp());
+        try self.emitStdMacroFragment("sa_std/btree_map.sa", "BTREE_MAP_TRY_GET", &.{
+            self.symbols.items[ok_reg],
+            self.symbols.items[val_reg],
+            self.symbols.items[recv_reg],
+            self.symbols.items[key_reg],
+        });
+        const option_reg = try self.intern(try self.newTmp());
+        try self.recordReg(option_reg);
+        const some_label = try self.newLabel("L_BTREE_GET_SOME");
+        const none_label = try self.newLabel("L_BTREE_GET_NONE");
+        const end_label = try self.newLabel("L_BTREE_GET_END");
+        try self.emitBranch(ok_reg, some_label, none_label);
+        const branch_locals_len = self.locals.items.len;
+        var pre_released = try self.released_regs.clone();
+        defer pre_released.deinit();
+        try self.emitLabel(some_label);
+        try self.emitBranchRelease(ok_reg);
+        const slot_reg = try self.intern(try self.newTmp());
+        try self.emitStackAlloc(slot_reg, 8);
+        try self.emitStore(slot_reg, 0, val_reg, .u64);
+        try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_SOME", &.{
+            self.symbols.items[option_reg],
+            self.symbols.items[slot_reg],
+        });
+        try self.emitBranchRelease(val_reg);
+        try self.emitJmp(end_label);
+        var then_released = try self.released_regs.clone();
+        defer then_released.deinit();
+        self.popLocalsTo(branch_locals_len);
+        try self.restoreReleased(&pre_released);
+        try self.emitLabel(none_label);
+        try self.emitBranchRelease(ok_reg);
+        try self.emitBranchRelease(val_reg);
         try self.emitStdMacroFragment("sa_std/core/option.sa", "OPTION_NEW_NONE", &.{
             self.symbols.items[option_reg],
         });

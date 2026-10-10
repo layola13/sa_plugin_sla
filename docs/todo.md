@@ -114,3 +114,8 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 已知架构债（Y-规则 42 备案，不影响验证结论）：#3/#5 的
   `inferred/explicit_*_string_locals` 跟踪集目前只落在 `sab_codegen.zig` 发射端，
   未上收为 `lowering_rules.zig` 共享语义；待后续以共享 lowering 契约重构，行为不变。
+- 2026-10-10：61–70 落地（`check+test` 10/10 + build-exe 抽查 61/66/70 输出核对
+  `55` / `33,11,22` / `55,9`；全量 70/70 + `zig build test` 302/302），已推送
+  （`1787ed7`）；工具链在新机重建：zig 0.14.1 + go 1.22.2 + llvm-14（18 的
+  PassManagerBuilder 已移除故用 14 默认路径直建）+ `sci` + `/content/sci` 符号链接，
+  `sla/http-client/http-server/node` 四插件齐备。

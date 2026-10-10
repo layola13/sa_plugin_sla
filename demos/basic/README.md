@@ -173,6 +173,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 143_fib_iter | 173_fib_loop | 迭代 fib（与 120 递归互补） |
 | 144_struct_bool | 790_top_obj_bool | 局部布尔字段结构体（顶层常量见 #19） |
 | 145_hex_mask | 1250_mask_idioms | `0x` 字面量掩码（无 `0o`/`0b`；`&` 优先级坑） |
+| 146_nested_continue | 893_nested_continue | 嵌套循环 continue（label 跳出见 #9） |
+| 147_while_continue | 895_while_continue | while + continue 求和（先步进防死循环） |
+| 148_call_len | 898_chain_call_len | `: ptr` 返回再 `len`（未注解落 #15） |
+| 149_multi_enum | 842_top_multi_enum | 显式判别值 + 变量 scrutinee |
+| 150_idx_compound | 908_arr_compound + 940_compound_var_idx | 下标复合赋值（字面量 + 变量下标） |
+| 151_switch_call | 902_switch_call | 调用结果作 switch scrutinee |
+| 152_enum_switch | 943_enum_switch | 枚举 switch（与 match 互补） |
+| 153_case_const | 948_case_ident | 顶层 `const` 作 case 臂 |
+| 154_vec_bool | 388_boolkw | `Vec<bool>`（124 定长版的换 Vec 版） |
+| 155_neg_divmod | 383_div_guard | 负数除余向零截断（383 正数延伸） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

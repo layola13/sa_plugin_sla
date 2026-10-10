@@ -102,7 +102,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 ## 3. 门禁（提交前必查，每轮均执行，见账本）
 
 - [x] 新增 demo 逐个 `check + test` 通过（命令见 §0）。
-- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 145）。
+- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 155）。
 - [x] `build-exe` 抽查 ≥2 个新增 demo 可运行输出。
 - [x] `POTENTIAL_ISSUES.md`：新发现记编号 + 复现探针路径；已修复的把“现状规避”改为
   “已修复（commit）”并保留复现记录（当前 #1–#14、#16 已修复，#15 确认缺口）。
@@ -272,3 +272,14 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   立缺口 #19（顶层 const 结构体双后端 UnknownRegister，JEV record 12%）、
   #20（嵌套数组读双路径 SIGSEGV，JEV record 60%）、#21（`&&`/`||` 急求值语义分歧，
   138 以 exe 锁定）；141 首跑 fail 重跑绿（抖动，老规律）。
+- 2026-10-10：146–155 落地（`check+test` 10/10 + build-exe 抽查 146/149/155
+  输出核对 `8` / `3` / `-1,1,-2`；全量 155/155 + `zig build test`
+  314/314），待推送。选型：tsgosa 840–969 池
+  （893/895/898/842/908+940/902/943/948/388-Vec/383-ext；
+  标签模板/可选链/null 系、740 系方法重复项、`.step()`/闭包块体/可变捕获
+  不可解析、`HashMap.remove` 不在面、930 Set 系（#16）、950 迭代器、
+  953/958/969 与既有 demo 重复项暂略）；探针结论：`continue`、`a[0]+=`
+  下标复合、调用结果 switch、枚举 switch、常量 case 臂、`Vec<bool>`、
+  负数除余 C 式截断均可用；#18 追测修正（`: ptr` 注解绑定左值亦失真，
+  缺口不限于推断绑定）；154 首跑 fail 重跑绿（抖动）；本轮无新缺口、
+  无需 JEV 裁定。

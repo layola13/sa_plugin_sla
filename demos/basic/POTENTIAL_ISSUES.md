@@ -156,6 +156,16 @@
   属明确拒绝；零参闭包 `|| 42` 本身可解析（探针 `/tmp/pclos0.sla`）。
 - 现状规避：`57_iife` 先绑定再调用，块作用域限定可见性，语义等价，README 注明。
 
+## #14 HashMap 在 SAB 默认后端报 UnknownRegister（已确认，91–100 批次新发现）
+
+- 复现（`/tmp/probe_ma.sla`，两次 `insert` + 一次 `get().copied().unwrap_or_default()`）：
+  `check` 通过，`test` 在 SAB 默认后端报
+  `trap UnknownRegister 1007 ... "callee is not declared"`；
+  同文件 `--test-backend sa` 通过；仓库内 `demos/rosetta/53_cache_hits`
+  同样默认后端 trap、SA 后端通过，属预置缺口非本轮引入。
+- 期望：SAB 直接路径支持 `HashMap::new/insert/get`（或 `check` 给出明确不支持提示）。
+- 现状规避：91–100 批次未收录 Map 类 demo（`35/132/167` 暂略），README 与账本注明。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

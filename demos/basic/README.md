@@ -118,6 +118,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 88_grade | 23_switch_plain | 纯全 `return` 臂分档（#7 已修复） |
 | 89_splice | 166_splice_do | 开区间尾段手工切片（与 65/83 同口径） |
 | 90_f64_cmp | 22_f64_cmp | 浮点运算比较（首个 f64 demo） |
+| 91_lcm_all | 182_lcm_all | 循环版 `gcd` + `lcm` 多组打印（与 21 互补） |
+| 92_and_or | 197_and_or | 整数比较式改写与或非（`&&` 口径见 14） |
+| 93_override | 104_override | 双结构体各自实现同名方法（无继承语义） |
+| 94_nested_tpl | 105_nested_tpl | 双插值模板赋值打印 + `str_eq`（#4b 绕行） |
+| 95_str_iter | 11_string_array_iter | 直列 `len()` 改写 `forEach/map`（无迭代器协议） |
+| 96_forof_len | 12_for_of | `for-of` 改直列求长（无迭代器协议） |
+| 97_gcd_loop | 134_gcd_loop | `main` 内直写辗转相除（与 51/80 互补） |
+| 98_sort_copy | 26_sort | 原地排序 + 手工拷贝排序（无 `toSorted`） |
+| 99_closure_dbl | 30_closure | 最简闭包绑定调用（与 20 互补） |
+| 100_math_floor | 31_math | 分支 `abs` + `as i32` 截断 `floor` |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

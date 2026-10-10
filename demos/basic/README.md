@@ -153,6 +153,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 123_inbounds | 387_inarr | 显式区间判断表达 `in`（无 `in` 运算符） |
 | 124_bool_array | 388_boolkw | 布尔透传 + `bool` 数组 |
 | 125_f64_infer | 311_float_infer | 无注解浮点即 `f64` |
+| 126_str_switch | 498_str_switch | 字面量 scrutinee + 字面量臂（#18 绕行） |
+| 127_arr_swap | 547_swap | 数组形参调用者可见可变（引用语义） |
+| 128_shift_big | 452_shift_bigcount | 64 位无掩码位移（与 TS mod-32 不同） |
+| 129_truthiness | 442_boolean_ctor | 显式 `!= 0` 表达真值（条件须严格布尔） |
+| 130_floor_neg | 497_math_floor_neg + 545_f64round | 分支 floor/ceil/trunc（主覆盖负数） |
+| 131_arr_alloc | 446_new_array_n | 占位字面量 + 下标填充（无 `new Array(n)`） |
+| 132_struct_str | 552_strobj | `: ptr` 字符串字段 + `len`/`str_eq` |
+| 133_pi_const | 574_piconst | 顶层 `const` f64 比较 |
+| 134_max_min | 511_math_int | 分支 max/min 双函数（无 `Math.max/min`） |
+| 135_enum_ret | 575_enumret | 函数返回枚举 + `match` 消费 |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

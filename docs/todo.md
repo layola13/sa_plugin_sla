@@ -102,7 +102,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 ## 3. 门禁（提交前必查，每轮均执行，见账本）
 
 - [x] 新增 demo 逐个 `check + test` 通过（命令见 §0）。
-- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 125）。
+- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 135）。
 - [x] `build-exe` 抽查 ≥2 个新增 demo 可运行输出。
 - [x] `POTENTIAL_ISSUES.md`：新发现记编号 + 复现探针路径；已修复的把“现状规避”改为
   “已修复（commit）”并保留复现记录（当前 #1–#14、#16 已修复，#15 确认缺口）。
@@ -252,3 +252,12 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   70% 裁定记档绕行，122 用 helper 包裹）；另记偶发抖动两则（121 首跑 fail
   重跑 3/3 绿；方法论：探针必须在 `sa_plugin_sla` 下跑，`/tmp` 起 cwd 会
   全员 FileNotFound 误报）。
+- 2026-10-10：126–135 落地（`check+test` 10/10 一遍全绿 + build-exe 抽查
+  127/128/130 输出核对 `2,1` / `0,8589934592,-1` / `7,-8,3,-7,3`；
+  全量 135/135 + `zig build test` 314/314），待推送。选型：tsgosa 中高编号池
+  （498/547/452/442/497+545/446/552/574/511/575；543/544/565 与既有 demo 重复、
+  测试框架系、字符串与构造系、NaN、数字解析、平凡项、方法与迭代器协议系暂略）；
+  探针结论：`~`、`if(int)`、异长数组重赋均为 loud 拒绝（分别归入无词法 token /
+  严格布尔 / 定长类型三类约束，不立新缺口）；两条语义发现记 README
+  （数组形参调用者可见可变；位移 64 位无掩码，与 TS mod-32 不同）；
+  本轮无新缺口、无需 JEV 裁定。

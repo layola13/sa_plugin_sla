@@ -88,6 +88,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 58_sum_2d | 172_sum_2d | 扁平 `[int; 6]` 双层循环（无嵌套字面量） |
 | 59_count_even | 174_count_even | `Vec` 版偶数计数（与 29/43 互补） |
 | 60_sort_desc | 190_sort_desc | 取反比较子降序插入（与 16/38 互补） |
+| 61_while_sum2 | 198_while_sum2 | `while` 倒数累加（与 04/05 互补） |
+| 62_pow_sum | 176_pow_sum | 翻倍累乘 2 的幂求和（无 `**`，15） |
+| 63_binary | 187_binary | 循环组装二进制 `01010101b=85`（与 44 互补） |
+| 64_select | 188_select | 变量索引取值（`a[1]=20`，`a[2]=30`） |
+| 65_sort_slice | 178_obj_sum | 插入排序 + 手工拷贝切片（无 `slice`） |
+| 66_pair_sum | 194_class_pair | 双字段 `struct+impl` + 求和方法 |
+| 67_map_dbl | 193_map_dbl | 显式循环 `push` 表达 `map` 翻倍 |
+| 68_str_count | 185_str_join2 | `for-of` 改直列 `str_eq` 计数（无迭代器协议） |
+| 69_len_sum | 196_str_len_sum | 字面量 + 变量 `len` 求和（=10，缺口 #10 已修复） |
+| 70_finale_mini | 200_finale | 递归 `fib(10)` + 排序首尾和收官综合 |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

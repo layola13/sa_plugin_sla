@@ -49,12 +49,12 @@
   本轮复测 `ptr + 多插值` 的 `unreachable` 崩溃已不再出现
   （`: ptr` 绑定持有真 C 串后 CSTR 路径正常）。
 - 现状规避：`10_strings` 的打印统一用 `"..."` 格式化（见其 README）。
-- 残留 #4b（双后端一致、无崩溃、仅输出语义缺口，另行立项）：
-  反引号模板脱糖为嵌套 `format()` 调用（`println(format(...))`），双后端
-  `println` 仅当首参为字符串字面量才展开占位，嵌套调用目前只输出换行
-  （探针 `/tmp/p4_var1.sla`、`/tmp/p4_lit.sla` build-exe 退出 0 但无正文；
-  直接 `println("hi {}!", ...)` 与 `format()` 赋值后打印均正常）。
-  模板断言请用 `str_eq(format(...), ...)` 或 `"..."` 直调。
+- 残留 #4b（已修复，2026-10-10）：反引号模板脱糖为嵌套 `format()` 调用
+  （`println(format(...))`），此前双后端 `println` 仅当首参为字符串字面量才
+  展开占位，嵌套调用只输出换行。现单参 string-like/format-string 走既有
+  per-arg 发射（SAB 经 `planPrintlnArg` + `emitPrintlnArg`，SA 镜像同发射），
+  其余元数保持裸换行历史行为。回归 `94_nested_tpl` 已补直打断言。
+  模板断言仍可用 `str_eq(format(...), ...)` 或 `"..."` 直调。
 
 ## #5 `println("{}", s)` 与 `str_eq(s, …)` 对字符串变量注解的要求互斥（已修复）
 

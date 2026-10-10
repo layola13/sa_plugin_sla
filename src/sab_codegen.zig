@@ -11241,6 +11241,20 @@ pub const Codegen = struct {
         if (call.associated_target != null) return Error.UnsupportedSabDirectFeature;
         try self.ensurePrintlnDeps();
         if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) {
+            // #4b: a single string-like/format-string argument (e.g. the
+            // `println(format(...))` shape templates desugar to) prints its
+            // value instead of a bare newline; every other arity keeps the
+            // historical behavior.
+            if (call.args.len == 1) {
+                const bare_plan = lowering_rules.planPrintlnArg(self.tc.expr_types.get(call.args[0]));
+                if (bare_plan.isFormatString() or bare_plan.isStringLike()) {
+                    try self.emitPrintlnArg(call.args[0]);
+                    try self.emitPrintConstBytes("\\n");
+                    const printed = try self.intern(try self.newTmp());
+                    try self.emitAssignImm(printed, 0);
+                    return printed;
+                }
+            }
             try self.emitPrintConstBytes("\\n");
         } else {
             const fmt = call.args[0].literal.string_val;

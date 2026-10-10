@@ -8789,3 +8789,22 @@ test "sla sab backend lowers chain assignment" {
     };
     try std.testing.expect(sab_bytes.len > 0);
 }
+
+test "sla sab backend lowers bare string println argument" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer stderr_buf.deinit();
+
+    const sab_bytes = (try compileSlaFileToSabWithOptions(
+        arena.allocator(),
+        "tests/test_unit_println_bare_string.sla",
+        ".sla-cache/sab/println_bare_string.sab",
+        stderr_buf.writer().any(),
+        .{},
+    )) orelse {
+        std.debug.print("{s}", .{stderr_buf.items});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expect(sab_bytes.len > 0);
+}

@@ -2096,6 +2096,44 @@ pub const Codegen = struct {
 
     fn emitPrintln(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
         if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) {
+            // #4b: a single string-like/format-string argument (e.g. the
+            // `println(format(...))` shape templates desugar to) prints its
+            // value instead of a bare newline; every other arity keeps the
+            // historical behavior.
+            if (call.args.len == 1) {
+                const arg = call.args[0];
+                if (self.tc.expr_types.get(arg)) |ty| {
+                    if (isFormatStringType(ty)) {
+                        const string_reg = try self.genExpr(arg, hoisted_allocs);
+                        const slice_reg = try self.newTmp();
+                        const ptr_reg = try self.newTmp();
+                        const len_reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND STRING_BUF_AS_STR {s}, {s}\n", .{ slice_reg, string_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                        try self.emitRelease(ptr_reg);
+                        try self.emitRelease(len_reg);
+                        try self.emitRelease(slice_reg);
+                        if (callArgNeedsRelease(arg)) try self.emitRelease(string_reg);
+                        self.out.writer().print("    call @sa_print_bytes(\"\\n\", 1)\n", .{}) catch return CodegenError.CodegenError;
+                        return;
+                    }
+                    if (isStringLikeType(ty)) {
+                        const slice_reg = try self.genExpr(arg, hoisted_allocs);
+                        const ptr_reg = try self.newTmp();
+                        const len_reg = try self.newTmp();
+                        self.out.writer().print("    EXPAND STRING_PTR {s}, {s}\n", .{ ptr_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    EXPAND STRING_LEN {s}, {s}\n", .{ len_reg, slice_reg }) catch return CodegenError.CodegenError;
+                        self.out.writer().print("    call @sa_print_bytes(&{s}, {s})\n", .{ ptr_reg, len_reg }) catch return CodegenError.CodegenError;
+                        try self.emitRelease(ptr_reg);
+                        try self.emitRelease(len_reg);
+                        if (callArgNeedsRelease(arg)) try self.emitRelease(slice_reg);
+                        self.out.writer().print("    call @sa_print_bytes(\"\\n\", 1)\n", .{}) catch return CodegenError.CodegenError;
+                        return;
+                    }
+                }
+            }
             self.out.writer().print("    call @sa_print_bytes(\"\\n\", 1)\n", .{}) catch return CodegenError.CodegenError;
             return;
         }

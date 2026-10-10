@@ -150,3 +150,6 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 - 2026-10-10：缺口 #12 已修复（parser `=` 右结合 desugar 为 `__chain` 块，右值求值
   一次；双/三链 + 字段/索引目标双后端全绿 + build-exe 核对；`56_chain_ops` 改直写；
   POTENTIAL_ISSUES #12 转已修复），已推送（`bec0084`）。
+- 2026-10-10：缺口 #4b 已修复（单参 string-like/format-string 走既有 per-arg 发射，
+  双后端一致；其余元数保持裸换行；`94_nested_tpl` 补直打断言；
+  POTENTIAL_ISSUES #4b 转已修复），已推送（`待填`）。

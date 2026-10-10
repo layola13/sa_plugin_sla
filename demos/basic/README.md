@@ -143,6 +143,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 113_pow_loop | 273_pow_assign | 循环连乘表达幂赋值（无 `**`/`**=`） |
 | 114_struct_pair | 272_destructure_defaults | 显式字段/索引表达解构（无解构语法） |
 | 115_switch_dispatch | 271_switch_arms | switch 分发 + `else if` 链（`12,100`） |
+| 116_linear_search | 323_unannot_scan | 显式循环表达 indexOf/includes/lastIndexOf（#1 注解） |
+| 117_isqrt | 347_math_sqrt | 循环试乘整数开方下取整（无 `Math.sqrt`） |
+| 118_sign_imul | 351_math_small | 分支 `sign` + 普通乘法 `imul`（`abs` 见 100） |
+| 119_shift | 372_ushr + 412_shift_compound | `>>`/`<<` + 显式移位赋值（无 `>>>`/`<<=`） |
+| 120_recurse | 377_funexpr_rec | 具名函数递归 fact/fib（无函数表达式自引用） |
+| 121_vec_rebind | 381_arr_clear | 重建绑定表达清空（无 `Vec.clear`） |
+| 122_strcmp_lit | 384_strcmp | 字面量关系比较 + helper 包裹（#18 绕行） |
+| 123_inbounds | 387_inarr | 显式区间判断表达 `in`（无 `in` 运算符） |
+| 124_bool_array | 388_boolkw | 布尔透传 + `bool` 数组 |
+| 125_f64_infer | 311_float_infer | 无注解浮点即 `f64` |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

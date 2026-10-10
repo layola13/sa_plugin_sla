@@ -244,6 +244,21 @@
   改用 `Vec`（如 112）或模块级数组；JEV 单选（record 84%）裁定记档绕行。
 - 复现探针：`/tmp/probes/p_arrret.sla`、`/tmp/probes/p_arrret2.sla`。
 
+## #18 字符串关系比较绑定左值失真（已确认缺口，2026-10-10，JEV 裁定记档绕行）
+
+- 现象：推断绑定作 `<`/`>` 左值时失真——`let a = "ab"; a < "abc"`
+  在 exe 中恒假；字面量直接写进 `@test` 体求值则 SAB 报
+  `MemoryLeak` trap（live Composite register，函数出口未释放）；
+  字面量左值（` "ab" < b`）与字面量间比较正常。
+- 定性：与 #3/#5/#10 同属字符串物化家族；另 `fn f(a: string)` 形参注解
+  本就不支持（#15，TypeMismatch），故缺口限于推断绑定左值。
+- 现状规避：116–125 batch 中 122 只用字面量比较，且包进无参 helper fn
+  再由 `@test` 断言（探针 `r_strcmp6` 双后端 + exe `-1` 核对）；
+  需比较变量字符串时改用 `str_eq` 判等。
+- 复现探针：`/tmp/probes2/r_strcmp.sla`（绑定左值 exe 失真）、
+  `/tmp/probes2/r_strcmp4.sla`（矩阵 `9,9,-1,9`）、
+  `/tmp/probes2/r_strcmp5.sla`（`@test` 直写触发 MemoryLeak）。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

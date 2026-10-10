@@ -102,7 +102,7 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
 ## 3. 门禁（提交前必查，每轮均执行，见账本）
 
 - [x] 新增 demo 逐个 `check + test` 通过（命令见 §0）。
-- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 115）。
+- [x] 全量 `TOTAL pass=N fail=0`（当前 N = 125）。
 - [x] `build-exe` 抽查 ≥2 个新增 demo 可运行输出。
 - [x] `POTENTIAL_ISSUES.md`：新发现记编号 + 复现探针路径；已修复的把“现状规避”改为
   “已修复（commit）”并保留复现记录（当前 #1–#14、#16 已修复，#15 确认缺口）。
@@ -240,3 +240,15 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   工具链在新机重建：zig 0.14.1（现存）+ go 1.22.2 + llvm-14 + `sci` 直建
   （默认路径即 llvm-14）+ `/content/sci` 符号链接，`sla/http-client/http-server/node`
   四插件齐备，基线复核 105/105 后开工。
+- 2026-10-10：116–125 落地（`check+test` 10/10 + build-exe 抽查 116/120/122
+  输出核对 `2,1,3` / `120,55` / `-1,1,0,-1,1`；全量 125/125 + `zig build test`
+  314/314），待推送。选型：tsgosa 201+ 池
+  （323/347/351/372+412/377/381/384/387/388/311；333/344/345 测试框架系、
+  352/357/359/360/364 字符串与构造系、358 NaN、376 数字解析、383 平凡除法、
+  394/404/406 与既有 demo 重复项暂略）；探针结论：`>>>`、`<<=`、`Vec.clear()`、
+  闭包作函数实参、`string` 形参注解均不支持（改写绕行）；116 另踩 #1
+  宽度门（`[i32;4]` 形参须显式注解实参）；立缺口 #18（字符串关系比较绑定左值
+  失真：exe 恒假 + `@test` 直写 MemoryLeak trap，字面量正常，JEV 单选 record
+  70% 裁定记档绕行，122 用 helper 包裹）；另记偶发抖动两则（121 首跑 fail
+  重跑 3/3 绿；方法论：探针必须在 `sa_plugin_sla` 下跑，`/tmp` 起 cwd 会
+  全员 FileNotFound 误报）。

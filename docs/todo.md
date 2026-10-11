@@ -693,3 +693,15 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   推送方法备注：URL 直推不更新本地 `origin/master` 跟踪引用，推后必跑
   `git fetch origin` 复核（JEV 督促复验发现：远端实已同步，仅跟踪引用滞后；
   此后每批推后都 fetch 对齐，`git status -sb` 零 ahead 方算交付闭环）。
+- 2026-10-11：546–555 落地（`check+test` 9/10 首绿 + 1 写法修正后 10/10 +
+  双后端 sab/sa 10/10 + build-exe 抽查 546/549/555 输出核对 `70,126,252` /
+  `70,70` / `252,252,252`；全量 555/555 + `zig build test` 315/315），待推送。
+  选型：二项恒等对峙（Pascal建表/行和/hockey/Vandermonde/行和对峙/
+  hockey对峙/Vandermonde对峙/对称/整行/C三向；531拍扁版/546单格版/
+  547横向版/548单表版/547表求和版/548求和版/549卷积版/546单查版/
+  350单值版/546×350×549三源版）；
+  探针结论：JEV 初选分散（47/33/20），风险仲裁改定二项恒等
+  （`jev_choose` 77%，crank 手算难出局）；546 沿 531 范式首列留零致
+  panic 54601（Pascal `C(nn,0)` 恒 1 与 Stirling 首列恒零相反，
+  补 `t[nn*w]=1` 修正，后续 Pascal 系同式）；本轮无抖动，一写法修正；
+  本轮无新缺口、无需新缺口编号。

@@ -573,6 +573,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 543_duel_p | 536_p8 | 对峙版（536×542 双实现锁定） |
 | 544_largest | 531_stirling2 | 精确版（531 加权版互补，545 做行和） |
 | 545_tri_p | 536_p8 | 三向版（536×542×544 三算法互锁） |
+| 546_pascal | 531_stirling2 | 建表版（531 首零版互补，此处首列恒一） |
+| 547_rowsum | 546_pascal | 行和版（546 单格版互补，550 做对峙） |
+| 548_hockey | 547_rowsum | 对角版（547 横向版互补，551 做对峙） |
+| 549_vander | 548_hockey | 卷积版（548 单表版互补，552 做对峙） |
+| 550_duel_row | 547_rowsum | 对峙版（547 表求和与 2^n 闭式锁定） |
+| 551_duel_hockey | 548_hockey | 对峙版（548 求和与查表锁定） |
+| 552_duel_vander | 549_vander | 对峙版（549 卷积与查表锁定） |
+| 553_sym | 546_pascal | 对称版（546 单查版互补，双下标互锁） |
+| 554_pascal_row | 350_binom | 整行版（350 单值版互补，乘法式逐项） |
+| 555_tri_binom | 546_pascal | 三向版（546×350×549 三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

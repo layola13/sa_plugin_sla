@@ -463,6 +463,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 433_sexy_primes | 366_twin_count | 差六版（366 差二版互补） |
 | 434_duel_quad | 423_duel_sphenic | 素串版（430 互补） |
 | 435_tri_constellation | 431_prime_triplet | 三星座版（366/430/431 合取） |
+| 436_egcd | 347_gcd_chain | 系数版（347 取值版互补） |
+| 437_crt | 344_modinv | 应用版（344 逆元版互补） |
+| 438_absorb | 401_lcm_gcd_id | 格版（401 恒等式版互补） |
+| 439_fibmod | 237_fib_table | 取模版（237 明文版互补，444/445 做对峙三向） |
+| 440_powmod_sum | 352_geom_sum | 取模版（352 明文版互补） |
+| 441_euclid_steps | 347_gcd_chain | 步数版（347 取值版互补） |
+| 442_lucas | 237_fib_table | 伴随版（237 互补） |
+| 443_pell | 442_lucas | 二倍递推版（442 一倍版互补） |
+| 444_duel_fibmod | 364_duel_prime | 周期版（439 互补） |
+| 445_tri_fibmod | 444_duel_fibmod | 三向版（439 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

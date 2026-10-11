@@ -583,6 +583,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 553_sym | 546_pascal | 对称版（546 单查版互补，双下标互锁） |
 | 554_pascal_row | 350_binom | 整行版（350 单值版互补，乘法式逐项） |
 | 555_tri_binom | 546_pascal | 三向版（546×350×549 三算法互锁） |
+| 556_cat_conv | 351_catalan | 卷积版（351 商式版互补，561 做对峙） |
+| 557_central | 350_binom | 取顶版（350 单值版延展，`2n` 取顶） |
+| 558_ballot | 351_catalan | 双参版（351 单参版互补，`q=p` 退化即 Catalan） |
+| 559_dyck | 531_stirling2 | 网格版（531 三角版互补，对角守卫） |
+| 560_fuss | 351_catalan | 三元版（351 二元版互补，564 做对峙） |
+| 561_duel_cat | 556_cat_conv | 对峙版（556×351 双实现锁定） |
+| 562_duel_dyck | 559_dyck | 对峙版（559×556 双视角锁定） |
+| 563_duel_central | 546_pascal | 对峙版（546×557 双实现锁定） |
+| 564_duel_fuss | 560_fuss | 对峙版（560 商式与三元卷积锁定） |
+| 565_tri_cat | 556_cat_conv | 三向版（556×351×559 三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

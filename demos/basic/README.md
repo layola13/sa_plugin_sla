@@ -533,6 +533,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 503_dlog | 485_primroot | 逆问题版（485 求根版互补） |
 | 504_duel_legendre | 434_duel_quad | 剩余版（499 互补） |
 | 505_tri_legendre | 435_tri_constellation | 剩余版（499/504 合取） |
+| 506_zeckendorf | 237_fib_table | 贪心版（237 迭代版互补，507 做编码） |
+| 507_fibcode | 506_zeckendorf | 编码版（506 项数版互补） |
+| 508_bitcount | 406_dsum | 二进制版（406 十进制版互补，510/512 做对峙三向） |
+| 509_bitrev | 409_rev_num | 位版（409 十进制版互补） |
+| 510_duel_bitcount | 411_duel_dsum | 位版（508 互补） |
+| 511_hamming | 510_duel_bitcount | 应用版（510 计数版互补） |
+| 512_tri_bitcount | 510_duel_bitcount | 三向版（508 互补） |
+| 513_nibble_swap | 509_bitrev | 半字节版（509 全字节版互补） |
+| 514_parity | 508_bitcount | 奇偶版（508 计数版互补） |
+| 515_pow2check | 514_parity | 位技巧版（514 计数版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

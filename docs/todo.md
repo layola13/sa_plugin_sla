@@ -713,4 +713,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   559×556对峙版/546×557对峙版/560商卷版/556×351×559三源版）；
   探针结论：JEV 初选 Catalan（`confirm_first` 71%  decisive，免二次仲裁）；
   351 既有商式先行查档（558/560/561 皆注明互补位，避重复）；本轮无抖动无自误；
-  本轮无新缺口、无需新缺口编号。
+  本轮无新缺口、无需新缺口编号。已推送（`452748e`）。

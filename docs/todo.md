@@ -754,4 +754,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   596全表版/602边值版/596商式A版/598×556×351三源版）；
   探针结论：JEV 初选 Narayana（`confirm_first` 64%），风险仲裁改定 Narayana
   （`jev_choose` 92%，Schröder 值大二维手算繁出局，Catalan 弧承接胜出）；
-  本轮无抖动无自误；本轮无新缺口、无需新缺口编号。
+  本轮无抖动无自误；本轮无新缺口、无需新缺口编号。已推送（`fcef347`）。

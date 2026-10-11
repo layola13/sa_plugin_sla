@@ -413,6 +413,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 383_lcm_grid | 370_gcd_grid_sum | lcm 版（371 单表版互补） |
 | 384_duel_sigma | 374_duel_primecount | 除数和版（379 三向版互补） |
 | 385_tri_pow3sum | 375_tri_altsum | 等比版（372 互补） |
+| 386_omega | 376_semiprime | 去重版（376 计重版互补） |
+| 387_mobius | 386_omega | 符号版（386 计数版互补） |
+| 388_primepow | 376_semiprime | 单基版（376 多基版互补） |
+| 389_perfect | 378_abundant | 等值版（334 因子和版互补） |
+| 390_amicable_pair | 335_amicable | 函数版（335 互补） |
+| 391_mersenne | 356_is_prime | 指数版（358 计数版互补） |
+| 392_fact_prime_exp | 349_fact_zero | 素数版（349 零计数版互补） |
+| 393_binom_odd | 350_binom | 奇偶版（350 取值版互补） |
+| 394_duel_catalan | 351_catalan | 递推对峙版（351 商式版互补） |
+| 395_tri_coprime | 381_coprime_sum | 三向版（381 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

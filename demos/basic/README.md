@@ -513,6 +513,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 483_stern | 237_fib_table | 位折半版（237 线性版互补） |
 | 484_carmichael | 336_euler_phi | 指数版（336/399 互补） |
 | 485_primroot | 397_fermat | 阶版（397 判定版互补） |
+| 486_heron | 338_pyth_check | 面积版（338 判定版互补，490 做对峙） |
+| 487_brahmagupta | 486_heron | 四边版（486 三边版互补） |
+| 488_pell_eq | 329_quad_roots | 丢番图版（329 求根版互补，494 做对峙） |
+| 489_markov | 428_taxicab | 三元版（428 二元版互补，492 做三向） |
+| 490_duel_heron | 434_duel_quad | 几何版（486 互补） |
+| 491_bernoulli | 480_harm_frac | 递推版（480 求和版互补） |
+| 492_tri_markov | 489_markov | 三向版（489 双角版互补） |
+| 493_mihailescu | 397_fermat | 幂差版（397 伪素数版互补） |
+| 494_duel_pelleq | 403_duel_fermat | 搜索版（488 互补） |
+| 495_genocchi | 491_bernoulli | 组合版（491 本体版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

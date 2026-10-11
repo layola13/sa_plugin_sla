@@ -383,6 +383,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 353_mat_pow | 28_mat_mul | 幂版（326/327 互补） |
 | 354_mat_trans_sum | 19_matrix | 恒等式版（327 迹版互补） |
 | 355_tri_powmod | 328_powmod | 三向版（258 明文版互补） |
+| 356_is_prime | 46_trial_div | 判定版（261 轮式版互补） |
+| 357_nth_prime | 356_is_prime | 计数版（356 判定版互补） |
+| 358_prime_sum | 281_prime_sum | 素数版（238 表版互补） |
+| 359_sq_sum | 27_sum_sq | 循环版（288 公式版互补，365 做三向） |
+| 360_cube_sum | 359_sq_sum | 立方版（359 平方版互补） |
+| 361_fib_even_sum | 237_fib_table | 偶项版（282 求和版互补） |
+| 362_harm_bound | 141_sum | 倒数版（239 f64 版互补，纯 int） |
+| 363_gcd_table_sum | 125_table | gcd 版（173-表系互补） |
+| 364_duel_prime | 46×261 | 判定对峙版（290 互补） |
+| 365_tri_sqsum | 288_duel_sqsum | 三向版（359 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

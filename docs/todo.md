@@ -704,4 +704,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   （`jev_choose` 77%，crank 手算难出局）；546 沿 531 范式首列留零致
   panic 54601（Pascal `C(nn,0)` 恒 1 与 Stirling 首列恒零相反，
   补 `t[nn*w]=1` 修正，后续 Pascal 系同式）；本轮无抖动，一写法修正；
-  本轮无新缺口、无需新缺口编号。
+  本轮无新缺口、无需新缺口编号。已推送（`5046928`）。

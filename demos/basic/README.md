@@ -553,6 +553,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 523_perfect_count | 373_prime_count | 完全版（373 素数版互补） |
 | 524_abundant_sum | 358_prime_sum | 丰数版（358 素数版互补） |
 | 525_practical | 378_abundant | 划分版（378 盈亏版互补） |
+| 526_distinct | 525_practical | 互异版（525 判定版互补，0-1 背包 DP） |
+| 527_oddpart | 526_distinct | 奇部版（526 互异版互补，534 做对峙） |
+| 528_pent | 350_binom | 递推版（350 乘法式互补，五边形数定理） |
+| 529_coinchange | 527_oddpart | 面值版（527 奇数列互补，{1,2,5} 三段直写） |
+| 530_compose | 526_distinct | 有序版（526 无序版互补，2 幂） |
+| 531_stirling2 | 351_catalan | 加权版（351 卷积版互补，拍扁二维表） |
+| 532_bell | 531_stirling2 | 行和版（531 单格版互补；453 集合版互补） |
+| 533_noones | 529_coinchange | 去 1 版（529 面值版互补，{2..n} 全集） |
+| 534_euler_duel | 526_distinct | 对峙版（526×527 双实现锁定） |
+| 535_coin_duel | 529_coinchange | 对峙版（529 DP 版互补，加暴力枚举） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

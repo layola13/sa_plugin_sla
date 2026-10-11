@@ -423,6 +423,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 393_binom_odd | 350_binom | 奇偶版（350 取值版互补） |
 | 394_duel_catalan | 351_catalan | 递推对峙版（351 商式版互补） |
 | 395_tri_coprime | 381_coprime_sum | 三向版（381 互补） |
+| 396_squarefree | 387_mobius | 存在版（387 零值版互补） |
+| 397_fermat | 356_is_prime | 概率版（341 伪素数记档） |
+| 398_wilson | 397_fermat | 阶乘版（397 幂模版互补） |
+| 399_phi_mult | 336_euler_phi | 乘性版（382 累和版互补） |
+| 400_sigma_mult | 377_sigma | 乘性版（399-phi 乘性互补） |
+| 401_lcm_gcd_id | 348_lcm_chain | 恒等式版（348 链式版互补） |
+| 402_units_prod | 381_coprime_sum | 乘积版（381 求和版互补） |
+| 403_duel_fermat | 355_tri_powmod | 费马版（397 互补） |
+| 404_tri_phi | 395_tri_coprime | phi 版（399 互补） |
+| 405_duel_euler | 403_duel_fermat | 二次剩余版（397 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

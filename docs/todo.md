@@ -592,3 +592,13 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   444三向版）；
   探针结论：439 初版返回 `b=F(n+1)` 差一（`return a` 修正，记 README）；
   436 恒等式断言天然避负数字面量坑；本轮无抖动，一差一修正（写码即改）。
+  已推送（`b4a5e0e`）。
+- 2026-10-11：446–455 落地（`check+test` 10/10 一遍全绿 + 双后端 sab/sa 10/10 +
+  build-exe 抽查 448/451/455 输出核对 `81,13,1` / `52,15,25` / `11,11`；
+  全量 455/455 + `zig build test` 315/315），待推送。选型：三阶递推+
+  组合三角+对峙三连（Jacobsthal/Pell伴随/Tribonacci/Padovan/Perrin/
+  Bell数/Eulerian数/Trib对峙/Bell对峙/Eulerian对峙；442加权版/443伴随版/
+  237三阶版/448跳阶版/449异初值版/351集合版/451排列版/432三阶版/
+  453集合版/454排列版）；
+  探针结论：本轮三对峙皆一次写对（容斥末项 `pow(0,n)=0` 自然归零是关键）；
+  本轮无抖动无自误。

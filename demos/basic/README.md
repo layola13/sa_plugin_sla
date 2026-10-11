@@ -473,6 +473,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 443_pell | 442_lucas | 二倍递推版（442 一倍版互补） |
 | 444_duel_fibmod | 364_duel_prime | 周期版（439 互补） |
 | 445_tri_fibmod | 444_duel_fibmod | 三向版（439 互补） |
+| 446_jacobsthal | 442_lucas | 加权版（442 一倍版互补） |
+| 447_pell_comp | 443_pell | 伴随版（443 本体版互补） |
+| 448_tribonacci | 237_fib_table | 三阶版（237 二阶版互补，453 做对峙） |
+| 449_padovan | 448_tribonacci | 跳阶版（448 全加版互补） |
+| 450_perrin | 449_padovan | 异初值版（449 初值版互补） |
+| 451_bell | 351_catalan | 集合划分版（351 互补，454 做对峙） |
+| 452_eulerian | 451_bell | 排列版（451 组合版互补，455 做对峙） |
+| 453_duel_trib | 432_duel_peak | 三阶版（448 互补） |
+| 454_duel_bell | 453_duel_trib | 集合版（451 互补） |
+| 455_duel_eulerian | 454_duel_bell | 排列版（452 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

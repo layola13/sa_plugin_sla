@@ -623,6 +623,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 593_fubini6 | 588_fubini | 高位版（588 低位版互补，大值单锁） |
 | 594_duel_lahcol | 592_lah_col | 对峙版（592 首列与阶乘直对锁定） |
 | 595_tri_lah | 586_lah | 三向版（586×589 双源加商式B三锁） |
+| 596_narayana | 586_lah | 细化版（586 同族互补，599 做行和对峙） |
+| 597_narayana_row | 596_narayana | 行版（596 单格版互补，行和直打） |
+| 598_narayana6 | 597_narayana_row | 高位版（597 低位版互补，600 做对峙） |
+| 599_duel_narrow | 597_narayana_row | 对峙版（597 行和与 556 卷积锁定） |
+| 600_duel_narcat | 598_narayana6 | 对峙版（598 行和与 351 商式锁定） |
+| 601_narayana_sym | 596_narayana | 对称版（596 单查版互补，镜像互锁） |
+| 602_narayana_edge | 596_narayana | 边值版（596 全表版互补，603 做对峙） |
+| 603_duel_edge | 602_narayana_edge | 对峙版（602 边值与三角数锁定） |
+| 604_narayana_alt | 596_narayana | 移位版（596 商式A互补，605 做三向） |
+| 605_tri_narcat | 598_narayana6 | 三向版（598×556×351 三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

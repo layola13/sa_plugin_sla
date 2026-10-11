@@ -735,4 +735,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   探针结论：JEV 初选一类 Stirling（`confirm_first` 77%  decisive，免二次仲裁）；
   578 签名语义（项数，起点）与 572（顶，项数）混淆致 panic 57803
   （`falling(5,2)=0` 含零因子，改 `falling(2,5)=20` 修正）；
-  本轮无抖动，一签名修正；本轮无新缺口、无需新缺口编号。
+  本轮无抖动，一签名修正；本轮无新缺口、无需新缺口编号。已推送（`e7590ae`）。

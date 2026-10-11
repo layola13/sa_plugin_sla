@@ -603,6 +603,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 573_duel_permfact | 572_perm | 对峙版（572 降乘与升乘阶乘锁定） |
 | 574_euler_sym | 569_euler | 对称版（569 单查版互补，镜像下标互锁） |
 | 575_tri_derange | 566_derange | 三向版（566×567 双源加单项式三锁） |
+| 576_stirling1 | 531_stirling2 | 一类版（531 二类版互补，580 做行值） |
+| 577_rising | 572_perm | 上升版（572 下降版互补，579 做对峙） |
+| 578_falling | 577_rising | 下降版（577 上升版互补，579 做对峙） |
+| 579_duel_risefall | 577_rising | 对峙版（577×578 升降双实现锁定） |
+| 580_rowval | 576_stirling1 | 行值版（576 单格版互补，581 做对峙） |
+| 581_duel_rowval | 580_rowval | 对峙版（580 行和与阶乘闭式锁定） |
+| 582_col | 576_stirling1 | 首列版（576 全表版互补，583 做对峙） |
+| 583_duel_col | 582_col | 对峙版（582 首列与错位阶乘锁定） |
+| 584_duel_diag | 576_stirling1 | 次对角版（576 全表版互补，对换解释） |
+| 585_tri_s1 | 580_rowval | 三向版（580×125×577 三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

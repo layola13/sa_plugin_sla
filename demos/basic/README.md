@@ -393,6 +393,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 363_gcd_table_sum | 125_table | gcd 版（173-表系互补） |
 | 364_duel_prime | 46×261 | 判定对峙版（290 互补） |
 | 365_tri_sqsum | 288_duel_sqsum | 三向版（359 互补） |
+| 366_twin_count | 356_is_prime | 对版（358 求和版互补） |
+| 367_prime_gap | 358_prime_sum | 间隙版（357 计数版互补） |
+| 368_tri_cubesum | 365_tri_sqsum | 立方版（360 互补） |
+| 369_alt_sum | 359_sq_sum | 符号版（330 等差系互补，375 做三向） |
+| 370_gcd_grid_sum | 363_gcd_table_sum | 网格版（363 单表版互补） |
+| 371_lcm_table_sum | 348_lcm_chain | 表版（363-gcd 表互补） |
+| 372_pow3_sum | 352_geom_sum | 3 进制版（352 公比 2 版互补） |
+| 373_prime_count | 358_prime_sum | 计数版（357 单值版互补） |
+| 374_duel_primecount | 364_duel_prime | 计数对峙版（373 互补） |
+| 375_tri_altsum | 368_tri_cubesum | 交错版（369 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

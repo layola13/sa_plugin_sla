@@ -543,6 +543,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 513_nibble_swap | 509_bitrev | 半字节版（509 全字节版互补） |
 | 514_parity | 508_bitcount | 奇偶版（508 计数版互补） |
 | 515_pow2check | 514_parity | 位技巧版（514 计数版互补） |
+| 516_golomb | 448_tribonacci | 自指版（448 线性版互补，522 做对峙） |
+| 517_ruler | 392_fact_prime_exp | 单值版（392 累计版互补） |
+| 518_aliquot_steps | 378_abundant | 链版（378/389 互补） |
+| 519_deficient_count | 378_abundant | 亏版（378 丰版互补，521 做三向） |
+| 520_duel_aliquot | 384_duel_sigma | 真因子版（390 互补） |
+| 521_tri_classify | 435_tri_constellation | 分类版（378/389/519 合取） |
+| 522_duel_golomb | 453_duel_trib | 自指版（516 互补） |
+| 523_perfect_count | 373_prime_count | 完全版（373 素数版互补） |
+| 524_abundant_sum | 358_prime_sum | 丰数版（358 素数版互补） |
+| 525_practical | 378_abundant | 划分版（378 盈亏版互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

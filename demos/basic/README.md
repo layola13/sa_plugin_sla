@@ -433,6 +433,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 403_duel_fermat | 355_tri_powmod | 费马版（397 互补） |
 | 404_tri_phi | 395_tri_coprime | phi 版（399 互补） |
 | 405_duel_euler | 403_duel_fermat | 二次剩余版（397 互补） |
+| 406_dsum | 342_droot | 求和版（342 数位根版互补，411/414 做对峙三向） |
+| 407_dprod | 406_dsum | 乘积版（406 求和版互补） |
+| 408_persist | 406_dsum | 迭代版（406 单步版互补） |
+| 409_rev_num | 234_numpalin | 反转版（234 判定版互补，412 做对峙） |
+| 410_harshad | 406_dsum | 整除版（406 求和版互补，415 做对峙） |
+| 411_duel_dsum | 364_duel_prime | 数位版（406 互补） |
+| 412_duel_rev | 411_duel_dsum | 反转版（409 互补） |
+| 413_repunit | 352_geom_sum | 1 串版（352 公比版互补） |
+| 414_tri_dsum | 411_duel_dsum | 三向版（408-持久性互补） |
+| 415_duel_harshad | 411_duel_dsum | 整除版（410 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

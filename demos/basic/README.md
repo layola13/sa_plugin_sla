@@ -593,6 +593,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 563_duel_central | 546_pascal | 对峙版（546×557 双实现锁定） |
 | 564_duel_fuss | 560_fuss | 对峙版（560 商式与三元卷积锁定） |
 | 565_tri_cat | 556_cat_conv | 三向版（556×351×559 三算法互锁） |
+| 566_derange | 125_fact | 递推版（125 阶乘版互补，568 做对峙） |
+| 567_derange_sum | 566_derange | 容斥版（566 递推版互补，568 做对峙） |
+| 568_duel_derange | 566_derange | 对峙版（566×567 双实现锁定） |
+| 569_euler | 531_stirling2 | 双权版（531 单权版互补，570 做行和） |
+| 570_euler_row | 569_euler | 行和版（569 单格版互补，571 做对峙） |
+| 571_duel_euler | 570_euler_row | 对峙版（570 行和与阶乘闭式锁定） |
+| 572_perm | 350_binom | 连乘版（350 除法版互补，573 做对峙） |
+| 573_duel_permfact | 572_perm | 对峙版（572 降乘与升乘阶乘锁定） |
+| 574_euler_sym | 569_euler | 对称版（569 单查版互补，镜像下标互锁） |
+| 575_tri_derange | 566_derange | 三向版（566×567 双源加单项式三锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

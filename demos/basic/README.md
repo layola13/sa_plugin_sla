@@ -563,6 +563,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 533_noones | 529_coinchange | 去 1 版（529 面值版互补，{2..n} 全集） |
 | 534_euler_duel | 526_distinct | 对峙版（526×527 双实现锁定） |
 | 535_coin_duel | 529_coinchange | 对峙版（529 DP 版互补，加暴力枚举） |
+| 536_p8 | 528_pent | 背包版（528 递推版互补，543 做对峙） |
+| 537_rr1 | 534_euler_duel | RR 版（534 Euler 版互补，差分递归对峙） |
+| 538_selfconj | 526_distinct | 奇限版（526 全硬币互补，奇硬币 0-1 背包） |
+| 539_qgrow | 526_distinct | 高位版（526 低位版互补，541 做对峙） |
+| 540_oddgrow | 527_oddpart | 高位版（527 低位版互补，541 做对峙） |
+| 541_euler2 | 534_euler_duel | 高位版（534 低位版互补，539/540 双源锁定） |
+| 542_pent_extend | 528_pent | 高位版（528 低位版互补，543 做对峙） |
+| 543_duel_p | 536_p8 | 对峙版（536×542 双实现锁定） |
+| 544_largest | 531_stirling2 | 精确版（531 加权版互补，545 做行和） |
+| 545_tri_p | 536_p8 | 三向版（536×542×544 三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

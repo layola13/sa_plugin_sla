@@ -453,6 +453,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 423_duel_sphenic | 394_duel_catalan | 形态版（416 互补） |
 | 424_duel_mertens | 423_duel_sphenic | 求和版（421 互补） |
 | 425_tri_smooth | 404_tri_phi | 形态版（417 互补） |
+| 426_prim_pyth | 338_pyth_check | 计数版（338/339 互补） |
+| 427_euclid_gen | 339_pyth_gen | 公式版（339 枚举版互补） |
+| 428_taxicab | 426_prim_pyth | 立方版（426 平方版互补） |
+| 429_collatz_peak | 236_collatz | 峰值版（283 最值版互补，432 做对峙） |
+| 430_prime_quad | 366_twin_count | 四元版（366 对版互补，434 做对峙） |
+| 431_prime_triplet | 430_prime_quad | 三元版（430 四元版互补） |
+| 432_duel_peak | 411_duel_dsum | 冰雹版（429 互补） |
+| 433_sexy_primes | 366_twin_count | 差六版（366 差二版互补） |
+| 434_duel_quad | 423_duel_sphenic | 素串版（430 互补） |
+| 435_tri_constellation | 431_prime_triplet | 三星座版（366/430/431 合取） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

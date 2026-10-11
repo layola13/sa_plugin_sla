@@ -443,6 +443,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 413_repunit | 352_geom_sum | 1 串版（352 公比版互补） |
 | 414_tri_dsum | 411_duel_dsum | 三向版（408-持久性互补） |
 | 415_duel_harshad | 411_duel_dsum | 整除版（410 互补） |
+| 416_sphenic | 386_omega | 等三版（386 计数版互补） |
+| 417_smooth | 416_sphenic | 界版（416 形态版互补，425 做三向） |
+| 418_weak_goldbach | 380_goldbach | 奇三元版（380 强分拆互补） |
+| 419_sophie | 366_twin_count | 倍加版（366 对版互补） |
+| 420_cunningham | 419_sophie | 链版（419 单步版互补） |
+| 421_mertens | 387_mobius | 累和版（387 单值版互补，424 做对峙） |
+| 422_liouville | 421_mertens | 全计数版（421 无平方版互补） |
+| 423_duel_sphenic | 394_duel_catalan | 形态版（416 互补） |
+| 424_duel_mertens | 423_duel_sphenic | 求和版（421 互补） |
+| 425_tri_smooth | 404_tri_phi | 形态版（417 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

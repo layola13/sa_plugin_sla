@@ -724,4 +724,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   探针结论：JEV 初选分散（47/26/27），风险仲裁改定错排
   （`jev_choose` 81%，三候选皆纯整数可手算，Eulerian 行和天然对峙胜出）；
   567 下降阶乘方向写反（`k` 项 vs `n-k` 项，panic 56701 定位修正）；
-  本轮无抖动，一写法修正；本轮无新缺口、无需新缺口编号。
+  本轮无抖动，一写法修正；本轮无新缺口、无需新缺口编号。已推送（`8ac9b94`）。

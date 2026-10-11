@@ -483,6 +483,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 453_duel_trib | 432_duel_peak | 三阶版（448 互补） |
 | 454_duel_bell | 453_duel_trib | 集合版（451 互补） |
 | 455_duel_eulerian | 454_duel_bell | 排列版（452 互补） |
+| 456_cows | 449_padovan | 同构版（449 跳阶版互补） |
+| 457_sylvester | 446_jacobsthal | 乘积递推版（446 加权版互补） |
+| 458_lazy | 330_arith_seq | 二次版（330 一次版互补，460 做对峙） |
+| 459_cake | 458_lazy | 三次版（458 二次版互补，463 做对峙） |
+| 460_duel_lazy | 288_duel_sqsum | 切分版（458 互补） |
+| 461_delannoy | 360_cube_sum | 格路版（19-矩阵系互补，464/465 做对峙三向） |
+| 462_motzkin | 351_catalan | 不交弦版（351 全分拆版互补） |
+| 463_duel_cake | 460_duel_lazy | 三次版（459 互补） |
+| 464_duel_delannoy | 463_duel_cake | 格路版（461 互补） |
+| 465_tri_delannoy | 464_duel_delannoy | 三向版（461 互补） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

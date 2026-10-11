@@ -523,6 +523,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 493_mihailescu | 397_fermat | 幂差版（397 伪素数版互补） |
 | 494_duel_pelleq | 403_duel_fermat | 搜索版（488 互补） |
 | 495_genocchi | 491_bernoulli | 组合版（491 本体版互补） |
+| 496_contfrac | 476_egypt | 欧几里得版（476 贪心版互补，497 做收敛子） |
+| 497_convergent | 496_contfrac | 渐近版（496 展开版互补） |
+| 498_pell_gen | 488_pell_eq | 幂版（488 基本解版互补） |
+| 499_legendre | 405_duel_euler | 符号版（405 对峙版互补，504/505 做对峙三向） |
+| 500_jacobi | 499_legendre | 合数版（499 素数版互补） |
+| 501_qr_count | 499_legendre | 计数版（499 判定版互补） |
+| 502_primroot_count | 485_primroot | 计数版（485 最小值版互补） |
+| 503_dlog | 485_primroot | 逆问题版（485 求根版互补） |
+| 504_duel_legendre | 434_duel_quad | 剩余版（499 互补） |
+| 505_tri_legendre | 435_tri_constellation | 剩余版（499/504 合取） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

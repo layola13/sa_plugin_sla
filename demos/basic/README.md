@@ -613,6 +613,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 583_duel_col | 582_col | 对峙版（582 首列与错位阶乘锁定） |
 | 584_duel_diag | 576_stirling1 | 次对角版（576 全表版互补，对换解释） |
 | 585_tri_s1 | 580_rowval | 三向版（580×125×577 三算法互锁） |
+| 586_lah | 558_ballot | 商式版（558 同族互补，590 做对峙） |
+| 587_lah_row | 586_lah | 行版（586 单格版互补，行和直打） |
+| 588_fubini | 532_bell | 加权版（532 无权版互补，591 做对峙） |
+| 589_lah_rec | 586_lah | 递推版（586 商式版互补，590 做对峙） |
+| 590_duel_lah | 586_lah | 对峙版（586×589 双实现锁定） |
+| 591_duel_fubini | 588_fubini | 对峙版（588 行和与组合递推锁定） |
+| 592_lah_col | 586_lah | 首列版（586 全表版互补，594 做对峙） |
+| 593_fubini6 | 588_fubini | 高位版（588 低位版互补，大值单锁） |
+| 594_duel_lahcol | 592_lah_col | 对峙版（592 首列与阶乘直对锁定） |
+| 595_tri_lah | 586_lah | 三向版（586×589 双源加商式B三锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

@@ -690,3 +690,6 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   修正；540 独立 DP 一次绿反向确证 Euler）；537 双参递归小规模一次绿
   （07/120 先例）；本轮无抖动，一自误（手算）；本轮无新缺口、无需新缺口编号。
   已推送（`2a7aeb6`）。
+  推送方法备注：URL 直推不更新本地 `origin/master` 跟踪引用，推后必跑
+  `git fetch origin` 复核（JEV 督促复验发现：远端实已同步，仅跟踪引用滞后；
+  此后每批推后都 fetch 对齐，`git status -sb` 零 ahead 方算交付闭环）。

@@ -745,4 +745,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   探针结论：JEV 初选 Lah（`confirm_first` 62%），风险仲裁改定 Lah
   （`jev_choose` 77%，Schröder 与 463 Delannoy 形近出局）；全量循环首跑
   600s 超时（595 规模所致，加大超时后 595/595，此后全量门禁默认大超时）；
-  本轮无抖动无自误；本轮无新缺口、无需新缺口编号。
+  本轮无抖动无自误；本轮无新缺口、无需新缺口编号。已推送（`fbbe9fb`）。

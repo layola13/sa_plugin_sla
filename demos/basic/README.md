@@ -873,6 +873,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 843_duel_lahcol29 | 842_lah_col29 | 对峙版（842 列与边式双实现锁定） |
 | 844_lah9_right | 836_lah9 | 右部版（836 左部版互补，全行覆盖） |
 | 845_tri_lah9 | 837_lah_row9 | 三向版（建表行和×商式行和×递归行和三算法互锁） |
+| 846_nar9 | 718_nar8 | 高位版（Narayana n=8 版互补，849 做对峙） |
+| 847_nar_row9 | 846_nar9 | 行版（846 单格版互补，行和恒等直打） |
+| 848_duel_narcol19 | 722_nar_edge | 对峙版（722 边值与三角数跨族续高位锁定） |
+| 849_duel_nar9 | 846_nar9 | 对峙版（846 乘式与表式双实现锁定） |
+| 850_duel_nar910 | 847_nar_row9 | 对峙版（847 行源与商式双实现锁定） |
+| 851_nar_edge9 | 722_nar_edge | 边值版（722 低位版互补，855 做三向） |
+| 852_nar_col29 | 846_nar9 | 列版（846 单格版互补，纵深三值锁定） |
+| 853_duel_narcol29 | 852_nar_col29 | 对峙版（852 列与表式双实现锁定） |
+| 854_nar9_right | 846_nar9 | 右部版（846 左部版互补，全行覆盖） |
+| 855_tri_nar9 | 847_nar_row9 | 三向版（行和×Catalan商式×Catalan卷积三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

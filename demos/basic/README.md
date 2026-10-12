@@ -933,6 +933,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 903_schro_qseq11 | 793_schro_qseq | 纵深版（793 n=7/8/9 版互补，905 做三向） |
 | 904_schro_bridge11 | 794_schro_bridge9 | 桥接版（794 n=9/10 桥互补，桥恒等续高位） |
 | 905_tri_schro11 | 896_schro11 | 三向版（迭代×商式×倍小三算法互锁） |
+| 906_bell11 | 778_bell10 | 高位版（Bell n=10 版互补，908 做对峙） |
+| 907_bell_seq11 | 906_bell11 | 序列版（906 单值版互补，前缀和直打） |
+| 908_duel_bell11 | 906_bell11 | 对峙版（906 递推与三角双实现锁定） |
+| 909_bell12 | 906_bell11 | 高位版（906 n=11 版互补，910 做对峙） |
+| 910_duel_bell12 | 909_bell12 | 对峙版（909 递推与三角双实现锁定） |
+| 911_belltri11 | 781_belltri | 三角版（781 低位版互补，915 做三向） |
+| 912_bell_rowsum11 | 906_bell11 | 行和版（906 递推版互补，915 做三向） |
+| 913_duel_bellrow11 | 912_bell_rowsum11 | 对峙版（912 行源与递推源合流） |
+| 914_bell_parity11 | 784_bell_parity | 奇偶版（784 n=8/9/10 版互补，周期续两位） |
+| 915_tri_bell11 | 906_bell11 | 三向版（二项递推×Aitken三角×二类行和三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

@@ -755,3 +755,17 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   探针结论：JEV 初选 Narayana（`confirm_first` 64%），风险仲裁改定 Narayana
   （`jev_choose` 92%，Schröder 值大二维手算繁出局，Catalan 弧承接胜出）；
   本轮无抖动无自误；本轮无新缺口、无需新缺口编号。已推送（`fcef347`）。
+- 2026-10-12：606–615 落地（`check+test` 10/10 一遍全绿 + 双后端 sab/sa 10/10 +
+  build-exe 抽查 606/611/615 输出核对 `6,22,90` / `13,63,25` / `90,90,90`；
+  全量 615/615 + `zig build test` 315/315），待推送。选型：Schröder小规模+
+  Delannoy承接（递推/序列/高位/双对峙/高位对峙/建表/建表对峙/高位二/
+  高位二对峙/三向；351同族版/606单值版/606低位版/606迭代版/608高位版/
+  464格路版/611建表版/608高位版/613高位版/608×609三源版）；
+  探针结论：JEV 初选 Schröder（`jev_choose` 71%，小规模值域可手算胜出，
+  大值二维出局旧案以 S(6)=1806 上限规避）；三实现（迭代/递归/商式
+  `sum C(n,k)C(n+k,k)/(k+1)`）与 Delannoy 双源（建表/直和）探针三线全绿；
+  `rsch(5/6)` 递归扇出两后端秒级（sab 0.3s / sa 8s）；商式逐项精确整除
+  （`1,10,30,35,14`）；工具链新机重建：zig 0.14.1（现存）+ go 1.22.2 +
+  llvm-14-dev + `sci` 直建 + `/content/sci` 符号链接，`sla/http-client/
+  http-server` 三插件齐备（`node` install 挂起超时，JEV 98% 裁定延后不阻塞）；
+  本轮无抖动无自误；本轮无新缺口、无需新缺口编号。已推送（待填）。

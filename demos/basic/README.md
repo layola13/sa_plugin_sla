@@ -633,6 +633,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 603_duel_edge | 602_narayana_edge | 对峙版（602 边值与三角数锁定） |
 | 604_narayana_alt | 596_narayana | 移位版（596 商式A互补，605 做三向） |
 | 605_tri_narcat | 598_narayana6 | 三向版（598×556×351 三算法互锁） |
+| 606_schroder | 351_catalan | 姐妹版（Catalan 同族格路计数，609 做对峙） |
+| 607_schro_seq | 606_schroder | 序列版（606 单值版互补，前5项和直打） |
+| 608_schro_high | 606_schroder | 高位版（606 低位版互补，610 做对峙） |
+| 609_duel_schro | 606_schroder | 对峙版（606 迭代与递归双实现锁定） |
+| 610_duel_schro_high | 608_schro_high | 对峙版（608 高位与递归双实现锁定） |
+| 611_delannoy_tab | 464_duel_delannoy | 表版（464 格路版互补，546 范式拍扁，612 做对峙） |
+| 612_duel_delan | 611_delannoy_tab | 对峙版（611 建表与二项直和锁定） |
+| 613_schro6 | 608_schro_high | 高位版（608 高位版互补，614 做对峙） |
+| 614_duel_schro6 | 613_schro6 | 对峙版（613 高位与递归双实现锁定） |
+| 615_tri_schro | 608_schro_high | 三向版（迭代×递归×商式三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

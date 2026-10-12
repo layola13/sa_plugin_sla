@@ -723,6 +723,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 693_stir1_edge | 686_stir17 | 边值版（686 内格版互补，695 做三向） |
 | 694_stir1_row8 | 687_stir1_row7 | 行版（687 低位行互补，高位行和再锁） |
 | 695_tri_stir1 | 687_stir1_row7 | 三向版（建表行和×递归行和×阶乘三算法互锁） |
+| 696_stir27 | 531_stirling2 | 高位版（二类低位版互补，699 做对峙） |
+| 697_stir2_row7 | 696_stir27 | 行版（696 单格版互补，行和恒等直打） |
+| 698_stir28 | 696_stir27 | 高位版（696 n=7 版互补，700 做对峙） |
+| 699_duel_stir27 | 696_stir27 | 对峙版（696 建表与递归双实现锁定） |
+| 700_duel_stir28 | 698_stir28 | 对峙版（698 高位与递归双实现锁定） |
+| 701_stir2_col2 | 696_stir27 | 列版（696 内格版互补，702 做列对峙） |
+| 702_duel_col2 | 701_stir2_col2 | 对峙版（701 列与幂公式跨算法锁定） |
+| 703_stir2_bell | 697_stir2_row7 | 桥接版（697×532 两族行和恒等单锁，705 做三向） |
+| 704_stir29 | 698_stir28 | 高位版（698 n=8 版互补，705 做三向） |
+| 705_tri_stir2 | 697_stir2_row7 | 三向版（建表行和×递归行和×Bell数三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

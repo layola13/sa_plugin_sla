@@ -793,6 +793,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 763_delan_col7 | 756_delan7 | 列版（756 行视角互补，纵深三值锁定） |
 | 764_duel_delan_col7 | 763_delan_col7 | 对峙版（763 列与直和双实现锁定） |
 | 765_tri_delan7 | 758_delan_high7 | 三向版（建表×直和×容斥三算法互锁） |
+| 766_sschro | 606_schroder | 小版（606 大数姐妹，769 做对峙） |
+| 767_sschro_seq | 766_sschro | 序列版（766 单值版互补，前7项和直打） |
+| 768_sschro_high | 766_sschro | 高位版（766 低位版互补，770 做对峙） |
+| 769_duel_sschro | 766_sschro | 对峙版（766 短递推与半大数双实现锁定） |
+| 770_duel_sschro_high | 768_sschro_high | 对峙版（768 高位与半大数双实现锁定） |
+| 771_sschro8 | 768_sschro_high | 高位版（768 n=7 版互补，772 做对峙） |
+| 772_duel_sschro8 | 771_sschro8 | 对峙版（771 高位与半大数双实现锁定） |
+| 773_schro78 | 613_schro6 | 高位版（613 S6 版互补，775 做三向） |
+| 774_schro_bridge | 769_duel_sschro | 桥接版（769 对峙版互补，桥大端三锁） |
+| 775_tri_sschro | 768_sschro_high | 三向版（短递推×半大数×半递归三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

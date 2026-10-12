@@ -643,6 +643,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 613_schro6 | 608_schro_high | 高位版（608 高位版互补，614 做对峙） |
 | 614_duel_schro6 | 613_schro6 | 对峙版（613 高位与递归双实现锁定） |
 | 615_tri_schro | 608_schro_high | 三向版（迭代×递归×商式三算法互锁） |
+| 616_delannoy_row | 611_delannoy_tab | 行版（611 建表版互补，高位行和直打） |
+| 617_delannoy_high | 611_delannoy_tab | 高位版（611 低位版互补，618 做对峙） |
+| 618_duel_delan_high | 617_delannoy_high | 对峙版（617 高位与直和双实现锁定） |
+| 619_delannoy_sym | 611_delannoy_tab | 对称版（611 建表版互补，行列镜像互锁） |
+| 620_delannoy_central | 617_delannoy_high | 中央版（617 高位版互补，621 做对峙） |
+| 621_duel_central | 620_delannoy_central | 对峙版（620 中央与直和双实现锁定） |
+| 622_schro_delan | 606_schroder | 桥接版（606×611 两族差式单锁，623 做对峙） |
+| 623_duel_bridge | 622_schro_delan | 对峙版（622 桥式与递推跨族锁定） |
+| 624_delannoy6 | 617_delannoy_high | 高位版（617 高位版互补，625 做三向） |
+| 625_tri_delan | 617_delannoy_high | 三向版（建表×直和×容斥三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

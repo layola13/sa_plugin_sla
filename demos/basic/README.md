@@ -883,6 +883,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 853_duel_narcol29 | 852_nar_col29 | 对峙版（852 列与表式双实现锁定） |
 | 854_nar9_right | 846_nar9 | 右部版（846 左部版互补，全行覆盖） |
 | 855_tri_nar9 | 847_nar_row9 | 三向版（行和×Catalan商式×Catalan卷积三算法互锁） |
+| 856_cat9 | 727_cat_div8 | 高位版（商式 n=7/8 版互补，858 做对峙） |
+| 857_cat_conv9 | 726_cat_conv6 | 卷积版（726 低位版互补，858 做对峙） |
+| 858_duel_cat9 | 856_cat9 | 对峙版（856 商源与卷积双实现锁定） |
+| 859_central18 | 729_central_binom | 分子版（729 低位版互补，860 做对峙） |
+| 860_duel_central9 | 859_central18 | 对峙版（859 乘式与建表双实现锁定） |
+| 861_cat_diff9 | 731_cat_diff | 差式版（731 低位版互补，865 做三向） |
+| 862_duel_catdiff9 | 861_cat_diff9 | 对峙版（861 差源与商源合流） |
+| 863_cat_ratio9 | 733_cat_ratio | 比值版（733 低位版互补，865 做三向） |
+| 864_cat_conv10 | 857_cat_conv9 | 卷积版（857 n=9 版互补，865 做三向） |
+| 865_tri_cat9 | 856_cat9 | 三向版（商式×卷积×比值递推三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

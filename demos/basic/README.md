@@ -743,6 +743,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 713_lah_edge | 706_lah7 | 边值版（706 内格版互补，715 做三向） |
 | 714_lah_row8 | 707_lah_row7 | 行版（707 低位行互补，高位行和再锁） |
 | 715_tri_lah | 707_lah_row7 | 三向版（建表行和×商式行和×递归行和三算法互锁） |
+| 716_nar7 | 596_narayana | 高位版（Narayana 低位版互补，719 做对峙） |
+| 717_nar_row7 | 716_nar7 | 行版（716 单格版互补，行和恒等直打） |
+| 718_nar8 | 716_nar7 | 高位版（716 n=7 版互补，720 做对峙） |
+| 719_duel_nar7 | 717_nar_row7 | 对峙版（717 行和与商式双实现锁定） |
+| 720_duel_nar8 | 718_nar8 | 对峙版（718 高位与商式双实现锁定） |
+| 721_nar_sym | 716_nar7 | 对称版（716 单格版互补，镜像双算一致） |
+| 722_nar_edge | 716_nar7 | 边值版（716 内格版互补，725 做三向） |
+| 723_nar_col2 | 716_nar7 | 列版（716 单格版互补，纵深三值锁定） |
+| 724_nar_row8 | 717_nar_row7 | 行版（717 低位行互补，高位行和再锁） |
+| 725_tri_nar2 | 717_nar_row7 | 三向版（行和×商式×卷积三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

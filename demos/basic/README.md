@@ -923,6 +923,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 893_delan_col8 | 886_delan8 | 列版（886 行视角互补，同值列复算） |
 | 894_duel_delan_col8 | 893_delan_col8 | 对峙版（893 列与直和双实现锁定） |
 | 895_tri_delan8 | 888_delan_high8 | 三向版（拍扁建表×二项直和×容斥和三算法互锁） |
+| 896_schro11 | 788_schro10 | 高位版（大 Schröder n=10 版互补，898 做对峙） |
+| 897_schro_seq11 | 896_schro11 | 序列版（896 单值版互补，前缀和直打） |
+| 898_duel_schro11 | 896_schro11 | 对峙版（896 迭代与商式双实现锁定） |
+| 899_schro12 | 896_schro11 | 高位版（896 n=11 版互补，900 做对峙） |
+| 900_duel_schro12 | 899_schro12 | 对峙版（899 迭代与商式双实现锁定） |
+| 901_sschro1112 | 791_sschro910 | 高位版（791 n=9/10 版互补，902 做对峙） |
+| 902_duel_sschro1112 | 901_sschro1112 | 对峙版（901 短递推与半大数双实现锁定） |
+| 903_schro_qseq11 | 793_schro_qseq | 纵深版（793 n=7/8/9 版互补，905 做三向） |
+| 904_schro_bridge11 | 794_schro_bridge9 | 桥接版（794 n=9/10 桥互补，桥恒等续高位） |
+| 905_tri_schro11 | 896_schro11 | 三向版（迭代×商式×倍小三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

@@ -943,6 +943,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 913_duel_bellrow11 | 912_bell_rowsum11 | 对峙版（912 行源与递推源合流） |
 | 914_bell_parity11 | 784_bell_parity | 奇偶版（784 n=8/9/10 版互补，周期续两位） |
 | 915_tri_bell11 | 906_bell11 | 三向版（二项递推×Aitken三角×二类行和三算法互锁） |
+| 916_eul9 | 798_eul8 | 高位版（Eulerian n=8 版互补，918 做对峙） |
+| 917_eul_row9 | 916_eul9 | 行版（916 单格版互补，行和恒等直打） |
+| 918_duel_eul9 | 916_eul9 | 对峙版（916 建表与交错双实现锁定） |
+| 919_eul_sym9 | 916_eul9 | 对称版（916 单格版互补，行列镜像互锁） |
+| 920_duel_eul910 | 917_eul_row9 | 对峙版（917 内格与交错双实现锁定） |
+| 921_eul_alt9 | 802_eul_alt78 | 交错版（802 低位版互补，925 做三向） |
+| 922_eul_fact9 | 917_eul_row9 | 桥接版（917 行源与阶乘互锁，925 做三向） |
+| 923_duel_eulrow9 | 922_eul_fact9 | 对峙版（922 行源与交错源合流） |
+| 924_eul9_right | 916_eul9 | 右部版（916 左部版互补，全行覆盖） |
+| 925_tri_eul9 | 917_eul_row9 | 三向版（建表行和×交错和行和×阶乘三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

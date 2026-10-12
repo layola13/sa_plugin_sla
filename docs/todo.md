@@ -768,4 +768,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   （`1,10,30,35,14`）；工具链新机重建：zig 0.14.1（现存）+ go 1.22.2 +
   llvm-14-dev + `sci` 直建 + `/content/sci` 符号链接，`sla/http-client/
   http-server` 三插件齐备（`node` install 挂起超时，JEV 98% 裁定延后不阻塞）；
-  本轮无抖动无自误；本轮无新缺口、无需新缺口编号。已推送（待填）。
+  本轮无抖动无自误；本轮无新缺口、无需新缺口编号。已推送（`c32965c`）。

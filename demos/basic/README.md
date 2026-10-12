@@ -653,6 +653,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 623_duel_bridge | 622_schro_delan | 对峙版（622 桥式与递推跨族锁定） |
 | 624_delannoy6 | 617_delannoy_high | 高位版（617 高位版互补，625 做三向） |
 | 625_tri_delan | 617_delannoy_high | 三向版（建表×直和×容斥三算法互锁） |
+| 626_motzkin | 606_schroder | 姐妹版（Schröder 同族格路计数，629 做对峙） |
+| 627_motz_seq | 626_motzkin | 序列版（626 单值版互补，前6项和直打） |
+| 628_motz_high | 626_motzkin | 高位版（626 低位版互补，630 做对峙） |
+| 629_duel_motz | 626_motzkin | 对峙版（626 迭代与递归双实现锁定） |
+| 630_duel_motz_high | 628_motz_high | 对峙版（628 高位与递归双实现锁定） |
+| 631_motz7 | 628_motz_high | 高位版（628 高位版互补，632 做对峙） |
+| 632_duel_motz7 | 631_motz7 | 对峙版（631 高位与直和双实现锁定） |
+| 633_motz_closed | 626_motzkin | 直和版（626 递推版互补，635 做三向） |
+| 634_motz8 | 631_motz7 | 高位版（631 高位版互补，635 做三向） |
+| 635_tri_motz | 628_motz_high | 三向版（迭代×递归×直和三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

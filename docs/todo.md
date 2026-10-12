@@ -989,4 +989,4 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   奇偶周期 `1,1,0` 三值连验（Touchard 同余）；
   写前修正一则（781 README 构建路径笔误 `belltrin`）；
   序列和 `26443` 十项复核；探针三线全绿；
-  本轮无抖动，一写前修正；本轮无新缺口、无需新缺口编号。已推送（待填）。
+  本轮无抖动，一写前修正；本轮无新缺口、无需新缺口编号。已推送（`4974d03`）。

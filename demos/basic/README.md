@@ -673,6 +673,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 643_rio_bridge | 636_riordan | 桥接版（636×626 两族差序单锁，645 做三向） |
 | 644_rio8 | 641_rio7 | 高位版（641 高位版互补，645 做三向） |
 | 645_tri_rio | 638_rio_high | 三向版（短递推×卷积×桥序三算法互锁） |
+| 646_ballot | 351_catalan | 三角版（Catalan 对角线全三角，649 做对峙） |
+| 647_ballot_row | 646_ballot | 行版（646 单格版互补，行和恒等直打） |
+| 648_ballot_high | 646_ballot | 高位版（646 低位版互补，650 做对峙） |
+| 649_duel_ballot | 646_ballot | 对峙版（646 建表与商式双实现锁定） |
+| 650_duel_ballot_high | 648_ballot_high | 对峙版（648 高位与商式双实现锁定） |
+| 651_ballot_reflect | 646_ballot | 差式版（646 建表版互补，655 做三向） |
+| 652_duel_reflect | 646_ballot | 对峙版（646 建表与差式跨算法锁定） |
+| 653_ballot5 | 647_ballot_row | 行版（647 低位行互补，高位行和再锁） |
+| 654_ballot_diag | 351_catalan | 对角版（351 单值版互补，655 做三向） |
+| 655_tri_ballot | 648_ballot_high | 三向版（建表×商式×差式三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

@@ -823,6 +823,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 793_schro_qseq | 789_duel_schro9 | 商式版（789 对峙版互补，795 做三向） |
 | 794_schro_bridge9 | 774_schro_bridge | 桥接版（774 低位桥互补，桥续大端双锁） |
 | 795_tri_schro9 | 786_schro9 | 三向版（迭代×商式×倍小三算法互锁） |
+| 796_eul7 | 666_eulerian | 高位版（Eulerian n≤6 版互补，799 做对峙） |
+| 797_eul_row7 | 796_eul7 | 行版（796 单格版互补，行和恒等直打） |
+| 798_eul8 | 796_eul7 | 高位版（796 n=7 版互补，800 做对峙） |
+| 799_duel_eul7 | 796_eul7 | 对峙版（796 建表与交错和双实现锁定） |
+| 800_duel_eul8 | 798_eul8 | 对峙版（798 高位与交错和双实现锁定） |
+| 801_eul_sym78 | 796_eul7 | 对称版（796 单格版互补，镜像双算一致） |
+| 802_eul_alt78 | 672_eul_alt | 交错版（672 低位版互补，805 做三向） |
+| 803_eul_row8 | 797_eul_row7 | 行版（797 低位行互补，高位行和再锁） |
+| 804_eul_fact78 | 797_eul_row7 | 桥接版（797×230 两族行和恒等单锁，805 做三向） |
+| 805_tri_eul78 | 798_eul8 | 三向版（建表行和×交错行和×阶乘三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

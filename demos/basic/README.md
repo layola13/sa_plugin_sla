@@ -753,6 +753,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 723_nar_col2 | 716_nar7 | 列版（716 单格版互补，纵深三值锁定） |
 | 724_nar_row8 | 717_nar_row7 | 行版（717 低位行互补，高位行和再锁） |
 | 725_tri_nar2 | 717_nar_row7 | 三向版（行和×商式×卷积三算法互锁） |
+| 726_cat_conv6 | 556_cat_conv | 卷积版（556 低位版互补，728 做对峙） |
+| 727_cat_div8 | 351_catalan | 商式版（351 低位版互补，728 做对峙） |
+| 728_duel_cat | 726_cat_conv6 | 对峙版（726 卷积与商式双实现锁定） |
+| 729_central_binom | 557_central | 中央版（557 取顶版互补，730 做对峙） |
+| 730_duel_central | 729_central_binom | 对峙版（729 商式与建表双实现锁定） |
+| 731_cat_diff | 351_catalan | 差式版（351 商式版互补，735 做三向） |
+| 732_duel_catdiff | 731_cat_diff | 对峙版（731 差式与商式跨算法锁定） |
+| 733_cat_ratio | 351_catalan | 比值版（351 商式版互补，735 做三向） |
+| 734_cat_conv8 | 726_cat_conv6 | 卷积版（726 低位版互补，735 做三向） |
+| 735_tri_cat | 727_cat_div8 | 三向版（商式×卷积×比值三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

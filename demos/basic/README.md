@@ -803,6 +803,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 773_schro78 | 613_schro6 | 高位版（613 S6 版互补，775 做三向） |
 | 774_schro_bridge | 769_duel_sschro | 桥接版（769 对峙版互补，桥大端三锁） |
 | 775_tri_sschro | 768_sschro_high | 三向版（短递推×半大数×半递归三算法互锁） |
+| 776_bell9 | 703_stir2_bell | 高位版（Bell n≤8 版互补，779 做对峙） |
+| 777_bell_seq | 776_bell9 | 序列版（776 单值版互补，前10项和直打） |
+| 778_bell10 | 776_bell9 | 高位版（776 n=9 版互补，780 做对峙） |
+| 779_duel_bell9 | 776_bell9 | 对峙版（776 递推与三角双实现锁定） |
+| 780_duel_bell10 | 778_bell10 | 对峙版（778 高位与三角双实现锁定） |
+| 781_belltri | 776_bell9 | 三角版（776 递推版互补，785 做三向） |
+| 782_bell_rowsum | 697_stir2_row7 | 桥接版（697×776 两族行和恒等单锁，785 做三向） |
+| 783_duel_bellrow | 782_bell_rowsum | 对峙版（782 行和与递推跨族锁定） |
+| 784_bell_parity | 776_bell9 | 奇偶版（776 单值版互补，周期三值锁定） |
+| 785_tri_bell | 776_bell9 | 三向版（二项递推×三角×行和三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

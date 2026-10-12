@@ -773,6 +773,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 743_duel_fubp | 742_fubp | 对峙版（742 表版与商版同核异源锁定） |
 | 744_fubp8 | 742_fubp | 高位版（742 n=7 版互补，745 做三向） |
 | 745_tri_fub | 736_fub7 | 三向版（商版递推×加权和×表版递推三算法互锁） |
+| 746_motz9 | 634_motz8 | 高位版（Motzkin n=8 版互补，749 做对峙） |
+| 747_motz_seq9 | 746_motz9 | 序列版（746 单值版互补，前10项和直打） |
+| 748_motz10 | 746_motz9 | 高位版（746 n=9 版互补，750 做对峙） |
+| 749_duel_motz9 | 746_motz9 | 对峙版（746 迭代与直和双实现锁定） |
+| 750_duel_motz10 | 748_motz10 | 对峙版（748 高位与直和双实现锁定） |
+| 751_motz_riob9 | 643_rio_bridge | 桥接版（643 低位桥互补，753 做续桥对峙） |
+| 752_rio910 | 644_rio8 | 高位版（644 n=8 版互补，753 做续桥对峙） |
+| 753_duel_rio910 | 751_motz_riob9 | 对峙版（751 续桥与短递推双实现锁定） |
+| 754_motz_alt910 | 633_motz_closed | 直和版（633 低位版互补，755 做三向） |
+| 755_tri_motz9 | 746_motz9 | 三向版（迭代×直和×桥序和三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

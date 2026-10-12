@@ -863,6 +863,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 833_duel_col210 | 832_stir2_col210 | 对峙版（832 列与三角数双实现锁定） |
 | 834_stir29_right | 826_stir29 | 右部版（826 左部版互补，全行覆盖） |
 | 835_tri_stir29 | 827_stir2_row10 | 三向版（建表行和×Bell递推×Aitken三算法互锁） |
+| 836_lah9 | 708_lah8 | 高位版（Lah n=8 版互补，839 做对峙） |
+| 837_lah_row9 | 836_lah9 | 行版（836 单格版互补，行和恒等直打） |
+| 838_duel_lahcol19 | 711_lah_col1 | 对峙版（711 首列与阶乘跨族续高位锁定） |
+| 839_duel_lah9 | 836_lah9 | 对峙版（836 建表与商式双实现锁定） |
+| 840_duel_lah910 | 836_lah9 | 对峙版（836 内格与商式双实现锁定） |
+| 841_lah_edge9 | 713_lah_edge | 边值版（713 低位版互补，845 做三向） |
+| 842_lah_col29 | 836_lah9 | 列版（836 单格版互补，纵深三值锁定） |
+| 843_duel_lahcol29 | 842_lah_col29 | 对峙版（842 列与边式双实现锁定） |
+| 844_lah9_right | 836_lah9 | 右部版（836 左部版互补，全行覆盖） |
+| 845_tri_lah9 | 837_lah_row9 | 三向版（建表行和×商式行和×递归行和三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

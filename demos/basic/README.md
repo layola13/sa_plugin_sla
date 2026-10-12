@@ -853,6 +853,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 823_duel_col29 | 822_stir1_col29 | 对峙版（822 列与递归双实现锁定） |
 | 824_stir19_right | 816_stir19 | 右部版（816 左部版互补，全行覆盖） |
 | 825_tri_stir19 | 817_stir1_row9 | 三向版（建表行和×递归行和×阶乘三算法互锁） |
+| 826_stir29 | 696_stir27 | 高位版（二类 n=7 版互补，829 做对峙） |
+| 827_stir2_row10 | 826_stir29 | 行版（826 单格版互补，行和恒等直打） |
+| 828_duel_col29 | 701_stir2_col2 | 对峙版（701 首列与幂式跨族续高位锁定） |
+| 829_duel_stir29 | 826_stir29 | 对峙版（826 建表与递归双实现锁定） |
+| 830_duel_stir2910 | 826_stir29 | 对峙版（826 内格与递归双实现锁定） |
+| 831_stir2_edge10 | 821_stir1_edge9 | 边值版（一类边值跨族互补，835 做三向） |
+| 832_stir2_col210 | 826_stir29 | 列版（826 单格版互补，纵深三值锁定） |
+| 833_duel_col210 | 832_stir2_col210 | 对峙版（832 列与三角数双实现锁定） |
+| 834_stir29_right | 826_stir29 | 右部版（826 左部版互补，全行覆盖） |
+| 835_tri_stir29 | 827_stir2_row10 | 三向版（建表行和×Bell递推×Aitken三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

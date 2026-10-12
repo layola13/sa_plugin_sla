@@ -813,6 +813,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 783_duel_bellrow | 782_bell_rowsum | 对峙版（782 行和与递推跨族锁定） |
 | 784_bell_parity | 776_bell9 | 奇偶版（776 单值版互补，周期三值锁定） |
 | 785_tri_bell | 776_bell9 | 三向版（二项递推×三角×行和三算法互锁） |
+| 786_schro9 | 773_schro78 | 高位版（大续 S78 版互补，789 做对峙） |
+| 787_schro_seq9 | 786_schro9 | 序列版（786 单值版互补，前10项和直打） |
+| 788_schro10 | 786_schro9 | 高位版（786 n=9 版互补，790 做对峙） |
+| 789_duel_schro9 | 786_schro9 | 对峙版（786 迭代与商式双实现锁定） |
+| 790_duel_schro10 | 788_schro10 | 对峙版（788 高位与商式双实现锁定） |
+| 791_sschro910 | 771_sschro8 | 高位版（771 n=8 版互补，792 做续桥对峙） |
+| 792_duel_sschro910 | 791_sschro910 | 对峙版（791 续桥与半大数双实现锁定） |
+| 793_schro_qseq | 789_duel_schro9 | 商式版（789 对峙版互补，795 做三向） |
+| 794_schro_bridge9 | 774_schro_bridge | 桥接版（774 低位桥互补，桥续大端双锁） |
+| 795_tri_schro9 | 786_schro9 | 三向版（迭代×商式×倍小三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

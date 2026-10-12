@@ -683,6 +683,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 653_ballot5 | 647_ballot_row | 行版（647 低位行互补，高位行和再锁） |
 | 654_ballot_diag | 351_catalan | 对角版（351 单值版互补，655 做三向） |
 | 655_tri_ballot | 648_ballot_high | 三向版（建表×商式×差式三算法互锁） |
+| 656_fine | 351_catalan | 姐妹版（Catalan 姐妹序列，659 做对峙） |
+| 657_fine_seq | 656_fine | 序列版（656 单值版互补，前7项和直打） |
+| 658_fine_high | 656_fine | 高位版（656 低位版互补，660 做对峙） |
+| 659_duel_fine | 656_fine | 对峙版（656 短递推与桥序双实现锁定） |
+| 660_duel_fine_high | 658_fine_high | 对峙版（658 高位与桥序双实现锁定） |
+| 661_fine7 | 658_fine_high | 高位版（658 高位版互补，662 做对峙） |
+| 662_duel_fine7 | 661_fine7 | 对峙版（661 高位与卷积双实现锁定） |
+| 663_fine_bridge | 656_fine | 桥接版（656×351 两族差序单锁，665 做三向） |
+| 664_fine8 | 661_fine7 | 高位版（661 高位版互补，665 做三向） |
+| 665_tri_fine | 658_fine_high | 三向版（短递推×卷积×桥序三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

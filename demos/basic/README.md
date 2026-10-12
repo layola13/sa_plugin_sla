@@ -693,6 +693,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 663_fine_bridge | 656_fine | 桥接版（656×351 两族差序单锁，665 做三向） |
 | 664_fine8 | 661_fine7 | 高位版（661 高位版互补，665 做三向） |
 | 665_tri_fine | 658_fine_high | 三向版（短递推×卷积×桥序三算法互锁） |
+| 666_eulerian | 646_ballot | 三角版（Ballot 同族加权三角，669 做对峙） |
+| 667_eul_row | 666_eulerian | 行版（666 单格版互补，行和恒等直打） |
+| 668_eul_high | 666_eulerian | 高位版（666 低位版互补，670 做对峙） |
+| 669_duel_eul | 666_eulerian | 对峙版（666 建表与交错和双实现锁定） |
+| 670_duel_eul_high | 668_eul_high | 对峙版（668 高位与交错和双实现锁定） |
+| 671_eul_sym | 666_eulerian | 对称版（666 单格版互补，镜像双算一致） |
+| 672_eul_alt | 666_eulerian | 交错版（666 建表版互补，675 做三向） |
+| 673_eul_row6 | 667_eul_row | 行版（667 低位行互补，高位行和再锁） |
+| 674_eul_fact | 667_eul_row | 桥接版（667×230 两族行和恒等单锁，675 做三向） |
+| 675_tri_eul | 668_eul_high | 三向版（建表行和×交错行和×阶乘三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

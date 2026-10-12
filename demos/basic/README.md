@@ -783,6 +783,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 753_duel_rio910 | 751_motz_riob9 | 对峙版（751 续桥与短递推双实现锁定） |
 | 754_motz_alt910 | 633_motz_closed | 直和版（633 低位版互补，755 做三向） |
 | 755_tri_motz9 | 746_motz9 | 三向版（迭代×直和×桥序和三算法互锁） |
+| 756_delan7 | 611_delannoy_tab | 高位版（Delannoy n≤6 版互补，759 做对峙） |
+| 757_delan_row7 | 756_delan7 | 行版（756 单格版互补，行和恒等直打） |
+| 758_delan_high7 | 624_delannoy6 | 中央版（624 D66 版互补，759 做对峙） |
+| 759_duel_delan7 | 758_delan_high7 | 对峙版（758 中央与直和双实现锁定） |
+| 760_duel_delan76 | 758_delan_high7 | 对峙版（758 高位与直和双实现锁定） |
+| 761_delan_sym7 | 756_delan7 | 对称版（756 单格版互补，镜像双算一致） |
+| 762_delan_central7 | 620_delannoy_central | 中央版（620 低位版互补，765 做三向） |
+| 763_delan_col7 | 756_delan7 | 列版（756 行视角互补，纵深三值锁定） |
+| 764_duel_delan_col7 | 763_delan_col7 | 对峙版（763 列与直和双实现锁定） |
+| 765_tri_delan7 | 758_delan_high7 | 三向版（建表×直和×容斥三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

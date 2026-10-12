@@ -843,6 +843,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 813_eulb_row7 | 807_eulb_row6 | 行版（807 低位行互补，高位行和再锁） |
 | 814_eulb_fact67 | 807_eulb_row6 | 桥接版（807×684 两族行和恒等单锁，815 做三向） |
 | 815_tri_eulb67 | 808_eulb7 | 三向版（建表行和×交错行和×公式三算法互锁） |
+| 816_stir19 | 686_stir17 | 高位版（一类 n=7 版互补，819 做对峙） |
+| 817_stir1_row9 | 816_stir19 | 行版（816 单格版互补，行和恒等直打） |
+| 818_duel_col19 | 691_stir1_col1 | 对峙版（691 首列与阶乘跨族续高位锁定） |
+| 819_duel_stir19 | 816_stir19 | 对峙版（816 建表与递归双实现锁定） |
+| 820_duel_stir194 | 816_stir19 | 对峙版（816 内格与递归双实现锁定） |
+| 821_stir1_edge9 | 693_stir1_edge | 边值版（693 低位版互补，825 做三向） |
+| 822_stir1_col29 | 816_stir19 | 列版（816 单格版互补，纵深三值锁定） |
+| 823_duel_col29 | 822_stir1_col29 | 对峙版（822 列与递归双实现锁定） |
+| 824_stir19_right | 816_stir19 | 右部版（816 左部版互补，全行覆盖） |
+| 825_tri_stir19 | 817_stir1_row9 | 三向版（建表行和×递归行和×阶乘三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

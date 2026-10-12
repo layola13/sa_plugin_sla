@@ -913,6 +913,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 883_duel_rio1112 | 881_motz_riob11 | 对峙版（881 短递推与桥序双实现锁定） |
 | 884_motz_alt1112 | 754_motz_alt910 | 直和版（754 低位版互补，885 做三向） |
 | 885_tri_motz11 | 876_motz11 | 三向版（迭代×直和×桥序和三算法互锁） |
+| 886_delan8 | 756_delan7 | 高位版（Delannoy n=7 版互补，889 做对峙） |
+| 887_delan_row8 | 886_delan8 | 行版（886 单格版互补，行和恒等直打） |
+| 888_delan_high8 | 758_delan_high7 | 中央版（758 D(7,7) 版互补，889 做对峙） |
+| 889_duel_delan8 | 888_delan_high8 | 对峙版（888 建表与直和双实现锁定） |
+| 890_duel_delan86 | 887_delan_row8 | 对峙版（887 内格与直和双实现锁定） |
+| 891_delan_sym8 | 886_delan8 | 对称版（886 单格版互补，行列镜像互锁） |
+| 892_delan_central8 | 762_delan_central7 | 中央版（762 低位版互补，895 做三向） |
+| 893_delan_col8 | 886_delan8 | 列版（886 行视角互补，同值列复算） |
+| 894_duel_delan_col8 | 893_delan_col8 | 对峙版（893 列与直和双实现锁定） |
+| 895_tri_delan8 | 888_delan_high8 | 三向版（拍扁建表×二项直和×容斥和三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

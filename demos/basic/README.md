@@ -763,6 +763,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 733_cat_ratio | 351_catalan | 比值版（351 商式版互补，735 做三向） |
 | 734_cat_conv8 | 726_cat_conv6 | 卷积版（726 低位版互补，735 做三向） |
 | 735_tri_cat | 727_cat_div8 | 三向版（商式×卷积×比值三算法互锁） |
+| 736_fub7 | 588_fubini | 高位版（Fubini 低位版互补，739 做对峙） |
+| 737_fub_seq | 736_fub7 | 序列版（736 单值版互补，前8项和直打） |
+| 738_fub8 | 736_fub7 | 高位版（736 n=7 版互补，740 做对峙） |
+| 739_duel_fub7 | 736_fub7 | 对峙版（736 递推与加权双实现锁定） |
+| 740_duel_fub8 | 738_fub8 | 对峙版（738 高位与加权双实现锁定） |
+| 741_fubw | 588_fubini | 加权版（588 低位版互补，745 做三向） |
+| 742_fubp | 736_fub7 | 表版（736 商版互补，743 做表商对峙） |
+| 743_duel_fubp | 742_fubp | 对峙版（742 表版与商版同核异源锁定） |
+| 744_fubp8 | 742_fubp | 高位版（742 n=7 版互补，745 做三向） |
+| 745_tri_fub | 736_fub7 | 三向版（商版递推×加权和×表版递推三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

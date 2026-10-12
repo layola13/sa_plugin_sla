@@ -833,6 +833,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 803_eul_row8 | 797_eul_row7 | 行版（797 低位行互补，高位行和再锁） |
 | 804_eul_fact78 | 797_eul_row7 | 桥接版（797×230 两族行和恒等单锁，805 做三向） |
 | 805_tri_eul78 | 798_eul8 | 三向版（建表行和×交错行和×阶乘三算法互锁） |
+| 806_eulb6 | 676_eulb | 高位版（B 型 n≤5 版互补，809 做对峙） |
+| 807_eulb_row6 | 806_eulb6 | 行版（806 单格版互补，行和恒等直打） |
+| 808_eulb7 | 806_eulb6 | 高位版（806 n=6 版互补，810 做对峙） |
+| 809_duel_eulb6 | 806_eulb6 | 对峙版（806 建表与交错和双实现锁定） |
+| 810_duel_eulb7 | 808_eulb7 | 对峙版（808 高位与交错和双实现锁定） |
+| 811_eulb_sym67 | 806_eulb6 | 对称版（806 单格版互补，镜像双算一致） |
+| 812_eulb_alt67 | 682_eulb_alt | 交错版（682 低位版互补，815 做三向） |
+| 813_eulb_row7 | 807_eulb_row6 | 行版（807 低位行互补，高位行和再锁） |
+| 814_eulb_fact67 | 807_eulb_row6 | 桥接版（807×684 两族行和恒等单锁，815 做三向） |
+| 815_tri_eulb67 | 808_eulb7 | 三向版（建表行和×交错行和×公式三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

@@ -663,6 +663,16 @@ for d in demos/basic/*/; do echo "== $d"; SA_PLUGIN_DEV=1 sa sla test "$d/main.s
 | 633_motz_closed | 626_motzkin | 直和版（626 递推版互补，635 做三向） |
 | 634_motz8 | 631_motz7 | 高位版（631 高位版互补，635 做三向） |
 | 635_tri_motz | 628_motz_high | 三向版（迭代×递归×直和三算法互锁） |
+| 636_riordan | 626_motzkin | 姐妹版（Motzkin 姐妹序列，639 做对峙） |
+| 637_rio_seq | 636_riordan | 序列版（636 单值版互补，前7项和直打） |
+| 638_rio_high | 636_riordan | 高位版（636 低位版互补，640 做对峙） |
+| 639_duel_rio | 636_riordan | 对峙版（636 短递推与卷积双实现锁定） |
+| 640_duel_rio_high | 638_rio_high | 对峙版（638 高位与卷积双实现锁定） |
+| 641_rio7 | 638_rio_high | 高位版（638 高位版互补，642 做对峙） |
+| 642_duel_rio7 | 641_rio7 | 对峙版（641 高位与卷积双实现锁定） |
+| 643_rio_bridge | 636_riordan | 桥接版（636×626 两族差序单锁，645 做三向） |
+| 644_rio8 | 641_rio7 | 高位版（641 高位版互补，645 做三向） |
+| 645_tri_rio | 638_rio_high | 三向版（短递推×卷积×桥序三算法互锁） |
 
 > 说明：TS 的高阶方法（`map/filter/reduce/find`）在 SLA 中用显式循环 + 闭包表达，
 > 避免依赖尚未进入 direct-SAB 快路径的迭代器协议（roadmap Phase 6）。

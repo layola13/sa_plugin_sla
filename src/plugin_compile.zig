@@ -57,7 +57,7 @@ pub fn pruneTestsByFilter(allocator: std.mem.Allocator, program: *ast.Node, filt
     if (filter == null or filter.?.len == 0) return;
     if (program.* != .program) return error.InvalidProgram;
 
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         if (decl.* == .test_decl and !testMatchesFilter(&decl.test_decl, filter)) continue;
@@ -126,7 +126,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
     defer reachable.deinit();
     var referenced_types = std.StringHashMap(void).init(allocator);
     defer referenced_types.deinit();
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     defer worklist.deinit();
     var scanned_symbol_roots = std.StringHashMap(void).init(allocator);
     defer scanned_symbol_roots.deinit();
@@ -203,7 +203,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
         try pruneKnownFalseBranchesInReachableDecls(allocator, program, &analysis, &reachable);
     }
 
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         switch (decl.*) {
@@ -222,7 +222,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
                     try filtered_decls.append(decl);
                     continue;
                 };
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (impl_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -251,7 +251,7 @@ pub fn pruneUnreachableTestFunctionDeclsBeforeTypeCheck(
                     try filtered_decls.append(decl);
                     continue;
                 };
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (overload_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -291,7 +291,7 @@ fn pruneUnreachableFilteredTestDecls(
     if (program.* != .program) return error.InvalidProgram;
 
     var reachable = std.StringHashMap(void).init(allocator);
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     try reachable.ensureTotalCapacity(@intCast(program.program.decls.len));
     try worklist.ensureTotalCapacity(program.program.decls.len);
 
@@ -342,7 +342,7 @@ fn pruneUnreachableFilteredTestDecls(
         }
     }
 
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         switch (decl.*) {
@@ -375,7 +375,7 @@ fn pruneUnreachableFilteredTestDecls(
                     continue;
                 };
 
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (impl_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -401,7 +401,7 @@ fn pruneUnreachableFilteredTestDecls(
                     try filtered_decls.append(decl);
                     continue;
                 };
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (overload_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -437,7 +437,7 @@ fn pruneUnreachableEntryFunctionDecls(
     const entry = tc.funcs.get(entry_name) orelse return;
 
     var reachable = std.StringHashMap(void).init(allocator);
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     try reachable.ensureTotalCapacity(@intCast(program.program.decls.len));
     try worklist.ensureTotalCapacity(program.program.decls.len);
 
@@ -485,7 +485,7 @@ fn pruneUnreachableEntryFunctionDecls(
         }
     }
 
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(program.program.decls.len);
     for (program.program.decls) |decl| {
         switch (decl.*) {
@@ -519,7 +519,7 @@ fn pruneUnreachableEntryFunctionDecls(
                     continue;
                 };
 
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (impl_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -545,7 +545,7 @@ fn pruneUnreachableEntryFunctionDecls(
                     try filtered_decls.append(decl);
                     continue;
                 };
-                var methods = std.ArrayList(*ast.Node).init(allocator);
+                var methods = std.array_list.Managed(*ast.Node).init(allocator);
                 for (overload_decl.methods) |method| {
                     if (method.* != .func_decl) {
                         try methods.append(method);
@@ -640,9 +640,9 @@ fn runSlaFrontend(
     else
         SlaModuleTable.init(allocator);
     defer import_modules.deinit();
-    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
     defer root_import_groups.deinit();
-    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    var contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
     defer contract_imports.deinit();
     const expanded_prog = expandSlaImportsWithModuleTableUsingContractTypeChecker(allocator, prog, file, &primary_decls, .{
         .prune_for_test_codegen = options.prune_for_test_codegen,
@@ -712,7 +712,7 @@ fn runSlaFrontend(
 
     // Filter specialized_prog to only include primary declarations
     stage_start = std.time.nanoTimestamp();
-    var filtered_decls = std.ArrayList(*ast.Node).init(allocator);
+    var filtered_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try filtered_decls.ensureTotalCapacity(specialized_prog.program.decls.len);
     for (specialized_prog.program.decls) |decl| {
         if (specialized_primary_decls.contains(decl)) {

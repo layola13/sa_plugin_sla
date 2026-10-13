@@ -86,7 +86,7 @@ fn isInjectedStateRelease(line: []const u8, state_fields: []const HandlerStateFi
 }
 
 fn filterSupportFunctions(allocator: std.mem.Allocator, raw_support: []const u8, state_fields: []const HandlerStateField) ![]const u8 {
-    var out = std.ArrayList(u8).init(allocator);
+    var out = std.array_list.Managed(u8).init(allocator);
     errdefer out.deinit();
 
     var lines = std.mem.splitScalar(u8, raw_support, '\n');
@@ -114,9 +114,9 @@ fn extractFunctionParts(allocator: std.mem.Allocator, sa_code: []const u8, handl
 
     var lines = std.mem.splitScalar(u8, sa_code, '\n');
     var found = false;
-    var body = std.ArrayList(u8).init(allocator);
+    var body = std.array_list.Managed(u8).init(allocator);
     errdefer body.deinit();
-    var support = std.ArrayList(u8).init(allocator);
+    var support = std.array_list.Managed(u8).init(allocator);
     errdefer support.deinit();
 
     while (lines.next()) |line| {
@@ -168,7 +168,7 @@ fn appendExpandedSlaImportDecls(
     base_dir: []const u8,
     import_path: []const u8,
     visited: *std.StringHashMap(void),
-    out_decls: *std.ArrayList(*ast.Node),
+    out_decls: *std.array_list.Managed(*ast.Node),
 ) !void {
     if (!std.mem.endsWith(u8, import_path, ".sla")) {
         const import_decl = try allocator.create(ast.Node);
@@ -203,7 +203,7 @@ fn expandSlaImports(allocator: std.mem.Allocator, program: *ast.Node, base_dir: 
     var visited = std.StringHashMap(void).init(allocator);
     defer visited.deinit();
 
-    var decls = std.ArrayList(*ast.Node).init(allocator);
+    var decls = std.array_list.Managed(*ast.Node).init(allocator);
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
             try appendExpandedSlaImportDecls(allocator, base_dir, decl.import_decl.path, &visited, &decls);

@@ -6,7 +6,7 @@ const type_checker_mod = @import("type_checker.zig");
 fn markReachableFunc(
     tc: *const type_checker_mod.TypeChecker,
     reachable: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     name: []const u8,
 ) anyerror!void {
     if (!tc.funcs.contains(name)) return;
@@ -44,7 +44,7 @@ fn associatedReachableFuncKey(
 fn markReachableCallTarget(
     tc: *const type_checker_mod.TypeChecker,
     reachable: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     expr: *const ast.Node,
     call: ast.CallExpr,
 ) anyerror!void {
@@ -79,7 +79,7 @@ fn markReachableCallTarget(
 fn markReachableProtocolMethod(
     tc: *const type_checker_mod.TypeChecker,
     reachable: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     iterable_ty: *ast.Type,
     method_name: []const u8,
 ) !void {
@@ -95,7 +95,7 @@ fn markReachableProtocolMethod(
 pub fn collectReachableExpr(
     tc: *const type_checker_mod.TypeChecker,
     reachable: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     expr: *const ast.Node,
 ) anyerror!void {
     switch (expr.*) {
@@ -165,7 +165,7 @@ pub fn collectReachableExpr(
 pub fn collectReachableBlock(
     tc: *const type_checker_mod.TypeChecker,
     reachable: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     block: []const *ast.Node,
 ) anyerror!void {
     for (block) |stmt| {

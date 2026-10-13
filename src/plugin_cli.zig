@@ -64,11 +64,11 @@ pub fn saTestFilterFromArgs(args: []const []const u8) ?[]const u8 {
     return null;
 }
 
-pub fn appendSaTestPassthrough(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
+pub fn appendSaTestPassthrough(argv: *std.array_list.Managed([]const u8), args: []const []const u8) !void {
     try appendSaTestPassthroughInternal(argv, args, .keep_filter);
 }
 
-pub fn appendCompiledSaTestPassthrough(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
+pub fn appendCompiledSaTestPassthrough(argv: *std.array_list.Managed([]const u8), args: []const []const u8) !void {
     try appendSaTestPassthroughInternal(argv, args, .strip_filter);
 }
 
@@ -77,7 +77,7 @@ const FilterPassthroughMode = enum {
     strip_filter,
 };
 
-fn appendSaTestPassthroughInternal(argv: *std.ArrayList([]const u8), args: []const []const u8, filter_mode: FilterPassthroughMode) !void {
+fn appendSaTestPassthroughInternal(argv: *std.array_list.Managed([]const u8), args: []const []const u8, filter_mode: FilterPassthroughMode) !void {
     var idx: usize = 0;
     while (idx < args.len) : (idx += 1) {
         const arg = args[idx];
@@ -105,7 +105,7 @@ fn hasJobsArg(args: []const []const u8) bool {
     return false;
 }
 
-pub fn appendDefaultJobsAuto(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
+pub fn appendDefaultJobsAuto(argv: *std.array_list.Managed([]const u8), args: []const []const u8) !void {
     if (hasJobsArg(args)) return;
     try argv.append("--jobs");
     try argv.append("auto");
@@ -453,13 +453,13 @@ pub fn parseSlaCliOptions(args: []const []const u8, command: []const u8) !SlaCli
 }
 
 test "sla delegated SA commands default to jobs auto unless supplied" {
-    var test_argv = std.ArrayList([]const u8).init(std.testing.allocator);
+    var test_argv = std.array_list.Managed([]const u8).init(std.testing.allocator);
     defer test_argv.deinit();
     try appendSaTestPassthrough(&test_argv, &.{ "--filter", "one" });
     try std.testing.expectEqualStrings("--jobs", test_argv.items[test_argv.items.len - 2]);
     try std.testing.expectEqualStrings("auto", test_argv.items[test_argv.items.len - 1]);
 
-    var explicit_argv = std.ArrayList([]const u8).init(std.testing.allocator);
+    var explicit_argv = std.array_list.Managed([]const u8).init(std.testing.allocator);
     defer explicit_argv.deinit();
     try appendSaTestPassthrough(&explicit_argv, &.{ "--filter", "one", "--jobs", "2" });
     var auto_count: usize = 0;
@@ -470,7 +470,7 @@ test "sla delegated SA commands default to jobs auto unless supplied" {
 }
 
 test "sla compiled test passthrough strips source-only test selection for child runner" {
-    var argv = std.ArrayList([]const u8).init(std.testing.allocator);
+    var argv = std.array_list.Managed([]const u8).init(std.testing.allocator);
     defer argv.deinit();
     try appendCompiledSaTestPassthrough(&argv, &.{ "--filter", "one", "--trace-panic", "--jobs=1", "--test-backend", "sab" });
 
@@ -483,7 +483,7 @@ test "sla compiled test passthrough strips source-only test selection for child 
     try std.testing.expectEqualStrings("--trace-panic", argv.items[0]);
     try std.testing.expectEqualStrings("--jobs=1", argv.items[1]);
 
-    var argv_eq = std.ArrayList([]const u8).init(std.testing.allocator);
+    var argv_eq = std.array_list.Managed([]const u8).init(std.testing.allocator);
     defer argv_eq.deinit();
     try appendCompiledSaTestPassthrough(&argv_eq, &.{ "--filter=one", "--trace-panic" });
     try std.testing.expectEqual(@as(usize, 3), argv_eq.items.len);

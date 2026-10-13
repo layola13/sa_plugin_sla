@@ -119,7 +119,7 @@ pub const Lexer = struct {
     /// `{`/`}` adjust it only when > 0, so plain blocks are untouched.
     interp_depth: u16 = 0,
     /// Saved interp depths for nested templates (cap 8, else invalid).
-    tmpl_stack: [8]u16 = [_]u16{0} ** 8,
+    tmpl_stack: [8]u16 = [_]u16{0}**8,
     tmpl_sp: u8 = 0,
 
     pub fn init(buffer: []const u8) Lexer {

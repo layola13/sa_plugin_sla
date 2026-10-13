@@ -95,7 +95,7 @@ pub const Options = struct {
 pub const Codegen = struct {
     allocator: std.mem.Allocator,
     tc: *type_checker.TypeChecker,
-    out: std.ArrayList(u8),
+    out: std.array_list.Managed(u8),
     tmp_idx: usize,
     label_idx: usize,
     string_idx: usize,
@@ -145,14 +145,14 @@ pub const Codegen = struct {
     future_state_vtables: std.StringHashMap([]const u8),
     future_readiness: std.StringHashMap(lowering_rules.FutureReadiness),
     executor_task_counts: std.StringHashMap(usize),
-    binding_aliases: std.StringHashMap(std.ArrayList([]const u8)),
+    binding_aliases: std.StringHashMap(std.array_list.Managed([]const u8)),
     let_binding_aliases: std.AutoHashMap(*const ast.Node, []const u8),
     injected_address_bindings: std.StringHashMap([]const u8),
-    loop_continue_labels: std.ArrayList([]const u8),
-    loop_break_labels: std.ArrayList([]const u8),
-    loop_body_local_scopes: std.ArrayList(std.ArrayList([]const u8)),
-    loop_body_block_depths: std.ArrayList(usize),
-    current_expr_later_nodes: std.ArrayList(*const ast.Node),
+    loop_continue_labels: std.array_list.Managed([]const u8),
+    loop_break_labels: std.array_list.Managed([]const u8),
+    loop_body_local_scopes: std.array_list.Managed(std.array_list.Managed([]const u8)),
+    loop_body_block_depths: std.array_list.Managed(usize),
+    current_expr_later_nodes: std.array_list.Managed(*const ast.Node),
     current_block: ?[]const *ast.Node = null,
     current_stmt_index: usize = 0,
     current_async: bool,
@@ -173,7 +173,7 @@ pub const Codegen = struct {
         return .{
             .allocator = allocator,
             .tc = tc,
-            .out = std.ArrayList(u8).init(allocator),
+            .out = std.array_list.Managed(u8).init(allocator),
             .tmp_idx = 0,
             .label_idx = 0,
             .string_idx = 0,
@@ -223,14 +223,14 @@ pub const Codegen = struct {
             .future_state_vtables = std.StringHashMap([]const u8).init(allocator),
             .future_readiness = std.StringHashMap(lowering_rules.FutureReadiness).init(allocator),
             .executor_task_counts = std.StringHashMap(usize).init(allocator),
-            .binding_aliases = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
+            .binding_aliases = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
             .let_binding_aliases = std.AutoHashMap(*const ast.Node, []const u8).init(allocator),
             .injected_address_bindings = injected_address_bindings,
-            .loop_continue_labels = std.ArrayList([]const u8).init(allocator),
-            .loop_break_labels = std.ArrayList([]const u8).init(allocator),
-            .loop_body_local_scopes = std.ArrayList(std.ArrayList([]const u8)).init(allocator),
-            .loop_body_block_depths = std.ArrayList(usize).init(allocator),
-            .current_expr_later_nodes = std.ArrayList(*const ast.Node).init(allocator),
+            .loop_continue_labels = std.array_list.Managed([]const u8).init(allocator),
+            .loop_break_labels = std.array_list.Managed([]const u8).init(allocator),
+            .loop_body_local_scopes = std.array_list.Managed(std.array_list.Managed([]const u8)).init(allocator),
+            .loop_body_block_depths = std.array_list.Managed(usize).init(allocator),
+            .current_expr_later_nodes = std.array_list.Managed(*const ast.Node).init(allocator),
             .current_async = false,
             .current_async_return_ty = null,
             .async_pending_return_emitted = false,
@@ -337,7 +337,7 @@ pub const Codegen = struct {
         const alias = try self.newTmp();
         var entry = self.binding_aliases.getOrPut(name) catch return CodegenError.OutOfMemory;
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+            entry.value_ptr.* = std.array_list.Managed([]const u8).init(self.allocator);
         }
         entry.value_ptr.append(alias) catch return CodegenError.OutOfMemory;
         return alias;
@@ -352,7 +352,7 @@ pub const Codegen = struct {
     fn pushBindingAliasTo(self: *Codegen, name: []const u8, alias: []const u8) CodegenError!void {
         var entry = self.binding_aliases.getOrPut(name) catch return CodegenError.OutOfMemory;
         if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+            entry.value_ptr.* = std.array_list.Managed([]const u8).init(self.allocator);
         }
         entry.value_ptr.append(alias) catch return CodegenError.OutOfMemory;
     }
@@ -392,14 +392,14 @@ pub const Codegen = struct {
         self: *Codegen,
         macro_decl: *const ast.MacroDecl,
         body: []const *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
-        var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
+        var scoped_aliases = std.array_list.Managed([]const u8).init(self.allocator);
         const SavedLocalType = struct {
             name: []const u8,
             old_ty: ?*const ast.Type,
         };
-        var scoped_types = std.ArrayList(SavedLocalType).init(self.allocator);
+        var scoped_types = std.array_list.Managed(SavedLocalType).init(self.allocator);
         defer {
             var type_i = scoped_types.items.len;
             while (type_i > 0) {
@@ -466,13 +466,13 @@ pub const Codegen = struct {
         self: *Codegen,
         macro_decl: *const ast.MacroDecl,
         body: []const *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (body.len == 0 or body[body.len - 1].* != .expr_stmt) return CodegenError.CodegenError;
 
-        var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
+        var scoped_aliases = std.array_list.Managed([]const u8).init(self.allocator);
         const SavedLocalType = struct { name: []const u8, old_ty: ?*const ast.Type };
-        var scoped_types = std.ArrayList(SavedLocalType).init(self.allocator);
+        var scoped_types = std.array_list.Managed(SavedLocalType).init(self.allocator);
         defer {
             var type_i = scoped_types.items.len;
             while (type_i > 0) {
@@ -534,13 +534,13 @@ pub const Codegen = struct {
         self: *Codegen,
         macro_decl: *const ast.MacroDecl,
         call: *const ast.CallExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (macro_decl.params.len != call.args.len) return CodegenError.CodegenError;
 
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var arg_types = std.ArrayList(?*const ast.Type).init(self.allocator);
+        var arg_types = std.array_list.Managed(?*const ast.Type).init(self.allocator);
         defer arg_types.deinit();
         for (call.args) |arg| {
             const arg_ty = self.resolvedTypeForExpr(arg);
@@ -553,10 +553,10 @@ pub const Codegen = struct {
             old_expr: ?*const ast.Node,
             old_ty: ?*const ast.Type,
         };
-        var saved_args = std.ArrayList(SavedArg).init(self.allocator);
+        var saved_args = std.array_list.Managed(SavedArg).init(self.allocator);
         defer saved_args.deinit();
 
-        var aliased_params = std.ArrayList([]const u8).init(self.allocator);
+        var aliased_params = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             var i = aliased_params.items.len;
             while (i > 0) {
@@ -706,7 +706,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn genDynBorrowCoercionArg(self: *Codegen, arg: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDynBorrowCoercionArg(self: *Codegen, arg: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const source_expr = if (arg.* == .borrow_expr) arg.borrow_expr.expr else arg;
         const source_ty = self.tc.expr_types.get(source_expr) orelse return CodegenError.CodegenError;
         const source_reg = try self.genExpr(source_expr, hoisted_allocs);
@@ -730,7 +730,7 @@ pub const Codegen = struct {
         return fat_reg;
     }
 
-    fn genDynBoxCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDynBoxCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
         const inner_ty = boxInnerType(expr_ty) orelse return CodegenError.CodegenError;
         const type_name = concreteTypeName(inner_ty) orelse return CodegenError.CodegenError;
@@ -749,7 +749,7 @@ pub const Codegen = struct {
         return fat_reg;
     }
 
-    fn genDynRcCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDynRcCoercionExpr(self: *Codegen, expr: *ast.Node, trait_name: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (expr.* != .call_expr) return CodegenError.CodegenError;
         const call = expr.call_expr;
         if (call.args.len != 1) return CodegenError.CodegenError;
@@ -772,7 +772,7 @@ pub const Codegen = struct {
         return rc_reg;
     }
 
-    fn genDynCoercionExpr(self: *Codegen, expr: *ast.Node, plan: lowering_rules.DynCoercionPlan, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDynCoercionExpr(self: *Codegen, expr: *ast.Node, plan: lowering_rules.DynCoercionPlan, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (plan.isBoxToDyn()) {
             return try self.genDynBoxCoercionExpr(expr, plan.trait_name, hoisted_allocs);
         }
@@ -918,7 +918,7 @@ pub const Codegen = struct {
         if (self.metadata_open_results.contains(resolved_name)) {
             _ = self.metadata_open_results.remove(resolved_name);
         }
-        var handles_to_release = std.ArrayList([]const u8).init(self.allocator);
+        var handles_to_release = std.array_list.Managed([]const u8).init(self.allocator);
         defer handles_to_release.deinit();
         var handle_iter = self.refcell_borrow_handles.iterator();
         while (handle_iter.next()) |entry| {
@@ -1028,7 +1028,7 @@ pub const Codegen = struct {
     }
 
     fn pushLoopBodyLocalScope(self: *Codegen) CodegenError!void {
-        self.loop_body_local_scopes.append(std.ArrayList([]const u8).init(self.allocator)) catch return CodegenError.OutOfMemory;
+        self.loop_body_local_scopes.append(std.array_list.Managed([]const u8).init(self.allocator)) catch return CodegenError.OutOfMemory;
         self.loop_body_block_depths.append(0) catch return CodegenError.OutOfMemory;
     }
 
@@ -1059,7 +1059,7 @@ pub const Codegen = struct {
         self.loop_body_local_scopes.items[scope_index].append(name) catch return CodegenError.OutOfMemory;
     }
 
-    fn cleanupListContainsName(self: *Codegen, list: ?*const std.ArrayList([]const u8), name: []const u8) bool {
+    fn cleanupListContainsName(self: *Codegen, list: ?*const std.array_list.Managed([]const u8), name: []const u8) bool {
         const cleanup_list = list orelse return false;
         const resolved_name = self.resolveBindingName(name);
         for (cleanup_list.items) |item| {
@@ -1089,7 +1089,7 @@ pub const Codegen = struct {
         return false;
     }
 
-    fn emitActiveLoopBodyLocalCleanups(self: *Codegen, skip_list: ?*const std.ArrayList([]const u8), force_consumed_primitive: bool) CodegenError!void {
+    fn emitActiveLoopBodyLocalCleanups(self: *Codegen, skip_list: ?*const std.array_list.Managed([]const u8), force_consumed_primitive: bool) CodegenError!void {
         if (self.loop_body_local_scopes.items.len == 0) return;
         const scope = &self.loop_body_local_scopes.items[self.loop_body_local_scopes.items.len - 1];
         var i = scope.items.len;
@@ -1793,7 +1793,7 @@ pub const Codegen = struct {
 
         try self.collectThreadClosureCapturesInExpr(closure.body, &captures, &locals);
 
-        var ordered = std.ArrayList(ThreadCapture).init(self.allocator);
+        var ordered = std.array_list.Managed(ThreadCapture).init(self.allocator);
         errdefer ordered.deinit();
         var iter = captures.iterator();
         var offset: usize = 16;
@@ -1844,7 +1844,7 @@ pub const Codegen = struct {
         return lowering_rules.isPanicBuiltinName(call.func_name);
     }
 
-    fn genCallStmt(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn genCallStmt(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         if (lowering_rules.isPrintlnCall(call.*)) {
             try self.emitPrintln(call, hoisted_allocs);
             return;
@@ -1868,11 +1868,11 @@ pub const Codegen = struct {
             defer self.allocator.free(method_key);
             if (self.tc.funcs.get(method_key)) |func| {
                 if (isVoidType(func.ret_ty)) {
-                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_regs.deinit();
-                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                     defer arg_release_regs.deinit();
-                    var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_consume_regs.deinit();
                     for (call.args, 0..) |arg, i| {
                         const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
@@ -1912,11 +1912,11 @@ pub const Codegen = struct {
                     var method_buf: [256]u8 = undefined;
                     const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ curr.user_defined.name, call.func_name }) catch return CodegenError.CodegenError;
                     if (self.tc.funcs.get(method_key)) |func| {
-                        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_regs.deinit();
-                        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                         defer arg_release_regs.deinit();
-                        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_consume_regs.deinit();
                         for (call.args, 0..) |arg, i| {
                             const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
@@ -1949,11 +1949,11 @@ pub const Codegen = struct {
                 }
             }
         }
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer arg_release_regs.deinit();
-        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_consume_regs.deinit();
         const resolved_func_name = self.tc.resolveFunctionAlias(call.func_name);
         const maybe_func = self.tc.funcs.get(resolved_func_name);
@@ -1991,13 +1991,13 @@ pub const Codegen = struct {
         self: *Codegen,
         call: *const ast.CallExpr,
         ext: contract_parser.ExternalFunction,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer arg_release_regs.deinit();
-        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_consume_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
@@ -2049,13 +2049,13 @@ pub const Codegen = struct {
         self: *Codegen,
         call: *const ast.CallExpr,
         ext: contract_parser.ExternalFunction,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer arg_release_regs.deinit();
-        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_consume_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
@@ -2103,7 +2103,7 @@ pub const Codegen = struct {
         self.out.writer().print("    call @sa_print_bytes(&{s}, 1)\n", .{nl_label}) catch return CodegenError.CodegenError;
     }
 
-    fn emitPrintln(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn emitPrintln(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) {
             // #4b: a single string-like/format-string argument (e.g. the
             // `println(format(...))` shape templates desugar to) prints its
@@ -2396,7 +2396,7 @@ pub const Codegen = struct {
     }
 
     fn sanitizeTestName(self: *Codegen, name: []const u8) CodegenError![]const u8 {
-        var out = std.ArrayList(u8).init(self.allocator);
+        var out = std.array_list.Managed(u8).init(self.allocator);
         for (name) |c| {
             switch (c) {
                 '(', ')' => out.append('-') catch return CodegenError.OutOfMemory,
@@ -2510,8 +2510,8 @@ pub const Codegen = struct {
 
     fn appendExternLoweredCallArgCleanups(
         self: *Codegen,
-        release_regs: *std.ArrayList(?[]const u8),
-        consume_regs: *std.ArrayList([]const u8),
+        release_regs: *std.array_list.Managed(?[]const u8),
+        consume_regs: *std.array_list.Managed([]const u8),
         lowered_arg: LoweredCallArg,
         param: ?contract_parser.Param,
         call_arg_reg: []const u8,
@@ -2757,7 +2757,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn appendHexEscapedByte(buf: *std.ArrayList(u8), byte: u8) CodegenError!void {
+    fn appendHexEscapedByte(buf: *std.array_list.Managed(u8), byte: u8) CodegenError!void {
         buf.writer().print("\\x{x:0>2}", .{byte}) catch return CodegenError.CodegenError;
     }
 
@@ -2772,7 +2772,7 @@ pub const Codegen = struct {
     fn literalHexBytes(self: *Codegen, node: *const ast.Node, ty: *const ast.Type) CodegenError![]const u8 {
         const literal_node = constLiteralNode(node) orelse return CodegenError.CodegenError;
         const literal = literal_node.literal;
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = std.array_list.Managed(u8).init(self.allocator);
         errdefer buf.deinit();
 
         switch (ty.*) {
@@ -3062,7 +3062,7 @@ pub const Codegen = struct {
         try self.emitRelease(ptr_reg);
     }
 
-    fn emitFormatPushStringLike(self: *Codegen, out_reg: []const u8, arg: *ast.Node, ty: *const ast.Type, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn emitFormatPushStringLike(self: *Codegen, out_reg: []const u8, arg: *ast.Node, ty: *const ast.Type, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         const tag = try self.newTmp();
         if (isFormatStringType(ty)) {
             const string_reg = try self.genExpr(arg, hoisted_allocs);
@@ -3108,7 +3108,7 @@ pub const Codegen = struct {
         owner_needs_release: bool,
     };
 
-    fn genStringLikePathRegs(self: *Codegen, arg: *ast.Node, ty: *const ast.Type, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!StringLikePathRegs {
+    fn genStringLikePathRegs(self: *Codegen, arg: *ast.Node, ty: *const ast.Type, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!StringLikePathRegs {
         if (isFormatStringType(ty)) {
             const owner_reg = try self.genExpr(arg, hoisted_allocs);
             const slice_reg = try self.newTmp();
@@ -3149,7 +3149,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn emitFormatPushArg(self: *Codegen, out_reg: []const u8, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn emitFormatPushArg(self: *Codegen, out_reg: []const u8, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         const ty = self.tc.expr_types.get(arg) orelse return CodegenError.CodegenError;
         if (isStringLikeType(ty)) {
             try self.emitFormatPushStringLike(out_reg, arg, ty, hoisted_allocs);
@@ -3571,7 +3571,7 @@ pub const Codegen = struct {
         bin: *const ast.BinaryExpr,
         left_ty: *const ast.Type,
         right_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         const left_struct = self.structDeclForType(left_ty);
         const right_struct = self.structDeclForType(right_ty);
@@ -3664,7 +3664,7 @@ pub const Codegen = struct {
         bin: *const ast.BinaryExpr,
         left_ty: *const ast.Type,
         right_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         if (!(bin.op == .eq or bin.op == .ne)) return null;
         const left_struct = self.structDeclForType(left_ty) orelse return null;
@@ -3712,7 +3712,7 @@ pub const Codegen = struct {
         bin: *const ast.BinaryExpr,
         left_ty: *const ast.Type,
         right_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         if (!(bin.op == .lt or bin.op == .le or bin.op == .gt or bin.op == .ge)) return null;
         const left_struct = self.structDeclForType(left_ty) orelse return null;
@@ -3830,7 +3830,7 @@ pub const Codegen = struct {
         bin: *const ast.BinaryExpr,
         left_ty: *const ast.Type,
         right_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         if (bin.op != .spaceship) return null;
         const plan = lowering_rules.planSpaceship(
@@ -3958,7 +3958,7 @@ pub const Codegen = struct {
         return hash_reg;
     }
 
-    fn genHashCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genHashCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (call.args.len != 1) return CodegenError.CodegenError;
         const ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
         const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -3988,7 +3988,7 @@ pub const Codegen = struct {
         try self.emitFormatPushConstBytes(out_reg, " }");
     }
 
-    fn genDebugCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genDebugCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (call.args.len != 1) return CodegenError.CodegenError;
         const ty = self.tc.expr_types.get(call.args[0]) orelse return CodegenError.CodegenError;
         const out_reg = try self.newTmp();
@@ -4195,7 +4195,7 @@ pub const Codegen = struct {
         self: *Codegen,
         source: *ast.Node,
         separator: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else if (sliceElementType(source_ty)) |elem| elem else vecElementType(source_ty) orelse return CodegenError.CodegenError;
@@ -4373,7 +4373,7 @@ pub const Codegen = struct {
     fn genStringCollect(
         self: *Codegen,
         source: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const elem_ty = if (arrayType(source_ty)) |arr| arr.elem else if (sliceElementType(source_ty)) |elem| elem else vecElementType(source_ty) orelse return CodegenError.CodegenError;
@@ -6766,7 +6766,7 @@ pub const Codegen = struct {
                 self.out.writer().print("    {s} = load slot+{} as ptr\n", .{ capture_reg, capture.offset }) catch return CodegenError.CodegenError;
                 self.thread_capture_regs.put(capture.name, capture_reg) catch return CodegenError.OutOfMemory;
             }
-            var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+            var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
             defer hoisted_allocs.deinit();
             try self.seedThreadCaptureBindingTypes(helper.captures);
             if (isVoidType(helper.ret_ty)) {
@@ -7490,11 +7490,11 @@ pub const Codegen = struct {
 
         // 1. Loop allocation hoisting pre-pass
         // Detect all stack allocations inside for loops in this function body
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
 
-        var loop_counter_slots = std.ArrayList([]const u8).init(self.allocator);
+        var loop_counter_slots = std.array_list.Managed([]const u8).init(self.allocator);
         defer loop_counter_slots.deinit();
         try self.collectLoopCounterSlots(f.body, &loop_counter_slots);
 
@@ -7634,11 +7634,11 @@ pub const Codegen = struct {
         self.out.writer().print("{s}:\n", .{entry_label}) catch return CodegenError.CodegenError;
 
         // Hoist any stack allocations inside the test body
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(t.body, &hoisted_allocs);
 
-        var loop_counter_slots = std.ArrayList([]const u8).init(self.allocator);
+        var loop_counter_slots = std.array_list.Managed([]const u8).init(self.allocator);
         defer loop_counter_slots.deinit();
         try self.collectLoopCounterSlots(t.body, &loop_counter_slots);
 
@@ -7658,11 +7658,11 @@ pub const Codegen = struct {
         self.out.writer().print("\n", .{}) catch return CodegenError.CodegenError;
     }
 
-    fn collectHoistedAllocs(self: *Codegen, block: []const *ast.Node, list: *std.ArrayList([]const u8)) CodegenError!void {
+    fn collectHoistedAllocs(self: *Codegen, block: []const *ast.Node, list: *std.array_list.Managed([]const u8)) CodegenError!void {
         try self.collectHoistedAllocsInternal(block, list, false);
     }
 
-    fn appendUniqueName(self: *Codegen, list: *std.ArrayList([]const u8), name: []const u8) CodegenError!void {
+    fn appendUniqueName(self: *Codegen, list: *std.array_list.Managed([]const u8), name: []const u8) CodegenError!void {
         _ = self;
         for (list.items) |existing| {
             if (std.mem.eql(u8, existing, name)) return;
@@ -7670,7 +7670,7 @@ pub const Codegen = struct {
         list.append(name) catch return CodegenError.OutOfMemory;
     }
 
-    fn collectLoopCounterSlots(self: *Codegen, block: []const *ast.Node, list: *std.ArrayList([]const u8)) CodegenError!void {
+    fn collectLoopCounterSlots(self: *Codegen, block: []const *ast.Node, list: *std.array_list.Managed([]const u8)) CodegenError!void {
         for (block) |stmt| {
             switch (stmt.*) {
                 .for_stmt => |f| {
@@ -7711,7 +7711,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn collectLoopCounterSlotsInExpr(self: *Codegen, expr: *ast.Node, list: *std.ArrayList([]const u8)) CodegenError!void {
+    fn collectLoopCounterSlotsInExpr(self: *Codegen, expr: *ast.Node, list: *std.array_list.Managed([]const u8)) CodegenError!void {
         switch (expr.*) {
             .if_expr => |ife| {
                 try self.collectLoopCounterSlotsInExpr(ife.cond, list);
@@ -7771,7 +7771,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn collectHoistedAllocsInternal(self: *Codegen, block: []const *ast.Node, list: *std.ArrayList([]const u8), in_loop: bool) CodegenError!void {
+    fn collectHoistedAllocsInternal(self: *Codegen, block: []const *ast.Node, list: *std.array_list.Managed([]const u8), in_loop: bool) CodegenError!void {
         for (block) |stmt| {
             switch (stmt.*) {
                 .let_stmt => |let| {
@@ -7818,7 +7818,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn collectHoistedAllocsInExpr(self: *Codegen, expr: *ast.Node, list: *std.ArrayList([]const u8), in_loop: bool) CodegenError!void {
+    fn collectHoistedAllocsInExpr(self: *Codegen, expr: *ast.Node, list: *std.array_list.Managed([]const u8), in_loop: bool) CodegenError!void {
         switch (expr.*) {
             .if_expr => |ife| {
                 try self.collectHoistedAllocsInExpr(ife.cond, list, in_loop);
@@ -7908,7 +7908,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn genBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn genBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         self.enterBlockForLoopLocalTracking();
         defer self.leaveBlockForLoopLocalTracking();
 
@@ -7920,7 +7920,7 @@ pub const Codegen = struct {
             self.current_stmt_index = prev_stmt_index;
         }
 
-        var scoped_aliases = std.ArrayList([]const u8).init(self.allocator);
+        var scoped_aliases = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             var i = scoped_aliases.items.len;
             while (i > 0) {
@@ -7986,8 +7986,8 @@ pub const Codegen = struct {
         }
     }
 
-    fn genScopedBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
-        var scoped_var_aliases = std.ArrayList([]const u8).init(self.allocator);
+    fn genScopedBlock(self: *Codegen, block: []const *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
+        var scoped_var_aliases = std.array_list.Managed([]const u8).init(self.allocator);
         defer scoped_var_aliases.deinit();
 
         for (block) |stmt| {
@@ -8010,7 +8010,7 @@ pub const Codegen = struct {
         self: *Codegen,
         block: []const *ast.Node,
         target: []const u8,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (block.len == 0) return CodegenError.CodegenError;
 
@@ -8047,7 +8047,7 @@ pub const Codegen = struct {
         block: []const *ast.Node,
         target_ptr: []const u8,
         target_ty: *const ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (block.len == 0) return CodegenError.CodegenError;
 
@@ -8175,7 +8175,7 @@ pub const Codegen = struct {
         return select_state;
     }
 
-    fn genFutureRuntimeCall(self: *Codegen, future_plan: lowering_rules.FutureRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genFutureRuntimeCall(self: *Codegen, future_plan: lowering_rules.FutureRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (future_plan.isReady()) {
             if (call.args.len != 1) return CodegenError.CodegenError;
             const value_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -8227,7 +8227,7 @@ pub const Codegen = struct {
         return CodegenError.CodegenError;
     }
 
-    fn genTaskRuntimeCall(self: *Codegen, task_plan: lowering_rules.TaskRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genTaskRuntimeCall(self: *Codegen, task_plan: lowering_rules.TaskRuntimeCallPlan, call: ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (task_plan.isNew()) {
             if (call.args.len != 1) return CodegenError.CodegenError;
             const state_reg = try self.genExpr(call.args[0], hoisted_allocs);
@@ -8856,7 +8856,7 @@ pub const Codegen = struct {
         self.out.writer().print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
         self.out.writer().print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         var captured_addends: [2]?[]const u8 = .{ null, null };
@@ -8916,7 +8916,7 @@ pub const Codegen = struct {
         w.print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
         w.print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         var sub_states: [lowering_rules.AsyncLinearAwaitMax][]const u8 = undefined;
@@ -8958,7 +8958,7 @@ pub const Codegen = struct {
         w.print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
         w.print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         for (f.body[0..plan.prefix_len]) |stmt| {
@@ -8989,7 +8989,7 @@ pub const Codegen = struct {
         // established textually in this helper, so an empty hoisted set
         // suffices here (mirrors poll helpers that never evaluate user AST
         // except through these stage expressions).
-        var helper_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var helper_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer helper_allocs.deinit();
         const w = self.out.writer();
         w.print(
@@ -9129,7 +9129,7 @@ pub const Codegen = struct {
         self.out.writer().print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
         self.out.writer().print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         const first_state = try self.genExpr(@constCast(plan.first_await_expr), &hoisted_allocs);
@@ -9164,7 +9164,7 @@ pub const Codegen = struct {
         self.out.writer().print(") -> {s}:\n", .{ret_type_str}) catch return CodegenError.CodegenError;
         self.out.writer().print("L_ENTRY:\n", .{}) catch return CodegenError.CodegenError;
 
-        var hoisted_allocs = std.ArrayList([]const u8).init(self.allocator);
+        var hoisted_allocs = std.array_list.Managed([]const u8).init(self.allocator);
         defer hoisted_allocs.deinit();
         try self.collectHoistedAllocs(f.body, &hoisted_allocs);
         // Leading input lets (join2 arguments bound to locals).
@@ -9195,7 +9195,7 @@ pub const Codegen = struct {
         return poll_reg;
     }
 
-    fn genPollRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
+    fn genPollRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!?[]const u8 {
         const plan = lowering_rules.planPollRuntimeCall(call) orelse return null;
         if (plan.isReady()) {
             if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
@@ -9228,7 +9228,7 @@ pub const Codegen = struct {
         return CodegenError.CodegenError;
     }
 
-    fn genExecutorRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
+    fn genExecutorRuntimeCall(self: *Codegen, call: ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!?[]const u8 {
         const plan = lowering_rules.planExecutorRuntimeCall(call) orelse return null;
         if (plan.isNew()) {
             if (call.args.len != 1 or call.generics.len != 0) return CodegenError.CodegenError;
@@ -9334,14 +9334,14 @@ pub const Codegen = struct {
         return out_count_reg;
     }
 
-    fn genFormatCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genFormatCall(self: *Codegen, call: *const ast.CallExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (call.args.len == 0 or call.args[0].* != .literal or call.args[0].literal != .string_val) return CodegenError.CodegenError;
         const fmt = call.args[0].literal.string_val;
         const out_reg = try self.newTmp();
         const capacity = escapedStringByteLen(fmt) + (call.args.len - 1) * 24;
         self.out.writer().print("    EXPAND FORMAT_BEGIN {s}, {}\n", .{ out_reg, capacity }) catch return CodegenError.CodegenError;
 
-        var literal = std.ArrayList(u8).init(self.allocator);
+        var literal = std.array_list.Managed(u8).init(self.allocator);
         defer literal.deinit();
         var arg_idx: usize = 1;
         var i: usize = 0;
@@ -9377,7 +9377,7 @@ pub const Codegen = struct {
         return out_reg;
     }
 
-    fn genCallArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genCallArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (lowering_rules.prefixedIdentifierCallArg(arg)) |prefixed| {
             return std.fmt.allocPrint(self.allocator, "{c}{s}", .{ prefixed.prefix, self.resolveBindingName(prefixed.name) }) catch return CodegenError.OutOfMemory;
         }
@@ -9523,7 +9523,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn genBranchConditionReg(self: *Codegen, cond: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genBranchConditionReg(self: *Codegen, cond: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const cond_reg = try self.genExpr(cond, hoisted_allocs);
         const cond_ty = self.tc.expr_types.get(cond) orelse return CodegenError.CodegenError;
         if (cond.* == .identifier and cond_ty.* == .primitive) {
@@ -9563,8 +9563,8 @@ pub const Codegen = struct {
 
     fn appendLoweredCallArgCleanups(
         self: *Codegen,
-        release_regs: *std.ArrayList(?[]const u8),
-        consume_regs: *std.ArrayList([]const u8),
+        release_regs: *std.array_list.Managed(?[]const u8),
+        consume_regs: *std.array_list.Managed([]const u8),
         lowered_arg: LoweredCallArg,
     ) CodegenError!void {
         release_regs.append(self.plannedCallArgReleaseReg(lowered_arg)) catch return CodegenError.OutOfMemory;
@@ -9642,7 +9642,7 @@ pub const Codegen = struct {
         arg: *ast.Node,
         param: ?ast.Param,
         materialization: lowering_rules.CallArgMaterializationPlan,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!LoweredCallArg {
         if (materialization.isRawPointerStringLiteral()) {
             return blk: {
@@ -9768,7 +9768,7 @@ pub const Codegen = struct {
     fn genPlannedCallArg(
         self: *Codegen,
         arg: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
         options: CallArgLoweringOptions,
     ) CodegenError!LoweredCallArg {
         const copy_struct_value = options.include_copy_struct_value and
@@ -9812,7 +9812,7 @@ pub const Codegen = struct {
         self: *Codegen,
         arg: *ast.Node,
         param: ast.Param,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!LoweredCallArg {
         return try self.genPlannedCallArg(arg, hoisted_allocs, .{
             .param = param,
@@ -9825,7 +9825,7 @@ pub const Codegen = struct {
         self: *Codegen,
         lowering: lowering_rules.StaticCallLoweringPlan,
         call: *const ast.CallExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
         auto_borrow_receiver: bool,
     ) CodegenError![]const u8 {
         const plan = lowering.call;
@@ -9833,11 +9833,11 @@ pub const Codegen = struct {
         const func = self.tc.funcs.get(symbol) orelse return CodegenError.CodegenError;
         if (func.params.len != plan.arg_count or func.params.len != call.args.len) return CodegenError.CodegenError;
 
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer release_regs.deinit();
-        var consume_regs = std.ArrayList([]const u8).init(self.allocator);
+        var consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer consume_regs.deinit();
 
         for (call.args, 0..) |arg, i| {
@@ -9896,7 +9896,7 @@ pub const Codegen = struct {
         }).shape;
     }
 
-    fn genImportedMacroMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+    fn genImportedMacroMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!LoweredCallArg {
         const value_reg = try self.genExpr(arg, hoisted_allocs);
         const arg_ty = try self.importedMacroArgType(arg);
         const slot = try self.newTmp();
@@ -9907,7 +9907,7 @@ pub const Codegen = struct {
         return .{ .reg = slot, .release_after_call = false };
     }
 
-    fn genImportedMacroAddressExpressionMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+    fn genImportedMacroAddressExpressionMaterializedSlotArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!LoweredCallArg {
         const arg_ty = try self.importedMacroArgType(arg);
         const slot = try self.newTmp();
         self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
@@ -9946,7 +9946,7 @@ pub const Codegen = struct {
         return .{ .reg = slot, .release_after_call = false };
     }
 
-    fn genImportedMacroAddressExpressionArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+    fn genImportedMacroAddressExpressionArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!LoweredCallArg {
         const address_reg = switch (try self.importedMacroArgAddressShape(arg)) {
             .field => blk: {
                 const projection = try self.genFieldAddress(&arg.field_expr, hoisted_allocs);
@@ -10006,7 +10006,7 @@ pub const Codegen = struct {
     fn genImportedMacroFnObjectArg(
         self: *Codegen,
         arg: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?LoweredCallArg {
         _ = hoisted_allocs;
         if (arg.* != .identifier) return null;
@@ -10028,7 +10028,7 @@ pub const Codegen = struct {
         plan: lowering_rules.ImportedMacroCallPlan,
         call_arg_index: usize,
         arg: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!LoweredCallArg {
         if (try self.genImportedMacroFnObjectArg(arg, hoisted_allocs)) |fn_obj| return fn_obj;
         const arg_ty = try self.importedMacroArgType(arg);
@@ -10057,7 +10057,7 @@ pub const Codegen = struct {
         self: *Codegen,
         call: *const ast.CallExpr,
         plan: lowering_rules.ImportedMacroCallPlan,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!?[]const u8 {
         if (!self.use_plain_time_sleep_ms_abi) return null;
 
@@ -10095,12 +10095,12 @@ pub const Codegen = struct {
         return null;
     }
 
-    fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genImportedMacroCall(self: *Codegen, call: *const ast.CallExpr, plan: lowering_rules.ImportedMacroCallPlan, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (try self.genPlainTimeMacroCall(call, plan, hoisted_allocs)) |reg| return reg;
         const reg = if (plan.expression_output) try self.newTmp() else "return_ty_sentinel";
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
-        var release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+        var release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
         defer release_regs.deinit();
         for (call.args, 0..) |arg, i| {
             const lowered_arg = try self.genImportedMacroArg(plan, i, arg, hoisted_allocs);
@@ -10141,7 +10141,7 @@ pub const Codegen = struct {
         return reg;
     }
 
-    fn genArrayBorrowToSliceInto(self: *Codegen, target: []const u8, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!?[]const u8 {
+    fn genArrayBorrowToSliceInto(self: *Codegen, target: []const u8, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!?[]const u8 {
         if (arg.* != .borrow_expr) return CodegenError.CodegenError;
         const inner = arg.borrow_expr.expr;
         const inner_ty = self.resolvedTypeForExpr(inner) orelse return CodegenError.CodegenError;
@@ -10164,14 +10164,14 @@ pub const Codegen = struct {
         return if (exprResultNeedsRelease(inner)) base_source_reg else null;
     }
 
-    fn genArrayBorrowToSliceArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!LoweredCallArg {
+    fn genArrayBorrowToSliceArg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!LoweredCallArg {
         const slice_reg = try self.newTmp();
         const base_release_reg = try self.genArrayBorrowToSliceInto(slice_reg, arg, hoisted_allocs);
         const borrow_arg = std.fmt.allocPrint(self.allocator, "&{s}", .{slice_reg}) catch return CodegenError.OutOfMemory;
         return .{ .reg = borrow_arg, .release_after_call = false, .release_reg = base_release_reg };
     }
 
-    fn genOwnedStringLiteral(self: *Codegen, value: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genOwnedStringLiteral(self: *Codegen, value: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         _ = hoisted_allocs;
         const label = try self.newStringConst();
         self.out.writer().print("    @const {s} = utf8:\"{s}\"\n", .{ label, value }) catch return CodegenError.CodegenError;
@@ -10369,7 +10369,7 @@ pub const Codegen = struct {
         return false;
     }
 
-    fn genHashMapKeyReg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genHashMapKeyReg(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (arg.* == .literal and arg.literal == .string_val) {
             const value = arg.literal.string_val;
             if (self.hashmap_key_slots.get(value)) |slot| return slot;
@@ -10391,7 +10391,7 @@ pub const Codegen = struct {
         return try self.genExpr(arg, hoisted_allocs);
     }
 
-    fn genHashMapValueSlot(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genHashMapValueSlot(self: *Codegen, arg: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const value_reg = try self.genExpr(arg, hoisted_allocs);
         const slot = try self.newTmp();
         self.stack_alloc_bindings.put(slot, {}) catch return CodegenError.OutOfMemory;
@@ -10412,7 +10412,7 @@ pub const Codegen = struct {
         return lowering_rules.isStackAllocNode(node);
     }
 
-    fn genStmt(self: *Codegen, stmt: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError!void {
+    fn genStmt(self: *Codegen, stmt: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError!void {
         switch (stmt.*) {
             .let_stmt => |let| {
                 // If it is a hoisted loop allocation, we bypass stack_alloc emission since it is pre-allocated
@@ -11206,7 +11206,7 @@ pub const Codegen = struct {
                 if (w.let_pattern) |pattern| {
                     const branch_flag = try self.newTmp();
                     const enum_decl = try self.enumDeclForPatternValue(w.cond, pattern);
-                    var scoped_bindings = std.ArrayList([]const u8).init(self.allocator);
+                    var scoped_bindings = std.array_list.Managed([]const u8).init(self.allocator);
                     defer scoped_bindings.deinit();
                     const success_on_true = enum_decl != null or std.mem.eql(u8, pattern.variant_name, "Some") or std.mem.eql(u8, pattern.variant_name, "Ok");
                     if (enum_decl) |decl| {
@@ -11376,7 +11376,7 @@ pub const Codegen = struct {
         self: *Codegen,
         target: []const u8,
         lit: *const ast.StructLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (lit.ty.* != .user_defined) return CodegenError.CodegenError;
         const struct_decl = self.structDeclForType(lit.ty) orelse return CodegenError.CodegenError;
@@ -11494,7 +11494,7 @@ pub const Codegen = struct {
         self: *Codegen,
         target: []const u8,
         lit: *const ast.ArrayLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         if (lit.elements.len == 0) return CodegenError.CodegenError;
         const first_ty = self.tc.expr_types.get(lit.elements[0]) orelse return CodegenError.CodegenError;
@@ -11515,7 +11515,7 @@ pub const Codegen = struct {
         target: []const u8,
         node: *const ast.Node,
         lit: *const ast.RepeatArrayLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         const array_ty = self.tc.expr_types.get(node) orelse return CodegenError.CodegenError;
         const arr = arrayType(array_ty) orelse return CodegenError.CodegenError;
@@ -11539,9 +11539,9 @@ pub const Codegen = struct {
         self: *Codegen,
         target: []const u8,
         lit: *const ast.TupleLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
-        var elems = std.ArrayList(*ast.Type).init(self.allocator);
+        var elems = std.array_list.Managed(*ast.Type).init(self.allocator);
         for (lit.elements) |elem| {
             try elems.append(self.tc.expr_types.get(elem) orelse return CodegenError.CodegenError);
         }
@@ -11559,7 +11559,7 @@ pub const Codegen = struct {
         self: *Codegen,
         target: []const u8,
         lit: *const ast.EnumLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         // Synthetic Option has no declared enum: Option::None lowers to the
         // std None constructor, exactly like bare None (see OPTION_NEW_NONE
@@ -11590,7 +11590,7 @@ pub const Codegen = struct {
         }
     }
 
-    fn genMatchExpr(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genMatchExpr(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         if (mat.cases.len == 0) return CodegenError.CodegenError;
         const val_reg = try self.genExpr(mat.val, hoisted_allocs);
         const val_ty = self.tc.expr_types.get(mat.val) orelse return CodegenError.CodegenError;
@@ -11617,9 +11617,9 @@ pub const Codegen = struct {
                 break;
             }
         }
-        var check_labels = std.ArrayList([]const u8).init(self.allocator);
-        var case_labels = std.ArrayList([]const u8).init(self.allocator);
-        var cond_regs = std.ArrayList([]const u8).init(self.allocator);
+        var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        var case_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        var cond_regs = std.array_list.Managed([]const u8).init(self.allocator);
 
         for (mat.cases, 0..) |_, i| {
             check_labels.append(try std.fmt.allocPrint(self.allocator, "L_MATCH_CHECK_{}_{}", .{ i, self.label_idx })) catch return CodegenError.OutOfMemory;
@@ -11704,7 +11704,7 @@ pub const Codegen = struct {
         return try self.newTmp();
     }
 
-    fn genOptionMatchExpr(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, val_reg: []const u8, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genOptionMatchExpr(self: *Codegen, expr: *ast.Node, mat: *const ast.MatchExpr, val_reg: []const u8, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         const expr_ty = self.tc.expr_types.get(expr) orelse return CodegenError.CodegenError;
         const value_match = !isVoidType(expr_ty);
         const result_slot = if (value_match) blk: {
@@ -11724,9 +11724,9 @@ pub const Codegen = struct {
             }
         }
 
-        var check_labels = std.ArrayList([]const u8).init(self.allocator);
-        var case_labels = std.ArrayList([]const u8).init(self.allocator);
-        var cond_regs = std.ArrayList([]const u8).init(self.allocator);
+        var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        var case_labels = std.array_list.Managed([]const u8).init(self.allocator);
+        var cond_regs = std.array_list.Managed([]const u8).init(self.allocator);
 
         for (mat.cases, 0..) |_, i| {
             check_labels.append(try std.fmt.allocPrint(self.allocator, "L_OPTION_MATCH_CHECK_{}_{}", .{ i, self.label_idx })) catch return CodegenError.OutOfMemory;
@@ -11823,7 +11823,7 @@ pub const Codegen = struct {
     fn genIndexAddress(
         self: *Codegen,
         idx: *const ast.IndexExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!IndexAddress {
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
 
@@ -11908,7 +11908,7 @@ pub const Codegen = struct {
     fn genFieldAddress(
         self: *Codegen,
         field: *const ast.FieldExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!AddressProjection {
         const expr_ty = self.resolvedTypeForExpr(field.expr) orelse return CodegenError.CodegenError;
         const layout = try self.fieldAddressLayout(expr_ty, field.field_name);
@@ -11946,7 +11946,7 @@ pub const Codegen = struct {
     fn genVecOwnerReceiver(
         self: *Codegen,
         target: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!VecReceiver {
         if (target.* == .field_expr) {
             const projection = try self.genFieldAddress(&target.field_expr, hoisted_allocs);
@@ -11970,7 +11970,7 @@ pub const Codegen = struct {
         self: *Codegen,
         idx: *const ast.IndexExpr,
         value: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError!void {
         const target_ty = self.resolvedTypeForExpr(idx.target) orelse return CodegenError.CodegenError;
         if (vecElementType(target_ty)) |elem_ty| {
@@ -12017,7 +12017,7 @@ pub const Codegen = struct {
         self: *Codegen,
         idx: *const ast.IndexExpr,
         elem_ty: *ast.Type,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const vec_receiver = try self.genVecOwnerReceiver(idx.target, hoisted_allocs);
         const vec_reg = vec_receiver.reg;
@@ -12053,7 +12053,7 @@ pub const Codegen = struct {
     fn genSliceExpr(
         self: *Codegen,
         slc: *const ast.SliceExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const target_ty = self.tc.expr_types.get(slc.target) orelse return CodegenError.CodegenError;
         const arr = arrayType(target_ty) orelse return CodegenError.CodegenError;
@@ -12079,7 +12079,7 @@ pub const Codegen = struct {
     fn genArrayIterSum(
         self: *Codegen,
         source: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
@@ -12124,7 +12124,7 @@ pub const Codegen = struct {
     fn genSliceIterSum(
         self: *Codegen,
         source: *ast.Node,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const elem_ty = sliceElementType(source_ty) orelse return CodegenError.CodegenError;
@@ -12195,7 +12195,7 @@ pub const Codegen = struct {
         self: *Codegen,
         source: *ast.Node,
         mapper: *const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
@@ -12245,7 +12245,7 @@ pub const Codegen = struct {
         self: *Codegen,
         source: *ast.Node,
         filter_lit: *const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
@@ -12310,7 +12310,7 @@ pub const Codegen = struct {
         source: *ast.Node,
         init_expr: *ast.Node,
         folder: *const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const arr = arrayType(source_ty) orelse return CodegenError.CodegenError;
@@ -12359,10 +12359,10 @@ pub const Codegen = struct {
         self: *Codegen,
         lit: *const ast.ClosureLiteral,
         arg_reg: []const u8,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (lit.params.len != 1) return CodegenError.CodegenError;
-        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        var saved = std.array_list.Managed(SavedClosureParam).init(self.allocator);
         defer saved.deinit();
         saved.append(.{ .name = lit.params[0].name, .old = self.closure_param_regs.get(lit.params[0].name) }) catch return CodegenError.OutOfMemory;
         self.closure_param_regs.put(lit.params[0].name, arg_reg) catch return CodegenError.OutOfMemory;
@@ -12373,7 +12373,7 @@ pub const Codegen = struct {
     fn genInlineClosureNullary(
         self: *Codegen,
         lit: *const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (lit.params.len != 0) return CodegenError.CodegenError;
         return try self.genExpr(lit.body, hoisted_allocs);
@@ -12384,10 +12384,10 @@ pub const Codegen = struct {
         lit: *const ast.ClosureLiteral,
         left_reg: []const u8,
         right_reg: []const u8,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (lit.params.len != 2) return CodegenError.CodegenError;
-        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        var saved = std.array_list.Managed(SavedClosureParam).init(self.allocator);
         defer saved.deinit();
         saved.append(.{ .name = lit.params[0].name, .old = self.closure_param_regs.get(lit.params[0].name) }) catch return CodegenError.OutOfMemory;
         saved.append(.{ .name = lit.params[1].name, .old = self.closure_param_regs.get(lit.params[1].name) }) catch return CodegenError.OutOfMemory;
@@ -12481,7 +12481,7 @@ pub const Codegen = struct {
         self: *Codegen,
         source: *ast.Node,
         mapper: ?*const ast.ClosureLiteral,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         const source_ty = self.tc.expr_types.get(source) orelse return CodegenError.CodegenError;
         const elem_ty = vecElementType(source_ty) orelse return CodegenError.CodegenError;
@@ -12565,17 +12565,17 @@ pub const Codegen = struct {
         self: *Codegen,
         lit: *const ast.ClosureLiteral,
         call: *const ast.CallExpr,
-        hoisted_allocs: *const std.ArrayList([]const u8),
+        hoisted_allocs: *const std.array_list.Managed([]const u8),
     ) CodegenError![]const u8 {
         if (lit.params.len != call.args.len) return CodegenError.CodegenError;
 
-        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
         defer arg_regs.deinit();
         for (call.args) |arg| {
             arg_regs.append(try self.genExpr(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
         }
 
-        var saved = std.ArrayList(SavedClosureParam).init(self.allocator);
+        var saved = std.array_list.Managed(SavedClosureParam).init(self.allocator);
         defer saved.deinit();
         for (lit.params, arg_regs.items) |param, arg_reg| {
             saved.append(.{ .name = param.name, .old = self.closure_param_regs.get(param.name) }) catch return CodegenError.OutOfMemory;
@@ -12586,7 +12586,7 @@ pub const Codegen = struct {
         return try self.genExpr(lit.body, hoisted_allocs);
     }
 
-    fn genExpr(self: *Codegen, expr: *ast.Node, hoisted_allocs: *const std.ArrayList([]const u8)) CodegenError![]const u8 {
+    fn genExpr(self: *Codegen, expr: *ast.Node, hoisted_allocs: *const std.array_list.Managed([]const u8)) CodegenError![]const u8 {
         @setEvalBranchQuota(10000);
         switch (expr.*) {
             .literal => |lit| {
@@ -13535,11 +13535,11 @@ pub const Codegen = struct {
                     const method_key = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ target, call.func_name });
                     defer self.allocator.free(method_key);
                     if (self.tc.funcs.contains(method_key)) {
-                        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_regs.deinit();
-                        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                         defer arg_release_regs.deinit();
-                        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_consume_regs.deinit();
                         const maybe_func = self.tc.funcs.get(method_key);
                         for (call.args, 0..) |arg, i| {
@@ -13848,11 +13848,11 @@ pub const Codegen = struct {
                     const fn_ptr_ty = self.localBindingTypeForName(call.func_name) orelse return CodegenError.CodegenError;
                     if (fn_ptr_ty.* != .fn_ptr or fn_ptr_ty.fn_ptr.params.len != call.args.len) return CodegenError.CodegenError;
 
-                    var lowered_args = std.ArrayList(LoweredCallArg).init(self.allocator);
+                    var lowered_args = std.array_list.Managed(LoweredCallArg).init(self.allocator);
                     defer lowered_args.deinit();
-                    var release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    var release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                     defer release_regs.deinit();
-                    var consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer consume_regs.deinit();
                     for (call.args, fn_ptr_ty.fn_ptr.params) |arg, param_ty| {
                         const param = ast.Param{
@@ -13871,7 +13871,7 @@ pub const Codegen = struct {
                         try self.appendLoweredCallArgCleanups(&release_regs, &consume_regs, lowered_arg);
                     }
 
-                    var candidates = std.ArrayList([]const u8).init(self.allocator);
+                    var candidates = std.array_list.Managed([]const u8).init(self.allocator);
                     defer candidates.deinit();
                     var func_iter = self.tc.funcs.iterator();
                     while (func_iter.next()) |entry| {
@@ -14946,7 +14946,7 @@ pub const Codegen = struct {
                         }
                     }
 
-                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_regs.deinit();
                     for (call.args[1..]) |arg| {
                         arg_regs.append(try self.genCallArg(arg, hoisted_allocs)) catch return CodegenError.OutOfMemory;
@@ -14988,9 +14988,9 @@ pub const Codegen = struct {
                     if (decl.fields.len != call.args.len) return CodegenError.CodegenError;
                     const reg = try self.newTmp();
                     self.out.writer().print("    {s} = alloc {}\n", .{ reg, structSize(decl) }) catch return CodegenError.CodegenError;
-                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                     defer arg_release_regs.deinit();
-                    var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_consume_regs.deinit();
                     for (decl.fields, call.args) |field, arg| {
                         const layout = fieldLayout(decl, field.name) orelse return CodegenError.CodegenError;
@@ -15022,11 +15022,11 @@ pub const Codegen = struct {
                             const method_key = std.fmt.bufPrint(&method_buf, "{s}_{s}", .{ curr.user_defined.name, call.func_name }) catch null;
                             if (method_key) |mk| {
                                 if (self.tc.funcs.contains(mk)) {
-                                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                                    var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                                     defer arg_regs.deinit();
-                                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                                    var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                                     defer arg_release_regs.deinit();
-                                    var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                                    var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                                     defer arg_consume_regs.deinit();
                                     const method_func = self.tc.funcs.get(mk);
                                     for (call.args, 0..) |arg, i| {
@@ -15080,11 +15080,11 @@ pub const Codegen = struct {
                 }
 
                 if (self.tc.extern_funcs.contains(call.func_name) or self.tc.funcs.contains(call.func_name)) {
-                    var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_regs.deinit();
-                    var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                    var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                     defer arg_release_regs.deinit();
-                    var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                    var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                     defer arg_consume_regs.deinit();
                     const maybe_func = self.tc.funcs.get(call.func_name);
                     for (call.args, 0..) |arg, i| {
@@ -15148,11 +15148,11 @@ pub const Codegen = struct {
 
                 if (call.associated_target) |target_name| {
                     if (std.mem.eql(u8, target_name, "str") and self.tc.funcs.contains(call.func_name)) {
-                        var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_regs.deinit();
-                        var arg_release_regs = std.ArrayList(?[]const u8).init(self.allocator);
+                        var arg_release_regs = std.array_list.Managed(?[]const u8).init(self.allocator);
                         defer arg_release_regs.deinit();
-                        var arg_consume_regs = std.ArrayList([]const u8).init(self.allocator);
+                        var arg_consume_regs = std.array_list.Managed([]const u8).init(self.allocator);
                         defer arg_consume_regs.deinit();
                         const maybe_func = self.tc.funcs.get(call.func_name);
                         for (call.args, 0..) |arg, i| {
@@ -15277,7 +15277,7 @@ pub const Codegen = struct {
 
                 // Assume macro expansion call in Sla
                 const reg = try self.newTmp();
-                var arg_regs = std.ArrayList([]const u8).init(self.allocator);
+                var arg_regs = std.array_list.Managed([]const u8).init(self.allocator);
                 defer arg_regs.deinit();
                 for (call.args) |arg| {
                     const arg_reg = try self.genExpr(arg, hoisted_allocs);
@@ -15307,7 +15307,7 @@ pub const Codegen = struct {
                     const else_terminates = if (ife.else_block) |eb| blockTerminates(eb) else false;
                     const needs_merge = !then_terminates or !else_terminates;
 
-                    var acquired = std.ArrayList([]const u8).init(self.allocator);
+                    var acquired = std.array_list.Managed([]const u8).init(self.allocator);
                     defer acquired.deinit();
 
                     for (chain, 0..) |cond, i| {
@@ -15610,8 +15610,8 @@ pub const Codegen = struct {
                 const switch_val_ty = self.resolvedTypeForExpr(swe.val) orelse self.tc.expr_types.get(swe.val);
                 const switch_enum_decl = if (switch_val_ty) |ty| self.enumDeclForValueType(ty) else null;
 
-                var cases_labels = std.ArrayList([]const u8).init(self.allocator);
-                var check_labels = std.ArrayList([]const u8).init(self.allocator);
+                var cases_labels = std.array_list.Managed([]const u8).init(self.allocator);
+                var check_labels = std.array_list.Managed([]const u8).init(self.allocator);
 
                 for (swe.cases, 0..) |_, idx| {
                     const c_lbl = std.fmt.allocPrint(self.allocator, "L_CASE_{}_{}", .{ idx, self.label_idx }) catch return CodegenError.OutOfMemory;

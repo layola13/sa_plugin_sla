@@ -1104,7 +1104,7 @@ fn isProjectShortcutPureExpr(expr: *const ast.Node) bool {
 }
 
 fn pruneDeadProjectShortcutLetsInBlock(allocator: std.mem.Allocator, block: []const *ast.Node) ![]const *ast.Node {
-    var out = std.ArrayList(*ast.Node).init(allocator);
+    var out = std.array_list.Managed(*ast.Node).init(allocator);
     for (block, 0..) |stmt, idx| {
         var keep = true;
         switch (stmt.*) {

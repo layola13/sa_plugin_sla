@@ -181,9 +181,9 @@ const plugin_commands = @import("plugin_commands.zig");
 const runSlaCommandImpl = plugin_commands.runSlaCommandImpl;
 
 test "sla skills emits json capability list" {
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -198,9 +198,9 @@ test "sla skills emits json capability list" {
 }
 
 test "sla skills honors host json mode" {
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator, .json_mode = true };
@@ -222,9 +222,9 @@ test "sla skills text writes agent skill files" {
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -240,9 +240,9 @@ test "sla skills text writes agent skill files" {
 }
 
 test "sla stability schema emits json schema" {
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -265,9 +265,9 @@ test "sla stability verify emits json report" {
     defer original_cwd.setAsCwd() catch {};
     try tmp.dir.writeFile(.{ .sub_path = "stability.json", .data = stability_metadata.example_manifest_json });
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -301,9 +301,9 @@ test "sla stability verify rejects undeclared labels" {
         ,
     });
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -325,9 +325,9 @@ test "sla init scaffolds project without overwriting" {
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -352,9 +352,9 @@ test "sla init scaffolds project without overwriting" {
 }
 
 fn expectSlaCheckRedeclarationDiagnostic(file: []const u8, expected: []const u8) !void {
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -368,9 +368,9 @@ fn expectSlaCheckRedeclarationDiagnostic(file: []const u8, expected: []const u8)
 }
 
 fn expectSlaCheckSyntaxDiagnostic(file: []const u8, expected: []const u8) !void {
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -423,9 +423,9 @@ test "sla check uses imported signatures without checking imported function bodi
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -462,9 +462,9 @@ test "sla check skips parsing imported function bodies" {
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -508,9 +508,9 @@ test "sla check uses imported method signatures without checking imported method
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -558,9 +558,9 @@ test "sla check uses imported trait method signatures without checking imported 
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -608,9 +608,9 @@ test "sla check uses imported trait associated signatures without checking impor
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -627,7 +627,7 @@ test "sla build rewrites sla imports relative to final output path" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaString(
@@ -671,7 +671,7 @@ test "sla test filter prunes unmatched tests before type checking" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaStringWithOptions(
@@ -717,7 +717,7 @@ test "sla test sab backend prunes unmatched tests before type checking" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -776,7 +776,7 @@ test "sla build-exe SAB codegen prunes unreachable main declarations" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -851,7 +851,7 @@ test "sla reachability plan cache separates test and executable roots" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     _ = (try compileSlaFileToSabWithOptions(
@@ -926,7 +926,7 @@ test "sla test codegen prunes unreachable functions before type checking" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaStringWithOptions(
@@ -1042,7 +1042,7 @@ test "sla test import expansion prunes unreachable imported methods" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaStringWithOptions(
@@ -1120,7 +1120,7 @@ test "sla test codegen uses registry loaded imported bodies" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var sa_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sa_stderr.deinit();
     const sa_compiled = try compileSlaSaTestInput(allocator, "main.sla", sa_stderr.writer().any(), &.{}, false);
     if (sa_compiled) |compiled| {
@@ -1137,7 +1137,7 @@ test "sla test codegen uses registry loaded imported bodies" {
     }
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
 
-    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
     const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, false);
     if (sab_compiled) |compiled| {
@@ -1228,7 +1228,7 @@ test "sla test codegen keeps imported macro direct callee" {
     try std.testing.expect(reachable.contains("use_imported_macro"));
     try std.testing.expect(reachable.contains("macro_pair_sum"));
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
     if (compiled) |test_input| {
@@ -1296,7 +1296,7 @@ test "sla sa codegen resolves local binding types for imported macro args" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaString(
@@ -1351,7 +1351,7 @@ test "sla emit reachability keeps user macro direct callee" {
 
     var reachable = std.StringHashMap(void).init(allocator);
     defer reachable.deinit();
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     defer worklist.deinit();
     for (prog.program.decls) |decl| {
         if (decl.* == .test_decl) try collectReachableBlock(&tc, &reachable, &worklist, decl.test_decl.body);
@@ -1408,7 +1408,7 @@ test "sla test codegen prunes unreferenced sla macro bodies" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
     if (compiled) |test_input| {
@@ -1461,7 +1461,7 @@ test "sla test codegen does not root imported const initializers" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
     if (compiled) |test_input| {
@@ -1655,7 +1655,7 @@ test "sla sa codegen does not release extern move field temps" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaString(
@@ -1915,7 +1915,7 @@ test "sla sa codegen lowers else if chains" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaString(
@@ -1968,7 +1968,7 @@ test "sla sa loop backedges require live body fallthrough" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
@@ -1988,7 +1988,7 @@ test "sla sa loop backedges require live body fallthrough" {
 test "sla sab filtered primitive call temp remains in test scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -2156,7 +2156,7 @@ test "sla generated async exits release stored state inputs" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
@@ -2186,7 +2186,7 @@ test "sla generated async exits release stored state inputs" {
 test "sla sab borrow alias return keeps source register" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -2259,7 +2259,7 @@ test "sla typechecker records exact await pending cleanup" {
 test "sla empty void exits keep caller managed parameters" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaString(
         arena.allocator(),
@@ -2301,7 +2301,7 @@ test "sla shared static call plan emits void calls without result registers" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
@@ -2416,7 +2416,7 @@ test "sla pre-typecheck pruning keeps for-in protocol methods" {
 
     var reachable = std.StringHashMap(void).init(allocator);
     defer reachable.deinit();
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     defer worklist.deinit();
     for (prog.program.decls) |decl| {
         if (decl.* == .test_decl) try collectReachableBlock(&tc, &reachable, &worklist, decl.test_decl.body);
@@ -2630,7 +2630,7 @@ test "sla reachability root scanners skip unchanged sets and honor invalidation"
     defer scanned_types.deinit();
     var reachable = std.StringHashMap(void).init(allocator);
     defer reachable.deinit();
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     defer worklist.deinit();
 
     try std.testing.expect(try scanReferencedSymbolRoots(&index, null, null, null, &reachable, &referenced, &scanned_symbols, &worklist));
@@ -2754,9 +2754,9 @@ test "sla load contracts reuses resolved non-sla imports" {
 
     var import_modules = SlaModuleTable.init(allocator);
     defer import_modules.deinit();
-    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
     defer root_import_groups.deinit();
-    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    var contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
     defer contract_imports.deinit();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const expanded_prog = try expandSlaImportsWithModuleTable(allocator, prog, "main.sla", &primary_decls, .{}, &import_modules, &root_import_groups, &contract_imports);
@@ -2826,9 +2826,9 @@ test "sla test import expansion reuses reachable contracts in final type checker
         .parse_test_bodies = false,
     });
     defer import_modules.deinit();
-    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
     defer root_import_groups.deinit();
-    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    var contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
     defer contract_imports.deinit();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     var tc = type_checker_mod.TypeChecker.init(allocator);
@@ -2898,7 +2898,7 @@ test "sla test codegen skips contract loading for non contributing imported modu
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
     if (compiled) |test_input| {
@@ -2958,7 +2958,7 @@ test "sla test codegen loads contract imports for contributing imported modules"
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
     if (compiled) |test_input| {
@@ -3013,7 +3013,7 @@ test "sla test codegen skips contract loading for type only imported modules" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
     if (compiled) |test_input| {
@@ -3074,7 +3074,7 @@ test "sla test codegen loads referenced macro imports from type only modules" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
     if (compiled) |test_input| {
@@ -3119,7 +3119,7 @@ test "sla reachable roots keep canonical callable key for temporary mangled meth
     defer reachable.deinit();
     var referenced_types = std.StringHashMap(void).init(allocator);
     defer referenced_types.deinit();
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     defer worklist.deinit();
 
     try markSyntacticReachableFunc(&callable_index, null, null, null, null, &reachable, &referenced_types, &worklist, temp_symbol);
@@ -3262,7 +3262,7 @@ test "sla module namespace call resolves through imported function alias" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaStringWithOptions(
@@ -3280,7 +3280,7 @@ test "sla module namespace call resolves through imported function alias" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__dep__imported_a") != null);
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 
-    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
     const sab_compiled = try compileSlaSabTestInput(arena.allocator(), "main.sla", sab_stderr.writer().any(), &.{}, false);
     if (sab_compiled) |compiled| {
@@ -3423,9 +3423,9 @@ test "sla imported aliases reuse parsed module table" {
 
     var import_modules = SlaModuleTable.init(allocator);
     defer import_modules.deinit();
-    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
     defer root_import_groups.deinit();
-    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    var contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
     defer contract_imports.deinit();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const expanded_prog = try expandSlaImportsWithModuleTable(allocator, prog, "main.sla", &primary_decls, .{}, &import_modules, &root_import_groups, &contract_imports);
@@ -3483,7 +3483,7 @@ test "sla module namespace aliases isolate same named imported functions" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var sa_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sa_stderr.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
@@ -3501,7 +3501,7 @@ test "sla module namespace aliases isolate same named imported functions" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__sibling__imported_a") != null);
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
 
-    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
     const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, false);
     if (sab_compiled) |compiled| {
@@ -3565,7 +3565,7 @@ test "sla reachable collector records namespace alias call targets" {
     try tc.checkProgram(&program);
 
     var reachable = std.StringHashMap(void).init(allocator);
-    var worklist = std.ArrayList([]const u8).init(allocator);
+    var worklist = std.array_list.Managed([]const u8).init(allocator);
     try collectReachableExpr(&tc, &reachable, &worklist, &dep_call);
     try collectReachableExpr(&tc, &reachable, &worklist, &sibling_call);
 
@@ -3964,7 +3964,7 @@ test "sla module table resolves imported function bodies by module and namespace
     var referenced_types = std.StringHashMap(void).init(allocator);
     var emitted = std.StringHashMap(void).init(allocator);
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
-    var out_decls = std.ArrayList(*ast.Node).init(allocator);
+    var out_decls = std.array_list.Managed(*ast.Node).init(allocator);
     try reachable.put("sibling__imported_value", {});
     try appendModuleDeclsSelective(allocator, &modules, sibling_module, &emitted, &primary_decls, &out_decls, &reachable, &referenced_types, .{}, null);
 
@@ -4031,9 +4031,9 @@ test "sla module table skips imported test body parsing" {
 
     var import_modules = SlaModuleTable.init(allocator);
     defer import_modules.deinit();
-    var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+    var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
     defer root_import_groups.deinit();
-    var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+    var contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
     defer contract_imports.deinit();
     var primary_decls = std.AutoHashMap(*const ast.Node, void).init(allocator);
     const expanded_prog = try expandSlaImportsWithModuleTable(allocator, prog, "main.sla", &primary_decls, .{}, &import_modules, &root_import_groups, &contract_imports);
@@ -4124,7 +4124,7 @@ test "sla module table skips non contributing imported module bodies" {
 
     var compile_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer compile_arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(compile_arena.allocator());
+    var stderr_buf = std.array_list.Managed(u8).init(compile_arena.allocator());
     defer stderr_buf.deinit();
     const compiled = try compileSlaSaTestInput(
         compile_arena.allocator(),
@@ -4268,7 +4268,7 @@ test "sla build codegen uses registry loaded imported bodies" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var sa_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sa_stderr.deinit();
     const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", sa_stderr.writer().any())) orelse {
         std.debug.print("{s}", .{sa_stderr.items});
@@ -4281,7 +4281,7 @@ test "sla build codegen uses registry loaded imported bodies" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_trait_body") == null);
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
 
-    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
     const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr.writer().any())) orelse {
         std.debug.print("{s}", .{sab_stderr.items});
@@ -4356,7 +4356,7 @@ test "sla build codegen keeps imported dyn trait impl bodies from registry" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var sa_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sa_stderr.deinit();
     const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", sa_stderr.writer().any())) orelse {
         std.debug.print("{s}", .{sa_stderr.items});
@@ -4374,7 +4374,7 @@ test "sla build codegen keeps imported dyn trait impl bodies from registry" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_dyn_body") == null);
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
 
-    var sab_stderr = std.ArrayList(u8).init(std.testing.allocator);
+    var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
     const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr.writer().any())) orelse {
         std.debug.print("{s}", .{sab_stderr.items});
@@ -4429,7 +4429,7 @@ test "sla build codegen skips parsing non contributing imported function bodies"
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", stderr_buf.writer().any())) orelse {
         std.debug.print("{s}", .{stderr_buf.items});
@@ -4492,7 +4492,7 @@ test "sla test codegen materializes reachable bodies in contributing module" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
@@ -4568,7 +4568,7 @@ test "sla sab test codegen materializes reachable bodies in contributing module"
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         allocator,
@@ -4639,7 +4639,7 @@ test "sla test codegen materializes reachable macro bodies in contributing modul
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
@@ -5136,7 +5136,7 @@ test "sla test codegen narrows same named imported methods by symbol" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
@@ -5198,7 +5198,7 @@ test "sla test codegen skips parsing non contributing transitive sla imports" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
@@ -5255,7 +5255,7 @@ test "sla test codegen lazily parses reachable transitive sla imports" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
@@ -5318,7 +5318,7 @@ test "sla test codegen skips unreferenced child imports of contributing modules"
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
@@ -5381,7 +5381,7 @@ test "sla test codegen qualifies same named imported helper reachability" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaStringWithOptions(
@@ -5601,7 +5601,7 @@ test "sla module table discovers transitive generic function references" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
@@ -5694,7 +5694,7 @@ test "sla module table prunes unreachable trait impl methods in contributing mod
     try std.testing.expect(saw_unused);
     try std.testing.expect(saw_unused_decl_only);
 
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
@@ -5752,7 +5752,7 @@ test "sla sab codegen skips decl only imported trait impl methods" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -6010,7 +6010,7 @@ test "sla sab test codegen omits unreachable functions after type checking" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -6087,7 +6087,7 @@ test "sla sab test codegen omits statically empty import scan resolver branch" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -6179,7 +6179,7 @@ test "sla sab test codegen propagates empty import scan through imported wrapper
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -6318,7 +6318,7 @@ test "sla sab test codegen uses lightweight project snapshot for primary configu
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -6391,7 +6391,7 @@ test "sla sab test codegen prunes known inferred snapshot result chains before r
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
@@ -6513,7 +6513,7 @@ test "sla sab test codegen folds cached default open configured projects" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -6589,7 +6589,7 @@ test "sla sab test codegen folds two open configured projects" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
@@ -6733,7 +6733,7 @@ test "sla sab test codegen folds cached default inferred project lookup" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -6958,7 +6958,7 @@ test "sla sab test codegen folds project session api open result" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7021,7 +7021,7 @@ test "sla sab test codegen omits unreachable trait impls after type checking" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7065,9 +7065,9 @@ test "sla test empty filter skips sab compilation" {
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -7126,7 +7126,7 @@ test "sla sab backend lowers plain structs directly" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7167,7 +7167,7 @@ test "sla sab backend lowers plain structs directly" {
 test "sla sab backend lowers function pointers directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7211,7 +7211,7 @@ test "sla sab backend lowers function pointers directly" {
 test "sla sab backend lowers escaped thread closure function pointer callee directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7259,7 +7259,7 @@ test "sla sab backend lowers escaped thread closure function pointer callee dire
 test "sla sab escaped loop closure loads stack slot scalar capture" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7300,7 +7300,7 @@ test "sla sab escaped loop closure loads stack slot scalar capture" {
 test "sla sab backend lowers paired escaped thread function pointer callees directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7353,7 +7353,7 @@ test "sla sab backend lowers multi-argument calls directly" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7383,7 +7383,7 @@ test "sla sab backend lowers multi-argument calls directly" {
 test "sla sab backend lowers imported std surface metadata directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7423,7 +7423,7 @@ test "sla sab backend lowers imported std surface metadata directly" {
 test "sla sab backend lowers std surface function metadata directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7459,7 +7459,7 @@ test "sla sab backend lowers std surface function metadata directly" {
 test "sla sab backend lowers typed vec index directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7498,7 +7498,7 @@ test "sla sab backend lowers typed vec index directly" {
 test "sla sab backend lowers fallible std surface metadata directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7542,7 +7542,7 @@ test "sla sab backend lowers fallible std surface metadata directly" {
 test "sla sab backend lowers option std surface metadata directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7585,7 +7585,7 @@ test "sla sab backend lowers option std surface metadata directly" {
 test "sla sab backend lowers result std surface metadata directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7625,7 +7625,7 @@ test "sla sab backend lowers result std surface metadata directly" {
 test "sla sab backend lowers closure calls directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7654,7 +7654,7 @@ test "sla sab backend lowers closure calls directly" {
 test "sla sab backend lowers var scalar slots directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7686,7 +7686,7 @@ test "sla sab backend lowers var scalar slots directly" {
 test "sla sab backend treats ptr stack slot temps as non owning" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7744,7 +7744,7 @@ test "sla sab backend treats ptr stack slot temps as non owning" {
 test "sla sab backend imported ptr add macro output does not redefine input param" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7789,7 +7789,7 @@ test "sla sab backend imported ptr add macro output does not redefine input para
 test "sla sab backend stores imported scalar macro outputs into stack slots" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7840,7 +7840,7 @@ test "sla sab backend stores imported scalar macro outputs into stack slots" {
 test "sla sab backend lowers tuple literals and destructuring directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7894,7 +7894,7 @@ test "sla sab backend lowers scalar if expressions directly" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -7957,7 +7957,7 @@ test "sla sab backend lowers typed if bindings and var assignments directly" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8019,7 +8019,7 @@ test "sla sab backend lowers nested if assignments directly" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8057,7 +8057,7 @@ test "sla sab backend lowers float arithmetic directly" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8113,7 +8113,7 @@ test "sla sab backend lowers boolean logic directly" {
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8144,7 +8144,7 @@ test "sla sab backend lowers boolean logic directly" {
 test "sla sab backend lowers numeric casts directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8192,7 +8192,7 @@ test "sla sab backend lowers numeric casts directly" {
 test "sla sab backend lowers borrow and deref directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8226,7 +8226,7 @@ test "sla sab backend lowers borrow and deref directly" {
 test "sla sab backend loads pointer-backed field for standalone borrow" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8263,7 +8263,7 @@ test "sla sab backend loads pointer-backed field for standalone borrow" {
 test "sla sa-text loads pointer-backed field for standalone borrow" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sa_code = (try compileSlaToSaStringWithOptions(
@@ -8285,7 +8285,7 @@ test "sla sa-text loads pointer-backed field for standalone borrow" {
 test "sla sab backend lowers array literals dynamic indexes and range for directly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8325,7 +8325,7 @@ test "sla sab backend lowers array literals dynamic indexes and range for direct
 test "sla sab backend lowers move arguments through fresh temps" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8377,9 +8377,9 @@ test "sla sab build emits direct SAB without SA source output" {
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -8438,9 +8438,9 @@ test "sla sab build defaults to managed sla cache" {
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -8503,9 +8503,9 @@ test "sla build resolves workspace default member when file omitted" {
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -8533,9 +8533,9 @@ test "sla check prefers current member over workspace default" {
     try member_dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -8561,9 +8561,9 @@ test "sla build selects workspace package with -p when file omitted" {
     try tmp.dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
-    var stdout_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
@@ -8578,7 +8578,7 @@ test "sla build selects workspace package with -p when file omitted" {
 test "sla sab backend releases by-value scalar params of functions declared after main" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     // The SA-text emitter consumes by-value params through the type checker's
@@ -8670,7 +8670,7 @@ test "sla sab backend releases str_eq loaded string data-pointer temps" {
 fn checkStrEqFixtureReleasesTemps(path: []const u8, cache: []const u8, expect_view_temps: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8705,7 +8705,7 @@ fn checkStrEqFixtureReleasesTemps(path: []const u8, cache: []const u8, expect_vi
     defer view_slots.deinit();
     var released_regs = std.AutoHashMap(u32, void).init(std.testing.allocator);
     defer released_regs.deinit();
-    var loaded_ptr_temps = std.ArrayList(u32).init(std.testing.allocator);
+    var loaded_ptr_temps = std.array_list.Managed(u32).init(std.testing.allocator);
     defer loaded_ptr_temps.deinit();
 
     for (module.instructions[main_sig.entry_inst_idx..body_end]) |item| {
@@ -8755,7 +8755,7 @@ fn checkStrEqFixtureReleasesTemps(path: []const u8, cache: []const u8, expect_vi
 test "sla sab backend lowers immediately-invoked closure literal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8774,7 +8774,7 @@ test "sla sab backend lowers immediately-invoked closure literal" {
 test "sla sab backend lowers chain assignment" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8793,7 +8793,7 @@ test "sla sab backend lowers chain assignment" {
 test "sla sab backend lowers bare string println argument" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8812,7 +8812,7 @@ test "sla sab backend lowers bare string println argument" {
 test "sla sab backend lowers map get copied unwrap chain" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8831,7 +8831,7 @@ test "sla sab backend lowers map get copied unwrap chain" {
 test "sla sab backend lowers btree get len chain" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
@@ -8850,7 +8850,7 @@ test "sla sab backend lowers btree get len chain" {
 test "sla sab backend lowers map clear" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var stderr_buf = std.ArrayList(u8).init(std.testing.allocator);
+    var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(

@@ -28,7 +28,7 @@ pub const ContractParser = struct {
     }
 
     pub fn parseSai(self: *ContractParser, content: []const u8) ![]const ExternalFunction {
-        var functions = std.ArrayList(ExternalFunction).init(self.allocator);
+        var functions = std.array_list.Managed(ExternalFunction).init(self.allocator);
         errdefer {
             for (functions.items) |f| {
                 self.allocator.free(f.params);
@@ -91,7 +91,7 @@ pub const ContractParser = struct {
         }
 
         // Parse parameters list
-        var params = std.ArrayList(Param).init(self.allocator);
+        var params = std.array_list.Managed(Param).init(self.allocator);
         errdefer params.deinit();
 
         var param_split = std.mem.splitScalar(u8, params_str, ',');
@@ -133,7 +133,7 @@ pub const ContractParser = struct {
     }
 
     pub fn parseSal(self: *ContractParser, content: []const u8) ![]const LayoutDefine {
-        var defines = std.ArrayList(LayoutDefine).init(self.allocator);
+        var defines = std.array_list.Managed(LayoutDefine).init(self.allocator);
         errdefer defines.deinit();
 
         var lines = std.mem.splitScalar(u8, content, '\n');

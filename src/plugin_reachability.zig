@@ -28,13 +28,13 @@ pub const UnresolvedCallable = struct {
 };
 
 pub const UnresolvedCallableSet = struct {
-    records: std.ArrayList(UnresolvedCallable),
-    record_indices_by_name: std.StringHashMap(std.ArrayList(usize)),
+    records: std.array_list.Managed(UnresolvedCallable),
+    record_indices_by_name: std.StringHashMap(std.array_list.Managed(usize)),
 
     pub fn init(allocator: std.mem.Allocator) UnresolvedCallableSet {
         return .{
-            .records = std.ArrayList(UnresolvedCallable).init(allocator),
-            .record_indices_by_name = std.StringHashMap(std.ArrayList(usize)).init(allocator),
+            .records = std.array_list.Managed(UnresolvedCallable).init(allocator),
+            .record_indices_by_name = std.StringHashMap(std.array_list.Managed(usize)).init(allocator),
         };
     }
 
@@ -58,7 +58,7 @@ pub const UnresolvedCallableSet = struct {
         receiver_type_name: ?[]const u8,
     ) !void {
         const entry = try self.record_indices_by_name.getOrPut(name);
-        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList(usize).init(self.records.allocator);
+        if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed(usize).init(self.records.allocator);
         for (entry.value_ptr.items) |record_index| {
             const recorded = self.records.items[record_index];
             if (recorded.kind != kind) continue;
@@ -85,7 +85,7 @@ pub const SlaCallableIndex = struct {
     macro_decls: std.StringHashMap(*ast.MacroDecl),
     type_decls: std.StringHashMap(*ast.Node),
     module_sources: std.StringHashMap([]const u8),
-    associated_candidates: std.StringHashMap(std.ArrayList([]const u8)),
+    associated_candidates: std.StringHashMap(std.array_list.Managed([]const u8)),
     unresolved_callables: ?*UnresolvedCallableSet,
 
     pub fn init(allocator: std.mem.Allocator) SlaCallableIndex {
@@ -97,7 +97,7 @@ pub const SlaCallableIndex = struct {
             .macro_decls = std.StringHashMap(*ast.MacroDecl).init(allocator),
             .type_decls = std.StringHashMap(*ast.Node).init(allocator),
             .module_sources = std.StringHashMap([]const u8).init(allocator),
-            .associated_candidates = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
+            .associated_candidates = std.StringHashMap(std.array_list.Managed([]const u8)).init(allocator),
             .unresolved_callables = null,
         };
     }
@@ -151,7 +151,7 @@ pub const SlaCallableIndex = struct {
 
     pub fn addAssociatedCandidate(self: *SlaCallableIndex, method_name: []const u8, symbol: []const u8) !void {
         const entry = try self.associated_candidates.getOrPut(method_name);
-        if (!entry.found_existing) entry.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+        if (!entry.found_existing) entry.value_ptr.* = std.array_list.Managed([]const u8).init(self.allocator);
         try entry.value_ptr.append(symbol);
     }
 
@@ -524,7 +524,7 @@ pub const ReachabilityAnalysis = struct {
     }
 
     pub fn retainOnly(self: *ReachabilityAnalysis, set: *std.StringHashMap(void), incoming: *const std.StringHashMap(void)) !bool {
-        var removed = std.ArrayList([]const u8).init(self.allocator);
+        var removed = std.array_list.Managed([]const u8).init(self.allocator);
         defer removed.deinit();
         var iter = set.keyIterator();
         while (iter.next()) |key_ptr| {
@@ -535,7 +535,7 @@ pub const ReachabilityAnalysis = struct {
     }
 
     pub fn retainMatchingInts(self: *ReachabilityAnalysis, facts: *std.StringHashMap(i64), incoming: *const std.StringHashMap(i64)) !bool {
-        var removed = std.ArrayList([]const u8).init(self.allocator);
+        var removed = std.array_list.Managed([]const u8).init(self.allocator);
         defer removed.deinit();
         var iter = facts.iterator();
         while (iter.next()) |entry| {
@@ -552,7 +552,7 @@ pub const ReachabilityAnalysis = struct {
     }
 
     pub fn retainMatchingBools(self: *ReachabilityAnalysis, facts: *std.StringHashMap(bool), incoming: *const std.StringHashMap(bool)) !bool {
-        var removed = std.ArrayList([]const u8).init(self.allocator);
+        var removed = std.array_list.Managed([]const u8).init(self.allocator);
         defer removed.deinit();
         var iter = facts.iterator();
         while (iter.next()) |entry| {
@@ -569,7 +569,7 @@ pub const ReachabilityAnalysis = struct {
     }
 
     pub fn retainMatchingTypes(self: *ReachabilityAnalysis, facts: *std.StringHashMap([]const u8), incoming: *const std.StringHashMap([]const u8)) !bool {
-        var removed = std.ArrayList([]const u8).init(self.allocator);
+        var removed = std.array_list.Managed([]const u8).init(self.allocator);
         defer removed.deinit();
         var iter = facts.iterator();
         while (iter.next()) |entry| {
@@ -1185,7 +1185,7 @@ pub fn pruneDeadZeroImportScanLetsInBlock(
     var facts = try incoming_facts.clone();
     defer facts.deinit();
 
-    var out = std.ArrayList(*ast.Node).init(allocator);
+    var out = std.array_list.Managed(*ast.Node).init(allocator);
     for (block, 0..) |stmt, idx| {
         var keep = true;
         switch (stmt.*) {
@@ -1269,7 +1269,7 @@ pub fn collectSyntacticReachableRootsFromDecls(
     analysis: ?*ReachabilityAnalysis,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     decls: []const *ast.Node,
     test_filter: ?[]const u8,
     saw_test: *bool,
@@ -1323,14 +1323,14 @@ pub fn scanReferencedSymbolRoots(
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
     scanned_symbol_roots: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
 ) !bool {
     // Every referenced root is inserted into this set when scanned. If counts
     // match, no root can be pending and we can avoid walking the whole hash map.
     // Explicit invalidation removes entries, making the counts differ again.
     if (referenced_types.count() == scanned_symbol_roots.count()) return false;
 
-    var pending = std.ArrayList([]const u8).init(funcs.allocator);
+    var pending = std.array_list.Managed([]const u8).init(funcs.allocator);
     defer pending.deinit();
 
     var referenced_iter = referenced_types.keyIterator();
@@ -1357,7 +1357,7 @@ pub fn scanReferencedSymbolRoots(
 const ReachabilityBuildState = struct {
     allocator: std.mem.Allocator,
     callable_index: SlaCallableIndex,
-    worklist: std.ArrayList([]const u8),
+    worklist: std.array_list.Managed([]const u8),
     scanned_symbol_roots: std.StringHashMap(void),
     scanned_type_roots: std.StringHashMap(void),
     analysis: ReachabilityAnalysis,
@@ -1369,7 +1369,7 @@ const ReachabilityBuildState = struct {
         return .{
             .allocator = allocator,
             .callable_index = SlaCallableIndex.init(allocator),
-            .worklist = std.ArrayList([]const u8).init(allocator),
+            .worklist = std.array_list.Managed([]const u8).init(allocator),
             .scanned_symbol_roots = std.StringHashMap(void).init(allocator),
             .scanned_type_roots = std.StringHashMap(void).init(allocator),
             .scanned_function_bodies = std.StringHashMap(void).init(allocator),
@@ -1845,7 +1845,7 @@ pub fn materializeReachableImportedModuleBodiesWithState(
                 select_ns += std.time.nanoTimestamp() - select_start;
                 if (unchanged) continue;
 
-                var newly_materialized_functions = std.ArrayList([]const u8).init(allocator);
+                var newly_materialized_functions = std.array_list.Managed([]const u8).init(allocator);
                 defer {
                     for (newly_materialized_functions.items) |name| allocator.free(name);
                     newly_materialized_functions.deinit();
@@ -1856,7 +1856,7 @@ pub fn materializeReachableImportedModuleBodiesWithState(
                         try newly_materialized_functions.append(try allocator.dupe(u8, name_ptr.*));
                     }
                 }
-                var newly_materialized_macros = std.ArrayList([]const u8).init(allocator);
+                var newly_materialized_macros = std.array_list.Managed([]const u8).init(allocator);
                 defer {
                     for (newly_materialized_macros.items) |name| allocator.free(name);
                     newly_materialized_macros.deinit();
@@ -2092,7 +2092,7 @@ pub fn scanReferencedExportedTypeSignatures(
 ) !bool {
     if (referenced_types.count() == scanned_type_roots.count()) return false;
 
-    var pending = std.ArrayList(*ast.Node).init(funcs.allocator);
+    var pending = std.array_list.Managed(*ast.Node).init(funcs.allocator);
     defer pending.deinit();
 
     var referenced_iter = referenced_types.keyIterator();
@@ -2115,7 +2115,7 @@ pub fn markSyntacticReachableFunc(
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     name: []const u8,
 ) !void {
     if (try moduleQualifiedCallableForCaller(funcs, modules, caller_name, name)) |qualified| {
@@ -2196,7 +2196,7 @@ pub fn markSyntacticAssociatedCallCandidates(
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     method_name: []const u8,
     target_type_name: ?[]const u8,
 ) !void {
@@ -2249,7 +2249,7 @@ pub fn collectSyntacticReachableExpr(
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     expr: *const ast.Node,
 ) anyerror!void {
     switch (expr.*) {
@@ -2384,7 +2384,7 @@ pub fn collectSyntacticReachableBlock(
     caller_name: ?[]const u8,
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
-    worklist: *std.ArrayList([]const u8),
+    worklist: *std.array_list.Managed([]const u8),
     block: []const *ast.Node,
 ) anyerror!void {
     var local_facts: ?SyntacticFactSet = null;

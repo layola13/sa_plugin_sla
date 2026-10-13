@@ -1,4 +1,5 @@
 const std = @import("std");
+const sla_rt = @import("sla_rt");
 
 pub const SourceExpandError = error{
     InvalidExpandTuple,
@@ -24,7 +25,7 @@ const TupleContext = struct {
     }
 
     fn typeList(self: TupleContext, allocator: std.mem.Allocator) SourceExpandError![]const u8 {
-        var out = std.ArrayList(u8).init(allocator);
+        var out = std.array_list.Managed(u8).init(allocator);
         for (0..self.arity) |i| {
             if (i != 0) try out.appendSlice(", ");
             out.writer().print("{s}{}", .{ self.type_prefix, i }) catch return SourceExpandError.OutOfMemory;
@@ -38,7 +39,7 @@ pub fn expand(allocator: std.mem.Allocator, source: []const u8) SourceExpandErro
         return allocator.dupe(u8, source) catch return SourceExpandError.OutOfMemory;
     }
 
-    var out = std.ArrayList(u8).init(allocator);
+    var out = std.array_list.Managed(u8).init(allocator);
     // Large ECS modules use many @expand_tuple blocks; avoid geometric realloc churn.
     try out.ensureTotalCapacity(source.len * 2);
     var i: usize = 0;
@@ -90,7 +91,7 @@ fn expandCachePath(allocator: std.mem.Allocator, module_path: []const u8, source
 }
 
 fn loadExpandedSourceCache(allocator: std.mem.Allocator, cache_path: []const u8) !?[]u8 {
-    return std.fs.cwd().readFileAlloc(allocator, cache_path, 64 * 1024 * 1024) catch |err| switch (err) {
+    return std.Io.Dir.cwd().readFileAlloc(allocator, sla_rt.get(), cache_path, std.Io.Limit.limited(64 * 1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => null,
         else => err,
     };
@@ -98,10 +99,13 @@ fn loadExpandedSourceCache(allocator: std.mem.Allocator, cache_path: []const u8)
 
 fn storeExpandedSourceCache(cache_path: []const u8, expanded: []const u8) void {
     const dir = std.fs.path.dirname(cache_path) orelse return;
-    std.fs.cwd().makePath(dir) catch return;
-    const file = std.fs.cwd().createFile(cache_path, .{}) catch return;
-    defer file.close();
-    file.writeAll(expanded) catch {};
+    std.Io.Dir.cwd().createDirPath(sla_rt.get(), dir) catch return;
+    const file = std.Io.Dir.cwd().createFile(sla_rt.get(), cache_path, .{}) catch return;
+    defer file.close(sla_rt.get());
+    var wb: [8192]u8 = undefined;
+    var w = file.writer(sla_rt.get(), &wb);
+    w.writeAll(expanded) catch {};
+    w.flush() catch {};
 }
 
 const ExpandTupleSpec = struct {
@@ -125,7 +129,7 @@ fn parseExpandTupleArgs(args: []const u8) SourceExpandError!ExpandTupleSpec {
 }
 
 fn expandTemplate(allocator: std.mem.Allocator, template: []const u8, ctx: TupleContext) SourceExpandError![]const u8 {
-    var out = std.ArrayList(u8).init(allocator);
+    var out = std.array_list.Managed(u8).init(allocator);
     var i: usize = 0;
     while (i < template.len) {
         if (startsWithAt(template, i, "@each")) {
@@ -168,7 +172,7 @@ fn expandTemplate(allocator: std.mem.Allocator, template: []const u8, ctx: Tuple
     return out.toOwnedSlice() catch return SourceExpandError.OutOfMemory;
 }
 
-fn appendPlaceholder(out: *std.ArrayList(u8), text: []const u8, index: *usize, ctx: TupleContext) SourceExpandError!bool {
+fn appendPlaceholder(out: *std.array_list.Managed(u8), text: []const u8, index: *usize, ctx: TupleContext) SourceExpandError!bool {
     const i = index.*;
     if (text[i] != '$') return false;
     if (startsWithAt(text, i, "$TYPE_PARAMS") or startsWithAt(text, i, "$TYPES")) {

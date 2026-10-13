@@ -141,7 +141,7 @@ fn runSabWorkspaceCommand(
         if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
     }
 
-    var argv = std.ArrayList([]const u8).init(allocator);
+    var argv = std.array_list.Managed([]const u8).init(allocator);
     try argv.append(resolveSaExecutable(allocator));
     try argv.append("build-exe");
     try argv.append(managed_path);
@@ -339,7 +339,7 @@ pub fn runSlaCommandImpl(
             if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
         }
 
-        var argv = std.ArrayList([]const u8).init(allocator);
+        var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append("build-exe");
         try argv.append(sab_out);
@@ -380,7 +380,7 @@ pub fn runSlaCommandImpl(
             if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
         }
 
-        var argv = std.ArrayList([]const u8).init(allocator);
+        var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append(sa_sub);
         try argv.append(sab_out);
@@ -425,7 +425,7 @@ pub fn runSlaCommandImpl(
             if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
         }
 
-        var argv = std.ArrayList([]const u8).init(allocator);
+        var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append("build-exe");
         try argv.append(sab_out);
@@ -493,9 +493,9 @@ pub fn runSlaCommandImpl(
         // Check include_all never materializes imported bodies; skip span capture.
         import_modules.capture_body_spans = false;
         defer import_modules.deinit();
-        var root_import_groups = std.ArrayList(SlaResolvedImportGroup).init(allocator);
+        var root_import_groups = std.array_list.Managed(SlaResolvedImportGroup).init(allocator);
         defer root_import_groups.deinit();
-        var contract_imports = std.ArrayList(ResolvedImport).init(allocator);
+        var contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
         defer contract_imports.deinit();
         const expanded_prog = expandSlaImportsWithModuleTable(allocator, prog, file, &primary_decls, .{
             .imported_bodies_decl_only = true,
@@ -585,7 +585,7 @@ pub fn runSlaCommandImpl(
             if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
         }
 
-        var argv = std.ArrayList([]const u8).init(allocator);
+        var argv = std.array_list.Managed([]const u8).init(allocator);
         try argv.append(resolveSaExecutable(allocator));
         try argv.append("test");
         try argv.append(test_input.path);

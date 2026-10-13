@@ -157,7 +157,7 @@ fn stringListContains(items: []const []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn parseStringListInto(allocator: std.mem.Allocator, text: []const u8, list: *std.ArrayList([]const u8)) !void {
+fn parseStringListInto(allocator: std.mem.Allocator, text: []const u8, list: *std.array_list.Managed([]const u8)) !void {
     const trimmed = trim(text);
     if (trimmed.len < 2 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') return error.InvalidFormat;
     const body = trim(trimmed[1 .. trimmed.len - 1]);
@@ -171,7 +171,7 @@ fn parseStringListInto(allocator: std.mem.Allocator, text: []const u8, list: *st
     }
 }
 
-fn parseUniqueStringListInto(allocator: std.mem.Allocator, text: []const u8, list: *std.ArrayList([]const u8)) !void {
+fn parseUniqueStringListInto(allocator: std.mem.Allocator, text: []const u8, list: *std.array_list.Managed([]const u8)) !void {
     const before_len = list.items.len;
     errdefer {
         while (list.items.len > before_len) allocator.free(list.pop().?);
@@ -208,7 +208,7 @@ fn parseManifestWithFile(allocator: std.mem.Allocator, source: []const u8) !Mani
     var package_name: ?[]u8 = null;
     errdefer if (package_name) |name| allocator.free(name);
 
-    var workspace_members = std.ArrayList([]const u8).init(allocator);
+    var workspace_members = std.array_list.Managed([]const u8).init(allocator);
     errdefer {
         for (workspace_members.items) |member| allocator.free(member);
         workspace_members.deinit();
@@ -383,7 +383,7 @@ pub fn listWorkspaceMembers(
     workspace_root: []const u8,
     workspace_manifest: *const Manifest,
 ) ResolveError![]WorkspaceMember {
-    var members = std.ArrayList(WorkspaceMember).init(allocator);
+    var members = std.array_list.Managed(WorkspaceMember).init(allocator);
     errdefer {
         for (members.items) |*member| member.deinit(allocator);
         members.deinit();

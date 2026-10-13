@@ -87,12 +87,12 @@ pub const ValidationReport = struct {
     label_count: usize = 0,
     artifact_count: usize = 0,
     evidence_count: usize = 0,
-    errors: std.ArrayList([]u8),
+    errors: std.array_list.Managed([]u8),
 
     pub fn init(allocator: std.mem.Allocator) ValidationReport {
         return .{
             .allocator = allocator,
-            .errors = std.ArrayList([]u8).init(allocator),
+            .errors = std.array_list.Managed([]u8).init(allocator),
         };
     }
 

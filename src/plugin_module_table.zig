@@ -66,8 +66,8 @@ pub const SlaModuleExports = struct {
     const_signatures: std.StringHashMap(ConstSignature),
     macro_decls: std.StringHashMap(*ast.Node),
     macro_signatures: std.StringHashMap(MacroSignature),
-    impl_decls: std.ArrayList(*ast.Node),
-    trait_impl_decls: std.ArrayList(*ast.Node),
+    impl_decls: std.array_list.Managed(*ast.Node),
+    trait_impl_decls: std.array_list.Managed(*ast.Node),
 
     pub fn init(allocator: std.mem.Allocator, module_path: []const u8) SlaModuleExports {
         return .{
@@ -83,8 +83,8 @@ pub const SlaModuleExports = struct {
             .const_signatures = std.StringHashMap(ConstSignature).init(allocator),
             .macro_decls = std.StringHashMap(*ast.Node).init(allocator),
             .macro_signatures = std.StringHashMap(MacroSignature).init(allocator),
-            .impl_decls = std.ArrayList(*ast.Node).init(allocator),
-            .trait_impl_decls = std.ArrayList(*ast.Node).init(allocator),
+            .impl_decls = std.array_list.Managed(*ast.Node).init(allocator),
+            .trait_impl_decls = std.array_list.Managed(*ast.Node).init(allocator),
         };
     }
 
@@ -363,7 +363,7 @@ pub const SlaModuleTable = struct {
     }
 
     pub fn buildModuleImportNamespaces(self: *SlaModuleTable, resolved_imports: []const ResolvedImport) ![]const ResolvedModuleImport {
-        var imports = std.ArrayList(ResolvedModuleImport).init(self.allocator);
+        var imports = std.array_list.Managed(ResolvedModuleImport).init(self.allocator);
         try imports.ensureTotalCapacity(resolved_imports.len);
         for (resolved_imports) |resolved| {
             if (!std.mem.endsWith(u8, resolved.path, ".sla")) continue;
@@ -416,7 +416,7 @@ pub const SlaModuleTable = struct {
     }
 
     pub fn resolveModuleImports(self: *SlaModuleTable, module_path: []const u8, base_dir: []const u8, decls: []const *ast.Node) ![]const ResolvedImport {
-        var imports = std.ArrayList(ResolvedImport).init(self.allocator);
+        var imports = std.array_list.Managed(ResolvedImport).init(self.allocator);
         // Most modules have few imports; pre-size for the upper bound of import_decl
         // nodes so getOrParse resolve-roots avoids repeated ArrayList growth.
         try imports.ensureTotalCapacity(decls.len);

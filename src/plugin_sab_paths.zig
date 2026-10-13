@@ -104,7 +104,7 @@ pub fn hasEmitSabArg(args: []const []const u8, start_idx: usize) bool {
     return false;
 }
 
-pub fn appendSabWorkspacePassthrough(argv: *std.ArrayList([]const u8), args: []const []const u8) !void {
+pub fn appendSabWorkspacePassthrough(argv: *std.array_list.Managed([]const u8), args: []const []const u8) !void {
     var idx: usize = 0;
     while (idx < args.len) : (idx += 1) {
         const arg = args[idx];
@@ -192,7 +192,7 @@ pub fn sabProjectRoot(allocator: std.mem.Allocator, source_file: []const u8) ![]
 }
 
 test "sla sab workspace passthrough defaults to jobs auto unless supplied" {
-    var workspace_argv = std.ArrayList([]const u8).init(std.testing.allocator);
+    var workspace_argv = std.array_list.Managed([]const u8).init(std.testing.allocator);
     defer workspace_argv.deinit();
     try appendSabWorkspacePassthrough(&workspace_argv, &.{ "--sab-out", "/tmp/out.sab", "-o", "/tmp/app" });
     try std.testing.expectEqualStrings("-o", workspace_argv.items[0]);

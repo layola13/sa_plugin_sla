@@ -1,4 +1,5 @@
 const std = @import("std");
+const sla_rt = @import("sla_rt");
 const type_checker_mod = @import("type_checker.zig");
 const source_expand = @import("source_expand.zig");
 
@@ -83,14 +84,14 @@ pub fn importedMacroCalleeName(allocator: std.mem.Allocator, raw: []const u8) ![
     return try allocator.dupe(u8, source_name);
 }
 
-pub fn appendUniqueDirectCallee(callees: *std.ArrayList([]const u8), name: []const u8) !void {
+pub fn appendUniqueDirectCallee(callees: *std.array_list.Managed([]const u8), name: []const u8) !void {
     for (callees.items) |existing| {
         if (std.mem.eql(u8, existing, name)) return;
     }
     try callees.append(name);
 }
 
-pub fn collectDirectSlaMacroCallees(allocator: std.mem.Allocator, callees: *std.ArrayList([]const u8), line: []const u8) !void {
+pub fn collectDirectSlaMacroCallees(allocator: std.mem.Allocator, callees: *std.array_list.Managed([]const u8), line: []const u8) !void {
     var rest = line;
     while (std.mem.indexOf(u8, rest, "call @")) |idx| {
         const start = idx + "call @".len;
@@ -109,7 +110,7 @@ pub fn collectDirectSlaMacroCallees(allocator: std.mem.Allocator, callees: *std.
 
 pub fn appendExpandedImportedMacroDirectCallees(
     tc: *type_checker_mod.TypeChecker,
-    callees: *std.ArrayList([]const u8),
+    callees: *std.array_list.Managed([]const u8),
     line: []const u8,
 ) !void {
     if (!std.mem.startsWith(u8, line, "EXPAND")) return;
@@ -135,7 +136,7 @@ fn tryLoadImportedMacrosFromCache(
     cache_path: []const u8,
     import_path: ?[]const u8,
 ) !bool {
-    const bytes = std.fs.cwd().readFileAlloc(allocator, cache_path, 16 * 1024 * 1024) catch return false;
+    const bytes = std.Io.Dir.cwd().readFileAlloc(allocator, sla_rt.get(), cache_path, std.Io.Limit.limited(16 * 1024 * 1024)) catch return false;
     defer allocator.free(bytes);
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |raw| {
@@ -151,7 +152,7 @@ fn tryLoadImportedMacrosFromCache(
         const leading = std.fmt.parseInt(usize, leading_s, 10) catch continue;
         const borrowed = std.fmt.parseInt(u64, borrow_s, 10) catch continue;
         const address = std.fmt.parseInt(u64, address_s, 10) catch continue;
-        var callee_list = std.ArrayList([]const u8).init(allocator);
+        var callee_list = std.array_list.Managed([]const u8).init(allocator);
         defer callee_list.deinit();
         if (callees_s.len != 0) {
             var cparts = std.mem.splitScalar(u8, callees_s, ',');
@@ -168,13 +169,16 @@ fn tryLoadImportedMacrosFromCache(
 
 fn storeImportedMacrosCache(cache_path: []const u8, records: []const []const u8) void {
     const dir = std.fs.path.dirname(cache_path) orelse return;
-    std.fs.cwd().makePath(dir) catch return;
-    const file = std.fs.cwd().createFile(cache_path, .{}) catch return;
-    defer file.close();
+    std.Io.Dir.cwd().createDirPath(sla_rt.get(), dir) catch return;
+    const file = std.Io.Dir.cwd().createFile(sla_rt.get(), cache_path, .{}) catch return;
+    defer file.close(sla_rt.get());
+    var wb: [8192]u8 = undefined;
+    var w = file.writer(sla_rt.get(), &wb);
     for (records) |line| {
-        file.writeAll(line) catch return;
-        file.writeAll("\n") catch return;
+        w.writeAll(line) catch return;
+        w.writeAll("\n") catch return;
     }
+    w.flush() catch return;
 }
 
 pub fn loadImportedMacrosFromExpandedSource(
@@ -191,7 +195,7 @@ pub fn loadImportedMacrosFromExpandedSource(
             if (try tryLoadImportedMacrosFromCache(tc, allocator, cp, import_path)) return;
         }
     }
-    var cache_records = std.ArrayList([]const u8).init(allocator);
+    var cache_records = std.array_list.Managed([]const u8).init(allocator);
     defer {
         for (cache_records.items) |line| allocator.free(line);
         cache_records.deinit();
@@ -205,7 +209,7 @@ pub fn loadImportedMacrosFromExpandedSource(
         const raw_name = parts.next() orelse continue;
         const name = try allocator.dupe(u8, std.mem.trim(u8, raw_name, " \t\r,"));
 
-        var param_names = std.ArrayList([]const u8).init(allocator);
+        var param_names = std.array_list.Managed([]const u8).init(allocator);
         defer param_names.deinit();
         var arity: usize = 0;
         var leading_outputs: usize = 0;
@@ -224,7 +228,7 @@ pub fn loadImportedMacrosFromExpandedSource(
 
         var borrowed_arg_mask: u64 = 0;
         var address_slot_arg_mask: u64 = 0;
-        var direct_callees = std.ArrayList([]const u8).init(allocator);
+        var direct_callees = std.array_list.Managed([]const u8).init(allocator);
         defer direct_callees.deinit();
         while (lines.next()) |body_raw_line| {
             const body_line = std.mem.trim(u8, body_raw_line, " \t\r");
@@ -239,7 +243,7 @@ pub fn loadImportedMacrosFromExpandedSource(
         const owned_import_path = if (import_path) |path| try allocator.dupe(u8, path) else null;
         const owned_callees = try direct_callees.toOwnedSlice();
         // Cache line: name|arity|leading|borrow|address|callee1,callee2
-        var callee_joined = std.ArrayList(u8).init(allocator);
+        var callee_joined = std.array_list.Managed(u8).init(allocator);
         defer callee_joined.deinit();
         for (owned_callees, 0..) |callee, idx| {
             if (idx != 0) try callee_joined.append(',');

@@ -1209,4 +1209,11 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   全量 925/925 `build-js` 零失败 + 925/925 `build-wasm` 零失败
   （慢 demo 如 `549/707/811/911–913` 单项达 6s+，分批 `-P4` + 90s 超时跑完；
   `02_arith` JS 跑出 `14/4/2/-5`，`20_closures` 跑出 `15/4/true/true`），
-  native 侧 `zig build test` RC=0 + `build-exe` 抽查正常；待推送。
+  native 侧 `zig build test` RC=0 + `build-exe` 抽查正常；已推送（`5f6cc0ef`）。
+- 2026-10-13：插件安装验证：`sa plugin install --dev .` 四件
+  （`http-client`/`http-server`/`node`/`sla`，`sa plugin list` 齐备；
+  dev 插件须 `SA_PLUGIN_DEV=1` 加载，正式模式拒绝属安全设计）；
+  安装态复验 `sa sla check`（01_hello 过）+ `sa sla build-js`
+  （02_arith 过且 `node` 跑出 `14/4/2/-5`）+ `sa sla build-wasm`
+  （10_strings 过）+ `sa node --help`（`node 0.1.0`）+
+  node 门面 `node_test_assert_top` / `node_test_buffer_top` 双过。

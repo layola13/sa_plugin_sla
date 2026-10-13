@@ -459,6 +459,26 @@
   `probe_c2.sla`（vecenum 绿）、`probe_c3.sla`（mapstruct exe 败）、
   `probe_c4.sla`（match 版双端败）。
 
+## #34 JS 后端 SAB 有 dest 调用报 InvalidOperand（已修复，2026-10-13，sci 侧）
+
+- 现象：`sa sla build-wasm` 全绿，但 `sa sla build-js` 几乎全败
+  （抽查 1/11，仅裸字符串 `println("hello world")` 通过）：
+  任何 `println("{}", x)` 报 `JS backend emit failed: InvalidOperand in main`；
+  同一 SAB 直调 `sa build-js` 同错，`.sa` 文本路径反绿。
+- 根因：SAB 结构化调用操作数为 `[dest.reg, body.text]` 且 `raw_text` 为空；
+  `sci/src/emit_js.zig` 的 `emitCallInstruction` /
+  `emitCallIndirectInstruction` 把 dest 经全局符号表做文本往返
+  （`lookupName(reg)` → 别名 → `findId` → `slotOf`），函数局部槽位被
+  误解析为无关全局名（实测 `dest=base id=4`，`slotOf` 失败）。
+  其余全部指令（含 wasm/LLVM）均经 `dstSlot` 直解寄存器操作数，
+  唯两处 call 发射例外，故 native/wasm 正常、仅 JS 败。
+- 已修复：两处 call-dest 改走 `dstSlot(fsig, use_global, base.operands[0])`
+  直解（`.reg`/`.symbol` 时），仅非寄存器形态回落文本查找；
+  并删去因此冗余的 `_ = use_global;`。探针 `/tmp/pvar.sla` 的 SAB
+  现 `build-js` 通过且 `node` 输出 `14` 正确；`02_arith` 的 JS 输出
+  `14/4/2/-5` 与 `@test` 断言一致；抽查 11/11 全绿。
+- 归属：sci JS 后端（`sci/src/emit_js.zig`），SLA 插件侧仅新增透传命令。
+
 ## 已验证无问题（回归对照）
 
 - [x] `Vec<i32>` vs `Vec<int>` stride（09_vec_methods 全绿，无数组字面量式问题）。

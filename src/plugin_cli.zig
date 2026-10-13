@@ -323,6 +323,8 @@ pub fn commandUsage(command: []const u8) []const u8 {
     if (std.mem.eql(u8, command, "build")) return "usage: sa sla build [file] [-p <package>] [--out <file>]\n";
     if (std.mem.eql(u8, command, "build-workspace")) return "usage: sa sla build-workspace [-p <package>] [sa-build-exe-options...]\n";
     if (std.mem.eql(u8, command, "build-exe")) return "usage: sa sla build-exe [file] [-p <package>] [sa-build-exe-options...]\n";
+    if (std.mem.eql(u8, command, "build-wasm")) return "usage: sa sla build-wasm [file] [-p <package>] [sa-build-wasm-options...]\n";
+    if (std.mem.eql(u8, command, "build-js")) return "usage: sa sla build-js [file] [-p <package>] [sa-build-js-options...]\n";
     if (std.mem.eql(u8, command, "sab")) return "usage: sa sla sab <build|workspace|disasm> [options]\n       sa slab <build|workspace|disasm> [options]\n";
     if (std.mem.eql(u8, command, "sab build")) return "usage: sa sla sab build [file] [-p <package>] [--out <file.sab>]\n       sa slab build [file] [-p <package>] [--out <file.sab>]\n";
     if (std.mem.eql(u8, command, "sab workspace")) return "usage: sa sla sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]\n       sa slab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe-options...]\n";
@@ -365,6 +367,8 @@ pub fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
     if (std.mem.eql(u8, command, "build") or
         std.mem.eql(u8, command, "build-workspace") or
         std.mem.eql(u8, command, "build-exe") or
+        std.mem.eql(u8, command, "build-wasm") or
+        std.mem.eql(u8, command, "build-js") or
         std.mem.eql(u8, command, "sab build") or
         std.mem.eql(u8, command, "sab workspace") or
         std.mem.eql(u8, command, "check") or
@@ -372,7 +376,7 @@ pub fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
     {
         try writer.writeAll("\n");
         try writer.writeAll("  -p, --package <name>    Select a workspace member package\n");
-        if (std.mem.eql(u8, command, "build-exe") or std.mem.eql(u8, command, "build-workspace") or std.mem.eql(u8, command, "test")) {
+        if (std.mem.eql(u8, command, "build-exe") or std.mem.eql(u8, command, "build-wasm") or std.mem.eql(u8, command, "build-js") or std.mem.eql(u8, command, "build-workspace") or std.mem.eql(u8, command, "test")) {
             try writer.writeAll("  --emit-sab              Also write a sibling .sab artifact for inspection\n");
         }
         if (std.mem.eql(u8, command, "test")) {

@@ -10,7 +10,7 @@ const sla_build_options = @import("sla_build_options");
 fn isTopLevelSlaCommand(token: []const u8) bool {
     const commands = [_][]const u8{
         "init",      "skills", "stability", "build", "build-workspace",
-        "build-exe", "sab",    "check",     "test",  "help",
+        "build-exe", "build-wasm", "build-js", "sab", "check", "test", "help",
     };
     for (commands) |cmd| {
         if (std.mem.eql(u8, token, cmd)) return true;

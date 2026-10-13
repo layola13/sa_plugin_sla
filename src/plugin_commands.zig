@@ -244,6 +244,8 @@ pub fn runSlaCommandImpl(
         try stderr.writeAll("  build      [file] [-p <package>] [--out <file>]\n");
         try stderr.writeAll("  build-workspace [-p <package>] [sa-build-exe args]\n");
         try stderr.writeAll("  build-exe  [file] [-p <package>] [sa-build-exe args]\n");
+        try stderr.writeAll("  build-wasm [file] [-p <package>] [sa-build-wasm args]\n");
+        try stderr.writeAll("  build-js   [file] [-p <package>] [sa-build-js args]\n");
         try stderr.writeAll("  sab build  [file] [-p <package>] [--out <file.sab>]\n");
         try stderr.writeAll("  sab workspace [-p <package>] [--sab-out <file.sab>] [sa-build-exe args]\n");
         try stderr.writeAll("  sab disasm <file.sab> [--out <file.sa>]\n");
@@ -347,6 +349,47 @@ pub fn runSlaCommandImpl(
         var child = std.process.Child.init(argv.items, allocator);
         const term = child.spawnAndWait() catch |err| {
             try stderr.print("Error: failed to run 'sa build-exe': {}\n", .{err});
+            return 1;
+        };
+        return switch (term) {
+            .Exited => |code| code,
+            else => 1,
+        };
+    } else if (std.mem.eql(u8, cmd, "build-wasm") or std.mem.eql(u8, cmd, "build-js")) {
+        const sa_sub = if (std.mem.eql(u8, cmd, "build-wasm")) "build-wasm" else "build-js";
+        const options = parseSlaCliOptions(args, cmd) catch {
+            try writeCommandHelp(stderr, cmd);
+            return 1;
+        };
+        if (options.help_requested) {
+            try writeCommandHelp(stderr, cmd);
+            return 0;
+        }
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        const file = (try resolveSlaInputFile(allocator, stderr, options)) orelse return 1;
+        const extra_args = args[options.passthrough_start..];
+
+        const sab_out = try managedSabPath(allocator, file);
+        const sab_bytes = (try compileSlaFileToSabWithOptions(allocator, file, sab_out, stderr, buildExeCompileOptions())) orelse return 1;
+        if (!try writeSabFile(allocator, sab_out, sab_bytes, stderr)) return 1;
+        if (options.emit_sab_file) {
+            if (!try writeSiblingSabFromBytes(allocator, file, sab_bytes, stderr)) return 1;
+        }
+
+        var argv = std.ArrayList([]const u8).init(allocator);
+        try argv.append(resolveSaExecutable(allocator));
+        try argv.append(sa_sub);
+        try argv.append(sab_out);
+        for (extra_args) |a| try argv.append(a);
+        try appendDefaultJobsAuto(&argv, extra_args);
+
+        var child = std.process.Child.init(argv.items, allocator);
+        const term = child.spawnAndWait() catch |err| {
+            try stderr.print("Error: failed to run 'sa {s}': {}\n", .{ sa_sub, err });
             return 1;
         };
         return switch (term) {

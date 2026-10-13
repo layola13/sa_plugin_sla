@@ -1197,3 +1197,16 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   交错大数中间值值域内；`%2` 判奇偶可用（805 体例复用，914 冗余绕行记账）；
   探针三线全绿；本轮无抖动无自误；本轮无新缺口、无需新缺口编号。
   已推送（`3cfe4a63`）。
+- 2026-10-13：三后端补齐（`build-wasm`/`build-js` 透传：`local_cli` +
+  `plugin_cli` + `plugin_commands` + `plugin_skills` + `sap.json`，
+  镜像 `build-exe` 经 SAB 直降后调 `sa build-wasm`/`sa build-js`；
+  `zig build` + `zig build test` 双过）+ sci 侧修 JS 缺口 #34
+  （SAB 有 dest 调用的 dest 经全局符号表误解析 `dest=base id=4`，
+  改走 `dstSlot` 直解寄存器操作数；`pvar` SAB 现 `build-js` 过且
+  `node` 输出 `14` 正确）+ wasm 归档补齐
+  （`zig build -Dtarget=wasm32-wasi sa-std-static` → `.sa_std/wasm32-wasi/`，
+  设 `SA_STD_DIR`；此前 `sa_fmt_bool` 等未定义纯系归档缺失）；
+  全量 925/925 `build-js` 零失败 + 925/925 `build-wasm` 零失败
+  （慢 demo 如 `549/707/811/911–913` 单项达 6s+，分批 `-P4` + 90s 超时跑完；
+  `02_arith` JS 跑出 `14/4/2/-5`，`20_closures` 跑出 `15/4/true/true`），
+  native 侧 `zig build test` RC=0 + `build-exe` 抽查正常；待推送。

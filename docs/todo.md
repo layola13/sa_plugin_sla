@@ -1217,3 +1217,8 @@ SA_PLUGIN_DEV=1 sa sla build-exe demos/basic/01_hello/main.sla -o /tmp/basic_01_
   （02_arith 过且 `node` 跑出 `14/4/2/-5`）+ `sa sla build-wasm`
   （10_strings 过）+ `sa node --help`（`node 0.1.0`）+
   node 门面 `node_test_assert_top` / `node_test_buffer_top` 双过。
+- 2026-10-13：native 全量补齐：925/925 `build-exe` 零失败
+  （分 3 批 `-P4` + 单项 120s 超时；结果 `/tmp/sweep_exe_res/*.exe`；
+  抽跑 `02_arith` 出 `14/4/2/-5`、`20_closures` 出 `15/4/true/true`、
+  `01_hello` 出 `hello world`）。至此三后端全量编译口径拉平：
+  check/test（基线）+ build-exe 925 + build-wasm 925 + build-js 925。

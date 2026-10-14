@@ -2880,7 +2880,17 @@ pub const Codegen = struct {
             }
         }
 
+        try self.emitMoveForSlotTransfer(src);
         try self.transferResultSlotValueState(slot, src, true);
+    }
+
+    /// Runtime counterpart of a result-slot ownership move (see
+    /// `storeResultSlotTransferredValue`): retire the source alias with
+    /// `move_` (frees nothing) so the verifier does not report the branch
+    /// allocation live at function exit. The slot, and later the
+    /// merge-loaded result, owns the memory. Locals are exempt.
+    fn emitMoveForSlotTransfer(self: *Codegen, src: u32) !void {
+        if (!self.isLocalReg(src)) try self.emitMove(src);
     }
 
     fn loadResultSlotTransferredValue(self: *Codegen, dst: u32, slot: u32, target_ty: *const ast.Type) !void {
@@ -9803,10 +9813,14 @@ pub const Codegen = struct {
                         return;
                     }
                     const value = try self.genExpr(expr);
-                    try self.emitRelease(value);
+                    // See genMacroStmt: skip the discard release when the
+                    // statement terminated the path (e.g. unsafe ending in
+                    // `return`); post-terminator instructions are rejected.
+                    if (!self.lastIsTerminator()) try self.emitRelease(value);
                 } else {
                     const value = try self.genExpr(expr);
-                    try self.emitRelease(value);
+                    // Same terminator guard as above.
+                    if (!self.lastIsTerminator()) try self.emitRelease(value);
                 }
             },
             .return_stmt => |ret| {
@@ -13549,7 +13563,14 @@ pub const Codegen = struct {
         if (call.args.len != 1) return Error.UnsupportedSabDirectFeature;
         const path_ty = self.tc.expr_types.get(call.args[0]) orelse return Error.MissingType;
         if (!lowering_rules.isStringLikeType(path_ty)) return Error.UnsupportedSabDirectFeature;
-        const path_reg = try self.genExpr(@constCast(call.args[0]));
+        // A string literal argument must materialize as a Slice: generic
+        // `genExpr` may lower literals to a raw data-pointer (when the
+        // literal's recorded type is ptr/void-like), but the loads below
+        // read Slice ptr/len fields. Build the Slice explicitly.
+        const path_reg = if (call.args[0].* == .literal and call.args[0].literal == .string_val)
+            try self.genStringLiteral(call.args[0].literal.string_val)
+        else
+            try self.genExpr(@constCast(call.args[0]));
         const path_ptr = try self.intern(try self.newTmp());
         try self.recordReg(path_ptr);
         const path_len = try self.intern(try self.newTmp());
@@ -13587,6 +13608,10 @@ pub const Codegen = struct {
         defer pre_released.deinit();
         try self.emitLabel(ok_label);
         try self.emitBranchRelease(ok_reg);
+        // Branch-scoped releases bypass `released_regs` bookkeeping, so
+        // record the register as consumed: the merge point below must not
+        // release it again (double release traps UseAfterMove).
+        try self.markConsumed(ok_reg);
         try self.emitStdMacroFragment("sa_std/core/result.sa", "RESULT_NEW_OK", &.{
             self.symbols.items[result_reg],
             self.symbols.items[file_reg],
@@ -13616,14 +13641,20 @@ pub const Codegen = struct {
         try self.setMergeReleased(false, &then_released, false, &else_released, &pre_released);
         try self.emitLabel(end_label);
         if (!self.isLocalReg(status_reg)) try self.emitRelease(status_reg);
-        try self.emitRelease(ok_reg);
+        // NOTE: `ok_reg` is released inside each branch (with matching
+        // `markConsumed` bookkeeping), so it must NOT be released again here.
         if (!self.isLocalReg(path_ptr)) try self.emitRelease(path_ptr);
         if (!self.isLocalReg(path_len)) try self.emitRelease(path_len);
         return result_reg;
     }
 
     /// Direct-SAB `file.as_raw_fd()`: the File value already is the fd word,
-    /// so copy and narrow to i32, mirroring the SA-text backend.
+    /// so copy and narrow to i32, mirroring the SA-text backend. The
+    /// intermediate word-copy is intentionally NOT released: releasing a
+    /// File-typed register closes the fd, so releasing the copy would
+    /// double-close when scope cleanup later releases the receiver
+    /// (UseAfterMove). The SA-text backend likewise returns without
+    /// releasing the copy.
     fn genFileAsRawFdCall(self: *Codegen, expr: *const ast.Node, call: ast.CallExpr) anyerror!?u32 {
         _ = expr;
         if (call.associated_target != null) return null;
@@ -13636,7 +13667,6 @@ pub const Codegen = struct {
         const dst = try self.intern(try self.newTmp());
         try self.recordReg(dst);
         try self.emitOp(dst, .trunc, .{ .reg = copied }, .{ .ty = @intFromEnum(sig.PrimType.i32) });
-        if (!self.isLocalReg(copied)) try self.emitRelease(copied);
         return dst;
     }
 

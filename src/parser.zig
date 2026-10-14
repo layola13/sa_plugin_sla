@@ -1807,9 +1807,11 @@ pub const Parser = struct {
                 node.* = .{ .assign_stmt = .{ .target = expr, .value = value } };
                 return node;
             }
-            // `a ??= b` desugars to `a = a.unwrap_or(b)`, mirroring `+=`
-            // above (same target-reuse tradeoff: complex place expressions
-            // evaluate twice; bind them first).
+            // `a ??= b` desugars to `a = Some(a.unwrap_or(b))`, mirroring
+            // `+=` above (same target-reuse tradeoff: complex place
+            // expressions evaluate twice; bind them first). The `Some`
+            // wrap-back is required: `unwrap_or` yields the inner value,
+            // but the target holds an `Option`.
             if (self.match(.question_question_equal)) {
                 const rhs = try self.parseExpr(0);
                 try self.expect(.semicolon);
@@ -1826,8 +1828,20 @@ pub const Parser = struct {
                         .args = fallback_args,
                     },
                 };
+                const some_args = try self.allocator.alloc(*ast.Node, 1);
+                some_args[0] = fallback;
+                const some_generics = try self.allocator.alloc(*ast.Type, 0);
+                const some_call = try self.allocator.create(ast.Node);
+                some_call.* = .{
+                    .call_expr = .{
+                        .func_name = "Some",
+                        .associated_target = null,
+                        .generics = some_generics,
+                        .args = some_args,
+                    },
+                };
                 const node = try self.allocator.create(ast.Node);
-                node.* = .{ .assign_stmt = .{ .target = expr, .value = fallback } };
+                node.* = .{ .assign_stmt = .{ .target = expr, .value = some_call } };
                 return node;
             }
             if (self.match(.pipe_equal)) {
@@ -4455,7 +4469,10 @@ test "sla nullish assign desugars to assign unwrap_or" {
 
     const fill = prog.program.decls[0].func_decl;
     try std.testing.expect(fill.body[1].* == .assign_stmt);
-    const fallback = fill.body[1].assign_stmt.value.call_expr;
+    const some_call = fill.body[1].assign_stmt.value.call_expr;
+    try std.testing.expect(std.mem.eql(u8, some_call.func_name, "Some"));
+    try std.testing.expect(some_call.args.len == 1);
+    const fallback = some_call.args[0].call_expr;
     try std.testing.expect(std.mem.eql(u8, fallback.func_name, "unwrap_or"));
     try std.testing.expect(fallback.args.len == 2);
 }

@@ -1245,6 +1245,15 @@ pub const Codegen = struct {
             }
         }
         try self.transferResultSlotValueState(slot, src, true);
+        // Runtime counterpart of the ownership move into the slot (mirrors
+        // the SAB backend `emitMoveForSlotTransfer`): retire a temporary
+        // source alias with `^src` (frees nothing) so the verifier does not
+        // report the branch allocation live at function exit. Named bindings
+        // stay live.
+        if (!self.consumed_bindings.contains(src) and std.mem.startsWith(u8, src, "tmp_")) {
+            self.outPrint("    ^{s}\n", .{src}) catch return CodegenError.CodegenError;
+            try self.markConsumedBinding(src);
+        }
     }
 
     fn loadResultSlotTransferredValueState(self: *Codegen, dst: []const u8, slot: []const u8, target_ty: *const ast.Type) CodegenError!void {

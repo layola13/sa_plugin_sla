@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const host_paths = @import("host_paths.zig");
 
 pub const ResolveError = error{
@@ -281,7 +282,7 @@ fn pathJoinAlloc(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 
 }
 
 fn realpathAllocResolved(allocator: std.mem.Allocator, path: []const u8) ResolveError![]u8 {
-    return std.fs.cwd().realpathAlloc(allocator, path) catch |err| switch (err) {
+    return sio.cwd().realpathAlloc(allocator, path) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.FileNotFound => error.FileNotFound,
         else => error.InvalidPath,
@@ -289,7 +290,7 @@ fn realpathAllocResolved(allocator: std.mem.Allocator, path: []const u8) Resolve
 }
 
 fn realpathAllocIfExists(allocator: std.mem.Allocator, path: []const u8) ResolveError!?[]u8 {
-    return std.fs.cwd().realpathAlloc(allocator, path) catch |err| switch (err) {
+    return sio.cwd().realpathAlloc(allocator, path) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.FileNotFound => null,
         else => error.InvalidPath,
@@ -297,12 +298,12 @@ fn realpathAllocIfExists(allocator: std.mem.Allocator, path: []const u8) Resolve
 }
 
 fn pathExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    sio.cwd().access(path, .{}) catch return false;
     return true;
 }
 
 fn readManifestTextFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var file = try std.fs.cwd().openFile(path, .{});
+    var file = try sio.cwd().openFile(path, .{});
     defer file.close();
     return file.readToEndAlloc(allocator, 1024 * 1024);
 }
@@ -613,21 +614,22 @@ pub fn selectedSourcePath(allocator: std.mem.Allocator, resolved: *const Package
 test "workspace resolver selects default member by package name" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.makePath("members/app/src");
-    try tmp.dir.makePath("members/tool/src");
-    try tmp.dir.writeFile(.{ .sub_path = "sa.mod", .data = 
+    try tdir.makePath("members/app/src");
+    try tdir.makePath("members/tool/src");
+    try tdir.writeFile(.{ .sub_path = "sa.mod", .data =
         \\workspace {
         \\  members ["members/app", "members/tool"]
         \\  default_member "app"
         \\}
     });
-    try tmp.dir.writeFile(.{ .sub_path = "members/app/sa.mod", .data = "package \"app\"\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "members/app/src/main.sla", .data = "fn main() -> i32 {\n    return 0;\n};\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "members/tool/sa.mod", .data = "package \"tool\"\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "members/tool/src/main.sla", .data = "fn main() -> i32 {\n    return 1;\n};\n" });
+    try tdir.writeFile(.{ .sub_path = "members/app/sa.mod", .data = "package \"app\"\n" });
+    try tdir.writeFile(.{ .sub_path = "members/app/src/main.sla", .data = "fn main() -> i32 {\n    return 0;\n};\n" });
+    try tdir.writeFile(.{ .sub_path = "members/tool/sa.mod", .data = "package \"tool\"\n" });
+    try tdir.writeFile(.{ .sub_path = "members/tool/src/main.sla", .data = "fn main() -> i32 {\n    return 1;\n};\n" });
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
     var resolved = try resolveFromRootPath(std.testing.allocator, root, .{});
@@ -644,18 +646,19 @@ test "workspace resolver selects default member by package name" {
 test "workspace resolver selects explicit member by relative path" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.makePath("members/tool/src");
-    try tmp.dir.writeFile(.{ .sub_path = "sa.mod", .data = 
+    try tdir.makePath("members/tool/src");
+    try tdir.writeFile(.{ .sub_path = "sa.mod", .data =
         \\workspace {
         \\  members ["members/tool"]
         \\  default_member "members/tool"
         \\}
     });
-    try tmp.dir.writeFile(.{ .sub_path = "members/tool/sa.mod", .data = "package \"tool\"\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "members/tool/src/main.sla", .data = "fn main() -> i32 {\n    return 1;\n};\n" });
+    try tdir.writeFile(.{ .sub_path = "members/tool/sa.mod", .data = "package \"tool\"\n" });
+    try tdir.writeFile(.{ .sub_path = "members/tool/src/main.sla", .data = "fn main() -> i32 {\n    return 1;\n};\n" });
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
 
     var resolved = try resolveFromRootPath(std.testing.allocator, root, .{ .request = "members/tool" });
@@ -665,33 +668,34 @@ test "workspace resolver selects explicit member by relative path" {
 }
 
 test "workspace resolver climbs from member manifest to ancestor workspace root" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.makePath("members/app/src");
-    try tmp.dir.makePath("members/tool/src");
-    try tmp.dir.writeFile(.{ .sub_path = "sa.mod", .data = 
+    try tdir.makePath("members/app/src");
+    try tdir.makePath("members/tool/src");
+    try tdir.writeFile(.{ .sub_path = "sa.mod", .data =
         \\workspace {
         \\  members ["members/app", "members/tool"]
         \\  default_member "tool"
         \\}
     });
-    try tmp.dir.writeFile(.{ .sub_path = "members/app/sa.mod", .data = "package \"app\"\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "members/app/src/main.sla", .data = "fn main() -> i32 {\n    return 7;\n};\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "members/tool/sa.mod", .data = "package \"tool\"\n" });
-    try tmp.dir.writeFile(.{ .sub_path = "members/tool/src/main.sla", .data = "fn main() -> i32 {\n    return 9;\n};\n" });
+    try tdir.writeFile(.{ .sub_path = "members/app/sa.mod", .data = "package \"app\"\n" });
+    try tdir.writeFile(.{ .sub_path = "members/app/src/main.sla", .data = "fn main() -> i32 {\n    return 7;\n};\n" });
+    try tdir.writeFile(.{ .sub_path = "members/tool/sa.mod", .data = "package \"tool\"\n" });
+    try tdir.writeFile(.{ .sub_path = "members/tool/src/main.sla", .data = "fn main() -> i32 {\n    return 9;\n};\n" });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var resolved = try resolveFromRootPath(std.testing.allocator, "members/app/src", .{});
     defer resolved.deinit(std.testing.allocator);
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
-    const member_root = try tmp.dir.realpathAlloc(std.testing.allocator, "members/app");
+    const member_root = try tdir.realpathAlloc(std.testing.allocator, "members/app");
     defer std.testing.allocator.free(member_root);
 
     try std.testing.expectEqualStrings(root, resolved.workspace_root);

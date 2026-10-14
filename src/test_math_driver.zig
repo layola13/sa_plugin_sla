@@ -1,5 +1,6 @@
 // test_math_driver.zig – verify test_unit_math.sla compiles to SA successfully.
 const std = @import("std");
+const sio = @import("sio");
 const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
 const type_checker_mod = @import("type_checker.zig");
@@ -10,7 +11,7 @@ pub fn main() !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const source = try std.fs.cwd().readFileAlloc(alloc, "tests/test_unit_math.sla", 1 * 1024 * 1024);
+    const source = try sio.cwd().readFileAlloc(alloc, "tests/test_unit_math.sla", 1 * 1024 * 1024);
 
     var p = parser_mod.Parser.init(alloc, source);
     const prog = p.parseProgram() catch |err| {
@@ -40,13 +41,15 @@ pub fn main() !void {
     };
 
     const out_path = "tests/test_unit_math.sa";
-    try std.fs.cwd().writeFile(.{ .sub_path = out_path, .data = sa_code });
+    try sio.cwd().writeFile(.{ .sub_path = out_path, .data = sa_code });
 
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("OK  {s}  →  {s}  ({d} bytes, {d} @test blocks)\n", .{
+    var obuf: [8192]u8 = undefined;
+    var ow = sio.getStdOut().writer(&obuf);
+    try ow.interface.print("OK  {s}  →  {s}  ({d} bytes, {d} @test blocks)\n", .{
         "tests/test_unit_math.sla",
         out_path,
         sa_code.len,
         std.mem.count(u8, sa_code, "@test "),
     });
+    try ow.interface.flush();
 }

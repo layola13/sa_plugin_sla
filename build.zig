@@ -56,6 +56,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     root_module.addImport("sla_rt", sla_rt);
+    // NOTE(Zig 0.17): reuse sci's I/O compat layer (same `sio` module as
+    // sci/build.zig); sla sources use `const sio = @import("sio");` for
+    // cwd/Child/args/stdout shims, and sci_bridge needs it for its own
+    // `@import("sio")` sites (flattener/sab/verifier/...).
+    const sio_module = b.createModule(.{
+        .root_source_file = lazyPath(b, b.pathJoin(&.{ repo_root, "src/sa_io.zig" })),
+        .target = target,
+        .optimize = optimize,
+    });
+    root_module.addImport("sio", sio_module);
+    sci_bridge.addImport("sio", sio_module);
 
     const lib = b.addLibrary(.{
         .name = "sla",
@@ -75,6 +86,7 @@ pub fn build(b: *std.Build) void {
     local_cli_module.addOptions("sla_build_options", sla_build_options);
     local_cli_module.addImport("sci_bridge", sci_bridge);
     local_cli_module.addImport("sla_rt", sla_rt);
+    local_cli_module.addImport("sio", sio_module);
     const local_cli = b.addExecutable(.{
         .name = "sla",
         .root_module = local_cli_module,
@@ -94,6 +106,7 @@ pub fn build(b: *std.Build) void {
     });
     dump_sab_module.addImport("sci_bridge", sci_bridge);
     dump_sab_module.addImport("sla_rt", sla_rt);
+    dump_sab_module.addImport("sio", sio_module);
     const dump_sab = b.addExecutable(.{
         .name = "dump-sab",
         .root_module = dump_sab_module,

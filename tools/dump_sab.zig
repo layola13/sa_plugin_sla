@@ -1,24 +1,27 @@
 const std = @import("std");
+const sio = @import("sio");
 const sci_bridge = @import("sci_bridge");
 const sab = sci_bridge.sab;
 const inst = sab.instruction;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init) !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = init.minimal.args.iterate();
     defer args.deinit();
     _ = args.next();
     const path = args.next() orelse return error.MissingPath;
     const symbol_name = args.next();
-    const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024 * 64);
+    const bytes = try sio.cwd().readFileAlloc(allocator, path, 1024 * 1024 * 64);
     defer allocator.free(bytes);
-    const stdout = std.io.getStdOut().writer();
+    var obuf: [8192]u8 = undefined;
+    var ow = sio.getStdOut().writer(&obuf);
+    defer ow.interface.flush() catch {};
     if (symbol_name) |name| {
-        try dumpSymbolUses(allocator, bytes, name, stdout);
+        try dumpSymbolUses(allocator, bytes, name, &ow.interface);
     } else {
-        try sab.disasmModule(allocator, bytes, stdout);
+        try sab.disasmModule(allocator, bytes, &ow.interface);
     }
 }
 

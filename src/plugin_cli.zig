@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const stability_metadata = @import("stability_metadata.zig");
 const plugin_skills = @import("plugin_skills.zig");
 
@@ -113,18 +114,18 @@ pub fn appendDefaultJobsAuto(argv: *std.array_list.Managed([]const u8), args: []
 
 fn ensureParentDir(path: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
-        if (dir.len != 0) try std.fs.cwd().makePath(dir);
+        if (dir.len != 0) try sio.cwd().makePath(dir);
     }
 }
 
 fn ensureNewFile(path: []const u8, bytes: []const u8) !void {
     try ensureParentDir(path);
-    var file = try std.fs.cwd().createFile(path, .{ .exclusive = true });
+    var file = try sio.cwd().createFile(path, .{ .exclusive = true });
     defer file.close();
     try file.writeAll(bytes);
 }
 
-pub fn runSlaSkillsCommand(args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter, default_json_mode: bool) !u8 {
+pub fn runSlaSkillsCommand(args: []const []const u8, option_start: usize, stdout: *std.Io.Writer, stderr: *std.Io.Writer, default_json_mode: bool) !u8 {
     var json_mode = default_json_mode;
     var idx = option_start;
     while (idx < args.len) : (idx += 1) {
@@ -160,7 +161,7 @@ fn projectPackageName(project_path: []const u8) []const u8 {
     return base;
 }
 
-pub fn runSlaInitCommand(allocator: std.mem.Allocator, args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter) !u8 {
+pub fn runSlaInitCommand(allocator: std.mem.Allocator, args: []const []const u8, option_start: usize, stdout: *std.Io.Writer, stderr: *std.Io.Writer) !u8 {
     var project_path: ?[]const u8 = null;
     var idx = option_start;
     while (idx < args.len) : (idx += 1) {
@@ -184,11 +185,11 @@ pub fn runSlaInitCommand(allocator: std.mem.Allocator, args: []const []const u8,
 
     const root = project_path orelse ".";
     const package_name = projectPackageName(root);
-    try std.fs.cwd().makePath(root);
+    try sio.cwd().makePath(root);
 
     const src_dir = try std.fs.path.join(allocator, &.{ root, "src" });
     defer allocator.free(src_dir);
-    try std.fs.cwd().makePath(src_dir);
+    try sio.cwd().makePath(src_dir);
 
     const manifest_path = try std.fs.path.join(allocator, &.{ root, "sa.mod" });
     defer allocator.free(manifest_path);
@@ -235,7 +236,7 @@ pub fn runSlaInitCommand(allocator: std.mem.Allocator, args: []const []const u8,
     return 0;
 }
 
-pub fn runSlaStabilityCommand(allocator: std.mem.Allocator, args: []const []const u8, option_start: usize, stdout: std.io.AnyWriter, stderr: std.io.AnyWriter, default_json_mode: bool) !u8 {
+pub fn runSlaStabilityCommand(allocator: std.mem.Allocator, args: []const []const u8, option_start: usize, stdout: *std.Io.Writer, stderr: *std.Io.Writer, default_json_mode: bool) !u8 {
     if (option_start >= args.len) {
         try writeCommandHelp(stderr, "stability");
         return 1;
@@ -295,7 +296,7 @@ pub fn runSlaStabilityCommand(allocator: std.mem.Allocator, args: []const []cons
             try writeCommandHelp(stderr, "stability verify");
             return 1;
         };
-        const manifest = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| {
+        const manifest = sio.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch |err| {
             try stderr.print("File Error: failed to read {s}: {}\n", .{ path, err });
             return 1;
         };
@@ -334,7 +335,7 @@ pub fn commandUsage(command: []const u8) []const u8 {
     return "usage: sla <command> [options]\n       sa sla <command> [options]\n";
 }
 
-pub fn writeCommandHelp(writer: std.io.AnyWriter, command: []const u8) !void {
+pub fn writeCommandHelp(writer: *std.Io.Writer, command: []const u8) !void {
     try writer.writeAll(commandUsage(command));
     if (std.mem.eql(u8, command, "init")) {
         try writer.writeAll("\n");

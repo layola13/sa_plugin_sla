@@ -86,7 +86,7 @@ pub const ContractParser = struct {
             ret_ty = std.mem.trim(u8, line[index..], " \t");
             if (ret_ty.len > 0 and ret_ty[ret_ty.len - 1] == '!') {
                 return_fallible = true;
-                ret_ty = std.mem.trimRight(u8, ret_ty[0 .. ret_ty.len - 1], " \t");
+                ret_ty = std.mem.trimEnd(u8, ret_ty[0 .. ret_ty.len - 1], " \t");
             }
         }
 

@@ -1,5 +1,5 @@
 const std = @import("std");
-const sla_rt = @import("sla_rt");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const source_expand = @import("source_expand.zig");
@@ -29,7 +29,7 @@ const loadImportedMacrosFromExpandedSource = plugin_imported_macros.loadImported
 
 fn profileImportExpandStage(enabled: bool, label: []const u8, start_ns: i128) void {
     if (!enabled) return;
-    const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - start_ns, std.time.ns_per_ms);
+    const elapsed_ms = @divTrunc(sio.nanoTimestamp() - start_ns, std.time.ns_per_ms);
     std.debug.print("[sla-profile] import expand {s}: {d}ms\n", .{ label, elapsed_ms });
 }
 
@@ -59,7 +59,7 @@ fn collectImportPathsFromExpandedSource(allocator: std.mem.Allocator, expanded_s
 }
 
 fn loadImportListCache(allocator: std.mem.Allocator, cache_path: []const u8) !?[]const []const u8 {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(allocator, sla_rt.get(), cache_path, std.Io.Limit.limited(1024 * 1024)) catch return null;
+    const bytes = sio.cwd().readFileAlloc(allocator, cache_path, 1024 * 1024) catch return null;
     defer allocator.free(bytes);
     var out = std.array_list.Managed([]const u8).init(allocator);
     errdefer {
@@ -76,16 +76,16 @@ fn loadImportListCache(allocator: std.mem.Allocator, cache_path: []const u8) !?[
 
 fn storeImportListCache(cache_path: []const u8, imports: []const []const u8) void {
     const dir = std.fs.path.dirname(cache_path) orelse return;
-    std.Io.Dir.cwd().createDirPath(sla_rt.get(), dir) catch return;
-    const file = std.Io.Dir.cwd().createFile(sla_rt.get(), cache_path, .{}) catch return;
-    defer file.close(sla_rt.get());
+    sio.cwd().makePath(dir) catch return;
+    const file = sio.cwd().createFile(cache_path, .{}) catch return;
+    defer file.close();
     var wb: [8192]u8 = undefined;
-    var w = file.writer(sla_rt.get(), &wb);
+    var w = file.writer(&wb);
     for (imports) |imp| {
-        w.writeAll(imp) catch return;
-        w.writeAll("\n") catch return;
+        w.interface.writeAll(imp) catch return;
+        w.interface.writeAll("\n") catch return;
     }
-    w.flush() catch return;
+    w.interface.flush() catch return;
 }
 
 fn scanExpandedSourceImports(
@@ -883,7 +883,7 @@ fn reachablePlanCachePath(
         hasher.update(&std.mem.toBytes(@as(u64, filter.len)));
         hasher.update(filter);
     } else {
-        hasher.update(&std.mem.toBytes(std.math.maxInt(u64)));
+        hasher.update(&std.mem.toBytes(@as(u64, std.math.maxInt(u64))));
     }
     for (ordered_modules) |module| {
         hasher.update(module.path);
@@ -902,7 +902,7 @@ fn tryLoadReachablePlan(
     reachable: *std.StringHashMap(void),
     referenced_types: *std.StringHashMap(void),
 ) !bool {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(allocator, sla_rt.get(), cache_path, std.Io.Limit.limited(8 * 1024 * 1024)) catch return false;
+    const bytes = sio.cwd().readFileAlloc(allocator, cache_path, 8 * 1024 * 1024) catch return false;
     defer allocator.free(bytes);
     var reachable_count: usize = 0;
     var type_count: usize = 0;
@@ -954,24 +954,24 @@ fn storeReachablePlan(
 ) void {
     _ = allocator;
     const dir = std.fs.path.dirname(cache_path) orelse return;
-    std.Io.Dir.cwd().createDirPath(sla_rt.get(), dir) catch return;
-    const file = std.Io.Dir.cwd().createFile(sla_rt.get(), cache_path, .{}) catch return;
-    defer file.close(sla_rt.get());
+    sio.cwd().makePath(dir) catch return;
+    const file = sio.cwd().createFile(cache_path, .{}) catch return;
+    defer file.close();
     var wb: [8192]u8 = undefined;
-    var w = file.writer(sla_rt.get(), &wb);
-    w.writeAll("[reachable]\n") catch return;
+    var w = file.writer(&wb);
+    w.interface.writeAll("[reachable]\n") catch return;
     var r_iter = reachable.keyIterator();
     while (r_iter.next()) |k| {
-        w.writeAll(k.*) catch return;
-        w.writeAll("\n") catch return;
+        w.interface.writeAll(k.*) catch return;
+        w.interface.writeAll("\n") catch return;
     }
-    w.writeAll("[types]\n") catch return;
+    w.interface.writeAll("[types]\n") catch return;
     var t_iter = referenced_types.keyIterator();
     while (t_iter.next()) |k| {
-        w.writeAll(k.*) catch return;
-        w.writeAll("\n") catch return;
+        w.interface.writeAll(k.*) catch return;
+        w.interface.writeAll("\n") catch return;
     }
-    w.flush() catch return;
+    w.interface.flush() catch return;
 }
 
 pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
@@ -987,11 +987,11 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
 ) !*ast.Node {
     if (program.* != .program) return error.InvalidProgram;
     const profile_enabled = plugin_compile_options.slaProfileEnabled(allocator);
-    var profile_start = std.time.nanoTimestamp();
+    var profile_start = sio.nanoTimestamp();
 
     var effective_options = options;
     const root_source_size = blk: {
-        const stat = std.Io.Dir.cwd().statFile(sla_rt.get(), source_file, .{}) catch break :blk @as(u64, 0);
+        const stat = sio.cwd().statFile(source_file) catch break :blk @as(u64, 0);
         break :blk stat.size;
     };
     // Historical small filtered-test root path. Larger registry-driven check/compile
@@ -1007,7 +1007,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
 
     var decls = std.array_list.Managed(*ast.Node).init(allocator);
     const source_dir = std.fs.path.dirname(source_file) orelse ".";
-    const source_abs = std.Io.Dir.cwd().realPathFileAlloc(sla_rt.get(), source_file, allocator) catch source_file;
+    const source_abs = sio.cwd().realpathAlloc(allocator, source_file) catch source_file;
 
     var ordered_modules = std.array_list.Managed(*SlaModule).init(allocator);
     defer ordered_modules.deinit();
@@ -1037,7 +1037,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
     if (profile_enabled) {
         std.debug.print("[sla-profile] import expand ordered modules={d}\n", .{ordered_modules.items.len});
     }
-    profile_start = std.time.nanoTimestamp();
+    profile_start = sio.nanoTimestamp();
 
     var reachable = std.StringHashMap(void).init(allocator);
     defer reachable.deinit();
@@ -1065,7 +1065,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
             std.debug.print("[sla-profile] import expand buildReachable skipped (include_all_imported_decls)\n", .{});
         }
     } else if (shouldKeepReachableImportedBody(effective_options)) {
-        const root_source = std.Io.Dir.cwd().readFileAlloc(allocator, sla_rt.get(), source_file, std.Io.Limit.limited(16 * 1024 * 1024)) catch null;
+        const root_source = sio.cwd().readFileAlloc(allocator, source_file, 16 * 1024 * 1024) catch null;
         if (root_source) |root_bytes| {
             defer allocator.free(root_bytes);
             if (reachablePlanCachePath(allocator, source_file, root_bytes, ordered_modules.items, effective_options)) |plan_path| {
@@ -1111,7 +1111,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
                 &reachable,
                 &referenced_types,
             );
-            const root_source2 = std.Io.Dir.cwd().readFileAlloc(allocator, sla_rt.get(), source_file, std.Io.Limit.limited(16 * 1024 * 1024)) catch null;
+            const root_source2 = sio.cwd().readFileAlloc(allocator, source_file, 16 * 1024 * 1024) catch null;
             if (root_source2) |root_bytes| {
                 defer allocator.free(root_bytes);
                 if (reachablePlanCachePath(allocator, source_file, root_bytes, ordered_modules.items, effective_options)) |plan_path| {
@@ -1121,7 +1121,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
             }
         }
     } else {
-        const reachable_start = std.time.nanoTimestamp();
+        const reachable_start = sio.nanoTimestamp();
         try buildReachableWithoutMaterializedSession(
             allocator,
             program,
@@ -1134,11 +1134,11 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
             &referenced_types,
         );
         if (profile_enabled) {
-            std.debug.print("[sla-profile] import expand buildReachable symbols={d} types={d} modules={d} elapsed={d}ms\n", .{ reachable.count(), referenced_types.count(), ordered_modules.items.len, @divTrunc(std.time.nanoTimestamp() - reachable_start, std.time.ns_per_ms) });
+            std.debug.print("[sla-profile] import expand buildReachable symbols={d} types={d} modules={d} elapsed={d}ms\n", .{ reachable.count(), referenced_types.count(), ordered_modules.items.len, @divTrunc(sio.nanoTimestamp() - reachable_start, std.time.ns_per_ms) });
         }
     }
     profileImportExpandStage(profile_enabled, "reachable materialize", profile_start);
-    profile_start = std.time.nanoTimestamp();
+    profile_start = sio.nanoTimestamp();
     if (options.prune_for_test_codegen) {
         while (true) {
             var imported_macro_contract_imports = std.array_list.Managed(ResolvedImport).init(allocator);
@@ -1181,7 +1181,7 @@ pub fn expandSlaImportsWithModuleTableUsingContractTypeChecker(
         }
     }
     profileImportExpandStage(profile_enabled, "macro contracts", profile_start);
-    profile_start = std.time.nanoTimestamp();
+    profile_start = sio.nanoTimestamp();
     if (profile_enabled) {
         std.debug.print(
             "[sla-profile] import type scan cache entries={d} hits={d}\n",
@@ -1324,7 +1324,7 @@ pub fn registerImportedFunctionAliases(tc: *type_checker_mod.TypeChecker, alloca
     defer root_import_groups.deinit();
 
     const source_dir = std.fs.path.dirname(source_file) orelse ".";
-    const source_abs = std.Io.Dir.cwd().realPathFileAlloc(sla_rt.get(), source_file, allocator) catch source_file;
+    const source_abs = sio.cwd().realpathAlloc(allocator, source_file) catch source_file;
 
     for (program.program.decls) |decl| {
         if (decl.* != .import_decl) continue;
@@ -1374,15 +1374,15 @@ fn loadResolvedImportContractsRecursive(
     const import_dir = std.fs.path.dirname(resolved.path) orelse base_dir;
     const expanded_source = try source_expand.expandForModulePath(allocator, resolved.path, resolved.source);
     const profile = plugin_compile_options.slaProfileEnabled(allocator);
-    const t0 = if (profile) std.time.nanoTimestamp() else 0;
+    const t0 = if (profile) sio.nanoTimestamp() else 0;
     try scanExpandedSourceImports(tc, allocator, expanded_source, import_dir, resolved.path, visited);
-    const t1 = if (profile) std.time.nanoTimestamp() else 0;
+    const t1 = if (profile) sio.nanoTimestamp() else 0;
     if (std.mem.endsWith(u8, resolved.path, ".sai")) {
         try tc.loadContracts(expanded_source, "");
     } else if (std.mem.endsWith(u8, resolved.path, ".sal")) {
         try tc.loadContracts("", expanded_source);
     }
-    const t2 = if (profile) std.time.nanoTimestamp() else 0;
+    const t2 = if (profile) sio.nanoTimestamp() else 0;
     try loadImportedMacrosFromExpandedSource(tc, allocator, expanded_source, resolved.output_path);
     if (profile and plugin_compile_options.slaProfileContractsEnabled(allocator)) {
         std.debug.print(
@@ -1391,7 +1391,7 @@ fn loadResolvedImportContractsRecursive(
                 std.fs.path.basename(resolved.path),
                 @divTrunc(t1 - t0, std.time.ns_per_ms),
                 @divTrunc(t2 - t1, std.time.ns_per_ms),
-                @divTrunc(std.time.nanoTimestamp() - t2, std.time.ns_per_ms),
+                @divTrunc(sio.nanoTimestamp() - t2, std.time.ns_per_ms),
             },
         );
     }
@@ -1406,7 +1406,7 @@ pub fn loadImportedContractsFromResolvedImports(
     defer visited.deinit();
     const profile = plugin_compile_options.slaProfileEnabled(allocator);
     var loaded: usize = 0;
-    const start = if (profile) std.time.nanoTimestamp() else 0;
+    const start = if (profile) sio.nanoTimestamp() else 0;
 
     for (imports) |resolved| {
         if (std.mem.endsWith(u8, resolved.path, ".sla")) continue;
@@ -1421,7 +1421,7 @@ pub fn loadImportedContractsFromResolvedImports(
     if (profile) {
         std.debug.print(
             "[sla-profile] load contracts summary: roots={d} visited={d} elapsed={d}ms\n",
-            .{ loaded, visited.count(), @divTrunc(std.time.nanoTimestamp() - start, std.time.ns_per_ms) },
+            .{ loaded, visited.count(), @divTrunc(sio.nanoTimestamp() - start, std.time.ns_per_ms) },
         );
     }
 }
@@ -1438,7 +1438,7 @@ pub fn loadImportedContracts(
     defer visited.deinit();
 
     const source_dir = std.fs.path.dirname(source_file) orelse ".";
-    const source_abs = std.Io.Dir.cwd().realPathFileAlloc(sla_rt.get(), source_file, allocator) catch source_file;
+    const source_abs = sio.cwd().realpathAlloc(allocator, source_file) catch source_file;
     for (program.program.decls) |decl| {
         if (decl.* == .import_decl) {
             try loadImportContractsRecursive(tc, allocator, source_dir, decl.import_decl.path, source_abs, &visited);

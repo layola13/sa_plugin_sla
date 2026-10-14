@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const lexer = @import("lexer.zig");
 const ast = @import("ast.zig");
 const lowering_rules = @import("lowering_rules.zig");
@@ -376,7 +377,7 @@ pub const Parser = struct {
     fn readSlaStdPathIfExists(self: *Parser, root: []const u8, rel_path: []const u8) !?[]const u8 {
         if (rel_path.len == 0) return null;
         const candidate = try std.fs.path.join(self.allocator, &.{ root, rel_path });
-        _ = std.fs.cwd().access(candidate, .{}) catch |err| {
+        _ = sio.cwd().access(candidate, .{}) catch |err| {
             if (err == error.FileNotFound or err == error.NotDir or err == error.IsDir) return null;
             return err;
         };
@@ -388,7 +389,7 @@ pub const Parser = struct {
         if (std.mem.eql(u8, import_path, "sla_std")) return null;
         const rel_path = import_path["sla_std/".len..];
 
-        if (std.process.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |env_root| {
+        if (sio.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |env_root| {
             if (try self.readSlaStdPathIfExists(env_root, rel_path)) |resolved| return resolved;
         } else |_| {}
 
@@ -1339,7 +1340,7 @@ pub const Parser = struct {
 
             const dir_path = std.fs.path.dirname(pattern_path) orelse ".";
             const pattern_name = std.fs.path.basename(pattern_path);
-            var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+            var dir = sio.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
             defer dir.close();
 
             var matches = std.array_list.Managed([]const u8).init(self.allocator);
@@ -1370,7 +1371,7 @@ pub const Parser = struct {
 
     fn prescanResolvedSlaImportTypes(self: *Parser, resolved_path: []const u8) !void {
         const canonical_path = blk: {
-            const real = std.fs.cwd().realpathAlloc(self.allocator, resolved_path) catch break :blk resolved_path;
+            const real = sio.cwd().realpathAlloc(self.allocator, resolved_path) catch break :blk resolved_path;
             const normed = host_paths.normalizePathSlashes(self.allocator, real) catch {
                 break :blk real;
             };
@@ -1392,7 +1393,7 @@ pub const Parser = struct {
             .complete = false,
         });
 
-        const source = std.fs.cwd().readFileAlloc(self.allocator, canonical_path, 16 * 1024 * 1024) catch return;
+        const source = sio.cwd().readFileAlloc(self.allocator, canonical_path, 16 * 1024 * 1024) catch return;
         const expanded_source = source_expand.expand(self.allocator, source) catch return;
 
         const import_dir = std.fs.path.dirname(canonical_path) orelse ".";
@@ -1513,7 +1514,7 @@ pub const Parser = struct {
         // template literals were truncated at the first interp `}`).
         var in_template = false;
         var interp_depth: u16 = 0;
-        var tmpl_stack: [8]u16 = [_]u16{0}**8;
+        var tmpl_stack: [8]u16 = std.mem.zeroes([8]u16);
         var tmpl_sp: u8 = 0;
         while (true) {
             const tok = lex.next();
@@ -1590,7 +1591,7 @@ pub const Parser = struct {
         // Same template-state mirror as peekBlockSpan (#4).
         var in_template = false;
         var interp_depth: u16 = 0;
-        var tmpl_stack: [8]u16 = [_]u16{0}**8;
+        var tmpl_stack: [8]u16 = std.mem.zeroes([8]u16);
         var tmpl_sp: u8 = 0;
         while (depth > 0 and self.peek() != .eof) {
             if (self.peek() == .template_start) {
@@ -3971,12 +3972,13 @@ test "parser accepts explicit u64 max literal suffix" {
 }
 
 test "sla import type prescan skips imported function bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "dep.sla",
         .data =
         \\struct ImportedThing {
@@ -3989,7 +3991,7 @@ test "sla import type prescan skips imported function bodies" {
         ,
     });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     const source =
@@ -4013,12 +4015,13 @@ test "sla import type prescan skips imported function bodies" {
 }
 
 test "sla import type prescan visits diamond dependencies once" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "common.sla",
         .data =
         \\struct SharedThing {
@@ -4026,14 +4029,14 @@ test "sla import type prescan visits diamond dependencies once" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "left.sla",
         .data =
         \\@import "common.sla"
         \\struct LeftThing { shared: SharedThing }
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "right.sla",
         .data =
         \\@import "common.sla"
@@ -4041,7 +4044,7 @@ test "sla import type prescan visits diamond dependencies once" {
         ,
     });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     const source =
@@ -4328,7 +4331,7 @@ test "syntax diagnostic includes location token and context" {
 
     var out = std.array_list.Managed(u8).init(std.testing.allocator);
     defer out.deinit();
-    try p.printDiagnostic(out.writer(), "bad.sla", ParserError.ExpectedDeclaration);
+    try p.printDiagnostic(sio.managedWriter(&out), "bad.sla", ParserError.ExpectedDeclaration);
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "Syntax Error: failed to parse bad.sla:4:1: error.ExpectedDeclaration") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "4 | }") != null);

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 const lowering_rules = @import("lowering_rules.zig");
 const type_checker_mod = @import("type_checker.zig");
@@ -1491,9 +1492,9 @@ fn drainReachabilityBuildState(
                     // already walked
                 } else {
                     if (profile) non_empty_bodies += 1;
-                    const body_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const body_start = if (profile) sio.nanoTimestamp() else 0;
                     try collectSyntacticReachableBlock(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, name, out_reachable, out_referenced_types, &state.worklist, fd.body);
-                    if (profile) body_walk_ns += std.time.nanoTimestamp() - body_start;
+                    if (profile) body_walk_ns += sio.nanoTimestamp() - body_start;
                     if (!options.prune_for_test_codegen) {
                         try state.scanned_function_bodies.put(name, {});
                     }
@@ -1501,12 +1502,12 @@ fn drainReachabilityBuildState(
             }
             state.analysis.current_facts = prev_facts;
         }
-        const scan_sym_start = if (profile) std.time.nanoTimestamp() else 0;
+        const scan_sym_start = if (profile) sio.nanoTimestamp() else 0;
         const scanned_symbols = try scanReferencedSymbolRoots(&state.callable_index, module_table, imported_macros, if (options.prune_for_test_codegen) &state.analysis else null, out_reachable, out_referenced_types, &state.scanned_symbol_roots, &state.worklist);
-        if (profile) scan_sym_ns += std.time.nanoTimestamp() - scan_sym_start;
-        const scan_ty_start = if (profile) std.time.nanoTimestamp() else 0;
+        if (profile) scan_sym_ns += sio.nanoTimestamp() - scan_sym_start;
+        const scan_ty_start = if (profile) sio.nanoTimestamp() else 0;
         const scanned_types = try scanReferencedExportedTypeSignatures(&state.callable_index, out_referenced_types, &state.scanned_type_roots);
-        if (profile) scan_ty_ns += std.time.nanoTimestamp() - scan_ty_start;
+        if (profile) scan_ty_ns += sio.nanoTimestamp() - scan_ty_start;
         if (!scanned_symbols and !scanned_types) break;
     }
     if (profile) {
@@ -1530,14 +1531,14 @@ fn initializeReachabilityBuildState(
     if (root_program.* != .program) return error.InvalidProgram;
     const profile = plugin_compile_options.slaProfileEnabled(state.allocator);
     state.callable_index.unresolved_callables = &state.unresolved_callables;
-    const index_start = if (profile) std.time.nanoTimestamp() else 0;
+    const index_start = if (profile) sio.nanoTimestamp() else 0;
     try state.callable_index.addDecls(root_program.program.decls);
     for (modules) |module| try state.callable_index.addDeclsFromModule(module.program.program.decls, module);
-    const index_ns = if (profile) std.time.nanoTimestamp() - index_start else 0;
-    const roots_start = if (profile) std.time.nanoTimestamp() else 0;
+    const index_ns = if (profile) sio.nanoTimestamp() - index_start else 0;
+    const roots_start = if (profile) sio.nanoTimestamp() else 0;
     try collectInitialReachabilityRoots(state, root_program, module_table, options, imported_macros, out_reachable, out_referenced_types);
-    const roots_ns = if (profile) std.time.nanoTimestamp() - roots_start else 0;
-    const drain_start = if (profile) std.time.nanoTimestamp() else 0;
+    const roots_ns = if (profile) sio.nanoTimestamp() - roots_start else 0;
+    const drain_start = if (profile) sio.nanoTimestamp() else 0;
     try drainReachabilityBuildState(state, module_table, options, imported_macros, out_reachable, out_referenced_types);
     if (profile) {
         std.debug.print(
@@ -1545,7 +1546,7 @@ fn initializeReachabilityBuildState(
             .{
                 @divTrunc(index_ns, std.time.ns_per_ms),
                 @divTrunc(roots_ns, std.time.ns_per_ms),
-                @divTrunc(std.time.nanoTimestamp() - drain_start, std.time.ns_per_ms),
+                @divTrunc(sio.nanoTimestamp() - drain_start, std.time.ns_per_ms),
                 modules.len,
             },
         );
@@ -1830,7 +1831,7 @@ pub fn materializeReachableImportedModuleBodiesWithState(
         for (ordered_modules) |module| {
             if (module.has_function_bodies and module.has_macro_bodies) continue;
             {
-                const select_start = std.time.nanoTimestamp();
+                const select_start = sio.nanoTimestamp();
                 var selected_functions = std.StringHashMap(void).init(allocator);
                 defer selected_functions.deinit();
                 var selected_macros = std.StringHashMap(void).init(allocator);
@@ -1842,7 +1843,7 @@ pub fn materializeReachableImportedModuleBodiesWithState(
                 try collectReachableModuleBodyNames(allocator, module, reachable, referenced_types, &selected_functions, &selected_macros);
                 const unchanged = stringSetsEqual(&selected_functions, &module.parsed_function_bodies) and
                     stringSetsEqual(&selected_macros, &module.parsed_macro_bodies);
-                select_ns += std.time.nanoTimestamp() - select_start;
+                select_ns += sio.nanoTimestamp() - select_start;
                 if (unchanged) continue;
 
                 var newly_materialized_functions = std.array_list.Managed([]const u8).init(allocator);
@@ -1868,9 +1869,9 @@ pub fn materializeReachableImportedModuleBodiesWithState(
                     }
                 }
 
-                const reparse_start = std.time.nanoTimestamp();
+                const reparse_start = sio.nanoTimestamp();
                 const reparse_stats = try modules.reparseModuleWithSelectedBodies(module, &selected_functions, &selected_macros);
-                const reparse_elapsed_ns = std.time.nanoTimestamp() - reparse_start;
+                const reparse_elapsed_ns = sio.nanoTimestamp() - reparse_start;
                 reparse_ns += reparse_elapsed_ns;
                 stats.reparses += 1;
                 if (profile_enabled) {
@@ -1899,9 +1900,9 @@ pub fn materializeReachableImportedModuleBodiesWithState(
         }
         if (!changed) break;
 
-        const extend_start = std.time.nanoTimestamp();
+        const extend_start = sio.nanoTimestamp();
         try drainReachabilityBuildState(state, modules, options, imported_macros, reachable, referenced_types);
-        extend_ns += std.time.nanoTimestamp() - extend_start;
+        extend_ns += sio.nanoTimestamp() - extend_start;
         stats.incremental_extensions += 1;
     }
     if (profile_enabled) {

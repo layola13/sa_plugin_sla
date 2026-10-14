@@ -3,6 +3,7 @@
 // moved tests resolve exactly as they did in plugin.zig.
 
 const std = @import("std");
+const sio = @import("sio");
 const plugin_api = @import("plugin_api");
 const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
@@ -183,112 +184,141 @@ const runSlaCommandImpl = plugin_commands.runSlaCommandImpl;
 test "sla skills emits json capability list" {
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "skills", "--json" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"status\":\"ok\""));
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla init [path]"));
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla sab build"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla skills honors host json mode" {
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator, .json_mode = true };
     const args = [_][]const u8{ "sa", "sla", "skills" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.startsWith(u8, stdout_buf.items, "{\"status\":\"ok\""));
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla skills [--json]"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla skills text writes agent skill files" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "skills" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 0), code);
-    try tmp.dir.access(".codex/skills/sla/SKILL.md", .{});
-    try tmp.dir.access(".claude/skills/sla/SKILL.md", .{});
+    try tdir.access(".codex/skills/sla/SKILL.md", .{});
+    try tdir.access(".claude/skills/sla/SKILL.md", .{});
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "generated agent skills"));
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "sla skills [--json]"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla stability schema emits json schema" {
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "stability", "schema" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"schema_version\""));
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"artifacts\""));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla stability verify emits json report" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
-    try tmp.dir.writeFile(.{ .sub_path = "stability.json", .data = stability_metadata.example_manifest_json });
+    try tdir.writeFile(.{ .sub_path = "stability.json", .data = stability_metadata.example_manifest_json });
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "stability", "verify", "stability.json", "--json" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"status\":\"ok\""));
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"labels\":5"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla stability verify rejects undeclared labels" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "bad_stability.json",
         .data =
         \\
@@ -303,82 +333,99 @@ test "sla stability verify rejects undeclared labels" {
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "stability", "verify", "bad_stability.json", "--json" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 1), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "\"status\":\"error\""));
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "undeclared label"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla init scaffolds project without overwriting" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "init", "demo_app" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 0), code);
-    try tmp.dir.access("demo_app/sa.mod", .{});
-    try tmp.dir.access("demo_app/src/main.sla", .{});
-    try tmp.dir.access("demo_app/.gitignore", .{});
+    try tdir.access("demo_app/sa.mod", .{});
+    try tdir.access("demo_app/src/main.sla", .{});
+    try tdir.access("demo_app/.gitignore", .{});
 
-    const manifest = try tmp.dir.readFileAlloc(std.testing.allocator, "demo_app/sa.mod", 1024);
+    const manifest = try tdir.readFileAlloc(std.testing.allocator, "demo_app/sa.mod", 1024);
     defer std.testing.allocator.free(manifest);
     try std.testing.expect(std.mem.containsAtLeast(u8, manifest, 1, "package \"demo_app\""));
 
-    const gitignore = try tmp.dir.readFileAlloc(std.testing.allocator, "demo_app/.gitignore", 1024);
+    const gitignore = try tdir.readFileAlloc(std.testing.allocator, "demo_app/.gitignore", 1024);
     defer std.testing.allocator.free(gitignore);
     try std.testing.expect(std.mem.containsAtLeast(u8, gitignore, 1, ".sla-cache/"));
 
-    const second_code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const second_code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
     try std.testing.expectEqual(@as(?u8, 1), second_code);
 }
 
 fn expectSlaCheckRedeclarationDiagnostic(file: []const u8, expected: []const u8) !void {
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "check", file };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 1), code);
+    try stderr_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "Type Check Error"));
+    try stderr_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "Redeclaration"));
+    try stderr_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
 }
 
 fn expectSlaCheckSyntaxDiagnostic(file: []const u8, expected: []const u8) !void {
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "check", file };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 1), code);
+    try stderr_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, "Syntax Error"));
+    try stderr_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stderr_buf.items, 1, expected));
 }
 
@@ -400,10 +447,11 @@ test "sla check reports redeclared symbol names" {
 }
 
 test "sla check uses imported signatures without checking imported function bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn imported_a() -> i32 {
@@ -417,32 +465,38 @@ test "sla check uses imported signatures without checking imported function bodi
         \\    return dep::imported_a();
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
+    try stderr_fw.writer().flush();
     if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla check skips parsing imported function bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn imported_a() -> i32 {
@@ -456,32 +510,38 @@ test "sla check skips parsing imported function bodies" {
         \\    return dep::imported_a();
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
+    try stderr_fw.writer().flush();
     if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla check uses imported method signatures without checking imported method bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\struct ImportedBox {
@@ -502,32 +562,38 @@ test "sla check uses imported method signatures without checking imported method
         \\    return item.used();
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
+    try stderr_fw.writer().flush();
     if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla check uses imported trait method signatures without checking imported trait bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\trait Label {
@@ -552,32 +618,38 @@ test "sla check uses imported trait method signatures without checking imported 
         \\    return item.label();
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
+    try stderr_fw.writer().flush();
     if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla check uses imported trait associated signatures without checking imported trait bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\trait Score {
@@ -602,24 +674,29 @@ test "sla check uses imported trait associated signatures without checking impor
         \\    return Score::score(item);
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "check", "main.sla" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
+    try stderr_fw.writer().flush();
     if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "Successfully parsed and verified"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -629,13 +706,15 @@ test "sla build rewrites sla imports relative to final output path" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaString(
         arena.allocator(),
         "tests/import_fixtures/output_relative/main.sla",
         "tests/output_relative_root.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -645,10 +724,11 @@ test "sla build rewrites sla imports relative to final output path" {
 }
 
 test "sla test filter prunes unmatched tests before type checking" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const filtered_source =
         \\fn value() -> i32 {
@@ -664,37 +744,41 @@ test "sla test filter prunes unmatched tests before type checking" {
         \\    missing_symbol();
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "filtered.sla", .data = filtered_source });
+    try tdir.writeFile(.{ .sub_path = "filtered.sla", .data = filtered_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "filtered.sla",
         "filtered.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "keep this" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "keep this test") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "drop broken test") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test sab backend prunes unmatched tests before type checking" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const filtered_sab_source =
         \\fn value() -> i32 {
@@ -710,23 +794,25 @@ test "sla test sab backend prunes unmatched tests before type checking" {
         \\    missing_symbol();
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "filtered_sab.sla", .data = filtered_sab_source });
+    try tdir.writeFile(.{ .sub_path = "filtered_sab.sla", .data = filtered_sab_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "filtered_sab.sla",
         ".sla-cache/sab/filtered_sab.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "sab keep" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -739,14 +825,16 @@ test "sla test sab backend prunes unmatched tests before type checking" {
         if (fsig.kind == .test_func) test_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), test_count);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla build-exe SAB codegen prunes unreachable main declarations" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn used_helper() -> i32 {
@@ -769,26 +857,28 @@ test "sla build-exe SAB codegen prunes unreachable main declarations" {
         \\    return used_value();
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "main.sla",
         ".sla-cache/sab/main.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .prune_for_entry_function = "main",
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -814,14 +904,16 @@ test "sla build-exe SAB codegen prunes unreachable main declarations" {
     try std.testing.expect(saw_helper);
     try std.testing.expect(!saw_unused);
     try std.testing.expect(!saw_test);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla reachability plan cache separates test and executable roots" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dependency =
         \\fn test_value() -> i32 {
@@ -843,28 +935,30 @@ test "sla reachability plan cache separates test and executable roots" {
         \\    return executable_value();
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dependency });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dependency });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     _ = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "main.sla",
         ".sla-cache/sab/main-test.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "cache test root",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -873,12 +967,13 @@ test "sla reachability plan cache separates test and executable roots" {
         arena.allocator(),
         "main.sla",
         ".sla-cache/sab/main-executable.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .prune_for_entry_function = "main",
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -896,14 +991,16 @@ test "sla reachability plan cache separates test and executable roots" {
     try std.testing.expect(saw_main);
     try std.testing.expect(saw_executable_value);
     try std.testing.expect(!saw_test_value);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen prunes unreachable functions before type checking" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn used_value() -> i32 {
@@ -919,37 +1016,41 @@ test "sla test codegen prunes unreachable functions before type checking" {
         \\    if got != 7 { panic(24003); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "reachable_only.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "reachable_only.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "reachable_only.sla",
         "reachable_only.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used_value") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_broken_value") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test import expansion prunes unreachable imported functions" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn used_import() -> i32 {
@@ -972,10 +1073,10 @@ test "sla test import expansion prunes unreachable imported functions" {
         \\    if got != 41 { panic(24006); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1005,10 +1106,11 @@ test "sla test import expansion prunes unreachable imported functions" {
 }
 
 test "sla test import expansion prunes unreachable imported methods" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\struct ImportedBox {
@@ -1034,38 +1136,42 @@ test "sla test import expansion prunes unreachable imported methods" {
         \\    if got != 44 { panic(24008); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedBox_used") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_broken") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen uses registry loaded imported bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\trait Label {
@@ -1110,10 +1216,10 @@ test "sla test codegen uses registry loaded imported bodies" {
         \\    if got != 137 { panic(24137); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1122,27 +1228,31 @@ test "sla test codegen uses registry loaded imported bodies" {
 
     var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sa_stderr.deinit();
-    const sa_compiled = try compileSlaSaTestInput(allocator, "main.sla", sa_stderr.writer().any(), &.{}, false);
+    var sa_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sa_stderr));
+    const sa_compiled = try compileSlaSaTestInput(allocator, "main.sla", sa_stderr_fw.writer(), &.{}, false);
     if (sa_compiled) |compiled| {
-        defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
-        const sa_code = try std.fs.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
+        defer if (compiled.delete_after) sio.cwd().deleteFile(compiled.path) catch {};
+        const sa_code = try sio.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__imported_value") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing_used") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing__Label_label") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_bad") == null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_trait_body") == null);
     } else {
+        try sa_stderr_fw.writer().flush();
         std.debug.print("{s}", .{sa_stderr.items});
         return error.TestUnexpectedResult;
     }
+    try sa_stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
 
     var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
-    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, false);
+    var sab_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sab_stderr));
+    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr_fw.writer(), &.{}, false);
     if (sab_compiled) |compiled| {
-        defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
-        const sab_bytes = try std.fs.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
+        defer if (compiled.delete_after) sio.cwd().deleteFile(compiled.path) catch {};
+        const sab_bytes = try sio.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
         var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
         defer module.deinit(std.testing.allocator);
 
@@ -1164,17 +1274,20 @@ test "sla test codegen uses registry loaded imported bodies" {
         try std.testing.expect(!saw_unused_bad);
         try std.testing.expect(!saw_unused_trait);
     } else {
+        try sab_stderr_fw.writer().flush();
         std.debug.print("{s}", .{sab_stderr.items});
         return error.TestUnexpectedResult;
     }
+    try sab_stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
 }
 
 test "sla test codegen keeps imported macro direct callee" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const macro_source =
         \\[MACRO] TEST_IMPORTED_PAIR_SUM %out, %value
@@ -1199,10 +1312,10 @@ test "sla test codegen keeps imported macro direct callee" {
         \\    if use_imported_macro() != 42 { panic(24042); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "imported_macros.sa", .data = macro_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "imported_macros.sa", .data = macro_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1230,24 +1343,28 @@ test "sla test codegen keeps imported macro direct callee" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
-    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_fw.writer(), &.{}, false);
     if (compiled) |test_input| {
-        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
-        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        defer if (test_input.delete_after) sio.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try sio.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND TEST_IMPORTED_PAIR_SUM") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "@sla__macro_pair_sum(&value") != null);
     } else {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sa codegen resolves local binding types for imported macro args" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\@import "sa_std/string.sa"
@@ -1289,22 +1406,24 @@ test "sla sa codegen resolves local binding types for imported macro args" {
         \\    let env_len = imported_macro_env_buffer_arg_type();
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaString(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -1315,6 +1434,7 @@ test "sla sa codegen resolves local binding types for imported macro args" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sa_fs_write_file") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND ENV_ARGS_JSON") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND ENV_BUFFER_DATA") != null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -1365,10 +1485,11 @@ test "sla emit reachability keeps user macro direct callee" {
 }
 
 test "sla test codegen prunes unreferenced sla macro bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn used_value() -> i32 {
@@ -1398,10 +1519,10 @@ test "sla test codegen prunes unreferenced sla macro bodies" {
         \\    if used_value() != 42 { panic(24045); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1410,27 +1531,31 @@ test "sla test codegen prunes unreferenced sla macro bodies" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
-    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_fw.writer(), &.{}, false);
     if (compiled) |test_input| {
-        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
-        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        defer if (test_input.delete_after) sio.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try sio.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_root_macro") == null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_root_macro_helper") == null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_imported_macro") == null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_imported_macro_helper") == null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_imported_symbol") == null);
     } else {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen does not root imported const initializers" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\const IMPORTED_BONUS: i32 = 1;
@@ -1451,10 +1576,10 @@ test "sla test codegen does not root imported const initializers" {
         \\    if used_value() != 42 { panic(24051); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1463,18 +1588,21 @@ test "sla test codegen does not root imported const initializers" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
-    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_fw.writer(), &.{}, false);
     if (compiled) |test_input| {
-        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
-        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        defer if (test_input.delete_after) sio.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try sio.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "used_value") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "UNUSED_BAD_CONST") == null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_const_helper") == null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_imported_const_symbol") == null);
     } else {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -1621,10 +1749,11 @@ test "sla typechecker treats extern move args as consumed for cleanup" {
 }
 
 test "sla sa codegen does not release extern move field temps" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const contract_source =
         \\@extern consume_handle(^buffer: u64) -> i32
@@ -1647,23 +1776,25 @@ test "sla sa codegen does not release extern move field temps" {
         \\    if status != 0 { panic(25025); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "move_abi.sai", .data = contract_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "move_abi.sai", .data = contract_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaString(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -1677,6 +1808,7 @@ test "sla sa codegen does not release extern move field temps" {
     const release_line = try std.fmt.allocPrint(arena.allocator(), "    !{s}\n", .{reg});
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, release_line) == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -1893,10 +2025,11 @@ test "sla typechecker accepts else if chains" {
 }
 
 test "sla sa codegen lowers else if chains" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn classify(x: i64) -> i64 {
@@ -1909,21 +2042,23 @@ test "sla sa codegen lowers else if chains" {
         \\    };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaString(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -1932,14 +2067,16 @@ test "sla sa codegen lowers else if chains" {
     // every branch label must be defined exactly once.
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, sa_code, "\n    br "));
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, sa_code, "\nL_ELSE_"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sa loop backedges require live body fallthrough" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn while_break() -> i64 {
@@ -1962,21 +2099,23 @@ test "sla sa loop backedges require live body fallthrough" {
         \\    if for_break() != 1 { panic(30933); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -1990,18 +2129,20 @@ test "sla sab filtered primitive call temp remains in test scope" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_refcell_owner_release_direct.sla",
         ".sla-cache/sab/filtered_loop_scope_test.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "refcell loop jumps release active borrow handles",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -2129,10 +2270,11 @@ test "sla typechecker plans exact explicit return cleanup" {
 }
 
 test "sla generated async exits release stored state inputs" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
     const source =
         \\@import "sa_std/future.sa"
         \\@import "sa_std/core/task.sa"
@@ -2150,21 +2292,23 @@ test "sla generated async exits release stored state inputs" {
         \\    if task::result(task) != 42 { panic(30948); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -2188,14 +2332,16 @@ test "sla sab borrow alias return keeps source register" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_explicit_borrow_return_direct.sla",
         ".sla-cache/sab/borrow_alias_return_test.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -2261,12 +2407,14 @@ test "sla empty void exits keep caller managed parameters" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaString(
         arena.allocator(),
         "tests/test_unit_empty_void_exit_cleanup_direct.sla",
         ".sla-cache/empty_void_exit_test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -2282,10 +2430,11 @@ test "sla empty void exits keep caller managed parameters" {
 }
 
 test "sla shared static call plan emits void calls without result registers" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn consume(value: i32) {
@@ -2295,50 +2444,56 @@ test "sla shared static call plan emits void calls without result registers" {
         \\    consume(7);
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "void static call plan",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "    call @sla__consume(") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, " = call @sla__consume(") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 
+    try stderr_fw.writer().flush();
     stderr_buf.clearRetainingCapacity();
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "main.sla",
         ".sla-cache/sab/void_static_call_plan.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "void static call plan",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
     const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
     try std.testing.expect(std.mem.indexOf(u8, disasm, "@sla__consume") != null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -2645,10 +2800,11 @@ test "sla reachability root scanners skip unchanged sets and honor invalidation"
 }
 
 test "sla load imported macros parses already expanded source" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const macro_source =
         \\@expand_tuple(1, 1, T) {
@@ -2663,10 +2819,10 @@ test "sla load imported macros parses already expanded source" {
         \\@test "expanded macro import"() {
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "expanded_macros.sa", .data = macro_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "expanded_macros.sa", .data = macro_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2710,10 +2866,11 @@ test "sla contract loader fast paths macro free sources" {
 }
 
 test "sla load contracts reuses resolved non-sla imports" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const macro_source =
         \\[MACRO] RESOLVED_IMPORT_MACRO %out
@@ -2736,12 +2893,12 @@ test "sla load contracts reuses resolved non-sla imports" {
         \\    return 0;
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "imported_macros.sa", .data = macro_source });
-    try tmp.dir.writeFile(.{ .sub_path = "imported_contract.sai", .data = sai_source });
-    try tmp.dir.writeFile(.{ .sub_path = "plain_helper.sa", .data = plain_sa_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "imported_macros.sa", .data = macro_source });
+    try tdir.writeFile(.{ .sub_path = "imported_contract.sai", .data = sai_source });
+    try tdir.writeFile(.{ .sub_path = "plain_helper.sa", .data = plain_sa_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2763,9 +2920,9 @@ test "sla load contracts reuses resolved non-sla imports" {
     try std.testing.expect(expanded_prog.program.decls.len > 0);
     try std.testing.expectEqual(@as(usize, 2), contract_imports.items.len);
 
-    try tmp.dir.deleteFile("imported_macros.sa");
-    try tmp.dir.deleteFile("imported_contract.sai");
-    try tmp.dir.deleteFile("plain_helper.sa");
+    try tdir.deleteFile("imported_macros.sa");
+    try tdir.deleteFile("imported_contract.sai");
+    try tdir.deleteFile("plain_helper.sa");
 
     var tc = type_checker_mod.TypeChecker.init(allocator);
     defer tc.deinit();
@@ -2776,10 +2933,11 @@ test "sla load contracts reuses resolved non-sla imports" {
 }
 
 test "sla test import expansion reuses reachable contracts in final type checker" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const macro_source =
         \\[MACRO] REUSED_REACHABLE_MACRO %out, %value
@@ -2804,12 +2962,12 @@ test "sla test import expansion reuses reachable contracts in final type checker
         \\    if reachable_value(40) != 42 { panic(24046); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "reachable_macros.sa", .data = macro_source });
-    try tmp.dir.writeFile(.{ .sub_path = "reachable_contract.sai", .data = contract_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "reachable_macros.sa", .data = macro_source });
+    try tdir.writeFile(.{ .sub_path = "reachable_contract.sai", .data = contract_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2855,16 +3013,17 @@ test "sla test import expansion reuses reachable contracts in final type checker
     try std.testing.expect(tc.imported_macros.get("REUSED_REACHABLE_MACRO") != null);
     try std.testing.expect(tc.extern_funcs.get("reused_reachable_external") != null);
 
-    try tmp.dir.deleteFile("reachable_macros.sa");
-    try tmp.dir.deleteFile("reachable_contract.sai");
+    try tdir.deleteFile("reachable_macros.sa");
+    try tdir.deleteFile("reachable_contract.sai");
     try tc.checkProgram(expanded_prog);
 }
 
 test "sla test codegen skips contract loading for non contributing imported modules" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dead_source =
         \\@import "dead_contract.sai"
@@ -2887,11 +3046,11 @@ test "sla test codegen skips contract loading for non contributing imported modu
         \\    if root_value() != 42 { panic(24042); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dead.sla", .data = dead_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dead_contract.sai", .data = dead_contract_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dead.sla", .data = dead_source });
+    try tdir.writeFile(.{ .sub_path = "dead_contract.sai", .data = dead_contract_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2900,24 +3059,28 @@ test "sla test codegen skips contract loading for non contributing imported modu
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
-    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_fw.writer(), &.{}, false);
     if (compiled) |test_input| {
-        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
-        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        defer if (test_input.delete_after) sio.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try sio.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "root_value") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_external") == null);
     } else {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen loads contract imports for contributing imported modules" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const macro_source =
         \\[MACRO] USED_IMPORTED_MODULE_MACRO %out, %value
@@ -2946,12 +3109,12 @@ test "sla test codegen loads contract imports for contributing imported modules"
         \\    if used_entry() != 42 { panic(24043); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "used_macros.sa", .data = macro_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dead_contract.sai", .data = dead_contract_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "used_macros.sa", .data = macro_source });
+    try tdir.writeFile(.{ .sub_path = "dead_contract.sai", .data = dead_contract_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2960,25 +3123,29 @@ test "sla test codegen loads contract imports for contributing imported modules"
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
-    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_fw.writer(), &.{}, false);
     if (compiled) |test_input| {
-        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
-        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        defer if (test_input.delete_after) sio.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try sio.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND USED_IMPORTED_MODULE_MACRO") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "@sla__used_macro_helper") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_external") == null);
     } else {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen skips contract loading for type only imported modules" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\@import "type_only_contract.sai"
@@ -3002,11 +3169,11 @@ test "sla test codegen skips contract loading for type only imported modules" {
         \\    if item.value != 42 { panic(24044); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "type_only_contract.sai", .data = dead_contract_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "type_only_contract.sai", .data = dead_contract_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -3015,24 +3182,28 @@ test "sla test codegen skips contract loading for type only imported modules" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
-    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_fw.writer(), &.{}, false);
     if (compiled) |test_input| {
-        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
-        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        defer if (test_input.delete_after) sio.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try sio.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_external_value") == null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "type_only_dead_external") == null);
     } else {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen loads referenced macro imports from type only modules" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const macro_source =
         \\[MACRO] TYPE_ONLY_INC %out, %value
@@ -3062,12 +3233,12 @@ test "sla test codegen loads referenced macro imports from type only modules" {
         \\    if TYPE_ONLY_INC(item.value) != 42 { panic(24045); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "type_only_macros.sa", .data = macro_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dead_contract.sai", .data = dead_contract_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "type_only_macros.sa", .data = macro_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "dead_contract.sai", .data = dead_contract_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -3076,16 +3247,19 @@ test "sla test codegen loads referenced macro imports from type only modules" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
-    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_buf.writer().any(), &.{}, false);
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+    const compiled = try compileSlaSaTestInput(allocator, "main.sla", stderr_fw.writer(), &.{}, false);
     if (compiled) |test_input| {
-        defer if (test_input.delete_after) std.fs.cwd().deleteFile(test_input.path) catch {};
-        const sa_code = try std.fs.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
+        defer if (test_input.delete_after) sio.cwd().deleteFile(test_input.path) catch {};
+        const sa_code = try sio.cwd().readFileAlloc(allocator, test_input.path, 10 * 1024 * 1024);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "EXPAND TYPE_ONLY_INC") != null);
         try std.testing.expect(std.mem.indexOf(u8, sa_code, "type_only_dead_external") == null);
     } else {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -3131,10 +3305,11 @@ test "sla reachable roots keep canonical callable key for temporary mangled meth
 }
 
 test "sla check keeps imported generic function refs from root tests reachable" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn imported_drop<T>(raw: *u8) -> void {
@@ -3152,10 +3327,10 @@ test "sla check keeps imported generic function refs from root tests reachable" 
         \\    accept_drop(imported_drop<Tiny>);
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -3177,10 +3352,11 @@ test "sla check keeps imported generic function refs from root tests reachable" 
 }
 
 test "sla import expansion omits tests from contributing imported modules" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\struct ImportedType {}
@@ -3200,10 +3376,10 @@ test "sla import expansion omits tests from contributing imported modules" {
         \\    return 1;
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -3236,10 +3412,11 @@ test "sla import expansion omits tests from contributing imported modules" {
 }
 
 test "sla module namespace call resolves through imported function alias" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn imported_a() -> i32 {
@@ -3254,38 +3431,42 @@ test "sla module namespace call resolves through imported function alias" {
         \\    if got != 7 { panic(24013); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__imported_a") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__dep__imported_a") != null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 
     var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
-    const sab_compiled = try compileSlaSabTestInput(arena.allocator(), "main.sla", sab_stderr.writer().any(), &.{}, false);
+    var sab_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sab_stderr));
+    const sab_compiled = try compileSlaSabTestInput(arena.allocator(), "main.sla", sab_stderr_fw.writer(), &.{}, false);
     if (sab_compiled) |compiled| {
-        defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
-        const sab_bytes = try std.fs.cwd().readFileAlloc(arena.allocator(), compiled.path, 10 * 1024 * 1024);
+        defer if (compiled.delete_after) sio.cwd().deleteFile(compiled.path) catch {};
+        const sab_bytes = try sio.cwd().readFileAlloc(arena.allocator(), compiled.path, 10 * 1024 * 1024);
         var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
         defer module.deinit(std.testing.allocator);
 
@@ -3298,19 +3479,22 @@ test "sla module namespace call resolves through imported function alias" {
         const disasm = try sci_bridge.disasmSabAlloc(arena.allocator(), sab_bytes);
         try std.testing.expect(std.mem.indexOf(u8, disasm, "\"@sla__dep__imported_a\"") != null);
     } else {
+        try sab_stderr_fw.writer().flush();
         std.debug.print("{s}", .{sab_stderr.items});
         return error.TestUnexpectedResult;
     }
+    try sab_stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
 }
 
 test "sla imported function aliases retain namespace metadata" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "dep.sla",
         .data =
         \\fn imported_a() -> i32 {
@@ -3318,7 +3502,7 @@ test "sla imported function aliases retain namespace metadata" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "sibling.sla",
         .data =
         \\fn imported_a() -> i32 {
@@ -3326,7 +3510,7 @@ test "sla imported function aliases retain namespace metadata" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "main.sla",
         .data =
         \\@import "dep.sla"
@@ -3338,14 +3522,14 @@ test "sla imported function aliases retain namespace metadata" {
         ,
     });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const main_source = try std.fs.cwd().readFileAlloc(allocator, "main.sla", 1024 * 1024);
+    const main_source = try sio.cwd().readFileAlloc(allocator, "main.sla", 1024 * 1024);
     const expanded_main = try source_expand.expand(allocator, main_source);
     var parser = parser_mod.Parser.initWithDir(allocator, expanded_main, ".");
     const prog = try parser.parseProgram();
@@ -3385,12 +3569,13 @@ test "sla imported function aliases retain namespace metadata" {
 }
 
 test "sla imported aliases reuse parsed module table" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "dep.sla",
         .data =
         \\fn imported_a() -> i32 {
@@ -3398,7 +3583,7 @@ test "sla imported aliases reuse parsed module table" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "main.sla",
         .data =
         \\@import "dep.sla"
@@ -3409,14 +3594,14 @@ test "sla imported aliases reuse parsed module table" {
         ,
     });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const main_source = try std.fs.cwd().readFileAlloc(allocator, "main.sla", 1024 * 1024);
+    const main_source = try sio.cwd().readFileAlloc(allocator, "main.sla", 1024 * 1024);
     const expanded_main = try source_expand.expand(allocator, main_source);
     var parser = parser_mod.Parser.initWithDir(allocator, expanded_main, ".");
     const prog = try parser.parseProgram();
@@ -3431,7 +3616,7 @@ test "sla imported aliases reuse parsed module table" {
     const expanded_prog = try expandSlaImportsWithModuleTable(allocator, prog, "main.sla", &primary_decls, .{}, &import_modules, &root_import_groups, &contract_imports);
     try std.testing.expect(expanded_prog.program.decls.len > 0);
 
-    try tmp.dir.deleteFile("dep.sla");
+    try tdir.deleteFile("dep.sla");
 
     var tc = type_checker_mod.TypeChecker.init(allocator);
     defer tc.deinit();
@@ -3442,12 +3627,13 @@ test "sla imported aliases reuse parsed module table" {
 }
 
 test "sla module namespace aliases isolate same named imported functions" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "dep.sla",
         .data =
         \\fn imported_a() -> i32 {
@@ -3455,7 +3641,7 @@ test "sla module namespace aliases isolate same named imported functions" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "sibling.sla",
         .data =
         \\fn imported_a() -> i32 {
@@ -3463,7 +3649,7 @@ test "sla module namespace aliases isolate same named imported functions" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "main.sla",
         .data =
         \\@import "dep.sla"
@@ -3476,7 +3662,7 @@ test "sla module namespace aliases isolate same named imported functions" {
         ,
     });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -3485,13 +3671,15 @@ test "sla module namespace aliases isolate same named imported functions" {
 
     var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sa_stderr.deinit();
+    var sa_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sa_stderr));
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
         "main.sla",
         "main.test.sa",
-        sa_stderr.writer().any(),
+        sa_stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try sa_stderr_fw.writer().flush();
         std.debug.print("{s}", .{sa_stderr.items});
         return error.TestUnexpectedResult;
     };
@@ -3499,14 +3687,16 @@ test "sla module namespace aliases isolate same named imported functions" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__sibling__imported_a") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__dep__imported_a") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__sibling__imported_a") != null);
+    try sa_stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
 
     var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
-    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr.writer().any(), &.{}, false);
+    var sab_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sab_stderr));
+    const sab_compiled = try compileSlaSabTestInput(allocator, "main.sla", sab_stderr_fw.writer(), &.{}, false);
     if (sab_compiled) |compiled| {
-        defer if (compiled.delete_after) std.fs.cwd().deleteFile(compiled.path) catch {};
-        const sab_bytes = try std.fs.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
+        defer if (compiled.delete_after) sio.cwd().deleteFile(compiled.path) catch {};
+        const sab_bytes = try sio.cwd().readFileAlloc(allocator, compiled.path, 10 * 1024 * 1024);
         var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
         defer module.deinit(std.testing.allocator);
 
@@ -3523,9 +3713,11 @@ test "sla module namespace aliases isolate same named imported functions" {
         try std.testing.expect(std.mem.indexOf(u8, disasm, "\"@sla__dep__imported_a\"") != null);
         try std.testing.expect(std.mem.indexOf(u8, disasm, "\"@sla__sibling__imported_a\"") != null);
     } else {
+        try sab_stderr_fw.writer().flush();
         std.debug.print("{s}", .{sab_stderr.items});
         return error.TestUnexpectedResult;
     }
+    try sab_stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
 }
 
@@ -3580,10 +3772,11 @@ test "sla module exports index records per-module function sources" {
     // exported symbols and SlaCallableIndex must record the owning module path
     // for every reachable callable, so future lazy typecheck can resolve calls
     // by module-qualified lookup instead of flattening every imported body.
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\@import "child.sla"
@@ -3645,12 +3838,12 @@ test "sla module exports index records per-module function sources" {
         \\    if got != 7 { panic(24010); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "sibling.sla", .data = sibling_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "sibling.sla", .data = sibling_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -3855,8 +4048,9 @@ test "sla module table resolves imported function bodies by module and namespace
 
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "dep.sla",
         .data =
         \\trait Label {
@@ -3884,7 +4078,7 @@ test "sla module table resolves imported function bodies by module and namespace
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "sibling.sla",
         .data =
         \\fn imported_value() -> i32 {
@@ -3892,7 +4086,7 @@ test "sla module table resolves imported function bodies by module and namespace
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "main.sla",
         .data =
         \\@import "dep.sla"
@@ -3904,13 +4098,13 @@ test "sla module table resolves imported function bodies by module and namespace
         ,
     });
 
-    const dep_source = try tmp.dir.readFileAlloc(allocator, "dep.sla", 1024 * 1024);
-    const sibling_source = try tmp.dir.readFileAlloc(allocator, "sibling.sla", 1024 * 1024);
-    const main_source = try tmp.dir.readFileAlloc(allocator, "main.sla", 1024 * 1024);
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
-    const dep_path = try tmp.dir.realpathAlloc(allocator, "dep.sla");
-    const sibling_path = try tmp.dir.realpathAlloc(allocator, "sibling.sla");
-    const main_path = try tmp.dir.realpathAlloc(allocator, "main.sla");
+    const dep_source = try tdir.readFileAlloc(allocator, "dep.sla", 1024 * 1024);
+    const sibling_source = try tdir.readFileAlloc(allocator, "sibling.sla", 1024 * 1024);
+    const main_source = try tdir.readFileAlloc(allocator, "main.sla", 1024 * 1024);
+    const cwd = try sio.cwd().realpathAlloc(allocator, ".");
+    const dep_path = try tdir.realpathAlloc(allocator, "dep.sla");
+    const sibling_path = try tdir.realpathAlloc(allocator, "sibling.sla");
+    const main_path = try tdir.realpathAlloc(allocator, "main.sla");
     const main_dir = std.fs.path.dirname(main_path) orelse cwd;
 
     const expanded_main = try source_expand.expand(allocator, main_source);
@@ -3989,12 +4183,13 @@ test "sla module table resolves imported function bodies by module and namespace
 }
 
 test "sla module table skips imported test body parsing" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "dep.sla",
         .data =
         \\@test "imported test body is not parsed"() {
@@ -4006,7 +4201,7 @@ test "sla module table skips imported test body parsing" {
         \\}
         ,
     });
-    try tmp.dir.writeFile(.{
+    try tdir.writeFile(.{
         .sub_path = "main.sla",
         .data =
         \\@import "dep.sla"
@@ -4017,14 +4212,14 @@ test "sla module table skips imported test body parsing" {
         ,
     });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const main_source = try std.fs.cwd().readFileAlloc(allocator, "main.sla", 1024 * 1024);
+    const main_source = try sio.cwd().readFileAlloc(allocator, "main.sla", 1024 * 1024);
     const expanded_main = try source_expand.expand(allocator, main_source);
     var parser = parser_mod.Parser.initWithDir(allocator, expanded_main, ".");
     const prog = try parser.parseProgram();
@@ -4049,10 +4244,11 @@ test "sla module table skips imported test body parsing" {
 }
 
 test "sla module table skips non contributing imported module bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const used_source =
         \\fn used_value() -> i32 {
@@ -4081,11 +4277,11 @@ test "sla module table skips non contributing imported module bodies" {
         \\    if got != 42 { panic(24011); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
-    try tmp.dir.writeFile(.{ .sub_path = "unused.sla", .data = unused_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
+    try tdir.writeFile(.{ .sub_path = "unused.sla", .data = unused_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4126,16 +4322,18 @@ test "sla module table skips non contributing imported module bodies" {
     defer compile_arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(compile_arena.allocator());
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const compiled = try compileSlaSaTestInput(
         compile_arena.allocator(),
         "main.sla",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         &.{},
         false,
     );
     if (compiled) |result| {
-        if (result.delete_after) std.fs.cwd().deleteFile(result.path) catch {};
+        if (result.delete_after) sio.cwd().deleteFile(result.path) catch {};
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -4145,10 +4343,11 @@ test "sla module table selective flatten in non test compile path" {
     // function referencing MissingType. Selective flattening must omit unused.sla's
     // body so the broken function never reaches TypeChecker, while used.sla's
     // reachable functions are flattened normally.
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const used_source =
         \\fn used_value() -> i32 {
@@ -4172,11 +4371,11 @@ test "sla module table selective flatten in non test compile path" {
         \\    return used_value();
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
-    try tmp.dir.writeFile(.{ .sub_path = "unused.sla", .data = unused_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
+    try tdir.writeFile(.{ .sub_path = "unused.sla", .data = unused_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4211,10 +4410,11 @@ test "sla module table selective flatten in non test compile path" {
 }
 
 test "sla build codegen uses registry loaded imported bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\trait Label {
@@ -4258,10 +4458,10 @@ test "sla build codegen uses registry loaded imported bodies" {
         \\    return item.used() + item.label();
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4270,7 +4470,9 @@ test "sla build codegen uses registry loaded imported bodies" {
 
     var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sa_stderr.deinit();
-    const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", sa_stderr.writer().any())) orelse {
+    var sa_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sa_stderr));
+    const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", sa_stderr_fw.writer())) orelse {
+        try sa_stderr_fw.writer().flush();
         std.debug.print("{s}", .{sa_stderr.items});
         return error.TestUnexpectedResult;
     };
@@ -4279,11 +4481,14 @@ test "sla build codegen uses registry loaded imported bodies" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing__Label_label") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_bad") == null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_trait_body") == null);
+    try sa_stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
 
     var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
-    const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr.writer().any())) orelse {
+    var sab_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sab_stderr));
+    const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr_fw.writer())) orelse {
+        try sab_stderr_fw.writer().flush();
         std.debug.print("{s}", .{sab_stderr.items});
         return error.TestUnexpectedResult;
     };
@@ -4307,14 +4512,16 @@ test "sla build codegen uses registry loaded imported bodies" {
     try std.testing.expect(saw_label);
     try std.testing.expect(!saw_unused_bad);
     try std.testing.expect(!saw_unused_trait);
+    try sab_stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
 }
 
 test "sla build codegen keeps imported dyn trait impl bodies from registry" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\trait Identified {
@@ -4346,10 +4553,10 @@ test "sla build codegen keeps imported dyn trait impl bodies from registry" {
         \\    return obj.get_id();
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4358,7 +4565,9 @@ test "sla build codegen keeps imported dyn trait impl bodies from registry" {
 
     var sa_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sa_stderr.deinit();
-    const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", sa_stderr.writer().any())) orelse {
+    var sa_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sa_stderr));
+    const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", sa_stderr_fw.writer())) orelse {
+        try sa_stderr_fw.writer().flush();
         std.debug.print("{s}", .{sa_stderr.items});
         return error.TestUnexpectedResult;
     };
@@ -4368,15 +4577,18 @@ test "sla build codegen keeps imported dyn trait impl bodies from registry" {
     // package's real rules file into the tmp dir so this test is hermetic
     // and does not depend on ambient SLA_STD_DIR.
     const surface_meta = try original_cwd.readFileAlloc(allocator, "sla_std/std_surface.sla_meta", 1024 * 1024);
-    try tmp.dir.makeDir("sla_std");
-    try tmp.dir.writeFile(.{ .sub_path = "sla_std/std_surface.sla_meta", .data = surface_meta });
+    try tdir.makeDir("sla_std");
+    try tdir.writeFile(.{ .sub_path = "sla_std/std_surface.sla_meta", .data = surface_meta });
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing__Identified_get_id") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_dyn_body") == null);
+    try sa_stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), sa_stderr.items.len);
 
     var sab_stderr = std.array_list.Managed(u8).init(std.testing.allocator);
     defer sab_stderr.deinit();
-    const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr.writer().any())) orelse {
+    var sab_stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&sab_stderr));
+    const sab_bytes = (try compileSlaFileToSab(allocator, "main.sla", ".sla-cache/sab/main.sab", sab_stderr_fw.writer())) orelse {
+        try sab_stderr_fw.writer().flush();
         std.debug.print("{s}", .{sab_stderr.items});
         return error.TestUnexpectedResult;
     };
@@ -4391,14 +4603,16 @@ test "sla build codegen keeps imported dyn trait impl bodies from registry" {
     }
     try std.testing.expect(saw_get_id);
     try std.testing.expect(!saw_unused_dyn);
+    try sab_stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), sab_stderr.items.len);
 }
 
 test "sla build codegen skips parsing non contributing imported function bodies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const used_source =
         \\fn used_value() -> i32 {
@@ -4418,11 +4632,11 @@ test "sla build codegen skips parsing non contributing imported function bodies"
         \\    return used::used_value();
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dead.sla", .data = dead_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
+    try tdir.writeFile(.{ .sub_path = "dead.sla", .data = dead_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4431,20 +4645,24 @@ test "sla build codegen skips parsing non contributing imported function bodies"
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
-    const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", stderr_buf.writer().any())) orelse {
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
+    const sa_code = (try compileSlaToSaString(allocator, "main.sla", "main.sa", stderr_fw.writer())) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used__used_value") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_bad") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen materializes reachable bodies in contributing module" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn selected_value() -> i32 {
@@ -4482,10 +4700,10 @@ test "sla test codegen materializes reachable bodies in contributing module" {
         \\    if item.selected() != 42 { panic(42043); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4494,17 +4712,19 @@ test "sla test codegen materializes reachable bodies in contributing module" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "selected imported bodies",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -4513,14 +4733,16 @@ test "sla test codegen materializes reachable bodies in contributing module" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "ImportedThing_selected") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_invalid") == null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "unused_method_invalid") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen materializes reachable bodies in contributing module" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn selected_value() -> i32 {
@@ -4558,10 +4780,10 @@ test "sla sab test codegen materializes reachable bodies in contributing module"
         \\    if item.selected() != 42 { panic(42043); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4570,17 +4792,19 @@ test "sla sab test codegen materializes reachable bodies in contributing module"
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         allocator,
         "main.sla",
         ".sla-cache/sab/selective_imported_bodies.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "selected imported bodies",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -4598,14 +4822,16 @@ test "sla sab test codegen materializes reachable bodies in contributing module"
     try std.testing.expect(saw_selected_value);
     try std.testing.expect(saw_selected_method);
     try std.testing.expect(!saw_unused_body);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen materializes reachable macro bodies in contributing module" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\macro ADD_ONE(value) {
@@ -4629,10 +4855,10 @@ test "sla test codegen materializes reachable macro bodies in contributing modul
         \\    if dep::selected_value() != 42 { panic(42045); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4641,31 +4867,35 @@ test "sla test codegen materializes reachable macro bodies in contributing modul
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "selected imported macro body",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__dep__selected_value") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "add value,") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "UNUSED_BAD") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla reachability incrementally extends newly materialized body chains" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn first() -> i32 {
@@ -4685,10 +4915,10 @@ test "sla reachability incrementally extends newly materialized body chains" {
         \\    if dep::first() != 42 { panic(42048); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4738,10 +4968,11 @@ test "sla reachability incrementally extends newly materialized body chains" {
 }
 
 test "sla module table reparses with cached imported type names" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const child_source =
         \\struct ImportedThing { value: i32 }
@@ -4752,9 +4983,9 @@ test "sla module table reparses with cached imported type names" {
         \\    return ImportedThing { value: 42 };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4772,7 +5003,7 @@ test "sla module table reparses with cached imported type names" {
 
     // A selected-body reparse must consume the type names cached by the first
     // module parse, not read and recursively prescan the import again.
-    try tmp.dir.deleteFile("child.sla");
+    try tdir.deleteFile("child.sla");
     var selected_functions = std.StringHashMap(void).init(allocator);
     defer selected_functions.deinit();
     try selected_functions.put("make_imported", {});
@@ -4784,10 +5015,11 @@ test "sla module table reparses with cached imported type names" {
 }
 
 test "sla module table shares imported type scan surfaces across modules" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const common_source =
         \\struct SharedThing { value: i32 }
@@ -4806,10 +5038,10 @@ test "sla module table shares imported type scan surfaces across modules" {
         \\    return item.value;
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "common.sla", .data = common_source });
-    try tmp.dir.writeFile(.{ .sub_path = "left.sla", .data = left_source });
-    try tmp.dir.writeFile(.{ .sub_path = "right.sla", .data = right_source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "common.sla", .data = common_source });
+    try tdir.writeFile(.{ .sub_path = "left.sla", .data = left_source });
+    try tdir.writeFile(.{ .sub_path = "right.sla", .data = right_source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4847,10 +5079,11 @@ test "sla module table shares imported type scan surfaces across modules" {
 }
 
 test "sla module table materializes function bodies from cached spans" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\struct Holder { value: i32 }
@@ -4869,8 +5102,8 @@ test "sla module table materializes function bodies from cached spans" {
         \\    let = ;
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -4898,7 +5131,7 @@ test "sla module table materializes function bodies from cached spans" {
     const owned_corrupt = try allocator.dupe(u8, corrupt);
     dep.expanded_source = owned_corrupt;
     dep.source = owned_corrupt;
-    try tmp.dir.deleteFile("dep.sla");
+    try tdir.deleteFile("dep.sla");
 
     const first_decl = dep.exports.function_decls.get("first") orelse return error.TestUnexpectedResult;
     const second_decl = dep.exports.function_decls.get("second") orelse return error.TestUnexpectedResult;
@@ -4936,10 +5169,11 @@ test "sla module table materializes function bodies from cached spans" {
 }
 
 test "sla reachability session retries only unresolved callable roots" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const mid_source =
         \\@import "leaf.sla"
@@ -4965,10 +5199,10 @@ test "sla reachability session retries only unresolved callable roots" {
         \\    if item.selected() != 43 { panic(42051); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "mid.sla", .data = mid_source });
-    try tmp.dir.writeFile(.{ .sub_path = "leaf.sla", .data = leaf_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "mid.sla", .data = mid_source });
+    try tdir.writeFile(.{ .sub_path = "leaf.sla", .data = leaf_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5016,10 +5250,11 @@ test "sla reachability session retries only unresolved callable roots" {
 }
 
 test "sla reachability session refreshes exact imported macro callers" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn use_late_macro() -> i32 {
@@ -5036,9 +5271,9 @@ test "sla reachability session refreshes exact imported macro callers" {
         \\    if dep::use_late_macro() != 41 { panic(42052); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5092,10 +5327,11 @@ test "sla reachability session refreshes exact imported macro callers" {
 }
 
 test "sla test codegen narrows same named imported methods by symbol" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\struct UsedBox {
@@ -5126,10 +5362,10 @@ test "sla test codegen narrows same named imported methods by symbol" {
         \\    if item.value() != 42 { panic(42046); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5138,30 +5374,34 @@ test "sla test codegen narrows same named imported methods by symbol" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "selected same named imported method",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "UsedBox_value") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "DeadBox_value") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen skips parsing non contributing transitive sla imports" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const used_source =
         \\fn value() -> i32 {
@@ -5186,12 +5426,12 @@ test "sla test codegen skips parsing non contributing transitive sla imports" {
         \\    if used::value() != 42 { panic(42047); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dead_parent.sla", .data = dead_parent_source });
-    try tmp.dir.writeFile(.{ .sub_path = "bad_child.sla", .data = bad_child_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "used.sla", .data = used_source });
+    try tdir.writeFile(.{ .sub_path = "dead_parent.sla", .data = dead_parent_source });
+    try tdir.writeFile(.{ .sub_path = "bad_child.sla", .data = bad_child_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5200,30 +5440,34 @@ test "sla test codegen skips parsing non contributing transitive sla imports" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "selected skips dead transitive import",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__used__value") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "bad_child") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen lazily parses reachable transitive sla imports" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const child_source =
         \\fn value() -> i32 {
@@ -5244,11 +5488,11 @@ test "sla test codegen lazily parses reachable transitive sla imports" {
         \\    if parent::entry() != 42 { panic(42048); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
-    try tmp.dir.writeFile(.{ .sub_path = "parent.sla", .data = parent_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tdir.writeFile(.{ .sub_path = "parent.sla", .data = parent_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5257,30 +5501,34 @@ test "sla test codegen lazily parses reachable transitive sla imports" {
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "selected reaches transitive import",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__parent__entry") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__child__value") != null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen skips unreferenced child imports of contributing modules" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const child_source =
         \\@import "dead_grandchild.sla"
@@ -5306,12 +5554,12 @@ test "sla test codegen skips unreferenced child imports of contributing modules"
         \\    if parent::entry() != 42 { panic(42049); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
-    try tmp.dir.writeFile(.{ .sub_path = "parent.sla", .data = parent_source });
-    try tmp.dir.writeFile(.{ .sub_path = "dead_grandchild.sla", .data = dead_grandchild_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tdir.writeFile(.{ .sub_path = "parent.sla", .data = parent_source });
+    try tdir.writeFile(.{ .sub_path = "dead_grandchild.sla", .data = dead_grandchild_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5320,31 +5568,35 @@ test "sla test codegen skips unreferenced child imports of contributing modules"
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "selected skips dead child import",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__parent__entry") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__child__value") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "dead_grandchild") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test codegen qualifies same named imported helper reachability" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\fn entry() -> i32 {
@@ -5372,29 +5624,31 @@ test "sla test codegen qualifies same named imported helper reachability" {
         \\    if dep::entry() + sibling::entry() != 42 { panic(42044); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "sibling.sla", .data = sibling_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "sibling.sla", .data = sibling_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "same named imported helpers",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -5404,14 +5658,16 @@ test "sla test codegen qualifies same named imported helper reachability" {
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "sla__sibling__helper") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__dep__helper") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "call @sla__sibling__helper") != null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla module table loads reachable imported bodies from registry while stubbing others" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\trait Label {
@@ -5459,10 +5715,10 @@ test "sla module table loads reachable imported bodies from registry while stubb
         \\    return item.inherent() + item.label();
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5511,10 +5767,11 @@ test "sla module table loads reachable imported bodies from registry while stubb
 }
 
 test "sla module table reaches contributing transitive module through non contributing parent" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const mid_source =
         \\@import "leaf.sla"
@@ -5535,11 +5792,11 @@ test "sla module table reaches contributing transitive module through non contri
         \\    return leaf_value();
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "mid.sla", .data = mid_source });
-    try tmp.dir.writeFile(.{ .sub_path = "leaf.sla", .data = leaf_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "mid.sla", .data = mid_source });
+    try tdir.writeFile(.{ .sub_path = "leaf.sla", .data = leaf_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5564,10 +5821,11 @@ test "sla module table reaches contributing transitive module through non contri
 }
 
 test "sla module table discovers transitive generic function references" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const mid_source =
         \\@import "leaf.sla"
@@ -5592,28 +5850,30 @@ test "sla module table discovers transitive generic function references" {
         \\    if apply(leaf_identity<i32>, 53) != 53 { panic(42046); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "mid.sla", .data = mid_source });
-    try tmp.dir.writeFile(.{ .sub_path = "leaf.sla", .data = leaf_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "mid.sla", .data = mid_source });
+    try tdir.writeFile(.{ .sub_path = "leaf.sla", .data = leaf_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{
             .test_filter = "transitive generic function reference",
             .prune_for_test_codegen = true,
             .load_reachable_imported_bodies_from_registry = true,
         },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -5622,10 +5882,11 @@ test "sla module table discovers transitive generic function references" {
 }
 
 test "sla module table prunes unreachable trait impl methods in contributing module" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\trait Label {
@@ -5655,10 +5916,10 @@ test "sla module table prunes unreachable trait impl methods in contributing mod
         \\    return item.label();
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5696,25 +5957,29 @@ test "sla module table prunes unreachable trait impl methods in contributing mod
 
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sa_code = (try compileSlaToSaStringWithOptions(
         allocator,
         "main.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "missing_trait_body") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab codegen skips decl only imported trait impl methods" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\trait Label {
@@ -5744,24 +6009,26 @@ test "sla sab codegen skips decl only imported trait impl methods" {
         \\    if item.label() != 61 { panic(61061); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "main.sla",
         ".sla-cache/sab/imported_trait_decl_only.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -5777,14 +6044,16 @@ test "sla sab codegen skips decl only imported trait impl methods" {
     }
     try std.testing.expect(saw_label);
     try std.testing.expect(!saw_unused);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla module table follows imported const initializer reachability" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\const IMPORTED_VALUE: i32 = const_helper();
@@ -5804,10 +6073,10 @@ test "sla module table follows imported const initializer reachability" {
         \\    return IMPORTED_VALUE;
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5841,10 +6110,11 @@ test "sla module table follows imported const initializer reachability" {
 }
 
 test "sla module table follows imported type signature dependencies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const child_source =
         \\struct ChildType {
@@ -5869,11 +6139,11 @@ test "sla module table follows imported type signature dependencies" {
         \\    return item.child.value;
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
-    try tmp.dir.writeFile(.{ .sub_path = "parent.sla", .data = parent_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "child.sla", .data = child_source });
+    try tdir.writeFile(.{ .sub_path = "parent.sla", .data = parent_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5907,10 +6177,11 @@ test "sla module table follows imported type signature dependencies" {
 }
 
 test "sla module table follows generic argument type dependencies" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const type_source =
         \\struct ImportedType {
@@ -5943,11 +6214,11 @@ test "sla module table follows generic argument type dependencies" {
         \\    return generic_id<ImportedType>(7) + apply(use_generic_ref<ImportedType>, 8);
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "types.sla", .data = type_source });
-    try tmp.dir.writeFile(.{ .sub_path = "funcs.sla", .data = funcs_source });
-    try tmp.dir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
+    try tdir.writeFile(.{ .sub_path = "types.sla", .data = type_source });
+    try tdir.writeFile(.{ .sub_path = "funcs.sla", .data = funcs_source });
+    try tdir.writeFile(.{ .sub_path = "main.sla", .data = main_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -5984,10 +6255,11 @@ test "sla module table follows generic argument type dependencies" {
 }
 
 test "sla sab test codegen omits unreachable functions after type checking" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn used_value() -> i32 {
@@ -6003,23 +6275,25 @@ test "sla sab test codegen omits unreachable functions after type checking" {
         \\    if got != 11 { panic(24005); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "reachable_output.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "reachable_output.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "reachable_output.sla",
         ".sla-cache/sab/reachable_output.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -6035,14 +6309,16 @@ test "sla sab test codegen omits unreachable functions after type checking" {
     }
     try std.testing.expect(saw_used);
     try std.testing.expect(!saw_unused);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen omits statically empty import scan resolver branch" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const dep_source =
         \\struct ImportSpecifierScanResult {
@@ -6079,24 +6355,26 @@ test "sla sab test codegen omits statically empty import scan resolver branch" {
         \\    if got != 0 { panic(24048); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
-    try tmp.dir.writeFile(.{ .sub_path = "empty_import_scan.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "dep.sla", .data = dep_source });
+    try tdir.writeFile(.{ .sub_path = "empty_import_scan.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "empty_import_scan.sla",
         ".sla-cache/sab/empty_import_scan.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -6115,14 +6393,16 @@ test "sla sab test codegen omits statically empty import scan resolver branch" {
     try std.testing.expect(saw_program_new);
     try std.testing.expect(saw_import_scan);
     try std.testing.expect(!saw_resolver);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen propagates empty import scan through imported wrapper" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const compiler_source =
         \\struct ImportSpecifierScanResult {
@@ -6170,25 +6450,27 @@ test "sla sab test codegen propagates empty import scan through imported wrapper
         \\    if got != 3 { panic(24049); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "compiler.sla", .data = compiler_source });
-    try tmp.dir.writeFile(.{ .sub_path = "wrapper.sla", .data = wrapper_source });
-    try tmp.dir.writeFile(.{ .sub_path = "wrapper_import_scan.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "compiler.sla", .data = compiler_source });
+    try tdir.writeFile(.{ .sub_path = "wrapper.sla", .data = wrapper_source });
+    try tdir.writeFile(.{ .sub_path = "wrapper_import_scan.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "wrapper_import_scan.sla",
         ".sla-cache/sab/wrapper_import_scan.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -6207,14 +6489,16 @@ test "sla sab test codegen propagates empty import scan through imported wrapper
     try std.testing.expect(saw_program_new);
     try std.testing.expect(!saw_import_scan);
     try std.testing.expect(!saw_resolver);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen uses lightweight project snapshot for primary configured project only" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\struct SessionState {
@@ -6311,23 +6595,25 @@ test "sla sab test codegen uses lightweight project snapshot for primary configu
         \\    if project.value != 2 { panic(24050); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "light_project_snapshot.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "light_project_snapshot.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "light_project_snapshot.sla",
         ".sla-cache/sab/light_project_snapshot.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -6349,14 +6635,16 @@ test "sla sab test codegen uses lightweight project snapshot for primary configu
     try std.testing.expect(!saw_session_parse_file);
     try std.testing.expect(!saw_project_snapshot_from_single_file);
     try std.testing.expect(saw_project_snapshot_from_program);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen prunes known inferred snapshot result chains before reachability" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\struct Project { kind: int }
@@ -6385,21 +6673,23 @@ test "sla sab test codegen prunes known inferred snapshot result chains before r
         \\    if services.has_tertiary != true { panic(24125); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "known_inferred_result_chains.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "known_inferred_result_chains.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "known_inferred_result_chains.sla",
         ".sla-cache/sab/known_inferred_result_chains.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -6411,14 +6701,16 @@ test "sla sab test codegen prunes known inferred snapshot result chains before r
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_session_get_language_services_for_documents") == null);
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "missing_") == null);
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen folds cached default open configured projects" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\struct SessionState {
@@ -6506,23 +6798,25 @@ test "sla sab test codegen folds cached default open configured projects" {
         \\    if open_projects.secondary_project_path_len != 0 { panic(24055); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "cached_default_open_projects.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "cached_default_open_projects.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "cached_default_open_projects.sla",
         ".sla-cache/sab/cached_default_open_projects.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -6537,14 +6831,16 @@ test "sla sab test codegen folds cached default open configured projects" {
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_snapshot_from_program") == null);
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_collection_get_open_configured_projects") == null);
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen folds two open configured projects" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\struct SessionState { snapshot_id: int, project_count: int, open_file_count: int, overlay_count: int, tsconfig_found: bool, tsconfig_parse_ok: bool, tsconfig_file_count: int, tsconfig_ref_count: int, total_nodes: int, total_statements: int, total_declarations: int, total_errors: int }
@@ -6583,21 +6879,23 @@ test "sla sab test codegen folds two open configured projects" {
         \\    if open_projects.secondary_project_path_len != 21 { panic(24104); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "two_open_configured_projects.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "two_open_configured_projects.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "two_open_configured_projects.sla",
         ".sla-cache/sab/two_open_configured_projects.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -6607,14 +6905,16 @@ test "sla sab test codegen folds two open configured projects" {
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_collection_get_open_configured_projects") == null);
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "missing_heavy_project_collection_surface") == null);
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen folds cached default inferred project lookup" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\struct SessionState {
@@ -6726,23 +7026,25 @@ test "sla sab test codegen folds cached default inferred project lookup" {
         \\    if found.project.kind != 0 { panic(24055); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "cached_default_inferred_lookup.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "cached_default_inferred_lookup.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "cached_default_inferred_lookup.sla",
         ".sla-cache/sab/cached_default_inferred_lookup.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -6758,14 +7060,16 @@ test "sla sab test codegen folds cached default inferred project lookup" {
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_snapshot_with_inferred") == null);
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_collection_get_default_project") == null);
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen folds project session api open result" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\struct SessionState {
@@ -6951,23 +7255,25 @@ test "sla sab test codegen folds project session api open result" {
         \\    if opened.project.program_last_update != opened.snapshot.snapshot_id { panic(24062); };
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "api_open_literal.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "api_open_literal.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "api_open_literal.sla",
         ".sla-cache/sab/api_open_literal.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -6985,14 +7291,16 @@ test "sla sab test codegen folds project session api open result" {
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_session_did_change_file") == null);
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "project_session_api_open_project") == null);
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab test codegen omits unreachable trait impls after type checking" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\trait UnusedTrait {
@@ -7014,23 +7322,25 @@ test "sla sab test codegen omits unreachable trait impls after type checking" {
         \\    if item.value != 7 { panic(24007); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "trait_impl_output.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "trait_impl_output.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "trait_impl_output.sla",
         ".sla-cache/sab/trait_impl_output.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .prune_for_test_codegen = true },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7042,14 +7352,16 @@ test "sla sab test codegen omits unreachable trait impls after type checking" {
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "UnusedTrait") == null);
         try std.testing.expect(std.mem.indexOf(u8, fsig.name, "UnusedType_value") == null);
     }
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla test empty filter skips sab compilation" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn helper() -> i32 {
@@ -7060,15 +7372,17 @@ test "sla test empty filter skips sab compilation" {
         \\    missing_symbol();
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "empty_filter.sla", .data = source });
+    try tdir.writeFile(.{ .sub_path = "empty_filter.sla", .data = source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{
@@ -7081,23 +7395,27 @@ test "sla test empty filter skips sab compilation" {
         "--filter",
         "definitely no such test",
     };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
+    try stderr_fw.writer().flush();
     if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "0 passed; 0 failed; 0 skipped"));
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 
     const sab_path = try managedSabTestPath(std.testing.allocator, "empty_filter.sla", &.{ "--filter", "definitely no such test" });
     defer std.testing.allocator.free(sab_path);
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access(sab_path, .{}));
+    try std.testing.expectError(error.FileNotFound, tdir.access(sab_path, .{}));
 }
 
 test "sla sab backend lowers plain structs directly" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const struct_source =
         \\struct SabPair {
@@ -7119,28 +7437,30 @@ test "sla sab backend lowers plain structs directly" {
         \\    if got != 5 { panic(25005); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "struct_sab.sla", .data = struct_source });
+    try tdir.writeFile(.{ .sub_path = "struct_sab.sla", .data = struct_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "struct_sab.sla",
         ".sla-cache/sab/struct_sab.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "sab struct fallback" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
 
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access("struct_sab.test.sa", .{}));
+    try std.testing.expectError(error.FileNotFound, tdir.access("struct_sab.test.sa", .{}));
     try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
 
     var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
@@ -7161,6 +7481,7 @@ test "sla sab backend lowers plain structs directly" {
     try std.testing.expect(saw_alloc);
     try std.testing.expect(saw_store);
     try std.testing.expect(saw_load);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7169,14 +7490,16 @@ test "sla sab backend lowers function pointers directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_fn_ptr_value.sla",
         ".sla-cache/sab/fn_ptr_value.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "function pointer can be passed as argument" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7205,6 +7528,7 @@ test "sla sab backend lowers function pointers directly" {
     try std.testing.expect(saw_fnptr_vtable);
     try std.testing.expect(saw_borrow);
     try std.testing.expect(saw_call_indirect);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7213,14 +7537,16 @@ test "sla sab backend lowers escaped thread closure function pointer callee dire
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_fn_ptr_value.sla",
         ".sla-cache/sab/fn_ptr_thread_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "thread closure captures function pointer callee" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7253,6 +7579,7 @@ test "sla sab backend lowers escaped thread closure function pointer callee dire
     try std.testing.expect(saw_raw_cast);
     try std.testing.expect(saw_assume_safe);
     try std.testing.expect(saw_call_indirect);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7261,14 +7588,16 @@ test "sla sab escaped loop closure loads stack slot scalar capture" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_fn_ptr_value.sla",
         ".sla-cache/sab/fn_ptr_thread_loop_capture_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "loop thread closures capture bool function pointer callee" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7294,6 +7623,7 @@ test "sla sab escaped loop closure loads stack slot scalar capture" {
         try std.testing.expect(!stack_regs.contains(item.operands[2].reg));
     }
     try std.testing.expect(saw_capture_store);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7302,14 +7632,16 @@ test "sla sab backend lowers paired escaped thread function pointer callees dire
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_fn_ptr_thread_pair_direct.sla",
         ".sla-cache/sab/fn_ptr_thread_pair_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "thread closures capture function pointer pair" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7328,14 +7660,16 @@ test "sla sab backend lowers paired escaped thread function pointer callees dire
     }
     try std.testing.expectEqual(@as(usize, 2), worker_count);
     try std.testing.expect(indirect_count >= 2);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab backend lowers multi-argument calls directly" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn add3(a: i32, b: i32, c: i32) -> i32 {
@@ -7347,22 +7681,24 @@ test "sla sab backend lowers multi-argument calls directly" {
         \\    if got != 9 { panic(27009); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "add3.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "add3.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "add3.sla",
         ".sla-cache/sab/add3.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct sab add3" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7377,6 +7713,7 @@ test "sla sab backend lowers multi-argument calls directly" {
         }
     }
     try std.testing.expect(saw_three_arg_call);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7385,14 +7722,16 @@ test "sla sab backend lowers imported std surface metadata directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_fn_ptr_value.sla",
         ".sla-cache/sab/fn_ptr_vec_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "function pointer survives vec push through function" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7417,6 +7756,7 @@ test "sla sab backend lowers imported std surface metadata directly" {
     try std.testing.expect(saw_vec_new);
     try std.testing.expect(!saw_unrelated_vec_free);
     try std.testing.expect(saw_call_indirect);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7425,14 +7765,16 @@ test "sla sab backend lowers std surface function metadata directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_vec_len_direct.sla",
         ".sla-cache/sab/vec_len_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct vec len metadata" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7453,6 +7795,7 @@ test "sla sab backend lowers std surface function metadata directly" {
     try std.testing.expect(saw_vec_len);
     try std.testing.expect(std.mem.indexOf(u8, test_body, "    load ") != null);
     try std.testing.expect(std.mem.indexOf(u8, test_body, "@sa_vec_len") == null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7461,14 +7804,16 @@ test "sla sab backend lowers typed vec index directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_vec_index_direct.sla",
         ".sla-cache/sab/vec_index_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct vec i32 index uses element width" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7492,6 +7837,7 @@ test "sla sab backend lowers typed vec index directly" {
     try std.testing.expect(saw_i32_load);
     try std.testing.expect(saw_i32_storage_stride);
     try std.testing.expect(!saw_raw_i32_width_stride);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7500,14 +7846,16 @@ test "sla sab backend lowers fallible std surface metadata directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_vec_remove_direct.sla",
         ".sla-cache/sab/vec_remove_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct vec remove metadata" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7536,6 +7884,7 @@ test "sla sab backend lowers fallible std surface metadata directly" {
     try std.testing.expect(saw_remove_call);
     try std.testing.expect(saw_fallible_branch);
     try std.testing.expect(saw_panic_86);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7544,14 +7893,16 @@ test "sla sab backend lowers option std surface metadata directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_option_direct.sla",
         ".sla-cache/sab/option_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct option constructors and query methods" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7579,6 +7930,7 @@ test "sla sab backend lowers option std surface metadata directly" {
     try std.testing.expect(saw_load);
     try std.testing.expect(saw_unwrap_panic_const);
     try std.testing.expect(saw_panic_msg);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7587,14 +7939,16 @@ test "sla sab backend lowers result std surface metadata directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_result_direct.sla",
         ".sla-cache/sab/result_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct result constructors and query methods" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7619,6 +7973,7 @@ test "sla sab backend lowers result std surface metadata directly" {
     try std.testing.expect(saw_store);
     try std.testing.expect(saw_load);
     try std.testing.expect(saw_unwrap_panic_const);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7627,14 +7982,16 @@ test "sla sab backend lowers closure calls directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_closures.sla",
         ".sla-cache/sab/closures_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "closure supports multiple params" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7648,6 +8005,7 @@ test "sla sab backend lowers closure calls directly" {
     }
     for (module.instructions) |item| try std.testing.expectEqualStrings("", item.raw_text);
     try std.testing.expect(saw_closure_func);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7656,14 +8014,16 @@ test "sla sab backend lowers var scalar slots directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_var_phase1.sla",
         ".sla-cache/sab/var_phase1_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "var initialized before loop remains readable" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7680,6 +8040,7 @@ test "sla sab backend lowers var scalar slots directly" {
     }
     try std.testing.expect(saw_stack_alloc);
     try std.testing.expect(saw_loop_jump);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7688,14 +8049,16 @@ test "sla sab backend treats ptr stack slot temps as non owning" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_ptr_byte_add_read_type_sa.sla",
         ".sla-cache/sab/ptr_byte_add_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct sab ptr byte add stack slot temps are non owning" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7738,6 +8101,7 @@ test "sla sab backend treats ptr stack slot temps as non owning" {
     }
 
     try std.testing.expect(ptr_stack_slot_sources.count() >= 2);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7746,14 +8110,16 @@ test "sla sab backend imported ptr add macro output does not redefine input para
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_ptr_add_macro_output_direct.sla",
         ".sla-cache/sab/ptr_add_macro_output_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct sab ptr add macro writes local output without redefining input param" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7783,6 +8149,7 @@ test "sla sab backend imported ptr add macro output does not redefine input para
         try std.testing.expect(item.operands[0].reg != source_param_id);
     }
     try std.testing.expect(saw_ptr_add);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7791,14 +8158,16 @@ test "sla sab backend stores imported scalar macro outputs into stack slots" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_checked_add_macro_output_direct.sla",
         ".sla-cache/sab/checked_add_macro_output_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct sab checked add macro writes scalar slot outputs" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7834,6 +8203,7 @@ test "sla sab backend stores imported scalar macro outputs into stack slots" {
     }
 
     try std.testing.expect(saw_slot_store);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -7842,14 +8212,16 @@ test "sla sab backend lowers tuple literals and destructuring directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_tuples.sla",
         ".sla-cache/sab/tuples_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "tuple destructuring" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7869,14 +8241,16 @@ test "sla sab backend lowers tuple literals and destructuring directly" {
     try std.testing.expect(saw_alloc);
     try std.testing.expect(saw_load);
     try std.testing.expect(saw_store);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab backend lowers scalar if expressions directly" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn pick(cond: bool) -> i32 {
@@ -7888,22 +8262,24 @@ test "sla sab backend lowers scalar if expressions directly" {
         \\    if pick(false) != 4 { panic(30102); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "if_value.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "if_value.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "if_value.sla",
         ".sla-cache/sab/if_value.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "if value" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7911,14 +8287,16 @@ test "sla sab backend lowers scalar if expressions directly" {
     var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
     defer module.deinit(std.testing.allocator);
     for (module.instructions) |item| try std.testing.expectEqualStrings("", item.raw_text);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab backend lowers typed if bindings and var assignments directly" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn typed_pick(cond: bool) -> i32 {
@@ -7951,22 +8329,24 @@ test "sla sab backend lowers typed if bindings and var assignments directly" {
         \\    if float_pick(false) != 2.5 { panic(30308); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "if_binding_variants.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "if_binding_variants.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "if_binding_variants.sla",
         ".sla-cache/sab/if_binding_variants.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "if binding variants" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -7974,14 +8354,16 @@ test "sla sab backend lowers typed if bindings and var assignments directly" {
     var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
     defer module.deinit(std.testing.allocator);
     for (module.instructions) |item| try std.testing.expectEqualStrings("", item.raw_text);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab backend lowers nested if assignments directly" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn nested(a: bool, b: bool) -> i32 {
@@ -8013,22 +8395,24 @@ test "sla sab backend lowers nested if assignments directly" {
         \\    if reassign_let(false) != 22 { panic(30406); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "nested_if_assignments.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "nested_if_assignments.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "nested_if_assignments.sla",
         ".sla-cache/sab/nested_if_assignments.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "nested if assignments" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8036,14 +8420,16 @@ test "sla sab backend lowers nested if assignments directly" {
     var module = try sci_bridge.sab.decodeModule(std.testing.allocator, sab_bytes);
     defer module.deinit(std.testing.allocator);
     for (module.instructions) |item| try std.testing.expectEqualStrings("", item.raw_text);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab backend lowers float arithmetic directly" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\@test "float add"() {
@@ -8051,22 +8437,24 @@ test "sla sab backend lowers float arithmetic directly" {
         \\    if sum != 3.75 { panic(30201); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "float_add.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "float_add.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "float_add.sla",
         ".sla-cache/sab/float_add.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "float add" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8082,14 +8470,16 @@ test "sla sab backend lowers float arithmetic directly" {
     }
     try std.testing.expect(saw_fadd);
     try std.testing.expect(saw_fcmp);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab backend lowers boolean logic directly" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const source =
         \\fn both(a: bool, b: bool) -> bool {
@@ -8107,22 +8497,24 @@ test "sla sab backend lowers boolean logic directly" {
         \\    if either(false, false) { panic(30504); };
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "boolean_logic.sla", .data = source });
-    try tmp.dir.setAsCwd();
+    try tdir.writeFile(.{ .sub_path = "boolean_logic.sla", .data = source });
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "boolean_logic.sla",
         ".sla-cache/sab/boolean_logic.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "boolean logic" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8138,6 +8530,7 @@ test "sla sab backend lowers boolean logic directly" {
     }
     try std.testing.expect(saw_and);
     try std.testing.expect(saw_or);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -8146,14 +8539,16 @@ test "sla sab backend lowers numeric casts directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_numeric_casts.sla",
         ".sla-cache/sab/numeric_casts_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "numeric casts direct" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8186,6 +8581,7 @@ test "sla sab backend lowers numeric casts directly" {
     try std.testing.expect(saw_fptosi);
     try std.testing.expect(saw_fptrunc);
     try std.testing.expect(saw_fpext);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -8194,14 +8590,16 @@ test "sla sab backend lowers borrow and deref directly" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_borrow_direct.sla",
         ".sla-cache/sab/borrow_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct borrow deref" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8220,6 +8618,7 @@ test "sla sab backend lowers borrow and deref directly" {
     try std.testing.expect(saw_borrow);
     try std.testing.expect(saw_load);
     try std.testing.expect(saw_stack_alloc);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -8228,14 +8627,16 @@ test "sla sab backend loads pointer-backed field for standalone borrow" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_standalone_borrow_pointer_field.sla",
         ".sla-cache/sab/standalone_borrow_pointer_field.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "standalone borrow of pointer-backed field" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8257,6 +8658,7 @@ test "sla sab backend loads pointer-backed field for standalone borrow" {
     }
     try std.testing.expect(saw_borrow);
     try std.testing.expect(saw_load_before_borrow);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -8265,20 +8667,23 @@ test "sla sa-text loads pointer-backed field for standalone borrow" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sa_code = (try compileSlaToSaStringWithOptions(
         arena.allocator(),
         "tests/test_unit_standalone_borrow_pointer_field.sla",
         "standalone_borrow_pointer_field.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "standalone borrow of pointer-backed field" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
 
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "standalone borrow of pointer-backed field") != null);
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "load ") != null);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -8287,14 +8692,16 @@ test "sla sab backend lowers array literals dynamic indexes and range for direct
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_array_direct.sla",
         ".sla-cache/sab/array_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct array literal repeat dynamic index range for" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8319,6 +8726,7 @@ test "sla sab backend lowers array literals dynamic indexes and range for direct
     try std.testing.expect(saw_load);
     try std.testing.expect(saw_ptr_add);
     try std.testing.expect(saw_stack_alloc);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
@@ -8327,14 +8735,16 @@ test "sla sab backend lowers move arguments through fresh temps" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_move_direct.sla",
         ".sla-cache/sab/move_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{ .test_filter = "direct move struct argument" },
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8352,14 +8762,16 @@ test "sla sab backend lowers move arguments through fresh temps" {
     }
     try std.testing.expect(saw_fresh_move_call);
     try std.testing.expect(!saw_direct_binding_move_call);
+    try stderr_fw.writer().flush();
     try std.testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "sla sab build emits direct SAB without SA source output" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const direct_source =
         \\fn add(a: i32, b: i32) -> i32 {
@@ -8372,26 +8784,29 @@ test "sla sab build emits direct SAB without SA source output" {
         \\    return x;
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "direct.sla", .data = direct_source });
+    try tdir.writeFile(.{ .sub_path = "direct.sla", .data = direct_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "sab", "build", "direct.sla", "--out", "direct.sab" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
+    try stderr_fw.writer().flush();
     if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
     try std.testing.expectEqual(@as(?u8, 0), code);
-    try tmp.dir.access("direct.sab", .{});
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access("direct.sa", .{}));
+    try tdir.access("direct.sab", .{});
+    try std.testing.expectError(error.FileNotFound, tdir.access("direct.sa", .{}));
 
-    const sab_bytes = try tmp.dir.readFileAlloc(std.testing.allocator, "direct.sab", 1024 * 1024);
+    const sab_bytes = try tdir.readFileAlloc(std.testing.allocator, "direct.sab", 1024 * 1024);
     defer std.testing.allocator.free(sab_bytes);
     try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
     try std.testing.expect(std.mem.indexOf(u8, sab_bytes, "tmp_0 = add") == null);
@@ -8423,46 +8838,51 @@ test "sla sab build emits direct SAB without SA source output" {
 }
 
 test "sla sab build defaults to managed sla cache" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
     const direct_source =
         \\fn main() -> i32 {
         \\    return 5;
         \\};
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "direct.sla", .data = direct_source });
+    try tdir.writeFile(.{ .sub_path = "direct.sla", .data = direct_source });
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "sab", "build", "direct.sla" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
+    try stderr_fw.writer().flush();
     if (code != @as(?u8, 0)) std.debug.print("{s}", .{stderr_buf.items});
     try std.testing.expectEqual(@as(?u8, 0), code);
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access("direct.sab", .{}));
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access("direct.sa", .{}));
+    try std.testing.expectError(error.FileNotFound, tdir.access("direct.sab", .{}));
+    try std.testing.expectError(error.FileNotFound, tdir.access("direct.sa", .{}));
 
     const cached_path = try managedSabPath(std.testing.allocator, "direct.sla");
     defer std.testing.allocator.free(cached_path);
-    try tmp.dir.access(cached_path, .{});
+    try tdir.access(cached_path, .{});
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, ".sla-cache/sab/"));
 
-    const sab_bytes = try tmp.dir.readFileAlloc(std.testing.allocator, cached_path, 1024 * 1024);
+    const sab_bytes = try tdir.readFileAlloc(std.testing.allocator, cached_path, 1024 * 1024);
     defer std.testing.allocator.free(sab_bytes);
     try std.testing.expect(std.mem.startsWith(u8, sab_bytes, sci_bridge.sab.magic));
 }
 
-fn writeWorkspaceFixture(dir: std.fs.Dir, default_member: []const u8, tool_source: []const u8) !void {
+fn writeWorkspaceFixture(dir: sio.Dir, default_member: []const u8, tool_source: []const u8) !void {
     try dir.makePath("members/app/src");
     try dir.makePath("members/tool/src");
 
@@ -8489,89 +8909,101 @@ fn writeWorkspaceFixture(dir: std.fs.Dir, default_member: []const u8, tool_sourc
 }
 
 test "sla build resolves workspace default member when file omitted" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try writeWorkspaceFixture(tmp.dir, "app",
+    try writeWorkspaceFixture(tdir, "app",
         \\fn main() -> i32 {
         \\    return 9;
         \\};
     );
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "build" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 0), code);
-    try tmp.dir.access("members/app/src/main.sa", .{});
-    try std.testing.expectError(error.FileNotFound, tmp.dir.access("members/tool/src/main.sa", .{}));
+    try tdir.access("members/app/src/main.sa", .{});
+    try std.testing.expectError(error.FileNotFound, tdir.access("members/tool/src/main.sa", .{}));
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "members/app/src/main.sla"));
 }
 
 test "sla check prefers current member over workspace default" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try writeWorkspaceFixture(tmp.dir, "tool",
+    try writeWorkspaceFixture(tdir, "tool",
         \\fn broken( {
     );
 
-    var member_dir = try tmp.dir.openDir("members/app/src", .{});
+    var member_dir = try tdir.openDir("members/app/src", .{});
     defer member_dir.close();
     try member_dir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "check" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 0), code);
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "members/app/src/main.sla"));
 }
 
 test "sla build selects workspace package with -p when file omitted" {
-    var original_cwd = try std.fs.cwd().openDir(".", .{});
+    var original_cwd = try sio.cwd().openDir(".", .{});
     defer original_cwd.close();
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
 
-    try writeWorkspaceFixture(tmp.dir, "app",
+    try writeWorkspaceFixture(tdir, "app",
         \\fn main() -> i32 {
         \\    return 9;
         \\};
     );
 
-    try tmp.dir.setAsCwd();
+    try tdir.setAsCwd();
     defer original_cwd.setAsCwd() catch {};
 
     var stdout_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stdout_buf.deinit();
+    var stdout_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stdout_buf));
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     var ctx = plugin_api.Context{ .allocator = std.testing.allocator };
     const args = [_][]const u8{ "sa", "sla", "build", "-p", "tool" };
-    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_buf.writer().any(), stderr_buf.writer().any());
+    const code = try runSlaCommandImpl(&ctx, args[0..], stdout_fw.writer(), stderr_fw.writer());
 
     try std.testing.expectEqual(@as(?u8, 0), code);
-    try tmp.dir.access("members/tool/src/main.sa", .{});
+    try tdir.access("members/tool/src/main.sa", .{});
+    try stdout_fw.writer().flush();
     try std.testing.expect(std.mem.containsAtLeast(u8, stdout_buf.items, 1, "members/tool/src/main.sla"));
 }
 
@@ -8580,6 +9012,7 @@ test "sla sab backend releases by-value scalar params of functions declared afte
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     // The SA-text emitter consumes by-value params through the type checker's
     // tail cleanups (`!v` right before `return`); the direct SAB emitter must
@@ -8590,21 +9023,24 @@ test "sla sab backend releases by-value scalar params of functions declared afte
         arena.allocator(),
         "tests/test_unit_param_cleanup_after_main_direct.sla",
         "main.test.sa",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
     try std.testing.expect(std.mem.indexOf(u8, sa_code, "\n    !v\n") != null);
 
+    try stderr_fw.writer().flush();
     stderr_buf.clearRetainingCapacity();
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_param_cleanup_after_main_direct.sla",
         ".sla-cache/sab/param_cleanup_after_main_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8672,14 +9108,16 @@ fn checkStrEqFixtureReleasesTemps(path: []const u8, cache: []const u8, expect_vi
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         path,
         cache,
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8757,14 +9195,16 @@ test "sla sab backend lowers immediately-invoked closure literal" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_iife_direct.sla",
         ".sla-cache/sab/iife_direct.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8776,14 +9216,16 @@ test "sla sab backend lowers chain assignment" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_chain_assign.sla",
         ".sla-cache/sab/chain_assign.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8795,14 +9237,16 @@ test "sla sab backend lowers bare string println argument" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_println_bare_string.sla",
         ".sla-cache/sab/println_bare_string.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8814,14 +9258,16 @@ test "sla sab backend lowers map get copied unwrap chain" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_map_get_chain.sla",
         ".sla-cache/sab/map_get_chain.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8833,14 +9279,16 @@ test "sla sab backend lowers btree get len chain" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_btree_get_chain.sla",
         ".sla-cache/sab/btree_get_chain.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };
@@ -8852,14 +9300,16 @@ test "sla sab backend lowers map clear" {
     defer arena.deinit();
     var stderr_buf = std.array_list.Managed(u8).init(std.testing.allocator);
     defer stderr_buf.deinit();
+    var stderr_fw = sio.ForwardWriter(sio.ManagedWriter).init(sio.managedWriter(&stderr_buf));
 
     const sab_bytes = (try compileSlaFileToSabWithOptions(
         arena.allocator(),
         "tests/test_unit_map_clear.sla",
         ".sla-cache/sab/map_clear.sab",
-        stderr_buf.writer().any(),
+        stderr_fw.writer(),
         .{},
     )) orelse {
+        try stderr_fw.writer().flush();
         std.debug.print("{s}", .{stderr_buf.items});
         return error.TestUnexpectedResult;
     };

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const monomorphizer_mod = @import("monomorphizer.zig");
@@ -181,7 +182,7 @@ fn appendExpandedSlaImportDecls(
     if (visited.contains(resolved_path)) return;
     try visited.put(resolved_path, {});
 
-    const source = std.fs.cwd().readFileAlloc(allocator, resolved_path, 16 * 1024 * 1024) catch return CompileHandlerError.InvalidHandlerOutput;
+    const source = sio.cwd().readFileAlloc(allocator, resolved_path, 16 * 1024 * 1024) catch return CompileHandlerError.InvalidHandlerOutput;
     const expanded_source = source_expand.expand(allocator, source) catch return CompileHandlerError.InvalidHandlerOutput;
     const import_dir = std.fs.path.dirname(resolved_path) orelse base_dir;
     var p = parser_mod.Parser.initWithDir(allocator, expanded_source, import_dir);
@@ -313,7 +314,8 @@ test "compileHandler lowers injected state reads and writes" {
 test "compileHandler expands relative sla imports" {
     var tmp = std.testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{
+    var tdir: sio.Dir = .{ .inner = tmp.dir };
+    try tdir.writeFile(.{
         .sub_path = "helpers.sla",
         .data =
         \\fn add_two(value: i64) -> i64 {
@@ -322,7 +324,7 @@ test "compileHandler expands relative sla imports" {
         \\
         ,
     });
-    const base_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const base_dir = try tdir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(base_dir);
 
     const fields = [_]HandlerStateField{

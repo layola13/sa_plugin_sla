@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const sio = @import("sio");
 const plugin = @import("plugin.zig");
 const plugin_api = @import("plugin_api");
 const sla_build_options = @import("sla_build_options");
@@ -18,13 +20,37 @@ fn isTopLevelSlaCommand(token: []const u8) bool {
     return false;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.page_allocator;
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
+
+    var args_it: std.process.Args.Iterator = if (comptime builtin.os.tag == .windows)
+        try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator)
+    else
+        std.process.Args.Iterator.init(init.minimal.args);
+    defer args_it.deinit();
+
+    var argv_list: std.array_list.Managed([:0]u8) = .init(allocator);
+    defer {
+        for (argv_list.items) |s| allocator.free(s);
+        argv_list.deinit();
+    }
+    while (args_it.next()) |arg| {
+        try argv_list.append(try allocator.dupeSentinel(u8, arg, 0));
+    }
+    const argv = try argv_list.toOwnedSlice();
+    defer sio.argsFree(allocator, argv);
+
+    var obuf: [8192]u8 = undefined;
+    var ostream = sio.getStdOut().writer(&obuf);
+    var ebuf: [8192]u8 = undefined;
+    var estream = sio.getStdErr().writer(&ebuf);
+    const stdout_writer = &ostream.interface;
+    const stderr_writer = &estream.interface;
 
     if (argv.len >= 2 and (std.mem.eql(u8, argv[1], "--version") or std.mem.eql(u8, argv[1], "-V"))) {
-        try std.io.getStdOut().writer().print("sla {s}{c}", .{ sla_build_options.version, 10 });
+        try ostream.interface.print("sla {s}{c}", .{ sla_build_options.version, 10 });
+        try ostream.interface.flush();
+        try estream.interface.flush();
         return;
     }
 
@@ -69,10 +95,9 @@ pub fn main() !void {
         .allocator = allocator,
     };
 
-    const stdout_writer = std.io.getStdOut().writer().any();
-    const stderr_writer = std.io.getStdErr().writer().any();
-
     const maybe_code = try plugin.runSlaCommandImpl(&ctx, args, stdout_writer, stderr_writer);
+    try ostream.interface.flush();
+    try estream.interface.flush();
     const code = maybe_code orelse 1;
     if (code != 0) std.process.exit(code);
 }

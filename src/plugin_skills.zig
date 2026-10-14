@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const plugin_api = @import("plugin_api");
 
 pub const skills = [_]plugin_api.SkillSection{
@@ -25,7 +26,7 @@ pub const skills = [_]plugin_api.SkillSection{
 
 fn ensureParentDir(path: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
-        if (dir.len != 0) try std.fs.cwd().makePath(dir);
+        if (dir.len != 0) try sio.cwd().makePath(dir);
     }
 }
 
@@ -132,14 +133,20 @@ pub fn writeSlaAgentSkills() !SlaAgentSkillPaths {
     try ensureParentDir(codex_path);
     try ensureParentDir(claude_path);
     {
-        var file = try std.fs.cwd().createFile(codex_path, .{ .truncate = true });
+        var file = try sio.cwd().createFile(codex_path, .{ .truncate = true });
         defer file.close();
-        try writeSlaAgentSkillMarkdown(file.writer(), "codex");
+        var fbuf: [8192]u8 = undefined;
+        var fw = file.writer(&fbuf);
+        try writeSlaAgentSkillMarkdown(&fw.interface, "codex");
+        try fw.interface.flush();
     }
     {
-        var file = try std.fs.cwd().createFile(claude_path, .{ .truncate = true });
+        var file = try sio.cwd().createFile(claude_path, .{ .truncate = true });
         defer file.close();
-        try writeSlaAgentSkillMarkdown(file.writer(), "claude");
+        var fbuf: [8192]u8 = undefined;
+        var fw = file.writer(&fbuf);
+        try writeSlaAgentSkillMarkdown(&fw.interface, "claude");
+        try fw.interface.flush();
     }
     return .{ .codex = codex_path, .claude = claude_path };
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 
 pub const SlaCompileOptions = struct {
     test_filter: ?[]const u8 = null,
@@ -12,24 +13,24 @@ pub fn defaultSlaCompileOptions() SlaCompileOptions {
 }
 
 pub fn slaProfileEnabled(allocator: std.mem.Allocator) bool {
-    const value = std.process.getEnvVarOwned(allocator, "SLA_PROFILE") catch return false;
+    const value = sio.getEnvVarOwned(allocator, "SLA_PROFILE") catch return false;
     defer allocator.free(value);
     return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
 }
 
 pub fn slaProfileContractsEnabled(allocator: std.mem.Allocator) bool {
-    const value = std.process.getEnvVarOwned(allocator, "SLA_PROFILE_CONTRACTS") catch return false;
+    const value = sio.getEnvVarOwned(allocator, "SLA_PROFILE_CONTRACTS") catch return false;
     defer allocator.free(value);
     return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
 }
 
-pub fn slaProfileStage(stderr: std.io.AnyWriter, enabled: bool, label: []const u8, start_ns: i128) void {
+pub fn slaProfileStage(stderr: *std.Io.Writer, enabled: bool, label: []const u8, start_ns: i128) void {
     if (!enabled) return;
-    const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - start_ns, std.time.ns_per_ms);
+    const elapsed_ms = @divTrunc(sio.nanoTimestamp() - start_ns, std.time.ns_per_ms);
     stderr.print("[sla-profile] {s}: {d}ms\n", .{ label, elapsed_ms }) catch {};
 }
 
-pub fn writeEmptyTestResult(stdout: std.io.AnyWriter) !void {
+pub fn writeEmptyTestResult(stdout: *std.Io.Writer) !void {
     try stdout.writeAll("----\n");
     try stdout.writeAll("test result: ok. 0 passed; 0 failed; 0 skipped\n");
 }

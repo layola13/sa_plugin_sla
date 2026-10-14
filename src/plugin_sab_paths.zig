@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const sla_build_options = @import("sla_build_options");
 const sla_workspace = @import("workspace.zig");
 const plugin_cli = @import("plugin_cli.zig");
@@ -49,27 +50,27 @@ pub fn managedSabTestPath(allocator: std.mem.Allocator, file: []const u8, extra_
     return try managedSabPathWithVariant(allocator, file, "test-all");
 }
 
-pub fn writeSabFile(allocator: std.mem.Allocator, path: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWriter) !bool {
+pub fn writeSabFile(allocator: std.mem.Allocator, path: []const u8, sab_bytes: []const u8, stderr: *std.Io.Writer) !bool {
     if (std.fs.path.dirname(path)) |dir| {
-        std.fs.cwd().makePath(dir) catch |err| {
+        sio.cwd().makePath(dir) catch |err| {
             try stderr.print("File Error: failed to create SAB output directory {s}: {}\n", .{ dir, err });
             return false;
         };
     }
 
-    if (std.fs.cwd().readFileAlloc(allocator, path, sab_bytes.len + 1)) |existing| {
+    if (sio.cwd().readFileAlloc(allocator, path, sab_bytes.len + 1)) |existing| {
         defer allocator.free(existing);
         if (std.mem.eql(u8, existing, sab_bytes)) return true;
     } else |_| {}
 
-    std.fs.cwd().writeFile(.{ .sub_path = path, .data = sab_bytes }) catch |err| {
+    sio.cwd().writeFile(.{ .sub_path = path, .data = sab_bytes }) catch |err| {
         try stderr.print("File Error: failed to write SAB output {s}: {}\n", .{ path, err });
         return false;
     };
     return true;
 }
 
-pub fn writeManagedSab(allocator: std.mem.Allocator, file: []const u8, sab_bytes: []const u8, stderr: std.io.AnyWriter) !?[]u8 {
+pub fn writeManagedSab(allocator: std.mem.Allocator, file: []const u8, sab_bytes: []const u8, stderr: *std.Io.Writer) !?[]u8 {
     const path = try managedSabPath(allocator, file);
     if (!try writeSabFile(allocator, path, sab_bytes, stderr)) return null;
     return path;
@@ -122,7 +123,7 @@ pub fn virtualSaPathForSabOutput(allocator: std.mem.Allocator, output_file: []co
     const stem = if (std.mem.endsWith(u8, output_file, ".sab")) output_file[0 .. output_file.len - 4] else output_file;
     const sa_path = try std.fmt.allocPrint(allocator, "{s}.sa", .{stem});
     if (std.fs.path.isAbsolute(sa_path)) return sa_path;
-    const cwd = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const cwd = try sio.cwd().realpathAlloc(allocator, ".");
     return try std.fs.path.join(allocator, &.{ cwd, sa_path });
 }
 
@@ -135,7 +136,7 @@ fn saStdRootLooksValid(allocator: std.mem.Allocator, root: []const u8) !bool {
     };
     for (required_files) |rel| {
         const path = try std.fs.path.join(allocator, &.{ root, rel });
-        if (std.fs.cwd().openFile(path, .{})) |file| {
+        if (sio.cwd().openFile(path, .{})) |file| {
             file.close();
         } else |err| switch (err) {
             error.FileNotFound, error.NotDir => return false,
@@ -149,11 +150,11 @@ pub fn sabSaStdRoot(allocator: std.mem.Allocator) ![]const u8 {
     if (try saStdRootLooksValid(allocator, sla_build_options.sa_std_source_dir)) {
         return try allocator.dupe(u8, sla_build_options.sa_std_source_dir);
     }
-    if (std.process.getEnvVarOwned(allocator, "SA_STD_DIR")) |env_root| {
+    if (sio.getEnvVarOwned(allocator, "SA_STD_DIR")) |env_root| {
         if (try saStdRootLooksValid(allocator, env_root)) return env_root;
     } else |_| {}
 
-    if (std.process.getEnvVarOwned(allocator, "SCI_ROOT")) |sci_root| {
+    if (sio.getEnvVarOwned(allocator, "SCI_ROOT")) |sci_root| {
         defer allocator.free(sci_root);
         const sci_sa_std_root = try std.fs.path.join(allocator, &.{ sci_root, "sa_std" });
         if (try saStdRootLooksValid(allocator, sci_sa_std_root)) return sci_sa_std_root;
@@ -184,9 +185,9 @@ pub fn sabSaStdRoot(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 pub fn sabProjectRoot(allocator: std.mem.Allocator, source_file: []const u8) ![]const u8 {
-    const source_abs = std.fs.cwd().realpathAlloc(allocator, source_file) catch return std.fs.cwd().realpathAlloc(allocator, ".");
+    const source_abs = sio.cwd().realpathAlloc(allocator, source_file) catch return sio.cwd().realpathAlloc(allocator, ".");
     const source_dir = std.fs.path.dirname(source_abs) orelse ".";
-    var resolution = sla_workspace.resolveFromRootPath(allocator, source_dir, .{}) catch return std.fs.cwd().realpathAlloc(allocator, ".");
+    var resolution = sla_workspace.resolveFromRootPath(allocator, source_dir, .{}) catch return sio.cwd().realpathAlloc(allocator, ".");
     defer resolution.deinit(allocator);
     return try allocator.dupe(u8, resolution.workspace_root);
 }

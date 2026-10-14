@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const sla_rt = @import("sla_rt");
 const workspace = @import("workspace.zig");
 const host_paths = @import("host_paths.zig");
@@ -72,11 +73,11 @@ pub fn isSlaStdImport(path: []const u8) bool {
 }
 
 pub fn readImportFileIfExistsWithOutputPath(allocator: std.mem.Allocator, path: []const u8, output_path: []const u8) !?ResolvedImport {
-    const source = std.Io.Dir.cwd().readFileAlloc(allocator, sla_rt.get(), path, std.Io.Limit.limited(max_import_bytes)) catch |err| {
+    const source = sio.cwd().readFileAlloc(allocator, path, max_import_bytes) catch |err| {
         if (err == error.FileNotFound or err == error.NotDir or err == error.IsDir) return null;
         return err;
     };
-    const real_path_raw = std.Io.Dir.cwd().realPathFileAlloc(sla_rt.get(), path, allocator) catch try allocator.dupe(u8, path);
+    const real_path_raw = sio.cwd().realpathAlloc(allocator, path) catch try allocator.dupe(u8, path);
     const real_path = try host_paths.normalizePathSlashes(allocator, real_path_raw);
     allocator.free(real_path_raw);
     return .{ .path = real_path, .output_path = try allocator.dupe(u8, output_path), .source = source };
@@ -100,7 +101,7 @@ fn readImportFromAncestorRoots(
     output_path: []const u8,
     roots: []const []const u8,
 ) !?ResolvedImport {
-    var current = std.Io.Dir.cwd().realPathFileAlloc(sla_rt.get(), base_dir, allocator) catch try allocator.dupe(u8, base_dir);
+    var current = sio.cwd().realpathAlloc(allocator, base_dir) catch try allocator.dupe(u8, base_dir);
     defer allocator.free(current);
     while (true) {
         for (roots) |root| {
@@ -302,8 +303,8 @@ pub fn appendResolvedImportFiles(
     const dir_path = std.fs.path.dirname(pattern_path) orelse ".";
     const pattern_name = std.fs.path.basename(pattern_path);
 
-    var dir = try std.Io.Dir.cwd().openDir(sla_rt.get(), dir_path, .{ .iterate = true });
-    defer dir.close(sla_rt.get());
+    var dir = try sio.cwd().openDir(dir_path, .{ .iterate = true });
+    defer dir.close();
 
     var matched_paths = std.array_list.Managed([]const u8).init(allocator);
     var it = dir.iterate();

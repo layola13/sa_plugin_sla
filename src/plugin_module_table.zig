@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 const parser_mod = @import("parser.zig");
 const source_expand = @import("source_expand.zig");
@@ -15,7 +16,7 @@ const splitImportedMangledSymbol = plugin_imports.splitImportedMangledSymbol;
 
 fn moduleTableProfileEnabled() bool {
     // Match SLA_PROFILE used by import-expand / compile stages.
-    const value = std.process.getEnvVarOwned(std.heap.page_allocator, "SLA_PROFILE") catch return false;
+    const value = sio.getEnvVarOwned(std.heap.page_allocator, "SLA_PROFILE") catch return false;
     defer std.heap.page_allocator.free(value);
     return value.len != 0 and !std.mem.eql(u8, value, "0") and !std.mem.eql(u8, value, "false");
 }
@@ -401,7 +402,7 @@ pub const SlaModuleTable = struct {
             try self.allocator.dupe(u8, import_path)
         else
             try std.fs.path.join(self.allocator, &.{ base_dir, import_path });
-        const canonical_path_raw = std.fs.cwd().realpathAlloc(self.allocator, candidate) catch return null;
+        const canonical_path_raw = sio.cwd().realpathAlloc(self.allocator, candidate) catch return null;
         const canonical_path = host_paths.normalizePathSlashes(self.allocator, canonical_path_raw) catch canonical_path_raw;
         if (!std.mem.eql(u8, canonical_path, canonical_path_raw)) self.allocator.free(canonical_path_raw);
         if (std.mem.eql(u8, canonical_path, exclude_path)) return null;
@@ -436,11 +437,11 @@ pub const SlaModuleTable = struct {
         if (self.modules.get(resolved.path)) |module| return module;
 
         const profile = moduleTableProfileEnabled();
-        const total_start = if (profile) std.time.nanoTimestamp() else 0;
+        const total_start = if (profile) sio.nanoTimestamp() else 0;
         const base_dir = std.fs.path.dirname(resolved.path) orelse ".";
-        const expand_start = if (profile) std.time.nanoTimestamp() else 0;
+        const expand_start = if (profile) sio.nanoTimestamp() else 0;
         const cache_lookup_path = blk: {
-            const raw = std.fs.cwd().realpathAlloc(self.allocator, resolved.path) catch break :blk resolved.path;
+            const raw = sio.cwd().realpathAlloc(self.allocator, resolved.path) catch break :blk resolved.path;
             const normed = host_paths.normalizePathSlashes(self.allocator, raw) catch {
                 break :blk raw;
             };
@@ -452,24 +453,24 @@ pub const SlaModuleTable = struct {
             self.expanded_source_cache_hits += 1;
             break :blk surface.expanded_source;
         } else try source_expand.expandForModulePath(self.allocator, resolved.path, resolved.source);
-        const expand_ns = if (profile) std.time.nanoTimestamp() - expand_start else 0;
-        const parse_start = if (profile) std.time.nanoTimestamp() else 0;
+        const expand_ns = if (profile) sio.nanoTimestamp() - expand_start else 0;
+        const parse_start = if (profile) sio.nanoTimestamp() else 0;
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, expanded_source, base_dir, self.parse_options);
         parser.seedImportTypeScanCache(self.import_type_scan_cache);
         const parsed = try parser.parseProgram();
         self.import_type_scan_cache = parser.importTypeScanCache();
         self.import_type_scan_cache_hits += parser.importTypeScanCacheHitCount();
         if (parsed.* != .program) return error.InvalidProgram;
-        const parse_ns = if (profile) std.time.nanoTimestamp() - parse_start else 0;
+        const parse_ns = if (profile) sio.nanoTimestamp() - parse_start else 0;
 
-        const exports_start = if (profile) std.time.nanoTimestamp() else 0;
+        const exports_start = if (profile) sio.nanoTimestamp() else 0;
         var exports = SlaModuleExports.init(self.allocator, resolved.path);
         try exports.buildFromDecls(parsed.program.decls);
         const resolved_imports = try self.resolveModuleImports(resolved.path, base_dir, parsed.program.decls);
         const resolved_module_imports = try self.buildModuleImportNamespaces(resolved_imports);
-        const exports_ns = if (profile) std.time.nanoTimestamp() - exports_start else 0;
+        const exports_ns = if (profile) sio.nanoTimestamp() - exports_start else 0;
         if (profile) {
-            const total_ms = @divTrunc(std.time.nanoTimestamp() - total_start, std.time.ns_per_ms);
+            const total_ms = @divTrunc(sio.nanoTimestamp() - total_start, std.time.ns_per_ms);
             const expand_ms = @divTrunc(expand_ns, std.time.ns_per_ms);
             const parse_ms = @divTrunc(parse_ns, std.time.ns_per_ms);
             const exports_ms = @divTrunc(exports_ns, std.time.ns_per_ms);
@@ -496,12 +497,12 @@ pub const SlaModuleTable = struct {
             .parsed_macro_bodies = std.StringHashMap(void).init(self.allocator),
             .function_body_spans = std.StringHashMap([]const u8).init(self.allocator),
         };
-        const spans_start = if (profile) std.time.nanoTimestamp() else 0;
+        const spans_start = if (profile) sio.nanoTimestamp() else 0;
         if (self.capture_body_spans) {
             try captureModuleFunctionBodySpans(self.allocator, module, &parser);
         }
         if (profile) {
-            const spans_ms = @divTrunc(std.time.nanoTimestamp() - spans_start, std.time.ns_per_ms);
+            const spans_ms = @divTrunc(sio.nanoTimestamp() - spans_start, std.time.ns_per_ms);
             if (spans_ms > 0) {
                 std.debug.print("[sla-profile] getOrParse {s}: body_spans={d}ms\n", .{ std.fs.path.basename(module.path), spans_ms });
             }
@@ -525,7 +526,7 @@ pub const SlaModuleTable = struct {
         // depending on huge world_table_erased) hit mergeKnownTypeSurface instead
         // of re-expanding and re-parsing the whole file during prescan.
         const cache_path = blk: {
-            const raw = std.fs.cwd().realpathAlloc(self.allocator, module.path) catch break :blk module.path;
+            const raw = sio.cwd().realpathAlloc(self.allocator, module.path) catch break :blk module.path;
             const normed = host_paths.normalizePathSlashes(self.allocator, raw) catch {
                 break :blk raw;
             };
@@ -582,7 +583,7 @@ pub const SlaModuleTable = struct {
             return stats;
         }
 
-        const parse_start = std.time.nanoTimestamp();
+        const parse_start = sio.nanoTimestamp();
         var parser = parser_mod.Parser.initWithDirAndOptions(self.allocator, module.expanded_source, module.base_dir, .{
             .parse_function_bodies = true,
             .function_body_names = selected_function_bodies,
@@ -594,14 +595,14 @@ pub const SlaModuleTable = struct {
         try parser.seedKnownTypeNames(module.known_types, module.known_enums);
         const parsed = try parser.parseProgram();
         if (parsed.* != .program) return error.InvalidProgram;
-        const parse_ns = std.time.nanoTimestamp() - parse_start;
+        const parse_ns = sio.nanoTimestamp() - parse_start;
 
-        const exports_start = std.time.nanoTimestamp();
+        const exports_start = sio.nanoTimestamp();
         var exports = SlaModuleExports.init(self.allocator, module.path);
         try exports.buildFromDecls(parsed.program.decls);
-        const exports_ns = std.time.nanoTimestamp() - exports_start;
+        const exports_ns = sio.nanoTimestamp() - exports_start;
 
-        const commit_start = std.time.nanoTimestamp();
+        const commit_start = sio.nanoTimestamp();
         // Record the selected body-name sets into the module's persistent
         // tracking maps BEFORE freeing the old exports. Some selected names
         // (mangled method symbols such as `Type_method`) are strings owned by
@@ -643,7 +644,7 @@ pub const SlaModuleTable = struct {
         return .{
             .parse_ns = parse_ns,
             .exports_ns = exports_ns,
-            .commit_ns = std.time.nanoTimestamp() - commit_start,
+            .commit_ns = sio.nanoTimestamp() - commit_start,
         };
     }
 
@@ -677,12 +678,12 @@ pub const SlaModuleTable = struct {
         if (new_function_count == 0) {
             // Selection shrank or only already-materialized bodies remain; keep
             // tracking set in sync without touching the AST.
-            const commit_start = std.time.nanoTimestamp();
+            const commit_start = sio.nanoTimestamp();
             try replaceParsedFunctionBodySet(self.allocator, module, selected_functions);
-            return .{ .commit_ns = std.time.nanoTimestamp() - commit_start };
+            return .{ .commit_ns = sio.nanoTimestamp() - commit_start };
         }
 
-        const parse_start = std.time.nanoTimestamp();
+        const parse_start = sio.nanoTimestamp();
         selected_iter = selected_functions.keyIterator();
         while (selected_iter.next()) |name_ptr| {
             if (module.parsed_function_bodies.contains(name_ptr.*)) continue;
@@ -698,9 +699,9 @@ pub const SlaModuleTable = struct {
             func_decl.body = body;
             func_decl.is_decl_only = false;
         }
-        const parse_ns = std.time.nanoTimestamp() - parse_start;
+        const parse_ns = sio.nanoTimestamp() - parse_start;
 
-        const commit_start = std.time.nanoTimestamp();
+        const commit_start = sio.nanoTimestamp();
         try replaceParsedFunctionBodySet(self.allocator, module, selected_functions);
         // Preserve the historical null-selection meaning used by full reparses:
         // null means "all bodies of this kind are present".
@@ -709,7 +710,7 @@ pub const SlaModuleTable = struct {
         return .{
             .parse_ns = parse_ns,
             .exports_ns = 0,
-            .commit_ns = std.time.nanoTimestamp() - commit_start,
+            .commit_ns = sio.nanoTimestamp() - commit_start,
         };
     }
 

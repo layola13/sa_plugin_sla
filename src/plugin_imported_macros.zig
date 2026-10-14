@@ -1,5 +1,5 @@
 const std = @import("std");
-const sla_rt = @import("sla_rt");
+const sio = @import("sio");
 const type_checker_mod = @import("type_checker.zig");
 const source_expand = @import("source_expand.zig");
 
@@ -136,7 +136,7 @@ fn tryLoadImportedMacrosFromCache(
     cache_path: []const u8,
     import_path: ?[]const u8,
 ) !bool {
-    const bytes = std.Io.Dir.cwd().readFileAlloc(allocator, sla_rt.get(), cache_path, std.Io.Limit.limited(16 * 1024 * 1024)) catch return false;
+    const bytes = sio.cwd().readFileAlloc(allocator, cache_path, 16 * 1024 * 1024) catch return false;
     defer allocator.free(bytes);
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |raw| {
@@ -169,16 +169,16 @@ fn tryLoadImportedMacrosFromCache(
 
 fn storeImportedMacrosCache(cache_path: []const u8, records: []const []const u8) void {
     const dir = std.fs.path.dirname(cache_path) orelse return;
-    std.Io.Dir.cwd().createDirPath(sla_rt.get(), dir) catch return;
-    const file = std.Io.Dir.cwd().createFile(sla_rt.get(), cache_path, .{}) catch return;
-    defer file.close(sla_rt.get());
+    sio.cwd().makePath(dir) catch return;
+    const file = sio.cwd().createFile(cache_path, .{ .truncate = true }) catch return;
+    defer file.close();
     var wb: [8192]u8 = undefined;
-    var w = file.writer(sla_rt.get(), &wb);
+    var w = file.writer(&wb);
     for (records) |line| {
-        w.writeAll(line) catch return;
-        w.writeAll("\n") catch return;
+        w.interface.writeAll(line) catch return;
+        w.interface.writeAll("\n") catch return;
     }
-    w.flush() catch return;
+    w.interface.flush() catch return;
 }
 
 pub fn loadImportedMacrosFromExpandedSource(

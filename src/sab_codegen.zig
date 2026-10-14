@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const sla_build_options = @import("sla_build_options");
 const ast = @import("ast.zig");
 const contract_parser = @import("contract_parser.zig");
@@ -18,7 +19,7 @@ fn stringSliceLessThan(_: void, a: []const u8, b: []const u8) bool {
 }
 
 fn sabProfileEnabled(allocator: std.mem.Allocator) bool {
-    const value = std.process.getEnvVarOwned(allocator, "SLA_SAB_PROFILE") catch return false;
+    const value = sio.getEnvVarOwned(allocator, "SLA_SAB_PROFILE") catch return false;
     defer allocator.free(value);
     return value.len != 0 and
         !std.mem.eql(u8, value, "0") and
@@ -26,26 +27,32 @@ fn sabProfileEnabled(allocator: std.mem.Allocator) bool {
 }
 
 fn sabProfileElapsedMs(start_ns: i128) i128 {
-    return @divTrunc(std.time.nanoTimestamp() - start_ns, std.time.ns_per_ms);
+    return @divTrunc(sio.nanoTimestamp() - start_ns, std.time.ns_per_ms);
 }
 
 fn sabProfileStage(enabled: bool, label: []const u8, start_ns: i128) void {
     if (!enabled) return;
-    std.io.getStdErr().writer().print("[sla-sab-profile] {s}: {d}ms\n", .{
+    var ebuf: [8192]u8 = undefined;
+    var ew = sio.getStdErr().writer(&ebuf);
+    ew.interface.print("[sla-sab-profile] {s}: {d}ms\n", .{
         label,
         sabProfileElapsedMs(start_ns),
     }) catch {};
+    ew.interface.flush() catch {};
 }
 
 fn sabProfileDecl(enabled: bool, kind: []const u8, name: []const u8, start_ns: i128) void {
     if (!enabled) return;
     const elapsed_ms = sabProfileElapsedMs(start_ns);
     if (elapsed_ms < 25) return;
-    std.io.getStdErr().writer().print("[sla-sab-profile] {s} {s}: {d}ms\n", .{
+    var ebuf: [8192]u8 = undefined;
+    var ew = sio.getStdErr().writer(&ebuf);
+    ew.interface.print("[sla-sab-profile] {s} {s}: {d}ms\n", .{
         kind,
         name,
         elapsed_ms,
     }) catch {};
+    ew.interface.flush() catch {};
 }
 
 pub const Error = error{
@@ -528,35 +535,35 @@ pub const Codegen = struct {
     pub fn generate(self: *Codegen, program: *ast.Node) ![]u8 {
         if (program.* != .program) return Error.UnsupportedSabDirectFeature;
         const profile = sabProfileEnabled(self.allocator);
-        var stage_start = std.time.nanoTimestamp();
+        var stage_start = sio.nanoTimestamp();
         try self.collectGlobalScalarConsts(program);
         try self.collectGlobalArrayConsts(program);
         try self.collectAssignedBindings(program);
         sabProfileStage(profile, "pre-scan", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         try self.loadStdSurfaceRules();
         self.preloadStdSurfaceDeps(program) catch |err| {
             self.traceUnsupported("std surface preload failed: {s}\n", .{@errorName(err)});
             return err;
         };
         sabProfileStage(profile, "std surface deps", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         if (programUsesFutureTaskRuntime(program)) {
             try self.emitFutureTaskHelpers();
         }
         sabProfileStage(profile, "future helpers", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         for (program.program.decls) |decl| {
             if (decl.* == .impl_decl and decl.impl_decl.trait_name != null) {
                 try self.emitTraitVTableDecl(&decl.impl_decl);
             }
         }
         sabProfileStage(profile, "trait vtables", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         for (program.program.decls) |decl| {
             switch (decl.*) {
                 .func_decl => |*f| {
-                    const decl_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const decl_start = if (profile) sio.nanoTimestamp() else 0;
                     if (f.is_decl_only) {
                         if (f.is_extern and !hasConcreteFunctionSymbol(program.program.decls, f)) {
                             self.genExternDecl(f) catch |err| {
@@ -574,7 +581,7 @@ pub const Codegen = struct {
                     }
                 },
                 .test_decl => |*t| {
-                    const decl_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const decl_start = if (profile) sio.nanoTimestamp() else 0;
                     self.genTestDecl(t) catch |err| {
                         self.traceUnsupported("test decl {s} failed: {s}\n", .{ t.name, @errorName(err) });
                         return err;
@@ -582,7 +589,7 @@ pub const Codegen = struct {
                     sabProfileDecl(profile, "test", t.name, decl_start);
                 },
                 .impl_decl => |*i| {
-                    const decl_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const decl_start = if (profile) sio.nanoTimestamp() else 0;
                     self.genImplDecl(i) catch |err| {
                         self.traceUnsupported("impl decl failed: {s}\n", .{@errorName(err)});
                         return err;
@@ -590,7 +597,7 @@ pub const Codegen = struct {
                     sabProfileDecl(profile, "impl", concreteTypeName(i.target_ty) orelse "?", decl_start);
                 },
                 .overload_decl => |*o| {
-                    const decl_start = if (profile) std.time.nanoTimestamp() else 0;
+                    const decl_start = if (profile) sio.nanoTimestamp() else 0;
                     self.genOverloadDecl(o) catch |err| {
                         self.traceUnsupported("overload decl failed: {s}\n", .{@errorName(err)});
                         return err;
@@ -605,13 +612,13 @@ pub const Codegen = struct {
             }
         }
         sabProfileStage(profile, "top-level decls", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         try self.emitEscapedClosureEntries();
         sabProfileStage(profile, "escaped closures", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         try self.emitReferencedContractExternDecls();
         sabProfileStage(profile, "extern decls", stage_start);
-        stage_start = std.time.nanoTimestamp();
+        stage_start = sio.nanoTimestamp();
         const bytes = try sab.encodeProgramWithConsts(
             self.allocator,
             self.symbols.items,
@@ -747,7 +754,7 @@ pub const Codegen = struct {
         defer hex_text.deinit();
         try hex_text.appendSlice("hex:");
         for (bytes) |b| {
-            try hex_text.writer().print("\\x{x:0>2}", .{b});
+            try sio.managedPrint(&hex_text, "\\x{x:0>2}", .{b});
         }
         const literal_text = try hex_text.toOwnedSlice();
         const raw_text = try std.fmt.allocPrint(self.allocator, "@const {s} = {s}", .{ label, literal_text });
@@ -1007,7 +1014,7 @@ pub const Codegen = struct {
             }
             if (slots.items.len > 0) try literal.appendSlice(", ");
             const lowered = try self.loweredFuncSymbol(mangled);
-            try literal.writer().print("{s} = @{s}", .{ method.name, lowered });
+            try sio.managedPrint(literal, "{s} = @{s}", .{ method.name, lowered });
             try slots.append(.{
                 .name = try self.allocator.dupe(u8, method.name),
                 .func_name = try self.allocator.dupe(u8, lowered),
@@ -1212,7 +1219,7 @@ pub const Codegen = struct {
             else => if (std.ascii.isPrint(b)) {
                 try out.append(b);
             } else {
-                try out.writer().print("\\x{X:0>2}", .{b});
+                try sio.managedPrint(&out, "\\x{X:0>2}", .{b});
             },
         };
 
@@ -1264,11 +1271,11 @@ pub const Codegen = struct {
     }
 
     fn readStdSurfaceFile(self: *Codegen) !?[]const u8 {
-        if (std.process.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |root| {
+        if (sio.getEnvVarOwned(self.allocator, "SLA_STD_DIR")) |root| {
             defer self.allocator.free(root);
             const path = try std.fs.path.join(self.allocator, &.{ root, "std_surface.sla_meta" });
             defer self.allocator.free(path);
-            if (std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+            if (sio.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
                 error.FileNotFound, error.NotDir => {},
                 else => return err,
             }
@@ -1278,7 +1285,7 @@ pub const Codegen = struct {
             defer self.allocator.free(home);
             const path = try std.fs.path.join(self.allocator, &.{ home, "projects", "sa_plugins", "sa_plugin_sla", "sla_std", "std_surface.sla_meta" });
             defer self.allocator.free(path);
-            if (std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+            if (sio.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
                 error.FileNotFound, error.NotDir => {},
                 else => return err,
             }
@@ -1291,7 +1298,7 @@ pub const Codegen = struct {
             "/home/vscode/projects/sa_plugins/sa_plugin_sla/sla_std/std_surface.sla_meta",
         };
         for (candidates) |path| {
-            if (std.fs.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
+            if (sio.cwd().readFileAlloc(self.allocator, path, 1024 * 1024)) |source| return source else |err| switch (err) {
                 error.FileNotFound, error.NotDir => {},
                 else => return err,
             }
@@ -1309,7 +1316,7 @@ pub const Codegen = struct {
         for (required_files) |rel| {
             const path = try std.fs.path.join(self.allocator, &.{ root, rel });
             defer self.allocator.free(path);
-            if (std.fs.cwd().openFile(path, .{})) |file| {
+            if (sio.cwd().openFile(path, .{})) |file| {
                 file.close();
             } else |err| switch (err) {
                 error.FileNotFound, error.NotDir => return false,
@@ -1326,12 +1333,12 @@ pub const Codegen = struct {
 
     fn resolveSaStdRoot(self: *Codegen) ![]const u8 {
         if (try self.dupeIfValidSaStdRoot(sla_build_options.sa_std_source_dir)) |root| return root;
-        if (std.process.getEnvVarOwned(self.allocator, "SA_STD_DIR")) |env_root| {
+        if (sio.getEnvVarOwned(self.allocator, "SA_STD_DIR")) |env_root| {
             defer self.allocator.free(env_root);
             if (try self.dupeIfValidSaStdRoot(env_root)) |root| return root;
         } else |_| {}
 
-        if (std.process.getEnvVarOwned(self.allocator, "SCI_ROOT")) |sci_root| {
+        if (sio.getEnvVarOwned(self.allocator, "SCI_ROOT")) |sci_root| {
             defer self.allocator.free(sci_root);
             const sci_sa_std_root = try std.fs.path.join(self.allocator, &.{ sci_root, "sa_std" });
             defer self.allocator.free(sci_sa_std_root);
@@ -5355,14 +5362,14 @@ pub const Codegen = struct {
 
         var source = std.array_list.Managed(u8).init(self.allocator);
         defer source.deinit();
-        try source.writer().print("@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
+        try sio.managedPrint(&source, "@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
         for (0..arg_count) |idx| {
             const placeholder = try self.stdMacroPlaceholder(idx);
             defer self.allocator.free(placeholder);
             if (idx == 0) {
-                try source.writer().print(" {s}", .{placeholder});
+                try sio.managedPrint(&source, " {s}", .{placeholder});
             } else {
-                try source.writer().print(", {s}", .{placeholder});
+                try sio.managedPrint(&source, ", {s}", .{placeholder});
             }
         }
         try source.appendSlice("\n    return\n");
@@ -5484,22 +5491,22 @@ pub const Codegen = struct {
         self.macro_fragment_idx += 1;
 
         var source = std.array_list.Managed(u8).init(self.allocator);
-        try source.writer().print("@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
+        try sio.managedPrint(&source, "@import \"{s}\"\n@{s}() -> void:\nL_ENTRY:\n    EXPAND {s}", .{ import_path, func_name, macro_name });
         for (args, 0..) |arg, i| {
             const use_literal = literal_args.len != 0 and literal_args[i];
             if (use_literal) {
                 if (i == 0) {
-                    try source.writer().print(" {s}", .{arg});
+                    try sio.managedPrint(&source, " {s}", .{arg});
                 } else {
-                    try source.writer().print(", {s}", .{arg});
+                    try sio.managedPrint(&source, ", {s}", .{arg});
                 }
             } else {
                 const placeholder = try self.stdMacroPlaceholder(i);
                 defer self.allocator.free(placeholder);
                 if (i == 0) {
-                    try source.writer().print(" {s}", .{placeholder});
+                    try sio.managedPrint(&source, " {s}", .{placeholder});
                 } else {
-                    try source.writer().print(", {s}", .{placeholder});
+                    try sio.managedPrint(&source, ", {s}", .{placeholder});
                 }
             }
         }
@@ -6318,7 +6325,7 @@ pub const Codegen = struct {
     }
 
     fn callTargetName(body: []const u8) ?[]const u8 {
-        const trimmed = std.mem.trimLeft(u8, body, " \t\r");
+        const trimmed = std.mem.trimStart(u8, body, " \t\r");
         if (trimmed.len == 0 or trimmed[0] != '@') return null;
         var end: usize = 1;
         while (end < trimmed.len and isCallTargetChar(trimmed[end])) : (end += 1) {}
@@ -6327,9 +6334,9 @@ pub const Codegen = struct {
     }
 
     fn directCallTargetName(body: []const u8) ?[]const u8 {
-        const trimmed = std.mem.trimLeft(u8, body, " \t\r");
+        const trimmed = std.mem.trimStart(u8, body, " \t\r");
         const target = callTargetName(trimmed) orelse return null;
-        const after = std.mem.trimLeft(u8, trimmed[target.len + 1 ..], " \t\r");
+        const after = std.mem.trimStart(u8, trimmed[target.len + 1 ..], " \t\r");
         if (after.len == 0 or after[0] != '(') return null;
         return target;
     }
@@ -6748,7 +6755,7 @@ pub const Codegen = struct {
     }
 
     fn traceSabUnsupported(self: *Codegen) bool {
-        const value = std.process.getEnvVarOwned(self.allocator, "SLA_SAB_TRACE_UNSUPPORTED") catch return false;
+        const value = sio.getEnvVarOwned(self.allocator, "SLA_SAB_TRACE_UNSUPPORTED") catch return false;
         defer self.allocator.free(value);
         return value.len != 0 and !std.mem.eql(u8, value, "0");
     }
@@ -9271,7 +9278,7 @@ pub const Codegen = struct {
         defer forget_regs.deinit();
         var restores = std.array_list.Managed(struct { slot: u32, value: u32 }).init(self.allocator);
         defer restores.deinit();
-        try text.writer().print("@{s}(", .{lowered});
+        try sio.managedPrint(&text, "@{s}(", .{lowered});
         for (call.args, 0..) |arg, i| {
             const effective = macroEffectiveArg(ctx, arg);
             const param_info = try self.directSabCallParam(call_plan.target_symbol, i);
@@ -11859,7 +11866,7 @@ pub const Codegen = struct {
         try self.emitLoad(fn_reg, vtable_reg, slot, .ptr);
 
         var body = std.array_list.Managed(u8).init(self.allocator);
-        try body.writer().print("{s}(&{s})", .{ self.symbols.items[fn_reg], self.symbols.items[data_reg] });
+        try sio.managedPrint(&body, "{s}(&{s})", .{ self.symbols.items[fn_reg], self.symbols.items[data_reg] });
         var item = self.makeInst(.call_indirect);
         item.operands[0] = .{ .reg = dst };
         item.operands[1] = .{ .text = try body.toOwnedSlice() };
@@ -15011,7 +15018,7 @@ pub const Codegen = struct {
         defer forget_regs.deinit();
         var restores = std.array_list.Managed(struct { slot: u32, value: u32 }).init(self.allocator);
         defer restores.deinit();
-        try text.writer().print("@{s}(", .{lowered});
+        try sio.managedPrint(&text, "@{s}(", .{lowered});
         for (call.args, 0..) |arg, i| {
             const param_info = try self.directSabCallParam(call_plan.target_symbol, i);
             const sibling_mark = try self.pushCallSiblingArgExprs(call.args, i);
@@ -17246,7 +17253,7 @@ pub const Codegen = struct {
         var body = std.array_list.Managed(u8).init(self.allocator);
         var arg_regs = std.array_list.Managed(u32).init(self.allocator);
         defer arg_regs.deinit();
-        try body.writer().print("{s}(", .{self.symbols.items[call_reg]});
+        try sio.managedPrint(&body, "{s}(", .{self.symbols.items[call_reg]});
         for (call.args, 0..) |arg, i| {
             const arg_reg = try self.genExpr(@constCast(arg));
             const call_arg_reg = blk: {
@@ -17261,7 +17268,7 @@ pub const Codegen = struct {
             };
             try arg_regs.append(call_arg_reg);
             if (i > 0) try body.appendSlice(", ");
-            try body.writer().print("{s}", .{self.symbols.items[call_arg_reg]});
+            try sio.managedPrint(&body, "{s}", .{self.symbols.items[call_arg_reg]});
         }
         try body.append(')');
 
@@ -17913,14 +17920,14 @@ pub const Codegen = struct {
             const call_plan = lowering_rules.planStaticCall(self.tc, guard, guard.call_expr) orelse return Error.UnsupportedSabDirectFeature;
             const lowered = try self.loweredFuncSymbol(lowering_rules.staticCallEmitSymbol(call_plan));
             var body = std.array_list.Managed(u8).init(self.allocator);
-            try body.writer().print("@{s}(", .{lowered});
+            try sio.managedPrint(&body, "@{s}(", .{lowered});
             for (guard.call_expr.args, 0..) |arg, arg_idx| {
                 if (arg_idx > 0) try body.appendSlice(", ");
                 if (arg.* == .identifier) {
                     const reg = self.localReg(arg.identifier) orelse return Error.UnsupportedSabDirectFeature;
                     try body.appendSlice(self.symbols.items[reg]);
                 } else if (arg.* == .literal and arg.literal == .int_val) {
-                    try body.writer().print("{}", .{arg.literal.int_val});
+                    try sio.managedPrint(&body, "{}", .{arg.literal.int_val});
                 } else {
                     const reg = try self.genScalarMatchGuardValue(arg, scratch, cursor);
                     try body.appendSlice(self.symbols.items[reg]);

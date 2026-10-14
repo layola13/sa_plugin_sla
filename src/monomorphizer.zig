@@ -1,4 +1,5 @@
 const std = @import("std");
+const sio = @import("sio");
 const ast = @import("ast.zig");
 
 pub const MonomorphizeError = error{
@@ -1220,7 +1221,7 @@ pub const Monomorphizer = struct {
             },
             .array => |arr| {
                 try buf.appendSlice("arr");
-                try buf.writer().print("{}", .{arr.len});
+                sio.managedPrint(buf, "{}", .{arr.len}) catch return MonomorphizeError.OutOfMemory;
                 try buf.append('_');
                 try self.appendTypeName(buf, arr.elem);
             },

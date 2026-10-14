@@ -272,7 +272,7 @@ pub const AsyncTwoAwaitContinuationPlan = struct {
 pub const AsyncLinearAwaitMax = 8;
 
 pub const AsyncLinearAwaitScalarPlan = struct {
-    coeffs: [AsyncLinearAwaitMax]i64 = [_]i64{0}**AsyncLinearAwaitMax,
+    coeffs: [AsyncLinearAwaitMax]i64 = std.mem.zeroes([AsyncLinearAwaitMax]i64),
     immediate: i64 = 0,
 };
 
@@ -2152,8 +2152,8 @@ pub fn planAsyncTwoAwaitContinuation(func: *const ast.FuncDecl) ?AsyncTwoAwaitCo
 }
 
 const AsyncLinearAwaitAddend = struct {
-    used: [AsyncLinearAwaitMax]bool = [_]bool{false}**AsyncLinearAwaitMax,
-    coeffs: [AsyncLinearAwaitMax]i64 = [_]i64{0}**AsyncLinearAwaitMax,
+    used: [AsyncLinearAwaitMax]bool = std.mem.zeroes([AsyncLinearAwaitMax]bool),
+    coeffs: [AsyncLinearAwaitMax]i64 = std.mem.zeroes([AsyncLinearAwaitMax]i64),
     immediate: i64 = 0,
 };
 
